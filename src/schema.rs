@@ -1,5 +1,5 @@
 //! A schema is a contract on a pipeline's rows: a table of fields, each a path from the record's root, the type it
-//! must hold, whether a row must hold it, and what it means. A bundle declares its schemas as such tables
+//! must hold, how much a row is asked to hold it (`Requirement`), and what it means. A bundle declares its schemas as such tables
 //! (`SchemaDto`), and `json_schema` reads one from JSON Schema and writes one as it. A pipeline names the schemas it
 //! produces, and `check` holds the type of its record (`plan::dictionary`) to them.
 //!
@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use crate::config_file::{SchemaDto, SchemaFieldDto};
+use crate::config_file::{Requirement, SchemaDto, SchemaFieldDto};
 use crate::core::column::DataType;
 
 pub mod csv;
@@ -63,7 +63,7 @@ pub struct Field {
     pub path: String,
     /// What the field must hold. An object type holds any object: its fields are rows of their own, under its path.
     pub ty: DataType,
-    pub required: bool,
+    pub requirement: Requirement,
     pub description: String,
     /// A value it may hold, as text.
     pub example: String,
@@ -102,7 +102,7 @@ pub fn read(dto: &SchemaDto) -> Result<Schema, String> {
         fields.push(Field {
             path: row.field.clone(),
             ty,
-            required: row.required,
+            requirement: row.requirement,
             description: row.description.clone(),
             example: row.example.clone(),
             elasticsearch: row.elasticsearch.clone(),
@@ -147,7 +147,7 @@ pub fn to_dto(schema: &Schema) -> SchemaDto {
             .map(|f| SchemaFieldDto {
                 field: f.path.clone(),
                 ty: f.ty.spell(),
-                required: f.required,
+                requirement: f.requirement,
                 description: f.description.clone(),
                 example: f.example.clone(),
                 elasticsearch: f.elasticsearch.clone(),
@@ -198,6 +198,16 @@ pub enum Misfit {
     },
     /// The schema requires the field, and the record does not have it.
     Missing,
+    /// The schema recommends the field, and the record does not have it. It never breaks the schema: it is told,
+    /// and not counted with what does.
+    Recommended,
+}
+
+impl Misfit {
+    /// Whether the record breaks the schema by it.
+    pub fn breaks(&self) -> bool {
+        *self != Misfit::Recommended
+    }
 }
 
 impl Finding {
@@ -321,9 +331,9 @@ fn fields_of(ty: &DataType) -> Option<&[(String, DataType)]> {
 
 impl Schema {
     /// Where a record may break the schema: each field whose type the schema's does not hold, and each field the
-    /// schema requires that the record lacks, in the schema's order. A field the schema does not name keeps it, as
-    /// does one whose type only the row knows. A required field is missing where the object it sits in is there and
-    /// does not declare it: an open object may carry the key, but the pipeline has not shown that it does.
+    /// schema requires or recommends that the record lacks, in the schema's order. A field the schema does not name
+    /// keeps it, as does one whose type only the row knows. A field is lacking where the object it sits in is there
+    /// and does not declare it: an open object may carry the key, but the pipeline has not shown that it does.
     pub fn check(&self, record: &DataType) -> Vec<Finding> {
         let shape = Shape::of(record);
         let mut out = Vec::new();
@@ -343,11 +353,16 @@ impl Schema {
                     }
                 }
                 None => {
-                    if f.required && shape.object_at(&keys[..keys.len() - 1]).is_some() {
+                    let misfit = match f.requirement {
+                        Requirement::Required => Misfit::Missing,
+                        Requirement::Recommended => Misfit::Recommended,
+                        Requirement::Optional => continue,
+                    };
+                    if shape.object_at(&keys[..keys.len() - 1]).is_some() {
                         out.push(Finding {
                             keys,
                             schema: self.id.clone(),
-                            misfit: Misfit::Missing,
+                            misfit,
                         });
                     }
                 }
@@ -364,7 +379,8 @@ impl Schema {
 }
 
 /// Where a record breaks the schemas a pipeline produces, all of them at once: a row keeps one of them, so a field
-/// breaks them when every schema that names it says so, and a field is missing when every schema requires it.
+/// breaks them when every schema that names it says so, a field is missing when every schema requires it, and a
+/// field is recommended when every schema requires or recommends it and some only recommend it.
 pub fn check(schemas: &[Arc<Schema>], record: &DataType) -> Vec<Finding> {
     let each: Vec<Vec<Finding>> = schemas.iter().map(|s| s.check(record)).collect();
     let mut out: Vec<Finding> = Vec::new();
@@ -377,6 +393,9 @@ pub fn check(schemas: &[Arc<Schema>], record: &DataType) -> Vec<Finding> {
                 match f.misfit {
                     Misfit::Type { .. } => alike || schemas[j].field(&f.keys).is_none(),
                     Misfit::Missing => alike,
+                    Misfit::Recommended => {
+                        alike || other.iter().any(|o| o.keys == f.keys && o.misfit == Misfit::Missing)
+                    }
                 }
             });
             if stands && !out.iter().any(|o| o.keys == f.keys && same_kind(&o.misfit, &f.misfit)) {
@@ -387,7 +406,7 @@ pub fn check(schemas: &[Arc<Schema>], record: &DataType) -> Vec<Finding> {
     out
 }
 
-/// A field a schema requires that the record lacks, as a pipeline's author is shown it.
+/// A field a schema requires or recommends that the record lacks, as a pipeline's author is shown it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Missing {
     /// The field's path, as the pipeline editor shows it.
@@ -396,31 +415,53 @@ pub struct Missing {
     pub written_as: String,
     /// The schema's title.
     pub schema: String,
+    /// Required or recommended.
+    pub requirement: Requirement,
 }
 
-/// Each field `findings` say the record lacks, with what to write it as and the schema requiring it.
+/// Each field `findings` say the record lacks, with what to write it as and the schema asking for it.
 pub fn missing(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Missing> {
     findings
         .iter()
-        .filter(|f| f.misfit == Misfit::Missing)
         .filter_map(|f| {
+            let requirement = match f.misfit {
+                Misfit::Missing => Requirement::Required,
+                Misfit::Recommended => Requirement::Recommended,
+                Misfit::Type { .. } => return None,
+            };
             let schema = schemas.iter().find(|s| s.id == f.schema)?;
             let field = schema.field(&f.keys)?;
             Some(Missing {
                 path: f.path(),
                 written_as: field.ty.spell(),
                 schema: schema.title.clone(),
+                requirement,
             })
         })
         .collect()
 }
 
+/// A sentence a check tells a pipeline's author (`told`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Told {
+    /// The field's keys, for a field whose type misfits.
+    pub keys: Option<Vec<String>>,
+    pub message: String,
+    /// Whether it says the rows break a schema. A recommended field they lack does not.
+    pub breaks: bool,
+}
+
+/// The recommended fields a sentence names before it counts the rest, so a standard's long list stays one line.
+const RECOMMENDED_NAMED: usize = 5;
+
 /// What a check's `findings` against `schemas` say to a pipeline's author: a sentence for each field whose type
-/// misfits, with the field's keys, and one for each schema's required fields the record lacks, with none.
-pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<(Option<Vec<String>>, String)> {
+/// misfits, with the field's keys, one for each schema's required fields the record lacks, and after them one for
+/// each schema's recommended fields it lacks, which names the first few and counts the rest.
+pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
     let title = |id: &str| (schemas.iter().find(|s| s.id == id)).map_or(id.to_string(), |s| s.title.clone());
     let mut out = Vec::new();
     let mut missing: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut recommended: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for f in findings {
         match &f.misfit {
             Misfit::Type { ty, wants } => {
@@ -431,24 +472,50 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<(Option<Vec<St
                     (DataType::DateTime, "i64") => ": `.epochMillis()` gives one",
                     _ => "",
                 };
-                out.push((
-                    Some(f.keys.clone()),
-                    format!(
+                out.push(Told {
+                    keys: Some(f.keys.clone()),
+                    message: format!(
                         "`{path}` is {}, but {schema} has it as {wants}. Write it as {wants}{how}.",
                         ty.spell()
                     ),
-                ));
+                    breaks: true,
+                });
             }
             Misfit::Missing => missing.entry(&f.schema).or_default().push(format!("`{}`", f.path())),
+            Misfit::Recommended => recommended
+                .entry(&f.schema)
+                .or_default()
+                .push(format!("`{}`", f.path())),
         }
     }
+    let lack = |paths: &[String]| if paths.len() == 1 { "it" } else { "them" };
     for (schema, paths) in missing {
-        let schema = title(schema);
-        let lack = if paths.len() == 1 { "it" } else { "them" };
-        out.push((
-            None,
-            format!("{schema} requires {}; the rows lack {lack}.", paths.join(", ")),
-        ));
+        out.push(Told {
+            keys: None,
+            message: format!(
+                "{} requires {}; the rows lack {}.",
+                title(schema),
+                paths.join(", "),
+                lack(&paths)
+            ),
+            breaks: true,
+        });
+    }
+    for (schema, paths) in recommended {
+        let named = paths[..paths.len().min(RECOMMENDED_NAMED)].join(", ");
+        let more = match paths.len().saturating_sub(RECOMMENDED_NAMED) {
+            0 => String::new(),
+            n => format!(" and {n} more"),
+        };
+        out.push(Told {
+            keys: None,
+            message: format!(
+                "{} recommends {named}{more}; the rows lack {}.",
+                title(schema),
+                lack(&paths)
+            ),
+            breaks: false,
+        });
     }
     out
 }
@@ -502,6 +569,7 @@ mod tests {
             .map(|f| match &f.misfit {
                 Misfit::Type { ty, wants } => format!("{} {}: {} not {wants}", f.schema, f.path(), ty.spell()),
                 Misfit::Missing => format!("{} {}: missing", f.schema, f.path()),
+                Misfit::Recommended => format!("{} {}: recommended", f.schema, f.path()),
             })
             .collect()
     }
@@ -510,8 +578,18 @@ mod tests {
         SchemaFieldDto {
             field: field.to_string(),
             ty: ty.to_string(),
-            required,
+            requirement: match required {
+                true => Requirement::Required,
+                false => Requirement::Optional,
+            },
             ..Default::default()
+        }
+    }
+
+    fn recommended(field: &str, ty: &str) -> SchemaFieldDto {
+        SchemaFieldDto {
+            requirement: Requirement::Recommended,
+            ..row(field, ty, false)
         }
     }
 
@@ -635,16 +713,92 @@ mod tests {
         assert_eq!(
             told,
             [
+                Told {
+                    keys: Some(vec!["time".to_string()]),
+                    message:
+                        "`time` is datetime, but Login has it as i64. Write it as i64: `.epochMillis()` gives one."
+                            .to_string(),
+                    breaks: true,
+                },
+                Told {
+                    keys: None,
+                    message: "Login requires `activity_id`, `user`, `metadata`; the rows lack them.".to_string(),
+                    breaks: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_recommended_field_the_rows_lack_is_told_after_what_breaks_and_breaks_nothing() {
+        let audit = declared(
+            "audit",
+            "Audit",
+            vec![
+                row("time", "i64", true),
+                recommended("message", "str"),
+                recommended("a", "str"),
+                recommended("b", "str"),
+                recommended("c", "str"),
+                recommended("d", "str"),
+                recommended("e", "str"),
+                recommended("f", "str"),
+                recommended("src", "{...}"),
+                recommended("src.ip", "str"),
+            ],
+        );
+        let schemas = std::slice::from_ref(&audit);
+        let findings = audit.check(&st(&[("message", DataType::Str), ("src", st(&[]))]));
+        assert_eq!(
+            shown(&findings),
+            [
+                "audit time: missing",
+                "audit a: recommended",
+                "audit b: recommended",
+                "audit c: recommended",
+                "audit d: recommended",
+                "audit e: recommended",
+                "audit f: recommended",
+                "audit src.ip: recommended",
+            ],
+            "a field the rows hold is not named, and one inside an object only where the object is there"
+        );
+        let told = told(schemas, &findings);
+        assert_eq!(
+            (told.iter())
+                .map(|t| (t.message.as_str(), t.breaks))
+                .collect::<Vec<_>>(),
+            [
+                ("Audit requires `time`; the rows lack it.", true),
                 (
-                    Some(vec!["time".to_string()]),
-                    "`time` is datetime, but Login has it as i64. Write it as i64: `.epochMillis()` gives one."
-                        .to_string()
-                ),
-                (
-                    None,
-                    "Login requires `activity_id`, `user`, `metadata`; the rows lack them.".to_string()
+                    "Audit recommends `a`, `b`, `c`, `d`, `e` and 2 more; the rows lack them.",
+                    false
                 ),
             ]
+        );
+        let lacking = missing(schemas, &findings);
+        assert_eq!(lacking.len(), 8, "{lacking:?}");
+        assert_eq!(
+            (lacking.iter().filter(|m| m.requirement == Requirement::Recommended)).count(),
+            7
+        );
+        assert!(!audit.check(&st(&[])).iter().any(|f| f.path() == "src.ip"));
+    }
+
+    #[test]
+    fn several_schemas_recommend_a_field_when_each_asks_for_it_and_one_only_recommends_it() {
+        let a = declared("a", "A", vec![row("x", "str", true), recommended("y", "str")]);
+        let b = declared("b", "B", vec![recommended("x", "str"), recommended("y", "str")]);
+        let c = declared("c", "C", vec![row("z", "str", false)]);
+        assert_eq!(
+            shown(&check(&[a.clone(), b.clone()], &st(&[]))),
+            ["a y: recommended", "b x: recommended"],
+            "`x` is required by one and recommended by the other, and `y` told once"
+        );
+        assert_eq!(
+            shown(&check(&[a, b, c], &st(&[]))),
+            Vec::<String>::new(),
+            "a row may keep the schema that asks for neither"
         );
     }
 

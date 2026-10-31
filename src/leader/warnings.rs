@@ -3100,6 +3100,7 @@ mod tests {
                     pipeline: "orders".to_string(),
                     step: None,
                     message: "Login requires `x`; the rows lack it.".to_string(),
+                    breaks: true,
                 },
             )],
         };

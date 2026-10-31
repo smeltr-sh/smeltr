@@ -385,6 +385,8 @@ pub struct SchemaFindingOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     step: Option<String>,
     message: String,
+    /// False for recommended fields the rows lack, which review shows and does not count.
+    breaks: bool,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -428,6 +430,7 @@ fn branch_findings(data_dir: &Path, name: &str) -> Result<SchemaFindings, Refusa
                     pipeline: f.pipeline,
                     step: f.step,
                     message: f.message,
+                    breaks: f.breaks,
                 }),
         );
     }
@@ -1272,7 +1275,8 @@ mod tests {
                 .collect();
             format!("[{}]", each.join(",")).into_bytes()
         };
-        let schema = br#"{"id":"login","title":"Login","fields":[{"field":"user","type":"str","required":true}]}"#;
+        let schema =
+            br#"{"id":"login","title":"Login","fields":[{"field":"user","type":"str","requirement":"required"}]}"#;
         let p = pipeline("p");
         save(
             &data,
@@ -1309,7 +1313,7 @@ mod tests {
         let data = temp_dir("schema-findings-fields");
         let schema = |fields: &[&str]| -> Vec<u8> {
             let each: Vec<String> = (fields.iter())
-                .map(|f| format!(r#"{{"field":"{f}","type":"str","required":true}}"#))
+                .map(|f| format!(r#"{{"field":"{f}","type":"str","requirement":"required"}}"#))
                 .collect();
             format!(r#"{{"id":"login","title":"Login","fields":[{}]}}"#, each.join(",")).into_bytes()
         };

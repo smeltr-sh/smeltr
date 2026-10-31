@@ -5,8 +5,16 @@
 -->
 <script lang="ts" module>
   import type { CatalogType } from './TypeCatalog.svelte';
-  import type { CsvColumns, CsvPreview, OcsfClass, OcsfLevel, SchemaReadFormat } from './api';
+  import type {
+    CsvColumns,
+    CsvPreview,
+    EcsRequirements,
+    OcsfClass,
+    Requirement,
+    SchemaReadFormat,
+  } from './api';
   import { FIELD_TYPES } from './api';
+  import { REQUIREMENTS } from './schemas';
 
   export type SchemaStart = 'ecs' | 'ocsf' | 'csv' | 'jsonSchema' | 'import' | 'empty';
 
@@ -17,9 +25,6 @@
     csv: 'csv',
     jsonSchema: 'json-schema',
   };
-
-  /** OCSF's requirement levels, in order. */
-  export const OCSF_LEVELS: OcsfLevel[] = ['required', 'recommended', 'optional'];
 
   /** A schema being added, before it is one. */
   export type SchemaDraft = {
@@ -44,7 +49,9 @@
     /** How many keys deep an OCSF class is read. */
     depth: number;
     /** Which OCSF requirement levels are read. */
-    levels: OcsfLevel[];
+    levels: Requirement[];
+    /** Whose requirements an ECS schema's fields take: ECS's own, or Elastic Security's in their place. */
+    requirements: EcsRequirements;
     /** A CSV as the leader read it before its columns were chosen, or why it could not. */
     preview: CsvPreview | null;
     previewError: string;
@@ -58,7 +65,7 @@
   export const CSV_ROLES = [
     'field',
     'type',
-    'required',
+    'requirement',
     'description',
     'example',
     'elasticsearch',
@@ -97,7 +104,7 @@
       type: 'csv',
       label: 'CSV of fields',
       category: 'From a file',
-      help: "A CSV file with a row per field and a header row. You choose which column holds each field's name, which holds its type, and optionally which hold required, description, example and elasticsearch.",
+      help: "A CSV file with a header row and a row per field. You choose the columns for each field's name and type. Columns for its requirement (required, recommended or optional), description, example value and Elasticsearch type are optional.",
       // A grid.
       glyph: { d: 'M10 14 H54 V50 H10 Z M10 26 H54 M10 38 H54 M26 14 V50 M40 14 V50' },
     },
@@ -229,6 +236,7 @@
       class: first,
       depth: 2,
       levels: ['required', 'recommended'],
+      requirements: 'ecs',
       preview: null,
       previewError: '',
       columns: {},
@@ -320,8 +328,8 @@
     draft.file = await file.text();
   }
 
-  function level(draft: SchemaDraft, l: OcsfLevel, on: boolean) {
-    draft.levels = OCSF_LEVELS.filter((x) => (x === l ? on : draft.levels.includes(x)));
+  function level(draft: SchemaDraft, l: Requirement, on: boolean) {
+    draft.levels = REQUIREMENTS.filter((x) => (x === l ? on : draft.levels.includes(x)));
   }
 
   function ready(d: SchemaDraft): boolean {
@@ -346,6 +354,26 @@
     }
   }
 </script>
+
+{#snippet ecsRequirementsHelp()}
+  <span class="option"
+    ><strong>ECS</strong> requires @timestamp and ecs.version, and recommends its
+    <a
+      href="https://www.elastic.co/guide/en/ecs/current/ecs-guidelines.html#_ecs_field_levels"
+      target="_blank"
+      rel="noreferrer">core fields</a
+    >.</span
+  >
+  <span class="option"
+    ><strong>Elastic Security</strong> requires five fields: @timestamp, ecs.version, event.kind,
+    event.category and event.type. It recommends the other fields its
+    <a
+      href="https://www.elastic.co/guide/en/security/current/siem-field-reference.html"
+      target="_blank"
+      rel="noreferrer">field reference</a
+    > lists, such as host.name and source.ip.</span
+  >
+{/snippet}
 
 {#snippet link(href: string)}
   <a {href} target="_blank" rel="noreferrer">{href.replace(/^https:\/\//, '').replace(/\/$/, '')}</a
@@ -402,11 +430,19 @@
         </p>
       {/if}
     {/if}
+    {#if draft.type === 'ecs'}
+      <Field label="Requirements" help={ecsRequirementsHelp}>
+        <select bind:value={draft.requirements}>
+          <option value="ecs">ECS</option>
+          <option value="elastic-security">Elastic Security</option>
+        </select>
+      </Field>
+    {/if}
     {#if draft.type === 'import'}
       <Field
         required
         label="Importer"
-        help="A pipeline that writes one row per field: field, type, required, description."
+        help="A pipeline that writes one row per field: field, type, requirement, description."
       >
         <select bind:value={draft.pipeline}>
           <option value="">Choose a pipeline…</option>
@@ -546,7 +582,7 @@
         </Field>
         <fieldset class="levels">
           <legend>Include fields that are</legend>
-          {#each OCSF_LEVELS as l (l)}
+          {#each REQUIREMENTS as l (l)}
             <label
               ><input
                 type="checkbox"
@@ -579,6 +615,15 @@
 </NewObject>
 
 <style>
+  /* Each choice's explanation on its own line, led by its name. */
+  .option {
+    display: block;
+  }
+
+  .option + .option {
+    margin-top: 0.4rem;
+  }
+
   textarea {
     width: 100%;
     box-sizing: border-box;

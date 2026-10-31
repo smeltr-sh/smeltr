@@ -6488,7 +6488,7 @@ mod tests {
     }
 
     const LOGIN: &str = r#"[
-        { "id": "acme-login", "fields": [{ "field": "user", "type": "str", "required": true }] },
+        { "id": "acme-login", "fields": [{ "field": "user", "type": "str", "requirement": "required" }] },
         { "id": "acme-audit" }
     ]"#;
 

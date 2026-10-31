@@ -2,12 +2,13 @@
 //! `generated/ecs/ecs_flat.yml`. Each ECS field is a field of the schema, typed as a pipeline writes it, and an ECS type
 //! that is not the one its smeltr type maps to of itself says so in `elasticsearch`, so the schema's mapping is ECS's.
 //! A multi-field, such as `message.text` beside `message`, is one way Elasticsearch indexes its field, so it is that
-//! field's `fields` rather than a field of its own.
+//! field's `fields` rather than a field of its own. A field ECS requires is required, and one of its core level, the
+//! fields ECS expects most events to have, is recommended: inside its object, where that object is there.
 
 use serde_json::{Map, Value, json};
 
 use super::csv;
-use crate::config_file::SchemaFieldDto;
+use crate::config_file::{Requirement, SchemaFieldDto};
 use crate::io::elastic_mapping::{IGNORE_ABOVE, types_for};
 
 /// The fields ECS requires. Its YAML says so of each; its CSV has no column for it.
@@ -27,7 +28,7 @@ struct Ecs {
     name: String,
     ty: String,
     array: bool,
-    required: bool,
+    requirement: Requirement,
     description: String,
     example: String,
     /// Settings ECS gives its mapping beside the type: `ignore_above`, `scaling_factor`, its multi-fields.
@@ -40,9 +41,10 @@ fn from_csv(text: &str) -> Result<Vec<Ecs>, String> {
     let at = |name: &str| {
         (header.iter().position(|h| h == name)).ok_or_else(|| format!("ECS's CSV names a `{name}` column"))
     };
-    let (field, ty, normalization, example, description) = (
+    let (field, ty, level, normalization, example, description) = (
         at("Field")?,
         at("Type")?,
+        at("Level")?,
         at("Normalization")?,
         at("Example")?,
         at("Description")?,
@@ -54,7 +56,7 @@ fn from_csv(text: &str) -> Result<Vec<Ecs>, String> {
             return Err(format!("row {n}: no `Field` or `Type`"));
         }
         Ok(Ecs {
-            required: REQUIRED.contains(&name.as_str()),
+            requirement: requirement(REQUIRED.contains(&name.as_str()), &cell(level)),
             name,
             ty: cell(ty),
             array: cell(normalization).split(',').any(|n| n.trim() == "array"),
@@ -100,13 +102,52 @@ fn from_yaml(text: &str) -> Result<Vec<Ecs>, String> {
                 name: name.clone(),
                 ty,
                 array: (f.get("normalize").and_then(Value::as_array)).is_some_and(|n| n.iter().any(|n| n == "array")),
-                required: f.get("required") == Some(&Value::Bool(true)),
+                requirement: requirement(f.get("required") == Some(&Value::Bool(true)), &text("level")),
                 description: text("description"),
                 example: super::example_of(f.get("example")),
                 settings,
             })
         })
         .collect()
+}
+
+/// Whose requirements an ECS schema's fields take.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Requirements {
+    /// ECS's own: what it requires, and its core fields recommended.
+    #[default]
+    Ecs,
+    /// Elastic Security's field reference (`standard::ELASTIC_SECURITY`): what it requires of all data, and the
+    /// fields it uses recommended. ECS's other fields are optional.
+    ElasticSecurity,
+}
+
+/// `fields` with the requirements `whose` gives them. A field Elastic Security names that the ECS read has not is
+/// passed over: its reference can name a field another release of ECS lacks.
+pub fn with_requirements(mut fields: Vec<SchemaFieldDto>, whose: Requirements) -> Vec<SchemaFieldDto> {
+    if whose == Requirements::ElasticSecurity {
+        let asks: std::collections::HashMap<&str, Requirement> = super::standard::ELASTIC_SECURITY
+            .lines()
+            .filter_map(|line| {
+                let (level, name) = line.split_once(' ')?;
+                Some((name, Requirement::named(level)?))
+            })
+            .collect();
+        for f in &mut fields {
+            f.requirement = asks.get(f.field.as_str()).copied().unwrap_or_default();
+        }
+    }
+    fields
+}
+
+/// How much a schema asks for a field ECS requires or not, at its level.
+fn requirement(required: bool, level: &str) -> Requirement {
+    match (required, level) {
+        (true, _) => Requirement::Required,
+        (false, "core") => Requirement::Recommended,
+        _ => Requirement::Optional,
+    }
 }
 
 /// The schema's fields: each ECS field typed, and each multi-field, a field under one that holds no object, folded
@@ -152,7 +193,7 @@ fn field(f: Ecs) -> SchemaFieldDto {
     SchemaFieldDto {
         field: f.name,
         ty,
-        required: f.required,
+        requirement: f.requirement,
         description: f.description,
         example: f.example,
         elasticsearch,
@@ -215,8 +256,18 @@ mod tests {
         let fields = read(CSV).unwrap();
         assert_eq!(fields.len(), 14);
         let at = get(&fields, "@timestamp");
-        assert_eq!((at.ty.as_str(), at.required), ("datetime", true));
+        assert_eq!((at.ty.as_str(), at.requirement), ("datetime", Requirement::Required));
         assert_eq!(at.example, "2016-05-23T08:05:34.853Z");
+        assert_eq!(
+            get(&fields, "agent.id").requirement,
+            Requirement::Recommended,
+            "a core field"
+        );
+        assert_eq!(
+            get(&fields, "client.as.number").requirement,
+            Requirement::Optional,
+            "an extended field"
+        );
         assert_eq!(get(&fields, "tags").ty, "array<str>");
         assert_eq!(get(&fields, "labels").ty, "{...}");
         assert_eq!(get(&fields, "client.as.number").ty, "i64");
@@ -235,8 +286,13 @@ mod tests {
     fn ecs_yaml_reads_as_its_fields_with_their_settings_and_multi_fields() {
         let fields = read(YAML).unwrap();
         let at = get(&fields, "@timestamp");
-        assert_eq!((at.ty.as_str(), at.required), ("datetime", true));
-        assert!(get(&fields, "ecs.version").required);
+        assert_eq!((at.ty.as_str(), at.requirement), ("datetime", Requirement::Required));
+        assert_eq!(get(&fields, "ecs.version").requirement, Requirement::Required);
+        assert_eq!(
+            get(&fields, "agent.id").requirement,
+            Requirement::Recommended,
+            "a core field"
+        );
         let id = get(&fields, "agent.id");
         assert_eq!(id.ty, "str");
         assert_eq!(id.example, "8a4f500d");
@@ -262,6 +318,25 @@ mod tests {
             fields[0].elasticsearch,
             mapped(json!({ "type": "keyword", "fields": { "text": { "type": "match_only_text" } } }))
         );
+    }
+
+    #[test]
+    fn elastic_securitys_requirements_replace_ecss() {
+        let fields = with_requirements(
+            read(super::super::standard::ECS).unwrap(),
+            Requirements::ElasticSecurity,
+        );
+        let requirement = |name| get(&fields, name).requirement;
+        assert_eq!(requirement("@timestamp"), Requirement::Required);
+        assert_eq!(requirement("event.kind"), Requirement::Required, "core in ECS");
+        assert_eq!(requirement("host.name"), Requirement::Recommended);
+        assert_eq!(
+            requirement("agent.name"),
+            Requirement::Optional,
+            "core in ECS, unnamed by Elastic Security"
+        );
+        let own = with_requirements(read(super::super::standard::ECS).unwrap(), Requirements::Ecs);
+        assert_eq!(get(&own, "agent.name").requirement, Requirement::Recommended);
     }
 
     #[test]

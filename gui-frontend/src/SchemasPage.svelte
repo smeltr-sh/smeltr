@@ -35,6 +35,7 @@
     type FileConfigDto,
     type PipelineDto,
     type SchemaDto,
+    type Requirement,
     type SchemaFieldDto,
   } from './api';
   import { downloadJson, fileName, matchesOf, userHash, usersOf, type User } from './schemas';
@@ -128,6 +129,7 @@
         ...(draft.type === 'ocsf'
           ? { class: draft.class, cut: { depth: draft.depth, levels: draft.levels } }
           : {}),
+        ...(draft.type === 'ecs' ? { requirements: draft.requirements } : {}),
         ...(draft.type === 'csv' ? { columns: draft.columns, types: draft.types } : {}),
       });
       if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
@@ -136,6 +138,13 @@
     schemas.push(schema);
     opened = new Set(opened).add(draft.id);
     adding = false;
+  }
+
+  function require(of: SchemaDto, field: string, requirement: Requirement) {
+    const f = of.fields.find((f) => f.field === field);
+    if (!f) return;
+    if (requirement === 'optional') delete f.requirement;
+    else f.requirement = requirement;
   }
 
   function map(of: SchemaDto, field: string, mapping: SchemaFieldDto['elasticsearch']) {
@@ -363,8 +372,12 @@
     <td colspan="4">
       <div class="actions">
         <span class="dim"
-          >{fromShared ? 'Declared in shared/.' : 'Edit it with Edit JSON.'}
-          <span class="required">*</span> required.</span
+          >{#if fromShared}<EditInShared
+              hash="#/build/schemas"
+              label="Edit in shared/"
+            />.{:else if readOnly}Edit it with Edit JSON.{:else}Choose each field’s requirement
+            here, or edit it with Edit JSON.{/if}
+          <span class="required">*</span> required, ° recommended.</span
         >
         <span class="grow"></span>
         <button type="button" onclick={() => void exported(id, 'json-schema')}
@@ -378,6 +391,7 @@
         {of}
         {q}
         onmap={fromShared || readOnly ? undefined : (field, m) => map(of, field, m)}
+        onrequire={fromShared || readOnly ? undefined : (field, r) => require(of, field, r)}
       />
     </td>
   </tr>

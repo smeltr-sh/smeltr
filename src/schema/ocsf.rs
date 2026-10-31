@@ -5,7 +5,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::config_file::SchemaFieldDto;
+use crate::config_file::{Requirement, SchemaFieldDto};
 
 /// How much of a class becomes the schema.
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -123,8 +123,8 @@ impl Reader<'_> {
                     true => format!("array<{element}>"),
                     false => element.to_string(),
                 },
-                // Inside an object, required holds where the object is there.
-                required: requirement == "required",
+                // Inside an object, a requirement holds where the object is there.
+                requirement: Requirement::named(requirement).unwrap_or_default(),
                 description: a
                     .get("description")
                     .and_then(Value::as_str)
@@ -172,7 +172,11 @@ mod tests {
     fn a_class_reads_two_keys_deep_as_ocsf_asks_a_producer_to_fill_it() {
         let fields = read(&doc(), "authentication", &Cut::default()).unwrap();
         let user = field(&fields, "user").unwrap();
-        assert_eq!((user.ty.as_str(), user.required), ("{...}", true));
+        assert_eq!((user.ty.as_str(), user.requirement), ("{...}", Requirement::Required));
+        assert_eq!(
+            field(&fields, "src_endpoint").unwrap().requirement,
+            Requirement::Recommended
+        );
         assert_eq!(field(&fields, "user.name").unwrap().ty, "str");
         assert_eq!(field(&fields, "observables").unwrap().ty, "array<{...}>");
         assert_eq!(
@@ -190,13 +194,13 @@ mod tests {
             levels: vec!["required".into()],
         };
         let fields = read(&doc(), "authentication", &only_required).unwrap();
-        assert!(fields.iter().all(|f| f.required && !f.field.contains('.')));
+        assert!((fields.iter()).all(|f| f.requirement == Requirement::Required && !f.field.contains('.')));
         let everything = Cut {
             depth: 2,
             levels: vec!["required".into(), "recommended".into(), "optional".into()],
         };
         let more = read(&doc(), "authentication", &everything).unwrap();
-        assert!(field(&more, "action").is_some());
+        assert_eq!(field(&more, "action").unwrap().requirement, Requirement::Optional);
         assert!(more.len() > read(&doc(), "authentication", &Cut::default()).unwrap().len());
     }
 

@@ -9,6 +9,10 @@ use serde_json::Value;
 /// ECS's `fields.csv`.
 pub const ECS: &str = include_str!("standards/ecs-fields.csv");
 
+/// The ECS fields Elastic Security requires and uses: a line for each, its requirement and its name, beneath a
+/// comment line. smeltr keeps the list by hand; `just schemas-refresh` does not touch it.
+pub const ELASTIC_SECURITY: &str = include_str!("standards/elastic-security.txt");
+
 /// The compiled OCSF, parsed afresh on each call: a schema is added seldom, and the parse is held only while it reads.
 pub fn ocsf() -> Value {
     serde_json::from_str(include_str!("standards/ocsf.json")).expect("ocsf.json is the refresh's")
@@ -63,6 +67,15 @@ pub fn ocsf_classes() -> &'static [OcsfClass] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_field_elastic_security_names_is_an_ecs_field() {
+        let ecs = crate::schema::ecs::read(ECS).unwrap();
+        for line in ELASTIC_SECURITY.lines().skip(1) {
+            let (_, name) = line.split_once(' ').unwrap();
+            assert!(ecs.iter().any(|f| f.field == name), "`{name}` is not in ECS {}", ecs_version());
+        }
+    }
 
     #[test]
     fn each_release_reads() {

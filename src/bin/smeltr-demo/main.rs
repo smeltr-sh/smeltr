@@ -548,6 +548,7 @@ struct SchemaFindingOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     step: Option<String>,
     message: String,
+    breaks: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -583,6 +584,7 @@ async fn schema_findings(State(service): State<Service>, Json(body): Json<Findin
                             pipeline: f.pipeline,
                             step: f.step,
                             message: f.message,
+                            breaks: f.breaks,
                         })
                         .collect(),
                 })

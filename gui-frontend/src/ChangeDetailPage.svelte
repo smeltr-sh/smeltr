@@ -210,6 +210,8 @@
   }
 
   let schemaFindings = $state<SchemaFindingDto[]>([]);
+  /** How many of them are findings: recommended fields the rows lack are shown, not counted. */
+  let schemaFound = $derived(schemaFindings.filter((f) => f.breaks).length);
   let schemasLoading = $state(true);
   let schemasError = $state('');
 
@@ -509,9 +511,7 @@
                 {:else if t === 'tests'}Tests <span class="pill"
                     >{testsLoading ? '…' : `${tally.passed}/${tally.total}`}</span
                   >
-                {:else}Schemas <span class="pill"
-                    >{schemasLoading ? '…' : schemaFindings.length}</span
-                  >
+                {:else}Schemas <span class="pill">{schemasLoading ? '…' : schemaFound}</span>
                 {/if}
               {/snippet}
             </SecondaryTabs>
@@ -612,7 +612,7 @@
         reviews={reviewState}
         tests={tally}
         {testsLoading}
-        schemaFindings={schemasLoading ? undefined : schemaFindings.length}
+        schemaFindings={schemasLoading ? undefined : schemaFound}
         behind={loaded.branch.behind}
         leftOut={loaded.branch.leftOut?.length ?? 0}
         {bringingCurrent}

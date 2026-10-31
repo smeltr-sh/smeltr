@@ -398,7 +398,7 @@ A schema is read from JSON Schema, ECS, an OCSF class or a CSV of fields
 ([Config plane](architecture/config-plane.md#schemas)). Any other file of
 fields is imported by a pipeline: Add schema, Import, pick the
 pipeline and a file, and each row it writes is a field, with `field`, `type`,
-and `required` and `description` where it has them. The file is cut into
+and `requirement` and `description` where it has them. The file is cut into
 records as a source cuts its bytes. `bq show --format=prettyjson` writes a
 table as one JSON document, its columns under `schema.fields`, so the importer
 takes the file as one record, with a line breaker it never matches, `(\x00)`,
@@ -418,10 +418,11 @@ let ty = c => {
     : "str";
   c.mode == "REPEATED" ? "array<" + t + ">" : t
 };
-let found: array<{field: str, type: str, required: bool, description: str}> = [];
+let found: array<{field: str, type: str, requirement: str, description: str}> = [];
 for (let column of columns) {
   let c: {name: str, type: str, mode: str, description: str, ...} = column;
-  found = found.push({field: c.name, type: ty(c), required: c.mode == "REQUIRED", description: c.description});
+  let requirement = c.mode == "REQUIRED" ? "required" : "optional";
+  found = found.push({field: c.name, type: ty(c), requirement: requirement, description: c.description});
 }
 out = found;
 unroll(out, false);
@@ -431,7 +432,7 @@ $ = out;
 Out, the schema's first rows:
 
 ```json
-{"field": "event_time", "type": "datetime", "required": true, "description": "When the request was served."}
-{"field": "client_ip", "type": "str", "description": "The address the request came from."}
-{"field": "tags", "type": "array<str>", "description": "Labels the edge gave the request."}
+{"field": "event_time", "type": "datetime", "requirement": "required", "description": "When the request was served."}
+{"field": "client_ip", "type": "str", "requirement": "optional", "description": "The address the request came from."}
+{"field": "tags", "type": "array<str>", "requirement": "optional", "description": "Labels the edge gave the request."}
 ```

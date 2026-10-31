@@ -1,5 +1,5 @@
 //! A schema from a CSV of fields: a spreadsheet's table, one row per field under a header row. `Columns` says which
-//! column holds a field's path and type, and which its `required`, `description`, `example` and `elasticsearch` (an
+//! column holds a field's path and type, and which its `requirement`, `description`, `example` and `elasticsearch` (an
 //! Elasticsearch type); other columns are a spreadsheet's own and are passed over. Unsaid, a column is found by its
 //! header's name, without regard to case. A type is smeltr's spelling, a common name for one (`schema::named`), or
 //! a value the reader is told the type of.
@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use serde_json::json;
 
-use crate::config_file::SchemaFieldDto;
+use crate::config_file::{Requirement, SchemaFieldDto};
 use crate::format::csv_scan;
 
 /// Which column holds what, each by its index from 0.
@@ -18,7 +18,7 @@ pub struct Columns {
     pub field: Option<usize>,
     #[serde(rename = "type")]
     pub ty: Option<usize>,
-    pub required: Option<usize>,
+    pub requirement: Option<usize>,
     pub description: Option<usize>,
     pub example: Option<usize>,
     pub elasticsearch: Option<usize>,
@@ -31,7 +31,7 @@ impl Columns {
         Columns {
             field: at(&["field", "name", "path", "column"]),
             ty: at(&["type", "data type", "datatype"]),
-            required: at(&["required"]),
+            requirement: at(&["requirement", "required"]),
             description: at(&["description"]),
             example: at(&["example"]),
             elasticsearch: at(&["elasticsearch"]),
@@ -136,8 +136,12 @@ pub fn read(
         fields.push(SchemaFieldDto {
             field: name.to_string(),
             ty,
-            required: yes(cell(c.required))
-                .map_err(|said| format!("row {n}: `required` is {said:?}, not yes or no"))?,
+            requirement: requirement(cell(c.requirement)).ok_or_else(|| {
+                format!(
+                    "row {n}: `requirement` is {:?}; it must be required, recommended, optional, yes or no",
+                    cell(c.requirement)
+                )
+            })?,
             description: cell(c.description).to_string(),
             example: cell(c.example).to_string(),
             elasticsearch: Some(cell(c.elasticsearch))
@@ -193,11 +197,13 @@ fn records(text: &str) -> Vec<&str> {
 }
 
 /// A spreadsheet's yes or no. Blank is no.
-fn yes(cell: &str) -> Result<bool, &str> {
+/// The requirement a cell names, or a yes or no to whether the field is required, as a spreadsheet's `Required`
+/// column says it. An empty cell is optional.
+fn requirement(cell: &str) -> Option<Requirement> {
     match cell.to_ascii_lowercase().as_str() {
-        "" | "false" | "no" | "n" | "0" => Ok(false),
-        "true" | "yes" | "y" | "1" => Ok(true),
-        _ => Err(cell),
+        "" | "false" | "no" | "n" | "0" => Some(Requirement::Optional),
+        "true" | "yes" | "y" | "1" => Some(Requirement::Required),
+        named => Requirement::named(named),
     }
 }
 
@@ -214,15 +220,17 @@ mod tests {
         let text = "Notes,FIELD,Type,Required,Description,Example,Elasticsearch\r\n\
                     x,client.ip,str,yes,\"Where it came from,\nthe address.\",10.0.0.1,ip\r\n\
                     ,status,i64,,The HTTP status.,200,\r\n\
+                    ,method,str,Recommended,,,\r\n\
                     \r\n";
         let fields = by_header(text).unwrap();
-        assert_eq!(fields.len(), 2);
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[2].requirement, Requirement::Recommended);
         assert_eq!(fields[0].field, "client.ip");
-        assert!(fields[0].required);
+        assert_eq!(fields[0].requirement, Requirement::Required);
         assert_eq!(fields[0].description, "Where it came from,\nthe address.");
         assert_eq!(fields[0].example, "10.0.0.1");
         assert_eq!(fields[0].elasticsearch, json!({ "type": "ip" }).as_object().cloned());
-        assert!(!fields[1].required);
+        assert_eq!(fields[1].requirement, Requirement::Optional);
         assert_eq!(fields[1].elasticsearch, None);
     }
 
@@ -237,7 +245,7 @@ mod tests {
         assert_eq!(by_header("field,type\na,").unwrap_err(), "row 2: no `type` for `a`");
         assert_eq!(
             by_header("field,type,required\na,str,maybe").unwrap_err(),
-            "row 2: `required` is \"maybe\", not yes or no"
+            "row 2: `requirement` is \"maybe\"; it must be required, recommended, optional, yes or no"
         );
         assert_eq!(
             by_header("field,type\n\"a,str").unwrap_err(),

@@ -3385,9 +3385,9 @@ pub struct SchemaFieldDto {
     /// What it must hold, spelled as a declaration spells a type: `str`, `array<i64>`, `{...}` for an object.
     #[serde(rename = "type")]
     pub ty: String,
-    /// Whether a row must hold it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub required: bool,
+    /// Whether a row must hold it, should, or may.
+    #[serde(default, skip_serializing_if = "Requirement::is_optional")]
+    pub requirement: Requirement,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
     /// A value it may hold, as text: what a standard or a spreadsheet gives as its example.
@@ -3396,6 +3396,36 @@ pub struct SchemaFieldDto {
     /// How it maps in an Elasticsearch index: a field's mapping, laid over the one its type has (`io::elastic_mapping`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elasticsearch: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// How much a schema asks of a row for one field. A field sits in the object its path names, so it is asked of a row
+/// only where that object is there.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum Requirement {
+    /// A row that lacks it breaks the schema.
+    Required,
+    /// A row should hold it; one that lacks it is told so, and still keeps the schema.
+    Recommended,
+    #[default]
+    Optional,
+}
+
+impl Requirement {
+    pub fn is_optional(&self) -> bool {
+        *self == Requirement::Optional
+    }
+
+    /// The requirement a standard or a spreadsheet names: `required`, `recommended` or `optional`, without regard
+    /// to case.
+    pub fn named(name: &str) -> Option<Requirement> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "required" => Some(Requirement::Required),
+            "recommended" => Some(Requirement::Recommended),
+            "optional" => Some(Requirement::Optional),
+            _ => None,
+        }
+    }
 }
 
 /// A named grok pattern, declared once for the bundle and named as `%{id}` from any grok in it.

@@ -1473,6 +1473,17 @@
           </div>
         {/if}
 
+        {#if result?.ok && result.recommended?.length}
+          <div class="recommended" role="status">
+            {#each result.recommended as told (told)}
+              <div class="recommended-note">
+                <span aria-hidden="true">ⓘ</span>
+                <span>{told}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
         {#if !readOnly}
           <div class="run-row">
             <button type="button" onclick={run} disabled={running}>
@@ -1793,5 +1804,25 @@
 
   .unplaced-warning .cutout {
     fill: var(--field);
+  }
+
+  /* What the schemas recommend and the rows lack: told under the warnings, and no warning itself. */
+  .recommended {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.4rem;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .recommended-note {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+    font-size: var(--text-note);
+    color: var(--dim);
+    line-height: 1.45;
   }
 </style>

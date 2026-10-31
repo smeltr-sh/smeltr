@@ -137,7 +137,7 @@ function describeArray(items: unknown[]): string {
     return elide(rows.map((row) => `${row.from}→${row.to}`).join(', '));
   }
   if (allHave(items, ['name'])) return elide(rows.map((row) => row.name).join(', '));
-  return count(items.length, 'entry');
+  return count(items.length, 'entry', 'entries');
 }
 
 /** A field's value as a reader would say it. */
@@ -158,7 +158,7 @@ export function describe(value: unknown): string {
     if (typeof named === 'string') return elide(`${keys[0]} ${named}`);
     if (Array.isArray(named) && named.length > 0 && named.every((x) => typeof x === 'string'))
       return elide(`${keys[0]} ${named.join(', ')}`);
-    return keys.length === 0 ? 'none' : count(keys.length, 'entry');
+    return keys.length === 0 ? 'none' : count(keys.length, 'entry', 'entries');
   }
   return 'a value';
 }

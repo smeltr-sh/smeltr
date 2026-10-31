@@ -4,7 +4,8 @@
 //! ECS: a field set drawn as ECS draws one, of every ECS type, arrays, objects, keys only their children name and
 //! multi-fields, written as both `fields.csv` and `ecs_flat.yml` with text that holds commas, quotes and line ends.
 //! Both read as the same schema, the YAML adding the settings it says, and that schema's Elasticsearch mapping is
-//! ECS's: each field as the type ECS gives it, each multi-field under its field's `fields`.
+//! ECS's: each field as the type ECS gives it, each multi-field under its field's `fields`. Each field takes the
+//! requirement ECS gives it, or Elastic Security's where those are asked for.
 //!
 //! A CSV of fields: a spreadsheet with its columns in any order and case, columns of its own, padded cells, blank
 //! rows and either line end reads as the fields it lists, and one with a row it cannot read names that row.
@@ -16,10 +17,11 @@
 use serde_json::{Map, Value, json};
 
 use super::*;
-use crate::config_file::SchemaFieldDto;
+use crate::config_file::{Requirement, SchemaFieldDto};
 use crate::fuzz::{self, Coverage, Rng};
 use crate::io::elastic_mapping::types_for;
 use crate::schema::csv::TypeValue;
+use crate::schema::ecs::Requirements;
 use crate::schema::ocsf::{Cut, DEEPEST};
 
 /// Text a cell may hold, each piece one a CSV or YAML writer has to take care over.
@@ -49,12 +51,13 @@ fn quoted(cell: &str) -> String {
     }
 }
 
-fn read_as(format: ReadFormat, text: String) -> Result<Vec<SchemaFieldDto>, String> {
+fn read_as(format: ReadFormat, text: String, requirements: Requirements) -> Result<Vec<SchemaFieldDto>, String> {
     read(&ReadRequest {
         id: "fuzzed".into(),
         format,
         text,
         built_in: false,
+        requirements,
         class: String::new(),
         cut: Cut::default(),
         columns: None,
@@ -109,6 +112,8 @@ struct Ecs {
     name: String,
     ty: &'static str,
     array: bool,
+    /// Of ECS's core level, which reads as recommended; otherwise extended.
+    core: bool,
     description: String,
     example: String,
     /// The example is a number, which the YAML writes bare.
@@ -129,6 +134,7 @@ fn draw_ecs(rng: &mut Rng, prefix: &str, depth: usize, out: &mut Vec<Ecs>, cov: 
             name: name.clone(),
             ty,
             array: false,
+            core: rng.chance(2),
             description: text(rng),
             example: String::new(),
             numeric: false,
@@ -190,7 +196,7 @@ fn ecs_csv(fields: &[Ecs]) -> String {
                 set,
                 name,
                 ty,
-                "core",
+                if f.core { "core" } else { "extended" },
                 normalization,
                 example,
                 &f.description,
@@ -230,7 +236,11 @@ fn ecs_yaml(fields: &[Ecs], required: &[&str]) -> String {
         if let Some(n) = f.ignore_above {
             out += &format!("  ignore_above: {n}\n");
         }
-        out += "  level: core\n";
+        out += if f.core {
+            "  level: core\n"
+        } else {
+            "  level: extended\n"
+        };
         if !f.multi.is_empty() {
             out += "  multi_fields:\n";
             for (key, multi) in &f.multi {
@@ -264,7 +274,12 @@ fn ecs_reads_the_same_from_its_csv_and_its_yaml_and_maps_as_ecs_says() {
                     "ecs a key only its children name",
                     "ecs a multi-field",
                     "ecs a required field",
+                    "ecs a core field",
+                    "ecs an extended field",
                     "ecs a setting the yaml says",
+                    "ecs ecs's own requirements",
+                    "ecs elastic security's requirements",
+                    "ecs a field elastic security names",
                 ]
                 .map(String::from),
             ),
@@ -280,6 +295,7 @@ fn ecs_reads_the_same_from_its_csv_and_its_yaml_and_maps_as_ecs_says() {
                 name: "@timestamp".into(),
                 ty: "date",
                 array: false,
+                core: true,
                 description: text(&mut rng),
                 example: "2016-05-23T08:05:34.853Z".into(),
                 numeric: false,
@@ -287,9 +303,41 @@ fn ecs_reads_the_same_from_its_csv_and_its_yaml_and_maps_as_ecs_says() {
                 multi: Vec::new(),
             });
         }
-        let from_csv = read_as(ReadFormat::Ecs, ecs_csv(&fields)).map_err(|e| format!("the CSV: {e}"))?;
-        let from_yaml =
-            read_as(ReadFormat::Ecs, ecs_yaml(&fields, &["@timestamp"])).map_err(|e| format!("the YAML: {e}"))?;
+        // A field Elastic Security requires, which ECS only has at its core level.
+        if rng.chance(2) && !fields.iter().any(|f| f.name == "event" || f.name.starts_with("event.")) {
+            cov.reach("ecs a field elastic security names");
+            fields.push(Ecs {
+                name: "event.kind".into(),
+                ty: "keyword",
+                array: false,
+                core: true,
+                description: text(&mut rng),
+                example: "alert".into(),
+                numeric: false,
+                ignore_above: None,
+                multi: Vec::new(),
+            });
+        }
+        let whose = match rng.chance(2) {
+            true => {
+                cov.reach("ecs elastic security's requirements");
+                Requirements::ElasticSecurity
+            }
+            false => {
+                cov.reach("ecs ecs's own requirements");
+                Requirements::Ecs
+            }
+        };
+        let elastic_security = |name: &str| {
+            (standard::ELASTIC_SECURITY.lines())
+                .filter_map(|line| line.split_once(' '))
+                .find(|(_, n)| *n == name)
+                .and_then(|(level, _)| Requirement::named(level))
+                .unwrap_or_default()
+        };
+        let from_csv = read_as(ReadFormat::Ecs, ecs_csv(&fields), whose).map_err(|e| format!("the CSV: {e}"))?;
+        let from_yaml = read_as(ReadFormat::Ecs, ecs_yaml(&fields, &["@timestamp"]), whose)
+            .map_err(|e| format!("the YAML: {e}"))?;
         if from_csv.len() != from_yaml.len() {
             return Err(format!(
                 "{} fields from the CSV, {} from the YAML",
@@ -324,10 +372,17 @@ fn ecs_reads_the_same_from_its_csv_and_its_yaml_and_maps_as_ecs_says() {
         .document;
         for f in &fields {
             let read = (from_yaml.iter().find(|r| r.field == f.name)).ok_or_else(|| format!("no `{}`", f.name))?;
-            if read.required != (f.name == "@timestamp")
-                || read.description != f.description
-                || read.example != f.example
-            {
+            let requirement = match (whose, f.name == "@timestamp", f.core) {
+                (Requirements::ElasticSecurity, _, _) => elastic_security(&f.name),
+                (Requirements::Ecs, true, _) => Requirement::Required,
+                (Requirements::Ecs, false, true) => Requirement::Recommended,
+                (Requirements::Ecs, false, false) => Requirement::Optional,
+            };
+            cov.reach(match f.core {
+                true => "ecs a core field",
+                false => "ecs an extended field",
+            });
+            if read.requirement != requirement || read.description != f.description || read.example != f.example {
                 return Err(format!("`{}` reads as {read:?}", f.name));
             }
             if f.array != read.ty.starts_with("array<") && f.ty != "nested" {
@@ -378,7 +433,7 @@ fn draw_fields(rng: &mut Rng, prefix: &str, depth: usize, out: &mut Vec<SchemaFi
         let mapped = types_for(&crate::expr::parse::parse_type(&ty).unwrap());
         out.push(SchemaFieldDto {
             field: field.clone(),
-            required: rng.chance(3),
+            requirement: *rng.pick(&[Requirement::Required, Requirement::Recommended, Requirement::Optional]),
             description: if rng.chance(2) { text(rng) } else { String::new() },
             example: if rng.chance(2) { text(rng) } else { String::new() },
             elasticsearch: (rng.chance(3) && !mapped.is_empty())
@@ -402,7 +457,14 @@ const COMMON: [(&str, &[&str]); 6] = [
 ];
 
 /// The columns a CSV of fields may have, as its reader names them.
-const COLUMNS: [&str; 6] = ["field", "type", "required", "description", "example", "elasticsearch"];
+const COLUMNS: [&str; 6] = [
+    "field",
+    "type",
+    "requirement",
+    "description",
+    "example",
+    "elasticsearch",
+];
 
 #[test]
 fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
@@ -416,7 +478,8 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
             "csv crlf",
             "csv a column left out",
             "csv a row with no type is refused",
-            "csv a required it cannot read is refused",
+            "csv a requirement it cannot read is refused",
+            "csv a requirement column headed required",
             "csv columns chosen",
             "csv a type by a common name",
             "csv a type it is told",
@@ -437,7 +500,9 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
             cov.reach("csv a column left out");
             // What the file does not say, a field does not hold.
             for f in &mut fields {
-                f.required &= columns.contains(&"required");
+                if !columns.contains(&"requirement") {
+                    f.requirement = Requirement::Optional;
+                }
                 for (name, cell) in [("description", &mut f.description), ("example", &mut f.example)] {
                     if !columns.contains(&name) {
                         cell.clear();
@@ -476,17 +541,27 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
             crate::schema::csv::Columns {
                 field: at("field"),
                 ty: at("type"),
-                required: at("required"),
+                requirement: at("requirement"),
                 description: at("description"),
                 example: at("example"),
                 elasticsearch: at("elasticsearch"),
             }
         });
         let header: Vec<String> = (columns.iter().enumerate())
-            .map(|(i, c)| match (&chosen, caps) {
-                (Some(_), _) => format!("c{i}"),
-                (None, true) => c.to_uppercase(),
-                (None, false) => c.to_string(),
+            .map(|(i, c)| {
+                // A spreadsheet's yes-or-no column is found as the requirement's.
+                let c = match *c == "requirement" && rng.chance(2) {
+                    true => {
+                        cov.reach("csv a requirement column headed required");
+                        "required"
+                    }
+                    false => c,
+                };
+                match (&chosen, caps) {
+                    (Some(_), _) => format!("c{i}"),
+                    (None, true) => c.to_uppercase(),
+                    (None, false) => c.to_string(),
+                }
             })
             .collect();
         let mut types = std::collections::BTreeMap::new();
@@ -503,11 +578,12 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
                 row += 1;
             }
             row += 1;
-            let required = match f.required {
-                true => *rng.pick(&["yes", "Y", "TRUE", "1"]),
-                false => *rng.pick(&["", "no", "false", "0"]),
+            let requirement = match f.requirement {
+                Requirement::Required => *rng.pick(&["yes", "Y", "TRUE", "1", "required", "Required"]),
+                Requirement::Recommended => *rng.pick(&["recommended", "Recommended"]),
+                Requirement::Optional => *rng.pick(&["", "no", "false", "0", "optional"]),
             };
-            let mut required = required.to_string();
+            let mut requirement = requirement.to_string();
             let mut ty = f.ty.clone();
             // A type as another system spells it, or one only the reader is told.
             if let Some((_, common)) = COMMON.iter().find(|(t, _)| *t == f.ty)
@@ -529,10 +605,12 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
                 }
             }
             if spoilt.is_none() && rng.chance(40) {
-                if columns.contains(&"required") && rng.chance(2) {
-                    cov.reach("csv a required it cannot read is refused");
-                    required = "maybe".into();
-                    spoilt = Some(format!("row {row}: `required` is \"maybe\", not yes or no"));
+                if columns.contains(&"requirement") && rng.chance(2) {
+                    cov.reach("csv a requirement it cannot read is refused");
+                    requirement = "maybe".into();
+                    spoilt = Some(format!(
+                        "row {row}: `requirement` is \"maybe\"; it must be required, recommended, optional, yes or no"
+                    ));
                 } else {
                     cov.reach("csv a row with no type is refused");
                     ty.clear();
@@ -550,7 +628,7 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
                     let cell = match *c {
                         "field" => f.field.as_str(),
                         "type" => &ty,
-                        "required" => &required,
+                        "requirement" => &requirement,
                         "description" => &f.description,
                         "example" => &f.example,
                         "elasticsearch" => es,
@@ -573,6 +651,7 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
             format: ReadFormat::Csv,
             text: text.clone(),
             built_in: false,
+            requirements: Default::default(),
             class: String::new(),
             cut: Cut::default(),
             columns: chosen.clone(),
@@ -777,6 +856,7 @@ fn an_ocsf_class_reads_as_deep_as_its_cut_and_at_the_levels_taken() {
             format: ReadFormat::Ocsf,
             text: doc.to_string(),
             built_in: false,
+            requirements: Default::default(),
             class: "c".into(),
             cut: cut.clone(),
             columns: None,
@@ -824,7 +904,10 @@ fn an_ocsf_class_reads_as_deep_as_its_cut_and_at_the_levels_taken() {
                 cov.reach("ocsf an object cut off");
             }
             let checks = [
-                (f.required == (a["requirement"] == "required"), "required"),
+                (
+                    Some(f.requirement) == Requirement::named(a["requirement"].as_str().unwrap_or("optional")),
+                    "requirement",
+                ),
                 (f.ty.starts_with("array<") == (a["is_array"] == true), "array"),
                 (f.ty.contains("{...}") == object, "object"),
                 (
