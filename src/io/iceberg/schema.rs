@@ -119,9 +119,14 @@ fn labelled(fields: &Fields, table: &[NestedField], path: &str) -> Result<(Field
     Ok((labelled.into(), defaults))
 }
 
-/// Whether a data file holds `field`'s column: an `unknown` one, always null, it does not.
+/// Whether a data file holds `field`'s column: an `unknown` one, always null, it does not, nor a struct of nothing
+/// else, which Parquet has no empty group for.
 fn stored(field: &NestedField) -> bool {
-    !matches!(&field.field_type, Type::Primitive(Primitive::Other(name)) if name == "unknown")
+    match &field.field_type {
+        Type::Primitive(Primitive::Other(name)) => name != "unknown",
+        Type::Struct(s) => s.fields.iter().any(stored),
+        _ => true,
+    }
 }
 
 fn with_id(field: &Field, id: i32, ty: &Type, path: &str) -> Result<(Field, WriteDefault), String> {
@@ -824,8 +829,7 @@ mod tests {
         let Type::Struct(http) = &mut table.fields[1].field_type else {
             panic!("http is a struct")
         };
-        http.fields
-            .push(field(12, "v", prim(Primitive::Other("file".into()))));
+        http.fields.push(field(12, "v", prim(Primitive::Other("file".into()))));
         let parquet = crate::io::parquet::Schema::new(&record()).unwrap();
         assert_eq!(
             with_field_ids(parquet.arrow(), &table).unwrap_err(),
