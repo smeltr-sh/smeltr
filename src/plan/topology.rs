@@ -6,7 +6,7 @@
 //! (behind the `Source`/ `Destination` traits) is a deliberately separate, later step. Nothing here depends on it, and
 //! nothing here will need to change once it lands.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::core::batch::{Batch, SLOT_LIVE};
 use crate::core::bits;
@@ -1725,6 +1725,15 @@ impl DestinationKind {
         }
     }
 
+    /// Whether this destination may hold a variant as Parquet's variant, and so reads its bytes (`parquet::Schema`).
+    pub fn holds_native_variants(&self) -> bool {
+        match self {
+            DestinationKind::Iceberg(_) => true,
+            DestinationKind::Objects(o) => o.format == ObjectFormat::Parquet { native_variants: true },
+            _ => false,
+        }
+    }
+
     /// Which field of the row this destination reads the document identity from, if it does. `None` means it relies on
     /// the pipeline's own `__destination.id`, or wants no identity at all.
     pub fn id_field(&self) -> Option<&str> {
@@ -3354,6 +3363,9 @@ pub struct CompiledTopology {
     pub dlq_of: HashMap<DestId, Vec<DestId>>,
     /// What each Parquet destination writes, route by route. Filled with `dlq_of`, since a DLQ takes the same rows.
     pub records: HashMap<DestId, Records>,
+    /// Each destination that may hold a variant as Parquet's variant (`DestinationKind::holds_native_variants`).
+    /// Filled with `dlq_of`.
+    pub native_variants: HashSet<DestId>,
     /// What each destination writes of a row (`DestinationKind::payload`). Filled with `dlq_of`; one missing writes the
     /// record.
     pub payloads: HashMap<DestId, Payload>,
@@ -3607,6 +3619,7 @@ pub fn compile_topology_with(
             on_exception,
             dlq_of: HashMap::new(),
             records: HashMap::new(),
+            native_variants: HashSet::new(),
             payloads: HashMap::new(),
             id_fields: Vec::new(),
         })
@@ -4678,6 +4691,7 @@ mod tests {
             // one entry per destination.
             dlq_of: std::collections::HashMap::from([(2, vec![5]), (8, vec![3])]),
             records: HashMap::new(),
+            native_variants: Default::default(),
             payloads: HashMap::new(),
             id_fields: Vec::new(),
         };

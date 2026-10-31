@@ -207,7 +207,7 @@ impl Schema {
             panic!("a written schema is the record's own, renamed, with metadata added or a leaf narrowed");
         };
         Schema {
-            narrowed: fields != *self.arrow.fields(),
+            narrowed: narrows_a_leaf(&Arrow::Struct(self.arrow.fields().clone()), &Arrow::Struct(fields)),
             written: Some(written),
             ..self
         }
@@ -242,6 +242,17 @@ impl Schema {
             native_variants: true,
             ..self.with_written(Arc::new(ArrowSchema::new(fields)))
         }
+    }
+
+    /// This schema, its chunks cut without their variants' own bytes, for a route on which no destination holds a
+    /// variant as Parquet's variant.
+    pub fn without_variant_bytes(self) -> Schema {
+        Schema { variants: None, ..self }
+    }
+
+    /// Whether its chunks carry their variants' own bytes.
+    pub fn cuts_variant_bytes(&self) -> bool {
+        self.variants.is_some()
     }
 
     /// This schema, its files written with `computed` after the record's columns.
@@ -430,7 +441,7 @@ fn narrowed(node: &Node, written: &Arrow) -> Option<Arrow> {
             Some(Arrow::List(Arc::new(field.as_ref().clone().with_data_type(t))))
         }
         (Kind::Struct(_) | Kind::List(..), _) => None,
-        (Kind::Variant, w @ Arrow::Struct(fields)) if variant_group(fields) => Some(w.clone()),
+        (Kind::Variant, w @ Arrow::Struct(fields)) if is_variant_group(fields) => Some(w.clone()),
         (_, w) if *w == node.arrow => Some(node.arrow.clone()),
         (_, w) if narrows(&node.ty, w) => Some(w.clone()),
         _ => None,
@@ -440,10 +451,7 @@ fn narrowed(node: &Node, written: &Arrow) -> Option<Arrow> {
 /// `node`'s type with each variant Parquet's variant group (`variant_group`).
 fn native(node: &Node) -> Arrow {
     match &node.kind {
-        Kind::Variant => Arrow::Struct(Fields::from(vec![
-            Field::new("metadata", Arrow::Binary, false),
-            Field::new("value", Arrow::Binary, false),
-        ])),
+        Kind::Variant => variant_group(),
         Kind::List(element, field) => Arrow::List(Arc::new(field.as_ref().clone().with_data_type(native(element)))),
         Kind::Struct(s) => Arrow::Struct(
             (s.arrow.iter().enumerate())
@@ -458,8 +466,29 @@ fn native(node: &Node) -> Arrow {
     }
 }
 
-/// Whether `fields` are Parquet's variant group, which a table holds a variant in: its metadata and its value.
-fn variant_group(fields: &Fields) -> bool {
+/// Whether `written`, which `narrowed` made of `ours`, holds a leaf narrower than ours, which a row may not fit. A
+/// variant held as Parquet's variant group always fits.
+fn narrows_a_leaf(ours: &Arrow, written: &Arrow) -> bool {
+    match (ours, written) {
+        (Arrow::Utf8, Arrow::Struct(fields)) if is_variant_group(fields) => false,
+        (Arrow::Struct(o), Arrow::Struct(w)) => {
+            (o.iter().zip(w)).any(|(o, w)| narrows_a_leaf(o.data_type(), w.data_type()))
+        }
+        (Arrow::List(o), Arrow::List(w)) => narrows_a_leaf(o.data_type(), w.data_type()),
+        (o, w) => o != w,
+    }
+}
+
+/// Parquet's variant group, unshredded, which a table holds a variant in: its metadata and its value.
+pub fn variant_group() -> Arrow {
+    Arrow::Struct(Fields::from(vec![
+        Field::new("metadata", Arrow::Binary, false),
+        Field::new("value", Arrow::Binary, false),
+    ]))
+}
+
+/// Whether `fields` are Parquet's variant group's (`variant_group`).
+fn is_variant_group(fields: &Fields) -> bool {
     let names: Vec<(&str, &Arrow)> = fields.iter().map(|f| (f.name().as_str(), f.data_type())).collect();
     names == [("metadata", &Arrow::Binary), ("value", &Arrow::Binary)]
 }
@@ -722,14 +751,21 @@ pub struct FileWriter {
     nulled: Vec<usize>,
 }
 
-/// `node` with each node whose field id `annotations` names taking its logical type.
+/// `node` with each node whose field id `annotations` names taking its logical type, and each variant group
+/// (`variant_group`) annotated as Parquet's variant. Only a variant group holds required fields named `metadata` and
+/// `value`: a record's fields are all nullable.
 fn annotate(node: &TypePtr, annotations: &[(i32, LogicalType)]) -> TypePtr {
     let info = node.get_basic_info();
     let named = (info.has_id())
-        .then(|| annotations.iter().find(|(id, _)| *id == info.id()))
+        .then(|| {
+            annotations
+                .iter()
+                .find(|(id, _)| *id == info.id())
+                .map(|(_, l)| l.clone())
+        })
         .flatten();
-    let (logical, converted) = match named {
-        Some((_, logical)) => (Some(logical.clone()), parquet::basic::ConvertedType::NONE),
+    let (logical, converted) = match named.or_else(|| is_variant_type(node).then(|| LogicalType::variant(Some(1)))) {
+        Some(logical) => (Some(logical), parquet::basic::ConvertedType::NONE),
         None => (info.logical_type_ref().cloned(), info.converted_type()),
     };
     let id = info.has_id().then(|| info.id());
@@ -765,48 +801,17 @@ fn annotate(node: &TypePtr, annotations: &[(i32, LogicalType)]) -> TypePtr {
     Arc::new(built.expect("the converter's own node, its logical type one Parquet allows there"))
 }
 
-/// `ty`, the converter's node of the record's `node`, with each of the node's variants annotated as Parquet's variant.
-/// A struct's fields lead its group's, and a list's element is under its repeated group.
-fn annotate_variants(node: &Node, ty: &TypePtr) -> TypePtr {
-    let fields: Vec<TypePtr> = match &node.kind {
-        Kind::Variant => return regroup(ty, ty.get_fields().to_vec(), Some(LogicalType::variant(Some(1)))),
-        Kind::Struct(s) => (ty.get_fields().iter().enumerate())
-            .map(|(i, f)| match s.fields.get(i) {
-                Some((_, child)) => annotate_variants(child, f),
-                None => f.clone(),
-            })
-            .collect(),
-        Kind::List(element, _) => {
-            let repeated = &ty.get_fields()[0];
-            let item = annotate_variants(element, &repeated.get_fields()[0]);
-            vec![regroup(
-                repeated,
-                vec![item],
-                repeated.get_basic_info().logical_type_ref().cloned(),
-            )]
-        }
-        _ => return ty.clone(),
+/// Whether `node` is the converter's node of a variant group: required binary `metadata` and `value`.
+fn is_variant_type(node: &TypePtr) -> bool {
+    use parquet::basic::{Repetition, Type as Physical};
+    let required_binary = |f: &TypePtr, name: &str| {
+        f.name() == name
+            && f.is_primitive()
+            && f.get_physical_type() == Physical::BYTE_ARRAY
+            && f.get_basic_info().repetition() == Repetition::REQUIRED
     };
-    regroup(ty, fields, ty.get_basic_info().logical_type_ref().cloned())
-}
-
-/// The group `ty` with `fields` and `logical` in place of its own.
-fn regroup(ty: &TypePtr, fields: Vec<TypePtr>, logical: Option<LogicalType>) -> TypePtr {
-    let info = ty.get_basic_info();
-    let converted = match logical == info.logical_type_ref().cloned() {
-        true => info.converted_type(),
-        false => parquet::basic::ConvertedType::NONE,
-    };
-    let builder = ParquetType::group_type_builder(info.name())
-        .with_fields(fields)
-        .with_logical_type(logical)
-        .with_converted_type(converted)
-        .with_id(info.has_id().then(|| info.id()));
-    let built = match info.has_repetition() {
-        true => builder.with_repetition(info.repetition()).build(),
-        false => builder.build(),
-    };
-    Arc::new(built.expect("the converter's own group, its logical type one Parquet allows there"))
+    !node.is_primitive()
+        && matches!(node.get_fields(), [m, v] if required_binary(m, "metadata") && required_binary(v, "value"))
 }
 
 /// What the Parquet writer writes into, shared with the `FileWriter` that drains it.
@@ -900,12 +905,7 @@ impl FileWriter {
             written: schema.written.clone(),
             defaults: schema.defaults.clone(),
             computed: schema.computed.clone(),
-            ..FileWriter::annotated(
-                file,
-                options,
-                &schema.annotations,
-                schema.native_variants.then_some(&*schema.root),
-            )
+            ..FileWriter::annotated(file, options, &schema.annotations, schema.native_variants)
         }
     }
 
@@ -922,28 +922,25 @@ impl FileWriter {
     }
 
     fn on(schema: Arc<ArrowSchema>, options: &WriteOptions) -> FileWriter {
-        FileWriter::annotated(schema, options, &[], None)
+        FileWriter::annotated(schema, options, &[], false)
     }
 
-    /// A writer of `schema`, each column whose field id `annotations` names taking its logical type, and each of
-    /// `variants`' variants, the record's own, annotated as Parquet's variant.
+    /// A writer of `schema`, each column whose field id `annotations` names taking its logical type, and with
+    /// `variants` or any annotation each variant group annotated as Parquet's variant (`annotate`).
     fn annotated(
         schema: Arc<ArrowSchema>,
         options: &WriteOptions,
         annotations: &[(i32, LogicalType)],
-        variants: Option<&Node>,
+        variants: bool,
     ) -> FileWriter {
         let props = options.properties();
         let sink = Sink::default();
         let mut writer_options = ArrowWriterOptions::new();
-        if !annotations.is_empty() || variants.is_some() {
+        if !annotations.is_empty() || variants {
             let converted = (ArrowSchemaConverter::new().with_coerce_types(props.coerce_types()))
                 .convert(&schema)
                 .expect("a writable schema");
-            let mut root = annotate(&converted.root_schema_ptr(), annotations);
-            if let Some(record) = variants {
-                root = annotate_variants(record, &root);
-            }
+            let root = annotate(&converted.root_schema_ptr(), annotations);
             writer_options = writer_options.with_parquet_schema(SchemaDescriptor::new(root));
         }
         // Writing to memory fails only on a schema Parquet cannot hold, and `Schema::new` refuses those.
