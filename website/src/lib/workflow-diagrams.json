@@ -1077,5 +1077,96 @@
         "labels": []
       }
     ]
+  },
+  "schemas": {
+    "title": "How schemas work",
+    "description": "A schema comes in from ECS, OCSF, a CSV or a JSON Schema. Smeltr checks a pipeline's records against it in the editor and in review. It can also be exported as an Elasticsearch mapping.",
+    "caption": "A schema comes in from a standard or a file. Smeltr checks a pipeline's records against it while you edit and in review. A mismatch is a finding, and never blocks a deploy. If you send to Elasticsearch, you can also export it as an index mapping.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 300,
+        "nodes": [
+          {
+            "x": 20,
+            "y": 20,
+            "w": 220,
+            "title": "ECS · OCSF · CSV",
+            "detail": ["or a JSON Schema"]
+          },
+          {
+            "x": 340,
+            "y": 20,
+            "w": 220,
+            "title": "Schema",
+            "detail": ["Fields · types · required"]
+          },
+          {
+            "x": 660,
+            "y": 20,
+            "w": 220,
+            "title": "Elasticsearch",
+            "detail": ["Optional index mapping"]
+          },
+          {
+            "x": 180,
+            "y": 200,
+            "w": 220,
+            "title": "Pipeline editor",
+            "detail": ["Marks missing fields"]
+          },
+          { "x": 500, "y": 200, "w": 220, "title": "Review", "detail": ["Lists findings"] }
+        ],
+        "paths": ["M240 60H330", "M400 100V150H290V190", "M500 100V150H610V190"],
+        "controlPaths": ["M560 60H650"],
+        "labels": [
+          { "x": 285, "y": 48, "text": "Read" },
+          { "x": 605, "y": 48, "text": "Export" },
+          { "x": 450, "y": 140, "text": "Checks" }
+        ]
+      },
+      {
+        "width": 360,
+        "height": 650,
+        "nodes": [
+          {
+            "x": 60,
+            "y": 10,
+            "w": 240,
+            "title": "ECS · OCSF · CSV",
+            "detail": ["or a JSON Schema"]
+          },
+          {
+            "x": 60,
+            "y": 150,
+            "w": 240,
+            "title": "Schema",
+            "detail": ["Fields · types · required"]
+          },
+          {
+            "x": 60,
+            "y": 290,
+            "w": 240,
+            "title": "Pipeline editor",
+            "detail": ["Marks missing fields"]
+          },
+          { "x": 60, "y": 410, "w": 240, "title": "Review", "detail": ["Lists findings"] },
+          {
+            "x": 60,
+            "y": 560,
+            "w": 240,
+            "title": "Elasticsearch",
+            "detail": ["Optional index mapping"]
+          }
+        ],
+        "paths": ["M180 90V140", "M180 230V280", "M300 190H335V450H310"],
+        "controlPaths": ["M60 190H25V520H120V550"],
+        "labels": [
+          { "x": 220, "y": 118, "text": "Read" },
+          { "x": 222, "y": 258, "text": "Checks" },
+          { "x": 160, "y": 540, "text": "Export" }
+        ]
+      }
+    ]
   }
 }

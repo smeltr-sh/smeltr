@@ -278,6 +278,8 @@ pub fn admit_columns(schemas: &[Schema], row: &OwnedRecord, partition: &Partitio
     if let Some(why) = columns.chunk.unfit(columns.row) {
         return Err(why.to_string());
     }
+    // Last, as a computed column may set a value aside for each row it admits.
+    schema.admit(columns)?;
     Ok(FileRow::Columns(columns.clone()))
 }
 
@@ -907,14 +909,14 @@ impl Writer {
 
 /// When a failed commit is tried again. A `Conflict` is tried at once, up to `MAX_CONFLICT_RETRIES`; a `Transient`
 /// failure waits, doubling from `BACKOFF_MIN` to `BACKOFF_MAX`, until `stall_after` from the first attempt.
-struct Retry {
+pub(crate) struct Retry {
     deadline: Instant,
     conflicts: usize,
     backoff: Duration,
 }
 
 impl Retry {
-    fn new(first_attempt: Instant, stall_after: Duration) -> Retry {
+    pub(crate) fn new(first_attempt: Instant, stall_after: Duration) -> Retry {
         Retry {
             deadline: first_attempt + stall_after,
             conflicts: 0,
@@ -923,7 +925,7 @@ impl Retry {
     }
 
     /// How long to wait before the next attempt, or `None` to give up.
-    fn next(&mut self, error: &CommitError, now: Instant) -> Option<Duration> {
+    pub(crate) fn next(&mut self, error: &CommitError, now: Instant) -> Option<Duration> {
         match error {
             CommitError::Conflict => {
                 self.conflicts += 1;

@@ -59,6 +59,18 @@ pub struct Schema {
     written: Option<Arc<ArrowSchema>>,
     /// Whether `written` holds a leaf narrower than `arrow`, so a row's values are checked against it.
     narrowed: bool,
+    /// Columns the destination computes, written after the record's own.
+    computed: Vec<Arc<dyn Computed>>,
+}
+
+/// A column a destination computes for each row it writes, after the record's own, such as a table's identity.
+pub trait Computed: std::fmt::Debug + Send + Sync {
+    /// The column as the file carries it.
+    fn field(&self) -> Arc<Field>;
+    /// Why `columns`' row can take no value. Each row admitted is filled at most once, after it is admitted.
+    fn admit(&self, columns: &Columns) -> Result<(), String>;
+    /// The column's values for `batch`'s rows, each admitted, `batch` under the record's own names.
+    fn fill(&self, batch: &RecordBatch) -> ArrayRef;
 }
 
 #[derive(Debug)]
@@ -139,6 +151,7 @@ impl Schema {
             arrow,
             written: None,
             narrowed: false,
+            computed: Vec::new(),
         })
     }
 
@@ -154,6 +167,16 @@ impl Schema {
             written: Some(written),
             ..self
         }
+    }
+
+    /// This schema, its files written with `computed` after the record's columns.
+    pub fn with_computed(self, computed: Vec<Arc<dyn Computed>>) -> Schema {
+        Schema { computed, ..self }
+    }
+
+    /// Admits `columns`' row to every computed column: Err is why one can give it no value.
+    pub fn admit(&self, columns: &Columns) -> Result<(), String> {
+        self.computed.iter().try_for_each(|c| c.admit(columns))
     }
 
     /// Why `columns`' row cannot be written, when a value of it is one a column its table holds narrower cannot hold.
@@ -495,6 +518,9 @@ pub struct FileWriter {
     rows: u64,
     /// The schema each batch is relabelled with before it is written, when the file's differs from its rows'.
     written: Option<Arc<ArrowSchema>>,
+    /// Columns computed for each batch, and the file's schema with them, when there are any.
+    computed: Vec<Arc<dyn Computed>>,
+    file: Arc<ArrowSchema>,
 }
 
 /// What the Parquet writer writes into, shared with the `FileWriter` that drains it.
@@ -575,12 +601,19 @@ impl WriteOptions {
 impl FileWriter {
     /// A writer for rows of chunks cut to `schema`, its bytes written as `options` say.
     pub fn open(schema: &Schema, options: &WriteOptions) -> FileWriter {
-        match &schema.written {
-            Some(written) => FileWriter {
-                written: Some(written.clone()),
-                ..FileWriter::on(written.clone(), options)
-            },
-            None => FileWriter::on(schema.arrow.clone(), options),
+        let own = schema.written.as_ref().unwrap_or(&schema.arrow);
+        let file = if schema.computed.is_empty() {
+            own.clone()
+        } else {
+            let fields: Vec<Arc<Field>> = (own.fields().iter().cloned())
+                .chain(schema.computed.iter().map(|c| c.field()))
+                .collect();
+            Arc::new(ArrowSchema::new_with_metadata(fields, own.metadata().clone()))
+        };
+        FileWriter {
+            written: schema.written.clone(),
+            computed: schema.computed.clone(),
+            ..FileWriter::on(file, options)
         }
     }
 
@@ -588,12 +621,14 @@ impl FileWriter {
         let props = options.properties();
         let sink = Sink::default();
         // Writing to memory fails only on a schema Parquet cannot hold, and `Schema::new` refuses those.
-        let writer = ArrowWriter::try_new(sink.clone(), schema, Some(props)).expect("a writable schema");
+        let writer = ArrowWriter::try_new(sink.clone(), schema.clone(), Some(props)).expect("a writable schema");
         FileWriter {
             writer,
             sink,
             rows: 0,
             written: None,
+            computed: Vec::new(),
+            file: schema,
         }
     }
 
@@ -617,8 +652,14 @@ impl FileWriter {
         }
         let batches: Vec<&RecordBatch> = chunks.iter().map(|c| &c.batch).collect();
         let mut batch = arrow_select::interleave::interleave_record_batch(&batches, &at).expect("chunks of one schema");
+        let computed: Vec<ArrayRef> = self.computed.iter().map(|c| c.fill(&batch)).collect();
         if let Some(written) = &self.written {
             batch = relabel(&batch, written);
+        }
+        if !computed.is_empty() {
+            let mut columns = batch.columns().to_vec();
+            columns.extend(computed);
+            batch = RecordBatch::try_new(self.file.clone(), columns).expect("computed columns of their fields' types");
         }
         self.writer.write(&batch).expect("a batch of the writer's own schema");
         self.rows += at.len() as u64;
