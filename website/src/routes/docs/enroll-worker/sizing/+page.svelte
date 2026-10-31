@@ -10,30 +10,32 @@
     { id: 'see-also', title: 'See also' },
   ];
 
-  const MiB = 1024 * 1024;
-  const UNITS: Record<string, number> = { MB: 1e6, MiB: MiB, GiB: 1024 * MiB };
+  const KiB = 1024;
+  const MiB = 1024 * KiB;
+  const UNITS: Record<string, number> = { KiB, MiB, GiB: 1024 * MiB };
   /** `"64 MiB"` to bytes. */
   function bytes(text: string): number {
     const [n, unit] = text.split(' ');
     return Number(n) * UNITS[unit];
   }
-  const part = (id: string) => bytes(data.parts.find((p) => p.id === id)!.bytes);
+  const least = (id: string) => bytes(data.parts.find((p) => p.id === id)!.least);
 
-  // The worked example: four cores, one Kafka source on a cluster of three brokers, one Elasticsearch and one S3 destination.
+  // The worked example: four cores, one Kafka source on a cluster of three brokers, one Elasticsearch and one S3
+  // destination, on a worker with room for whole batches.
   const threads = 4;
   const brokers = 3;
+  const batch = 4 * MiB;
+  const fetch = least('kafka');
   const example = [
-    { what: 'Columnar budget', bytes: part('transform') },
+    { what: 'Processes', bytes: least('processes') },
+    { what: `Lanes, 1 source and ${threads} threads`, bytes: (1 + threads) * batch },
     {
-      what: `Lanes, 1 source and ${threads} threads`,
-      bytes: (1 + threads) * part('lanes'),
+      what: `Fetch queue and its client, ${brokers} brokers`,
+      bytes: 2 * fetch + (fetch / 2) * brokers,
     },
-    {
-      what: `Fetch queue, a cluster of ${brokers} brokers`,
-      bytes: part('kafka') + (part('kafka') / 2) * brokers,
-    },
-    { what: 'Elasticsearch buffer', bytes: part('buffer') },
-    { what: 'S3 buffer and open files', bytes: part('objectBuffer') },
+    { what: 'Elasticsearch queue and 4 senders', bytes: batch + 4 * least('senders') },
+    { what: 'S3 queue and open files', bytes: 2 * batch },
+    { what: 'Columnar budget', bytes: least('transform') },
   ];
   const total = example.reduce((sum, row) => sum + row.bytes, 0);
   const mib = (b: number) => `${Math.round(b / MiB)} MiB`;
@@ -46,27 +48,34 @@
 >
   <h1>Size a worker</h1>
   <p class="lede">
-    A worker's memory is a fixed columnar budget plus a ceiling for each source and destination it
-    runs. Its CPU is one transform thread per core. Its disk is the state directory.
+    A worker sizes itself to its memory. Its CPU is one transform thread per core. Its disk is the
+    state directory.
   </p>
 
   <h2 id="memory">Memory</h2>
   <p>
+    A worker uses 90% of its container's memory limit, or of the host's memory when it has none;
+    <code>worker.runtime.memory</code> sets the amount instead. It sets aside the least each part below
+    needs, and the parts with room to grow share the rest, so a worker with more memory holds more in
+    flight with no change to its configuration. A destination's queue grows as its traffic asks, so a
+    busy destination takes what idle ones leave.
+  </p>
+  <p>
     Give a worker at least the sum of the parts below for the sources and destinations its group
-    runs, plus about 150 MiB for the process itself and the size of every lookup table the group
-    uses and its index, which a worker holds in memory whole. Each amount below is the default; a
-    source or destination with a larger <code>fetchBytes</code> or <code>bufferBytes</code> holds that
-    instead. Every worker in a group runs the whole group's configuration, so size each one for all of
-    it. The warning below counts the parts and not the lookup tables.
+    runs. Every worker in a group runs the whole group's configuration, so size each one for all of
+    it.
   </p>
   <div class="table-scroll">
     <table>
-      <thead><tr><th>Part</th><th>Default</th><th>For each</th><th>Why</th></tr></thead>
+      <thead
+        ><tr><th>Part</th><th>Least</th><th>Grows to</th><th>For each</th><th>Why</th></tr></thead
+      >
       <tbody>
         {#each data.parts as p (p.id)}
           <tr>
             <td>{p.part}</td>
-            <td>{p.bytes}</td>
+            <td>{p.least}</td>
+            <td>{p.most ?? ''}</td>
             <td><Prose text={p.each} /></td>
             <td><Prose text={p.what} /></td>
           </tr>
@@ -75,8 +84,8 @@
     </table>
   </div>
   <p>
-    A group on four cores reading one Kafka topic from three brokers into Elasticsearch and S3 adds
-    up to {mib(total)}:
+    A group on four cores reading one Kafka topic from three brokers into Elasticsearch and S3 has
+    full batches at {mib(total)}:
   </p>
   <div class="table-scroll">
     <table>
@@ -89,17 +98,17 @@
     </table>
   </div>
   <p>
-    Each ceiling is a worst case, and they rarely all fill at once. A worker whose deployment adds
-    up to more than its memory limit still runs, but can be killed for memory under load. It logs a
-    warning naming each part and its share, and the warning stays on Issues while it holds. Select
-    the worker on Status and open <strong>Memory by part</strong> to see which part it is. Raise the
-    limit, or lower <code>fetchBytes</code>, <code>bufferBytes</code> or
-    <code>SMELTR_MEMORY_BUDGET_BYTES</code>.
+    A stated <code>fetchBytes</code>, <code>bufferBytes</code> or
+    <code>SMELTR_MEMORY_BUDGET_BYTES</code>
+    fixes that part at what it states, and the worker sets it aside whole. A worker whose fixed parts
+    add up to more than its memory limit still runs, but can be killed for memory under load. It logs
+    a warning naming each part and its share, and the warning stays on Issues while it holds. Select the
+    worker on Status and open <strong>Memory by part</strong> to see which part it is. Raise the limit,
+    or lower what the configuration fixes.
   </p>
   <p>
-    The limit a worker checks against is its container's memory limit, or the host's memory when it
-    has none. Set a memory limit on every worker container, so the warning compares against what the
-    worker may really use.
+    Set a memory limit on every worker container, so the worker sizes itself to what it may really
+    use. Lookup tables are read from disk as they are needed and are not counted here.
   </p>
   <p>
     <code>smeltr_memory_peak_bytes</code> shows how much of the columnar budget batches have needed. A
