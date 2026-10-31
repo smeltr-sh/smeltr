@@ -2306,7 +2306,12 @@ mod tests {
                 service: crate::plan::topology::KafkaService::Kafka,
                 tls: None,
                 buffer_bytes: 64 * 1024 * 1024,
-                props: Default::default(),
+                // The two records of a batch go in one request, which the injected error answers, however late the
+                // second is queued: `flush` sends them.
+                props: crate::plan::topology::KafkaProps {
+                    literal: vec![("linger.ms".to_string(), "1000".to_string())],
+                    ..Default::default()
+                },
                 avro: None,
             },
             7,
