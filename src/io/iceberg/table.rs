@@ -114,9 +114,10 @@ fn assemble(
         IcebergCommitter::new(catalog, config, metadata, schema, store.clone(), runtime.clone()).map_err(refused)?;
     let partitioner = TablePartitioner::new(&committer.spec, &committer.schema).map_err(refused)?;
     let file_schema = parquet::Schema::new(record).map_err(refused)?;
-    let written = with_field_ids(file_schema.arrow(), &committer.schema).map_err(refused)?;
+    let (written, defaults) = with_field_ids(file_schema.arrow(), &committer.schema).map_err(refused)?;
     let settings = WriteSettings::of(&committer.metadata.properties, config);
-    let format = ParquetFormat::new(vec![file_schema.with_written(written)], settings.options);
+    let file_schema = file_schema.with_written(written).with_defaults(defaults);
+    let format = ParquetFormat::new(vec![file_schema], settings.options);
     let files = FileConfig {
         format: Arc::new(format),
         partitioner: Arc::new(partitioner),

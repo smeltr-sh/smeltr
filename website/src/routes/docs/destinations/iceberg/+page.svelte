@@ -177,7 +177,8 @@
     fields as structs and arrays as lists. A missing table is created with that schema and with
     <code>partitionBy</code> as its partition spec. A table that exists keeps its columns and its
     spec: a field it lacks, at any depth, is added as an optional column before any file is written,
-    and a column the record lacks reads as null in the rows written. A field that can hold no value,
+    and a column the record lacks takes its write default in the rows written, or null where it has
+    none. A field that can hold no value,
     <code>null</code> or a list or closed struct of nothing else, has no column. Each field is
     written as the Iceberg type of its
     <a href="/docs/code-reference#types">record type</a>:
@@ -213,7 +214,8 @@
   </div>
   <p>
     Every column the destination writes is optional. It refuses to start when the table holds a
-    field as another type, or has a required column the record may leave null or does not write.
+    field as another type, or has a required column the record may leave null, or does not write and
+    that has no write default.
   </p>
 
   <h2 id="how-it-works">How it works</h2>
@@ -293,7 +295,14 @@
     <dt><strong>the table's column … is required …</strong></dt>
     <dd>
       Every column the destination writes is optional. Make the column optional in the table, or
-      send the records to a table of their own.
+      send the records to a table of their own. On a table of format version 3, you can instead give
+      the column a write default, which the destination writes where the record does not write the
+      column.
+    </dd>
+    <dt><strong>the table's column … has the write default …, which is not of type …</strong></dt>
+    <dd>
+      The column's write default is not a value of its type as the Iceberg spec writes one. Set a
+      default of the column's type in the table.
     </dd>
     <dt><strong>it is of format version …, and versions 2 and 3 are written</strong></dt>
     <dd>
@@ -302,14 +311,6 @@
         >ALTER TABLE &lt;namespace&gt;.&lt;table&gt; SET TBLPROPERTIES ('format-version'='2')</code
       >, which rewrites no data file. A table of a later version is not written: write to a table of
       format version 2 or 3.
-    </dd>
-    <dt>
-      <strong>the table's column … has a write default, and the record does not write it</strong>
-    </dt>
-    <dd>
-      The table expects a writer to fill this column with its write default when a row leaves it
-      out, and the destination does not. Write the field from the pipeline, or drop the column's
-      write default.
     </dd>
     <dt>
       <strong

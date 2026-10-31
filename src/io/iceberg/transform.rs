@@ -15,7 +15,10 @@ use base64::Engine as _;
 
 use crate::io::OwnedRecord;
 use crate::io::files::{Partition, Partitioner};
-use crate::io::iceberg::metadata::{Literal, PartitionSpec, Primitive, Schema, Transform, Type};
+use arrow_schema::{DataType as Arrow, Schema as ArrowSchema};
+
+use super::schema::{primitive_arrow, write_default};
+use crate::io::iceberg::metadata::{Literal, NestedField, PartitionSpec, Primitive, Schema, Transform, Type};
 use crate::io::table::{Kind, column_at, iso_date, read, url_encode};
 use crate::ops::civil::{MICROS_PER_DAY, civil_from_days, valid_date_days};
 
@@ -357,7 +360,7 @@ fn signed_parts(s: &str, want: usize) -> Option<Vec<i64>> {
     Some(parts)
 }
 
-fn parse_date(s: &str) -> Option<i64> {
+pub(super) fn parse_date(s: &str) -> Option<i64> {
     let [y, m, d] = signed_parts(s, 3)?[..] else {
         return None;
     };
@@ -365,7 +368,7 @@ fn parse_date(s: &str) -> Option<i64> {
 }
 
 /// Microseconds of `2026-10-10T13:05:09.000123`; the fraction may have up to six digits, or be left out.
-fn parse_timestamp(s: &str) -> Option<i64> {
+pub(super) fn parse_timestamp(s: &str) -> Option<i64> {
     let (date, time) = s.split_once('T')?;
     let (hms, fraction) = time.split_once('.').unwrap_or((time, ""));
     let [h, m, sec] = hms
@@ -395,6 +398,8 @@ struct SpecField {
     /// The source column's names from the record's root, its type, and the type the transform makes of it. `None` for
     /// void, which reads no source: its column may since have been dropped.
     source: Option<(Vec<String>, Kind, Primitive)>,
+    /// The source's value in a row whose record lacks its names from the `k`th on, for each `k`.
+    lacked: Vec<Option<Literal>>,
     transform: Transform,
 }
 
@@ -410,6 +415,7 @@ impl TablePartitioner {
                     return Ok(SpecField {
                         name: field.name.clone(),
                         source: None,
+                        lacked: Vec::new(),
                         transform: Transform::Void,
                     });
                 }
@@ -429,9 +435,11 @@ impl TablePartitioner {
                 let result = result_type(&field.transform, source_type)
                     .map_err(|e| format!("the partition field {}: {e}", field.name))?;
                 let kind = source_type.kind().expect("result_type refuses Other");
+                let lacked = lacked_values(&schema.fields, &source, &kind)?;
                 Ok(SpecField {
                     name: field.name.clone(),
                     source: Some((source, kind, result)),
+                    lacked,
                     transform: field.transform.clone(),
                 })
             })
@@ -440,10 +448,48 @@ impl TablePartitioner {
     }
 }
 
+/// What a row whose record lacks `names` from the `k`th on holds at them, for each `k`: the leaf's write default where
+/// every struct from the `k`th on takes a struct by default, null otherwise.
+fn lacked_values(fields: &[NestedField], names: &[String], kind: &Kind) -> Result<Vec<Option<Literal>>, String> {
+    let mut path: Vec<&NestedField> = Vec::with_capacity(names.len());
+    for name in names {
+        let fields = match path.last().map(|f| &f.field_type) {
+            Some(Type::Struct(s)) => &s.fields,
+            _ => fields,
+        };
+        path.push(fields.iter().find(|f| f.name == *name).expect("a source's path"));
+    }
+    let (leaf, structs) = path.split_last().expect("a source has a name");
+    let Type::Primitive(p) = &leaf.field_type else {
+        unreachable!("a source is a primitive")
+    };
+    let arrow = primitive_arrow(p).expect("a primitive of a kind");
+    let value = read(&write_default(leaf, &arrow, &names.join("."))?, 0, kind, names)?;
+    let defaulted = |f: &&NestedField| f.other.get("write-default").is_some_and(|d| !d.is_null());
+    Ok((0..names.len())
+        .map(|k| structs[k..].iter().all(defaulted).then(|| value.clone()).flatten())
+        .collect())
+}
+
+/// The first of `names` that `schema`, a row's, lacks along them.
+fn lacked_from(schema: &ArrowSchema, names: &[String]) -> Option<usize> {
+    let mut fields = schema.fields();
+    for (k, name) in names.iter().enumerate() {
+        let Some((_, field)) = fields.find(name) else {
+            return Some(k);
+        };
+        match field.data_type() {
+            Arrow::Struct(children) => fields = children,
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// The names leading to column `id` among `fields`, and its type. Err when it is inside a list, which has no one
 /// value per row.
 fn source_path<'s>(
-    fields: &'s [crate::io::iceberg::metadata::NestedField],
+    fields: &'s [NestedField],
     id: i32,
     at: &mut Vec<String>,
 ) -> Result<Option<(Vec<String>, &'s Type)>, String> {
@@ -484,12 +530,17 @@ impl Partitioner for TablePartitioner {
             let text = match &field.source {
                 None => NULL.to_string(),
                 Some((source, source_type, result)) => {
-                    let column = column_at(batch, source, at)?;
-                    let value = column
-                        .map(|c| read(&c, at, source_type, source))
-                        .transpose()?
-                        .flatten()
-                        .and_then(|v| apply(&field.transform, &v));
+                    let value = match lacked_from(batch.schema_ref(), source) {
+                        None => (column_at(batch, source, at)?)
+                            .map(|c| read(&c, at, source_type, source))
+                            .transpose()?
+                            .flatten(),
+                        // Where the record lacks the source, the file holds its default, under structs a row holds.
+                        Some(k) => (k == 0 || column_at(batch, &source[..k], at)?.is_some_and(|p| p.is_valid(at)))
+                            .then(|| field.lacked[k].clone())
+                            .flatten(),
+                    };
+                    let value = value.and_then(|v| apply(&field.transform, &v));
                     path_text(value.as_ref(), result, &field.transform)
                 }
             };
@@ -508,7 +559,7 @@ mod tests {
     use crate::core::buffer::BufferPool;
     use crate::core::column::{Column, DataType, StrBuilder, VarType};
     use crate::format::record::RecordView;
-    use crate::io::iceberg::metadata::{ListType, NestedField, PartitionField, StructType};
+    use crate::io::iceberg::metadata::{ListType, PartitionField, StructType};
     use crate::io::parquet::{self, Chunk, Columns};
 
     /// 2017-11-16T22:31:08 UTC, the spec's appendix time.
@@ -964,6 +1015,61 @@ mod tests {
         let rows = rows();
         let by_ratio = TablePartitioner::new(&spec(&[("ratio", Transform::Identity, 9)]), &table_schema()).unwrap();
         assert_eq!(by_ratio.partition(&rows[0]).unwrap().path, ["ratio=null"]);
+    }
+
+    #[test]
+    fn a_column_the_record_does_not_write_partitions_by_its_write_default() {
+        let default = |mut f: NestedField, value: serde_json::Value| {
+            f.other.insert("write-default".into(), value);
+            f
+        };
+        let p = Type::Primitive;
+        let mut schema = table_schema();
+        schema.fields[5] = default(field(9, "ratio", p(Primitive::Double)), serde_json::json!(0.5));
+        let Type::Struct(ctx) = &mut schema.fields[3].field_type else {
+            panic!("ctx is a struct")
+        };
+        ctx.fields.push(default(
+            field(10, "zone", p(Primitive::String)),
+            serde_json::json!("z1"),
+        ));
+        let child = |id, name| default(field(id, name, p(Primitive::String)), serde_json::json!("nl"));
+        schema.fields.extend([
+            default(
+                field(
+                    11,
+                    "geo",
+                    Type::Struct(StructType {
+                        fields: vec![child(12, "cc")],
+                    }),
+                ),
+                serde_json::json!({}),
+            ),
+            field(
+                13,
+                "none",
+                Type::Struct(StructType {
+                    fields: vec![child(14, "cc")],
+                }),
+            ),
+        ]);
+        let partitioner = TablePartitioner::new(
+            &spec(&[
+                ("ratio", Transform::Identity, 9),
+                ("zone", Transform::Identity, 10),
+                ("cc", Transform::Identity, 12),
+                ("none_cc", Transform::Identity, 14),
+            ]),
+            &schema,
+        )
+        .unwrap();
+        let rows = rows();
+        assert_eq!(
+            partitioner.partition(&rows[0]).unwrap().path,
+            ["ratio=0.5", "zone=z1", "cc=nl", "none_cc=null"]
+        );
+        // The third row's ctx is null, and so is the zone in it.
+        assert_eq!(partitioner.partition(&rows[2]).unwrap().path[1], "zone=null");
     }
 
     #[test]
