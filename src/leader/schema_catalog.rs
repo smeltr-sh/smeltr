@@ -411,7 +411,8 @@ mod tests {
     /// The importer of `docs/examples.md` 9 over a BigQuery table's schema: a row for each column.
     #[test]
     fn the_docs_importer_writes_a_row_for_each_column() {
-        let examples = include_str!("../../docs/examples.md");
+        // A Windows checkout may hold the file with CRLF.
+        let examples = include_str!("../../docs/examples.md").replace("\r\n", "\n");
         let section = examples.split("## 9.").nth(1).expect("the importer's section");
         let body = (section.split("```ts\n").nth(1).and_then(|b| b.split("\n```").next())).expect("its pipeline");
         let config = json!({

@@ -232,7 +232,8 @@ mod tests {
     /// of `types_for`; this keeps its lists equal to these, in order, since the first is the default it names.
     #[test]
     fn the_gui_offers_the_types_each_field_can_hold() {
-        let source = include_str!("../../gui-frontend/src/schemas.ts");
+        // A Windows checkout may hold the file with CRLF.
+        let source = include_str!("../../gui-frontend/src/schemas.ts").replace("\r\n", "\n");
         let body = &source[source
             .find("export function elasticsearchTypes")
             .expect("elasticsearchTypes")..];

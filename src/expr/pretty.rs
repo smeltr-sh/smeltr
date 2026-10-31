@@ -536,6 +536,8 @@ mod tests {
             include_str!("../../docs/architecture/language.md"),
         ];
         for doc in docs {
+            // A Windows checkout may hold the file with CRLF.
+            let doc = doc.replace("\r\n", "\n");
             for fenced in doc.split("```ts\n").skip(1) {
                 let src = fenced.split("\n```").next().expect("a fence's text");
                 if parse::parse_block(src).is_err() {
