@@ -31,7 +31,7 @@ use super::catalog::{Auth, Catalog, CommitFailure, Loaded, Requirement, Signer, 
 use super::manifest::{self, DataFileEntry, ManifestFile};
 use super::metadata::{
     FIRST_PARTITION_ID, FORMAT_VERSION, MAIN, NestedField, PartitionField, PartitionSpec, Primitive, Schema, Snapshot,
-    TableMetadata, Transform, Type,
+    SnapshotRef, TableMetadata, Transform, Type,
 };
 use super::schema::{table_schema, with_field_ids};
 use super::transform::{TablePartitioner, literal_of, partition_name, partition_term, result_type};
@@ -725,8 +725,11 @@ impl Committer for IcebergCommitter {
             Update::AddSnapshot(snapshot),
             Update::SetSnapshotRef {
                 name: MAIN.to_string(),
-                snapshot_id: id,
-                kind: "branch".to_string(),
+                reference: SnapshotRef {
+                    snapshot_id: id,
+                    kind: "branch".to_string(),
+                    ..self.metadata.refs.get(MAIN).cloned().unwrap_or_default()
+                },
             },
         ];
         match self
@@ -899,7 +902,9 @@ impl IcebergCommitter {
         snapshot_id: i64,
         entries: &[DataFileEntry],
     ) -> Result<ManifestFile, String> {
-        let bytes = manifest::write_manifest(&self.schema, spec, entries)?;
+        let types = partition_types(spec, &self.schema, &self.metadata.schemas)?;
+        let types: Vec<Primitive> = types.into_iter().map(|(ty, _)| ty).collect();
+        let bytes = manifest::write_manifest(&self.schema, spec, &types, entries)?;
         let length = bytes.len() as u64;
         let name = format!("{}-m0.avro", objects::object_id());
         self.put(&self.meta.key(&name), bytes)?;
@@ -1286,15 +1291,9 @@ mod tests {
                 table.snapshots.push(snapshot);
             }
             "set-snapshot-ref" => {
-                let id = update["snapshot-id"].as_i64().unwrap();
-                table.refs.insert(
-                    MAIN.into(),
-                    crate::io::iceberg::metadata::SnapshotRef {
-                        snapshot_id: id,
-                        kind: "branch".into(),
-                    },
-                );
-                table.current_snapshot_id = Some(id);
+                let main: SnapshotRef = serde_json::from_value(update.clone()).unwrap();
+                table.current_snapshot_id = Some(main.snapshot_id);
+                table.refs.insert(MAIN.into(), main);
             }
             other => panic!("unknown update {other}"),
         }
@@ -1592,6 +1591,32 @@ mod tests {
         live.sort_by_key(|(_, rows, _)| *rows);
         let host = |h: &str| vec![Some(Literal::String(h.into()))];
         assert_eq!(live, [(host("a"), 3, true), (host("b"), 4, true), (host("a"), 5, true)]);
+    }
+
+    #[test]
+    fn a_commit_keeps_the_retention_of_main() {
+        let fake = Arc::new(Mutex::new(Fake::default()));
+        let url = serve(fake.clone());
+        let record = st(&[("host", DataType::Str)]);
+        let mut committer = committer(&url, &config(&url, &[]), &record, &Arc::new(InMemory::new()));
+        committer.commit(&[file(&committer, &[], 3)]).unwrap();
+        let retention = |main: &mut SnapshotRef| {
+            main.min_snapshots_to_keep = Some(5);
+            main.max_snapshot_age_ms = Some(3_600_000);
+            main.max_ref_age_ms = Some(86_400_000);
+        };
+        retention(fake.lock().unwrap().table.as_mut().unwrap().refs.get_mut(MAIN).unwrap());
+        committer.reload().unwrap();
+
+        committer.commit(&[file(&committer, &[], 4)]).unwrap();
+        let table = fake.lock().unwrap().table.clone().unwrap();
+        let mut expected = SnapshotRef {
+            snapshot_id: table.snapshots[1].snapshot_id,
+            kind: "branch".into(),
+            ..SnapshotRef::default()
+        };
+        retention(&mut expected);
+        assert_eq!(table.refs[MAIN], expected);
     }
 
     #[test]
@@ -2003,6 +2028,43 @@ mod tests {
         );
         // Any other transform reads its source, which must be in the current schema.
         assert!(partition_types(&spec(vec![field("gone", Transform::Identity, 2)]), &current, &schemas).is_err());
+    }
+
+    #[test]
+    fn a_table_partitioned_void_over_a_dropped_column_takes_commits() {
+        let fake = Arc::new(Mutex::new(Fake::default()));
+        let url = serve(fake.clone());
+        let store = Arc::new(InMemory::new());
+        let config = config(&url, &["host"]);
+        let before = st(&[("host", DataType::Str), ("gone", DataType::Str)]);
+        committer(&url, &config, &before, &store);
+        {
+            let mut fake = fake.lock().unwrap();
+            let table = fake.table.as_mut().unwrap();
+            let mut schema = table.schemas[0].clone();
+            schema.schema_id = 1;
+            let gone = schema.fields.pop().unwrap();
+            table.schemas.push(schema);
+            table.current_schema_id = 1;
+            let mut spec = table.partition_specs[0].clone();
+            spec.spec_id = 1;
+            spec.fields.push(PartitionField {
+                name: "gone_null".into(),
+                transform: Transform::Void,
+                source_id: gone.id,
+                field_id: 1001,
+            });
+            table.partition_specs.push(spec);
+            table.default_spec_id = 1;
+            table.last_partition_id = 1001;
+        }
+
+        let mut committer = committer(&url, &config, &st(&[("host", DataType::Str)]), &store);
+        committer
+            .commit(&[file(&committer, &[("host", "a"), ("gone_null", "null")], 3)])
+            .unwrap();
+        let live: Vec<_> = live_files(&committer).into_iter().map(|e| e.partition).collect();
+        assert_eq!(live, [vec![Some(Literal::String("a".into())), None]]);
     }
 
     #[test]

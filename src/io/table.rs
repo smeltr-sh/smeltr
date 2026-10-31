@@ -8,6 +8,7 @@ use arrow_schema::{DataType as Arrow, TimeUnit};
 use parquet::basic::{LogicalType, TimeUnit as ParquetTimeUnit};
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::statistics::Statistics;
+use std::cmp::Ordering;
 use std::fmt;
 
 use crate::core::column::DataType;
@@ -196,8 +197,8 @@ pub fn iso_date(days: i64) -> String {
     format!("{year}-{m:02}-{d:02}")
 }
 
-/// A row group's min or max as the footer holds it. Two bounds compare only within one variant.
-#[derive(Clone, Debug, PartialEq, PartialOrd)]
+/// A row group's min or max as the footer holds it.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Bound {
     Boolean(bool),
     Int(i32),
@@ -205,6 +206,23 @@ pub enum Bound {
     Float(f32),
     Double(f64),
     Bytes(Vec<u8>),
+}
+
+impl Bound {
+    /// The order of bounds of one variant, None across two. A float's is IEEE 754 totalOrder, where -0.0 comes
+    /// before 0.0, as Iceberg orders its bounds; `PartialOrd` would take them as equal.
+    fn order(&self, other: &Bound) -> Option<Ordering> {
+        use Bound as B;
+        match (self, other) {
+            (B::Boolean(a), B::Boolean(b)) => Some(a.cmp(b)),
+            (B::Int(a), B::Int(b)) => Some(a.cmp(b)),
+            (B::Long(a), B::Long(b)) => Some(a.cmp(b)),
+            (B::Float(a), B::Float(b)) => Some(a.total_cmp(b)),
+            (B::Double(a), B::Double(b)) => Some(a.total_cmp(b)),
+            (B::Bytes(a), B::Bytes(b)) => Some(a.cmp(b)),
+            _ => None,
+        }
+    }
 }
 
 /// One leaf column's statistics across a file's row groups.
@@ -246,8 +264,16 @@ pub fn column_stats(metadata: &ParquetMetaData, column: usize, kind: Option<&Kin
         bounds = match (statistics.and_then(|s| min_max(s, kind)), so_far) {
             (Some(here), None) => Some(Some(here)),
             (Some((lo, hi)), Some((low, high))) => Some(Some((
-                if lo < low { lo } else { low },
-                if hi > high { hi } else { high },
+                if lo.order(&low) == Some(Ordering::Less) {
+                    lo
+                } else {
+                    low
+                },
+                if hi.order(&high) == Some(Ordering::Greater) {
+                    hi
+                } else {
+                    high
+                },
             ))),
             (None, so_far) if null_count == Some(chunk.num_values() as u64) => Some(so_far),
             (None, _) => None,
@@ -292,9 +318,30 @@ fn min_max(statistics: &Statistics, kind: &Kind) -> Option<(Bound, Bound)> {
 mod tests {
     use std::sync::Arc;
 
-    use arrow_array::{Float64Array, Int64Array, TimestampMicrosecondArray};
+    use arrow_array::{Float64Array, Int64Array, RecordBatch, TimestampMicrosecondArray};
+    use parquet::arrow::ArrowWriter;
+    use parquet::file::properties::WriterProperties;
 
     use super::*;
+
+    #[test]
+    fn bounds_across_row_groups_put_negative_zero_below_zero() {
+        let bounds = |values: Vec<f64>| {
+            let batch = RecordBatch::try_from_iter([("v", Arc::new(Float64Array::from(values)) as ArrayRef)]).unwrap();
+            let properties = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
+            let mut writer = ArrowWriter::try_new(Vec::new(), batch.schema(), Some(properties)).unwrap();
+            writer.write(&batch).unwrap();
+            let metadata = writer.close().unwrap();
+            assert_eq!(metadata.num_row_groups(), 3);
+            match column_stats(&metadata, 0, Some(&Kind::Double)).bounds {
+                Some((Bound::Double(lo), Bound::Double(hi))) => (lo.to_bits(), hi.to_bits()),
+                other => panic!("bounds {other:?}"),
+            }
+        };
+        let zeros = ((-0.0f64).to_bits(), 0.0f64.to_bits());
+        assert_eq!(bounds(vec![0.0, -0.0, 0.0]), zeros);
+        assert_eq!(bounds(vec![-0.0, 0.0, -0.0]), zeros);
+    }
 
     #[test]
     fn a_partition_value_is_read_as_the_table_holds_it_or_refused_where_it_cannot() {
