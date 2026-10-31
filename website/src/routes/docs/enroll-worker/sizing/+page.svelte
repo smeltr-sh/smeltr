@@ -54,11 +54,10 @@
 
   <h2 id="memory">Memory</h2>
   <p>
-    A worker uses 90% of its container's memory limit or host memory;
-    <code>worker.runtime.memory</code> sets the amount instead. It sets aside the least each part below
-    needs, and the parts with room to grow share the rest, so a worker with more memory holds more in
-    flight with no change to its configuration. A destination's queue grows as its traffic asks, so a
-    busy destination takes what idle ones leave.
+    A worker uses 90% of its container's memory limit or host memory.
+    <code>worker.runtime.memory</code> sets a different amount. The worker sets aside the least each part
+    below needs, and the parts that can grow share the rest. More memory holds more data in flight, with
+    no change to the configuration. A busy destination takes the room that idle ones leave.
   </p>
   <p>
     Give a worker at least the sum of the parts below for the sources and destinations its group
