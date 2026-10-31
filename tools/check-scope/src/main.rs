@@ -495,11 +495,41 @@ fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, String>) {
     }
 }
 
+/// `check-all`'s recipes, as the justfile lists them, each a job of its own: a failure then names the one that
+/// failed rather than `check-all`. `check-all` itself when the justfile cannot be read.
+fn check_all() -> Vec<Vec<String>> {
+    let shown = Command::new("just").args(["--show", "check-all"]).output();
+    let recipes = shown
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| recipes_of("check-all", &String::from_utf8_lossy(&out.stdout)))
+        .unwrap_or_default();
+    if recipes.is_empty() {
+        vec![vec!["check-all".to_string()]]
+    } else {
+        recipes
+    }
+}
+
+/// The recipes `recipe` depends on, from `just --show`.
+fn recipes_of(recipe: &str, shown: &str) -> Vec<Vec<String>> {
+    let head = format!("{recipe}:");
+    shown
+        .lines()
+        .find_map(|line| line.strip_prefix(head.as_str()))
+        .map(|deps| deps.split_whitespace().map(|d| vec![d.to_string()]).collect())
+        .unwrap_or_default()
+}
+
 fn run(plan: &Plan) -> ExitCode {
     for why in &plan.why {
         eprintln!("check: {why}");
     }
-    let jobs = plan.jobs();
+    let jobs: Vec<_> = plan
+        .jobs()
+        .into_iter()
+        .flat_map(|job| if job == ["check-all"] { check_all() } else { vec![job] })
+        .collect();
     let names: Vec<String> = jobs.iter().map(|j| j[0].clone()).collect();
     eprintln!("check: running {}", names.join(", "));
     let stable = jobs.iter().any(|j| {
@@ -711,5 +741,15 @@ mod tests {
     fn a_file_nothing_places_runs_everything() {
         assert!(plan(&["src/io/kafka.rs", "justfile"]).all);
         assert!(plan(&["compose.live.yaml"]).all);
+    }
+
+    #[test]
+    fn check_all_runs_as_the_recipes_it_lists() {
+        let shown = "# Every check.\n[parallel]\ncheck-all: check-rust clippy check-frontend\n";
+        assert_eq!(
+            recipes_of("check-all", shown),
+            [["check-rust"], ["clippy"], ["check-frontend"]]
+        );
+        assert!(recipes_of("check-all", "other: a\n").is_empty());
     }
 }
