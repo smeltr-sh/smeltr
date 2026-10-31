@@ -419,7 +419,9 @@ mod tests {
 
     #[test]
     fn the_prelude_is_in_the_style() {
-        let prelude = include_str!("prelude.smeltr").trim_end();
+        // A Windows checkout may hold the file with CRLF; the formatter writes LF.
+        let prelude = include_str!("prelude.smeltr").replace("\r\n", "\n");
+        let prelude = prelude.trim_end();
         assert_eq!(block(prelude), prelude);
     }
 

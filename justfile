@@ -28,9 +28,22 @@ build: gui
 # of the time `build` takes.
 [doc("Frontend and demo, then unoptimized binaries embedding them: what the GUI tests run.")]
 [group("dev")]
-build-dev: gui
+build-dev: gui fips-dll
     npm --prefix gui-frontend run build:demo
     cargo build --bin smeltr --bin smeltr-demo
+
+# Windows loads the AWS-LC FIPS module from a DLL beside each binary, the test binaries in `deps` included
+# (`tools/fips-dll.ps1`), so what runs a debug binary copies it there first. The one crate builds it, and reuses the
+# build the tests make.
+[private]
+[windows]
+fips-dll:
+    cargo build -p aws-lc-fips-sys
+    powershell -NoProfile -ExecutionPolicy Bypass -File tools/fips-dll.ps1 "{{ env('CARGO_TARGET_DIR', 'target') }}/debug"
+
+[private]
+[unix]
+fips-dll:
 
 # The website demo: the GUI over the leader its page plays, in
 # gui-frontend/dist-demo, and the preview service it asks.
@@ -185,7 +198,7 @@ fmt-check:
 # alone picks none, and passes.
 [private]
 [env("SMELTR_NO_GUI", "1")]
-check-tests filter: stable
+check-tests filter: stable fips-dll
     cargo nextest run --workspace -j {{test_threads}} --no-tests=pass -E "not test(/fuzz/) & ({{filter}})"
 
 # One crate under `tools/`.
@@ -249,7 +262,7 @@ clippy: stable
 # the GUI, and `check-frontend` builds it, so the binary embeds none.
 [private]
 [env("SMELTR_NO_GUI", "1")]
-check-rust: stable
+check-rust: stable fips-dll
     cargo fmt --all --check
     cargo nextest run --workspace -j {{test_threads}} -E "not test(/fuzz/)"
     -cargo test --test integration language_tests:: -- --ignored
@@ -258,7 +271,7 @@ check-rust: stable
 # seeds each and take a minute or more, so `check` leaves them here.
 [doc("Every offline fuzzer.")]
 [env("SMELTR_NO_GUI", "1")]
-check-fuzz: && fuzz-gui fuzz-journey fuzz-pipeline
+check-fuzz: fips-dll && fuzz-gui fuzz-journey fuzz-pipeline
     cargo nextest run --workspace -j {{test_threads}} -E "test(/fuzz/)"
 
 # The GUI fuzzer, `tests/gui/specs/gui-fuzz.spec.ts`, over more seeds than
