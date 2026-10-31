@@ -426,8 +426,16 @@ impl DeltaCommitter {
             // Before the record's columns are committed: a table this writer refuses keeps its log as it was.
             let identities = identity::columns(&current)?;
             let generated = generated(&identities, &arrow, &snapshot.metadata.partition_columns)?;
-            let evolution =
-                schema::table_schema(record, Some(&current), mapping(&snapshot.metadata)?, widens(&snapshot))?;
+            let mapping = mapping(&snapshot.metadata)?;
+            let evolution = schema::table_schema(record, Some(&current), mapping, widens(&snapshot))?;
+            if evolution.mapping != mapping && snapshot.metadata.property("delta.columnMapping.maxColumnId").is_none() {
+                // An id above the schema's may still be in the files of a column another writer dropped.
+                return Err(
+                    "the table maps columns and has no delta.columnMapping.maxColumnId, so the record's new columns \
+                     can take no id"
+                        .to_string(),
+                );
+            }
             if let Some(why) = schema::refused_column(&evolution.schema) {
                 return Err(why);
             }
@@ -730,18 +738,16 @@ fn iceberg_compat_v2(metadata: &Metadata) -> bool {
     metadata.flag("delta.enableIcebergCompatV2") == Some(true)
 }
 
-/// The table's column mapping. Err for a mode this writer does not write, or a mapped table without maxColumnId.
+/// The table's column mapping. Err for a mode this writer does not write.
 fn mapping(metadata: &Metadata) -> Result<Mapping, String> {
     match metadata.property("delta.columnMapping.mode").unwrap_or("none") {
         "none" => Ok(Mapping::None),
         // A writer writes both alike: physical names, and each column's id as its field id. Only readers differ.
-        mode @ ("name" | "id") => {
-            let max_column_id = metadata
-                .property("delta.columnMapping.maxColumnId")
+        "name" | "id" => {
+            // Without its highest id, a table is written only as long as no new column needs one; see `open`.
+            let max_column_id = (metadata.property("delta.columnMapping.maxColumnId"))
                 .and_then(|v| v.parse::<i64>().ok())
-                .ok_or_else(|| {
-                    format!("the table maps columns by {mode} and has no delta.columnMapping.maxColumnId")
-                })?;
+                .unwrap_or(0);
             let iceberg = iceberg_compat_v2(metadata);
             // Another writer may count the ids of arrays' elements apart from its columns'.
             let max_column_id = match iceberg {
@@ -1864,6 +1870,32 @@ mod tests {
             assert_eq!(ids, [Some("1"), Some("2")], "{mode}");
             assert_eq!(committer.partitions[0].physical, physical(&mapped, "host"));
         }
+    }
+
+    #[test]
+    fn a_mapped_table_without_its_highest_id_takes_a_record_that_adds_no_column() {
+        let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
+        let mapped = schema::table_schema(&record, None, Mapping::name(0), None)
+            .unwrap()
+            .schema;
+        let table = table_with(&record, &["host"], |a| {
+            if let Some(p) = a.get_mut("protocol") {
+                *p = json!({"minReaderVersion": 2, "minWriterVersion": 5});
+            }
+            if let Some(m) = a.get_mut("metaData") {
+                m["schemaString"] = json!(mapped.to_json());
+                m["configuration"] = json!({"delta.columnMapping.mode": "name"});
+            }
+        });
+
+        let committer = table.open(&record, &["host"]).unwrap();
+        let ids: Vec<Option<&str>> = (committer.written.fields().iter())
+            .map(|f| f.metadata().get(PARQUET_FIELD_ID_META_KEY).map(String::as_str))
+            .collect();
+        assert_eq!(ids, [Some("1"), Some("2")]);
+        let grown = st(&[("host", DataType::Str), ("n", DataType::I64), ("msg", DataType::Str)]);
+        let why = table.refused(&grown, &["host"]);
+        assert!(why.contains("has no delta.columnMapping.maxColumnId"), "{why}");
     }
 
     #[test]

@@ -122,6 +122,7 @@ const COVERED: &[&str] = &[
     "iceberg missing nested id",
     "iceberg type change refused",
     "mapping name without maxColumnId",
+    "mapping without maxColumnId written",
     "mapping unsupported",
     "check constraint",
     "checkpointInterval",
@@ -443,7 +444,6 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType, iceberg
             set(metadata, "delta.columnMapping.mode", mode);
             if rng.chance(6) {
                 reach("mapping name without maxColumnId");
-                refused = true;
             } else {
                 set(metadata, "delta.columnMapping.maxColumnId", &max_column_id.to_string());
             }
@@ -885,6 +885,19 @@ fn element_ids(table: &[schema::StructField], written: &Fields) -> Result<(), St
 
 /// No two of the table's columns, nor of its arrays' elements, share an id.
 fn unique_ids(schema: &StructType) -> Result<(), String> {
+    let ids = ids(schema);
+    let distinct: BTreeSet<i64> = ids.iter().copied().collect();
+    if distinct.len() != ids.len() {
+        return Err(format!("the table's ids {ids:?} repeat"));
+    }
+    if ids.len() > 1 {
+        reach("ids unique");
+    }
+    Ok(())
+}
+
+/// Every id `schema` gives, its columns' and its arrays' elements'.
+fn ids(schema: &StructType) -> Vec<i64> {
     let json: Value = serde_json::from_str(&schema.to_json()).unwrap();
     fn collect(v: &Value, out: &mut Vec<i64>) {
         match v {
@@ -903,14 +916,7 @@ fn unique_ids(schema: &StructType) -> Result<(), String> {
     }
     let mut ids = Vec::new();
     collect(&json, &mut ids);
-    let distinct: BTreeSet<i64> = ids.iter().copied().collect();
-    if distinct.len() != ids.len() {
-        return Err(format!("the table's ids {ids:?} repeat"));
-    }
-    if ids.len() > 1 {
-        reach("ids unique");
-    }
-    Ok(())
+    ids
 }
 
 fn kept_narrow(committer: &DeltaCommitter) -> Result<(), String> {
@@ -1373,11 +1379,21 @@ impl Run {
         // A restart writes the batches again in files of their own.
         self.pending = None;
         let before = self.latest();
+        let no_max = self.load().is_ok_and(|s| {
+            matches!(s.metadata.property("delta.columnMapping.mode"), Some("name" | "id"))
+                && s.metadata.property("delta.columnMapping.maxColumnId").is_none()
+        });
         let by: Vec<&str> = self.partition_by.iter().map(String::as_str).collect();
         let opened = self.table.open(&self.record, &by);
         self.harvest()?;
         match opened {
+            Ok(_) if no_max && self.latest() != before => {
+                Err("the writer gave a new column an id in a table without maxColumnId".to_string())
+            }
             Ok(committer) => {
+                if no_max {
+                    reach("mapping without maxColumnId written");
+                }
                 kept_narrow(&committer)?;
                 field_ids(&committer.schema.fields, committer.written.fields())?;
                 element_ids(&committer.schema.fields, committer.written.fields())?;
@@ -1729,7 +1745,8 @@ impl Run {
                     metadata: Map::new(),
                 };
                 if let Ok(Mapping::Name { max_column_id, .. }) = mapping(&metadata) {
-                    let id = max_column_id + 1;
+                    // A table without maxColumnId has its highest id in its schema, as this other writer drops none.
+                    let id = max_column_id.max(ids(&schema).into_iter().max().unwrap_or(0)) + 1;
                     field.metadata.insert("delta.columnMapping.id".into(), json!(id));
                     field
                         .metadata

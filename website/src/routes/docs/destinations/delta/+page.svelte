@@ -106,10 +106,7 @@
           <code>icebergCompatV2</code>;
         </li>
         <li>its files are Parquet;</li>
-        <li>
-          it maps columns by name or by id, with <code>delta.columnMapping.maxColumnId</code> set, or
-          not at all;
-        </li>
+        <li>it maps columns by name or by id, or not at all;</li>
         <li>it sets no check constraint;</li>
         <li>
           if it sets <code>delta.enableIcebergCompatV2</code> to <code>true</code>, it maps columns,
@@ -375,12 +372,14 @@
     <dd>Write to a table that maps columns by name or by id, or not at all.</dd>
     <dt>
       <strong
-        >the table maps columns by … and has no <code>delta.columnMapping.maxColumnId</code></strong
+        >the table maps columns and has no <code>delta.columnMapping.maxColumnId</code>, so the
+        record's new columns can take no id</strong
       >
     </dt>
     <dd>
-      The writer that mapped the table's columns did not record the highest column id it gave, so
-      the destination cannot give a new column an id of its own. Write to another table.
+      The writer that mapped the table's columns did not record the highest column id it gave. The
+      destination writes such a table only while the record adds no column. Drop the new field in
+      the pipeline, or write another table.
     </dd>
     <dt>
       <strong>the table is IcebergCompatV2 and maps no columns …</strong> or
