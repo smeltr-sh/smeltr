@@ -27,13 +27,27 @@ pub fn ocsf_version() -> &'static str {
     OCSF["version"].as_str().expect("the compiled OCSF names its version")
 }
 
-/// The OCSF classes, by name, in order.
-pub fn ocsf_classes() -> Vec<String> {
-    let mut names: Vec<String> = (OCSF["classes"].as_object())
-        .map(|c| c.keys().cloned().collect())
-        .unwrap_or_default();
-    names.sort();
-    names
+/// One OCSF class, as the dialog offers it.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct OcsfClass {
+    /// What a schema is read from by.
+    pub name: String,
+    pub caption: String,
+    /// OCSF's category, such as "Identity & Access Management"; empty for a class in none.
+    pub category: String,
+}
+
+/// The OCSF classes, by name.
+pub fn ocsf_classes() -> Vec<OcsfClass> {
+    let mut classes: Vec<OcsfClass> = (OCSF["classes"].as_object().into_iter().flatten())
+        .map(|(name, c)| OcsfClass {
+            name: name.clone(),
+            caption: c["caption"].as_str().unwrap_or(name).to_string(),
+            category: c["category_name"].as_str().unwrap_or_default().to_string(),
+        })
+        .collect();
+    classes.sort_by(|a, b| a.name.cmp(&b.name));
+    classes
 }
 
 #[cfg(test)]
@@ -48,10 +62,11 @@ mod tests {
 
         assert!(ocsf_version().split('.').count() == 3, "{}", ocsf_version());
         let classes = ocsf_classes();
-        assert!(classes.contains(&"authentication".to_string()));
+        let auth = classes.iter().find(|c| c.name == "authentication").unwrap();
+        assert_eq!((auth.caption.as_str(), auth.category.as_str()), ("Authentication", "Identity & Access Management"));
         for class in &classes {
-            let fields = crate::schema::ocsf::read(&OCSF, class, &Default::default()).unwrap();
-            assert!(!fields.is_empty(), "{class}");
+            let fields = crate::schema::ocsf::read(&OCSF, &class.name, &Default::default()).unwrap();
+            assert!(!fields.is_empty(), "{}", class.name);
         }
     }
 }

@@ -5,7 +5,7 @@
 -->
 <script lang="ts" module>
   import type { CatalogType } from './TypeCatalog.svelte';
-  import type { CsvColumns, CsvPreview, OcsfLevel, SchemaReadFormat } from './api';
+  import type { CsvColumns, CsvPreview, OcsfClass, OcsfLevel, SchemaReadFormat } from './api';
   import { FIELD_TYPES } from './api';
 
   export type SchemaStart = 'ecs' | 'ocsf' | 'csv' | 'jsonSchema' | 'import' | 'empty';
@@ -36,9 +36,11 @@
     file: string;
     /** Where a record of the file ends, for `import`; absent, each line is one. */
     lineBreaker: string | undefined;
-    /** The uploaded OCSF file's classes, and the one read. */
-    classes: string[];
+    /** The uploaded OCSF file's classes, and the one read, by name. */
+    classes: OcsfClass[];
     class: string;
+    /** The id the dialog last suggested, which follows the class until the id is typed over. */
+    suggested: string;
     /** How many keys deep an OCSF class is read. */
     depth: number;
     /** Which OCSF requirement levels are read. */
@@ -168,23 +170,55 @@
   }
 
   /** The OCSF classes `d` may be read from. */
-  function classesOf(d: SchemaDraft): string[] {
+  function classesOf(d: SchemaDraft): OcsfClass[] {
     return fromRelease(d) ? standards!.ocsf.classes : d.classes;
+  }
+
+  /** `classes` by category, each by caption; a class in no category comes last, under Other. */
+  function byCategory(classes: OcsfClass[]): [string, OcsfClass[]][] {
+    const groups = new Map<string, OcsfClass[]>();
+    for (const c of [...classes].sort((a, b) => a.caption.localeCompare(b.caption))) {
+      const key = c.category || 'Other';
+      groups.set(key, [...(groups.get(key) ?? []), c]);
+    }
+    return [...groups].sort(([a], [b]) =>
+      a === 'Other' ? 1 : b === 'Other' ? -1 : a.localeCompare(b),
+    );
+  }
+
+  /** The class a draft starts on, where `classes` holds it. */
+  function firstClass(classes: OcsfClass[]): string {
+    return classes.some((c) => c.name === 'authentication')
+      ? 'authentication'
+      : (classes[0]?.name ?? '');
+  }
+
+  /** The class `d` reads: the one chosen, or, where the releases arrived after the tile was chosen, the first. */
+  function classOf(d: SchemaDraft): string {
+    return d.class || firstClass(classesOf(d));
+  }
+
+  /** `d` reads `name`, and its id follows, unless it was typed over. */
+  function setClass(d: SchemaDraft, name: string) {
+    d.class = name;
+    if (d.type !== 'ocsf' || !name || d.id !== d.suggested) return;
+    d.id = d.suggested = suggestId(name, unavailable);
   }
 
   /** `d` reads the release, or an upload; its class stays where the other offers it. */
   function setBuiltIn(d: SchemaDraft, on: boolean) {
     d.builtIn = on;
     const classes = classesOf(d);
-    if (d.type === 'ocsf' && !classes.includes(d.class)) {
-      d.class = classes.includes('authentication') ? 'authentication' : (classes[0] ?? '');
-    }
+    if (d.type === 'ocsf' && !classes.some((c) => c.name === d.class))
+      setClass(d, firstClass(classes));
   }
 
   function blank(type: SchemaStart, taken: string[]): SchemaDraft {
-    const classes = standards?.ocsf.classes ?? [];
+    const first = type === 'ocsf' ? firstClass(standards?.ocsf.classes ?? []) : '';
+    const id = suggestId(type === 'ecs' ? 'ecs' : first || 'schema', taken);
     return {
-      id: suggestId(type === 'ecs' ? 'ecs' : 'schema', taken),
+      id,
+      suggested: id,
       type,
       text: '',
       builtIn: true,
@@ -192,7 +226,7 @@
       file: '',
       lineBreaker: undefined,
       classes: [],
-      class: classes.includes('authentication') ? 'authentication' : (classes[0] ?? ''),
+      class: first,
       depth: 2,
       levels: ['required', 'recommended'],
       preview: null,
@@ -264,11 +298,19 @@
     if (draft.type === 'ocsf') {
       // The classes to pick from. A file that is not JSON lists none, and the leader says why on Add.
       try {
-        draft.classes = Object.keys(JSON.parse(draft.text).classes ?? {}).sort();
+        const listed: Record<string, { caption?: string; category_name?: string }> =
+          JSON.parse(draft.text).classes ?? {};
+        draft.classes = Object.entries(listed).map(([name, c]) => ({
+          name,
+          caption: c.caption || name,
+          category: c.category_name ?? '',
+        }));
       } catch {
         draft.classes = [];
       }
-      draft.class = draft.classes.includes(draft.class) ? draft.class : (draft.classes[0] ?? '');
+      if (!draft.classes.some((c) => c.name === draft.class)) {
+        setClass(draft, firstClass(draft.classes));
+      }
     }
   }
 
@@ -292,7 +334,10 @@
         return d.text.trim() !== '';
       case 'ocsf':
         return (
-          (fromRelease(d) || d.text !== '') && d.class !== '' && d.levels.length > 0 && d.depth >= 1
+          (fromRelease(d) || d.text !== '') &&
+          classOf(d) !== '' &&
+          d.levels.length > 0 &&
+          d.depth >= 1
         );
       case 'import':
         return d.pipeline !== '' && d.file !== '';
@@ -310,7 +355,10 @@
   {blank}
   typeLabel={(t) => LABELS[t]}
   {ready}
-  {onadd}
+  onadd={(d) => {
+    if (d.type === 'ocsf') d.class = classOf(d);
+    return onadd(d);
+  }}
   {oncancel}
 >
   {#snippet link(href: string)}
@@ -477,10 +525,16 @@
       {#if fromRelease(draft) || draft.text !== ''}
         {@const classes = classesOf(draft)}
         <Field required label="Class">
-          <select bind:value={draft.class}>
+          <select bind:value={() => classOf(draft), (v) => setClass(draft, v)}>
             {#if classes.length === 0}<option value="">No classes in the file</option>
-            {:else if !classes.includes(draft.class)}<option value="">Choose a class…</option>{/if}
-            {#each classes as c (c)}<option value={c}>{c}</option>{/each}
+            {:else if !classes.some((c) => c.name === classOf(draft))}<option value=""
+                >Choose a class…</option
+              >{/if}
+            {#each byCategory(classes) as [category, members] (category)}
+              <optgroup label={category}>
+                {#each members as c (c.name)}<option value={c.name}>{c.caption}</option>{/each}
+              </optgroup>
+            {/each}
           </select>
         </Field>
         <Field

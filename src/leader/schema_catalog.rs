@@ -102,9 +102,9 @@ pub struct Release {
     pub version: String,
     /// Where the release is published.
     pub source: String,
-    /// OCSF's classes, by name, one of which a schema is read from.
+    /// OCSF's classes, one of which a schema is read from.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub classes: Vec<String>,
+    pub classes: Vec<standard::OcsfClass>,
 }
 
 pub fn standards() -> Standards {
@@ -298,8 +298,8 @@ mod tests {
         };
         assert!(!read(&req(ReadFormat::Ecs, "")).unwrap().schema.fields.is_empty());
         let standards = standards();
-        assert!(standards.ocsf.classes.contains(&"authentication".to_string()));
-        for class in &standards.ocsf.classes {
+        assert!(standards.ocsf.classes.iter().any(|c| c.name == "authentication"));
+        for class in standards.ocsf.classes.iter().map(|c| &c.name) {
             let read = read(&req(ReadFormat::Ocsf, class)).unwrap_or_else(|e| panic!("{class}: {e}"));
             assert!(!read.schema.fields.is_empty(), "{class}");
         }

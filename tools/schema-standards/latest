@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Says whether ECS or OCSF has a release newer than the one smeltr carries (`schema::standard`), and fails if either
+# does, so the weekly check flags it. Reads the tags with git, which needs no API token.
+set -euo pipefail
+out=src/schema/standards
+ours_ecs=$(sed -n 2p "$out/ecs-fields.csv" | cut -d, -f1)
+ours_ocsf=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$out/ocsf.json")
+
+# The newest release tag, rc and dev tags left out.
+newest() {
+    git ls-remote --tags --refs "$1" | sed 's#.*refs/tags/v\{0,1\}##' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
+}
+stale=0
+for pair in "ECS $ours_ecs https://github.com/elastic/ecs.git" "OCSF $ours_ocsf https://github.com/ocsf/ocsf-schema.git"; do
+    read -r name ours repo <<<"$pair"
+    latest=$(newest "$repo")
+    if [ "$(printf '%s\n%s\n' "$ours" "$latest" | sort -V | tail -1)" != "$ours" ]; then
+        echo "$name: smeltr carries $ours, $latest is out"
+        stale=1
+    else
+        echo "$name: smeltr carries $ours, the latest"
+    fi
+done
+[ "$stale" = 0 ] || { echo "Refresh with: just schemas-refresh <ecs> <ocsf>"; exit 1; }

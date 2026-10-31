@@ -5456,11 +5456,18 @@ export interface StandardRelease {
   source: string;
 }
 
+/** An OCSF class: its name, which a schema is read by, its caption, and its category; empty for none. */
+export interface OcsfClass {
+  name: string;
+  caption: string;
+  category: string;
+}
+
 /** The releases of ECS and OCSF the leader carries, which `readSchema` reads with `builtIn`. */
 export interface SchemaStandards {
   ecs: StandardRelease;
-  /** With OCSF's classes, by name. */
-  ocsf: StandardRelease & { classes: string[] };
+  /** With OCSF's classes. */
+  ocsf: StandardRelease & { classes: OcsfClass[] };
 }
 
 export function getSchemaStandards(): Promise<SchemaStandards> {

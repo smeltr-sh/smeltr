@@ -1,3 +1,2 @@
 tests/fixtures/releases/** -text
 src/leader/docs.json linguist-generated
-src/schema/standards/** -text linguist-generated

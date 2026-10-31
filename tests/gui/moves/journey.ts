@@ -1746,7 +1746,8 @@ const addBuiltInSchema: Move = {
     const standards = await truth.get('/api/preview/schema-standards');
     const release = standards[format];
     // An OCSF class, cut as deep and to the requirements drawn.
-    const klass: string = format === 'ocsf' ? rng.pick(release.classes as string[]) : '';
+    const klass: string =
+      format === 'ocsf' ? rng.pick(release.classes as { name: string }[]).name : '';
     const depth = 1 + rng.below(3);
     const levels = ['required', 'recommended', 'optional'].filter(
       (l, i) => i === 0 || rng.chance(2),

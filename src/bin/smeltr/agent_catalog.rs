@@ -83,7 +83,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/preview/schema-standards",
-        what: "The releases of ECS and OCSF smeltr carries, each with its version and where it is published, and OCSF's classes by name. A schema-read with builtIn reads one of them rather than a file. No query.",
+        what: "The releases of ECS and OCSF smeltr carries, each with its version and where it is published, and OCSF's classes, each its name, caption and category. A schema-read with builtIn reads one of them rather than a file. No query.",
         body: "",
     },
     Route {

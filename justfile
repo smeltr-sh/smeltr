@@ -337,6 +337,11 @@ uap-refresh:
 schemas-refresh ecs ocsf:
     tools/schema-standards/refresh {{ecs}} {{ocsf}}
 
+# Fails where ECS or OCSF has a release newer than the one built in. Run weekly.
+[private]
+schemas-latest:
+    tools/schema-standards/latest
+
 # The reference page's type lines, written from the engine's function table.
 [private]
 [env("SMELTR_WRITE_SIGNATURES", "1")]

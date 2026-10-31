@@ -498,12 +498,12 @@ async function addFrom(admin: Page, leader: Leader, tile: string, id: string, fi
 
 /** Opens Add schema at `tile` and names the schema `id`, read from the release the leader carries. Answers the
  * dialog. */
-async function addBuiltIn(admin: Page, leader: Leader, tile: 'ECS' | 'OCSF', id: string) {
+async function addBuiltIn(admin: Page, leader: Leader, tile: 'ECS' | 'OCSF', id?: string) {
   await goto(admin, leader, '#/build/schemas');
   await admin.getByRole('button', { name: '+ Add schema' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: tile, exact: true }).click();
-  await dialog.getByLabel('id', { exact: true }).fill(id);
+  if (id) await dialog.getByLabel('id', { exact: true }).fill(id);
   await expect(
     dialog.getByRole('button', { name: new RegExp(`^${tile} \\d+\\.\\d+\\.\\d+, built in$`) }),
   ).toHaveAttribute('aria-pressed', 'true');
@@ -526,12 +526,21 @@ test('ECS and an OCSF class come in from the releases the leader carries', async
   expect(field('@timestamp')).toMatchObject({ type: 'datetime', required: true });
   expect(field('source.ip')?.elasticsearch).toEqual({ type: 'ip' });
 
-  dialog = await addBuiltIn(admin, leader, 'OCSF', 'auth');
-  await expect(dialog.getByRole('combobox', { name: 'Class' })).toHaveValue('authentication');
-  await dialog.getByRole('combobox', { name: 'Class' }).selectOption('process_activity');
+  // The id follows the class, by its name; the class is listed by its caption, under its category.
+  dialog = await addBuiltIn(admin, leader, 'OCSF');
+  const klass = dialog.getByRole('combobox', { name: 'Class' });
+  await expect(klass).toHaveValue('authentication');
+  await expect(dialog.getByLabel('id', { exact: true })).toHaveValue('authentication-1');
+  await expect(
+    klass.locator('optgroup[label="Identity & Access Management"] option', {
+      hasText: 'Authentication',
+    }),
+  ).toHaveAttribute('value', 'authentication');
+  await klass.selectOption({ label: 'Process Activity' });
+  await expect(dialog.getByLabel('id', { exact: true })).toHaveValue('process_activity-1');
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
-  field = await saved(admin, api, 'auth');
+  field = await saved(admin, api, 'process_activity-1');
   expect(field('process')).toMatchObject({ type: '{...}', required: true });
   expect(field('process.pid')?.type).toBe('i64');
 });

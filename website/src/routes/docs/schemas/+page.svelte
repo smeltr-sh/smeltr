@@ -116,7 +116,7 @@
       <a href="https://pypi.org/project/ocsf-schema-compiler/"><code>ocsf-schema-compiler</code></a
       >: <code>ocsf-schema-compiler ocsf-schema &gt; schema.json</code>.
     </li>
-    <li>Choose the <strong>Class</strong>, such as <code>authentication</code>.</li>
+    <li>Choose the <strong>Class</strong>, such as <strong>Authentication</strong>.</li>
     <li>
       Leave <strong>Depth</strong> at 2 and <strong>Include fields that are</strong> at required and recommended.
       That is the list OCSF asks a producer to fill. Add optional, or a greater depth, only if your pipeline
@@ -127,7 +127,7 @@
     source="schema-ocsf"
     height={1800}
     crop={{ x: 608, y: 478, width: 1664, height: 851 }}
-    alt="The New schema from an OCSF class dialog: OCSF built in, the authentication class, depth 2, and required and recommended checked."
+    alt="The New schema from an OCSF class dialog: OCSF built in, the Authentication class, depth 2, and required and recommended checked."
     caption="An OCSF class, read two levels deep, with the fields OCSF requires or recommends."
   />
   <p>Add a schema for each class you send.</p>
