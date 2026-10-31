@@ -184,14 +184,12 @@ async function fill(j: Journey, card: Locator, step: StepModel) {
 async function pickFields(j: Journey, card: Locator, step: StepModel & { type: 'remove' }) {
   const list = card.getByRole('group', { name: 'Fields' });
   await expect(list.getByRole('checkbox', { name: '_raw', exact: true })).toBeVisible();
-  const rows = await list
-    .getByRole('checkbox')
-    .evaluateAll((els) =>
-      els.map((e) => ({
-        path: e.getAttribute('aria-label') ?? '',
-        locked: (e as HTMLInputElement).disabled,
-      })),
-    );
+  const rows = await list.getByRole('checkbox').evaluateAll((els) =>
+    els.map((e) => ({
+      path: e.getAttribute('aria-label') ?? '',
+      locked: (e as HTMLInputElement).disabled,
+    })),
+  );
   const paths = rows.map((r) => r.path);
   const given = paths.filter((f) => !/^f\d+$/.test(f));
   const under = (f: string, a: string) => f.startsWith(`${a}.`);
