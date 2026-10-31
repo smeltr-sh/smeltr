@@ -46,7 +46,9 @@
       Where a pipeline's rows do not fit a schema it produces. None of these block the deploy.
     </p>
   {:else}
-    <p class="dim">The rows fit every schema their pipelines produce.</p>
+    <p class="dim">
+      The rows fit every schema their pipelines produce. They lack fields a schema recommends:
+    </p>
   {/if}
   {#each grouped as g (JSON.stringify([g.group, g.pipeline]))}
     <section class="pipeline">
