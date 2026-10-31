@@ -177,85 +177,34 @@ pub(crate) mod tests {
         out
     }
 
-    /// The value as JSON-like text, read from the encoding with `metadata`'s keys: what a reader of the spec sees.
+    /// The value as JSON-like text, as arrow-rs's reader of the encoding reads it: what a reader of the spec sees.
+    /// Panics where the encoding is invalid, or its dictionary is not sorted, as its header says.
     pub(crate) fn read(metadata: &[u8], value: &[u8]) -> String {
-        assert_eq!(metadata[0] & 0x0f, VERSION);
-        let size = (metadata[0] >> 6) as usize + 1;
-        let uint = |b: &[u8], at: usize, size: usize| {
-            let mut v = [0u8; 4];
-            v[..size].copy_from_slice(&b[at..at + size]);
-            u32::from_le_bytes(v) as usize
-        };
-        let count = uint(metadata, 1, size);
-        let start = 1 + size * (count + 2);
-        let keys: Vec<&str> = (0..count)
-            .map(|i| {
-                let (lo, hi) = (
-                    uint(metadata, 1 + size * (i + 1), size),
-                    uint(metadata, 1 + size * (i + 2), size),
-                );
-                std::str::from_utf8(&metadata[start + lo..start + hi]).unwrap()
-            })
-            .collect();
-        let mut sorted = keys.clone();
-        sorted.sort();
-        assert_eq!(keys, sorted, "the dictionary is sorted, as its header says");
-        assert_eq!(metadata[0] >> 4 & 1, 1);
+        use parquet_variant::{Variant, VariantMetadata};
+        let dictionary = VariantMetadata::try_new(metadata).expect("valid metadata");
+        assert!(dictionary.is_sorted(), "the dictionary is sorted, as its header says");
+        let v = Variant::try_new(metadata, value).expect("a valid variant");
 
-        fn text(v: &[u8], keys: &[&str], uint: &dyn Fn(&[u8], usize, usize) -> usize) -> String {
-            let header = v[0] >> 2;
-            let i64_at = |at: usize| i64::from_le_bytes(v[at..at + 8].try_into().unwrap());
-            match v[0] & 3 {
-                PRIMITIVE => match header {
-                    NULL => "null".into(),
-                    TRUE => "true".into(),
-                    FALSE => "false".into(),
-                    INT64 => i64_at(1).to_string(),
-                    DOUBLE => format!("{:?}", f64::from_le_bytes(v[1..9].try_into().unwrap())),
-                    TIMESTAMP_MICROS => format!("ts:{}", i64_at(1)),
-                    BINARY | STRING => {
-                        let len = uint(v, 1, 4);
-                        let body = &v[5..5 + len];
-                        match header {
-                            BINARY => format!("bin:{body:?}"),
-                            _ => format!("{:?}", std::str::from_utf8(body).unwrap()),
-                        }
-                    }
-                    other => panic!("primitive {other}"),
-                },
-                SHORT_STRING => format!("{:?}", std::str::from_utf8(&v[1..1 + header as usize]).unwrap()),
-                ARRAY => {
-                    let size = (header & 3) as usize + 1;
-                    let count_size = if header >> 2 & 1 == 1 { 4 } else { 1 };
-                    let count = uint(v, 1, count_size);
-                    let offsets = 1 + count_size;
-                    let start = offsets + size * (count + 1);
-                    let items: Vec<String> = (0..count)
-                        .map(|i| text(&v[start + uint(v, offsets + size * i, size)..], keys, uint))
-                        .collect();
-                    format!("[{}]", items.join(","))
-                }
-                OBJECT => {
-                    let size = (header & 3) as usize + 1;
-                    let id_size = (header >> 2 & 3) as usize + 1;
-                    let count_size = if header >> 4 & 1 == 1 { 4 } else { 1 };
-                    let count = uint(v, 1, count_size);
-                    let ids = 1 + count_size;
-                    let offsets = ids + id_size * count;
-                    let start = offsets + size * (count + 1);
-                    let fields: Vec<String> = (0..count)
-                        .map(|i| {
-                            let key = keys[uint(v, ids + id_size * i, id_size)];
-                            let at = start + uint(v, offsets + size * i, size);
-                            format!("{key}:{}", text(&v[at..], keys, uint))
-                        })
-                        .collect();
+        fn text(v: &Variant<'_, '_>) -> String {
+            match v {
+                Variant::Null => "null".into(),
+                Variant::BooleanTrue => "true".into(),
+                Variant::BooleanFalse => "false".into(),
+                Variant::Int64(n) => n.to_string(),
+                Variant::Double(f) => format!("{f:?}"),
+                Variant::TimestampMicros(t) => format!("ts:{}", t.timestamp_micros()),
+                Variant::Binary(b) => format!("bin:{b:?}"),
+                Variant::String(s) => format!("{s:?}"),
+                Variant::ShortString(s) => format!("{:?}", s.as_str()),
+                Variant::List(items) => format!("[{}]", items.iter().map(|i| text(&i)).collect::<Vec<_>>().join(",")),
+                Variant::Object(fields) => {
+                    let fields: Vec<String> = fields.iter().map(|(k, v)| format!("{k}:{}", text(&v))).collect();
                     format!("{{{}}}", fields.join(","))
                 }
-                _ => unreachable!(),
+                other => panic!("a type this writer never writes: {other:?}"),
             }
         }
-        text(value, &keys, &uint)
+        text(&v)
     }
 
     fn encoded(b: &[u8]) -> String {
