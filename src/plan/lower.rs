@@ -55,6 +55,11 @@ pub fn names(kind: &FunctionKind) -> Result<FunctionKind, String> {
                 (*from, *to) = (name(from)?, name(to)?);
             }
         }
+        FunctionKind::Remove { fields } => {
+            for field in fields {
+                *field = name(field)?;
+            }
+        }
         FunctionKind::Parser {
             input,
             into,
@@ -92,6 +97,19 @@ pub fn rename(pairs: &[(String, String)]) -> Vec<Stmt> {
         .enumerate()
         .flat_map(|(n, (from, to))| move_stmts(from, to, n + 1, Span::default()))
         .collect()
+}
+
+/// `delete(fields)`, clearing them on the rows a filter selects as a Rename does. A blank name removes nothing.
+pub fn remove(fields: &[String]) -> Vec<Stmt> {
+    let names: Vec<String> = fields.iter().filter(|f| !f.trim().is_empty()).cloned().collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    vec![Stmt::Delete {
+        names,
+        clears: true,
+        span: Span::default(),
+    }]
 }
 
 /// `if (cond) drop()`. A blank condition drops nothing.
