@@ -850,11 +850,14 @@
     let asked = recordsBefore.get(key);
     if (!asked) {
       if (recordsBefore.size > 32) recordsBefore.clear();
-      asked = fetchPreview(before, lastSample).then((res) => {
-        // A failed preview is asked again, once the steps ahead are fixed.
-        if (!res.ok || !res.dictionary) recordsBefore.delete(key);
-        return res.ok ? (res.dictionary ?? null) : null;
-      });
+      asked = fetchPreview(before, lastSample).then(
+        (res) => {
+          // A failed preview, or a refused request, is asked again.
+          if (!res.ok || !res.dictionary) recordsBefore.delete(key);
+          return res.ok ? (res.dictionary ?? null) : null;
+        },
+        () => (recordsBefore.delete(key), null),
+      );
       recordsBefore.set(key, asked);
     }
     const d = await asked;

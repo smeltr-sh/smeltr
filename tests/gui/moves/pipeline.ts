@@ -177,27 +177,51 @@ async function fill(j: Journey, card: Locator, step: StepModel) {
   await j.page.keyboard.press('Escape');
 }
 
-/** Removes or keeps fields of a Remove step as an author does: a tick, or Remove all or Keep all over a search. The
- * list is what the engine says the record holds where the step starts, read from the screen; the model keeps the
- * fields in its order. It removes only what the source gives: an Eval's field can move after the step, or go, and a
- * Remove of a name nothing holds does not compile. */
+/** Removes or keeps fields of a Remove step as an author does: a tick, Remove all or Keep all over a search, or closing
+ * and opening an object. The list is the record the engine says the step starts with, as a tree whose ticks are named
+ * by each field's path, read from the screen; the model keeps the fields in its order. It removes only what the source
+ * gives: an Eval's field can move after the step, or go, and a Remove of a name nothing holds does not compile. */
 async function pickFields(j: Journey, card: Locator, step: StepModel & { type: 'remove' }) {
   const list = card.getByRole('group', { name: 'Fields' });
-  await expect(list.locator('label', { hasText: '_raw' })).toBeVisible();
-  const listed = (await list.locator('label .name').allTextContents()).map((t) => t.trim());
-  const given = listed.filter((f) => !/^f\d+$/.test(f));
-  const order = (names: Set<string>) => listed.filter((f) => names.has(f));
+  await expect(list.getByRole('checkbox', { name: '_raw', exact: true })).toBeVisible();
+  const rows = await list
+    .getByRole('checkbox')
+    .evaluateAll((els) =>
+      els.map((e) => ({
+        path: e.getAttribute('aria-label') ?? '',
+        locked: (e as HTMLInputElement).disabled,
+      })),
+    );
+  const paths = rows.map((r) => r.path);
+  const given = paths.filter((f) => !/^f\d+$/.test(f));
+  const under = (f: string, a: string) => f.startsWith(`${a}.`);
+  // A removed object takes what is under it, so a name under one leaves the list.
+  const settle = (names: Set<string>) =>
+    paths.filter((f) => names.has(f) && ![...names].some((a) => under(f, a)));
   const find = card.getByRole('searchbox', { name: 'Find a field' });
-  switch (j.rng.below(3)) {
+  switch (j.rng.below(4)) {
     case 0: {
-      const f = j.rng.pick([...given, ...step.fields]);
-      await list
-        .locator('label', { has: j.page.locator('.name', { hasText: new RegExp(`^${f}$`) }) })
-        .click();
+      const free = rows.filter(
+        (r) => !r.locked && (given.includes(r.path) || step.fields.includes(r.path)),
+      );
+      const f = j.rng.pick(free).path;
+      await list.getByRole('checkbox', { name: f, exact: true }).click();
       const now = new Set(step.fields);
       if (now.has(f)) now.delete(f);
       else now.add(f);
-      step.fields = order(now);
+      step.fields = settle(now);
+      break;
+    }
+    case 1: {
+      // Closing an object hides what is under it, and opening it shows it again.
+      const objects = paths.filter((p) => paths.some((f) => under(f, p)));
+      if (!objects.length) break;
+      const o = j.rng.pick(objects);
+      const child = paths.find((f) => under(f, o))!;
+      await list.getByRole('button', { name: `Close ${o}`, exact: true }).click();
+      await expect(list.getByRole('checkbox', { name: child, exact: true })).toBeHidden();
+      await list.getByRole('button', { name: `Open ${o}`, exact: true }).click();
+      await expect(list.getByRole('checkbox', { name: child, exact: true })).toBeVisible();
       break;
     }
     default: {
@@ -205,16 +229,20 @@ async function pickFields(j: Journey, card: Locator, step: StepModel & { type: '
       // Remove all is drawn over a search that finds only what the source gives.
       const q = remove || j.rng.chance(2) ? j.rng.pick(given) : '';
       await find.fill(q);
-      const matches = listed.filter((f) => f.toLowerCase().includes(q.toLowerCase()));
-      await card
-        .getByRole('button', { name: new RegExp(`^${remove ? 'Remove' : 'Keep'} all`) })
-        .click();
+      const matches = paths.filter((f) => f.toLowerCase().includes(q.toLowerCase()));
       const now = new Set(step.fields);
-      for (const f of matches) {
-        if (remove) now.add(f);
-        else now.delete(f);
+      // A field inside a removed object is kept again only by keeping the object.
+      const keepable = matches.filter((f) => ![...now].some((a) => under(f, a)));
+      if (remove || keepable.length) {
+        await card
+          .getByRole('button', { name: new RegExp(`^${remove ? 'Remove' : 'Keep'} all`) })
+          .click();
+        for (const f of remove ? matches : keepable) {
+          if (remove) now.add(f);
+          else for (const g of [...now]) if (g === f || under(g, f)) now.delete(g);
+        }
+        step.fields = settle(now);
       }
-      step.fields = order(now);
       await find.fill('');
     }
   }

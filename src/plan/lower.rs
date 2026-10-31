@@ -99,9 +99,17 @@ pub fn rename(pairs: &[(String, String)]) -> Vec<Stmt> {
         .collect()
 }
 
-/// `delete(fields)`, clearing them on the rows a filter selects as a Rename does. A blank name removes nothing.
+/// `delete(fields)`, clearing them on the rows a filter selects as a Rename does. A blank name removes nothing. A name
+/// listed twice, or under an object also listed, goes with the first or the object: deleting it again would find no
+/// field.
 pub fn remove(fields: &[String]) -> Vec<Stmt> {
-    let names: Vec<String> = fields.iter().filter(|f| !f.trim().is_empty()).cloned().collect();
+    let listed: std::collections::HashSet<&str> = fields.iter().map(String::as_str).collect();
+    let mut seen = std::collections::HashSet::new();
+    let names: Vec<String> = (fields.iter())
+        .filter(|f| !f.trim().is_empty() && seen.insert(f.as_str()))
+        .filter(|f| !crate::plan::tree::ancestors(f).any(|a| listed.contains(a)))
+        .cloned()
+        .collect();
     if names.is_empty() {
         return Vec::new();
     }

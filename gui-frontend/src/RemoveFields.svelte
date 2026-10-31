@@ -35,6 +35,10 @@
   let roots = $state<Node[]>([]);
   let query = $state('');
   let collapsed = $state<Set<string>>(new Set());
+  /** Whether the record has been shown once, after which what is open is the author's. */
+  let opened = false;
+  /** Rows past which a record opens with its objects closed. */
+  const LONG = 40;
 
   // Asked again each time the steps ahead of it settle; the answer before stays until the next comes.
   $effect(() => {
@@ -44,7 +48,18 @@
       (d) => {
         // The sample's side also holds the keys only its rows know, which a parser read without declaring.
         const listed = d?.sampled ?? d?.compiled;
-        if (current && listed) roots = nodes(declaredRecord(listed.fields), '', 0);
+        if (!current || !listed) return;
+        roots = nodes(declaredRecord(listed.fields), '', 0);
+        // A long record opens with its objects closed, but for those holding a removed name, so the list starts short.
+        if (!opened && flat(roots).length > LONG) {
+          const holds = (n: Node): boolean => removed.has(n.path) || n.children.some(holds);
+          collapsed = new Set(
+            flat(roots)
+              .filter((n) => n.children.length && !holds(n))
+              .map((n) => n.path),
+          );
+        }
+        opened = true;
       },
       // With no answer the list is the step's own fields; the search box still removes by name.
       () => {},
@@ -104,6 +119,8 @@
   let q = $derived(query.trim().toLowerCase());
   let typed = $derived(query.trim());
   let matches = $derived(q ? all.filter((n) => n.path.toLowerCase().includes(q)) : all);
+  // A field inside a removed object is kept again only by keeping the object.
+  let keepable = $derived(matches.filter((n) => !removedWith(n.path)));
   /** The rows shown: under a search, each match and the objects above it; otherwise all but what a closed object hides. */
   let rows = $derived.by(() => {
     if (q) {
@@ -144,13 +161,15 @@
           onclick={() => set(q ? matches.map((n) => n.path) : roots.map((n) => n.path), true)}
           >Remove all{typed ? ` ${matches.length}` : ''}</button
         >
+      {/if}
+      {#if keepable.length}
         <button
           type="button"
           onclick={() =>
             set(
-              matches.map((n) => n.path),
+              keepable.map((n) => n.path),
               false,
-            )}>Keep all{typed ? ` ${matches.length}` : ''}</button
+            )}>Keep all{typed ? ` ${keepable.length}` : ''}</button
         >
       {/if}
       <span class="dim">{goneLeaves} of {allLeaves.length} fields removed</span>
@@ -176,6 +195,7 @@
         <label class="tick">
           <input
             type="checkbox"
+            aria-label={n.path}
             checked={!gone(n.path)}
             indeterminate={!gone(n.path) && someInside(n)}
             disabled={readOnly || !!under}

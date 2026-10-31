@@ -4776,7 +4776,7 @@ mod tests {
     #[test]
     fn a_remove_step_takes_its_fields_out_of_the_record() {
         let compiled = |fields: &[&str], filter: Option<&str>| {
-            let mut p = code_pipeline("Object.assign($, json(_raw)); x = when; y = 1");
+            let mut p = code_pipeline("Object.assign($, json(_raw)); x = when; y = 1; o = {a: 1, b: 2}");
             let mut remove = FunctionConfig::new(
                 1,
                 FunctionKind::Remove {
@@ -4803,6 +4803,9 @@ mod tests {
             "{filtered:?}"
         );
         assert_eq!(compiled(&["", " "], None).unwrap(), compiled(&[], None).unwrap());
+        // A name twice, or under an object also named, goes with the first or the object.
+        assert_eq!(compiled(&["y", "y"], None).unwrap(), compiled(&["y"], None).unwrap());
+        assert_eq!(compiled(&["o", "o.a"], None).unwrap(), compiled(&["o"], None).unwrap());
     }
 
     fn warnings(body: &str) -> Vec<String> {
