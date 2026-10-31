@@ -411,6 +411,22 @@ fn widens(from: &Type, to: &Type) -> bool {
     }
 }
 
+/// The largest column id in `fields`, at any depth; 0 when none has one.
+pub fn max_column_id(fields: &[StructField]) -> i64 {
+    fn of(t: &Type) -> i64 {
+        match t {
+            Type::Primitive(_) => 0,
+            Type::Struct(s) => max_column_id(&s.fields),
+            Type::Array { element, .. } => of(element),
+            Type::Map { key, value, .. } => of(key).max(of(value)),
+        }
+    }
+    (fields.iter())
+        .map(|f| f.column_id().unwrap_or(0).max(of(&f.data_type)))
+        .max()
+        .unwrap_or(0)
+}
+
 /// The first column, at any depth, whose metadata asks of a writer what this one does not do: compute a generated
 /// value or a default, check an invariant, or generate an identity below the top level. The message names the column
 /// and what it carries.
@@ -840,6 +856,7 @@ mod tests {
         let e = table_schema(&record(), None, Mapping::Name { max_column_id: 0 }, None).unwrap();
         assert!(e.changed);
         assert_eq!(e.mapping, Mapping::Name { max_column_id: 9 });
+        assert_eq!(max_column_id(&e.schema.fields), 9);
         let mut got = Vec::new();
         ids(&e.schema.fields, "", &mut got);
         let want: Vec<(String, Option<i64>)> = [

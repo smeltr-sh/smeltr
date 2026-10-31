@@ -421,7 +421,6 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool
             set(metadata, "delta.columnMapping.mode", mode);
             if rng.chance(6) {
                 reach("mapping name without maxColumnId");
-                refused = true;
             } else {
                 set(metadata, "delta.columnMapping.maxColumnId", &max_column_id.to_string());
             }

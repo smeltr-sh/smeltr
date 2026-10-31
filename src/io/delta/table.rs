@@ -697,18 +697,20 @@ fn fits(snapshot: &Snapshot) -> Result<(), String> {
     mapping(metadata).map(|_| ())
 }
 
-/// The table's column mapping. Err for a mode this writer does not write, or a mapped table without maxColumnId.
+/// The table's column mapping. Err for a mode this writer does not write.
 fn mapping(metadata: &Metadata) -> Result<Mapping, String> {
     match metadata.property("delta.columnMapping.mode").unwrap_or("none") {
         "none" => Ok(Mapping::None),
         // A writer writes both alike: physical names, and each column's id as its field id. Only readers differ.
-        mode @ ("name" | "id") => {
-            let max_column_id = metadata
+        "name" | "id" => {
+            // A table some writer left without its highest id has every id it gave in its schema.
+            let max_column_id = match metadata
                 .property("delta.columnMapping.maxColumnId")
                 .and_then(|v| v.parse().ok())
-                .ok_or_else(|| {
-                    format!("the table maps columns by {mode} and has no delta.columnMapping.maxColumnId")
-                })?;
+            {
+                Some(max) => max,
+                None => schema::max_column_id(&StructType::parse(&metadata.schema_string)?.fields),
+            };
             Ok(Mapping::Name { max_column_id })
         }
         other => Err(format!("the table maps columns by {other}, which this writer does not")),
@@ -1825,6 +1827,34 @@ mod tests {
             assert_eq!(ids, [Some("1"), Some("2")], "{mode}");
             assert_eq!(committer.partitions[0].physical, physical(&mapped, "host"));
         }
+    }
+
+    #[test]
+    fn a_mapped_table_without_its_highest_id_gives_a_new_column_the_next_id_above_its_schemas() {
+        let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
+        let mapped = schema::table_schema(&record, None, Mapping::Name { max_column_id: 0 }, None)
+            .unwrap()
+            .schema;
+        let table = table_with(&record, &["host"], |a| {
+            if let Some(p) = a.get_mut("protocol") {
+                *p = json!({"minReaderVersion": 2, "minWriterVersion": 5});
+            }
+            if let Some(m) = a.get_mut("metaData") {
+                m["schemaString"] = json!(mapped.to_json());
+                m["configuration"] = json!({"delta.columnMapping.mode": "name"});
+            }
+        });
+        let grown = st(&[("host", DataType::Str), ("n", DataType::I64), ("msg", DataType::Str)]);
+
+        let committer = table.open(&grown, &["host"]).unwrap();
+
+        let ids: Vec<Option<&str>> = (committer.written.fields().iter())
+            .map(|f| f.metadata().get(PARQUET_FIELD_ID_META_KEY).map(String::as_str))
+            .collect();
+        assert_eq!(ids, [Some("1"), Some("2"), Some("3")]);
+        let actions = table.commit(1).unwrap();
+        let metadata = action(&actions, "metaData");
+        assert_eq!(metadata["configuration"]["delta.columnMapping.maxColumnId"], "3");
     }
 
     #[test]
