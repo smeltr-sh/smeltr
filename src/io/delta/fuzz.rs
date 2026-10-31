@@ -29,7 +29,7 @@ use arrow_array::{
     StructArray, TimestampMicrosecondArray, new_null_array,
 };
 use arrow_buffer::{NullBuffer, OffsetBuffer};
-use arrow_schema::DataType as Arrow;
+use arrow_schema::{DataType as Arrow, Fields};
 use object_store::path::Path;
 use object_store::{ObjectStore, PutMode, PutPayload};
 
@@ -110,6 +110,8 @@ const COVERED: &[&str] = &[
     "reader typeWidening",
     "mapping none",
     "mapping name",
+    "mapping id",
+    "field ids checked",
     "mapping name without maxColumnId",
     "mapping unsupported",
     "check constraint",
@@ -414,17 +416,18 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool
                 unreachable!("a mapped schema counts its ids")
             };
             metadata["schemaString"] = json!(mapped.schema.to_json());
-            set(metadata, "delta.columnMapping.mode", "name");
+            let mode = *rng.pick(&["name", "id"]);
+            reach(format!("mapping {mode}"));
+            set(metadata, "delta.columnMapping.mode", mode);
             if rng.chance(6) {
                 reach("mapping name without maxColumnId");
                 refused = true;
             } else {
-                reach("mapping name");
                 set(metadata, "delta.columnMapping.maxColumnId", &max_column_id.to_string());
             }
         }
         3 => {
-            set(metadata, "delta.columnMapping.mode", rng.pick(&["id", "Name", "other"]));
+            set(metadata, "delta.columnMapping.mode", rng.pick(&["ID", "Name", "other"]));
             reach("mapping unsupported");
             refused = true;
         }
@@ -762,6 +765,39 @@ fn identity_values(start: i64, step: i64, mark: Option<i64>, n: usize) -> Option
     (0..n as i128)
         .map(|k| i64::try_from(start + (first + k) * step).ok())
         .collect()
+}
+
+/// Each column the table gives an id is written with it as its field id, at any depth.
+fn field_ids(table: &[schema::StructField], written: &Fields) -> Result<(), String> {
+    for column in table {
+        let Some(field) = written.iter().find(|f| f.name() == column.physical_name()) else {
+            continue;
+        };
+        if let Some(id) = column.column_id() {
+            reach("field ids checked");
+            let carried = field.metadata().get(::parquet::arrow::PARQUET_FIELD_ID_META_KEY);
+            if carried != Some(&id.to_string()) {
+                return Err(format!(
+                    "{} is written with field id {carried:?}, not {id}",
+                    column.name
+                ));
+            }
+        }
+        let element = |t: &Arrow| match t {
+            Arrow::List(f) | Arrow::LargeList(f) => Some(f.data_type().clone()),
+            _ => None,
+        };
+        match (&column.data_type, field.data_type()) {
+            (schema::Type::Struct(s), Arrow::Struct(f)) => field_ids(&s.fields, f)?,
+            (schema::Type::Array { element: e, .. }, t) => {
+                if let (schema::Type::Struct(s), Some(Arrow::Struct(f))) = (&**e, element(t)) {
+                    field_ids(&s.fields, &f)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn kept_narrow(committer: &DeltaCommitter) -> Result<(), String> {
@@ -1209,6 +1245,7 @@ impl Run {
         match opened {
             Ok(committer) => {
                 kept_narrow(&committer)?;
+                field_ids(&committer.schema.fields, committer.written.fields())?;
                 self.committer = Some(committer);
                 Ok(true)
             }

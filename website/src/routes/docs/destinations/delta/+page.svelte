@@ -106,7 +106,8 @@
         </li>
         <li>its files are Parquet;</li>
         <li>
-          it maps columns by name, with <code>delta.columnMapping.maxColumnId</code> set, or not at all;
+          it maps columns by name or by id, with <code>delta.columnMapping.maxColumnId</code> set, or
+          not at all;
         </li>
         <li>it sets no check constraint;</li>
         <li>
@@ -356,8 +357,8 @@
       The table's protocol asks for more than this writer does. Write to a table whose protocol
       <a href="#before-you-start">Before you start</a> lists.
     </dd>
-    <dt><strong>the table maps columns by id, which this writer does not</strong></dt>
-    <dd>Write to a table that maps columns by name, or not at all.</dd>
+    <dt><strong>the table maps columns by …, which this writer does not</strong></dt>
+    <dd>Write to a table that maps columns by name or by id, or not at all.</dd>
     <dt><strong>the table has the check constraint …</strong></dt>
     <dd>
       The destination does not check constraints. Drop the constraint, or write another table.
