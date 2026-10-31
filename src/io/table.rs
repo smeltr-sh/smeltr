@@ -2,7 +2,9 @@
 //! statistics from its Parquet footer. Each format names its own types and writes these values its own way.
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Date32Type, Float32Type, Float64Type, Int32Type, Int64Type, TimestampMicrosecondType};
+use arrow_array::types::{
+    Date32Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, TimestampMicrosecondType,
+};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::{DataType as Arrow, TimeUnit};
 use parquet::basic::{LogicalType, TimeUnit as ParquetTimeUnit};
@@ -138,6 +140,9 @@ pub fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Resu
         (Kind::Boolean, Arrow::Boolean) => Literal::Boolean(column.as_boolean().value(at)),
         (Kind::Long, Arrow::Int64) => Literal::Long(column.as_primitive::<Int64Type>().value(at)),
         (Kind::Int, Arrow::Int32) => Literal::Int(column.as_primitive::<Int32Type>().value(at)),
+        // A column's default is of the table's type.
+        (Kind::Byte, Arrow::Int8) => Literal::Int(column.as_primitive::<Int8Type>().value(at).into()),
+        (Kind::Short, Arrow::Int16) => Literal::Int(column.as_primitive::<Int16Type>().value(at).into()),
         // A row's column is the record's, wider than a table may hold it (`parquet::narrows`).
         (Kind::Byte | Kind::Short | Kind::Int, Arrow::Int64) | (Kind::Float, Arrow::Float64) => {
             let to = kind.narrowed().expect("a narrower kind");

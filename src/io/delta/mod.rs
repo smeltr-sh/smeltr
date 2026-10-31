@@ -2,6 +2,7 @@
 //! written only where none is.
 
 pub mod checkpoint;
+pub mod default;
 pub mod identity;
 pub mod log;
 pub mod schema;

@@ -13,7 +13,9 @@
 //! - a column an earlier table holds narrower, as another engine may have made it, is written as that type, and a
 //!   partition value of it reads as that type or its row is refused;
 //! - every identity value a file of this writer's holds is on its column's grid, within the mark its commit leaves,
-//!   and no other row's, this writer's or another's, and a row past a long's range is refused.
+//!   and no other row's, this writer's or another's, and a row past a long's range is refused;
+//! - a column the record does not write whose default is a literal of its type is written as that value, a partition
+//!   column's in its partition value too, and any other default refuses the table.
 //!
 //! It draws from `crate::fuzz`: a failure names its seed, `SMELTR_FUZZ_SEED=n` replays seed `n`, and the run fails
 //! when its seeds leave a data type, protocol feature, table property or fault in `COVERED` unreached.
@@ -168,6 +170,27 @@ const COVERED: &[&str] = &[
     "unhonoured delta.invariants",
     "unhonoured nested identity",
     "other identity change",
+    "writer allowColumnDefaults",
+    "default boolean",
+    "default byte",
+    "default short",
+    "default integer",
+    "default long",
+    "default float",
+    "default double",
+    "default date",
+    "default timestamp",
+    "default timestamp_ntz",
+    "default string",
+    "default binary",
+    "default null",
+    "default not nullable",
+    "default null not nullable",
+    "default unreadable",
+    "default written",
+    "default partition value",
+    "other default change",
+    "default changed refused",
     "in-commit timestamps enabled",
     "in-commit timestamp ahead",
     "in-commit timestamps checked",
@@ -357,7 +380,7 @@ fn partitioning_refused(record: &DataType, by: &[String]) -> bool {
 }
 
 /// The writer features of tables made here: the ones the writer supports, and some it does not.
-const FEATURES: [&str; 20] = [
+const FEATURES: [&str; 21] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -378,6 +401,7 @@ const FEATURES: [&str; 20] = [
     "icebergCompatV2",
     "variantType",
     "variantShredding",
+    "allowColumnDefaults",
 ];
 
 const READER_FEATURES: [&str; 6] = [
@@ -769,6 +793,261 @@ fn identity_column(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bo
     refused || step == 0
 }
 
+/// A column the record does not write and its default: the SQL the table holds, and the value it reads as.
+struct Defaulting {
+    name: String,
+    /// The column's type, as the log names it.
+    delta: String,
+    sql: String,
+    /// One row of the column's type as the files carry it.
+    value: ArrayRef,
+}
+
+impl Defaulting {
+    /// A random literal of the type the log names `delta`.
+    fn of(rng: &mut Rng, delta: &str) -> Defaulting {
+        use crate::ops::civil::{MICROS_PER_DAY, civil_from_days};
+        use arrow_array::{BinaryArray, Date32Array, Float32Array, Int8Array, Int16Array, Int32Array};
+        let kind = schema::kind(delta).expect("a primitive this writer reads");
+        // A keyword in either case, as SQL reads it.
+        fn cased(rng: &mut Rng, keyword: &str) -> String {
+            match rng.chance(2) {
+                true => keyword.to_string(),
+                false => keyword.to_ascii_lowercase(),
+            }
+        }
+        let (sql, value): (String, ArrayRef) = if rng.chance(8) {
+            reach("default null");
+            (
+                cased(rng, "NULL"),
+                new_null_array(&crate::io::delta::default::arrow(&kind), 1),
+            )
+        } else {
+            let date = |days: i64| {
+                let (y, m, d) = civil_from_days(days);
+                format!("{y:04}-{m:02}-{d:02}")
+            };
+            let time = |micros: i64| {
+                let (days, of_day) = (micros.div_euclid(MICROS_PER_DAY), micros.rem_euclid(MICROS_PER_DAY));
+                let secs = of_day / 1_000_000;
+                format!(
+                    "{} {:02}:{:02}:{:02}.{:06}",
+                    date(days),
+                    secs / 3600,
+                    secs / 60 % 60,
+                    secs % 60,
+                    of_day % 1_000_000
+                )
+            };
+            match kind {
+                Kind::Boolean => {
+                    let v = rng.chance(2);
+                    (
+                        cased(rng, &v.to_string().to_ascii_uppercase()),
+                        Arc::new(BooleanArray::from(vec![v])),
+                    )
+                }
+                Kind::Byte => {
+                    let v = *rng.pick(&[i8::MIN, -1, 0, 7, i8::MAX]);
+                    let suffix = *rng.pick(&["", "Y"]);
+                    (format!("{v}{suffix}"), Arc::new(Int8Array::from(vec![v])))
+                }
+                Kind::Short => {
+                    let v = *rng.pick(&[i16::MIN, -300, 0, 300, i16::MAX]);
+                    let suffix = *rng.pick(&["", "S", "s"]);
+                    (format!("{v}{suffix}"), Arc::new(Int16Array::from(vec![v])))
+                }
+                Kind::Int => {
+                    let v = *rng.pick(&[i32::MIN, -70_000, 0, 70_000, i32::MAX]);
+                    (format!("{v}"), Arc::new(Int32Array::from(vec![v])))
+                }
+                Kind::Long => {
+                    let v = *rng.pick(&[i64::MIN, -5_000_000_000, 0, 42, i64::MAX]);
+                    let suffix = *rng.pick(&["", "L"]);
+                    (format!("{v}{suffix}"), Arc::new(Int64Array::from(vec![v])))
+                }
+                Kind::Float => {
+                    let v = *rng.pick(&[-2.5f32, 0.0, 0.1, 1e10]);
+                    let suffix = *rng.pick(&["", "F"]);
+                    (format!("{v:?}{suffix}"), Arc::new(Float32Array::from(vec![v])))
+                }
+                Kind::Double => {
+                    let v = *rng.pick(&[-2.5, 0.0, 0.1, 1e300]);
+                    let suffix = *rng.pick(&["", "D", "BD"]);
+                    (format!("{v:?}{suffix}"), Arc::new(Float64Array::from(vec![v])))
+                }
+                Kind::Date => {
+                    let days = *rng.pick(&[-719_162, -1, 0, 19_782, 2_932_896]);
+                    let keyword = cased(rng, "DATE");
+                    let gap = *rng.pick(&["", " "]);
+                    (
+                        format!("{keyword}{gap}'{}'", date(days)),
+                        Arc::new(Date32Array::from(vec![days as i32])),
+                    )
+                }
+                Kind::Timestamp | Kind::Timestamptz => {
+                    let micros = *rng.pick(&[-1, 0, 1_500_000, 1_700_000_000_123_456]);
+                    let ntz = kind == Kind::Timestamp;
+                    let keyword = match ntz && rng.chance(2) {
+                        true => cased(rng, "TIMESTAMP_NTZ"),
+                        false => cased(rng, "TIMESTAMP"),
+                    };
+                    let (text, zone) = match ntz {
+                        true => (time(micros), String::new()),
+                        // An hour east, its wall clock an hour on.
+                        false if rng.chance(2) => (time(micros + 3_600_000_000), "+01:00".to_string()),
+                        false => (time(micros), "Z".to_string()),
+                    };
+                    let value = TimestampMicrosecondArray::from(vec![micros]);
+                    let value: ArrayRef = match ntz {
+                        true => Arc::new(value),
+                        false => Arc::new(value.with_timezone("UTC")),
+                    };
+                    (format!("{keyword} '{text}{zone}'"), value)
+                }
+                Kind::String => {
+                    let v = *rng.pick(&["", "a", "it's", "x y", "ü/%"]);
+                    let sql = match rng.chance(2) {
+                        true => format!("'{}'", v.replace('\'', "''")),
+                        false => format!("\"{v}\""),
+                    };
+                    (sql, Arc::new(StringArray::from(vec![v])))
+                }
+                Kind::Binary => {
+                    let v: &[u8] = rng.pick(&[&[][..], &[0, 255][..], &[0xab][..]]);
+                    let hex: String = v.iter().map(|b| format!("{b:02x}")).collect();
+                    (format!("X'{hex}'"), Arc::new(BinaryArray::from(vec![v])))
+                }
+            }
+        };
+        Defaulting {
+            name: String::new(),
+            delta: delta.to_string(),
+            sql,
+            value,
+        }
+    }
+
+    fn data_type(&self) -> schema::Type {
+        schema::Type::Primitive(self.delta.clone())
+    }
+
+    /// Whether `committer`'s table holds the column as it was made, its type and default unchanged.
+    fn current(&self, committer: &DeltaCommitter) -> bool {
+        committer.schema.fields.iter().any(|f| {
+            f.name == self.name
+                && f.data_type == self.data_type()
+                && f.metadata.get("CURRENT_DEFAULT") == Some(&json!(self.sql))
+        })
+    }
+
+    /// Err when `committer` does not write the column, unchanged in its table, with its default in every row.
+    fn written(&self, committer: &DeltaCommitter) -> Result<(), String> {
+        if !self.current(committer) {
+            return Ok(());
+        }
+        let field = committer
+            .schema
+            .fields
+            .iter()
+            .find(|f| f.name == self.name)
+            .expect("current");
+        let at = committer
+            .written
+            .index_of(field.physical_name())
+            .map_err(|_| format!("the files leave out {}, whose default is {}", self.name, self.sql))?;
+        match committer.defaults().get(at) {
+            Some(parquet::WriteDefault::Value(v)) if v.to_data() == self.value.to_data() => {
+                reach("default written");
+                Ok(())
+            }
+            other => Err(format!("{}'s default {} is written as {other:?}", self.name, self.sql)),
+        }
+    }
+
+    /// The column's partition value: its default's text, empty for null.
+    fn partition_text(&self) -> String {
+        let kind = schema::kind(&self.delta).expect("a primitive this writer reads");
+        (read(&self.value, 0, &kind, std::slice::from_ref(&self.name))
+            .ok()
+            .flatten())
+        .map(|v| partition_text(&v, &kind))
+        .unwrap_or_default()
+    }
+}
+
+/// Adds a column of `metadata`'s that the record does not write, with a default: a literal of its type, or one the
+/// writer cannot read. Gives the column where the writer must write its default, and whether it must refuse the table.
+fn default_column(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> (Option<Defaulting>, bool) {
+    const NAME: &str = "dflt";
+    let Some(mut schema) = (metadata["schemaString"].as_str()).and_then(|s| serde_json::from_str::<Value>(s).ok())
+    else {
+        return (None, false);
+    };
+    if top_level(record).iter().any(|(n, _)| n == NAME) {
+        return (None, false);
+    }
+    let delta = *rng.pick(&[
+        "boolean",
+        "byte",
+        "short",
+        "integer",
+        "long",
+        "float",
+        "double",
+        "date",
+        "timestamp",
+        "timestamp_ntz",
+        "string",
+        "binary",
+    ]);
+    let mut field = json!({"name": NAME, "type": delta, "nullable": true, "metadata": {}});
+    let max = &metadata["configuration"]["delta.columnMapping.maxColumnId"];
+    if let Some(max) = max.as_str().and_then(|m| m.parse::<i64>().ok()) {
+        field["metadata"]["delta.columnMapping.id"] = json!(max + 1);
+        field["metadata"]["delta.columnMapping.physicalName"] = json!(format!("col-d{}", max + 1));
+        metadata["configuration"]["delta.columnMapping.maxColumnId"] = json!((max + 1).to_string());
+    }
+    let (default, mut refused) = if rng.chance(6) {
+        reach("default unreadable");
+        let (t, sql) = *rng.pick(&[("decimal(10,2)", "1.5"), (delta, "current_date()"), (delta, "1 + 1")]);
+        field["type"] = json!(t);
+        field["metadata"]["CURRENT_DEFAULT"] = json!(sql);
+        (None, true)
+    } else {
+        reach(format!("default {delta}"));
+        let default = Defaulting {
+            name: NAME.to_string(),
+            ..Defaulting::of(rng, delta)
+        };
+        field["metadata"]["CURRENT_DEFAULT"] = json!(default.sql);
+        (Some(default), false)
+    };
+    if rng.chance(3) {
+        field["nullable"] = json!(false);
+        match &default {
+            Some(d) if d.value.is_null(0) => {
+                reach("default null not nullable");
+                refused = true;
+            }
+            _ => reach("default not nullable"),
+        }
+    }
+    // A binary column partitions no table this writer writes.
+    if rng.chance(4) && delta != "binary" {
+        metadata["partitionColumns"]
+            .as_array_mut()
+            .expect("partition columns")
+            .push(json!(NAME));
+    }
+    schema["fields"]
+        .as_array_mut()
+        .expect("a schema has fields")
+        .push(field);
+    metadata["schemaString"] = json!(schema.to_string());
+    (default, refused)
+}
+
 /// Gives a column of `metadata`'s, or a struct's field, what the writer does not fill or check: a generated value, a
 /// default, an invariant, or an identity below the top level. Gives whether it did, so the writer must refuse the
 /// table.
@@ -798,7 +1077,8 @@ fn unhonoured(rng: &mut Rng, metadata: &mut Value) -> bool {
             let key = ["delta.generationExpression", "CURRENT_DEFAULT", "delta.invariants"][n - 1];
             reach(format!("unhonoured {key}"));
             let at = rng.below(fields.len());
-            fields[at]["metadata"][key] = json!("1");
+            // An expression, which no literal default is.
+            fields[at]["metadata"][key] = json!("1 + 1");
         }
     }
     metadata["schemaString"] = json!(schema.to_string());
@@ -1184,6 +1464,8 @@ struct Run {
     clustering: Vec<String>,
     /// The identity values of another writer's files, by file key and column name.
     other_identity: BTreeMap<String, Vec<(String, Vec<i64>)>>,
+    /// The table's column the record does not write that has a default.
+    default: Option<Defaulting>,
 }
 
 /// Runs seed `seed`. Err names the property it breaks.
@@ -1210,6 +1492,7 @@ fn run(seed: u64) -> Result<(), String> {
         dropped: None,
         clustering: Vec::new(),
         other_identity: BTreeMap::new(),
+        default: None,
     };
     let must_refuse = run.existing()?;
     run.harvest()?;
@@ -1313,6 +1596,14 @@ impl Run {
         }
         if self.rng.chance(8) {
             refused |= unhonoured(&mut self.rng, metadata);
+        }
+        if self.rng.chance(4) {
+            let (default, refuses) = default_column(&mut self.rng, metadata, &self.record);
+            if default.is_some() && features.contains(&json!("allowColumnDefaults")) {
+                reach("writer allowColumnDefaults");
+            }
+            self.default = default;
+            refused |= refuses;
         }
         // A table that knows type widening is narrowed more often: the writer must widen it if it enables widening,
         // and leave it as it is if not.
@@ -1443,6 +1734,9 @@ impl Run {
                 field_ids(&committer.schema.fields, committer.written.fields())?;
                 element_ids(&committer.schema.fields, committer.written.fields())?;
                 unique_ids(&committer.schema)?;
+                if let Some(default) = &self.default {
+                    default.written(&committer)?;
+                }
                 self.committer = Some(committer);
                 Ok(true)
             }
@@ -1505,6 +1799,9 @@ impl Run {
             Err(CommitError::Unknown(_)) => "commit unknown",
             Err(CommitError::Transient(_)) => "commit transient",
         });
+        if matches!(&committed, Err(CommitError::Transient(why)) if why.contains("changed the default")) {
+            reach("default changed refused");
+        }
         match committed {
             Ok(()) => {
                 for file in &files {
@@ -1552,6 +1849,7 @@ impl Run {
         }
         let partitioner = DeltaPartitioner {
             columns: committer.partitions.clone(),
+            defaults: committer.partition_defaults().unwrap(),
             unpartitioned_key_bytes: committer.root.key(&format!("{}.parquet", "0".repeat(32))).len(),
         };
         let mut files = Vec::new();
@@ -1599,6 +1897,17 @@ impl Run {
                 }
             }
             for (column, (_, text)) in committer.partitions.iter().zip(&partition.values) {
+                if let Some(default) = (self.default.as_ref()).filter(|d| d.name == column.name && d.current(committer))
+                {
+                    let expected = default.partition_text();
+                    if *text != expected {
+                        return Err(format!(
+                            "{}'s partition value is {text:?}, and its default {:?} is {expected:?}",
+                            column.name, default.sql
+                        ));
+                    }
+                    reach("default partition value");
+                }
                 if !text.is_empty() && !narrow_text(&column.kind, text) {
                     return Err(format!(
                         "{}'s partition value {text:?} is no {}",
@@ -1717,7 +2026,27 @@ impl Run {
             .fields
             .iter()
             .position(|f| f.metadata.contains_key("delta.identity.step"));
+        let defaulted = (self.default.as_ref()).and_then(|d| {
+            schema
+                .fields
+                .iter()
+                .position(|f| f.name == d.name && f.data_type == d.data_type())
+        });
         match rng.below(12) {
+            _ if defaulted.is_some() && rng.chance(8) => {
+                reach("other default change");
+                let field = &mut schema.fields[defaulted.expect("checked above")];
+                let changed = Defaulting::of(rng, &self.default.as_ref().expect("checked above").delta);
+                field.metadata.insert("CURRENT_DEFAULT".into(), json!(changed.sql));
+                // A column another writer leaves null where the record writes no value can no longer be not nullable.
+                field.nullable = true;
+                self.default = Some(Defaulting {
+                    name: field.name.clone(),
+                    ..changed
+                });
+                metadata.schema_string = schema.to_json();
+                lines.push(json!({"metaData": metadata}));
+            }
             _ if identity.is_some() && rng.chance(10) => {
                 reach("other identity change");
                 let field = &mut schema.fields[identity.expect("checked above")];

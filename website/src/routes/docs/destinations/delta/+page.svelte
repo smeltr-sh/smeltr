@@ -103,7 +103,8 @@
           <code>timestampNtz</code>, <code>clustering</code>, <code>rowTracking</code>,
           <code>typeWidening</code>, <code>identityColumns</code>,
           <code>inCommitTimestamp</code>, <code>materializePartitionColumns</code>,
-          <code>icebergCompatV2</code> and <code>variantType</code>;
+          <code>icebergCompatV2</code>, <code>variantType</code> and
+          <code>allowColumnDefaults</code>;
         </li>
         <li>its files are Parquet;</li>
         <li>it maps columns by name or by id, or not at all;</li>
@@ -114,9 +115,10 @@
           <code>delta.columnMapping.nested.ids</code>, and records only type changes Iceberg allows;
         </li>
         <li>
-          no column is generated, has a default or carries an invariant, and every column is
-          nullable, as is every array's element, except an
-          <a href="#identity-columns">identity column</a> the record does not write;
+          no column is generated or carries an invariant, any default is a
+          <a href="#column-defaults">literal</a>, and every column is nullable, as is every array's
+          element, except an <a href="#identity-columns">identity column</a> or a column with a default
+          that the record does not write;
         </li>
         <li>it has a column a data file can hold, one that is not <code>void</code> alone;</li>
         <li>
@@ -294,6 +296,15 @@
     values are then written as they are.
   </p>
 
+  <h3 id="column-defaults">Column defaults</h3>
+  <p>
+    A top-level column the record does not write takes its default in every row, partition columns
+    too. The default must be a literal of the column's type, such as <code>42</code>,
+    <code>'n/a'</code>, <code>DATE '2024-01-01'</code> or
+    <code>TIMESTAMP '2024-01-01 00:00:00Z'</code>. A <code>timestamp</code> default must name its zone.
+    Any other default refuses the table.
+  </p>
+
   <h2 id="how-it-works">How it works</h2>
   <p>
     When it starts, the destination reads the table, or creates it, and adds the record's new
@@ -406,9 +417,9 @@
     </dd>
     <dt><strong>the table's column … carries …, which this writer cannot honour</strong></dt>
     <dd>
-      The column is generated, has a default, carries an invariant, or is an identity column inside
-      a struct, which the destination does not compute or check. Write to a table without such a
-      column.
+      The column is generated, has a default that is not a literal, carries an invariant, or is an
+      identity column inside a struct, which the destination does not compute or check. Write to a
+      table without such a column.
     </dd>
     <dt>
       <strong
