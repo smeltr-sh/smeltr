@@ -1,5 +1,5 @@
-// Schemas: a bundle's schemas opened and searched by field, added from a standard's file (ECS, OCSF, a CSV of fields,
-// JSON Schema) or by an importer pipeline, a pipeline's Produces and a destination's accepts, and what review finds
+// Schemas: a bundle's schemas opened and searched by field, added from the release of ECS or OCSF the leader carries,
+// from a standard's file (ECS, OCSF, a CSV of fields, JSON Schema) or by an importer pipeline, a pipeline's Produces and a destination's accepts, and what review finds
 // where rows do not fit.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -489,9 +489,52 @@ async function addFrom(admin: Page, leader: Leader, tile: string, id: string, fi
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: tile, exact: true }).click();
   await dialog.getByLabel('id', { exact: true }).fill(id);
+  if (tile === 'ECS' || tile === 'OCSF') {
+    await dialog.getByRole('button', { name: 'Upload a file', exact: true }).click();
+  }
   await dialog.getByLabel(/^File/).setInputFiles(file);
   return dialog;
 }
+
+/** Opens Add schema at `tile` and names the schema `id`, read from the release the leader carries. Answers the
+ * dialog. */
+async function addBuiltIn(admin: Page, leader: Leader, tile: 'ECS' | 'OCSF', id: string) {
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: '+ Add schema' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: tile, exact: true }).click();
+  await dialog.getByLabel('id', { exact: true }).fill(id);
+  await expect(
+    dialog.getByRole('button', { name: new RegExp(`^${tile} \\d+\\.\\d+\\.\\d+, built in$`) }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await expect(dialog.getByLabel(/^File/)).toHaveCount(0);
+  return dialog;
+}
+
+test('ECS and an OCSF class come in from the releases the leader carries', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  let dialog = await addBuiltIn(admin, leader, 'ECS', 'ecs');
+  await expect(
+    dialog.getByRole('link', { name: /^github\.com\/elastic\/ecs\/tree\/v/ }),
+  ).toBeVisible();
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  let field = await saved(admin, api, 'ecs');
+  expect(field('@timestamp')).toMatchObject({ type: 'datetime', required: true });
+  expect(field('source.ip')?.elasticsearch).toEqual({ type: 'ip' });
+
+  dialog = await addBuiltIn(admin, leader, 'OCSF', 'auth');
+  await expect(dialog.getByRole('combobox', { name: 'Class' })).toHaveValue('authentication');
+  await dialog.getByRole('combobox', { name: 'Class' }).selectOption('process_activity');
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  field = await saved(admin, api, 'auth');
+  expect(field('process')).toMatchObject({ type: '{...}', required: true });
+  expect(field('process.pid')?.type).toBe('i64');
+});
 
 /** Saves the page, and answers `id`'s fields as the leader keeps them. */
 async function saved(admin: Page, api: Api, id: string) {

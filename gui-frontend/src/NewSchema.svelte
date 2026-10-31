@@ -27,13 +27,16 @@
     type: SchemaStart;
     /** The file, as text, for a start that reads one; JSON Schema may be pasted. */
     text: string;
+    /** For ECS and OCSF, read the release the leader carries rather than `text`. Until the leader says which it
+     * carries, a file is uploaded, and an upload turns this off. */
+    builtIn: boolean;
     /** The importer, by pipeline id, for `import`. */
     pipeline: string;
     /** The uploaded file, for `import`, cut into records on the leader. */
     file: string;
     /** Where a record of the file ends, for `import`; absent, each line is one. */
     lineBreaker: string | undefined;
-    /** The OCSF file's classes, and the one read. */
+    /** The uploaded OCSF file's classes, and the one read. */
     classes: string[];
     class: string;
     /** How many keys deep an OCSF class is read. */
@@ -76,7 +79,7 @@
       type: 'ecs',
       label: 'ECS',
       category: 'From a standard',
-      help: "The Elastic Common Schema, from the fields.csv or ecs_flat.yml in ECS's generated/ folder.",
+      help: "The Elastic Common Schema: the release built in, or the fields.csv or ecs_flat.yml under ECS's generated/ folder.",
       // Three layers.
       glyph: { d: 'M32 8 L56 20 L32 32 L8 20 Z M8 32 L32 44 L56 32 M8 44 L32 56 L56 44' },
     },
@@ -84,7 +87,7 @@
       type: 'ocsf',
       label: 'OCSF',
       category: 'From a standard',
-      help: "One class of the Open Cybersecurity Schema Framework, from ocsf-schema-compiler's output.",
+      help: "One class of the Open Cybersecurity Schema Framework: from the release built in, or from ocsf-schema-compiler's output.",
       // A shield.
       glyph: { d: 'M32 6 L52 14 V30 C52 44 42 54 32 58 C22 54 12 44 12 30 V14 Z' },
     },
@@ -127,7 +130,8 @@
   import Field from './Field.svelte';
   import { suggestId } from './ids';
   import LineBreakerField from './LineBreakerField.svelte';
-  import { readSchema } from './api';
+  import { getSchemaStandards, readSchema, type SchemaStandards } from './api';
+  import Segmented from './Segmented.svelte';
   import { count } from './time';
   import Help from './Help.svelte';
 
@@ -148,16 +152,47 @@
     oncancel: () => void;
   } = $props();
 
+  /** The releases the leader carries; null until it says, and where it cannot, so a file is uploaded. Asked as the
+   * page opens rather than the dialog, so it is here by the time a tile is chosen. */
+  let standards = $state<SchemaStandards | null>(null);
+  $effect(() => {
+    getSchemaStandards().then(
+      (s) => (standards = s),
+      () => {},
+    );
+  });
+
+  /** Whether `d` reads the release the leader carries. */
+  function fromRelease(d: SchemaDraft): boolean {
+    return d.builtIn && standards !== null;
+  }
+
+  /** The OCSF classes `d` may be read from. */
+  function classesOf(d: SchemaDraft): string[] {
+    return fromRelease(d) ? standards!.ocsf.classes : d.classes;
+  }
+
+  /** `d` reads the release, or an upload; its class stays where the other offers it. */
+  function setBuiltIn(d: SchemaDraft, on: boolean) {
+    d.builtIn = on;
+    const classes = classesOf(d);
+    if (d.type === 'ocsf' && !classes.includes(d.class)) {
+      d.class = classes.includes('authentication') ? 'authentication' : (classes[0] ?? '');
+    }
+  }
+
   function blank(type: SchemaStart, taken: string[]): SchemaDraft {
+    const classes = standards?.ocsf.classes ?? [];
     return {
       id: suggestId(type === 'ecs' ? 'ecs' : 'schema', taken),
       type,
       text: '',
+      builtIn: true,
       pipeline: '',
       file: '',
       lineBreaker: undefined,
       classes: [],
-      class: '',
+      class: classes.includes('authentication') ? 'authentication' : (classes[0] ?? ''),
       depth: 2,
       levels: ['required', 'recommended'],
       preview: null,
@@ -221,6 +256,7 @@
     const file = input.files?.[0];
     if (!file) return;
     draft.text = await file.text();
+    draft.builtIn = false;
     if (draft.type === 'csv') {
       draft.types = {};
       await previewCsv(draft);
@@ -251,10 +287,13 @@
       case 'csv':
         return d.preview !== null && d.columns.field != null && d.columns.type != null;
       case 'ecs':
+        return fromRelease(d) || d.text.trim() !== '';
       case 'jsonSchema':
         return d.text.trim() !== '';
       case 'ocsf':
-        return d.text !== '' && d.class !== '' && d.levels.length > 0 && d.depth >= 1;
+        return (
+          (fromRelease(d) || d.text !== '') && d.class !== '' && d.levels.length > 0 && d.depth >= 1
+        );
       case 'import':
         return d.pipeline !== '' && d.file !== '';
       default:
@@ -274,7 +313,47 @@
   {onadd}
   {oncancel}
 >
+  {#snippet link(href: string)}
+    <a {href} target="_blank" rel="noreferrer"
+      >{href.replace(/^https:\/\//, '').replace(/\/$/, '')}</a
+    >
+  {/snippet}
   {#snippet fields(draft)}
+    {#if (draft.type === 'ecs' || draft.type === 'ocsf') && standards}
+      {@const release = draft.type === 'ecs' ? standards.ecs : standards.ocsf}
+      {@const name = draft.type === 'ecs' ? 'ECS' : 'OCSF'}
+      <div class="source">
+        <Segmented
+          label="Read from"
+          options={[
+            { value: 'built-in', label: `${name} ${release.version}, built in` },
+            { value: 'upload', label: 'Upload a file' },
+          ]}
+          bind:value={
+            () => (draft.builtIn ? 'built-in' : 'upload'),
+            (v) => setBuiltIn(draft, v === 'built-in')
+          }
+        />
+      </div>
+      {#if draft.builtIn}
+        <p class="note">
+          As published at {@render link(release.source)}{draft.type === 'ocsf'
+            ? ', compiled by ocsf-schema-compiler'
+            : ''}.
+        </p>
+      {:else if draft.type === 'ecs'}
+        <p class="note">
+          The fields.csv or ecs_flat.yml under the generated/ folder of {@render link(
+            'https://github.com/elastic/ecs',
+          )}, at the release you use.
+        </p>
+      {:else}
+        <p class="note">
+          The output of {@render link('https://pypi.org/project/ocsf-schema-compiler/')} run over
+          {@render link('https://github.com/ocsf/ocsf-schema')}, at the release you use.
+        </p>
+      {/if}
+    {/if}
     {#if draft.type === 'import'}
       <Field
         required
@@ -292,7 +371,7 @@
         <input type="file" onchange={(e) => uploadFile(draft, e.currentTarget)} />
       </Field>
       <LineBreakerField value={draft.lineBreaker} onchange={(p) => (draft.lineBreaker = p)} />
-    {:else if draft.type === 'ecs' || draft.type === 'csv'}
+    {:else if (draft.type === 'ecs' && !fromRelease(draft)) || draft.type === 'csv'}
       <Field required label="File">
         <input
           type="file"
@@ -386,18 +465,22 @@
         </fieldset>
       {/if}
     {:else if draft.type === 'ocsf'}
-      <Field required label="File">
-        <input
-          type="file"
-          accept=".json,application/json"
-          onchange={(e) => upload(draft, e.currentTarget)}
-        />
-      </Field>
-      {#if draft.text !== ''}
+      {#if !fromRelease(draft)}
+        <Field required label="File">
+          <input
+            type="file"
+            accept=".json,application/json"
+            onchange={(e) => upload(draft, e.currentTarget)}
+          />
+        </Field>
+      {/if}
+      {#if fromRelease(draft) || draft.text !== ''}
+        {@const classes = classesOf(draft)}
         <Field required label="Class">
           <select bind:value={draft.class}>
-            {#if draft.classes.length === 0}<option value="">No classes in the file</option>{/if}
-            {#each draft.classes as c (c)}<option value={c}>{c}</option>{/each}
+            {#if classes.length === 0}<option value="">No classes in the file</option>
+            {:else if !classes.includes(draft.class)}<option value="">Choose a class…</option>{/if}
+            {#each classes as c (c)}<option value={c}>{c}</option>{/each}
           </select>
         </Field>
         <Field
@@ -534,6 +617,10 @@
 
   .note {
     margin: 0;
+  }
+
+  .source {
+    display: flex;
   }
 
   .levels {

@@ -58,7 +58,9 @@ by its own reader: JSON Schema (`schema::json_schema`), ECS's `fields.csv` or
 `ecs_flat.yml` (`schema::ecs`), one class of `ocsf-schema-compiler`'s output,
 cut to as many keys deep and to the requirements asked for (`schema::ocsf`),
 and a CSV of fields, one row per field, its columns chosen by their place or
-found by the header's names (`schema::csv`). A type is read as smeltr spells
+found by the header's names (`schema::csv`). The leader carries one release of
+ECS and one of OCSF, compiled and cut to what `schema::ocsf` reads, so either
+is read without its file (`schema::standard`); another release is uploaded. A type is read as smeltr spells
 it, or by the name a database, a spreadsheet or a standard gives it, from one
 map every reader shares (`schema::named`); a CSV's type the map does not know
 is read as the type it is told. Each reader gives the same table, checked as a

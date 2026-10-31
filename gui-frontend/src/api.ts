@@ -5449,11 +5449,31 @@ export type SchemaReadFormat = 'json-schema' | 'ecs' | 'ocsf' | 'csv';
 /** An OCSF requirement level. */
 export type OcsfLevel = 'required' | 'recommended' | 'optional';
 
+/** A release of a standard the leader carries. */
+export interface StandardRelease {
+  version: string;
+  /** Where the release is published. */
+  source: string;
+}
+
+/** The releases of ECS and OCSF the leader carries, which `readSchema` reads with `builtIn`. */
+export interface SchemaStandards {
+  ecs: StandardRelease;
+  /** With OCSF's classes, by name. */
+  ocsf: StandardRelease & { classes: string[] };
+}
+
+export function getSchemaStandards(): Promise<SchemaStandards> {
+  return readJson('/api/preview/schema-standards', 'quiet');
+}
+
 /** `text`, a file in `format`, read as the schema `id`. Not `ok`, with why, where it does not read. */
 export function readSchema(req: {
   id: string;
   format: SchemaReadFormat;
   text: string;
+  /** Read the release of ECS or OCSF the leader carries rather than `text`. */
+  builtIn?: boolean;
   /** The OCSF class to read. */
   class?: string;
   /** How much of the OCSF class: how many keys deep, and which requirement levels. */

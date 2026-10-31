@@ -77,8 +77,14 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/preview/schema-read",
-        what: "A file read as a schema, its table of fields: a JSON Schema document, ECS's fields.csv or ecs_flat.yml, one class of ocsf-schema-compiler's output (cut to depth keys deep and to the requirement levels named; by default 2, required and recommended), or a CSV of fields under a header row. A CSV's columns are found by header name (field, type, and optionally required, description, example, elasticsearch) unless `columns` gives each by index; a type is smeltr's spelling, a common name for one (string, int, timestamp, ...), or as `types` says. With `preview`, a CSV is not read: the answer's `preview` holds its header, its first rows and the first row of each type value they lack (`first` counts the first rows), guessed columns, and each type value (`value`, `readsAs`, null where unknown, and `fields`, how many rows hold it). No query.",
-        body: "{ id?: string, format: \"json-schema\" | \"ecs\" | \"ocsf\" | \"csv\", text: string, class?: string, cut?: { depth?: number, levels?: (\"required\" | \"recommended\" | \"optional\")[] }, columns?: { field?: number, type?: number, required?: number, description?: number, example?: number, elasticsearch?: number }, types?: { [value: string]: string }, preview?: boolean }",
+        what: "A file read as a schema, its table of fields: a JSON Schema document, ECS's fields.csv or ecs_flat.yml, one class of ocsf-schema-compiler's output (cut to depth keys deep and to the requirement levels named; by default 2, required and recommended), or a CSV of fields under a header row. With builtIn, ECS or OCSF is the release smeltr carries (GET /api/preview/schema-standards) and text is not read. A CSV's columns are found by header name (field, type, and optionally required, description, example, elasticsearch) unless `columns` gives each by index; a type is smeltr's spelling, a common name for one (string, int, timestamp, ...), or as `types` says. With `preview`, a CSV is not read: the answer's `preview` holds its header, its first rows and the first row of each type value they lack (`first` counts the first rows), guessed columns, and each type value (`value`, `readsAs`, null where unknown, and `fields`, how many rows hold it). No query.",
+        body: "{ id?: string, format: \"json-schema\" | \"ecs\" | \"ocsf\" | \"csv\", text?: string, builtIn?: boolean, class?: string, cut?: { depth?: number, levels?: (\"required\" | \"recommended\" | \"optional\")[] }, columns?: { field?: number, type?: number, required?: number, description?: number, example?: number, elasticsearch?: number }, types?: { [value: string]: string }, preview?: boolean }",
+    },
+    Route {
+        method: "GET",
+        path: "/api/preview/schema-standards",
+        what: "The releases of ECS and OCSF smeltr carries, each with its version and where it is published, and OCSF's classes by name. A schema-read with builtIn reads one of them rather than a file. No query.",
+        body: "",
     },
     Route {
         method: "POST",

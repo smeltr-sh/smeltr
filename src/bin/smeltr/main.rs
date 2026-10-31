@@ -2110,6 +2110,7 @@ async fn run_leader() {
         .route("/api/areas/:area/preview/schema-import", post(import_schema))
         .route("/api/preview/schema-read", post(schema_api::read))
         .route("/api/preview/schema-export", post(schema_api::export))
+        .route("/api/preview/schema-standards", get(schema_api::standards))
         .route("/api/areas/:area/manifest", put(config_api::put_manifest))
         .route("/api/areas/:area/pipelines", get(config_api::list_pipelines))
         .route(

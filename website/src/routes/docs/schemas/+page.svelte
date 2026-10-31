@@ -68,8 +68,11 @@
     <li>Select <strong>Add</strong>, then <strong>Save</strong>.</li>
   </ol>
   <ul>
-    <li><strong>ECS</strong> reads the Elastic Common Schema.</li>
-    <li><strong>OCSF</strong> reads one class of the Open Cybersecurity Schema Framework.</li>
+    <li><strong>ECS</strong> reads the Elastic Common Schema, built in or from a file.</li>
+    <li>
+      <strong>OCSF</strong> reads one class of the Open Cybersecurity Schema Framework, built in or from
+      a file.
+    </li>
     <li><strong>CSV of fields</strong> reads a CSV file with a row per field.</li>
     <li><strong>JSON Schema</strong> takes a JSON Schema you paste or upload.</li>
     <li>
@@ -95,20 +98,24 @@
 
   <h2 id="ecs">Read ECS</h2>
   <p>
-    Download <code>fields.csv</code> or <code>ecs_flat.yml</code> from the
+    Choose <strong>ECS</strong>. It reads the ECS release built into Smeltr, which the choice names.
+    For another release, choose <strong>Upload a file</strong> and the <code>fields.csv</code> or
+    <code>ecs_flat.yml</code> under the
     <a href="https://github.com/elastic/ecs/tree/main/generated"><code>generated/</code></a> folder
-    of the ECS repository, at the ECS version you use. Choose <strong>ECS</strong> and the file.
-    Each field keeps the Elasticsearch type ECS gives it, such as <code>ip</code> for an address.
+    of the <a href="https://github.com/elastic/ecs">ECS repository</a>, at that release. Each field
+    keeps the Elasticsearch type ECS gives it, such as <code>ip</code> for an address.
   </p>
 
   <h2 id="ocsf">Read an OCSF class</h2>
   <ol>
     <li>
-      Compile the <a href="https://github.com/ocsf/ocsf-schema">OCSF schema</a> into one file with
+      Choose <strong>OCSF</strong>. It reads the OCSF release built into Smeltr, which the choice
+      names. For another release, choose <strong>Upload a file</strong> and the
+      <a href="https://github.com/ocsf/ocsf-schema">OCSF schema</a> at that release, compiled into
+      one file with
       <a href="https://pypi.org/project/ocsf-schema-compiler/"><code>ocsf-schema-compiler</code></a
       >: <code>ocsf-schema-compiler ocsf-schema &gt; schema.json</code>.
     </li>
-    <li>Choose <strong>OCSF</strong> and <code>schema.json</code>.</li>
     <li>Choose the <strong>Class</strong>, such as <code>authentication</code>.</li>
     <li>
       Leave <strong>Depth</strong> at 2 and <strong>Include fields that are</strong> at required and recommended.
@@ -119,8 +126,8 @@
   <ProductScreenshot
     source="schema-ocsf"
     height={1800}
-    crop={{ x: 612, y: 474, width: 1656, height: 856 }}
-    alt="The New schema from an OCSF class dialog: the compiled file, the authentication class, depth 2, and required and recommended checked."
+    crop={{ x: 608, y: 478, width: 1664, height: 851 }}
+    alt="The New schema from an OCSF class dialog: OCSF built in, the authentication class, depth 2, and required and recommended checked."
     caption="An OCSF class, read two levels deep, with the fields OCSF requires or recommends."
   />
   <p>Add a schema for each class you send.</p>

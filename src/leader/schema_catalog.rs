@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::config_file::SchemaDto;
 use crate::io::line_breaker::{LineBreaker, PER_LINE};
 use crate::io::raw_object;
-use crate::schema::json_schema;
+use crate::schema::{json_schema, standard};
 
 /// What a schema is read from: a file in a format a standard publishes.
 #[derive(Clone, Copy, Debug, serde::Deserialize)]
@@ -33,7 +33,11 @@ pub struct ReadRequest {
     pub id: String,
     pub format: ReadFormat,
     /// The file, as text.
+    #[serde(default)]
     pub text: String,
+    /// Read the release of ECS or OCSF smeltr carries (`schema::standard`) rather than `text`.
+    #[serde(default)]
+    pub built_in: bool,
     /// The OCSF class to read.
     #[serde(default)]
     pub class: String,
@@ -70,8 +74,11 @@ pub fn read(req: &ReadRequest) -> Result<ReadSchema, String> {
                 preview: None,
             });
         }
+        ReadFormat::Ecs if req.built_in => crate::schema::ecs::read(standard::ECS)?,
         ReadFormat::Ecs => crate::schema::ecs::read(&req.text)?,
+        ReadFormat::Ocsf if req.built_in => crate::schema::ocsf::read(&standard::OCSF, &req.class, &req.cut)?,
         ReadFormat::Ocsf => crate::schema::ocsf::read(&json()?, &req.class, &req.cut)?,
+        _ if req.built_in => return Err("only ECS and OCSF are built in".to_string()),
         ReadFormat::Csv if req.preview => {
             return Ok(ReadSchema {
                 preview: Some(crate::schema::csv::preview(&req.text, req.columns.as_ref())?),
@@ -81,6 +88,38 @@ pub fn read(req: &ReadRequest) -> Result<ReadSchema, String> {
         ReadFormat::Csv => crate::schema::csv::read(&req.text, req.columns.as_ref(), &req.types)?,
     };
     declared(&req.id, "", fields)
+}
+
+/// The releases of the standards smeltr carries, for a schema to be read from one with `ReadRequest::built_in`.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct Standards {
+    pub ecs: Release,
+    pub ocsf: Release,
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+pub struct Release {
+    pub version: String,
+    /// Where the release is published.
+    pub source: String,
+    /// OCSF's classes, by name, one of which a schema is read from.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub classes: Vec<String>,
+}
+
+pub fn standards() -> Standards {
+    Standards {
+        ecs: Release {
+            version: standard::ecs_version().to_string(),
+            source: format!("https://github.com/elastic/ecs/tree/v{}/generated", standard::ecs_version()),
+            classes: Vec::new(),
+        },
+        ocsf: Release {
+            version: standard::ocsf_version().to_string(),
+            source: format!("https://github.com/ocsf/ocsf-schema/tree/{}", standard::ocsf_version()),
+            classes: standard::ocsf_classes(),
+        },
+    }
 }
 
 /// The schema `id` of `fields`, checked as a bundle's would be.
@@ -235,6 +274,7 @@ mod tests {
             id: id.to_string(),
             format: ReadFormat::JsonSchema,
             text: doc.to_string(),
+            built_in: false,
             class: String::new(),
             cut: Default::default(),
             columns: None,
@@ -244,11 +284,38 @@ mod tests {
     }
 
     #[test]
+    fn each_built_in_release_reads_as_a_bundles_schema() {
+        let req = |format, class: &str| ReadRequest {
+            id: "x".to_string(),
+            format,
+            text: String::new(),
+            built_in: true,
+            class: class.to_string(),
+            cut: Default::default(),
+            columns: None,
+            types: Default::default(),
+            preview: false,
+        };
+        assert!(!read(&req(ReadFormat::Ecs, "")).unwrap().schema.fields.is_empty());
+        let standards = standards();
+        assert!(standards.ocsf.classes.contains(&"authentication".to_string()));
+        for class in &standards.ocsf.classes {
+            let read = read(&req(ReadFormat::Ocsf, class)).unwrap_or_else(|e| panic!("{class}: {e}"));
+            assert!(!read.schema.fields.is_empty(), "{class}");
+        }
+        assert_eq!(
+            read(&req(ReadFormat::Csv, "")).unwrap_err(),
+            "only ECS and OCSF are built in"
+        );
+    }
+
+    #[test]
     fn a_file_reads_in_the_format_it_is_named_as_and_is_checked_as_a_bundles_schema() {
         let req = |format, text: &str| ReadRequest {
             id: "x".to_string(),
             format,
             text: text.to_string(),
+            built_in: false,
             class: "authentication".to_string(),
             cut: Default::default(),
             columns: None,

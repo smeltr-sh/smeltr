@@ -1696,6 +1696,9 @@ const addSchema: Move = {
       await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(file);
     } else if (format !== 'empty') {
       const name = { csv: 'fields.csv', ecs: 'fields.csv', ocsf: 'ocsf.json' }[format];
+      if (format === 'ecs' || format === 'ocsf') {
+        await dialog.getByRole('button', { name: 'Upload a file', exact: true }).click();
+      }
       await dialog
         .getByLabel(/^File/)
         .setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(file) });
@@ -1728,6 +1731,58 @@ const addSchema: Move = {
     const saved = res.config.schemas.find((s: { id: string }) => s.id === id);
     expect(saved.fields, `${id} from ${format}`).toEqual(fields);
     return `add schema ${id} from ${format}, of ${fields.length} field(s)`;
+  },
+};
+
+const addBuiltInSchema: Move = {
+  name: 'add-built-in-schema',
+  leadsTo: ['produce-schema'],
+  weight: (w) => (w.password && w.editing.schemas.length < 2 ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const id = `schema-${world.made++}`;
+    const format = rng.pick(['ecs', 'ocsf'] as const);
+    const truth = await j.truth();
+    const standards = await truth.get('/api/preview/schema-standards');
+    const release = standards[format];
+    // An OCSF class, cut as deep and to the requirements drawn.
+    const klass: string = format === 'ocsf' ? rng.pick(release.classes as string[]) : '';
+    const depth = 1 + rng.below(3);
+    const levels = ['required', 'recommended', 'optional'].filter(
+      (l, i) => i === 0 || rng.chance(2),
+    );
+    await goto(page, leader, '#/build/schemas');
+    await page.getByRole('button', { name: '+ Add schema' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: FORMAT_TILES[format], exact: true }).click();
+    await dialog.getByLabel('id', { exact: true }).fill(id);
+    const name = `${FORMAT_TILES[format]} ${release.version}, built in`;
+    await expect(dialog.getByRole('button', { name, exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    if (format === 'ocsf') {
+      await dialog.getByRole('combobox', { name: 'Class' }).selectOption(klass);
+      await dialog.getByRole('spinbutton', { name: 'Depth' }).fill(String(depth));
+      for (const l of ['recommended', 'optional']) {
+        await dialog.getByRole('checkbox', { name: l }).setChecked(levels.includes(l));
+      }
+    }
+    await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await save(j, unsaved(page));
+    world.editing.schemas.push(id);
+    await editingIsSaved(j);
+    const res = await truth.get(`/api/areas/shared?branch=${world.branch}`);
+    const saved = res.config.schemas.find((s: { id: string }) => s.id === id);
+    const read = await truth.post('/api/preview/schema-read', {
+      id,
+      format,
+      builtIn: true,
+      ...(format === 'ocsf' ? { class: klass, cut: { depth, levels } } : {}),
+    });
+    expect(saved.fields, `${id} from ${name}`).toEqual(read.schema.fields);
+    return `add schema ${id} from ${name}${format === 'ocsf' ? `, ${klass} ${depth} deep, ${levels.join(' and ')}` : ''}`;
   },
 };
 
@@ -3114,6 +3169,7 @@ export const MOVES: readonly Move[] = [
   addLookup,
   addGrokPattern,
   addSchema,
+  addBuiltInSchema,
   mapSchemaField,
   produceSchema,
   pasteSample,

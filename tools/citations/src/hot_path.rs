@@ -65,6 +65,7 @@ const ALLOWED: &[(&str, &str)] = &[
     ("src/schema/csv.rs", "a file read as a schema, once per read"),
     ("src/schema/ecs.rs", "a file read as a schema, once per read"),
     ("src/schema/ocsf.rs", "a file read as a schema, once per read"),
+    ("src/schema/standard.rs", "the OCSF release carried, parsed once"),
     ("src/schema.rs", "a field's Elasticsearch mapping, once per load"),
 ];
 
