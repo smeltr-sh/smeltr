@@ -28,7 +28,7 @@ impl FileFormat for LineFormat {
     fn admit(&self, row: &OwnedRecord, _partition: &Partition) -> Result<FileRow, String> {
         // Egress made the row in this destination's form.
         let line = match &self.format {
-            ObjectFormat::Parquet | ObjectFormat::Avro | ObjectFormat::Csv => {
+            ObjectFormat::Parquet { .. } | ObjectFormat::Avro | ObjectFormat::Csv => {
                 unreachable!("`LineFormat::new` refuses {:?}", self.format)
             }
             ObjectFormat::Ndjson | ObjectFormat::Json => row.value.trim_ascii().to_vec(),

@@ -3044,6 +3044,42 @@ test('A10: an S3 destination writes unmodified source bytes, which an S3 source 
   ]);
 });
 
+// A10, sources and destinations from a form.
+test('A10: a Parquet destination writes native variants, and another format drops the choice', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await goto(admin, leader, '#/build/destinations');
+  await expect(admin.getByRole('heading', { name: 'Destinations' })).toBeVisible();
+  await admin.getByRole('button', { name: '+ Add destination' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'S3', exact: true }).click();
+  await dialog.getByRole('textbox', { name: /^bucket/ }).fill('lake-zone');
+  const format = dialog.getByRole('combobox', { name: /^format/ });
+  const variant = dialog.getByRole('combobox', { name: /^variant/ });
+  await expect(variant).toBeHidden();
+  await format.selectOption('parquet');
+  await expect(variant).toHaveValue('json');
+  await variant.selectOption('native');
+  await format.selectOption('csv');
+  await expect(variant).toBeHidden();
+  await format.selectOption('parquet');
+  await expect(variant).toHaveValue('json');
+  await variant.selectOption('native');
+  await dialog.getByRole('textbox', { name: /^id/ }).fill('lake');
+  await dialog.screenshot({ path: test.info().outputPath('destination-native-variant.png') });
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+
+  const saved = await api.get(`/api/areas/shared${ON}`);
+  expect(saved.config.destinations).toMatchObject([
+    { id: 'lake', type: 's3', format: 'parquet', variant: 'native' },
+  ]);
+});
+
 // A10, sources and destinations from a form. Nothing answers at the source's endpoint: holding a listing source
 // is the leader's choice of worker, whether or not its listing succeeds.
 test('A10: the Sources page names the worker that holds a listing source', async ({

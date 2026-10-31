@@ -125,12 +125,13 @@
   }
 
   /** What the shared format select edits: a destination's `format`, the `field` only `text` and `bytes` write,
-   * the `newlines` only `bytes` reads, the `schemaRegistry` only a stream's `avro` registers in, and the
+   * the `newlines` only `bytes` reads, the `variant` only `parquet` reads, the `schemaRegistry` only a stream's `avro` registers in, and the
    * `compression` an Avro file has no `lz4` of. */
   type Formatted = {
     format?: string;
     field?: string;
     newlines?: string;
+    variant?: string;
     schemaRegistry?: SchemaRegistry;
     compression?: Compression;
   };
@@ -808,6 +809,27 @@
         </Field>
       </Nested>
     {/if}
+    {#if o.format === 'parquet'}
+      <Nested>
+        <Field field="variant" label="variant">
+          {#snippet help()}
+            <code>json</code>: a variant is its JSON text, a <code>string</code>.
+            <code>native</code>: Parquet's own <code>variant</code>, each value of its own type.
+          {/snippet}
+          <select
+            value={o.variant ?? 'json'}
+            onchange={(e) => {
+              const v = e.currentTarget.value;
+              if (v === 'native') o.variant = v;
+              else delete o.variant;
+            }}
+          >
+            <option value="json">json</option>
+            <option value="native">native</option>
+          </select>
+        </Field>
+      </Nested>
+    {/if}
     {#if isCloud(o)}
       <TlsFields value={o} farEnd="destination" />
     {/if}
@@ -960,6 +982,8 @@
         else d.format = v;
         // Only bytes reads newlines; the load refuses it beside any other format.
         if (v !== 'bytes') delete d.newlines;
+        // Only parquet reads variant.
+        if (v !== 'parquet') delete d.variant;
         // Only a stream's Avro registers in a schema registry, and an Avro file has no lz4.
         if (v !== 'avro') delete d.schemaRegistry;
         else if (formats === AVRO_STREAM_FORMATS) d.schemaRegistry ??= { url: '' };

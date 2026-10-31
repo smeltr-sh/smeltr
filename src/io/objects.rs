@@ -189,7 +189,7 @@ fn attributes(content_type: &'static str, storage_class: Option<&str>) -> Attrib
 /// What an object's key ends with.
 fn extension(format: &ObjectFormat, compression: Compression) -> String {
     let format = match format {
-        ObjectFormat::Parquet => return "parquet".into(),
+        ObjectFormat::Parquet { .. } => return "parquet".into(),
         ObjectFormat::Avro => return "avro".into(),
         ObjectFormat::Ndjson => "ndjson",
         ObjectFormat::Csv => "csv",
@@ -209,7 +209,7 @@ fn extension(format: &ObjectFormat, compression: Compression) -> String {
 /// An object's content type. Parquet and Avro compress inside the file, so their types never name the codec.
 fn content_type(format: &ObjectFormat, compression: Compression) -> &'static str {
     match (format, compression) {
-        (ObjectFormat::Parquet, _) => "application/vnd.apache.parquet",
+        (ObjectFormat::Parquet { .. }, _) => "application/vnd.apache.parquet",
         (ObjectFormat::Avro, _) => "application/avro",
         (_, Compression::Gzip) => "application/gzip",
         (_, Compression::Snappy) => "application/x-snappy-framed",
@@ -249,7 +249,10 @@ pub fn destination(
                 });
                 part_of.insert(route, at);
             }
-            let schemas = types.into_iter().map(Schema::new).collect::<Result<Vec<_>, _>>()?;
+            let mut schemas = types.into_iter().map(Schema::new).collect::<Result<Vec<_>, _>>()?;
+            if let ObjectFormat::Parquet { native_variants: true } = config.format {
+                schemas = schemas.into_iter().map(Schema::with_native_variants).collect();
+            }
             let format: Arc<dyn FileFormat> = match config.format {
                 ObjectFormat::Avro => Arc::new(AvroFormat::new(schemas, config.compression)?),
                 ObjectFormat::Csv => Arc::new(CsvFormat::new(schemas, config.compression)),

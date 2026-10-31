@@ -3863,6 +3863,11 @@ fn check_objects(id: &str, o: &ObjectSettingsDto, url: &str, tls: &TlsDto, error
             "destination {id:?} names newlines, which only the \"bytes\" format reads"
         ));
     }
+    if o.variant.is_some() && o.format != ObjectFormatDto::Parquet {
+        errors.at("variant").push(format!(
+            "destination {id:?} names variant, which only the \"parquet\" format reads"
+        ));
+    }
     if o.format == ObjectFormatDto::Avro && o.compression == CompressionDto::Lz4 {
         errors.at("compression").push(format!(
             "destination {id:?} writes Avro compressed with lz4, which Avro has no codec for; use \"gzip\", \"snappy\", \"zstd\" or \"none\""
@@ -5054,7 +5059,9 @@ fn to_objects(
         format: match o.format {
             ObjectFormatDto::Ndjson => ObjectFormat::Ndjson,
             ObjectFormatDto::Json => ObjectFormat::Json,
-            ObjectFormatDto::Parquet => ObjectFormat::Parquet,
+            ObjectFormatDto::Parquet => ObjectFormat::Parquet {
+                native_variants: o.variant == Some(VariantDto::Native),
+            },
             ObjectFormatDto::Avro => ObjectFormat::Avro,
             ObjectFormatDto::Csv => ObjectFormat::Csv,
             ObjectFormatDto::Bytes => ObjectFormat::Bytes {

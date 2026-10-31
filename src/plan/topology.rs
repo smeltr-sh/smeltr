@@ -1596,7 +1596,7 @@ impl DestinationKind {
             DestinationKind::Objects(c) => match &c.format {
                 ObjectFormat::Ndjson
                 | ObjectFormat::Json
-                | ObjectFormat::Parquet
+                | ObjectFormat::Parquet { .. }
                 | ObjectFormat::Avro
                 | ObjectFormat::Csv => Payload::Record,
                 ObjectFormat::Text { field } => Payload::Text { field: field.clone() },
@@ -2663,8 +2663,9 @@ pub enum ObjectFormat {
     Json,
     /// One field's text per line.
     Text { field: std::sync::Arc<str> },
-    /// One Parquet file, its columns the record of the route whose rows it holds (`CompiledTopology::records`).
-    Parquet,
+    /// One Parquet file, its columns the record of the route whose rows it holds (`CompiledTopology::records`). With
+    /// `native_variants`, a variant is Parquet's variant rather than JSON text (`parquet::Schema::with_native_variants`).
+    Parquet { native_variants: bool },
     /// One Avro container file, its schema the record of the route whose rows it holds, as `Parquet`'s is.
     Avro,
     /// One CSV file, a column per leaf of the record of the route whose rows it holds, as `Parquet`'s is (`io::csv`).
@@ -2681,7 +2682,7 @@ impl ObjectFormat {
     /// line formats, which write each row as egress made it.
     pub fn column_format(&self) -> Option<&'static str> {
         match self {
-            ObjectFormat::Parquet => Some("Parquet"),
+            ObjectFormat::Parquet { .. } => Some("Parquet"),
             ObjectFormat::Avro => Some("Avro"),
             ObjectFormat::Csv => Some("CSV"),
             ObjectFormat::Ndjson | ObjectFormat::Json | ObjectFormat::Text { .. } | ObjectFormat::Bytes { .. } => None,

@@ -3821,6 +3821,23 @@
         ]
       },
       {
+        "name": "variant",
+        "type": "string",
+        "absent": "`json`",
+        "examples": ["native"],
+        "what": "How a `parquet` object holds a variant. Only with format `parquet`.",
+        "values": [
+          {
+            "value": "json",
+            "what": "Writes its JSON text as a `string`."
+          },
+          {
+            "value": "native",
+            "what": "Writes Parquet's own `variant` type, each value of its own type."
+          }
+        ]
+      },
+      {
         "name": "compression",
         "type": "string",
         "default": "gzip",
@@ -5271,6 +5288,7 @@
               "format",
               "field",
               "newlines",
+              "variant",
               "certificate",
               "trustedAuthorities",
               "trustPublic"
@@ -5370,6 +5388,7 @@
               "format",
               "field",
               "newlines",
+              "variant",
               "certificate",
               "trustedAuthorities",
               "trustPublic"
@@ -5534,6 +5553,7 @@
               "format",
               "field",
               "newlines",
+              "variant",
               "certificate",
               "trustedAuthorities",
               "trustPublic"
@@ -5639,7 +5659,8 @@
               "prefix",
               "format",
               "field",
-              "newlines"
+              "newlines",
+              "variant"
             ]
           },
           {

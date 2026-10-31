@@ -969,6 +969,8 @@ export interface ObjectSettings {
   field?: string;
   /** What `bytes` does with a row that holds a line break. Absent is `escape`. */
   newlines?: 'escape' | 'refuse';
+  /** How `parquet` holds a variant: its JSON text, or Parquet's own variant. Absent is `json`. */
+  variant?: 'json' | 'native';
   /** Absent is `gzip`. */
   compression?: Compression;
   inFlight?: number;
