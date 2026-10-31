@@ -167,7 +167,7 @@ fn put_uint(out: &mut Vec<u8>, v: usize, size: usize) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A variant built by `build`, in this crate's encoding.
@@ -178,7 +178,7 @@ mod tests {
     }
 
     /// The value as JSON-like text, read from the encoding with `metadata`'s keys: what a reader of the spec sees.
-    fn read(metadata: &[u8], value: &[u8]) -> String {
+    pub(crate) fn read(metadata: &[u8], value: &[u8]) -> String {
         assert_eq!(metadata[0] & 0x0f, VERSION);
         let size = (metadata[0] >> 6) as usize + 1;
         let uint = |b: &[u8], at: usize, size: usize| {
