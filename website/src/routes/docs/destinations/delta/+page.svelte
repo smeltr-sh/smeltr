@@ -112,9 +112,9 @@
         </li>
         <li>it sets no check constraint;</li>
         <li>
-          if it sets <code>delta.enableIcebergCompatV2</code>, it maps columns, does not enable
-          deletion vectors, gives every array's element an id in
-          <code>delta.columnMapping.nested.ids</code>, and records only type changes Iceberg makes;
+          if it sets <code>delta.enableIcebergCompatV2</code> to <code>true</code>, it maps columns,
+          does not enable deletion vectors, gives every array's element an id in
+          <code>delta.columnMapping.nested.ids</code>, and records only type changes Iceberg allows;
         </li>
         <li>
           no column is generated, has a default or carries an invariant, and every column is
@@ -387,16 +387,17 @@
       <strong>… enables deletion vectors …</strong>
     </dt>
     <dd>
-      The table breaks a rule of IcebergCompatV2, so an Iceberg reader could not read what the
-      destination adds. Write to another table.
+      IcebergCompatV2 needs the table to map its columns and to have no deletion vectors; this table
+      does not meet that, so an Iceberg reader could not read what the destination adds. Write to
+      another table.
     </dd>
     <dt>
       <strong>the table is IcebergCompatV2, and its column … gives … no id …</strong> or
-      <strong>… changed type as Iceberg does not …</strong>
+      <strong>… changed type in a way Iceberg does not allow …</strong>
     </dt>
     <dd>
       Another writer left an array's element without its id, or changed a column's type in a way
-      Iceberg does not. Write to another table.
+      Iceberg does not allow. Write to another table.
     </dd>
     <dt><strong>the table has the check constraint …</strong></dt>
     <dd>

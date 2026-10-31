@@ -496,7 +496,7 @@ pub fn not_iceberg(schema: &StructType) -> Option<String> {
             !from.zip(to).is_some_and(|(from, to)| iceberg_widens(from, to))
         })?;
         Some(format!(
-            "the table is IcebergCompatV2, and its column {} changed type as Iceberg does not: {change}",
+            "the table is IcebergCompatV2, and its column {} changed type in a way Iceberg does not allow: {change}",
             f.name
         ))
     })
