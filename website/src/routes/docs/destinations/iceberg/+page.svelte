@@ -201,9 +201,10 @@
         <tr><th scope="row"><code>str</code></th><td><code>string</code></td></tr>
         <tr
           ><th scope="row"><code>variant</code></th><td
-            ><code>string</code>, the value as JSON. A column added to a table of format version 3
-            is a <code>variant</code>, each value in it of its own type, a <code>duration</code> its count
-            of microseconds</td
+            ><code>string</code>, the value as JSON. A column the destination adds to a table of
+            format version 3 is Iceberg's <code>variant</code> instead: each value keeps its type,
+            except a
+            <code>duration</code>, which is its count of microseconds</td
           ></tr
         >
         <tr><th scope="row"><code>datetime</code></th><td><code>timestamptz</code></td></tr>
