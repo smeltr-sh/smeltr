@@ -1,5 +1,6 @@
 """Cuts ocsf-schema-compiler's output to what `schema::ocsf` reads: each class's and object's name, caption and
-attributes, a class's category for the dialog to group it by, and of each attribute its type, object type, array flag, requirement, caption, description and example.
+attributes, a class's category for the dialog to group it by, and of each attribute its type, object type, array
+flag, requirement, caption, description and example.
 
 Usage: cut_ocsf.py <compiled.json> <out.json>
 """
