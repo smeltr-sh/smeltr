@@ -697,7 +697,7 @@ fn fits(snapshot: &Snapshot) -> Result<(), String> {
     mapping(metadata).map(|_| ())
 }
 
-/// The table's column mapping. Err for mapping by id, which this writer does not write.
+/// The table's column mapping. Err for a mode this writer does not write, or a mapped table without maxColumnId.
 fn mapping(metadata: &Metadata) -> Result<Mapping, String> {
     match metadata.property("delta.columnMapping.mode").unwrap_or("none") {
         "none" => Ok(Mapping::None),
