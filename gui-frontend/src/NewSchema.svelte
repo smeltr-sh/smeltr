@@ -357,15 +357,17 @@
 
 {#snippet ecsRequirementsHelp()}
   <span class="option"
-    ><strong>ECS</strong> requires @timestamp and ecs.version, and recommends its <a
+    ><strong>ECS</strong> requires @timestamp and ecs.version, and recommends its
+    <a
       href="https://www.elastic.co/guide/en/ecs/current/ecs-guidelines.html#_ecs_field_levels"
       target="_blank"
       rel="noreferrer">core fields</a
     >.</span
   >
   <span class="option"
-    ><strong>Elastic Security</strong> requires five fields: @timestamp, ecs.version, event.kind, event.category and
-    event.type. It recommends the other fields its <a
+    ><strong>Elastic Security</strong> requires five fields: @timestamp, ecs.version, event.kind,
+    event.category and event.type. It recommends the other fields its
+    <a
       href="https://www.elastic.co/guide/en/security/current/siem-field-reference.html"
       target="_blank"
       rel="noreferrer">field reference</a

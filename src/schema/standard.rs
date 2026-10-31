@@ -9,6 +9,10 @@ use serde_json::Value;
 /// ECS's `fields.csv`.
 pub const ECS: &str = include_str!("standards/ecs-fields.csv");
 
+/// The ECS fields Elastic Security's field reference requires and uses: a line for each, its requirement and its
+/// name, beneath a comment line.
+pub const ELASTIC_SECURITY: &str = include_str!("standards/elastic-security.txt");
+
 /// The compiled OCSF, parsed afresh on each call: a schema is added seldom, and the parse is held only while it reads.
 pub fn ocsf() -> Value {
     serde_json::from_str(include_str!("standards/ocsf.json")).expect("ocsf.json is the refresh's")

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Replaces the ECS and OCSF releases smeltr carries (`schema::standard`): ECS's generated/csv/fields.csv at tag
-# v<ecs>, and OCSF at tag <ocsf> compiled by ocsf-schema-compiler, which needs Python 3.14 (run here through uv), and
-# cut to what `schema::ocsf` reads, so the binary carries a third of it.
+# v<ecs>, the ECS fields Elastic Security's field reference requires and uses, as the page stands, and OCSF at tag
+# <ocsf> compiled by ocsf-schema-compiler, which needs Python 3.14 (run here through uv), and cut to what
+# `schema::ocsf` reads, so the binary carries a third of it.
 set -euo pipefail
 ecs=$1
 ocsf=$2
@@ -10,6 +11,9 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 curl -fsSL "https://raw.githubusercontent.com/elastic/ecs/v$ecs/generated/csv/fields.csv" -o "$out/ecs-fields.csv"
+curl -fsSL https://raw.githubusercontent.com/elastic/docs-content/main/reference/security/fields-and-object-schemas/siem-field-reference.md \
+    -o "$work/elastic-security.md"
+python3 -I "$(dirname "$0")/elastic_security.py" "$work/elastic-security.md" "$out/elastic-security.txt"
 
 git -c advice.detachedHead=false clone -q --depth 1 --branch "$ocsf" https://github.com/ocsf/ocsf-schema.git "$work/ocsf"
 uvx --python 3.14 ocsf-schema-compiler "$work/ocsf" > "$work/compiled.json"

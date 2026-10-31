@@ -111,6 +111,36 @@ fn from_yaml(text: &str) -> Result<Vec<Ecs>, String> {
         .collect()
 }
 
+/// Whose requirements an ECS schema's fields take.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Requirements {
+    /// ECS's own: what it requires, and its core fields recommended.
+    #[default]
+    Ecs,
+    /// Elastic Security's field reference (`standard::ELASTIC_SECURITY`): what it requires of all data, and the
+    /// fields it uses recommended. ECS's other fields are optional.
+    ElasticSecurity,
+}
+
+/// `fields` with the requirements `whose` gives them. A field Elastic Security names that the ECS read has not is
+/// passed over: its reference can name a field another release of ECS lacks.
+pub fn with_requirements(mut fields: Vec<SchemaFieldDto>, whose: Requirements) -> Vec<SchemaFieldDto> {
+    if whose == Requirements::ElasticSecurity {
+        let asks: std::collections::HashMap<&str, Requirement> = super::standard::ELASTIC_SECURITY
+            .lines()
+            .filter_map(|line| {
+                let (level, name) = line.split_once(' ')?;
+                Some((name, Requirement::named(level)?))
+            })
+            .collect();
+        for f in &mut fields {
+            f.requirement = asks.get(f.field.as_str()).copied().unwrap_or_default();
+        }
+    }
+    fields
+}
+
 /// How much a schema asks for a field ECS requires or not, at its level.
 fn requirement(required: bool, level: &str) -> Requirement {
     match (required, level) {
@@ -288,6 +318,25 @@ mod tests {
             fields[0].elasticsearch,
             mapped(json!({ "type": "keyword", "fields": { "text": { "type": "match_only_text" } } }))
         );
+    }
+
+    #[test]
+    fn elastic_securitys_requirements_replace_ecss() {
+        let fields = with_requirements(
+            read(super::super::standard::ECS).unwrap(),
+            Requirements::ElasticSecurity,
+        );
+        let requirement = |name| get(&fields, name).requirement;
+        assert_eq!(requirement("@timestamp"), Requirement::Required);
+        assert_eq!(requirement("event.kind"), Requirement::Required, "core in ECS");
+        assert_eq!(requirement("host.name"), Requirement::Recommended);
+        assert_eq!(
+            requirement("agent.name"),
+            Requirement::Optional,
+            "core in ECS, unnamed by Elastic Security"
+        );
+        let own = with_requirements(read(super::super::standard::ECS).unwrap(), Requirements::Ecs);
+        assert_eq!(get(&own, "agent.name").requirement, Requirement::Recommended);
     }
 
     #[test]

@@ -38,6 +38,9 @@ pub struct ReadRequest {
     /// Read the release of ECS or OCSF smeltr carries (`schema::standard`) rather than `text`.
     #[serde(default)]
     pub built_in: bool,
+    /// Whose requirements an ECS schema's fields take.
+    #[serde(default)]
+    pub requirements: crate::schema::ecs::Requirements,
     /// The OCSF class to read.
     #[serde(default)]
     pub class: String,
@@ -74,8 +77,10 @@ pub fn read(req: &ReadRequest) -> Result<ReadSchema, String> {
                 preview: None,
             });
         }
-        ReadFormat::Ecs if req.built_in => crate::schema::ecs::read(standard::ECS)?,
-        ReadFormat::Ecs => crate::schema::ecs::read(&req.text)?,
+        ReadFormat::Ecs => {
+            let text = if req.built_in { standard::ECS } else { &req.text };
+            crate::schema::ecs::with_requirements(crate::schema::ecs::read(text)?, req.requirements)
+        }
         ReadFormat::Ocsf if req.built_in => crate::schema::ocsf::read(&standard::ocsf(), &req.class, &req.cut)?,
         ReadFormat::Ocsf => crate::schema::ocsf::read(&json()?, &req.class, &req.cut)?,
         _ if req.built_in => return Err("only ECS and OCSF are built in".to_string()),
@@ -284,6 +289,7 @@ mod tests {
             format: ReadFormat::JsonSchema,
             text: doc.to_string(),
             built_in: false,
+            requirements: Default::default(),
             class: String::new(),
             cut: Default::default(),
             columns: None,
@@ -299,6 +305,7 @@ mod tests {
             format,
             text: String::new(),
             built_in: true,
+            requirements: Default::default(),
             class: class.to_string(),
             cut: Default::default(),
             columns: None,
@@ -325,6 +332,7 @@ mod tests {
             format,
             text: text.to_string(),
             built_in: false,
+            requirements: Default::default(),
             class: "authentication".to_string(),
             cut: Default::default(),
             columns: None,

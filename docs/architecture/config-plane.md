@@ -63,8 +63,10 @@ found by the header's names (`schema::csv`). The leader carries one release of
 ECS and one of OCSF, compiled and cut to what `schema::ocsf` reads, so either
 is read without its file (`schema::standard`); another release is uploaded.
 An imported ECS schema's required fields are required and its core fields
-recommended, and an imported OCSF attribute keeps the requirement OCSF gives
-it. A recommended field is exported to JSON Schema as a field a row may lack. A type is read as smeltr spells
+recommended, unless Elastic Security's requirements are asked for: then the
+fields its field reference requires are required, those it uses recommended
+and the rest optional (`standard::ELASTIC_SECURITY`, refreshed with ECS). An
+imported OCSF attribute keeps the requirement OCSF gives it. A recommended field is exported to JSON Schema as a field a row may lack. A type is read as smeltr spells
 it, or by the name a database, a spreadsheet or a standard gives it, from one
 map every reader shares (`schema::named`); a CSV's type the map does not know
 is read as the type it is told. Each reader gives the same table, checked as a

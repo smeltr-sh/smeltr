@@ -629,6 +629,25 @@ test('ECS and an OCSF class come in from the releases the leader carries', async
 });
 
 /** Saves the page, and answers `id`'s fields as the leader keeps them. */
+test("ECS read with Elastic Security's requirements asks for the fields Elastic Security uses", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const dialog = await addBuiltIn(admin, leader, 'ECS', 'siem');
+  await expect(dialog.getByLabel('Requirements', { exact: true })).toHaveValue('ecs');
+  await dialog.getByLabel('Requirements', { exact: true }).selectOption('elastic-security');
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const field = await saved(admin, api, 'siem');
+  expect(field('event.kind')?.requirement, 'required by Elastic Security').toBe('required');
+  expect(field('host.name')?.requirement, 'used by Elastic Security').toBe('recommended');
+  expect(
+    field('agent.name')?.requirement,
+    "core in ECS, but Elastic Security's only",
+  ).toBeUndefined();
+});
+
 async function saved(admin: Page, api: Api, id: string) {
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });

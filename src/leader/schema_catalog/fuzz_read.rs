@@ -4,7 +4,8 @@
 //! ECS: a field set drawn as ECS draws one, of every ECS type, arrays, objects, keys only their children name and
 //! multi-fields, written as both `fields.csv` and `ecs_flat.yml` with text that holds commas, quotes and line ends.
 //! Both read as the same schema, the YAML adding the settings it says, and that schema's Elasticsearch mapping is
-//! ECS's: each field as the type ECS gives it, each multi-field under its field's `fields`.
+//! ECS's: each field as the type ECS gives it, each multi-field under its field's `fields`. Each field takes the
+//! requirement ECS gives it, or Elastic Security's where those are asked for.
 //!
 //! A CSV of fields: a spreadsheet with its columns in any order and case, columns of its own, padded cells, blank
 //! rows and either line end reads as the fields it lists, and one with a row it cannot read names that row.
@@ -20,6 +21,7 @@ use crate::config_file::{Requirement, SchemaFieldDto};
 use crate::fuzz::{self, Coverage, Rng};
 use crate::io::elastic_mapping::types_for;
 use crate::schema::csv::TypeValue;
+use crate::schema::ecs::Requirements;
 use crate::schema::ocsf::{Cut, DEEPEST};
 
 /// Text a cell may hold, each piece one a CSV or YAML writer has to take care over.
@@ -49,12 +51,13 @@ fn quoted(cell: &str) -> String {
     }
 }
 
-fn read_as(format: ReadFormat, text: String) -> Result<Vec<SchemaFieldDto>, String> {
+fn read_as(format: ReadFormat, text: String, requirements: Requirements) -> Result<Vec<SchemaFieldDto>, String> {
     read(&ReadRequest {
         id: "fuzzed".into(),
         format,
         text,
         built_in: false,
+        requirements,
         class: String::new(),
         cut: Cut::default(),
         columns: None,
@@ -274,6 +277,9 @@ fn ecs_reads_the_same_from_its_csv_and_its_yaml_and_maps_as_ecs_says() {
                     "ecs a core field",
                     "ecs an extended field",
                     "ecs a setting the yaml says",
+                    "ecs ecs's own requirements",
+                    "ecs elastic security's requirements",
+                    "ecs a field elastic security names",
                 ]
                 .map(String::from),
             ),
@@ -297,9 +303,41 @@ fn ecs_reads_the_same_from_its_csv_and_its_yaml_and_maps_as_ecs_says() {
                 multi: Vec::new(),
             });
         }
-        let from_csv = read_as(ReadFormat::Ecs, ecs_csv(&fields)).map_err(|e| format!("the CSV: {e}"))?;
-        let from_yaml =
-            read_as(ReadFormat::Ecs, ecs_yaml(&fields, &["@timestamp"])).map_err(|e| format!("the YAML: {e}"))?;
+        // A field Elastic Security requires, which ECS only has at its core level.
+        if rng.chance(2) && !fields.iter().any(|f| f.name == "event" || f.name.starts_with("event.")) {
+            cov.reach("ecs a field elastic security names");
+            fields.push(Ecs {
+                name: "event.kind".into(),
+                ty: "keyword",
+                array: false,
+                core: true,
+                description: text(&mut rng),
+                example: "alert".into(),
+                numeric: false,
+                ignore_above: None,
+                multi: Vec::new(),
+            });
+        }
+        let whose = match rng.chance(2) {
+            true => {
+                cov.reach("ecs elastic security's requirements");
+                Requirements::ElasticSecurity
+            }
+            false => {
+                cov.reach("ecs ecs's own requirements");
+                Requirements::Ecs
+            }
+        };
+        let elastic_security = |name: &str| {
+            (standard::ELASTIC_SECURITY.lines())
+                .filter_map(|line| line.split_once(' '))
+                .find(|(_, n)| *n == name)
+                .and_then(|(level, _)| Requirement::named(level))
+                .unwrap_or_default()
+        };
+        let from_csv = read_as(ReadFormat::Ecs, ecs_csv(&fields), whose).map_err(|e| format!("the CSV: {e}"))?;
+        let from_yaml = read_as(ReadFormat::Ecs, ecs_yaml(&fields, &["@timestamp"]), whose)
+            .map_err(|e| format!("the YAML: {e}"))?;
         if from_csv.len() != from_yaml.len() {
             return Err(format!(
                 "{} fields from the CSV, {} from the YAML",
@@ -334,10 +372,11 @@ fn ecs_reads_the_same_from_its_csv_and_its_yaml_and_maps_as_ecs_says() {
         .document;
         for f in &fields {
             let read = (from_yaml.iter().find(|r| r.field == f.name)).ok_or_else(|| format!("no `{}`", f.name))?;
-            let requirement = match (f.name == "@timestamp", f.core) {
-                (true, _) => Requirement::Required,
-                (false, true) => Requirement::Recommended,
-                (false, false) => Requirement::Optional,
+            let requirement = match (whose, f.name == "@timestamp", f.core) {
+                (Requirements::ElasticSecurity, _, _) => elastic_security(&f.name),
+                (Requirements::Ecs, true, _) => Requirement::Required,
+                (Requirements::Ecs, false, true) => Requirement::Recommended,
+                (Requirements::Ecs, false, false) => Requirement::Optional,
             };
             cov.reach(match f.core {
                 true => "ecs a core field",
@@ -612,6 +651,7 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
             format: ReadFormat::Csv,
             text: text.clone(),
             built_in: false,
+            requirements: Default::default(),
             class: String::new(),
             cut: Cut::default(),
             columns: chosen.clone(),
@@ -816,6 +856,7 @@ fn an_ocsf_class_reads_as_deep_as_its_cut_and_at_the_levels_taken() {
             format: ReadFormat::Ocsf,
             text: doc.to_string(),
             built_in: false,
+            requirements: Default::default(),
             class: "c".into(),
             cut: cut.clone(),
             columns: None,
