@@ -14,7 +14,7 @@ use std::cmp::Ordering;
 use std::fmt;
 
 use crate::core::column::DataType;
-use crate::ops::civil::civil_from_days;
+use crate::ops::civil::{MICROS_PER_DAY, civil_from_days, valid_date_days};
 use crate::plan::topology::Records;
 
 /// A row group's size where a table sets none: Iceberg's default, and Spark's for Delta.
@@ -128,6 +128,68 @@ pub fn column_at(batch: &arrow_array::RecordBatch, names: &[String], at: usize) 
         }
     }
     Ok(Some(column))
+}
+
+/// `valid_date_days` for parts read as signed numbers; None for a negative or oversized one.
+pub fn date_days(y: i64, m: i64, d: i64) -> Option<i64> {
+    valid_date_days(y, u32::try_from(m).ok()?, u32::try_from(d).ok()?)
+}
+
+/// `want` numbers joined by `-`, the first of which may carry a sign.
+pub fn signed_parts(s: &str, want: usize) -> Option<Vec<i64>> {
+    let (negative, body) = match s.as_bytes().first()? {
+        b'-' => (true, &s[1..]),
+        b'+' => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let mut parts = body
+        .split('-')
+        .map(|p| (!p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())).then(|| p.parse().ok())?)
+        .collect::<Option<Vec<i64>>>()?;
+    if parts.len() != want {
+        return None;
+    }
+    if negative {
+        parts[0] = -parts[0];
+    }
+    Some(parts)
+}
+
+/// Days since 1970-01-01 of `2026-10-10`, its year signed.
+pub fn parse_date(s: &str) -> Option<i64> {
+    let [y, m, d] = signed_parts(s, 3)?[..] else {
+        return None;
+    };
+    date_days(y, m, d)
+}
+
+/// Microseconds of `2026-10-10T13:05:09.000123`; the fraction may have up to six digits, or be left out.
+pub fn parse_timestamp(s: &str) -> Option<i64> {
+    let (date, time) = s.split_once('T')?;
+    let (hms, fraction) = time.split_once('.').unwrap_or((time, ""));
+    let [h, m, sec] = hms
+        .split(':')
+        .map(|p| (p.len() == 2).then(|| p.parse::<i64>().ok())?)
+        .collect::<Option<Vec<_>>>()?[..]
+    else {
+        return None;
+    };
+    if h > 23 || m > 59 || sec > 59 || fraction.len() > 6 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let micros = format!("{fraction:0<6}").parse::<i64>().ok()?;
+    let day = parse_date(date)?;
+    day.checked_mul(MICROS_PER_DAY)?
+        .checked_add(((h * 60 + m) * 60 + sec) * 1_000_000 + micros)
+}
+
+/// The bytes of `s`, two hex digits for each.
+pub fn unhex(s: &str) -> Option<Vec<u8>> {
+    (s.len().is_multiple_of(2) && s.is_ascii()).then_some(())?;
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
 }
 
 /// Row `at` of `column` as a value of the table's `kind`; None when null.

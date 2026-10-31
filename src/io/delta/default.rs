@@ -10,8 +10,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType as Arrow, TimeUnit};
 
-use crate::io::table::Kind;
-use crate::ops::civil::valid_date_days;
+use crate::io::table::{Kind, parse_date, parse_timestamp, unhex};
 
 /// The key of a column's metadata that holds its default.
 pub const CURRENT_DEFAULT: &str = "CURRENT_DEFAULT";
@@ -117,20 +116,11 @@ fn typed(sql: &str, keywords: &[&str]) -> Option<String> {
 
 /// Days since 1970-01-01 of `yyyy-mm-dd`.
 fn date(text: String) -> Option<i32> {
-    days(&text)?.try_into().ok()
+    parse_date(&text)?.try_into().ok()
 }
 
-fn days(text: &str) -> Option<i64> {
-    let mut parts = text.splitn(3, '-');
-    let (y, m, d) = (parts.next()?, parts.next()?, parts.next()?);
-    if y.len() != 4 || m.len() != 2 || d.len() != 2 {
-        return None;
-    }
-    valid_date_days(y.parse().ok()?, m.parse().ok()?, d.parse().ok()?)
-}
-
-/// Microseconds since 1970-01-01T00:00:00Z of `yyyy-mm-dd[ hh:mm:ss[.ffffff]]`, then `Z` or `±hh:mm` where `zoned`
-/// and nothing where not. A time without zone is its wall clock in UTC.
+/// Microseconds since 1970-01-01T00:00:00Z of `yyyy-mm-dd[ hh:mm:ss[.ffffff]]`, `T` or a space between, then `Z` or
+/// `±hh:mm` where `zoned` and nothing where not. A time without zone is its wall clock in UTC.
 fn timestamp(text: String, zoned: bool) -> Option<i64> {
     let (date, time) = match text.split_once([' ', 'T']) {
         Some((date, time)) => (date, time),
@@ -141,25 +131,7 @@ fn timestamp(text: String, zoned: bool) -> Option<i64> {
         false => (time, 0),
         true => zone(time)?,
     };
-    let days = days(date)?;
-    let (hms, fraction) = time.split_once('.').unwrap_or((time, ""));
-    let mut parts = hms.splitn(3, ':');
-    let (h, min, s) = (parts.next()?, parts.next()?, parts.next()?);
-    if h.len() != 2
-        || min.len() != 2
-        || s.len() != 2
-        || fraction.len() > 6
-        || !fraction.bytes().all(|b| b.is_ascii_digit())
-    {
-        return None;
-    }
-    let (h, min, s): (i64, i64, i64) = (h.parse().ok()?, min.parse().ok()?, s.parse().ok()?);
-    if h > 23 || min > 59 || s > 59 {
-        return None;
-    }
-    let micros = format!("{fraction:0<6}").parse::<i64>().ok()?;
-    let secs = days * 86_400 + h * 3600 + min * 60 + s - offset_secs;
-    secs.checked_mul(1_000_000)?.checked_add(micros)
+    parse_timestamp(&format!("{date}T{time}"))?.checked_sub(offset_secs * 1_000_000)
 }
 
 /// `time` without its zone, `Z` or `±hh:mm`, and the zone's offset in seconds.
@@ -180,14 +152,7 @@ fn zone(time: &str) -> Option<(&str, i64)> {
 
 /// The bytes of `X'…'`, in hex.
 fn hex(sql: &str) -> Option<Vec<u8>> {
-    let text = sql.strip_prefix(['X', 'x']).and_then(string)?;
-    if text.len() % 2 != 0 {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
-        .collect()
+    unhex(&sql.strip_prefix(['X', 'x']).and_then(string)?)
 }
 
 #[cfg(test)]
