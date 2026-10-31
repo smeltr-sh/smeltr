@@ -824,8 +824,7 @@ mod tests {
         let Type::Struct(http) = &mut table.fields[1].field_type else {
             panic!("http is a struct")
         };
-        http.fields
-            .push(field(12, "v", prim(Primitive::Other("file".into()))));
+        http.fields.push(field(12, "v", prim(Primitive::Other("file".into()))));
         let parquet = crate::io::parquet::Schema::new(&record()).unwrap();
         assert_eq!(
             with_field_ids(parquet.arrow(), &table).unwrap_err(),
