@@ -21,7 +21,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ::parquet::file::metadata::ParquetMetaData;
-use arrow_schema::Schema as ArrowSchema;
+use arrow_schema::{Field, Schema as ArrowSchema};
 use object_store::Attributes;
 use serde_json::{Map, Value, json};
 
@@ -30,7 +30,7 @@ use super::identity::{self, Identity, Sequences};
 use super::log::{
     Action, DomainMetadata, Format, Log, Metadata, Protocol, Snapshot, Txn, commit_name, line, now_ms, uuid,
 };
-use super::schema::{self, Mapping, StructField, StructType, Type, Variants};
+use super::schema::{self, Defaulted, Mapping, StructField, StructType, Type, Variants};
 use super::unity::UnityCatalog;
 use crate::core::column::DataType;
 use crate::io::files::{
@@ -46,7 +46,7 @@ use crate::ops::civil::MICROS_PER_DAY;
 use crate::plan::topology::{DeltaDestinationConfig, HeldSecrets, Records, UnityCatalogTable};
 
 /// The writer features of a table this writer can write. A table needing any other is refused.
-const WRITER_FEATURES: [&str; 18] = [
+const WRITER_FEATURES: [&str; 19] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -74,6 +74,8 @@ const WRITER_FEATURES: [&str; 18] = [
     "icebergCompatV2",
     // Its variant columns are written unshredded, in Parquet's variant encoding (`io::parquet_variant`).
     "variantType",
+    // Each column the record does not write takes its default, where it is a literal; any other refuses the table.
+    "allowColumnDefaults",
 ];
 
 /// The domain that holds a row-tracking table's highest row id.
@@ -121,17 +123,9 @@ pub fn destination(
         &runtime,
     )?;
     let log = Log::new(store.clone(), runtime.clone(), config.stall_after, &root.key);
-    let unpartitioned_key_bytes = root.key(&format!("{}.parquet", "0".repeat(32))).len();
     let committer = DeltaCommitter::open(log, root, &config.partition_by, record).map_err(refused)?;
-    let partitioner = DeltaPartitioner {
-        columns: committer.partitions.clone(),
-        unpartitioned_key_bytes,
-    };
-    let file_schema = parquet::Schema::new(record).map_err(refused)?;
-    let file_schema = file_schema
-        .with_written(committer.written.clone())
-        .with_computed(committer.sequences.computed(&committer.schema))
-        .with_partition_columns(committer.partition_columns());
+    let partitioner = committer.partitioner().map_err(refused)?;
+    let file_schema = committer.file_schema().map_err(refused)?;
     let format = ParquetFormat::new(vec![file_schema], config.compression.into());
     // The protocol names no codec and no row group's size; a table names its files' size.
     let file_bytes = (committer.snapshot.metadata.property("delta.targetFileSize"))
@@ -261,8 +255,10 @@ struct DeltaCommitter {
     /// The route's record, and the schema the Parquet writer writes it with.
     record: DataType,
     arrow: Arc<ArrowSchema>,
-    /// `arrow` as the data files carry it, under the table's physical names.
+    /// `arrow` as the data files carry it, under the table's physical names, then `defaulted`.
     written: Arc<ArrowSchema>,
+    /// The table's columns the record does not write that take a default.
+    defaulted: Vec<Defaulted>,
     /// The table's schema as last read.
     schema: StructType,
     partitions: Vec<PartitionColumn>,
@@ -400,6 +396,47 @@ impl DeltaCommitter {
             .collect()
     }
 
+    /// The schema the record's files are written with: under the table's physical names, each column the record does
+    /// not write taking its default or its identity values, and the partition columns holding their partition's.
+    fn file_schema(&self) -> Result<parquet::Schema, String> {
+        Ok(parquet::Schema::new(&self.record)?
+            .with_written(self.written.clone())
+            .with_defaults(self.defaults())
+            .with_computed(self.sequences.computed(&self.schema))
+            .with_partition_columns(self.partition_columns()))
+    }
+
+    /// The partitioner of the record's rows, by the table's partition columns.
+    fn partitioner(&self) -> Result<DeltaPartitioner, String> {
+        Ok(DeltaPartitioner {
+            columns: self.partitions.clone(),
+            defaults: self.partition_defaults()?,
+            unpartitioned_key_bytes: self.root.key(&format!("{}.parquet", "0".repeat(32))).len(),
+        })
+    }
+
+    /// What each of the files' columns takes in a row: the record's value, or its column's default.
+    fn defaults(&self) -> Vec<parquet::WriteDefault> {
+        let written = self.arrow.fields().iter().map(|_| parquet::WriteDefault::Written);
+        written
+            .chain(
+                self.defaulted
+                    .iter()
+                    .map(|d| parquet::WriteDefault::Value(d.value.clone())),
+            )
+            .collect()
+    }
+
+    /// The value each partition column the record does not write takes: its default, else null.
+    fn partition_defaults(&self) -> Result<Vec<Option<Literal>>, String> {
+        (self.partitions.iter())
+            .map(|p| match self.defaulted.iter().find(|d| d.name == p.name) {
+                Some(d) => read(&d.value, 0, &p.kind, std::slice::from_ref(&p.name)),
+                None => Ok(None),
+            })
+            .collect()
+    }
+
     /// The committer of the table whose log is `log`, created from `record` and partitioned by `partition_by` when
     /// missing, the record's new columns added. Err when the table cannot be written.
     fn open(log: Log, root: Root, partition_by: &[String], record: &DataType) -> Result<DeltaCommitter, String> {
@@ -480,7 +517,8 @@ impl DeltaCommitter {
             }
         };
         let partitions = partition_columns(&snapshot.metadata, &schema)?;
-        let written = schema::physical(&arrow, &schema);
+        let defaulted = schema::defaulted(&arrow, &schema);
+        let written = files(&arrow, &schema, &defaulted);
         let sequences = Arc::new(Sequences::new(generated, log.clone()));
         Ok(DeltaCommitter {
             log,
@@ -492,6 +530,7 @@ impl DeltaCommitter {
             record: record.clone(),
             arrow,
             written,
+            defaulted,
             schema,
             partitions,
             txn_version: 0,
@@ -535,9 +574,12 @@ impl DeltaCommitter {
         if evolution.changed {
             return Err("another writer dropped a column the record writes".to_string());
         }
+        if schema::defaulted(&self.arrow, &schema) != self.defaulted {
+            return Err("another writer changed the default of a column the record does not write".to_string());
+        }
         // A column another writer widened still takes this writer's files of its earlier type, as the protocol lets a
         // table hold, and their stats are read by the schema they were written by.
-        let widened = schema::physical(&self.arrow, &schema) != self.written;
+        let widened = files(&self.arrow, &schema, &self.defaulted) != self.written;
         if widened && !schema::only_widened(&self.schema, &schema) {
             return Err("another writer changed a column the record writes".to_string());
         }
@@ -628,6 +670,19 @@ fn generated(
         }
     }
     Ok(generated)
+}
+
+/// The schema the data files are written with: `arrow` under the table's physical names (`schema::physical`), then each
+/// of `defaulted`.
+fn files(arrow: &ArrowSchema, schema: &StructType, defaulted: &[Defaulted]) -> Arc<ArrowSchema> {
+    let physical = schema::physical(arrow, schema);
+    if defaulted.is_empty() {
+        return physical;
+    }
+    let fields: Vec<Arc<Field>> = (physical.fields().iter().cloned())
+        .chain(defaulted.iter().map(|d| Arc::new(d.field.clone())))
+        .collect();
+    Arc::new(ArrowSchema::new_with_metadata(fields, physical.metadata().clone()))
 }
 
 /// Commit 0 of a table of `record`, partitioned by `partition_by`: a plain table, which every Delta reader opens. Its
@@ -821,6 +876,8 @@ fn uri_path(path: &str) -> String {
 /// it, an empty string for null.
 struct DeltaPartitioner {
     columns: Vec<PartitionColumn>,
+    /// The value each of `columns` takes in a row that does not write it.
+    defaults: Vec<Option<Literal>>,
     /// The length of a data file's key with no partition directories.
     unpartitioned_key_bytes: usize,
 }
@@ -842,12 +899,12 @@ impl Partitioner for DeltaPartitioner {
         let at = columns.row as usize;
         let mut path = Vec::with_capacity(self.columns.len());
         let mut values = Vec::with_capacity(self.columns.len());
-        for column in &self.columns {
+        for (column, default) in self.columns.iter().zip(&self.defaults) {
             let names = [column.name.clone()];
-            let value = column_at(batch, &names, at)?
-                .map(|c| read(&c, at, &column.kind, &names))
-                .transpose()?
-                .flatten();
+            let value = match column_at(batch, &names, at)? {
+                Some(c) => read(&c, at, &column.kind, &names)?,
+                None => default.clone(),
+            };
             let text = value
                 .as_ref()
                 .map(|v| partition_text(v, &column.kind))
@@ -1703,10 +1760,7 @@ mod tests {
         // Not nullable: every row takes a value.
         let table = identity_table(&record, &[], false, metadata);
         let mut committer = table.open(&record, &[]).unwrap();
-        let schema = parquet::Schema::new(&record)
-            .unwrap()
-            .with_written(committer.written.clone())
-            .with_computed(committer.sequences.computed(&committer.schema));
+        let schema = committer.file_schema().unwrap();
         let rows = host_rows(&schema, 3);
         assert!(table.commit(1).is_none(), "nothing is reserved before a row needs it");
         for row in &rows {
@@ -1854,6 +1908,132 @@ mod tests {
         let refused = committer.commit(&files);
         assert!(
             matches!(&refused, Err(CommitError::Transient(why)) if why.contains("changed the table's identity columns")),
+            "{refused:?}"
+        );
+    }
+
+    /// A table of `record` with the `allowColumnDefaults` feature and `columns` after the record's, partitioned by
+    /// `partition_by`.
+    fn defaults_table(record: &DataType, partition_by: &[&str], columns: &[Value]) -> Table {
+        let table = Table::new();
+        let mut actions: Vec<Value> = (create(record, &[]).unwrap().lines())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        for action in &mut actions {
+            if let Some(p) = action.get_mut("protocol") {
+                *p = json!({"minReaderVersion": 1, "minWriterVersion": 7, "writerFeatures": ["allowColumnDefaults"]});
+            }
+            if let Some(m) = action.get_mut("metaData") {
+                let mut schema: Value = serde_json::from_str(m["schemaString"].as_str().unwrap()).unwrap();
+                schema["fields"].as_array_mut().unwrap().extend_from_slice(columns);
+                m["schemaString"] = json!(schema.to_string());
+                m["partitionColumns"] = json!(partition_by);
+            }
+        }
+        table.put(0, &actions);
+        table
+    }
+
+    fn defaulted(name: &str, t: &str, nullable: bool, sql: &str) -> Value {
+        json!({"name": name, "type": t, "nullable": nullable, "metadata": {"CURRENT_DEFAULT": sql}})
+    }
+
+    #[test]
+    fn a_column_the_record_does_not_write_takes_its_default_in_every_row() {
+        use arrow_array::Array;
+        use arrow_array::cast::AsArray;
+        use arrow_array::types::{Date32Type, Int16Type};
+        let record = st(&[("host", DataType::Str)]);
+        let table = defaults_table(
+            &record,
+            &["p"],
+            &[
+                defaulted("n", "short", false, "7S"),
+                defaulted("d", "date", true, "DATE '1970-01-02'"),
+                defaulted("z", "string", true, "NULL"),
+                defaulted("p", "string", true, "'x'"),
+            ],
+        );
+        let mut committer = table.open(&record, &[]).unwrap();
+        let schema = committer.file_schema().unwrap();
+        let rows = host_rows(&schema, 3);
+
+        // The partition column takes its default too.
+        let partitioner = committer.partitioner().unwrap();
+        let owned = OwnedRecord {
+            columns: Some(rows[0].clone()),
+            ..Default::default()
+        };
+        let partition = partitioner.partition(&owned).unwrap();
+        assert_eq!(partition.path, ["p=x"]);
+        assert_eq!(partition.values, [("p".to_string(), "x".to_string())]);
+
+        let options = parquet::WriteOptions::from(crate::plan::topology::Compression::None);
+        let mut writer = parquet::FileWriter::of_partition(&schema, &options, &partition.values);
+        writer.write(&rows);
+        let (bytes, footer) = writer.finish();
+        let read = ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(Bytes::from(bytes))
+            .unwrap()
+            .build()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let n = read.column_by_name("n").unwrap().as_primitive::<Int16Type>();
+        assert_eq!((n.values().as_ref(), n.null_count()), (&[7, 7, 7][..], 0));
+        let d = read.column_by_name("d").unwrap().as_primitive::<Date32Type>();
+        assert_eq!(d.values().as_ref(), &[1, 1, 1]);
+        assert_eq!(read.column_by_name("z").unwrap().null_count(), 3);
+        let p = read.column_by_name("p").unwrap().as_string::<i32>();
+        assert_eq!(p.iter().collect::<Vec<_>>(), [Some("x"); 3]);
+
+        // Its stats are the file's own.
+        let mut data = file(&committer, &["p=x"], &[("p", "x")], Some(Arc::new(footer)));
+        data.record_count = 3;
+        committer.commit(&[data]).unwrap();
+        let actions = table.commit(1).unwrap();
+        let stats: Value = serde_json::from_str(adds(&actions)[0]["stats"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            (&stats["minValues"]["n"], &stats["maxValues"]["n"]),
+            (&json!(7), &json!(7))
+        );
+        assert_eq!(adds(&actions)[0]["partitionValues"], json!({"p": "x"}));
+    }
+
+    #[test]
+    fn a_default_this_writer_cannot_read_refuses_the_table() {
+        let record = st(&[("host", DataType::Str)]);
+        let refused = |column: Value| defaults_table(&record, &[], &[column]).refused(&record, &[]);
+        let why = refused(defaulted("t", "timestamp", true, "current_timestamp()"));
+        assert_eq!(
+            why,
+            "the table's column t carries CURRENT_DEFAULT, which this writer cannot honour"
+        );
+        let why = refused(defaulted("n", "long", false, "NULL"));
+        assert_eq!(
+            why,
+            "the table's column n is not nullable, and the record may leave it null"
+        );
+    }
+
+    #[test]
+    fn a_default_another_writer_changes_holds_commits_back() {
+        let record = st(&[("host", DataType::Str)]);
+        let table = defaults_table(&record, &[], &[defaulted("n", "long", true, "1")]);
+        let mut committer = table.open(&record, &[]).unwrap();
+        let mut meta = action(&table.commit(0).unwrap(), "metaData").clone();
+        let schema = meta["schemaString"]
+            .as_str()
+            .unwrap()
+            .replace("\"CURRENT_DEFAULT\":\"1\"", "\"CURRENT_DEFAULT\":\"2\"");
+        assert_ne!(schema, meta["schemaString"].as_str().unwrap());
+        meta["schemaString"] = json!(schema);
+        table.put(1, &[json!({"metaData": meta})]);
+        let files = [file(&committer, &[], &[], None)];
+        assert!(matches!(committer.commit(&files), Err(CommitError::Conflict)));
+        let refused = committer.commit(&files);
+        assert!(
+            matches!(&refused, Err(CommitError::Transient(why)) if why.contains("changed the default of a column")),
             "{refused:?}"
         );
     }
@@ -2253,6 +2433,7 @@ mod tests {
         let by = ["n", "host name", "ok", "ts"];
         let columns = partition_columns(&metadata(&schema, &[], &by), &schema).unwrap();
         let partitioner = DeltaPartitioner {
+            defaults: vec![None; columns.len()],
             columns: columns.clone(),
             unpartitioned_key_bytes: 0,
         };
@@ -2320,6 +2501,7 @@ mod tests {
         assert!(nulls.values.iter().all(|(_, v)| v.is_empty()), "{:?}", nulls.values);
 
         let near_full = DeltaPartitioner {
+            defaults: vec![None; columns.len()],
             columns,
             unpartitioned_key_bytes: 1000,
         };
@@ -2328,6 +2510,7 @@ mod tests {
 
         let unpartitioned = DeltaPartitioner {
             columns: Vec::new(),
+            defaults: Vec::new(),
             unpartitioned_key_bytes: 0,
         }
         .partition(&OwnedRecord::default())
