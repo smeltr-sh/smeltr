@@ -697,15 +697,18 @@ fn fits(snapshot: &Snapshot) -> Result<(), String> {
     mapping(metadata).map(|_| ())
 }
 
-/// The table's column mapping. Err for mapping by id, which this writer does not write.
+/// The table's column mapping. Err for a mode this writer does not write, or a mapped table without maxColumnId.
 fn mapping(metadata: &Metadata) -> Result<Mapping, String> {
     match metadata.property("delta.columnMapping.mode").unwrap_or("none") {
         "none" => Ok(Mapping::None),
-        "name" => {
+        // A writer writes both alike: physical names, and each column's id as its field id. Only readers differ.
+        mode @ ("name" | "id") => {
             let max_column_id = metadata
                 .property("delta.columnMapping.maxColumnId")
                 .and_then(|v| v.parse().ok())
-                .ok_or("the table maps columns by name and has no delta.columnMapping.maxColumnId")?;
+                .ok_or_else(|| {
+                    format!("the table maps columns by {mode} and has no delta.columnMapping.maxColumnId")
+                })?;
             Ok(Mapping::Name { max_column_id })
         }
         other => Err(format!("the table maps columns by {other}, which this writer does not")),
@@ -1036,7 +1039,7 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
-    use ::parquet::arrow::ArrowWriter;
+    use ::parquet::arrow::{ArrowWriter, PARQUET_FIELD_ID_META_KEY};
     use arrow_array::builder::{ListBuilder, StringBuilder};
     use arrow_array::{
         ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray, StructArray, TimestampMicrosecondArray,
@@ -1439,8 +1442,8 @@ mod tests {
         .unwrap();
         let why = table_with(&record, &[], configured("delta.constraints.positive", "a > 0")).refused(&record, &[]);
         assert!(why.contains("check constraint delta.constraints.positive"), "{why}");
-        let why = table_with(&record, &[], configured("delta.columnMapping.mode", "id")).refused(&record, &[]);
-        assert!(why.contains("maps columns by id"), "{why}");
+        let why = table_with(&record, &[], configured("delta.columnMapping.mode", "Name")).refused(&record, &[]);
+        assert!(why.contains("maps columns by Name"), "{why}");
         let why =
             table_with(&record, &[], configured("delta.checkpoint.writeStatsAsStruct", "true")).refused(&record, &[]);
         assert!(why.contains("writeStatsAsStruct to true"), "{why}");
@@ -1794,28 +1797,34 @@ mod tests {
     }
 
     #[test]
-    fn a_table_that_maps_its_columns_by_name_has_them_written_under_their_physical_names() {
+    fn a_table_that_maps_its_columns_by_name_or_id_has_them_written_under_their_physical_names_and_ids() {
         let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
         let mapped = schema::table_schema(&record, None, Mapping::Name { max_column_id: 0 }, None)
             .unwrap()
             .schema;
-        let table = table_with(&record, &["host"], |a| {
-            if let Some(p) = a.get_mut("protocol") {
-                *p = json!({"minReaderVersion": 2, "minWriterVersion": 5});
-            }
-            if let Some(m) = a.get_mut("metaData") {
-                m["schemaString"] = json!(mapped.to_json());
-                m["configuration"] =
-                    json!({"delta.columnMapping.mode": "name", "delta.columnMapping.maxColumnId": "2"});
-            }
-        });
+        for mode in ["name", "id"] {
+            let table = table_with(&record, &["host"], |a| {
+                if let Some(p) = a.get_mut("protocol") {
+                    *p = json!({"minReaderVersion": 2, "minWriterVersion": 5});
+                }
+                if let Some(m) = a.get_mut("metaData") {
+                    m["schemaString"] = json!(mapped.to_json());
+                    m["configuration"] =
+                        json!({"delta.columnMapping.mode": mode, "delta.columnMapping.maxColumnId": "2"});
+                }
+            });
 
-        let committer = table.open(&record, &["host"]).unwrap();
+            let committer = table.open(&record, &["host"]).unwrap();
 
-        let names: Vec<&String> = committer.written.fields().iter().map(|f| f.name()).collect();
-        assert_eq!(names, [&physical(&mapped, "host"), &physical(&mapped, "n")]);
-        assert!(names[0].starts_with("col-"), "{names:?}");
-        assert_eq!(committer.partitions[0].physical, physical(&mapped, "host"));
+            let names: Vec<&String> = committer.written.fields().iter().map(|f| f.name()).collect();
+            assert_eq!(names, [&physical(&mapped, "host"), &physical(&mapped, "n")]);
+            assert!(names[0].starts_with("col-"), "{names:?}");
+            let ids: Vec<Option<&str>> = (committer.written.fields().iter())
+                .map(|f| f.metadata().get(PARQUET_FIELD_ID_META_KEY).map(String::as_str))
+                .collect();
+            assert_eq!(ids, [Some("1"), Some("2")], "{mode}");
+            assert_eq!(committer.partitions[0].physical, physical(&mapped, "host"));
+        }
     }
 
     #[test]

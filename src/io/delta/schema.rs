@@ -208,8 +208,8 @@ fn parse_field(value: &Value) -> Result<StructField, String> {
     })
 }
 
-/// The table's column mapping: `delta.columnMapping.mode` absent or `none`, or `name` with
-/// `delta.columnMapping.maxColumnId`.
+/// The table's column mapping: `delta.columnMapping.mode` absent or `none`, or `name` or `id` with
+/// `delta.columnMapping.maxColumnId`. A writer writes `name` and `id` alike.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mapping {
     None,
