@@ -287,8 +287,8 @@ pub struct SecurityEvent {
     /// [`Actor::id`]: a user id, or a reserved one for what no person asked for.
     pub actor: String,
     /// What was attempted, in a fixed vocabulary: `login`, `logout`, `password-change`, `account-create`,
-    /// `account-disable`, `account-enable`, `password-reset`, `revoke-sessions`, `bootstrap`, `recover`, `role-put`,
-    /// `role-delete`, `account-rename`, `account-access`, `key-create`, `key-revoke`.
+    /// `account-disable`, `account-enable`, `account-delete`, `password-reset`, `revoke-sessions`, `bootstrap`,
+    /// `recover`, `role-put`, `role-delete`, `account-rename`, `account-access`, `key-create`, `key-revoke`.
     pub action: String,
     /// What it was done to -- a user id, usually. Empty when the action names no object.
     pub target: String,

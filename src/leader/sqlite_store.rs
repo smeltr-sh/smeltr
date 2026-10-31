@@ -5109,7 +5109,7 @@ mod tests {
             .unwrap();
         for id in ["u_2", "u_a"] {
             s.set_user_enabled(id, false, &ev("account-disable")).unwrap().unwrap();
-            s.delete_user(id, &ev("delete")).unwrap().unwrap();
+            s.delete_user(id, &ev("account-delete")).unwrap().unwrap();
             assert!(s.get_user(id).unwrap().is_none());
         }
         assert_eq!(s.list_users().unwrap().len(), 1);
@@ -5153,7 +5153,7 @@ mod tests {
         s.set_user_enabled("i_1", false, &key_account_event("account-disable"))
             .unwrap()
             .unwrap();
-        s.delete_user("i_1", &ev("delete")).unwrap().unwrap();
+        s.delete_user("i_1", &ev("account-delete")).unwrap().unwrap();
         assert!(s.api_key_by_hash("hash-1").unwrap().is_none());
     }
 
@@ -5168,16 +5168,19 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(s.delete_user("u_2", &ev("delete")).unwrap(), Err(AccountError::Enabled));
+        assert_eq!(
+            s.delete_user("u_2", &ev("account-delete")).unwrap(),
+            Err(AccountError::Enabled)
+        );
         s.set_user_enabled("u_1", false, &ev("account-disable"))
             .unwrap()
             .unwrap();
         assert_eq!(
-            s.delete_user("u_1", &ev("delete")).unwrap(),
+            s.delete_user("u_1", &ev("account-delete")).unwrap(),
             Err(AccountError::Recovery)
         );
         assert_eq!(
-            s.delete_user("u_none", &ev("delete")).unwrap(),
+            s.delete_user("u_none", &ev("account-delete")).unwrap(),
             Err(AccountError::NoSuchUser)
         );
     }

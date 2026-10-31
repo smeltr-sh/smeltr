@@ -450,7 +450,7 @@ pub async fn delete_account(
     actor: axum::Extension<Actor>,
     Path(id): Path<String>,
 ) -> Response {
-    let event = accounts::event_for(&actor, "delete", &id, "ok");
+    let event = accounts::event_for(&actor, "account-delete", &id, "ok");
     let store = auth.store.clone();
     let target = id.clone();
     match store_call(move || store.delete_user(&target, &event)).await {
