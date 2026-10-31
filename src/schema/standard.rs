@@ -73,7 +73,11 @@ mod tests {
         let ecs = crate::schema::ecs::read(ECS).unwrap();
         for line in ELASTIC_SECURITY.lines().skip(1) {
             let (_, name) = line.split_once(' ').unwrap();
-            assert!(ecs.iter().any(|f| f.field == name), "`{name}` is not in ECS {}", ecs_version());
+            assert!(
+                ecs.iter().any(|f| f.field == name),
+                "`{name}` is not in ECS {}",
+                ecs_version()
+            );
         }
     }
 
