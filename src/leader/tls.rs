@@ -2502,7 +2502,11 @@ pub(crate) mod tests {
         for file in [CA_CERT, CA_KEY, SERVED] {
             assert!(dir.join(file).exists(), "{file} was not written");
         }
-        assert_eq!(materials.ca_pem, std::fs::read(dir.join(CA_CERT)).unwrap());
+        // The certificates, not the bytes: on Windows rcgen writes CRLF, and a root cut from its file ends in LF.
+        assert_eq!(
+            ders(&materials.ca_pem, CA_CERT).unwrap(),
+            ders(&std::fs::read(dir.join(CA_CERT)).unwrap(), CA_CERT).unwrap()
+        );
         assert_eq!(served(&dir).unwrap().unwrap().name, OWN_ENTRY);
         assert!(!materials.supplied, "the leader's own entry is not an operator's");
     }
