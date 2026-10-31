@@ -101,8 +101,8 @@
           <code>columnMapping</code>, <code>v2Checkpoint</code>, <code>domainMetadata</code>,
           <code>deletionVectors</code>, <code>vacuumProtocolCheck</code>,
           <code>timestampNtz</code>, <code>clustering</code>, <code>rowTracking</code>,
-          <code>typeWidening</code>, <code>identityColumns</code> and
-          <code>inCommitTimestamp</code>;
+          <code>typeWidening</code>, <code>identityColumns</code>,
+          <code>inCommitTimestamp</code> and <code>materializePartitionColumns</code>;
         </li>
         <li>its files are Parquet;</li>
         <li>
@@ -293,7 +293,10 @@
   <pre><code>{layout}</code></pre>
   <p>
     A null or empty partition value is written as <code>__HIVE_DEFAULT_PARTITION__</code> in the
-    path. A row whose partition values would make a file's key longer than 1024 bytes is
+    path. Each file also holds the partition columns, which a table that names
+    <code>materializePartitionColumns</code> requires. Where a partition value is empty, the file
+    holds null for that column. A row whose partition values would make a file's key longer than
+    1024 bytes is
     <a href="/docs/delivery#refused">refused</a>.
   </p>
   <p>
