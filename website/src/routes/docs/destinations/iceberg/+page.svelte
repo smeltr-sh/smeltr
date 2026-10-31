@@ -71,8 +71,8 @@
     </li>
     <li>
       A table that exists is of
-      <a href="https://iceberg.apache.org/spec/#format-versioning">format version</a> 2 and not encrypted.
-      A table the destination creates is of version 2.
+      <a href="https://iceberg.apache.org/spec/#format-versioning">format version</a> 2 or 3 and not encrypted.
+      A table the destination creates is of format version 2.
     </li>
     <li>
       Give the principal the destination signs in to the catalog as permission to load and update
@@ -177,7 +177,8 @@
     fields as structs and arrays as lists. A missing table is created with that schema and with
     <code>partitionBy</code> as its partition spec. A table that exists keeps its columns and its
     spec: a field it lacks, at any depth, is added as an optional column before any file is written,
-    and a column the record lacks reads as null in the rows written. A field that can hold no value,
+    and a column the record lacks takes its write default in the rows written, or null where it has
+    none. A field that can hold no value,
     <code>null</code> or a list or closed struct of nothing else, has no column. Each field is
     written as the Iceberg type of its
     <a href="/docs/code-reference#types">record type</a>:
@@ -213,7 +214,8 @@
   </div>
   <p>
     Every column the destination writes is optional. It refuses to start when the table holds a
-    field as another type, or has a required column the record may leave null or does not write.
+    field as another type, or has a required column the record may leave null, or does not write and
+    that has no write default.
   </p>
 
   <h2 id="how-it-works">How it works</h2>
@@ -232,9 +234,11 @@
     everything they hold. A commit closes every open file, writes a manifest of the new files and a
     manifest list under the table's metadata location, merging the parent's small manifests as the
     table's
-    <code>commit.manifest.*</code> properties say, and asks the catalog to append them as the table's
-    next snapshot on top of the one it read. A batch is acknowledged once the commit holding its records
-    lands.
+    <code>commit.manifest.*</code> properties say, and asks the catalog to append them as the
+    table's next snapshot on top of the one it read. In a table of format version 3, the snapshot
+    gives its manifests row ids from the table's <code>next-row-id</code>, as the spec's
+    <a href="https://iceberg.apache.org/spec/#row-lineage">row lineage</a> asks. A batch is acknowledged
+    once the commit holding its records lands.
   </p>
   <p>
     A commit another writer beat to the table is made again at once on top of the new snapshot, up
@@ -291,10 +295,30 @@
     <dt><strong>the table's column … is required …</strong></dt>
     <dd>
       Every column the destination writes is optional. Make the column optional in the table, or
-      send the records to a table of their own.
+      send the records to a table of their own. On a table of format version 3, you can instead give
+      the column a write default, which the destination writes where the record does not write the
+      column.
     </dd>
-    <dt><strong>it is of format version …, and only version 2 is written</strong></dt>
-    <dd>Write to a table of format version 2.</dd>
+    <dt><strong>the table's column … has the write default …, which is not of type …</strong></dt>
+    <dd>
+      The column's write default is not a value of its type as the Iceberg spec writes one. Set a
+      default of the column's type in the table.
+    </dd>
+    <dt><strong>it is of format version …, and versions 2 and 3 are written</strong></dt>
+    <dd>
+      Upgrade a version 1 table in place in Spark with
+      <code
+        >ALTER TABLE &lt;namespace&gt;.&lt;table&gt; SET TBLPROPERTIES ('format-version'='2')</code
+      >, which rewrites no data file. A table of a later version is not written: write to a table of
+      format version 2 or 3.
+    </dd>
+    <dt>
+      <strong
+        >its partition field … is a transform of several columns, and only a transform of one column
+        is written</strong
+      >
+    </dt>
+    <dd>Write to a table whose partition fields each transform one column.</dd>
     <dt><strong>it is encrypted, and an encrypted table is not written</strong></dt>
     <dd>Write to a table that is not encrypted.</dd>
     <dt>

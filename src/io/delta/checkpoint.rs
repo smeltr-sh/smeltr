@@ -832,10 +832,7 @@ fn retention_ms(metadata: &Metadata, key: &str) -> Result<Option<i64>, String> {
 /// checkpoint so old. `newest` is the checkpoint just written. A V2 checkpoint's sidecars are left to the writer that
 /// wrote them.
 fn clean(log: &Log, metadata: &Metadata, newest: &Checkpoint, now: i64) -> Result<(), String> {
-    if metadata
-        .property("delta.enableExpiredLogCleanup")
-        .is_some_and(|v| v.trim().eq_ignore_ascii_case("false"))
-    {
+    if metadata.flag("delta.enableExpiredLogCleanup") == Some(false) {
         return Ok(());
     }
     let cutoff_time = now.saturating_sub(retention_ms(metadata, "delta.logRetentionDuration")?.unwrap_or(30 * DAY_MS));

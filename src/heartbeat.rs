@@ -194,12 +194,19 @@ pub enum MetricValueDto {
     FloatCounter(f64),
     Gauge(f64),
     /// A fact with no natural number -- a reason, a destination's own words -- carried as text. A metric sample never
-    /// produces this from a registry value; a caller builds one directly when a thread has a string fact to report
-    /// alongside its numbers.
+    /// produces this from a registry value; a caller builds one with [`MetricValueDto::text`] when a thread has a
+    /// string fact to report alongside its numbers.
     Text(String),
     /// A kind from a newer build, which this one does not read, kept as it arrived.
     #[serde(untagged)]
     Unknown(serde_json::Value),
+}
+
+impl MetricValueDto {
+    /// A text fact, cut to [`MAX_TEXT_LEN`]: a fact rides every heartbeat while it stands, so none is longer.
+    pub fn text(fact: &str) -> MetricValueDto {
+        MetricValueDto::Text(crate::runtime::truncate(fact, MAX_TEXT_LEN))
+    }
 }
 
 impl From<MetricSample> for MetricSampleDto {
@@ -514,9 +521,10 @@ pub struct HeartbeatRequest {
     /// worker older than this field, and from one that ran nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub streams: Option<StreamReport>,
-    /// Which window of this worker process's life (`boot_id`) `streams` is, counted from 1. A window the leader
-    /// has not acknowledged is sent again under the same number, and the leader records each number once. Absent
-    /// from a worker older than this field, whose every window is recorded as it arrives.
+    /// Which window of this worker process's life (`boot_id`) the beat is, counted from 1: the window every part of
+    /// the beat that accumulates belongs to -- its samples, logs, streams and progress. A window the leader has not
+    /// answered is sent again under the same number, and the leader records each number once. Absent from a worker
+    /// older than this field, whose every beat is recorded as it arrives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub streams_window: Option<u64>,
     pub threads: Vec<ThreadHeartbeat>,
@@ -564,7 +572,7 @@ pub struct SourceProgress {
 }
 
 /// A single-worker source the leader holds for this worker, and where it resumes. The ledger is fetched on its
-/// own (`/api/ledger`), since it can be far larger than a heartbeat.
+/// own (`/api/worker/ledger`), since it can be far larger than a heartbeat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hold {
@@ -749,8 +757,8 @@ fn taken() -> bool {
     true
 }
 
-/// Leader → worker: what to run is `main`, which the worker fetches for itself -- naming a commit would put the
-/// leader between a worker and a ref it may not own.
+/// Leader → worker: what to run is the deployed pointer, which the worker fetches for itself. [`Self::deployed`] only
+/// says when to look.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeartbeatResponse {
@@ -785,6 +793,11 @@ pub struct HeartbeatResponse {
     /// worker stops reading. An absent key is the empty list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub holds: Vec<Hold>,
+    /// The commit the deployed pointer names, so a worker that has already fetched it need not fetch again to learn
+    /// it has not moved. A cue, not an order: what the worker runs is what its fetch returns. Absent before anything
+    /// is deployed, and from a leader too old to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployed: Option<String>,
 }
 
 /// One thing an operator asked of one worker. The id tells a repeat from a new request: a worker acts on each id
@@ -820,6 +833,10 @@ pub struct SecretDelivery {
     pub name: String,
     pub version: i64,
     pub value: String,
+    /// The certificate chain beside the value, PEM, when the secret is a certificate entry and the value its private
+    /// key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<String>,
 }
 
 /// Names the version, never the value (`plan::topology::HeldSecrets` does the same for the same reason). Written
@@ -853,9 +870,6 @@ pub struct CaptureInvitation {
     /// egress thread takes; one whose deployment does not answers that it runs no such destination.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<String>,
-    /// The identity that source names, where it names one. A worker has no bundle to look it up in either.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub identity: Option<crate::config_file::IdentityDto>,
     /// A `Bool` expression over the record and the source's declared fields, compiled the way a route condition is
     /// (`plan::topology`). `None` keeps everything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -887,6 +901,12 @@ impl CaptureInvitation {
     /// that starts somewhere other than the latest.
     pub fn reads_source_itself(&self) -> bool {
         self.start.is_some() || self.source.as_ref().is_some_and(|s| s.kind.runs_its_own_query())
+    }
+
+    /// The source a deployment reading it serves this capture from, by tapping its records. None for a capture that
+    /// names no source, or that reads its source itself wherever it is deployed.
+    pub fn tapped(&self) -> Option<&crate::config_file::SourceDto> {
+        self.source.as_ref().filter(|_| !self.reads_source_itself())
     }
 }
 
@@ -1225,16 +1245,46 @@ impl TryFrom<WireBatch> for CaptureBatch {
 mod client {
     use super::{CAPTURE_BUDGET, HeartbeatRequest, HeartbeatResponse, LOOKUP_FILE_BUDGET, REQUEST_BUDGET};
 
-    /// The POST failed or its response did not parse. Never fatal: the caller tries again next interval. Carries
-    /// the status the leader answered with, where it answered.
+    /// The POST failed or its response did not parse. Never fatal: the caller tries again next interval.
     #[derive(Debug)]
-    pub struct HeartbeatError(String, Option<u16>);
+    pub struct HeartbeatError(String, Failure);
+
+    /// What kind of failure a [`HeartbeatError`] is.
+    #[derive(Debug, PartialEq)]
+    enum Failure {
+        /// The leader answered with this status.
+        Status(u16),
+        /// This worker's roots do not accept the leader's certificate.
+        CertificateRefused,
+        Other,
+    }
 
     impl HeartbeatError {
+        fn other(reason: impl Into<String>) -> Self {
+            HeartbeatError(reason.into(), Failure::Other)
+        }
+
         /// Whether the leader answered that it does not know this worker's credential: never issued, or its worker
         /// forgotten. A revoked one is answered otherwise.
         pub fn credential_unknown(&self) -> bool {
-            self.1 == Some(401)
+            self.1 == Failure::Status(401)
+        }
+
+        /// Whether the leader refused the request for its size: past [`super::HEARTBEAT_BODY_LIMIT`]. Sending it
+        /// again is refused again.
+        pub fn too_large(&self) -> bool {
+            self.1 == Failure::Status(413)
+        }
+
+        /// Whether the leader's certificate is one this worker's roots do not accept. Retrying changes nothing until
+        /// the roots or the certificate do.
+        pub fn certificate_untrusted(&self) -> bool {
+            self.1 == Failure::CertificateRefused
+        }
+
+        /// What went wrong, without the "heartbeat failed" the display puts in front.
+        pub fn reason(&self) -> &str {
+            &self.0
         }
     }
 
@@ -1266,6 +1316,27 @@ mod client {
         lookup_agent: ureq::Agent,
     }
 
+    /// What a worker says when its roots refuse the leader's certificate, whichever request it was making: one
+    /// mistake, one wording.
+    pub fn untrusted_certificate(leader_url: &str, reason: &dyn std::fmt::Display) -> String {
+        format!(
+            "{leader_url} presented a certificate this worker does not trust ({reason}). The leader's certificate \
+             must chain to the worker's CA, or to the public roots when worker.leader.trust_public is on, and carry \
+             the name in the address"
+        )
+    }
+
+    /// The handshake's refusal of the leader's certificate, if that is what `e` is. rustls reports it from inside
+    /// the stream, so it arrives wrapped as an I/O error as often as on its own.
+    pub fn certificate_refused(e: &ureq::Error) -> Option<&rustls::Error> {
+        let rustls = match e {
+            ureq::Error::Rustls(e) => Some(e),
+            ureq::Error::Io(e) => e.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>()),
+            _ => None,
+        };
+        rustls.filter(|e| matches!(e, rustls::Error::InvalidCertificate(_)))
+    }
+
     /// A failed attempt, and whether the connection failed rather than the leader answered.
     struct SendFailure {
         retryable: bool,
@@ -1283,29 +1354,31 @@ mod client {
     /// waits forever on an address that accepts and never answers is a first boot that never reports why.
     pub fn agent_without_verification(budget: std::time::Duration) -> ureq::Agent {
         let tls_config = ureq::tls::TlsConfig::builder().disable_verification(true).build();
-        agent_with(Some(tls_config), budget)
+        agent_with(tls_config, budget)
     }
 
-    /// An agent that accepts a leader whose certificate chains to something in `leader_ca_pem`, and no other, and
-    /// gives up after `budget`.
+    /// An agent that accepts a leader whose certificate chains to a root of [`leader_roots`], and gives up after
+    /// `budget`.
     ///
-    /// `None` leaves the platform's own roots in place, which is what a leader behind a proxy holding a publicly
-    /// issued certificate needs, and what a leader on plain HTTP does not use at all.
+    /// `None` is the public roots, which is what a leader behind a proxy holding a publicly issued certificate needs,
+    /// and what a leader on plain HTTP does not use at all.
     ///
     /// `leader_ca_pem` may hold more than one authority. That is what lets an authority be replaced without
     /// stopping the fleet: a worker given the old and the new accepts a leader that has moved and one that has not.
-    pub fn agent_trusting(leader_ca_pem: Option<&[u8]>, budget: std::time::Duration) -> Result<ureq::Agent, String> {
-        Ok(agent_with(tls_trusting(leader_ca_pem)?, budget))
+    pub fn agent_trusting(
+        leader_ca_pem: Option<&[u8]>,
+        trust_public: bool,
+        budget: std::time::Duration,
+    ) -> Result<ureq::Agent, String> {
+        Ok(agent_with(tls_trusting(leader_ca_pem, trust_public)?, budget))
     }
 
-    /// An agent that gives up after `budget`, trusting what `tls` trusts, or the public roots (`io::trust`) when it
-    /// is `None`.
+    /// An agent that gives up after `budget`, trusting what `tls` trusts.
     ///
     /// Every agent that talks to the leader is built here. `ureq` bounds no part of a request on its own, so an
     /// agent built anywhere else waits on a leader that accepts and never answers for as long as the socket stays
     /// open.
-    fn agent_with(tls: Option<ureq::tls::TlsConfig>, budget: std::time::Duration) -> ureq::Agent {
-        let tls = tls.unwrap_or_else(crate::io::trust::public_tls);
+    fn agent_with(tls: ureq::tls::TlsConfig, budget: std::time::Duration) -> ureq::Agent {
         ureq::Agent::new_with_config(
             ureq::Agent::config_builder()
                 .timeout_global(Some(budget))
@@ -1315,16 +1388,34 @@ mod client {
     }
 
     /// What [`agent_trusting`] trusts, as a configuration rather than an agent, for a caller that builds more than
-    /// one agent from it. `None` is the platform's own roots left in place.
-    fn tls_trusting(leader_ca_pem: Option<&[u8]>) -> Result<Option<ureq::tls::TlsConfig>, String> {
+    /// one agent from it.
+    fn tls_trusting(leader_ca_pem: Option<&[u8]>, trust_public: bool) -> Result<ureq::tls::TlsConfig, String> {
+        let roots = leader_roots(leader_ca_pem, trust_public)?
+            .iter()
+            .map(|der| ureq::tls::Certificate::from_der(der.as_ref()).to_owned())
+            .collect();
+        Ok(ureq::tls::TlsConfig::builder()
+            .root_certs(ureq::tls::RootCerts::Specific(std::sync::Arc::new(roots)))
+            .build())
+    }
+
+    /// Every root a worker verifies its leader by: the authorities in `leader_ca_pem`, and the public roots too when
+    /// `trust_public` (`io::trust::trusting`), as a connector trusts. The heartbeat and git's fetch both trust this,
+    /// so the two never disagree about a leader.
+    pub fn leader_roots(
+        leader_ca_pem: Option<&[u8]>,
+        trust_public: bool,
+    ) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, String> {
         let Some(pem) = leader_ca_pem else {
-            return Ok(None);
+            return Ok(crate::io::trust::trusting(Vec::new(), trust_public));
         };
 
-        let mut roots = Vec::new();
+        let mut authorities = Vec::new();
         for item in ureq::tls::parse_pem(pem) {
             match item.map_err(|e| e.to_string())? {
-                ureq::tls::PemItem::Certificate(cert) => roots.push(cert),
+                ureq::tls::PemItem::Certificate(cert) => {
+                    authorities.push(rustls::pki_types::CertificateDer::from(cert.der().to_vec()))
+                }
                 // An operator who reached for the combined file their tooling calls the CA has named the wrong
                 // one, and a worker copies this into its state directory for git to use as well. Skipping the key
                 // says nothing about a mistake worth hearing about; a trust store is certificates.
@@ -1334,39 +1425,36 @@ mod client {
                 _ => return Err("holds something that is not a certificate".to_string()),
             }
         }
-        // A file holding none would leave an empty root store, and every request would fail at the handshake with
-        // a message about the leader rather than about the file.
-        if roots.is_empty() {
+        // A file holding none would leave only the public roots, or an empty root store, and every request would
+        // fail at the handshake with a message about the leader rather than about the file.
+        if authorities.is_empty() {
             return Err("holds no certificate".to_string());
         }
-
-        Ok(Some(
-            ureq::tls::TlsConfig::builder()
-                .root_certs(ureq::tls::RootCerts::Specific(std::sync::Arc::new(roots)))
-                .build(),
-        ))
+        Ok(crate::io::trust::trusting(authorities, trust_public))
     }
 
     impl HeartbeatClient {
-        /// `leader_ca_pem` is the authority the leader's certificate must chain to; see [`agent_trusting`].
+        /// `leader_ca_pem` and `trust_public` are what the leader's certificate must chain to; see
+        /// [`agent_trusting`].
         pub fn new(
             leader_url: impl AsRef<str>,
             token: impl Into<String>,
             leader_ca_pem: Option<&[u8]>,
+            trust_public: bool,
         ) -> Result<HeartbeatClient, HeartbeatError> {
             // One authority, parsed once, trusted by both agents: what a leader is judged by does not depend on
             // which call is being made.
-            let tls_config = tls_trusting(leader_ca_pem)
-                .map_err(|e| HeartbeatError(format!("the leader's certificate authority: {e}"), None))?;
+            let tls_config = tls_trusting(leader_ca_pem, trust_public)
+                .map_err(|e| HeartbeatError::other(format!("the leader's certificate authority: {e}")))?;
             let base = leader_url.as_ref().trim_end_matches('/');
             Ok(HeartbeatClient {
-                heartbeat_url: format!("{base}/api/heartbeat"),
-                capture_url: format!("{base}/api/capture-report"),
+                heartbeat_url: format!("{base}/api/worker/heartbeat"),
+                capture_url: format!("{base}/api/worker/capture-report"),
                 token: token.into(),
                 agent: agent_with(tls_config.clone(), REQUEST_BUDGET),
                 capture_agent: agent_with(tls_config.clone(), CAPTURE_BUDGET),
-                lookup_url: format!("{base}/api/lookup-store"),
-                ledger_url: format!("{base}/api/ledger"),
+                lookup_url: format!("{base}/api/worker/lookup-store"),
+                ledger_url: format!("{base}/api/worker/ledger"),
                 lookup_agent: agent_with(tls_config, LOOKUP_FILE_BUDGET),
             })
         }
@@ -1379,7 +1467,7 @@ mod client {
                 .header("Authorization", &format!("Bearer {}", self.token))
                 .call()
                 .map(|response| response.into_body().into_reader())
-                .map_err(|e| HeartbeatError(e.to_string(), None))
+                .map_err(|e| HeartbeatError::other(e.to_string()))
         }
 
         /// The ledger the leader keeps for a source it holds for this worker, as it arrives: one
@@ -1392,7 +1480,7 @@ mod client {
                 .header("Authorization", &format!("Bearer {}", self.token))
                 .call()
                 .map(|response| response.into_body().into_reader())
-                .map_err(|e| HeartbeatError(e.to_string(), None))
+                .map_err(|e| HeartbeatError::other(e.to_string()))
         }
 
         /// Hand one finished capture to the leader.
@@ -1401,20 +1489,22 @@ mod client {
         /// the leader keeps the first answer from each worker and ignores the rest, so a report arriving twice
         /// cannot double a sample.
         pub fn report_capture(&self, report: &super::CaptureReport) -> Result<(), HeartbeatError> {
+            let body = super::gzipped_json(report).map_err(|e| HeartbeatError::other(e.to_string()))?;
             self.capture_agent
                 .post(&self.capture_url)
                 .header("Authorization", &format!("Bearer {}", self.token))
-                .send_json(report)
+                .header("Content-Type", "application/json")
+                .header("Content-Encoding", "gzip")
+                .send(&body[..])
                 .map(|_| ())
-                .map_err(|e| HeartbeatError(e.to_string(), None))
+                .map_err(|e| HeartbeatError::other(e.to_string()))
         }
 
         /// One heartbeat, retried once if the connection failed: a server may close a pooled idle connection as the
         /// next request reuses it, and `ureq` does not retry a POST itself.
         ///
-        /// Safe only because the leader replaces each thread's last metrics rather than summing them, so a request that
-        /// arrives twice overwrites rather than double-counts. Anything downstream that accumulates these samples needs
-        /// an idempotency key first. A status code is the leader's answer and is not retried.
+        /// Safe because the leader records each window once (`HeartbeatRequest::streams_window`), so a request that
+        /// arrives twice counts once. A status code is the leader's answer and is not retried.
         pub fn send(&self, req: &HeartbeatRequest) -> Result<HeartbeatResponse, HeartbeatError> {
             match self.send_once(req) {
                 Err(e) if e.retryable => self.send_once(req).map_err(|e| e.error),
@@ -1423,24 +1513,30 @@ mod client {
         }
 
         fn send_once(&self, req: &HeartbeatRequest) -> Result<HeartbeatResponse, SendFailure> {
+            let body = super::gzipped_json(req).map_err(|e| SendFailure {
+                retryable: false,
+                error: HeartbeatError::other(e.to_string()),
+            })?;
             let mut response = self
                 .agent
                 .post(&self.heartbeat_url)
                 .header("Authorization", &format!("Bearer {}", self.token))
-                .send_json(req)
+                .header("Content-Type", "application/json")
+                .header("Content-Encoding", "gzip")
+                .send(&body[..])
                 .map_err(|e| SendFailure {
                     // The exchange did not complete, as opposed to the leader having answered.
                     retryable: matches!(
                         e,
                         ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::Protocol(_)
                     ),
-                    error: HeartbeatError(
-                        e.to_string(),
-                        match e {
-                            ureq::Error::StatusCode(status) => Some(status),
-                            _ => None,
-                        },
-                    ),
+                    error: match (certificate_refused(&e), &e) {
+                        (Some(refused), _) => HeartbeatError(refused.to_string(), Failure::CertificateRefused),
+                        (None, ureq::Error::StatusCode(status)) => {
+                            HeartbeatError(e.to_string(), Failure::Status(*status))
+                        }
+                        (None, _) => HeartbeatError::other(e.to_string()),
+                    },
                 })?;
             response
                 .body_mut()
@@ -1448,26 +1544,55 @@ mod client {
                 .map_err(|e| SendFailure {
                     // Served; re-sending would be a second heartbeat.
                     retryable: false,
-                    error: HeartbeatError(e.to_string(), None),
+                    error: HeartbeatError::other(e.to_string()),
                 })
         }
     }
 }
 
-pub use client::{HeartbeatClient, HeartbeatError, agent_trusting, agent_without_verification};
+/// `value` as JSON, gzipped, as a worker sends every body to its leader. A heartbeat is the same metric names and
+/// labels beat after beat, which gzip takes to a fraction.
+fn gzipped_json(value: &impl Serialize) -> std::io::Result<Vec<u8>> {
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    serde_json::to_writer(&mut gz, value)?;
+    gz.finish()
+}
+
+pub use client::{
+    HeartbeatClient, HeartbeatError, agent_trusting, agent_without_verification, certificate_refused, leader_roots,
+    untrusted_certificate,
+};
 
 #[cfg(test)]
 mod trust_tests {
-    use super::{REQUEST_BUDGET, agent_trusting};
+    use super::{REQUEST_BUDGET, agent_trusting, leader_roots};
+
+    /// As a connector trusts: the authority, and the public roots unless the worker says not to.
+    #[test]
+    fn a_worker_trusts_its_leaders_authority_and_the_public_roots_unless_told_not_to() {
+        let authority = rcgen::generate_simple_self_signed(vec!["leader.test".to_string()])
+            .unwrap()
+            .cert;
+        let pem = authority.pem();
+        let public = crate::io::trust::public();
+
+        let alone = leader_roots(Some(pem.as_bytes()), false).unwrap();
+        assert_eq!(alone, vec![authority.der().clone()]);
+        let with_public = leader_roots(Some(pem.as_bytes()), true).unwrap();
+        assert_eq!(with_public.len(), public.len() + 1);
+        assert!(with_public.contains(authority.der()));
+        assert_eq!(leader_roots(None, true).unwrap(), public);
+        assert!(leader_roots(None, false).unwrap().is_empty());
+    }
 
     #[test]
     fn a_worker_given_no_authority_falls_back_to_the_platforms_own_roots() {
-        assert!(agent_trusting(None, REQUEST_BUDGET).is_ok());
+        assert!(agent_trusting(None, true, REQUEST_BUDGET).is_ok());
     }
 
     #[test]
     fn a_file_holding_no_certificate_is_refused_by_name() {
-        let refused = agent_trusting(Some(b"not a certificate"), REQUEST_BUDGET).expect_err("nothing to trust");
+        let refused = agent_trusting(Some(b"not a certificate"), true, REQUEST_BUDGET).expect_err("nothing to trust");
         assert!(refused.contains("holds no certificate"), "{refused}");
     }
 
@@ -1476,7 +1601,8 @@ mod trust_tests {
     #[test]
     fn a_file_holding_only_a_key_is_refused_too() {
         let key = rcgen::KeyPair::generate().unwrap().serialize_pem();
-        let refused = agent_trusting(Some(key.as_bytes()), REQUEST_BUDGET).expect_err("a key is not an authority");
+        let refused =
+            agent_trusting(Some(key.as_bytes()), true, REQUEST_BUDGET).expect_err("a key is not an authority");
         assert!(refused.contains("holds a private key"), "{refused}");
     }
 
@@ -1491,7 +1617,7 @@ mod trust_tests {
             .unwrap();
         let both = format!("{}{}", cert.pem(), key.serialize_pem());
 
-        let refused = agent_trusting(Some(both.as_bytes()), REQUEST_BUDGET).expect_err("a key came with it");
+        let refused = agent_trusting(Some(both.as_bytes()), true, REQUEST_BUDGET).expect_err("a key came with it");
         assert!(refused.contains("holds a private key"), "{refused}");
     }
 }
@@ -1952,12 +2078,13 @@ mod tests {
         assert!(json.contains(r#""logs":[{"seq":0,"#), "{json}");
     }
 
-    /// The other direction of the same contract. The answer names no commit and no thread: what to run is `main`,
-    /// which the worker fetches for itself.
+    /// The other direction of the same contract. What to run is the deployed pointer, which the worker fetches for
+    /// itself.
     #[test]
     fn a_heartbeat_response_serializes_to_the_wire_spelling() {
         let resp = HeartbeatResponse {
             holds: Vec::new(),
+            deployed: None,
             authority: None,
             captures: Vec::new(),
             secrets: Vec::new(),
@@ -2177,6 +2304,7 @@ mod tests {
             name: "kafka-cred".to_string(),
             version: 4,
             value: "hunter2-the-actual-password".to_string(),
+            chain: None,
         };
         let direct = format!("{delivery:?}");
         assert!(!direct.contains("hunter2"), "{direct}");
@@ -2187,7 +2315,6 @@ mod tests {
             group: "g".to_string(),
             source: serde_json::from_str(r#"{"id":"probe","type":"metrics","bucketSeconds":5}"#).unwrap(),
             destination: None,
-            identity: None,
             filter: None,
             start: None,
             max_matches: 1,
@@ -2204,6 +2331,7 @@ mod tests {
         // Through a response, a vector, an Option -- every shape a caller might have in hand.
         let response = HeartbeatResponse {
             holds: Vec::new(),
+            deployed: None,
             authority: None,
             captures: vec![Invited::Readable(Box::new(invitation))],
             secrets: vec![delivery.clone()],
@@ -2221,6 +2349,7 @@ mod tests {
             name: "kafka-cred".to_string(),
             version: 4,
             value: "hunter2".to_string(),
+            chain: None,
         })
         .unwrap();
         assert_eq!(json, r#"{"name":"kafka-cred","version":4,"value":"hunter2"}"#);

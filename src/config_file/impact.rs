@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::core::error::{Category, ExceptionKind};
 
 use super::dto::{
-    DestinationDto, FileConfig, GrokPatternDto, IdentityDto, LookupTableDto, PipelineDto, RouteDto, SourceDto, StepDto,
+    DestinationDto, FileConfig, GrokPatternDto, LookupTableDto, PipelineDto, RouteDto, SourceDto, StepDto,
 };
 use super::links::Links;
 
@@ -181,30 +181,11 @@ struct Changed {
 
 impl Changed {
     fn between(before: &FileConfig, after: &FileConfig, links: &Links) -> Changed {
-        let identities = differing(&before.identities, &after.identities, |i: &IdentityDto| i.id.clone());
-        let mut sources = differing(&before.sources, &after.sources, |s: &SourceDto| s.id.clone());
-        let mut destinations = differing(&before.destinations, &after.destinations, |d: &DestinationDto| {
-            d.id.clone()
-        });
-        // A source or destination naming a changed identity behaves differently even though its own DTO did not:
-        // the identity is what it connects out under.
-        sources.extend(
-            after
-                .sources
-                .iter()
-                .filter(|s| s.identity().is_some_and(|id| identities.contains(id)))
-                .map(|s| s.id.clone()),
-        );
-        destinations.extend(
-            after
-                .destinations
-                .iter()
-                .filter(|d| d.identity().is_some_and(|id| identities.contains(id)))
-                .map(|d| d.id.clone()),
-        );
         Changed {
-            sources,
-            destinations,
+            sources: differing(&before.sources, &after.sources, |s: &SourceDto| s.id.clone()),
+            destinations: differing(&before.destinations, &after.destinations, |d: &DestinationDto| {
+                d.id.clone()
+            }),
             routes: differing(&before.routes, &after.routes, |r: &RouteDto| r.id.clone()),
             lookup_tables: differing(&before.lookup_tables, &after.lookup_tables, |t: &LookupTableDto| {
                 t.id.clone()
@@ -295,6 +276,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps,
+            produces: vec![],
         }
     }
 
@@ -330,7 +312,7 @@ mod tests {
                 brokers: "kafka:9092".to_string(),
                 topics: vec![topic.to_string()],
                 group_id: "g".to_string(),
-                identity: None,
+                tls: Default::default(),
                 start: Default::default(),
                 stop: None,
                 fetch_bytes: Default::default(),
@@ -367,9 +349,9 @@ mod tests {
             routes,
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
             on_exception: None,
             name: None,
+            schemas: vec![],
         }
     }
 
@@ -464,6 +446,7 @@ mod tests {
             filter: None,
             disabled: false,
             input: "_raw".to_string(),
+            into: crate::plan::tree::ROOT.to_string(),
             kind: crate::config_file::ParserKindDto::Grok {
                 patterns: vec![pattern.to_string()],
                 custom_patterns: vec![],
@@ -685,14 +668,16 @@ mod tests {
                 schema_registry: None,
                 brokers: "kafka:9092".to_string(),
                 default_topic: topic.to_string(),
-                identity: None,
+                tls: Default::default(),
                 format: Default::default(),
                 field: None,
                 compression: Default::default(),
+                acks: crate::config_file::dto::AcksDto::All,
                 stall_after_secs: Default::default(),
                 buffer_bytes: Default::default(),
                 props: Default::default(),
             },
+            accepts: vec![],
         };
         let routes = vec![
             route("r1", "orders-west", "orders-normalize", &["es"]),
@@ -717,40 +702,6 @@ mod tests {
                     destination: "dlq".to_string()
                 }]
             )]
-        );
-    }
-
-    /// A source's own DTO does not change when the identity it names does -- the change lands in `identities`, not
-    /// in `sources`. The route reading it still has to be reported: it connects differently now.
-    #[test]
-    fn a_route_is_reached_by_an_identity_its_source_names() {
-        let routes = vec![route("r1", "orders-west", "orders-normalize", &["es"])];
-        let pipelines = vec![pipeline("orders-normalize", vec![])];
-        let mut named = source("orders-west", "orders");
-        if let SourceKindDto::Kafka { identity, .. } = &mut named.kind {
-            *identity = Some("acme".to_string());
-        }
-        let before = config(vec![named.clone()], routes.clone(), pipelines.clone());
-        let mut after = before.clone();
-        after.identities = vec![IdentityDto {
-            id: "acme".to_string(),
-            description: None,
-            certificate: None,
-            key: None,
-            authorities: Some("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----".to_string()),
-            trust_public: None,
-        }];
-
-        let impact = pipelines_touched(&before, &after);
-        assert_eq!(
-            impact.routes,
-            vec![reached(
-                "r1",
-                vec![Reason::SourceChanged {
-                    source: "orders-west".to_string()
-                }]
-            )],
-            "the identity a route's source connects out under changed, so the route did too"
         );
     }
 

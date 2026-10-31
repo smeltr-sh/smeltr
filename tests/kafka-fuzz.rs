@@ -752,7 +752,7 @@ fn execute(plan: &Plan, brokers: &str) -> Result<BTreeSet<&'static str>, String>
                 brokers: brokers[spec.brokers].clone(),
                 topics,
                 group_id: groups[spec.group].clone(),
-                identity: None,
+                tls: None,
                 start: match spec.start {
                     Start::Earliest => StartPosition::Earliest,
                     Start::Time(n) => StartPosition::Timestamp(stamp(broker.base, n as usize) - 500),

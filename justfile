@@ -23,6 +23,28 @@ default:
 build: gui
     cargo build --release --bin smeltr
 
+# What the GUI tests and screenshots run: the frontend, the demo site and unoptimized binaries embedding them. They
+# share `target/debug` with the Rust tests, so the dependencies build once, and a GUI edit rebuilds in less than half
+# of the time `build` takes.
+[doc("Frontend and demo, then unoptimized binaries embedding them: what the GUI tests run.")]
+[group("dev")]
+build-dev: gui fips-dll
+    npm --prefix gui-frontend run build:demo
+    cargo build --bin smeltr --bin smeltr-demo
+
+# Windows loads the AWS-LC FIPS module from a DLL beside each binary, the test binaries in `deps` included
+# (`tools/fips-dll.ps1`), so what runs a debug binary copies it there first. The one crate builds it, and reuses the
+# build the tests make.
+[private]
+[windows]
+fips-dll:
+    cargo build -p aws-lc-fips-sys
+    powershell -NoProfile -ExecutionPolicy Bypass -File tools/fips-dll.ps1 "{{ env('CARGO_TARGET_DIR', 'target') }}/debug"
+
+[private]
+[unix]
+fips-dll:
+
 # The website demo: the GUI over the leader its page plays, in
 # gui-frontend/dist-demo, and the preview service it asks.
 [group("dev")]
@@ -139,9 +161,9 @@ clean-main:
     powershell -NoProfile -Command "$changes = @(git status --porcelain); if ($LASTEXITCODE -ne 0) { exit 1 }; $branch = git branch --show-current; if ($LASTEXITCODE -ne 0 -or $branch -ne 'main' -or $changes.Count -gt 0) { [Console]::Error.WriteLine('a release builds from main with nothing uncommitted'); exit 1 }"
 
 # The check before every push; nothing else runs one. `tools/check-scope` picks the checks the files changed since
-# origin/main can break, down to the Rust tests of the modules they touch, and runs them side by side. It can miss a
+# origin/nightly can break, down to the Rust tests of the modules they touch, and runs them side by side. It can miss a
 # test: `check-all` runs everything, before a merge to main.
-[doc("The check before every push, scoped to what changed since origin/main.")]
+[doc("The check before every push, scoped to what changed since origin/nightly.")]
 check:
     cargo run -q -p check-scope
 
@@ -176,7 +198,7 @@ fmt-check:
 # alone picks none, and passes.
 [private]
 [env("SMELTR_NO_GUI", "1")]
-check-tests filter: stable
+check-tests filter: stable fips-dll
     cargo nextest run --workspace -j {{test_threads}} --no-tests=pass -E "not test(/fuzz/) & ({{filter}})"
 
 # One crate under `tools/`.
@@ -240,7 +262,7 @@ clippy: stable
 # the GUI, and `check-frontend` builds it, so the binary embeds none.
 [private]
 [env("SMELTR_NO_GUI", "1")]
-check-rust: stable
+check-rust: stable fips-dll
     cargo fmt --all --check
     cargo nextest run --workspace -j {{test_threads}} -E "not test(/fuzz/)"
     -cargo test --test integration language_tests:: -- --ignored
@@ -249,14 +271,14 @@ check-rust: stable
 # seeds each and take a minute or more, so `check` leaves them here.
 [doc("Every offline fuzzer.")]
 [env("SMELTR_NO_GUI", "1")]
-check-fuzz: && fuzz-gui fuzz-journey
+check-fuzz: fips-dll && fuzz-gui fuzz-journey fuzz-pipeline
     cargo nextest run --workspace -j {{test_threads}} -E "test(/fuzz/)"
 
 # The GUI fuzzer, `tests/gui/specs/gui-fuzz.spec.ts`, over more seeds than
 # `check-gui` gives it: 64. `SMELTR_FUZZ_SEED=n` replays one.
 [doc("The GUI fuzzer, over many seeds.")]
 [env("SMELTR_FUZZ_SEEDS", "64")]
-fuzz-gui: build
+fuzz-gui: build-dev
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project fuzz-coverage
 
@@ -266,9 +288,19 @@ fuzz-gui: build
 [doc("The admin journey fuzzer, over many seeds.")]
 [env("SMELTR_FUZZ_SEEDS", "16")]
 [env("SMELTR_JOURNEY_MOVES", "52")]
-fuzz-journey: build
+fuzz-journey: build-dev
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project journey-coverage
+
+# The pipeline journey fuzzer, `tests/gui/specs/pipeline-fuzz.spec.ts`, over
+# more and longer journeys than `check-gui` gives it: 16 of 100 moves.
+# `SMELTR_FUZZ_SEED=n` replays one.
+[doc("The pipeline journey fuzzer, over many seeds.")]
+[env("SMELTR_FUZZ_SEEDS", "16")]
+[env("SMELTR_PIPELINE_MOVES", "100")]
+fuzz-pipeline: build-dev
+    npm --prefix tests/gui install
+    cd tests/gui && npx playwright test --project pipeline-coverage
 
 # The build goes to `target/gui-check`, not `dist`: `check-rust` runs alongside
 # and embeds `dist`, which vite empties before it writes.
@@ -298,6 +330,17 @@ deny: stable
 [private]
 uap-refresh:
     curl -fsSL https://raw.githubusercontent.com/ua-parser/uap-core/master/regexes.yaml -o src/ops/useragent/regexes.yaml
+
+# The ECS and OCSF releases the Add schema dialog offers built in (`schema::standard`), as
+# `just schemas-refresh 9.5.0 1.9.0`: ECS's fields.csv at that tag, and OCSF compiled and cut.
+[private]
+schemas-refresh ecs ocsf:
+    tools/schema-standards/refresh {{ecs}} {{ocsf}}
+
+# Fails where ECS or OCSF has a release newer than the one built in. Run weekly.
+[private]
+schemas-latest:
+    tools/schema-standards/latest
 
 # The reference page's type lines, written from the engine's function table.
 [private]
@@ -382,6 +425,9 @@ live-up:
 [env("GIT_TEST_AUTH", "smeltr:smeltr-live-1")]
 [env("KEYCLOAK_TEST_ISSUER", "http://localhost:8180/realms/smeltr")]
 [env("PEBBLE_TEST_DIRECTORY", "https://localhost:14000/dir")]
+[env("PEBBLE_DNS_TEST_DIRECTORY", "https://localhost:14001/dir")]
+[env("CHALLTESTSRV_TEST_DNS", "127.0.0.1:18053")]
+[env("CHALLTESTSRV_TEST_MANAGEMENT", "http://127.0.0.1:18055")]
 [env("S2S_TEST_FORWARDER", "target/s2s-forwarder")]
 [env("OTEL_COLLECTOR_TEST_IMAGE", "otel/opentelemetry-collector-contrib:0.135.0")]
 [env("PROMETHEUS_TEST_IMAGE", "prom/prometheus:v3.5.0")]
@@ -559,6 +605,11 @@ fmt: deps-gui deps-website
     npm --prefix gui-frontend run format
     npm --prefix website run format
 
+# `build-dev`'s binary, started.
+[group("dev")]
+run-dev: build-dev
+    cargo run --bin smeltr
+
 # Frontend, then an optimized binary, started.
 [unix]
 run: gui
@@ -574,11 +625,11 @@ run: gui
 # Each test starts its own leader and workers from empty data directories, so
 # they run side by side. Arguments go to Playwright: a file, `-g <title>`,
 # `--headed`. A failure leaves a trace and a screenshot in `tests/gui/results`.
-[doc("Every user story the GUI serves, driven in Chromium against the release binary.")]
+[doc("Every user story the GUI serves, driven in Chromium against the debug binary.")]
 [group("dev")]
 [unix]
 [positional-arguments]
-check-gui *args: build demo
+check-gui *args: build-dev
     npm --prefix tests/gui install
     npm --prefix tests/gui run format:check
     cd tests/gui && npx playwright test "$@"

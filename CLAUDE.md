@@ -52,15 +52,20 @@ What a leader stores and what builds send each other outlive the build that wrot
 
 ## Checks
 
-Run `just check` once, at the end of the work, before its push. Commit each task of the work without checking
-between them, then run `just check` and put what it finds in one last commit. John runs `just check-all` before a
-merge to main. Nothing runs on a PR. After a change to `Cargo.toml`, `Cargo.lock` or the
-Kerberos tests, also run `just check-kerberos`.
+One thread watches nightly. On each commit that lands there it runs `just check`, which on nightly itself is
+`just check-all`, and the whole of `just check-gui`, and it fixes a failure in a PR of its own before other work. John
+runs `just check-all` before a merge to main. Nothing runs on a PR.
+
+Every other thread tests only what it changed, once, before its push: the tests of the modules it touched
+(`SMELTR_NO_GUI=1 cargo nextest run <module>::`, as the checks build them, so neither rebuilds for the other), and
+after a change to the GUI or the API it calls, the specs it touched (`just check-gui specs/<name>.spec.ts`). It runs no `just check`, `just check-all` or whole `just check-gui`. A thread
+that changes `Cargo.toml`, `Cargo.lock` or the Kerberos tests also runs `just check-kerberos`, which the nightly
+checks leave out.
 
 A dependency change also needs `just notices`: nothing else keeps
 `THIRD-PARTY-NOTICES.md` current.
 
-`just check` runs what the files changed since origin/main can break, as `tools/check-scope` decides: a document,
+`just check` runs what the files changed since origin/nightly can break, as `tools/check-scope` decides: a document,
 the citation checks; the GUI or the site, their own checks; a Rust file, the tests of its module and of the
 integration modules that use it. It can miss a test, and anything it cannot place runs `just check-all`, which is every
 check but the fuzzers.
@@ -72,7 +77,8 @@ the `SMELTR_LIVE_TESTS=required` and service variables the recipe sets for
 them. Start the Docker daemon first, then `just live-up`. Windows is checked
 nowhere.
 
-After a change to the GUI or the API it calls, also run `just check-gui`.
+While building, run the app with `just build-dev` or `just run-dev`, and take screenshots from it. `just build` and
+`just run` are for checking how a release build behaves.
 
 A machine builds into one `target/`, the main checkout's. A worktree or second clone sets `CARGO_TARGET_DIR` to
 it, so dependencies build once and a new checkout recompiles only smeltr. Cargo commands on one `target/` run one
@@ -94,13 +100,17 @@ and `npm audit`, and after a change to anything a fuzzer exercises: a source, a 
 compiler. The live one is a live test like any other: it takes its service
 from `tests/live`, so it skips without one, and it gets its own line in `just check-live`.
 
-The GUI has two fuzzers, seeded the same way (`tests/gui/fuzz.ts` ports `src/fuzz.rs`), and both check after every
+The GUI has three fuzzers, seeded the same way (`tests/gui/fuzz.ts` ports `src/fuzz.rs`), and each checks after every
 step that what is on screen works (`tests/gui/onscreen.ts`). `tests/gui/specs/gui-fuzz.spec.ts` walks the GUI as
 each kind of person, by what is on screen. `tests/gui/specs/journey-fuzz.spec.ts` takes an administrator from a
 fresh install to rows flowing and on, by moves (`tests/gui/moves/journey.ts`) each checked against the leader's API,
-the workers and the rows that arrive. A new thing an administrator does is a new move. `just check-gui` runs a seed
-for each kind of person and one journey, which makes only some of the moves; `just fuzz-gui` and `just fuzz-journey`
-run enough seeds to reach everything, and `just check-fuzz` runs both after the crate's fuzzers.
+the workers and the rows that arrive. A new thing an administrator does is a new move.
+`tests/gui/specs/pipeline-fuzz.spec.ts` edits one pipeline's steps for many moves in a row
+(`tests/gui/moves/pipeline.ts`), and after each the steps on screen must be its model's, and after a save the
+leader's too. A new thing an author does to steps is a new move. `just check-gui` runs a seed for each kind of
+person, one journey and one pipeline journey, which make only some of the moves; `just fuzz-gui`, `just fuzz-journey`
+and `just fuzz-pipeline` run enough seeds to reach everything, and `just check-fuzz` runs them after the crate's
+fuzzers.
 
 ## Pull requests
 

@@ -46,10 +46,6 @@ pub struct CaptureRequest {
     /// an outgoing row is what a pipeline finished, which no route takes in.
     #[serde(default)]
     pub destination: Option<String>,
-    /// The identity that source names, where it names one. Sent as configuration like the source itself: a
-    /// capture samples the author's branch, which nothing here reads.
-    #[serde(default)]
-    pub identity: Option<crate::config_file::IdentityDto>,
     #[serde(default)]
     pub filter: Option<String>,
     /// Where a Kafka or Event Hubs source's capture starts. Absent, it reads from the latest.
@@ -124,6 +120,10 @@ pub enum WorkerState {
 struct Session {
     invitation: CaptureInvitation,
     started: Instant,
+    /// When it opened, in microseconds since the epoch, and the commit the fleet ran then: what a sample saved from
+    /// it records ([`Captures::capture_fields`]).
+    opened_micros: i64,
+    config: Option<String>,
     /// Set by [`Captures::stop`] on a capture still running. Nothing more is folded in and nobody more is invited.
     stopped: bool,
     /// The workers this capture is waiting for: those in its group the leader had heard from when it opened.
@@ -339,7 +339,8 @@ impl Captures {
     /// `expected` is the workers in this capture's group the leader has heard from: who it waits for before calling
     /// itself finished. `holding` is those of them holding rows a block keeps, which its total waits for. `secrets`
     /// is what this source's own credentials resolved to, which the caller reads out of the store once here rather
-    /// than on every heartbeat that hands the invitation on.
+    /// than on every heartbeat that hands the invitation on. `config` is the commit the fleet ran when it opened, for
+    /// a sample saved from it to record.
     pub fn open(
         &self,
         id: String,
@@ -347,6 +348,7 @@ impl Captures {
         expected: HashSet<String>,
         holding: HashSet<String>,
         secrets: Vec<crate::heartbeat::SecretDelivery>,
+        config: Option<String>,
     ) -> CaptureInvitation {
         let one_worker = request.source.as_ref().is_some_and(|s| s.kind.single_worker());
         let invitation = CaptureInvitation {
@@ -354,7 +356,6 @@ impl Captures {
             group: request.group,
             source: request.source,
             destination: request.destination,
-            identity: request.identity,
             filter: request.filter,
             // The latest is where a capture reads from without one, so it is no start of its own.
             start: request
@@ -381,6 +382,8 @@ impl Captures {
                 stopped: false,
                 invitation: invitation.clone(),
                 started: Instant::now(),
+                opened_micros: crate::core::ctx::wall_clock_micros(),
+                config,
                 expected,
                 holding,
                 invited: HashSet::new(),
@@ -491,6 +494,66 @@ impl Captures {
         self.0.lock().unwrap().get(session).map(|s| s.status(session))
     }
 
+    /// How `session` was taken, as the `__capture` fields a sample saved from it carries on every record: when it
+    /// opened, what it read, in which group, under which filter, on which commit, and each worker that failed with
+    /// why. A field with nothing to say is left out.
+    pub fn capture_fields(&self, session: &str) -> Vec<(crate::heartbeat::CaptureColumn, serde_json::Value)> {
+        let sessions = self.0.lock().unwrap();
+        let Some(s) = sessions.get(session) else {
+            return Vec::new();
+        };
+        let mut timestamp = Vec::new();
+        crate::ops::datetime::write_iso8601_micros_bare(s.opened_micros, &mut timestamp);
+        let timestamp = String::from_utf8(timestamp).expect("an instant is written as ASCII");
+        let failed: Vec<serde_json::Value> = s
+            .ended
+            .iter()
+            .filter_map(|(worker, end)| match end {
+                CaptureEnd::Failed(reason) => Some(serde_json::json!({"worker": worker, "reason": reason})),
+                _ => None,
+            })
+            .collect();
+        use crate::core::column::DataType;
+        let text = |v: &str| serde_json::Value::String(v.to_string());
+        let failure = DataType::Struct(
+            vec![
+                ("worker".to_string(), DataType::Str),
+                ("reason".to_string(), DataType::Str),
+            ],
+            false,
+        );
+        [
+            ("timestamp", DataType::DateTime, Some(text(&timestamp))),
+            (
+                "source",
+                DataType::Str,
+                s.invitation.source.as_ref().map(|source| text(&source.id)),
+            ),
+            (
+                "destination",
+                DataType::Str,
+                s.invitation.destination.as_deref().map(text),
+            ),
+            ("group", DataType::Str, Some(text(&s.invitation.group))),
+            ("filter", DataType::Str, s.invitation.filter.as_deref().map(text)),
+            ("config", DataType::Str, s.config.as_deref().map(text)),
+            (
+                "failed",
+                DataType::Array(Box::new(failure)),
+                (!failed.is_empty()).then_some(serde_json::Value::Array(failed)),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, ty, value)| {
+            let column = crate::heartbeat::CaptureColumn {
+                name: format!("__capture.{name}"),
+                ty: ty.spell(),
+            };
+            value.map(|v| (column, v))
+        })
+        .collect()
+    }
+
     /// The group `session` was opened against, which is the area whoever follows it must edit.
     pub fn group(&self, session: &str) -> Option<String> {
         self.0.lock().unwrap().get(session).map(|s| s.invitation.group.clone())
@@ -543,7 +606,7 @@ mod tests {
                     brokers: "b1:9092".to_string(),
                     topics: vec!["orders".to_string()],
                     group_id: "production".to_string(),
-                    identity: None,
+                    tls: Default::default(),
                     start: Default::default(),
                     stop: None,
                     fetch_bytes: Default::default(),
@@ -552,7 +615,6 @@ mod tests {
                 },
             }),
             destination: None,
-            identity: None,
             filter: None,
             start: None,
             max_matches: None,
@@ -612,6 +674,61 @@ mod tests {
         rows_in(&status.batches)
     }
 
+    /// A sample saved from a capture records how it was taken: what it read, in which group, under which filter, on
+    /// which commit, and each worker that failed with why.
+    #[test]
+    fn a_capture_says_how_it_was_taken() {
+        let captures = Captures::default();
+        captures.open(
+            "s1".to_string(),
+            CaptureRequest {
+                filter: Some("_raw.includes(\"x\")".to_string()),
+                ..request(Some(60))
+            },
+            expect(&["w1", "w2"]),
+            Default::default(),
+            Vec::new(),
+            Some("54bf84a1".to_string()),
+        );
+        captures.invitations_for("w1", "prod-west", |_| None);
+        captures.invitations_for("w2", "prod-west", |_| None);
+        captures.record(report("s1", "w1", &["a"]));
+        captures.record(CaptureReport {
+            finished: Some(CaptureEnd::Failed("the broker refused the credential".to_string())),
+            ..progress_report("s1", "w2", &[])
+        });
+
+        let taken = captures.capture_fields("s1");
+        let field = |name: &str| {
+            taken
+                .iter()
+                .find(|(c, _)| c.name == format!("__capture.{name}"))
+                .map(|(_, v)| v.clone())
+        };
+        let timestamp = field("timestamp").unwrap();
+        let timestamp = timestamp.as_str().unwrap();
+        assert!(timestamp.ends_with('Z') && timestamp.contains('T'), "{timestamp}");
+        assert_eq!(field("source"), Some(serde_json::json!("orders")));
+        assert_eq!(field("destination"), None);
+        assert_eq!(field("group"), Some(serde_json::json!("prod-west")));
+        assert_eq!(field("filter"), Some(serde_json::json!("_raw.includes(\"x\")")));
+        assert_eq!(field("config"), Some(serde_json::json!("54bf84a1")));
+        assert_eq!(
+            field("failed"),
+            Some(serde_json::json!([{"worker": "w2", "reason": "the broker refused the credential"}])),
+            "a worker that finished is not a failure"
+        );
+        let columns: Vec<_> = taken.into_iter().map(|(c, _)| c).collect();
+        let meta =
+            crate::plan::topology::SourceMeta::of_columns(&columns).expect("a sample reads its `__capture` columns");
+        assert!(
+            meta.record()
+                .iter()
+                .any(|(name, _)| name.as_ref() == "__capture.config"),
+            "a pipeline reads them"
+        );
+    }
+
     /// A capture asks for one total. Each worker is handed that number as its own bound, and the leader stops
     /// folding at it whoever sent what: the fleet may send more, and what it holds is what was asked for.
     #[test]
@@ -626,6 +743,7 @@ mod tests {
             expect(&["w1", "w2", "w3"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(invitation.max_matches, 3, "each worker may fill it alone");
         captures.invitations_for("w1", "prod-west", |_| None);
@@ -662,6 +780,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -697,6 +816,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(captures.invitations_for("w2", "prod-west", |_| None).len(), 1);
         assert!(
@@ -743,6 +863,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         let held_by_w1 = |source: &str| (source == "pg").then(|| "w1".to_string());
         assert!(
@@ -764,6 +885,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.record(progress_report("s1", "w1", &["a"]));
@@ -808,6 +930,7 @@ mod tests {
             expect(&["w1", "w2", "w3"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         for worker in ["w1", "w2", "w3"] {
             captures.invitations_for(worker, "prod-west", |_| None);
@@ -864,6 +987,7 @@ mod tests {
             expect(&["w1", "w2"]),
             expect(&["w2"]),
             Vec::new(),
+            None,
         );
         for worker in ["w1", "w2"] {
             captures.invitations_for(worker, "prod-west", |_| None);
@@ -890,6 +1014,7 @@ mod tests {
             expect(&["w1", "w2"]),
             expect(&["w2"]),
             Vec::new(),
+            None,
         );
         for worker in ["w1", "w2"] {
             captures.invitations_for(worker, "prod-west", |_| None);
@@ -921,6 +1046,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -954,6 +1080,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -983,6 +1110,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         for worker in ["w2", "w1", "w3"] {
             captures.invitations_for(worker, "prod-west", |_| None);
@@ -1028,6 +1156,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(captures.invitations_for("w1", "prod-west", |_| None).len(), 1);
         captures.stop("s1");
@@ -1046,6 +1175,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         let listed: Vec<String> = captures
             .invitations_for("w1", "prod-west", |_| None)
@@ -1068,6 +1198,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
 
         assert_eq!(captures.invitations_for("w1", "prod-west", |_| None).len(), 1);
@@ -1096,6 +1227,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.record(report("s1", "w1", &["a"]));
@@ -1113,6 +1245,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.record(report("s1", "w1", &["a"]));
@@ -1133,6 +1266,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
 
@@ -1154,6 +1288,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1185,6 +1320,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
 
@@ -1211,6 +1347,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
 
@@ -1239,6 +1376,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1269,6 +1407,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1308,6 +1447,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1333,6 +1473,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1359,6 +1500,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
 
         // Only w1 has heartbeated so far, and it answers immediately.
@@ -1392,6 +1534,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
 
         assert!(
@@ -1413,6 +1556,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(captures.group("s1").as_deref(), Some("prod-west"));
         captures.stop("s1");
@@ -1433,6 +1577,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.record(report("s1", "impostor", &["forged", "forged"]));
 
@@ -1460,6 +1605,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(invitation.max_matches, crate::config_file::MAX_SAMPLE_RECORDS);
         assert_eq!(invitation.max_bytes, MAX_BYTES_CEILING);
@@ -1479,6 +1625,7 @@ mod tests {
                 expect(&["w1"]),
                 Default::default(),
                 Vec::new(),
+                None,
             )
         };
         assert_eq!(open("s1", Some(StartPositionDto::Latest)).start, None);
@@ -1499,6 +1646,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.record(report("s1", "w1", &["a"]));
@@ -1527,6 +1675,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(invitation.destination.as_deref(), Some("es"));
         assert!(invitation.source.is_none());

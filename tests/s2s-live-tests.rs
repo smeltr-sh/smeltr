@@ -64,7 +64,7 @@ fn receiver(port: u16) -> Box<dyn Source> {
                 version: 1,
             },
         )],
-        identity: None,
+        tls: None,
         max_request_bytes: 1 << 20,
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());

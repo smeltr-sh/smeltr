@@ -78,7 +78,7 @@ export function threadsOnObject(
   return [...list].filter(
     (t) =>
       t.anchor?.kind === 'object' &&
-      t.anchor.scope === scope &&
+      t.anchor.area === scope &&
       t.anchor.section === section &&
       t.anchor.objectId === objectId &&
       t.anchor.step === step,
@@ -107,7 +107,7 @@ export function findStep(steps: StepChange[], id: string): StepChange | undefine
 
 function objectOf(objects: ObjectChange[], anchor: CommentAnchor & { kind: 'object' }) {
   return objects.find(
-    (c) => c.scope === anchor.scope && c.section === anchor.section && c.id === anchor.objectId,
+    (c) => c.scope === anchor.area && c.section === anchor.section && c.id === anchor.objectId,
   );
 }
 

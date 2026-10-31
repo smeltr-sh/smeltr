@@ -55,8 +55,20 @@ pub fn names(kind: &FunctionKind) -> Result<FunctionKind, String> {
                 (*from, *to) = (name(from)?, name(to)?);
             }
         }
-        FunctionKind::Parser { input, kind, declared } => {
-            *input = name(input)?;
+        FunctionKind::Remove { fields } => {
+            for field in fields {
+                *field = name(field)?;
+            }
+        }
+        FunctionKind::Parser {
+            input,
+            into,
+            kind,
+            declared,
+        } => {
+            // Each names a field, and a blank one names none.
+            *input = tree::parse_name(input)?;
+            *into = tree::parse_name(into)?;
             for d in declared {
                 // A csv column is a header, the key the parser reads: its name is that key's.
                 d.name = match kind {
@@ -87,6 +99,27 @@ pub fn rename(pairs: &[(String, String)]) -> Vec<Stmt> {
         .collect()
 }
 
+/// `delete(fields)`, clearing them on the rows a filter selects as a Rename does. A blank name removes nothing. A name
+/// listed twice, or under an object also listed, goes with the first or the object: deleting it again would find no
+/// field.
+pub fn remove(fields: &[String]) -> Vec<Stmt> {
+    let listed: std::collections::HashSet<&str> = fields.iter().map(String::as_str).collect();
+    let mut seen = std::collections::HashSet::new();
+    let names: Vec<String> = (fields.iter())
+        .filter(|f| !f.trim().is_empty() && seen.insert(f.as_str()))
+        .filter(|f| !crate::plan::tree::ancestors(f).any(|a| listed.contains(a)))
+        .cloned()
+        .collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    vec![Stmt::Delete {
+        names,
+        clears: true,
+        span: Span::default(),
+    }]
+}
+
 /// `if (cond) drop()`. A blank condition drops nothing.
 pub fn drop(cond: Option<Expr>) -> Vec<Stmt> {
     let span = Span::default();
@@ -99,8 +132,15 @@ pub fn drop(cond: Option<Expr>) -> Vec<Stmt> {
     .collect()
 }
 
-/// `Object.assign($, json(input))`, and the call each other kind makes, after a declaration of each of `fields`.
-pub fn parser(input: &str, kind: &ParserKind, fields: &[DeclaredField], held: impl Fn(&str) -> Held) -> Lowered {
+/// `Object.assign(into, json(input))`, and the call each other kind makes, after a declaration of each of `fields`
+/// under `into`.
+pub fn parser(
+    input: &str,
+    into: &str,
+    kind: &ParserKind,
+    fields: &[DeclaredField],
+    held: impl Fn(&str) -> Held,
+) -> Lowered {
     let text = field(input);
     let parse = match kind {
         ParserKind::Json { .. } => call("json", vec![text]),
@@ -116,6 +156,10 @@ pub fn parser(input: &str, kind: &ParserKind, fields: &[DeclaredField], held: im
                 ("escapes", boolean(c.escapes)),
                 ("nextKey", boolean(c.next_key)),
             ]);
+            let options = match c.skip.is_empty() {
+                true => options,
+                false => with_entry(options, "skip", strings(&c.skip)),
+            };
             call("kv", vec![text, options])
         }
         ParserKind::Csv(c) => {
@@ -143,7 +187,50 @@ pub fn parser(input: &str, kind: &ParserKind, fields: &[DeclaredField], held: im
     let typed = fields
         .iter()
         .map(|d| (d.name.as_str(), d.ty.clone(), d.time_source.as_ref()));
-    declare_around(typed, parse, kind.is_dynamic(), held)
+    let mut lowered = declare_around(into, typed, parse, kind.is_dynamic(), held);
+    lowered.body.extend(rebuild(input, kind));
+    lowered
+}
+
+/// `input = csvRebuild(input, …)` or `kvRebuild`, where the parser rebuilds its input and skips something; with
+/// nothing skipped the text it would write is the text it read.
+fn rebuild(input: &str, kind: &ParserKind) -> Option<Stmt> {
+    let text = field(input);
+    let value = match kind {
+        ParserKind::Csv(c) if c.rebuild && c.headers.iter().any(Option::is_none) => {
+            let headers = c.headers.iter().map(|h| h.as_deref().map_or(null(), string)).collect();
+            let escape = c.escape.map_or(string(""), byte);
+            let args = vec![
+                text,
+                array(headers),
+                byte(c.delimiter),
+                byte(c.quote),
+                escape,
+                boolean(c.squeeze),
+                boolean(c.trim),
+            ];
+            call("csvRebuild", args)
+        }
+        ParserKind::KeyValue(c) if c.rebuild && !c.skip.is_empty() => {
+            let quote = c.quote.map_or(string(""), byte);
+            let args = vec![
+                text,
+                strings(&c.skip),
+                byte(c.pair_sep),
+                byte(c.kv_sep),
+                quote,
+                boolean(c.escapes),
+                boolean(c.next_key),
+            ];
+            call("kvRebuild", args)
+        }
+        _ => return None,
+    };
+    Some(Stmt::Assign {
+        target: input.to_string(),
+        value,
+        typed: false,
+    })
 }
 
 /// `Object.assign($, lookup(table, input, {…}))`, after a declaration of each output.
@@ -189,14 +276,16 @@ pub fn lookup(
         };
         (o.field.as_str(), ty, o.time_source.as_ref())
     });
-    declare_around(typed, parse, false, held)
+    declare_around(ROOT, typed, parse, false, held)
 }
 
-/// `Object.assign($, parse)`, each field declared before it where the name does not hold its type, and a formatted
-/// `datetime` read by the parse's `formats`. Fields under an object nothing holds yet declare it once, open, with all
-/// of them. A key the record may hold converts after a `dynamic` parse, which lays it as it finds it, and before any
-/// other, whose fields are typed by what the name holds; a formatted one is read as text and converted after.
+/// `Object.assign(into, parse)`, each field declared under `into` before it where the name does not hold its type,
+/// and a formatted `datetime` read by the parse's `formats`. Fields under an object nothing holds yet declare it once,
+/// open, with all of them; so does an `into` nothing holds. A key the record may hold converts after a `dynamic` parse,
+/// which lays it as it finds it, and before any other, whose fields are typed by what the name holds; a formatted one is
+/// read as text and converted after.
 fn declare_around<'f>(
+    into: &str,
     fields: impl Iterator<Item = (&'f str, DataType, Option<&'f TimeSource>)>,
     parse: Expr,
     dynamic: bool,
@@ -205,7 +294,26 @@ fn declare_around<'f>(
     let mut lowered = Lowered::default();
     let mut objects: Vec<(&str, Vec<(String, DataType)>)> = Vec::new();
     let mut formats = Vec::new();
-    for (name, ty, time) in fields {
+    let open = || DataType::Struct(Vec::new(), true);
+    // `Object.assign` merges into an object a name holds, so `into` is made one first. Its own entry comes before the
+    // fields under it, which `nest` lays inside it.
+    match held(into) {
+        Held::Bound(_) => {}
+        Held::Free => match tree::ancestors(into).find(|above| matches!(held(above), Held::Free)) {
+            Some(top) => objects.push((top, vec![(tree::key_under(top, into).to_string(), open())])),
+            None => objects.push((into, Vec::new())),
+        },
+        Held::Key => lowered.body.push(Stmt::Assign {
+            target: into.to_string(),
+            value: declared(into, Some(open()), field(into)),
+            typed: true,
+        }),
+    }
+    let names: Vec<_> = fields
+        .map(|(key, ty, time)| (key, tree::join(into, key), ty, time))
+        .collect();
+    for (key, name, ty, time) in &names {
+        let (name, ty) = (name.as_str(), ty.clone());
         let format = match time {
             Some(TimeSource::Format(f)) => Some(f),
             _ => None,
@@ -256,13 +364,14 @@ fn declare_around<'f>(
                 continue;
             }
         }
+        // The parse's own key, not the name it lands at.
         if let Some(format) = format {
-            formats.push((name, string(format)));
+            formats.push((*key, string(format)));
         }
     }
     let parse = with_option(parse, "formats", formats);
     let objects = objects.into_iter().map(|(name, fields)| {
-        let mut ty = DataType::Struct(Vec::new(), true);
+        let mut ty = open();
         for (path, leaf) in fields {
             nest(&mut ty, &path, leaf);
         }
@@ -271,8 +380,8 @@ fn declare_around<'f>(
     });
     lowered.body.splice(0..0, objects);
     lowered.body.push(Stmt::Assign {
-        target: ROOT.to_string(),
-        value: call("Object.assign", vec![field(ROOT), parse]),
+        target: into.to_string(),
+        value: call("Object.assign", vec![field(into), parse]),
         typed: false,
     });
     lowered
@@ -352,6 +461,14 @@ fn array(items: Vec<Expr>) -> Expr {
 
 fn strings(items: &[String]) -> Expr {
     array(items.iter().map(|s| string(s)).collect())
+}
+
+/// The object literal `options` with `value` at `key` after its entries.
+fn with_entry(mut options: Expr, key: &str, value: Expr) -> Expr {
+    if let ExprKind::Object(entries) = &mut options.kind {
+        entries.push((Some(key.to_string()), value));
+    }
+    options
 }
 
 fn object(entries: Vec<(&str, Expr)>) -> Expr {

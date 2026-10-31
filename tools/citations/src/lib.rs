@@ -16,26 +16,22 @@ use std::path::{Path, PathBuf};
 
 mod hot_path;
 
-/// Cited names nothing in this tree defines, and why each is correct anyway: it belongs to another project, a
-/// proposal coins it for something not yet built, or prose uses it as a shape rather than a name.
+/// Cited names nothing in this tree defines, because each belongs to another project, with its owner.
 ///
-/// Each carries its reason, the way `RESERVED_KAFKA_PROPS` does. Adding a real one is a line and a justification;
-/// silencing a dead citation by adding it here is visible in review, and a reason reading "not built" next to a name
-/// a document uses in the present tense is itself the finding.
+/// Each carries its reason, the way `RESERVED_KAFKA_PROPS` does. The test holds the list to what it needs: an entry
+/// that nothing cites, that the tree already defines, or that is listed twice fails it. A name smeltr could define
+/// does not belong here; define it, or cite the whole name it is a fragment of.
 const NOT_DEFINED_HERE: &[(&str, &str)] = &[
     (
         "_RJEM_MALLOC_CONF",
         "the environment jemalloc reads its settings from, under tikv-jemalloc-sys's prefix",
     ),
-    (
-        "CARGO_TARGET_DIR",
-        "the environment cargo reads its build directory from",
-    ),
+    ("allOf", "a JSON Schema keyword"),
+    ("anyOf", "a JSON Schema keyword"),
     // librdkafka and the rdkafka crate.
     ("RD_KAFKA_EVENT_ERROR", "librdkafka's event type"),
     ("WITH_SASL_CYRUS", "librdkafka build flag"),
     ("_WIN32", "the C preprocessor's, which librdkafka tests for SSPI"),
-    ("rd_kafka_new", "librdkafka's client constructor"),
     (
         "rd_avg_rollover",
         "librdkafka's window reset, which makes a stats window a delta",
@@ -44,13 +40,9 @@ const NOT_DEFINED_HERE: &[(&str, &str)] = &[
         "ThreadedProducer",
         "the rdkafka crate's other producer, which smeltr does not use",
     ),
-    ("Offset::Invalid", "the rdkafka crate's sentinel offset"),
     ("sasl_gssapi", "a librdkafka `builtin.features` value"),
     // The operating system's own calls.
-    (
-        "setsid",
-        "the unix call a process leaves its session by, escaping a tree kill",
-    ),
+    ("System32", "the Windows directory a service starts in"),
     (
         "setpgid",
         "the unix call a process leaves its group by, escaping a tree kill",
@@ -60,10 +52,6 @@ const NOT_DEFINED_HERE: &[(&str, &str)] = &[
         "the unix call that reaps a child, cited for the flag it does not take",
     ),
     (
-        "PR_SET_PDEATHSIG",
-        "the linux prctl flag that signals a child on its parent's death, cited as a gap not built",
-    ),
-    (
         "TIME_WAIT",
         "the TCP state a closed listener's port sits in until the OS reclaims it, cited as what SO_REUSEADDR skips",
     ),
@@ -71,78 +59,22 @@ const NOT_DEFINED_HERE: &[(&str, &str)] = &[
     ("RangeError", "JavaScript's, thrown by the Temporal API"),
     ("RFC3339Nano", "Go's layout constant, cited for contrast"),
     ("epochMilliseconds", "the Temporal API's property"),
-    ("fromEpochMilliseconds", "the Temporal API's constructor"),
     ("relativeTo", "the Temporal API's option"),
-    ("beforetoggle", "a DOM event"),
-    ("to_entries", "jq's builtin, cited as prior art"),
     // Crates and tools smeltr depends on or names.
     (
         "serde_urlencoded",
         "what axum's `Query` decodes with, whose handling of a repeated key shapes the logs query",
     ),
-    ("chrono", "the crate smeltr deliberately does not depend on"),
-    ("cmake_build", "the rdkafka crate's feature"),
     ("mmdbinspect", "MaxMind's own inspection tool"),
-    ("journal_size_limit", "a SQLite pragma"),
-    ("Transaction", "rusqlite's, which rolls back as it drops"),
-    (
-        "reqwest",
-        "gix-transport's other HTTP backend, named for contrast with the curl one smeltr uses",
-    ),
     (
         "ssl_verify",
         "a field of gix-transport's http::Options, cited for the default a worker's fetch relies on",
     ),
-    // Databricks, named by a proposal that has not been built.
-    ("_delta_log", "Delta Lake's transaction log directory"),
-    ("deltalake", "a crate a proposal would need"),
-    ("object_store", "a crate a proposal would need"),
-    // Splunk forwarders: their settings and the fields they send over S2S.
-    ("httpout", "a Splunk forwarder's outputs.conf stanza"),
-    ("_meta", "a Splunk forwarder's inputs.conf setting"),
+    // Splunk forwarders: the fields they send over S2S.
     ("_hpn", "a field a Splunk forwarder sends"),
     ("_charSet", "a field a Splunk forwarder sends"),
     ("_nfd", "a field a Splunk forwarder sends"),
     ("_linebreaker", "a field a Splunk forwarder sends"),
-    (
-        "channel_limit",
-        "what a Splunk indexer tells a forwarder in its S2S handshake",
-    ),
-    // Timezone abbreviations, cited as parse inputs.
-    ("CDT", "a timezone abbreviation"),
-    ("CST", "a timezone abbreviation"),
-    ("EDT", "a timezone abbreviation"),
-    ("EST", "a timezone abbreviation"),
-    ("MDT", "a timezone abbreviation"),
-    ("MST", "a timezone abbreviation"),
-    ("PDT", "a timezone abbreviation"),
-    ("PST", "a timezone abbreviation"),
-    // Names a proposal or a review coins for something not yet built.
-    ("dispatch_chunked", "named by a proposal, not built"),
-    (
-        "__brk",
-        "a spelling weighed for the loop-break variable and not adopted",
-    ),
-    // Named by a design that is not built. Each is a finding, parked here so the check can hold the rest of the
-    // tree while it is settled.
-    (
-        "dispatch_chunked",
-        "status.md's \"Unroll's output is not bounded at dispatch\" note names this; nothing implements it",
-    ),
-    (
-        "max_dispatch_rows",
-        "the bound status.md says `dispatch_chunked` applies; neither exists",
-    ),
-    (
-        "max_dispatch_bytes",
-        "the bound status.md says `dispatch_chunked` applies; neither exists",
-    ),
-    // Prose: a fragment, a placeholder, or a stand-in for a shape.
-    ("JanX", "a shape a parse rejects, not a value"),
-    ("add_", "a prefix, cited as a naming shape"),
-    ("set_", "a prefix, cited as a naming shape"),
-    ("gc", "shorthand for garbage collection"),
-    ("_no_replacement", "a stand-in for what a decoder does not do"),
 ];
 
 fn collect(root: &Path, exts: &[&str], out: &mut Vec<PathBuf>) {
@@ -265,12 +197,19 @@ fn every_name_a_comment_cites_exists() {
     ] {
         collect(&root.join(dir), exts, &mut defining);
     }
+    // This file writes every entry in a string, so it defines a name for the citations but not for the list.
     let mut corpus = String::new();
+    let mut own = String::new();
     let mut stems: Vec<String> = Vec::new();
     for p in &defining {
         if let Ok(t) = fs::read_to_string(p) {
-            corpus.push_str(&without_backticks(&t));
-            corpus.push('\n');
+            let into = if p.ends_with("citations/src/lib.rs") {
+                &mut own
+            } else {
+                &mut corpus
+            };
+            into.push_str(&without_backticks(&t));
+            into.push('\n');
         }
         if let Some(s) = p.file_stem().and_then(|s| s.to_str()) {
             stems.push(s.to_ascii_lowercase());
@@ -292,16 +231,22 @@ fn every_name_a_comment_cites_exists() {
 
     let allowed: Vec<&str> = NOT_DEFINED_HERE.iter().map(|(n, _)| *n).collect();
     let mut dead: BTreeMap<String, String> = BTreeMap::new();
+    let mut cited: Vec<&str> = Vec::new();
+    let defined = |name: &str| contains_word(&corpus, name) || stems.contains(&name.to_ascii_lowercase());
 
     for p in &citing {
         let Ok(text) = fs::read_to_string(p) else { continue };
         let rel = p.strip_prefix(root).unwrap_or(p).display().to_string();
         for (tok, line) in backticked(&text) {
-            if !is_citation(&tok) || allowed.contains(&tok.as_str()) {
+            if !is_citation(&tok) {
+                continue;
+            }
+            if let Some(entry) = allowed.iter().find(|a| **a == tok) {
+                cited.push(entry);
                 continue;
             }
             let last = tok.rsplit("::").next().unwrap_or(&tok);
-            if contains_word(&corpus, last) || stems.contains(&last.to_ascii_lowercase()) {
+            if defined(last) || contains_word(&own, last) {
                 continue;
             }
             dead.entry(tok).or_insert(format!("{rel}:{line}"));
@@ -313,6 +258,22 @@ fn every_name_a_comment_cites_exists() {
         "these names are cited in backticks and exist nowhere in the tree. Fix the citation, or -- if nothing here \
          should define it -- add it to NOT_DEFINED_HERE with the reason:\n{}",
         dead.iter().map(|(n, w)| format!("  {n:50} {w}\n")).collect::<String>()
+    );
+
+    let mut needless = Vec::new();
+    for (i, name) in allowed.iter().enumerate() {
+        if allowed[..i].contains(name) {
+            needless.push(format!("  {name:50} listed twice\n"));
+        } else if !cited.contains(name) {
+            needless.push(format!("  {name:50} cited nowhere\n"));
+        } else if defined(name.rsplit("::").next().unwrap_or(name)) {
+            needless.push(format!("  {name:50} already defined in the tree\n"));
+        }
+    }
+    assert!(
+        needless.is_empty(),
+        "these NOT_DEFINED_HERE entries are not needed. Remove them:\n{}",
+        needless.concat()
     );
 }
 

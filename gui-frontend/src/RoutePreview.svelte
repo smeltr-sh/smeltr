@@ -1,6 +1,6 @@
 <!--
   Route preview: where a saved sample's records would go, through
-  `POST /api/route-preview` (`runtime::preview_routes`). The routes it runs
+  `POST /api/areas/:area/preview/routes` (`runtime::preview_routes`). The routes it runs
   are the ones on screen, saved or not, so this answers what the edit in
   front of you would do.
 
@@ -118,7 +118,7 @@
   };
 
   function routeName(i: number): string {
-    return result?.route_ids[i] || `route ${i}`;
+    return result?.route_names[i] ?? '';
   }
 
   // A record's lines are its routes in the order they ran, so the sort orders records and each keeps
@@ -459,9 +459,6 @@
   td .dim + .dim,
   td .mono + .dim {
     margin-left: 0.5rem;
-  }
-  .dim {
-    color: var(--dim);
   }
   .mono {
     font-family: var(--mono);

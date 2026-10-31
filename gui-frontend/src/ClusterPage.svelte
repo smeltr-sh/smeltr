@@ -27,24 +27,34 @@
   leader keeps no series for `smeltr_rows_errored_total`.
 -->
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
+  import { store, storedJson } from './stored';
   import Locked from './Locked.svelte';
   import SectionShell from './SectionShell.svelte';
   import { ask } from './Confirm.svelte';
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
+  import Panel from './Panel.svelte';
+  import CrossButton from './CrossButton.svelte';
   import FlowChart from './FlowChart.svelte';
   import Sparkline from './Sparkline.svelte';
+  import StateMark from './StateMark.svelte';
+  import { severityState, type State } from './stateGlyphs';
   import { pipelineNamesAt, type PipelineNames } from './pipelineNames';
   import { bytes } from './bytes';
   import SortButton from './SortButton.svelte';
+  import FoldAllButton from './FoldAllButton.svelte';
+  import Chips from './Chips.svelte';
+  import Segmented from './Segmented.svelte';
   import { TableSort } from './sort.svelte';
   import {
     errorText,
     getClusterStatus,
     getFlow,
     listWarnings,
+    history as mainHistory,
     restartWorker,
     conditionLabel,
     MAIN_BRANCH,
@@ -529,17 +539,12 @@
   );
   const EXPANDED_GROUPS_KEY = 'smeltr-status-expanded-groups';
   function loadExpandedGroups(): Record<string, boolean> {
-    if (typeof window === 'undefined') return {};
-    try {
-      const saved = JSON.parse(window.localStorage.getItem(EXPANDED_GROUPS_KEY) ?? '{}');
-      return saved && typeof saved === 'object' ? saved : {};
-    } catch {
-      return {};
-    }
+    const saved = storedJson<unknown>(EXPANDED_GROUPS_KEY, {});
+    return saved && typeof saved === 'object' ? (saved as Record<string, boolean>) : {};
   }
   let expandedGroups: Record<string, boolean> = $state(loadExpandedGroups());
   function saveExpandedGroups() {
-    window.localStorage.setItem(EXPANDED_GROUPS_KEY, JSON.stringify(expandedGroups));
+    store(EXPANDED_GROUPS_KEY, JSON.stringify(expandedGroups));
   }
   // A group nobody has folded yet starts open.
   function isExpanded(group: string): boolean {
@@ -558,17 +563,32 @@
   }
 
   let workerQuery = $state('');
-  let workerStatusFilter = $state<WorkerStatus | 'attention' | 'all'>('all');
+  // Null is All.
+  let workerStatusFilter = $state<'attention' | 'online' | null>(null);
   let workerCounts = $derived.by(() => countWorkers(workerRows));
   let healthOf = $derived.by(
     () =>
       new Map<string, WorkerHealth>(workerRows.map((w) => [w.workerId, workerHealth(w, warnings)])),
   );
+  /** A worker's sign: a failed or warning health, else online is ok and stopped is info. */
+  function workerState(w: WorkerRow): State {
+    const health = healthOf.get(w.workerId) ?? 'healthy';
+    if (health === 'failed' || health === 'warning') return severityState(health);
+    return w.status === 'online' ? 'ok' : 'info';
+  }
+
+  function workerStateLabel(w: WorkerRow): string {
+    const health = healthOf.get(w.workerId) ?? 'healthy';
+    return health === 'healthy' || health === 'info'
+      ? STATUS_LABEL[w.status]
+      : `${STATUS_LABEL[w.status]}, ${health === 'failed' ? 'failing' : 'warning'}`;
+  }
+
   let needsAttention = $derived(workerRows.filter((w) => healthOf.get(w.workerId) !== 'healthy'));
   let filteredWorkers = $derived.by(() =>
     workerStatusFilter === 'attention'
       ? filterWorkers(needsAttention, workerQuery, 'all')
-      : filterWorkers(workerRows, workerQuery, workerStatusFilter),
+      : filterWorkers(workerRows, workerQuery, workerStatusFilter ?? 'all'),
   );
   let selectedWorker = $derived.by(
     () => workerRows.find((w) => w.workerId === selectedWorkerId) ?? null,
@@ -582,6 +602,9 @@
     }
     return [...groups.entries()];
   });
+  let allGroupsOpen = $derived(
+    displayedGroups.length > 0 && displayedGroups.every(([group]) => isExpanded(group)),
+  );
   // Sorts workers within their group only: the group row is the band they fold under.
   const workerSort = new TableSort<'worker' | 'running' | 'cpu' | 'memory' | 'lastSeen'>();
   let sortedGroups = $derived(
@@ -601,6 +624,26 @@
     ),
   );
   let fleetRollout = $derived(deploying ? rollout(workerRows, deploying) : null);
+  // The deployed commit's message, so the card names the change and not only its hash. History's
+  // first page: one deployed from further back shows its hash alone.
+  let deployingSubject = $state('');
+  $effect(() => {
+    const target = deploying;
+    deployingSubject = '';
+    if (!target) return;
+    let current = true;
+    mainHistory(50)
+      .then((h) => {
+        const found = h.commits.find(
+          (c) => c.commit.startsWith(target) || target.startsWith(c.commit),
+        );
+        if (current) deployingSubject = found?.subject ?? '';
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  });
   // Online and not yet running the commit being deployed.
   function behind(worker: WorkerRow): boolean {
     return !!deploying && worker.status === 'online' && !onCommit(worker, deploying);
@@ -656,7 +699,10 @@
   {:else}
     {#if warnings.length > 0}
       <a class="issue-ribbon" href="#/status/issues" aria-label="Active fleet issues">
-        <strong>▲ {warnings.length} active {warnings.length === 1 ? 'issue' : 'issues'}</strong>
+        <strong
+          ><StateMark state={warnings.some((w) => w.severity === 'failed') ? 'error' : 'warning'} />
+          {warnings.length} active {warnings.length === 1 ? 'issue' : 'issues'}</strong
+        >
         <span class="issue-divider">|</span>
         <span class="issue-teaser">{warnings[0].subjectId}: {warnings[0].message}</span>
         <span class="issue-more">View all issues &rsaquo;</span>
@@ -680,15 +726,21 @@
         </p>
       </div>
       <div class="fleet-totals" aria-label="Fleet totals">
-        <span class="total online"><i></i><strong>{workerCounts.online}</strong> online</span>
-        <span class="total silent"><i></i><strong>{workerCounts.silent}</strong> silent</span>
+        <span class="total"
+          ><StateMark state="ok" /><strong>{workerCounts.online}</strong> online</span
+        >
+        <span class="total"
+          ><StateMark state="error" /><strong>{workerCounts.silent}</strong> silent</span
+        >
         {#if workerCounts.neverHeartbeated > 0}
-          <span class="total neverHeartbeated"
-            ><i></i><strong>{workerCounts.neverHeartbeated}</strong> never heartbeated</span
+          <span class="total"
+            ><StateMark state="error" /><strong>{workerCounts.neverHeartbeated}</strong> never heartbeated</span
           >
         {/if}
         {#if workerCounts.stopped > 0}
-          <span class="total stopped"><i></i><strong>{workerCounts.stopped}</strong> stopped</span>
+          <span class="total"
+            ><StateMark state="info" /><strong>{workerCounts.stopped}</strong> stopped</span
+          >
         {/if}
         <span class="total"><strong>{totalPartitions}</strong> partitions</span>
         <span class="total"><strong>{rateText(nowOutRate)}</strong> rows/s</span>
@@ -696,15 +748,22 @@
     </header>
 
     {#if deploying && fleetRollout}
+      {@const done = fleetRollout.on === fleetRollout.of}
       <div class="rollout" role="status">
-        <span class="mono">{commitOrNone(deploying)}</span>
-        <meter min="0" max={Math.max(fleetRollout.of, 1)} value={fleetRollout.on}></meter>
-        <span
-          >{fleetRollout.on === fleetRollout.of
-            ? `on all ${fleetRollout.of} online ${fleetRollout.of === 1 ? 'worker' : 'workers'}`
-            : `${fleetRollout.on} of ${fleetRollout.of} online workers`}</span
-        >
-        <a class="rollout-close" href="#/status" aria-label="Stop following this deploy">&times;</a>
+        <Panel title={`${done ? 'Deployed' : 'Deploying'} ${commitOrNone(deploying)}`}>
+          {#snippet actions()}
+            <CrossButton label="Stop following this deploy" href="#/status" />
+          {/snippet}
+          <div class="rollout-body">
+            {#if deployingSubject}<strong>{deployingSubject}</strong>{/if}
+            <meter min="0" max={Math.max(fleetRollout.of, 1)} value={fleetRollout.on}></meter>
+            <span
+              >{done
+                ? `on all ${fleetRollout.of} online ${fleetRollout.of === 1 ? 'worker' : 'workers'}`
+                : `${fleetRollout.on} of ${fleetRollout.of} online workers`}</span
+            >
+          </div>
+        </Panel>
       </div>
     {/if}
 
@@ -717,25 +776,21 @@
     <section class="fleet-shell" class:has-detail={selectedWorker !== null}>
       <div class="fleet-matrix">
         <div class="matrix-tools">
-          <div class="status-pills" role="group" aria-label="Filter workers by status">
-            <button
-              class:on={workerStatusFilter === 'all'}
-              onclick={() => (workerStatusFilter = 'all')}>All ({workerRows.length})</button
-            >
-            <button
-              class:on={workerStatusFilter === 'attention'}
-              onclick={() => (workerStatusFilter = 'attention')}
-              >Needs attention ({needsAttention.length})</button
-            >
-            <button
-              class:on={workerStatusFilter === 'online'}
-              onclick={() => (workerStatusFilter = 'online')}>Online ({workerCounts.online})</button
-            >
-          </div>
-          <div class="fold-controls" role="group" aria-label="Fold worker groups">
-            <button onclick={() => setAllGroups(true)}>Expand all</button>
-            <button onclick={() => setAllGroups(false)}>Collapse all</button>
-          </div>
+          <Chips
+            label="Filter workers by status"
+            allCount={workerRows.length}
+            items={[
+              { key: 'attention', label: 'Needs attention', count: needsAttention.length },
+              { key: 'online', label: 'Online', count: workerCounts.online },
+            ]}
+            bind:value={workerStatusFilter}
+          />
+          <FoldAllButton
+            allOpen={allGroupsOpen}
+            what="worker groups"
+            disabled={displayedGroups.length === 0}
+            onclick={() => setAllGroups(!allGroupsOpen)}
+          />
           <label class="matrix-search"
             ><span aria-hidden="true">⌕</span><input
               type="search"
@@ -744,12 +799,7 @@
               aria-label="Search workers"
             /></label
           >
-          <button
-            class="icon-refresh"
-            title="Refresh now"
-            aria-label="Refresh now"
-            onclick={refreshNow}>↻</button
-          >
+          <button title="Refresh now" aria-label="Refresh now" onclick={refreshNow}>↻</button>
         </div>
         <div class="matrix-columns">
           <div>
@@ -775,12 +825,12 @@
               class:selected={selectedGroupId === group && selectedWorkerId === null}
             >
               <button
-                class="group-toggle"
+                class="icon group-toggle"
                 aria-label={isExpanded(group) ? `Collapse ${group}` : `Expand ${group}`}
                 aria-expanded={isExpanded(group)}
                 onclick={() => toggleGroup(group)}
               >
-                <span class="group-caret" class:expanded={isExpanded(group)}>▶</span>
+                <ChevronIcon open={isExpanded(group)} />
               </button>
               <button
                 class="group-select"
@@ -817,8 +867,8 @@
                   }}
                 >
                   <span class="worker-name"
-                    ><i class="state-dot {worker.status} {healthOf.get(worker.workerId)}"
-                    ></i><strong>{worker.workerId}</strong></span
+                    ><StateMark state={workerState(worker)} /><strong>{worker.workerId}</strong
+                    ></span
                   >
                   <span class="mono" class:behind={behind(worker)}
                     >{commitOrNone(worker.commit)}</span
@@ -840,12 +890,13 @@
 
       {#if selectedWorker}
         <aside class="worker-detail">
-          <button
-            class="detail-close"
-            aria-label="Close worker details"
-            onclick={() => {
-              selectedWorkerId = null;
-            }}>×</button
+          <span class="detail-close"
+            ><CrossButton
+              label="Close worker details"
+              onclick={() => {
+                selectedWorkerId = null;
+              }}
+            /></span
           >
           <h2>{selectedWorker.workerId}</h2>
           <p class="detail-group">
@@ -853,8 +904,10 @@
           </p>
           <div class="health-callout {selectedWorker.status}">
             <strong
-              ><i class="state-dot {selectedWorker.status} {healthOf.get(selectedWorker.workerId)}"
-              ></i>{STATUS_LABEL[selectedWorker.status]}</strong
+              ><StateMark
+                state={workerState(selectedWorker)}
+                label={workerStateLabel(selectedWorker)}
+              />{STATUS_LABEL[selectedWorker.status]}</strong
             ><span
               >Last heartbeat<b
                 >{selectedWorker.lastSeenMillisAgo === null
@@ -973,11 +1026,11 @@
                   <tr>
                     <td>
                       <button
-                        class="group-toggle part-toggle"
+                        class="icon group-toggle part-toggle"
                         aria-label={runtimeOpen ? 'Collapse runtime' : 'Expand runtime'}
                         aria-expanded={runtimeOpen}
                         onclick={() => (runtimeOpen = !runtimeOpen)}
-                        ><span class="group-caret" class:expanded={runtimeOpen}>▶</span></button
+                        ><ChevronIcon open={runtimeOpen} /></button
                       >runtime
                     </td>
                     <td class="num" class:over={isOver(selectedMemory.runtime.whole)}>
@@ -1027,16 +1080,11 @@
             >
           </h2>
         </div>
-        <div class="filters" role="group" aria-label="Chart window">
-          {#each FLOW_WINDOWS as w (w.minutes)}
-            <button
-              type="button"
-              class="filter"
-              class:on={windowMinutes === w.minutes}
-              onclick={() => chooseWindow(w.minutes)}>{w.label}</button
-            >
-          {/each}
-        </div>
+        <Segmented
+          label="Chart window"
+          options={FLOW_WINDOWS.map((w) => ({ value: String(w.minutes), label: w.label }))}
+          bind:value={() => String(windowMinutes), (v) => chooseWindow(Number(v))}
+        />
       </div>
       {#if flow === null}
         <p class="empty">Loading…</p>
@@ -1180,20 +1228,16 @@
 
 <style>
   .rollout {
+    margin-bottom: 0.75rem;
+  }
+  .rollout-body {
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    margin-bottom: 0.75rem;
     font-size: var(--text-label);
   }
-  .rollout meter {
-    width: 10rem;
-  }
-  .rollout-close {
-    margin-left: auto;
-    color: var(--dim);
-    text-decoration: none;
-    font-size: 1.1rem;
+  .rollout-body meter {
+    flex: 1;
   }
   .behind {
     color: var(--warn);
@@ -1204,13 +1248,13 @@
     align-items: center;
     gap: 1rem;
     color: var(--error);
-    background: color-mix(in oklch, var(--error) 8%, var(--panel));
-    border: 1px solid color-mix(in oklch, var(--error) 18%, var(--border));
+    background: color-mix(in oklab, var(--error) 8%, var(--panel));
+    border: 1px solid color-mix(in oklab, var(--error) 18%, var(--border));
     font-size: var(--text-note);
     text-decoration: none;
   }
   .issue-ribbon:hover {
-    background: color-mix(in oklch, var(--error) 14%, var(--panel));
+    background: color-mix(in oklab, var(--error) 14%, var(--panel));
   }
   .issue-ribbon strong {
     flex: none;
@@ -1276,33 +1320,6 @@
   .total:first-child {
     border-left: 0;
   }
-  .total i,
-  .state-dot {
-    width: 0.65rem;
-    height: 0.65rem;
-    border-radius: 50%;
-    background: var(--dim);
-    display: inline-block;
-    flex: none;
-  }
-  .total.online i,
-  .state-dot.online {
-    background: var(--added);
-  }
-  .total.silent i,
-  .total.neverHeartbeated i,
-  .state-dot.silent,
-  .state-dot.neverHeartbeated,
-  .state-dot.revoked {
-    background: var(--error);
-  }
-  /* After the heartbeat colors, so an issue on what an online worker runs shows over its green. */
-  .state-dot.warning {
-    background: var(--warn);
-  }
-  .state-dot.failed {
-    background: var(--error);
-  }
   .fleet-shell {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -1321,37 +1338,13 @@
     min-width: 0;
     border-left: 1px solid var(--border);
     padding: 1.15rem 1.25rem;
-    background: color-mix(in oklch, var(--panel) 94%, var(--bg));
+    background: color-mix(in oklab, var(--panel) 94%, var(--bg));
   }
   .matrix-tools {
     display: flex;
     gap: 0.75rem;
     padding: 0.7rem;
     border-bottom: 1px solid var(--border);
-  }
-  .status-pills {
-    display: flex;
-    gap: 0.45rem;
-  }
-  .status-pills button,
-  .icon-refresh {
-    border: 1px solid var(--border);
-    background: var(--bg);
-    color: var(--ink);
-    border-radius: var(--radius);
-    padding: 0.45rem 0.75rem;
-    font: inherit;
-    font-size: var(--text-note);
-    cursor: pointer;
-  }
-  .fold-controls {
-    display: flex;
-    gap: 0.25rem;
-  }
-  .status-pills button.on {
-    background: var(--ink);
-    color: var(--bg);
-    border-color: var(--ink);
   }
   .matrix-search {
     display: flex;
@@ -1373,10 +1366,6 @@
     /* The browser's own, which set this box's height before the shared field padding. */
     padding: 1px 2px;
   }
-  .icon-refresh {
-    padding: 0.35rem 0.65rem;
-    font-size: 1.1rem;
-  }
   .matrix-columns,
   .worker-row {
     display: grid;
@@ -1396,7 +1385,7 @@
     align-items: center;
     gap: 0;
     padding: 0;
-    background: color-mix(in oklch, var(--bg) 55%, var(--panel));
+    background: color-mix(in oklab, var(--bg) 55%, var(--panel));
     border-bottom: 1px solid var(--border);
     font-size: var(--text-note);
     font-family: inherit;
@@ -1407,9 +1396,8 @@
   }
   .group-row:hover,
   .group-row.selected {
-    background: color-mix(in oklch, var(--ink) 10%, var(--panel));
+    background: color-mix(in oklab, var(--ink) 10%, var(--panel));
   }
-  .group-toggle,
   .group-select {
     border: 0;
     background: transparent;
@@ -1420,15 +1408,6 @@
   .group-toggle {
     align-self: stretch;
     padding: 0 0.3rem 0 1rem;
-  }
-  .group-caret {
-    display: inline-block;
-    color: var(--dim);
-    font-size: 0.7rem;
-    transition: transform 120ms ease;
-  }
-  .group-caret.expanded {
-    transform: rotate(90deg);
   }
   .group-select {
     min-width: 0;
@@ -1461,13 +1440,13 @@
   }
   .worker-row:hover,
   .worker-row.selected {
-    background: color-mix(in oklch, var(--ink) 7%, var(--panel));
+    background: color-mix(in oklab, var(--ink) 7%, var(--panel));
   }
   .worker-row.attention {
-    background: color-mix(in oklch, var(--warn) 8%, var(--panel));
+    background: color-mix(in oklab, var(--warn) 8%, var(--panel));
   }
   .worker-row.attention.selected {
-    background: color-mix(in oklch, var(--warn) 15%, var(--panel));
+    background: color-mix(in oklab, var(--warn) 15%, var(--panel));
   }
   .worker-name {
     min-width: 0;
@@ -1497,13 +1476,6 @@
     position: absolute;
     right: 1rem;
     top: 1rem;
-    border: 0;
-    background: none;
-    color: var(--dim);
-    /* The browser's own, which placed the glyph before the shared button padding. */
-    padding: 1px 6px;
-    font-size: 1.6rem;
-    cursor: pointer;
   }
   .worker-detail h2 {
     max-width: 100%;
@@ -1697,16 +1669,11 @@
     color: var(--warn);
   }
   .live-controls,
-  .worker-controls,
-  .filters {
+  .worker-controls {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 0.5rem;
-  }
-  .filter {
-    font: inherit;
-    font-size: var(--text-note);
   }
   .panel {
     border: 1px solid var(--border);
@@ -1818,28 +1785,6 @@
     font-size: var(--text-micro);
     line-height: 1.35;
   }
-  .flow .filters {
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-    gap: 0;
-  }
-  .filter {
-    padding: 0.3rem 0.6rem;
-    color: var(--dim);
-    background: transparent;
-    border: 0;
-    border-right: 1px solid var(--border);
-    cursor: pointer;
-  }
-  .filter:last-child {
-    border-right: 0;
-  }
-  /* The accent belongs to the page's primary action; the chosen window is ink and bold. */
-  .filter.on {
-    color: var(--ink);
-    font-weight: 600;
-  }
   .table-wrap {
     margin-top: 0.8rem;
     overflow-x: auto;
@@ -1920,13 +1865,6 @@
     .matrix-tools {
       align-items: stretch;
       flex-direction: column;
-    }
-    .status-pills,
-    .fold-controls {
-      overflow-x: auto;
-    }
-    .status-pills button {
-      white-space: nowrap;
     }
     .matrix-columns {
       display: none;

@@ -58,12 +58,14 @@ cosign verify-attestation --type cyclonedx "$image" \
 
   <h2 id="archive">Load an image archive</h2>
   <p>
-    A host that cannot reach ghcr.io loads the image from an archive instead. Compare the archive's
-    SHA-256 checksum with its line in the release's <code>SHA256SUMS</code>, and stop if it is
-    missing or differs. Then load it and check its name, tag and runtime user:
+    A host that cannot reach ghcr.io loads the image from the archive in the release's extras.
+    Compare the extras zip's SHA-256 checksum with the one shown beside it on the release page, and
+    stop if it differs. Then unzip the image archive, load it and check its name, tag and runtime
+    user:
   </p>
   <pre><code
-      >sha256sum smeltr-image.tar.gz
+      >sha256sum smeltr-extras.zip
+unzip smeltr-extras.zip smeltr-image.tar.gz
 docker load --input smeltr-image.tar.gz
 docker image inspect smeltr:&lt;version&gt; --format '&#123;&#123;.Id&#125;&#125; user=&#123;&#123;.Config.User&#125;&#125;'</code
     ></pre>
@@ -100,7 +102,7 @@ key = "/run/secrets/smeltr/sealing.key"</code
   <p>
     For a standalone container, append <code>[worker]</code> with <code>enabled = true</code> and
     <code>group = "default"</code>. Its worker state stays within the leader-data mount. Leave the
-    sealing key file absent on a fresh installation.
+    secrets encryption key file absent on a fresh installation.
   </p>
   <pre><code
       >sudo install -o root -g 1000 -m 0640 ./container-smeltr.toml /srv/smeltr/smeltr.toml

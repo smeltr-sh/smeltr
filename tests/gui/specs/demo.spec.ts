@@ -12,7 +12,7 @@ import { RUN_DIR, recordPid } from '../run';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const TARGET = path.resolve(REPO, process.env.CARGO_TARGET_DIR ?? 'target');
-const SERVICE = path.join(TARGET, 'release', 'smeltr-demo');
+const SERVICE = path.join(TARGET, 'debug', 'smeltr-demo');
 const SITE = path.join(REPO, 'gui-frontend', 'dist-demo');
 const TYPES: Record<string, string> = {
   '.html': 'text/html',
@@ -114,12 +114,12 @@ test('a visitor captures a sample, saves it on a branch and previews a pipeline 
   await page.getByRole('button', { name: 'Add sample' }).click();
   const dialog = page.locator('dialog[open]');
   await dialog.locator('button.tile', { hasText: 'Capture' }).click();
-  await dialog.locator("label:has(> .name:text-is('Group')) select").selectOption('network');
+  await dialog.getByRole('combobox', { name: 'Group', exact: true }).selectOption('network');
   await dialog
-    .locator("label:has(> .name:text-is('Capture target')) select")
+    .getByRole('combobox', { name: 'Capture target', exact: true })
     .selectOption('panw-firewalls');
   await dialog
-    .locator("label:has(> .name:text-is('Keep records where')) input")
+    .getByRole('textbox', { name: 'Keep records where', exact: true })
     .fill('_raw.includes("TRAFFIC")');
   await dialog.locator("input[aria-label='records']").fill('50');
   await dialog.locator('button[type=submit]', { hasText: 'Start' }).click();
@@ -142,14 +142,15 @@ test('a visitor captures a sample, saves it on a branch and previews a pipeline 
 
   await page.goto(`${base}#/build/pipelines/panos-traffic/for/${sample}`);
   await expect(page.getByText('panw-firewalls, captured', { exact: true })).toBeVisible();
-  await expect(page.getByText('50 rows', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Choose a sample' })).toContainText('50 records');
   // The directory table is a CSV under the service's bundle: a department in the output is a lookup that read it.
   await expect(page.getByText('Engineering').first()).toBeVisible();
 });
 
 test('the map draws the fleet from the service', async ({ page }) => {
   await open(page, '#/map');
-  await expect(page.getByText('panw-firewalls').first()).toBeVisible();
+  // The map draws from what the in-browser service has computed, which a loaded machine takes seconds over.
+  await expect(page.getByText('panw-firewalls').first()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText('nginx-access').first()).toBeVisible();
   await expect(page.getByText('lookup key column')).toHaveCount(0);
 });
@@ -158,4 +159,25 @@ test("the samples page runs the scope's locked tests in the service", async ({ p
   await open(page, '#/build');
   await expect(page.getByText('panos-traffic maps sessions to ECS')).toBeVisible();
   await expect(page.getByText('Passing')).toHaveCount(2);
+});
+
+test('the Schemas page reads a schema through the service', async ({ page }) => {
+  await open(page, '#/build/schemas');
+  await page.getByRole('button', { name: '+ Add schema' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'JSON Schema', exact: true }).click();
+  await dialog.getByLabel('id', { exact: true }).fill('login');
+  const login = {
+    type: 'object',
+    properties: {
+      user: { type: 'object', properties: { name: { type: 'string' } } },
+      src_endpoint: { type: 'object', properties: { port: { type: 'integer' } } },
+    },
+  };
+  await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(JSON.stringify(login));
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole('cell', { name: 'user.name', exact: true })).toBeVisible();
+  await page.getByRole('searchbox', { name: 'Search schemas' }).fill('src_endpoint.port');
+  await expect(page.getByRole('cell', { name: 'src_endpoint.port', exact: true })).toBeVisible();
 });

@@ -15,7 +15,7 @@ use crate::heartbeat::{
     FieldShape, ParserShape, STREAM_FIELDS_PER_PARSER, STREAM_KEYS_PER_SOURCE, STREAM_NAME_LEN, StreamKey,
     StreamReport, UnmatchedStreams,
 };
-use crate::plan::plan::Plan;
+use crate::plan::compile::Plan;
 
 /// One deployment's account of its streams.
 pub struct Streams {

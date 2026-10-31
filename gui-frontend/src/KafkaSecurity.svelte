@@ -29,19 +29,19 @@
     value,
     secrets = [],
     mechanisms = [],
-    hasIdentity = false,
+    hasTls = false,
   }: {
     /** Mutated in place, as `KafkaPropsEditor` mutates it: this writes the
      * connector's own property maps, and the page's Save is what commits. */
     value: KafkaProps;
     secrets?: SecretDto[];
-    /** What this leader's build can select, from `GET /api/system/info`.
+    /** What this leader's build can select, from `GET /api/system`.
      * Empty is that answer not arrived, or a leader older than the field;
      * the section then shows what the file says and offers no menu, rather
      * than reading as a build that carries nothing. */
     mechanisms?: string[];
-    /** Whether an identity answers for TLS. */
-    hasIdentity?: boolean;
+    /** Whether the TLS settings answer for TLS. */
+    hasTls?: boolean;
   } = $props();
 
   let security = $derived(readSecurity(value));
@@ -69,14 +69,13 @@
 <div class="security">
   <Field field="properties.security.protocol" label="protocol">
     {#snippet help()}
-      <code>SSL</code> and <code>SASL_SSL</code> use TLS; the two <code>SASL_</code> protocols also log
-      in.
-    {/snippet}
-    {#snippet note()}
-      {#if negotiatesTls && hasIdentity}
-        The certificate, the key and the authorities come from the identity above.
+      <code>SSL</code> and <code>SASL_SSL</code> use TLS; the two <code>SASL_</code> protocols also
+      log in.
+      {#if negotiatesTls && hasTls}
+        The certificate, the key and the trusted authorities come from the TLS settings above.
       {:else if negotiatesTls}
-        No identity is named, so this client presents no certificate and trusts the public roots.
+        No TLS setting is filled, so this client presents no certificate and trusts the public
+        roots.
       {/if}
     {/snippet}
     <!-- Unset is shown as PLAINTEXT, librdkafka's own default. -->
@@ -101,13 +100,12 @@
       error={unavailable
         ? 'This build carries no provider for it, and the save is refused. Pick another, or deploy a build that carries it.'
         : null}
-      note={known
-        ? undefined
-        : 'This leader did not say which mechanisms its build carries, so this is what the file says and there is nothing to choose from.'}
     >
       {#snippet help()}
-        How this client logs in. <code>GSSAPI</code> (Kerberos) is listed only in a build linked with
-        a Kerberos provider.
+        How this client logs in. <code>GSSAPI</code> (Kerberos) is listed only in a build linked
+        with a Kerberos provider.{#if !known}
+          This leader did not say which mechanisms its build carries, so this shows the value saved
+          in the config repository, and there is nothing to choose from.{/if}
       {/snippet}
       <select
         value={security.mechanism ?? ''}
@@ -132,8 +130,8 @@
     </Field>
 
     {#each fields as f (f.prop)}
-      <Field label="{f.label}{f.optional ? ' (optional)' : ''}">
-        {#snippet note()}
+      <Field label={f.label} required={!f.optional} optional={f.optional}>
+        {#snippet help()}
           {f.note} Written as <code>{f.prop}</code>.
         {/snippet}
         {#if f.secret}

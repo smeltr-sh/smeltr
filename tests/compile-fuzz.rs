@@ -1,6 +1,6 @@
 //! Generated pipelines against the compiler. Each seed writes a program of steps over a parsed record -- code, eval,
-//! drop, rename, unroll, each parser, lookup, a step's filter and an `if` step -- typed as it is written so most
-//! compile, and holds four properties that need no expected output:
+//! drop, rename, remove, unroll, each parser, lookup, a step's filter and an `if` step -- typed as it is written so
+//! most compile, and holds four properties that need no expected output:
 //!
 //! 1. Compiling it gives a plan or compile errors, and never panics.
 //! 2. Each record comes out of a batch of all of them as it comes out alone.
@@ -28,12 +28,12 @@ use smeltr::core::ctx::Ctx;
 use smeltr::core::error::ErrorSink;
 use smeltr::ops::stdfuncs::{Arg, Param, ROWS, StdFunc};
 use smeltr::ops::{BinOp, UnOp};
+use smeltr::plan::compile::{Plan, compile};
 use smeltr::plan::config::{
     CsvConfig, DeclaredField, FunctionConfig, FunctionKind, GrokConfig, KvConfig, LookupOutput, LookupSource,
     MatchKind, Multiplicity, ParserKind, PipelineConfig, Step,
 };
 use smeltr::plan::output::run_to_json;
-use smeltr::plan::plan::{Plan, compile};
 use smeltr::plan::resolve::{binop_result, unop_result};
 use smeltr::plan::topology::SourceMeta;
 
@@ -332,8 +332,30 @@ struct Parse {
     split_dots: bool,
     /// A text field.
     input: usize,
+    /// The object it writes into, each of `declared` a field of it; `None`, the record.
+    into: Option<String>,
+    /// Whether `into` is an object the program bound, rather than a key the record may hold.
+    into_bound: bool,
     /// Each field it writes, with whether this parse is its first write, which declares it.
     declared: Vec<(usize, bool)>,
+    /// A CSV parse's last column, or a key-value parse's last pair, `sk`, which it skips: the text holds it at the top
+    /// level.
+    skip: bool,
+    /// Whether the parse rebuilds its input without what it skips.
+    rebuild: bool,
+}
+
+impl Parse {
+    /// `id`'s name as the parse finds it: its key under `into`.
+    fn key<'n>(&self, name: &'n str) -> &'n str {
+        match &self.into {
+            Some(into) => name
+                .strip_prefix(into.as_str())
+                .and_then(|k| k.strip_prefix('.'))
+                .unwrap_or(name),
+            None => name,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -389,6 +411,8 @@ enum Form {
     Drop,
     /// Each statement a `Move`.
     Rename,
+    /// One `Delete`.
+    Remove,
     /// One `Unroll`.
     Unroll,
     /// One `Parse`.
@@ -953,7 +977,7 @@ impl Gen {
         match self.rng.below(if depth >= 2 { 6 } else { 10 }) {
             0 | 1 if top => {
                 // A variant field is what a typed write converts: there is one in most programs.
-                let ty = match self.rng.chance(4) {
+                let ty = match self.rng.chance(2) {
                     true => DataType::Variant,
                     false => self.ty(),
                 };
@@ -1447,6 +1471,7 @@ impl Gen {
                 return vec![(Form::Code, self.block(0, n))];
             }
             5 => self.eval(true).map(|s| vec![(Form::Eval, s)]),
+            6 if self.rng.chance(2) => self.write_as(9, 0).map(|d| vec![(Form::Remove, vec![d])]),
             6 => self
                 .write_as(10, 0)
                 .map(|m| vec![(Form::Rename, vec![m])])
@@ -1553,17 +1578,29 @@ impl Gen {
     }
 
     /// A parse of a text field, with the eval step that writes the text first at the top level. Under a guard the
-    /// parse reads a text field already bound, and is of a kind that declares every key it writes.
+    /// parse reads a text field already bound, and is of a kind that declares every key it writes. At the top level it
+    /// may write into an object, its fields new: one of its own, `o`, which holds fields already, or `zz`, a key some
+    /// records hold as text.
     fn parse_steps(&mut self, top: bool) -> Option<Vec<(Form, Vec<S>)>> {
         let kinds: Vec<Parser> = Parser::ALL.into_iter().filter(|k| top || !k.dynamic()).collect();
         let kind = *self.rng.pick(&kinds);
+        let into = (top && self.rng.chance(3)).then(|| match self.rng.below(3) {
+            0 => "o".to_string(),
+            1 => "zz".to_string(),
+            _ => format!("p{}", self.bindings.len()),
+        });
+        let into_bound = into.as_deref() == Some("o");
         let mut declared = Vec::new();
         for _ in 0..1 + self.rng.below(3) {
             let ty = self
                 .rng
                 .pick(&[DataType::I64, DataType::F64, DataType::Str, DataType::Bool])
                 .clone();
-            if let Some(d) = self.out_field(ty, top) {
+            let field = match &into {
+                Some(into) => Some((self.field(format!("{into}.f{}", self.bindings.len()), ty), true)),
+                None => self.out_field(ty, top),
+            };
+            if let Some(d) = field {
                 declared.push(d);
             }
         }
@@ -1571,9 +1608,10 @@ impl Gen {
             return None;
         }
         let mut out = Vec::new();
+        let skip = matches!(kind, Parser::Csv | Parser::Kv) && self.rng.chance(2);
         let input = match top {
             true => {
-                let text = self.text(kind, &declared);
+                let text = self.text(kind, into.as_deref(), &declared, skip);
                 let id = self.field(format!("f{}", self.bindings.len()), DataType::Str);
                 out.push((Form::Eval, vec![S::Assign(id, text)]));
                 id
@@ -1584,14 +1622,19 @@ impl Gen {
             kind,
             split_dots: self.rng.chance(2),
             input,
+            into,
+            into_bound,
             declared,
+            skip,
+            rebuild: matches!(kind, Parser::Csv | Parser::Kv) && self.rng.chance(2),
         };
         out.push((Form::Parser, vec![S::Parse(parse)]));
         Some(out)
     }
 
-    /// A line of `kind` holding a value of each of `declared`, the keys their names.
-    fn text(&mut self, kind: Parser, declared: &[(usize, bool)]) -> E {
+    /// A line of `kind` holding a value of each of `declared`, the keys their names, and after them the column or pair
+    /// a parse skips where `skip` says.
+    fn text(&mut self, kind: Parser, into: Option<&str>, declared: &[(usize, bool)], skip: bool) -> E {
         let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
         let mut parts = Vec::new();
         let mut before = match kind {
@@ -1601,6 +1644,7 @@ impl Gen {
         };
         for (i, &(id, _)) in declared.iter().enumerate() {
             let (name, ty) = (self.bindings[id].name.clone(), self.bindings[id].ty.clone());
+            let name = into.map_or(name.as_str(), |into| &name[into.len() + 1..]).to_string();
             let sep = match (i, kind) {
                 (0, _) => "",
                 (_, Parser::Json) => ", ",
@@ -1624,6 +1668,11 @@ impl Gen {
         }
         if kind == Parser::Json {
             before.push('}');
+        }
+        match (skip, kind) {
+            (true, Parser::Csv) => before.push_str(",\"s,k\""),
+            (true, Parser::Kv) => before.push_str(" sk=\"s k\""),
+            _ => {}
         }
         E::Template(parts, leak(before))
     }
@@ -1858,25 +1907,52 @@ impl Writer<'_> {
             S::Drop => out.push_str("drop(); "),
             S::Bare(e) => out.push_str(&format!("{}; ", self.expr(e))),
             S::Parse(p) => {
+                // What `plan::lower` writes for an object the open record may hold as a key: it, converted to an
+                // object, before the fields that convert under it.
+                if let Some(into) = p.into.as_ref().filter(|_| !p.into_bound) {
+                    out.push_str(&format!("{into}: {{...}} = {into}; "));
+                }
                 if !p.kind.dynamic() {
                     self.declare(p.declared.iter().copied(), out);
                 }
-                let names: Vec<String> = p.declared.iter().map(|&(id, _)| self.name(id)).collect();
+                let names: Vec<String> = p
+                    .declared
+                    .iter()
+                    .map(|&(id, _)| p.key(&self.name(id)).to_string())
+                    .collect();
                 let dots = format!("splitDots: {}", p.split_dots);
                 let input = self.name(p.input);
+                let mut headers: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+                if p.skip {
+                    headers.push("null".into());
+                }
+                let headers = headers.join(", ");
                 let call = match p.kind {
                     Parser::Json | Parser::Cef => format!("{}({input}, {{{dots}}})", p.kind.name()),
                     Parser::Kv => format!(
-                        "kv({input}, {{pairSep: \" \", kvSep: \"=\", quote: \"\\\"\", escapes: false, nextKey: true, {dots}}})"
+                        "kv({input}, {{pairSep: \" \", kvSep: \"=\", quote: \"\\\"\", escapes: false, nextKey: true, {}{dots}}})",
+                        if p.skip { "skip: [\"sk\"], " } else { "" }
                     ),
                     Parser::Csv => format!(
-                        "csv({input}, [{}], {{delimiter: \",\", quote: \"\\\"\", escape: null, squeeze: false, trim: false, \
-                         {dots}}})",
-                        names.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ")
+                        "csv({input}, [{headers}], {{delimiter: \",\", quote: \"\\\"\", escape: null, squeeze: false, trim: false, \
+                         {dots}}})"
                     ),
                     Parser::Grok => format!("grok({input}, [\"{}\"], {{{dots}}})", grok_pattern(&names)),
                 };
-                out.push_str(&format!("Object.assign($, {call}); "));
+                out.push_str(&format!(
+                    "Object.assign({}, {call}); ",
+                    p.into.as_deref().unwrap_or("$")
+                ));
+                // What `plan::lower` writes after a parse that rebuilds its input and skips something.
+                match (p.rebuild && p.skip, p.kind) {
+                    (true, Parser::Csv) => out.push_str(&format!(
+                        "{input} = csvRebuild({input}, [{headers}], \",\", \"\\\"\", \"\", false, false); "
+                    )),
+                    (true, Parser::Kv) => out.push_str(&format!(
+                        "{input} = kvRebuild({input}, [\"sk\"], \" \", \"=\", \"\\\"\", false, true); "
+                    )),
+                    _ => {}
+                }
                 if p.kind.dynamic() {
                     self.declare(p.declared.iter().copied(), out);
                 }
@@ -1961,23 +2037,37 @@ impl Writer<'_> {
                     })
                     .collect(),
             }),
+            (Form::Remove, [S::Delete(ids)]) => func(FunctionKind::Remove {
+                fields: ids.iter().map(|&id| self.name(id)).collect(),
+            }),
             (Form::Unroll, [S::Unroll(f, keep)]) => func(FunctionKind::Unroll {
                 field: self.name(*f),
                 keep_parent_fields: *keep,
             }),
             (Form::Parser, [S::Parse(p)]) => {
-                let names: Vec<String> = p.declared.iter().map(|&(id, _)| self.name(id)).collect();
+                let names: Vec<String> = p
+                    .declared
+                    .iter()
+                    .map(|&(id, _)| p.key(&self.name(id)).to_string())
+                    .collect();
                 let split_dots = p.split_dots;
                 let kind = match p.kind {
                     Parser::Json => ParserKind::Json { split_dots },
                     Parser::Cef => ParserKind::Cef { split_dots },
                     Parser::Kv => ParserKind::KeyValue(KvConfig {
                         split_dots,
+                        skip: p.skip.then(|| "sk".to_string()).into_iter().collect(),
+                        rebuild: p.rebuild,
                         ..KvConfig::default()
                     }),
                     Parser::Csv => ParserKind::Csv(CsvConfig {
-                        headers: names.iter().map(|n| Some(n.clone())).collect(),
+                        headers: names
+                            .iter()
+                            .map(|n| Some(n.clone()))
+                            .chain(p.skip.then_some(None))
+                            .collect(),
                         split_dots,
+                        rebuild: p.rebuild,
                         ..CsvConfig::default()
                     }),
                     Parser::Grok => ParserKind::Grok(GrokConfig {
@@ -1988,12 +2078,13 @@ impl Writer<'_> {
                 };
                 func(FunctionKind::Parser {
                     input: self.name(p.input),
+                    into: p.into.clone().unwrap_or_else(|| "$".into()),
                     kind,
                     declared: p
                         .declared
                         .iter()
                         .map(|&(id, _)| DeclaredField {
-                            name: self.name(id),
+                            name: p.key(&self.name(id)).to_string(),
                             ty: self.p.bindings[id].ty.clone(),
                             time_source: None,
                         })
@@ -2239,6 +2330,11 @@ const CONSTRUCTS: &[&str] = &[
     "unroll keep",
     "drop",
     "bare call",
+    "parse into",
+    "parse into an object",
+    "parse into a record key",
+    "parse skip",
+    "parse rebuild",
 ];
 
 /// What `p` writes, by the names `expected` gives.
@@ -2255,6 +2351,14 @@ fn covers(p: &Program) -> BTreeSet<String> {
     }
     for step in &p.steps {
         each(step, &mut |n| {
+            if let Node::S(S::Parse(p)) = n {
+                if p.skip {
+                    out.insert("parse skip".into());
+                }
+                if p.skip && p.rebuild {
+                    out.insert("parse rebuild".into());
+                }
+            }
             let name: String = match n {
                 Node::S(S::Assign(_, E::Lit(l))) if l == "null" => "null write".into(),
                 Node::S(S::Let(id, _)) if fields.contains(p.bindings[*id].name.as_str()) => "shadow".into(),
@@ -2319,6 +2423,9 @@ fn covers(p: &Program) -> BTreeSet<String> {
                 },
                 Node::S(S::Drop) => "drop".into(),
                 Node::S(S::Bare(_)) => "bare call".into(),
+                Node::S(S::Parse(p)) if p.into_bound => "parse into an object".into(),
+                Node::S(S::Parse(p)) if p.into.as_deref() == Some("zz") => "parse into a record key".into(),
+                Node::S(S::Parse(p)) if p.into.is_some() => "parse into".into(),
                 Node::S(S::Parse(p)) => format!("{} call", p.kind.name()),
                 Node::S(S::Lookup(_)) => "lookup call".into(),
                 Node::S(S::Assign(..)) => return,
@@ -2362,6 +2469,7 @@ const STEPS: &[&str] = &[
     "eval step",
     "drop step",
     "rename step",
+    "remove step",
     "unroll step",
     "parser step",
     "lookup step",
@@ -2376,6 +2484,7 @@ fn form_covers(form: &Form, out: &mut BTreeSet<String>) {
         Form::Eval => "eval step",
         Form::Drop => "drop step",
         Form::Rename => "rename step",
+        Form::Remove => "remove step",
         Form::Unroll => "unroll step",
         Form::Parser => "parser step",
         Form::Lookup => "lookup step",

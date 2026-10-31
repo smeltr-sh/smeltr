@@ -43,6 +43,7 @@ fn app_state(store: SqliteStore, data_dir: std::path::PathBuf) -> AppState {
         deploy_checks: Default::default(),
         origin_hosts: Vec::new(),
         remote: Default::default(),
+        updates: Default::default(),
         data_dir,
         directives: Default::default(),
     }
@@ -57,6 +58,11 @@ fn start_leader() -> String {
 /// `start_leader`, also handing back the `data_dir`, so a test can land a
 /// commit on `main` the way a deploy does.
 fn start_leader_with_data_dir() -> (String, std::path::PathBuf) {
+    start_leader_with_registry(Arc::new(Registry::default()))
+}
+
+/// `start_leader_with_data_dir`, keeping its threads and series in `registry`.
+fn start_leader_with_registry(registry: Arc<Registry>) -> (String, std::path::PathBuf) {
     let data_dir = scratch_dir("smeltr-leader-test");
     std::fs::create_dir_all(&data_dir).unwrap();
     let returned = data_dir.clone();
@@ -70,7 +76,10 @@ fn start_leader_with_data_dir() -> (String, std::path::PathBuf) {
                 &scratch_dir("smeltr-leader-key").join("sealing.key"),
             )
             .unwrap();
-            let state = app_state(store, data_dir);
+            let state = AppState {
+                registry,
+                ..app_state(store, data_dir)
+            };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             tx.send(addr.port()).unwrap();
@@ -145,23 +154,25 @@ fn start_leader_tls() -> (String, Vec<u8>) {
     let data_dir = scratch_dir("smeltr-leader-test-tls");
     std::fs::create_dir_all(&data_dir).unwrap();
 
-    // Twice, and the authority a worker is given is the one from the first call while the certificate served is
-    // the one from the second. Every TLS test below then stands on the property the authority exists for: a
-    // certificate minted after a worker was handed `ca.pem` is one that worker still accepts.
+    // Twice, the second reached at one more name, and the authority a worker is given is the one from the first
+    // call while the certificate served is the one from the second. Every TLS test below then stands on the property
+    // the authority exists for: a certificate minted after a worker was handed `ca.pem` is one that worker still
+    // accepts.
     let names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
     let tls_dir = data_dir.join("tls");
+    crate::harness::leader_tls::listing(&tls_dir);
     let validity = std::time::Duration::from_secs(60 * 60);
     let first = smeltr::leader::tls::ensure(&tls_dir, names.clone(), validity, &[]).expect("an authority, created");
     let ca_pem = first.ca_pem.clone();
-    let issued_first = std::fs::read(&first.server_cert_path).unwrap();
+    let issued_first = first.served.clone();
 
-    let materials = smeltr::leader::tls::ensure(&tls_dir, names, validity, &[]).expect("a certificate, reissued");
+    let more = [names, vec!["leader.test".to_string()]].concat();
+    let materials = smeltr::leader::tls::ensure(&tls_dir, more, validity, &[]).expect("a certificate, reissued");
     // What `main` says once it has built the socket from these files: it has what is on disk.
     smeltr::leader::tls::socket_took(&tls_dir, smeltr::leader::tls::disk_generation(&tls_dir));
     assert_eq!(materials.ca_pem, ca_pem, "the authority is kept across starts");
-    let cert_pem = std::fs::read(&materials.server_cert_path).unwrap();
+    let (_, cert_pem, key_pem) = smeltr::leader::tls::to_serve(&tls_dir).unwrap();
     assert_ne!(cert_pem, issued_first, "the served certificate is a new one");
-    let key_pem = std::fs::read(&materials.server_key_path).unwrap();
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -198,7 +209,7 @@ fn start_leader_tls() -> (String, Vec<u8>) {
 
 /// Poll until the leader answers over TLS, or panic with how long it was given.
 fn wait_until_serving(base: &str, ca_pem: &[u8]) {
-    let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
@@ -236,7 +247,7 @@ struct EnrollResult {
 }
 
 fn try_enroll(base: &str, code: &str, worker_id: &str) -> EnrollResult {
-    ureq::post(format!("{base}/api/enroll"))
+    ureq::post(format!("{base}/api/worker/enroll"))
         .send_json(serde_json::json!({ "code": code, "workerId": worker_id }))
         .expect("request succeeds")
         .body_mut()
@@ -251,8 +262,14 @@ fn enroll_worker(base: &str, worker_id: &str) -> String {
     r.token.expect("ok implies a token")
 }
 
+/// An agent that reads the answer at any status: a refusal carries its errors in the body, as a success does.
+fn lenient() -> ureq::Agent {
+    ureq::Agent::config_builder().http_status_as_error(false).build().into()
+}
+
 fn revoke_worker(base: &str, worker_id: &str) -> MutationResult {
-    ureq::post(format!("{base}/api/workers/{worker_id}/revoke"))
+    lenient()
+        .post(format!("{base}/api/workers/{worker_id}/revoke"))
         .send_json(serde_json::json!({}))
         .expect("request succeeds")
         .body_mut()
@@ -265,7 +282,7 @@ fn revoke_worker(base: &str, worker_id: &str) -> MutationResult {
 /// find; `worker_id` is a parameter because the leader now checks it against
 /// the token.
 fn heartbeat_status(base: &str, token: &str, worker_id: &str) -> u16 {
-    match ureq::post(format!("{base}/api/heartbeat"))
+    match ureq::post(format!("{base}/api/worker/heartbeat"))
         .header("Authorization", &format!("Bearer {token}"))
         .send_json(serde_json::json!({
             "workerId": worker_id,
@@ -301,7 +318,7 @@ fn heartbeat_one_thread_with_policy(
     stop_after_unreachable_secs: Option<u64>,
     commit: Option<&str>,
 ) -> smeltr::heartbeat::HeartbeatResponse {
-    let client = HeartbeatClient::new(base, token, None).expect("no authority needed over plain HTTP");
+    let client = HeartbeatClient::new(base, token, None, true).expect("no authority needed over plain HTTP");
     client
         .send(&HeartbeatRequest {
             heartbeat_interval_ms: None,
@@ -404,11 +421,11 @@ fn commit_for_group(data_dir: &std::path::Path, group_id: &str, source_id: Optio
 #[test]
 fn a_worker_trusting_the_authority_reaches_the_leader_it_signed_for() {
     let (base, ca_pem) = start_leader_tls();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
 
     let code = mint_code_with(&agent, &base, serde_json::json!({}));
     let enrolled: EnrollResult = agent
-        .post(format!("{base}/api/enroll"))
+        .post(format!("{base}/api/worker/enroll"))
         .send_json(serde_json::json!({ "code": code, "workerId": "w1" }))
         .expect("enroll request succeeds over the authority's TLS")
         .body_mut()
@@ -416,8 +433,8 @@ fn a_worker_trusting_the_authority_reaches_the_leader_it_signed_for() {
         .unwrap();
     let token = enrolled.token.unwrap();
 
-    let client =
-        HeartbeatClient::new(&base, &token, Some(&ca_pem)).expect("HeartbeatClient accepts the leader's authority");
+    let client = HeartbeatClient::new(&base, &token, Some(&ca_pem), true)
+        .expect("HeartbeatClient accepts the leader's authority");
     client
         .send(&HeartbeatRequest {
             heartbeat_interval_ms: None,
@@ -459,8 +476,10 @@ fn a_worker_trusting_the_authority_reaches_the_leader_it_signed_for() {
 fn a_worker_holding_two_authorities_reaches_a_leader_that_runs_either() {
     let (base, ca_pem) = start_leader_tls();
 
+    let elsewhere_dir = scratch_dir("smeltr-leader-test-other-ca").join("tls");
+    crate::harness::leader_tls::listing(&elsewhere_dir);
     let elsewhere = smeltr::leader::tls::ensure(
-        &scratch_dir("smeltr-leader-test-other-ca").join("tls"),
+        &elsewhere_dir,
         vec!["localhost".to_string()],
         std::time::Duration::from_secs(60 * 60),
         &[],
@@ -469,13 +488,14 @@ fn a_worker_holding_two_authorities_reaches_a_leader_that_runs_either() {
 
     let mut both = elsewhere.ca_pem.clone();
     both.extend_from_slice(&ca_pem);
-    let agent = smeltr::heartbeat::agent_trusting(Some(&both), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&both), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     agent
         .get(format!("{base}/api/health"))
         .call()
         .expect("a worker holding both authorities reaches the leader signed for by one of them");
 
-    let wrong = smeltr::heartbeat::agent_trusting(Some(&elsewhere.ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let wrong =
+        smeltr::heartbeat::agent_trusting(Some(&elsewhere.ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     assert!(
         wrong.get(format!("{base}/api/health")).call().is_err(),
         "holding only the other authority must not be enough"
@@ -497,14 +517,14 @@ fn a_capture_report_over_tls_trusts_the_same_pinned_cert() {
     let agent = ureq::Agent::new_with_config(ureq::Agent::config_builder().tls_config(tls_config).build());
     let code = mint_code_with(&agent, &base, serde_json::json!({}));
     let enrolled: EnrollResult = agent
-        .post(format!("{base}/api/enroll"))
+        .post(format!("{base}/api/worker/enroll"))
         .send_json(serde_json::json!({ "code": code, "workerId": "w1" }))
         .expect("enroll request succeeds over pinned TLS")
         .body_mut()
         .read_json()
         .unwrap();
 
-    let client = HeartbeatClient::new(&base, enrolled.token.unwrap(), Some(&cert_pem))
+    let client = HeartbeatClient::new(&base, enrolled.token.unwrap(), Some(&cert_pem), true)
         .expect("HeartbeatClient accepts the pinned cert");
     client
         .report_capture(&smeltr::heartbeat::CaptureReport {
@@ -531,7 +551,7 @@ fn a_capture_report_over_tls_trusts_the_same_pinned_cert() {
 #[test]
 fn heartbeat_client_without_the_authority_rejects_the_leader() {
     let (base, _ca_pem) = start_leader_tls();
-    let client = HeartbeatClient::new(&base, "some-token", None).unwrap();
+    let client = HeartbeatClient::new(&base, "some-token", None, true).unwrap();
     let result = client.send(&HeartbeatRequest {
         heartbeat_interval_ms: None,
         single_worker: Vec::new(),
@@ -557,10 +577,9 @@ fn heartbeat_client_without_the_authority_rejects_the_leader() {
         accepts: Vec::new(),
         took: None,
     });
-    assert!(
-        result.is_err(),
-        "a client holding no authority must not trust a leader that runs its own"
-    );
+    let refused = result.expect_err("a client holding no authority must not trust a leader that runs its own");
+    assert!(refused.certificate_untrusted(), "{refused}");
+    assert_eq!(refused.reason(), "invalid peer certificate: UnknownIssuer");
 }
 
 /// What a worker is running is the worker's own answer. The leader knows where `main` is, but a worker that
@@ -646,7 +665,7 @@ fn clone_and_read_deployed(base: &str, token: &str, dest: &std::path::Path) -> S
             &build_header(),
             "clone",
             "--quiet",
-            &format!("{base}/repo"),
+            &format!("{base}/api/worker/repo"),
             dest.to_str().unwrap(),
         ])
         .status()
@@ -778,7 +797,7 @@ fn a_capture_report_larger_than_a_framework_default_body_is_accepted() {
         sql: None,
         avro: Vec::new(),
     };
-    let status = ureq::post(format!("{base}/api/capture-report"))
+    let status = ureq::post(format!("{base}/api/worker/capture-report"))
         .header("Authorization", &format!("Bearer {token}"))
         .send_json(&report)
         .map(|r| r.status().as_u16())
@@ -789,10 +808,65 @@ fn a_capture_report_larger_than_a_framework_default_body_is_accepted() {
     assert_eq!(status, 204, "a capture report past a 2 MiB body was refused");
 }
 
+/// A beat the leader's store will not take is refused, so the worker sends its window again; taken then, it is
+/// counted once however often it comes.
+#[test]
+fn a_beat_the_store_will_not_take_is_refused_and_counted_once_when_it_comes_again() {
+    use smeltr::leader::series::Tier;
+
+    let dir = scratch_dir("smeltr-leader-registry");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("registry.db");
+    let registry = Arc::new(Registry::open(&path).expect("registry.db opens"));
+    let refusing = rusqlite::Connection::open(&path).unwrap();
+    refusing
+        .execute_batch("CREATE TRIGGER refused BEFORE INSERT ON windows BEGIN SELECT RAISE(ABORT, 'refused'); END")
+        .unwrap();
+    let (base, _) = start_leader_with_registry(registry.clone());
+    let token = enroll_worker(&base, "w1");
+    let send = || match ureq::post(format!("{base}/api/worker/heartbeat"))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send_json(serde_json::json!({
+            "workerId": "w1",
+            "bootId": 7,
+            "streamsWindow": 1,
+            "threads": [{
+                "threadId": "t0",
+                "groupId": "pool",
+                "partitionsOwned": [],
+                "metrics": [{
+                    "metric": "smeltr_rows_polled_total",
+                    "labels": [["source", "in"]],
+                    "value": {"kind": "counter", "value": 5},
+                }],
+            }],
+        })) {
+        Ok(r) => r.status().as_u16(),
+        Err(ureq::Error::StatusCode(c)) => c,
+        Err(other) => panic!("unexpected transport error: {other}"),
+    };
+
+    assert_eq!(send(), 503, "a beat that was not recorded was answered as recorded");
+    refusing.execute_batch("DROP TRIGGER refused").unwrap();
+    assert_eq!(send(), 200);
+    assert_eq!(send(), 200);
+    let polled = registry
+        .series()
+        .unwrap()
+        .series_since("smeltr_rows_polled_total", Tier::TenSeconds, 0)
+        .unwrap();
+    assert_eq!(polled.len(), 1, "{polled:?}");
+    assert_eq!(
+        polled[0].1.iter().map(|p| p.1).sum::<f64>(),
+        5.0,
+        "the window was not counted once"
+    );
+}
+
 #[test]
 fn heartbeat_without_a_token_is_rejected() {
     let base = start_leader();
-    let status = ureq::post(format!("{base}/api/heartbeat"))
+    let status = ureq::post(format!("{base}/api/worker/heartbeat"))
         .send_json(serde_json::json!({ "workerId": "w1", "threads": [] }))
         .unwrap_err();
     assert!(matches!(status, ureq::Error::StatusCode(401)));
@@ -801,11 +875,71 @@ fn heartbeat_without_a_token_is_rejected() {
 #[test]
 fn heartbeat_with_a_garbage_token_is_rejected() {
     let base = start_leader();
-    let status = ureq::post(format!("{base}/api/heartbeat"))
+    let status = ureq::post(format!("{base}/api/worker/heartbeat"))
         .header("Authorization", "Bearer not-a-real-token")
         .send_json(serde_json::json!({ "workerId": "w1", "threads": [] }))
         .unwrap_err();
     assert!(matches!(status, ureq::Error::StatusCode(401)));
+}
+
+/// A worker gzips its heartbeat, and the leader holds the body to `HEARTBEAT_BODY_LIMIT` as inflated, so a few
+/// kilobytes on the wire cannot become more than the limit in the leader's memory.
+#[test]
+fn a_gzipped_heartbeat_is_held_to_the_limit_as_inflated() {
+    use std::io::Write;
+
+    let base = start_leader();
+    let token = enroll_worker(&base, "w1");
+    let send = |inflated: usize| {
+        let beat = br#"{"workerId":"w1","threads":[]}"#;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(beat).unwrap();
+        // Whitespace, so the JSON is valid at any length and only its size can refuse it.
+        gz.write_all(&vec![b' '; inflated - beat.len()]).unwrap();
+        let body = gz.finish().unwrap();
+        match ureq::post(format!("{base}/api/worker/heartbeat"))
+            .header("Authorization", &format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .header("Content-Encoding", "gzip")
+            .send(&body[..])
+        {
+            Ok(r) => r.status().as_u16(),
+            Err(ureq::Error::StatusCode(c)) => c,
+            Err(other) => panic!("unexpected transport error: {other}"),
+        }
+    };
+    let limit = smeltr::heartbeat::HEARTBEAT_BODY_LIMIT;
+    assert_eq!(send(limit), 200, "a gzipped heartbeat at the limit was refused");
+    assert_eq!(send(limit + 1), 413, "a gzipped heartbeat past the limit was taken");
+}
+
+/// The leader answers gzipped to a client that takes it, and as it is to one that does not. Read off the socket:
+/// `ureq` inflates an answer and drops the header that said it was gzipped.
+#[test]
+fn an_answer_is_gzipped_for_a_client_that_takes_it() {
+    use std::io::{Read, Write};
+
+    let base = start_leader();
+    let token = enroll_worker(&base, "w1");
+    heartbeat_one_thread(&base, &token, "w1", "t0", "pool");
+    let encoding = |accept: &str| {
+        let mut socket = std::net::TcpStream::connect(base.trim_start_matches("http://")).unwrap();
+        write!(
+            socket,
+            "GET /api/health HTTP/1.1\r\nHost: leader\r\nAccept-Encoding: {accept}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut answer = Vec::new();
+        socket.read_to_end(&mut answer).unwrap();
+        let answer = String::from_utf8_lossy(&answer).to_ascii_lowercase();
+        let head = &answer[..answer.find("\r\n\r\n").expect("a whole head")];
+        assert!(head.starts_with("http/1.1 200"), "{head}");
+        head.lines()
+            .find_map(|l| l.strip_prefix("content-encoding: "))
+            .map(str::to_string)
+    };
+    assert_eq!(encoding("gzip").as_deref(), Some("gzip"));
+    assert_eq!(encoding("identity"), None);
 }
 
 /// A token names exactly one worker, so a heartbeat reporting a different id is
@@ -854,7 +988,8 @@ fn enrolling_an_existing_worker_id_is_refused_and_the_original_keeps_its_token()
 
 /// What `POST /api/enrollment-codes` answers `body` with.
 fn mint_answer(base: &str, body: serde_json::Value) -> serde_json::Value {
-    ureq::post(format!("{base}/api/enrollment-codes"))
+    lenient()
+        .post(format!("{base}/api/enrollment-codes"))
         .send_json(body)
         .expect("request succeeds")
         .body_mut()
@@ -880,19 +1015,14 @@ fn an_ephemeral_enrollment_code_has_no_cap_and_no_expiry() {
     for n in 0..60 {
         assert!(try_enroll(&base, code, &format!("pod-{n}")).ok, "pod-{n}");
     }
-    let workers: Vec<smeltr::leader::WorkerOut> = ureq::get(format!("{base}/api/workers"))
-        .call()
-        .unwrap()
-        .body_mut()
-        .read_json()
-        .unwrap();
+    let workers = roster(&base);
     assert_eq!(workers.len(), 60);
     assert!(workers.iter().all(|w| w.kind == "ephemeral"));
 }
 
 /// A heartbeat from `worker_id`, saying it is stopping or not, answered with its status.
 fn beat_status(base: &str, token: &str, worker_id: &str, stopping: bool) -> u16 {
-    match ureq::post(format!("{base}/api/heartbeat"))
+    match ureq::post(format!("{base}/api/worker/heartbeat"))
         .header("Authorization", &format!("Bearer {token}"))
         .send_json(serde_json::json!({
             "workerId": worker_id,
@@ -906,12 +1036,13 @@ fn beat_status(base: &str, token: &str, worker_id: &str, stopping: bool) -> u16 
 }
 
 fn roster(base: &str) -> Vec<smeltr::leader::WorkerOut> {
-    ureq::get(format!("{base}/api/workers"))
+    let mut listed: serde_json::Value = ureq::get(format!("{base}/api/workers"))
         .call()
         .unwrap()
         .body_mut()
         .read_json()
-        .unwrap()
+        .unwrap();
+    serde_json::from_value(listed["workers"].take()).expect("the workers are listed")
 }
 
 fn health_threads(base: &str) -> Vec<serde_json::Value> {
@@ -974,7 +1105,8 @@ fn how_long_an_ephemeral_worker_may_be_silent_is_a_setting_with_bounds() {
             .unwrap()
     };
     let put = |seconds: u64| -> serde_json::Value {
-        ureq::put(format!("{base}/api/settings/workers"))
+        lenient()
+            .put(format!("{base}/api/settings/workers"))
             .send_json(serde_json::json!({ "ephemeralForgetAfterSeconds": seconds }))
             .unwrap()
             .body_mut()
@@ -1074,12 +1206,7 @@ fn a_revoked_worker_id_cannot_re_enroll() {
     assert!(again.token.is_none());
     assert_eq!(heartbeat_status(&base, &token, "w1"), 403);
 
-    let workers: Vec<smeltr::leader::WorkerOut> = ureq::get(format!("{base}/api/workers"))
-        .call()
-        .unwrap()
-        .body_mut()
-        .read_json()
-        .unwrap();
+    let workers = roster(&base);
     assert_eq!(workers.len(), 1);
     assert!(workers[0].revoked);
 }
@@ -1089,12 +1216,7 @@ fn list_workers_shows_a_worker_that_enrolled_but_never_heartbeated() {
     let base = start_leader();
     enroll_worker(&base, "w1");
 
-    let workers: Vec<smeltr::leader::WorkerOut> = ureq::get(format!("{base}/api/workers"))
-        .call()
-        .expect("request succeeds")
-        .body_mut()
-        .read_json()
-        .expect("valid JSON response");
+    let workers = roster(&base);
     assert_eq!(workers.len(), 1);
     assert_eq!(workers[0].worker_id, "w1");
     assert!(!workers[0].revoked);
@@ -1133,7 +1255,7 @@ fn committing_one_group_leaves_another_groups_subtree_alone() {
             &build_header(),
             "clone",
             "--quiet",
-            &format!("{base}/repo"),
+            &format!("{base}/api/worker/repo"),
             dest.to_str().unwrap(),
         ])
         .status()
@@ -1153,7 +1275,12 @@ fn a_git_clone_without_a_token_is_rejected() {
 
     let dest = scratch_dir("smeltr-leader-test-clone-unauth");
     let status = git_without_prompting()
-        .args(["clone", "--quiet", &format!("{base}/repo"), dest.to_str().unwrap()])
+        .args([
+            "clone",
+            "--quiet",
+            &format!("{base}/api/worker/repo"),
+            dest.to_str().unwrap(),
+        ])
         .status()
         .expect("git clone runs");
     assert!(!status.success(), "an unauthenticated clone must fail");

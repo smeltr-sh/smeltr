@@ -26,7 +26,7 @@ export const RAIL_GLYPHS: Record<string, Glyph> = {
   Routes: {
     d: 'M6 29 H26 L40 15 H48 V7 L60 18 L48 29 V21 H43 L32 32 L43 43 H48 V35 L60 46 L48 57 V49 H40 L26 35 H6 Z',
   },
-  // A stack of records: samples, lookup tables, identities.
+  // A stack of records: samples, lookup tables, grok patterns.
   Resources: {
     d: 'M10 14 A22 7 0 0 1 54 14 A22 7 0 0 1 10 14 Z M10 22 A22 7 0 0 0 54 22 V30 A22 7 0 0 1 10 30 Z M10 38 A22 7 0 0 0 54 38 V46 A22 7 0 0 1 10 46 Z',
   },
@@ -34,9 +34,8 @@ export const RAIL_GLYPHS: Record<string, Glyph> = {
   Branches: {
     d: 'M18 14 H25 V50 H18 Z M25 40 C38 40 44 34 44 24 V14 H51 V24 C51 38 41 47 25 47 Z M15 12 A6.5 6.5 0 1 1 28 12 A6.5 6.5 0 1 1 15 12 Z M15 52 A6.5 6.5 0 1 1 28 52 A6.5 6.5 0 1 1 15 52 Z M41 12 A6.5 6.5 0 1 1 54 12 A6.5 6.5 0 1 1 41 12 Z',
   },
-  // A clock.
+  // A commit log: the Branches line, unforked, each commit a row.
   History: {
-    d: 'M8 32 A24 24 0 1 0 56 32 A24 24 0 1 0 8 32 Z M14 32 A18 18 0 1 0 50 32 A18 18 0 1 0 14 32 Z M29 17 H35 V30 H45 V36 H29 Z',
-    evenodd: true,
+    d: 'M12.5 14 H19.5 V50 H12.5 Z M9.5 14 A6.5 6.5 0 1 1 22.5 14 A6.5 6.5 0 1 1 9.5 14 Z M28 10 H52 L55 18 H25 Z M9.5 32 A6.5 6.5 0 1 1 22.5 32 A6.5 6.5 0 1 1 9.5 32 Z M28 28 H52 L55 36 H25 Z M9.5 50 A6.5 6.5 0 1 1 22.5 50 A6.5 6.5 0 1 1 9.5 50 Z M28 46 H52 L55 54 H25 Z',
   },
 };

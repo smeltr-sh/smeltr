@@ -1,7 +1,7 @@
 //! The warning catalog (design doc, Control plane): a fixed set of named conditions, each about one object, each
 //! derived fresh from `Registry::snapshot()`, the worker roster, and which groups the fleet runs, on every call.
-//! There is no warning table --
-//! [`derive`] is the whole mechanism, and a condition absent from its result is not true, not closed or acknowledged.
+//! There is no warning table -- [`crate::leader::catalog`] is the whole mechanism, [`derive`] the fleet's part of it,
+//! and a condition absent from its result is not true, not closed or acknowledged.
 //!
 //! A warning needs a start time this module cannot read off any one heartbeat: nothing on the wire says how long a
 //! fact has held. [`crate::leader::registry::Registry::observe_facts`] is the leader's only memory of that -- when
@@ -19,37 +19,41 @@ use crate::leader::access::{Access, Level};
 use crate::leader::deploy_checks::{FailingTest, Findings};
 use crate::leader::registry::{FactKey, ThreadHealth};
 use crate::leader::series::{DRIFT_WINDOW, DeclaredField, LoggedSite, RegistryStore, Tier};
-use crate::leader::store::WorkerCredentialRecord;
+use crate::leader::store::{KeyStanding, Unopenable, WorkerCredentialRecord};
 use crate::leader::throughput;
 
 /// *Failed*: the thing is not doing its job. *Warning*: it is working and something is off. (design doc, Control
-/// plane).
+/// plane). *Info*: a fact worth knowing that asks nothing of anyone, which only a caller that asks for it is given
+/// (`leader::catalog`), so no view that judges health can count one as trouble.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Severity {
     Failed,
     Warning,
+    Info,
 }
 
 /// The kind of object a warning's subject is (design doc, Control plane: "this source, this destination, this
 /// worker, this group"). A fleet or group view rolls warnings up by subject; that rollup is a query the caller runs,
 /// not a fifth
 /// kind of warning.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SubjectKind {
     Source,
     Destination,
     Worker,
     Group,
-    /// An identity a deployed connector names, by its id in the bundle.
-    Identity,
     /// This leader itself. The one subject nothing reports on, because it is what the reports arrive at.
     Leader,
     /// An outstanding enrollment code, by its id.
     EnrollmentCode,
     /// A pipeline, by the id its author gave it.
     Pipeline,
+    /// A leader-stored secret, by name.
+    Secret,
+    /// A certificate in the leader's list, by name.
+    Certificate,
 }
 
 /// Which catalog entry raised this warning. The catalog is fixed (design doc, Control plane), so a reader can
@@ -66,24 +70,33 @@ pub enum Condition {
     DestinationRefusing,
     DestinationUnreachable,
     LagClimbing,
+    DestinationMemoryBound,
     SourceRowsBelow,
     SourceRowsAbove,
     GroupNotDeployed,
     WorkerNotDeployingItsTarget,
     WorkerOnAnotherBuild,
+    WorkerOnAnotherRelease,
     WorkerMemoryHigh,
     AuthorityExpiring,
     AuthorityAging,
     EnrollmentCodeNamesOutgoingAuthority,
-    IdentityExpiring,
+    CertificateExpiring,
     WorkerLoggedWarnings,
     DeployHeld,
     RemoteNotFollowed,
+    NewerRelease,
     DeployDoesNotLoad,
     DeployFailsTests,
+    DeployBreaksSchemas,
     DeclaredFieldFailing,
     DeclaredFieldGone,
     StreamUnrouted,
+    SecretsKeyUnusable,
+    SecretNeedsValue,
+    AcmeRenewalFailing,
+    LeaderCertificateRunningOut,
+    IssuedCertificateNotRenewed,
 }
 
 impl Condition {
@@ -99,24 +112,33 @@ impl Condition {
         Condition::DestinationRefusing,
         Condition::DestinationUnreachable,
         Condition::LagClimbing,
+        Condition::DestinationMemoryBound,
         Condition::SourceRowsBelow,
         Condition::SourceRowsAbove,
         Condition::GroupNotDeployed,
         Condition::WorkerNotDeployingItsTarget,
         Condition::WorkerOnAnotherBuild,
+        Condition::WorkerOnAnotherRelease,
         Condition::WorkerMemoryHigh,
         Condition::AuthorityExpiring,
         Condition::AuthorityAging,
-        Condition::IdentityExpiring,
+        Condition::CertificateExpiring,
         Condition::EnrollmentCodeNamesOutgoingAuthority,
         Condition::WorkerLoggedWarnings,
         Condition::DeployHeld,
         Condition::RemoteNotFollowed,
+        Condition::NewerRelease,
         Condition::DeployDoesNotLoad,
         Condition::DeployFailsTests,
+        Condition::DeployBreaksSchemas,
         Condition::DeclaredFieldFailing,
         Condition::DeclaredFieldGone,
         Condition::StreamUnrouted,
+        Condition::SecretsKeyUnusable,
+        Condition::SecretNeedsValue,
+        Condition::AcmeRenewalFailing,
+        Condition::LeaderCertificateRunningOut,
+        Condition::IssuedCertificateNotRenewed,
     ];
 
     /// What this is called on the wire. The match is what makes a new entry a compile error here.
@@ -131,27 +153,43 @@ impl Condition {
             Condition::DestinationRefusing => "destinationRefusing",
             Condition::DestinationUnreachable => "destinationUnreachable",
             Condition::LagClimbing => "lagClimbing",
+            Condition::DestinationMemoryBound => "destinationMemoryBound",
             Condition::SourceRowsBelow => "sourceRowsBelow",
             Condition::SourceRowsAbove => "sourceRowsAbove",
             Condition::GroupNotDeployed => "groupNotDeployed",
             Condition::WorkerNotDeployingItsTarget => "workerNotDeployingItsTarget",
             Condition::WorkerOnAnotherBuild => "workerOnAnotherBuild",
+            Condition::WorkerOnAnotherRelease => "workerOnAnotherRelease",
             Condition::WorkerMemoryHigh => "workerMemoryHigh",
             Condition::AuthorityExpiring => "authorityExpiring",
             Condition::AuthorityAging => "authorityAging",
-            Condition::IdentityExpiring => "identityExpiring",
+            Condition::CertificateExpiring => "certificateExpiring",
             Condition::EnrollmentCodeNamesOutgoingAuthority => "enrollmentCodeNamesOutgoingAuthority",
             Condition::WorkerLoggedWarnings => "workerLoggedWarnings",
             Condition::DeployHeld => "deployHeld",
             Condition::RemoteNotFollowed => "remoteNotFollowed",
+            Condition::NewerRelease => "newerRelease",
             Condition::DeployDoesNotLoad => "deployDoesNotLoad",
             Condition::DeployFailsTests => "deployFailsTests",
+            Condition::DeployBreaksSchemas => "deployBreaksSchemas",
             Condition::DeclaredFieldFailing => "declaredFieldFailing",
             Condition::DeclaredFieldGone => "declaredFieldGone",
             Condition::StreamUnrouted => "streamUnrouted",
+            Condition::SecretsKeyUnusable => "secretsKeyUnusable",
+            Condition::SecretNeedsValue => "secretNeedsValue",
+            Condition::AcmeRenewalFailing => "acmeRenewalFailing",
+            Condition::LeaderCertificateRunningOut => "leaderCertificateRunningOut",
+            Condition::IssuedCertificateNotRenewed => "issuedCertificateNotRenewed",
         }
     }
 }
+
+/// Where an operator manages what this leader serves and the authority it signs under, as a message names it. One
+/// name in every message, so a renamed page is renamed everywhere.
+const LEADER_CERTIFICATE_TAB: &str = "Admin → System → Leader certificate";
+
+/// Where certificates are kept and replaced, as a message names it.
+const CERTIFICATE_LIST: &str = "Admin → Certificates";
 
 /// How long before an authority expires this starts saying so. Long enough to copy a new one to every worker at
 /// a normal pace, which is the work it is warning about.
@@ -164,8 +202,14 @@ const AUTHORITY_NOTICE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// is not. A tenth of a decade is a year, which is the pace this is for.
 const AUTHORITY_LAST_PART: f64 = 0.1;
 
-/// A named condition about one object: what the design calls a warning. [`derive`] recomputes the whole list on
-/// every call; nothing here is stored, and there is nothing to acknowledge.
+/// How long before a certificate good from `not_before_millis` to `not_after_millis` runs out it is said to be
+/// running out: the last part of its life. The GUI marks one by the same rule (`time.ts`).
+pub fn notice_millis(not_before_millis: i64, not_after_millis: i64) -> i64 {
+    ((not_after_millis - not_before_millis) as f64 * AUTHORITY_LAST_PART) as i64
+}
+
+/// A named condition about one object: what the design calls a warning. [`crate::leader::catalog`] recomputes the
+/// whole list on every call; nothing here is stored, and there is nothing to acknowledge.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Warning {
@@ -190,10 +234,10 @@ pub struct Warning {
     /// so condition and subject alone do not name one warning; with this they do. `None` on every other condition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub site: Option<String>,
-    /// The scope whose bundle declares the subject: `shared`, or the group. Set only on a pipeline, which the page
+    /// The area whose bundle declares the subject: `shared`, or the group. Set only on a pipeline, which the page
     /// links to its editor, and only where the deployed commit says.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
+    pub area: Option<String>,
 }
 
 impl Warning {
@@ -219,6 +263,7 @@ const SOURCE_ROWS_ABOVE: &str = "source_rows_above";
 const GROUP_NOT_DEPLOYED: &str = "group_not_deployed";
 const DEPLOY_DOES_NOT_LOAD: &str = "deploy_does_not_load";
 const DEPLOY_FAILS_TESTS: &str = "deploy_fails_tests";
+const DEPLOY_BREAKS_SCHEMAS: &str = "deploy_breaks_schemas";
 
 /// A source blocked on `cause`: its condition, its severity, and its fact-clock entry -- each cause its own, so a
 /// source whose block changes cause is dated from the change.
@@ -343,7 +388,7 @@ fn authority_expiring(snapshot: &[ThreadHealth], credentials: &[WorkerCredential
         .map(|(worker_id, (expires, group))| {
             let expired = expires <= now_ms;
             Warning {
-                scope: None,
+                area: None,
                 condition: Condition::AuthorityExpiring,
                 subject_kind: SubjectKind::Worker,
                 site: None,
@@ -371,54 +416,56 @@ fn authority_expiring(snapshot: &[ThreadHealth], credentials: &[WorkerCredential
     out
 }
 
-/// Which side of an identity a certificate sits on. The two run out differently, so they are said differently.
+/// Which side of a connector's TLS a certificate sits on. The two run out differently, so they are said differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Half {
-    /// The chain this worker presents. Out of date, every connector naming the identity fails at the handshake.
+    /// The chain this worker presents. Out of date, the connector fails at the handshake.
     Presented,
     /// An authority a far end is verified against. Out of date, a far end chaining only to it cannot be checked;
-    /// one chaining to another root the identity still trusts is unaffected.
+    /// one chaining to another root the connector still trusts is unaffected.
     Trusted,
 }
 
-/// One certificate a deployed identity carries, and the window it is good for.
+/// One certificate a deployed connector's TLS carries, and the window it is good for.
 ///
-/// The leader reads these off the commit the fleet runs: a bundle nobody deploys cannot stop anything working, and
-/// an identity nothing names configures no connection. A group mid-rollout runs more than one commit at once, and
-/// each carries its own answer -- a worker on one never has another commit's roots in its trust store, however
-/// their two bundles happen to name the same identity id.
+/// The leader reads these off the commit the fleet runs, with the chain a presented certificate's list entry holds
+/// now: a bundle nobody deploys cannot stop anything working. A group mid-rollout runs more than one commit at
+/// once, and each carries its own answer -- a worker on one never has another commit's roots in its trust store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployedCertificate {
     pub group: String,
-    /// The commit this certificate was read off. Two commits naming the same identity are never one trust store:
-    /// a worker still on the older one has only its own roots to verify against.
+    /// The commit this certificate was read off. Two commits are never one trust store: a worker still on the
+    /// older one has only its own roots to verify against.
     pub commit: String,
-    /// The identity that carries it, by its id in the bundle.
-    pub identity: String,
+    /// The connector whose TLS carries it.
+    pub subject_kind: SubjectKind,
+    pub subject_id: String,
     pub half: Half,
     pub not_before_millis: i64,
     pub not_after_millis: i64,
 }
 
-/// A deployed identity's certificates running out, in time to replace them.
+/// A deployed connector's certificates running out, in time to replace them.
 ///
 /// A date rather than something observed, like the two authority entries: the leader reads it off the bundle, so
 /// the warning knows exactly when it began and needs nothing remembered. Notice is a tenth of that certificate's
-/// own life or thirty days, whichever is longer, because a tenth of a short-lived one is no notice at all.
+/// own life.
 ///
-/// One warning per identity per half, because an identity holds more than one certificate and they do not fail
+/// One warning per connector per half, because a connector holds more than one certificate and they do not fail
 /// together. A presented chain is only as good as its soonest part. A trust store holds several roots on purpose --
 /// during a far end's own rollover the outgoing one expires sooner and matters to nobody -- so trust runs out when
 /// the last of them does, not the first.
-fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warning> {
-    // Commit is part of the key: two commits naming the same identity are two separate trust stores, one per
-    // worker generation, and merging them would let a fresh root on one hide an exhausted one on the other.
-    let mut decisive: HashMap<(&str, &str, &str, Half), &DeployedCertificate> = HashMap::new();
+pub fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warning> {
+    // Commit is part of the key: two commits are two separate trust stores, one per worker generation, and merging
+    // them would let a fresh root on one hide an exhausted one on the other. Kind is part of it because a source
+    // and a destination may share an id.
+    let mut decisive: HashMap<(&str, &str, SubjectKind, &str, Half), &DeployedCertificate> = HashMap::new();
     for certificate in deployed {
         let key = (
             certificate.group.as_str(),
             certificate.commit.as_str(),
-            certificate.identity.as_str(),
+            certificate.subject_kind,
+            certificate.subject_id.as_str(),
             certificate.half,
         );
         let held = decisive.entry(key).or_insert(certificate);
@@ -426,7 +473,7 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
             Half::Presented => certificate.not_after_millis < held.not_after_millis,
             // A trust store's roots are alternatives, not a chain -- any one of them currently valid is enough to
             // verify a far end. A pre-staged rollover root, not valid yet, must never outrank one already good:
-            // outranking it here is what reported an identity failed while its current root still worked.
+            // outranking it here is what reported a connector failed while its current root still worked.
             Half::Trusted => {
                 let held_valid = now_ms >= held.not_before_millis;
                 let candidate_valid = now_ms >= certificate.not_before_millis;
@@ -446,12 +493,13 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
     // only as good as its latest-starting one: every member has to hold right now, unlike a trust store's roots,
     // which are alternatives. `decisive` above tracks the first; this tracks the second, since the two can name
     // different members of the same chain.
-    let mut presented_starts: HashMap<(&str, &str, &str), i64> = HashMap::new();
+    let mut presented_starts: HashMap<(&str, &str, SubjectKind, &str), i64> = HashMap::new();
     for certificate in deployed.iter().filter(|c| c.half == Half::Presented) {
         let key = (
             certificate.group.as_str(),
             certificate.commit.as_str(),
-            certificate.identity.as_str(),
+            certificate.subject_kind,
+            certificate.subject_id.as_str(),
         );
         let start = presented_starts.entry(key).or_insert(certificate.not_before_millis);
         *start = (*start).max(certificate.not_before_millis);
@@ -460,8 +508,7 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
     let mut out: Vec<Warning> = decisive
         .into_values()
         .filter_map(|certificate| {
-            let life = certificate.not_after_millis - certificate.not_before_millis;
-            let notice = ((life as f64 * AUTHORITY_LAST_PART) as i64).max(AUTHORITY_NOTICE.as_millis() as i64);
+            let notice = notice_millis(certificate.not_before_millis, certificate.not_after_millis);
             let remaining = certificate.not_after_millis - now_ms;
             // Not yet valid is a current failure, not a countdown, so it is reported whatever the notice window
             // says about a `not_after` still years off: a TLS peer rejects it today regardless of when it expires.
@@ -473,7 +520,8 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
                     let key = (
                         certificate.group.as_str(),
                         certificate.commit.as_str(),
-                        certificate.identity.as_str(),
+                        certificate.subject_kind,
+                        certificate.subject_id.as_str(),
                     );
                     presented_starts.get(&key).is_some_and(|&start| now_ms < start)
                 }
@@ -484,11 +532,15 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
             }
             let expired = remaining <= 0;
             let days = remaining / (24 * 60 * 60 * 1000);
-            let id = &certificate.identity;
+            let what = match certificate.subject_kind {
+                SubjectKind::Source => "source",
+                _ => "destination",
+            };
+            let id = &certificate.subject_id;
             Some(Warning {
-                scope: None,
-                condition: Condition::IdentityExpiring,
-                subject_kind: SubjectKind::Identity,
+                area: None,
+                condition: Condition::CertificateExpiring,
+                subject_kind: certificate.subject_kind,
                 site: None,
                 subject_id: id.clone(),
                 group: Some(certificate.group.clone()),
@@ -499,35 +551,31 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
                 },
                 // Clamped to the certificate's own start: one shorter-lived than the notice window would otherwise
                 // read as having warned before it existed.
-                since_millis: Some((certificate.not_after_millis - notice).max(certificate.not_before_millis)),
+                since_millis: Some(certificate.not_after_millis - notice),
                 message: match (certificate.half, not_yet_valid, expired) {
                     (Half::Presented, true, _) => format!(
-                        "the certificate identity {id:?} presents is not valid yet, so every source and \
-                         destination naming it fails at the handshake until it is. Check its start date on the \
-                         Connection identities page"
+                        "{what} {id:?} uses a certificate that is not valid yet, so it fails at the handshake \
+                         until it is. Check its start date in {CERTIFICATE_LIST}"
                     ),
                     (Half::Presented, _, true) => format!(
-                        "the certificate identity {id:?} presents has expired, so every source and destination \
-                         naming it fails at the handshake. Replace it on the Connection identities page"
+                        "{what} {id:?} uses a certificate that has expired, so it fails at the handshake. \
+                         Replace it in {CERTIFICATE_LIST}"
                     ),
                     (Half::Presented, false, false) => format!(
-                        "the certificate identity {id:?} presents expires in {days} days; replace it on the \
-                         Connection identities page before then"
+                        "{what} {id:?} uses a certificate that expires in {days} days; replace it in \
+                         {CERTIFICATE_LIST} before then"
                     ),
                     (Half::Trusted, true, _) => format!(
-                        "the authority identity {id:?} trusts is not valid yet, so a source or destination it \
-                         names cannot be verified against it until it is. Check its start date on the Connection \
-                         identities page"
+                        "the authority {what} {id:?} trusts is not valid yet, so nothing can be verified against it \
+                         until it is. Check its start date in the {what}'s authorities"
                     ),
                     (Half::Trusted, _, true) => format!(
-                        "every authority identity {id:?} trusts has expired, so a source or destination it names \
-                         can no longer be verified against any of them. Add their replacements on the Connection \
-                         identities page"
+                        "every authority {what} {id:?} trusts has expired, so nothing can be verified against any \
+                         of them. Add their replacements to the {what}'s authorities"
                     ),
                     (Half::Trusted, false, false) => format!(
-                        "the last authority identity {id:?} trusts expires in {days} days, and a source or \
-                         destination it names stops verifying then. Add its replacement on the Connection \
-                         identities page"
+                        "the last authority {what} {id:?} trusts expires in {days} days, and the {what} stops \
+                         verifying then. Add its replacement to the {what}'s authorities"
                     ),
                 },
             })
@@ -535,8 +583,8 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
         .collect();
     // Deterministic: a map's order is not, and a poll that reordered its own answer reads as the fleet changing.
     out.sort_by(|a, b| (&a.group, &a.subject_id, &a.message).cmp(&(&b.group, &b.subject_id, &b.message)));
-    // An ordinary rollout has both commits still carrying the same certificate for an identity neither is
-    // rotating, and each commit's own decisive entry says the same thing about it -- keeping the two apart above
+    // An ordinary rollout has both commits still carrying the same certificate for a connector neither is
+    // changing, and each commit's own decisive entry says the same thing about it -- keeping the two apart above
     // is what a differing pair needs, but an identical pair is one fact, not two.
     out.dedup();
     out
@@ -566,14 +614,15 @@ pub enum Rotating {
 /// Silent while a rotation is under way, because the answer is already coming and a warning nobody can clear is
 /// one an operator learns to ignore. A rotation that cannot finish is not an answer coming, so it says so -- and
 /// says what to do about it, since starting another is refused while this one is open.
-fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &Rotating, now_ms: i64) -> Vec<Warning> {
+pub fn authority_aging(
+    signing: Option<&crate::leader::tls::Described>,
+    rotating: &Rotating,
+    now_ms: i64,
+) -> Vec<Warning> {
     let Some(authority) = signing.filter(|_| !matches!(rotating, Rotating::UnderWay)) else {
         return Vec::new();
     };
-    let life = authority.not_after_millis - authority.not_before_millis;
-    // Whichever is longer. A tenth of a very short authority is hours, which is no notice at all, and a leader
-    // configured with one is a leader always about to lose it -- which is what saying so from the start means.
-    let notice = ((life as f64 * AUTHORITY_LAST_PART) as i64).max(AUTHORITY_NOTICE.as_millis() as i64);
+    let notice = notice_millis(authority.not_before_millis, authority.not_after_millis);
     let remaining = authority.not_after_millis - now_ms;
     if remaining > notice {
         return Vec::new();
@@ -581,7 +630,7 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
     let expired = remaining <= 0;
     let days = remaining / (24 * 60 * 60 * 1000);
     vec![Warning {
-        scope: None,
+        area: None,
         condition: Condition::AuthorityAging,
         subject_kind: SubjectKind::Leader,
         site: None,
@@ -595,22 +644,134 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
             // naming that would send them to a page that turns them away.
             (_, Rotating::Stuck(why) | Rotating::Unreadable(why)) => format!(
                 "this leader's certificate authority {} and the rotation meant to replace it cannot finish: {why} \
-                 Put that right, or abandon the rotation on the Certificates page and start another",
+                 Put that right, or abandon the rotation in {LEADER_CERTIFICATE_TAB} and start another",
                 if expired {
                     "has expired".to_string()
                 } else {
                     format!("expires in {days} days")
                 }
             ),
-            (true, _) => "this leader's certificate authority has expired, and no worker given it can verify this \
-                 leader any more. Rotate it on the Certificates page"
-                .to_string(),
+            (true, _) => format!(
+                "this leader's certificate authority has expired, and no worker given it can verify this leader any \
+                 more. Rotate it in {LEADER_CERTIFICATE_TAB}"
+            ),
             (false, _) => format!(
-                "this leader's certificate authority expires in {days} days. Rotate it on the Certificates page: \
+                "this leader's certificate authority expires in {days} days. Rotate it in {LEADER_CERTIFICATE_TAB}: \
                  every worker has to take the new one before this leader signs under it"
             ),
         },
     }]
+}
+
+/// The certificate this leader serves, as its warnings read it.
+pub struct Serving {
+    pub certificate: crate::leader::tls::Described,
+    pub source: crate::leader::acme::Source,
+    /// The entry in the certificate list it is a copy of, for an uploaded one.
+    pub entry: Option<String>,
+    /// What the last order left, for one ACME renews.
+    pub acme: crate::leader::acme::State,
+}
+
+/// The certificate this leader serves running out. One ACME renews is said once a renewal is due and the last try
+/// failed, which is two thirds of the way through its life rather than the last tenth: the leader has been trying,
+/// and the operator has most of a third to put it right. Any other is said in its last tenth, by [`notice_millis`],
+/// and so is an ACME one ACME has stopped trying to renew.
+pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
+    let certificate = &serving.certificate;
+    let remaining = certificate.not_after_millis - now_ms;
+    let expired = remaining <= 0;
+    let when = if expired {
+        "has expired".to_string()
+    } else {
+        format!("expires in {} days", remaining / (24 * 60 * 60 * 1000))
+    };
+    let acme = &serving.acme;
+    let failing = match (
+        acme.last_error.as_deref(),
+        acme.renew_after_millis,
+        acme.last_attempt_millis,
+    ) {
+        // Tried since it fell due: an error from before then, such as a Renew now that failed early, is not a
+        // renewal failing.
+        (Some(error), Some(due), Some(tried)) if tried >= due => Some((error, due)),
+        _ => None,
+    };
+    let (condition, since_millis, message) = match (serving.source, failing) {
+        (crate::leader::acme::Source::Acme, Some((error, due))) => {
+            let error = one_line(error);
+            // The error last, so a long one clipped costs nothing and nothing after it reads as the authority's.
+            let message = if expired {
+                format!(
+                    "this leader could not renew its certificate, and the certificate has expired. Check the ACME \
+                     settings in {LEADER_CERTIFICATE_TAB}. Last error: {error}"
+                )
+            } else {
+                format!(
+                    "this leader could not renew its certificate. It tries again every hour, and the certificate \
+                     {when}. Check the ACME settings in {LEADER_CERTIFICATE_TAB}. Last error: {error}"
+                )
+            };
+            (Condition::AcmeRenewalFailing, due, message)
+        }
+        (source, _) => {
+            // An ACME certificate reaches its last tenth unrenewed and without a failure only where ACME stopped
+            // trying: turned off, or its names no longer orderable.
+            let notice = notice_millis(certificate.not_before_millis, certificate.not_after_millis);
+            if remaining > notice {
+                return Vec::new();
+            }
+            let message = match (source, &serving.entry) {
+                (crate::leader::acme::Source::Acme, _) => format!(
+                    "this leader's certificate {when}, and ACME is not renewing it. Check the ACME settings in {LEADER_CERTIFICATE_TAB}"
+                ),
+                (crate::leader::acme::Source::Upload, Some(entry)) => format!(
+                    "this leader's certificate {entry:?} {when}. Replace it in {CERTIFICATE_LIST}, and the leader \
+                     serves the new version"
+                ),
+                // The leader renews its own every hour, and a start issues one, so reaching here means renewing failed.
+                _ => format!(
+                    "this leader's certificate {when}, and renewing it failed. It tries again every hour. Status → Logs \
+                     says why"
+                ),
+            };
+            (
+                Condition::LeaderCertificateRunningOut,
+                certificate.not_after_millis - notice,
+                message,
+            )
+        }
+    };
+    vec![Warning {
+        area: None,
+        condition,
+        subject_kind: SubjectKind::Leader,
+        site: None,
+        subject_id: certificate
+            .names
+            .first()
+            .cloned()
+            .unwrap_or_else(|| certificate.subject.clone()),
+        group: None,
+        severity: if expired { Severity::Failed } else { Severity::Warning },
+        since_millis: Some(since_millis),
+        message,
+    }]
+}
+
+/// An authority's error as the end of a row: its first line, without a full stop, as no row ends in one, and short
+/// enough to leave the row readable.
+fn one_line(error: &str) -> String {
+    const LONGEST: usize = 200;
+    let line = error.lines().next().unwrap_or_default().trim().trim_end_matches('.');
+    match line.char_indices().nth(LONGEST) {
+        // At the last word that fits, so a clipped error does not end mid-word.
+        Some((cut, _)) => format!(
+            "{}…",
+            line[..cut].rsplit_once(' ').map_or(&line[..cut], |(kept, _)| kept)
+        ),
+        None => line.to_string(),
+    }
 }
 
 /// The outstanding enrollment codes that name a root this rotation is about to retire.
@@ -624,7 +785,7 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
 /// means and the only state with a remedy. One naming a root already left behind brings nobody in now, and telling an
 /// operator it has until the cutover to spend it would be a window that does not exist; the Enrollment codes page says
 /// that one is replaced, off the same answer.
-fn enrollment_code_names_outgoing_authority(
+pub fn enrollment_code_names_outgoing_authority(
     codes: &[crate::leader::store::UsableEnrollmentCode],
     presenting: &crate::leader::enrollment_codes::Presenting,
 ) -> Vec<Warning> {
@@ -633,14 +794,14 @@ fn enrollment_code_names_outgoing_authority(
         .iter()
         .filter(|code| presenting.standing_of(&code.fingerprint) == Standing::UntilCutover)
         .map(|code| Warning {
-            scope: None,
+            area: None,
             condition: Condition::EnrollmentCodeNamesOutgoingAuthority,
             subject_kind: SubjectKind::EnrollmentCode,
             site: None,
             subject_id: code.id.clone(),
             group: (!code.group_id.is_empty()).then(|| code.group_id.clone()),
             severity: Severity::Warning,
-            // The rotation's own start, which the Certificates page already shows against the rotation itself.
+            // The rotation's own start, which the Leader certificate tab already shows against the rotation itself.
             // Repeating it on every enrollment code it dooms would be one date said many times and acted on once.
             since_millis: None,
             message:
@@ -1005,6 +1166,12 @@ pub fn currently_active_facts(
 pub fn deploy_facts(checks: &Findings, registry: &crate::leader::registry::Registry) -> Vec<FactKey> {
     let mut out: Vec<FactKey> = checks.not_loading.iter().map(|n| does_not_load_key(&n.group)).collect();
     out.extend(checks.failing.iter().map(|t| fails_tests_key(&t.scope, &t.id)));
+    out.extend(
+        checks
+            .schemas
+            .iter()
+            .map(|(group, f)| breaks_schemas_key(group, &f.pipeline)),
+    );
     if checks.tests_pending() {
         out.extend(registry.facts_of(DEPLOY_FAILS_TESTS));
     }
@@ -1014,6 +1181,11 @@ pub fn deploy_facts(checks: &Findings, registry: &crate::leader::registry::Regis
 /// Keyed by group alone, so a fix that does not fix it carries on the same clock.
 fn does_not_load_key(group: &str) -> FactKey {
     FactKey::new(DEPLOY_DOES_NOT_LOAD, group)
+}
+
+/// Keyed by pipeline alone, so a deploy that leaves it breaking a schema carries on the same clock.
+fn breaks_schemas_key(group: &str, pipeline: &str) -> FactKey {
+    FactKey::new(DEPLOY_BREAKS_SCHEMAS, scoped_subject(group, pipeline))
 }
 
 /// Keyed by test alone, so a deploy that leaves it failing carries on the same clock.
@@ -1031,11 +1203,20 @@ fn workers_behind_target(snapshot: &[ThreadHealth]) -> impl Iterator<Item = (Str
         .into_iter()
         .filter(|(_, t)| t.stopped_at_millis.is_none())
         .filter_map(|(worker_id, t)| {
-            let desired = t.supervising.as_ref()?.desired_commit.as_deref()?;
-            (t.commit.as_deref() != Some(desired)).then(|| (worker_id.to_string(), desired.to_string()))
+            let supervising = t.supervising.as_ref()?;
+            let desired = supervising.desired_commit.as_deref()?;
+            not_running_as_found(t.commit.as_deref(), desired, supervising.failure.as_deref())
+                .then(|| (worker_id.to_string(), desired.to_string()))
         })
         .collect::<Vec<_>>()
         .into_iter()
+}
+
+/// Whether a worker is not running `desired` as it found it: on another commit, or on it but refusing to restart
+/// it, which a new version of a certificate it presents asks for. A worker refusing keeps running the old version
+/// until it expires, so it is as stuck as one that never deployed.
+fn not_running_as_found(running: Option<&str>, desired: &str, failure: Option<&str>) -> bool {
+    running != Some(desired) || failure.is_some()
 }
 
 /// The clock this warning ages against, which is a worker's wait for one particular commit rather than its wait
@@ -1093,7 +1274,7 @@ fn workers_on_another_build(
             )
         })
         .map(|(worker_id, t)| Warning {
-            scope: None,
+            area: None,
             condition: Condition::WorkerOnAnotherBuild,
             subject_kind: SubjectKind::Worker,
             site: None,
@@ -1107,6 +1288,40 @@ fn workers_on_another_build(
                 crate::leader::build_name(crate::version::commit_of(&t.smeltr_version), t.release.as_deref()),
                 crate::leader::build_name(leader_commit, leader_release),
             ),
+        })
+        .collect();
+    out.sort_by(|a, b| a.subject_id.cmp(&b.subject_id));
+    out
+}
+
+/// Every worker on another release than the leader's that it is still compatible with: it takes deployments, and is
+/// one upgrade from matching. Info, since nothing is wrong; [`workers_on_another_build`] covers the pairs that are not
+/// compatible.
+fn workers_on_another_release(
+    snapshot: &[ThreadHealth],
+    leader_commit: &str,
+    leader_release: Option<&str>,
+) -> Vec<Warning> {
+    let Some(leader_release) = leader_release else {
+        return Vec::new();
+    };
+    let mut out: Vec<Warning> = freshest_per_worker(snapshot)
+        .into_iter()
+        .filter(|(_, t)| t.stopped_at_millis.is_none())
+        .filter_map(|(worker_id, t)| {
+            let release = t.release.as_deref().filter(|r| *r != leader_release)?;
+            let commit = crate::version::commit_of(&t.smeltr_version);
+            crate::version::compatible(leader_commit, Some(leader_release), commit, Some(release)).then(|| Warning {
+                area: None,
+                condition: Condition::WorkerOnAnotherRelease,
+                subject_kind: SubjectKind::Worker,
+                site: None,
+                subject_id: worker_id.to_string(),
+                group: Some(t.report.group_id.clone()),
+                severity: Severity::Info,
+                since_millis: None,
+                message: format!("worker {worker_id} is on {release}, and this leader on {leader_release}"),
+            })
         })
         .collect();
     out.sort_by(|a, b| a.subject_id.cmp(&b.subject_id));
@@ -1131,7 +1346,7 @@ fn workers_memory_high(snapshot: &[ThreadHealth], heartbeat_interval: Duration) 
             let used = resources.memory_used_bytes;
             // Widened, so a limit near u64::MAX cannot overflow the comparison.
             (u128::from(used) * 100 >= u128::from(limit) * u128::from(MEMORY_HIGH_PERCENT)).then(|| Warning {
-                scope: None,
+                area: None,
                 condition: Condition::WorkerMemoryHigh,
                 subject_kind: SubjectKind::Worker,
                 site: None,
@@ -1202,7 +1417,7 @@ fn worker_silent(
             !revoked.contains(worker_id) && !stopped.contains(worker_id) && *ago as i64 > stale_after
         })
         .map(|(worker_id, ago)| Warning {
-            scope: None,
+            area: None,
             condition: Condition::WorkerSilent,
             subject_kind: SubjectKind::Worker,
             site: None,
@@ -1229,7 +1444,7 @@ fn enrolled_never_heartbeating(snapshot: &[ThreadHealth], credentials: &[WorkerC
         .iter()
         .filter(|c| !c.revoked && !known.contains(c.worker_id.as_str()))
         .map(|c| Warning {
-            scope: None,
+            area: None,
             condition: Condition::WorkerNeverHeartbeated,
             subject_kind: SubjectKind::Worker,
             site: None,
@@ -1263,7 +1478,7 @@ fn source_blocked(snapshot: &[ThreadHealth], starts: &HashMap<FactKey, i64>) -> 
             let reporting = blocked.len();
             let running = workers_running(snapshot, &group, "source", &source_id).len();
             Warning {
-                scope: None,
+                area: None,
                 condition,
                 subject_kind: SubjectKind::Source,
                 site: None,
@@ -1305,7 +1520,7 @@ fn source_unreachable(snapshot: &[ThreadHealth], starts: &HashMap<FactKey, i64>)
             let reporting = workers_reporting(snapshot, &group, SOURCE_CONNECTION_ERROR, "source", &source_id).len();
             let running = workers_running(snapshot, &group, "source", &source_id).len();
             Warning {
-                scope: None,
+                area: None,
                 condition: Condition::SourceUnreachable,
                 subject_kind: SubjectKind::Source,
                 site: None,
@@ -1374,7 +1589,7 @@ fn destination_refusing(
             let reporting = workers_refusing(snapshot, &group, &dest_id, now_ms, stale_after).len();
             let running = workers_running(snapshot, &group, "destination", &dest_id).len();
             Warning {
-                scope: None,
+                area: None,
                 condition: Condition::DestinationRefusing,
                 subject_kind: SubjectKind::Destination,
                 site: None,
@@ -1477,7 +1692,7 @@ fn destination_unreachable(
             let reporting = workers_destination_unhealthy(snapshot, &group, &dest_id, stale_after).len();
             let running = workers_running_destination(snapshot, &group, &dest_id, stale_after).len();
             Warning {
-                scope: None,
+                area: None,
                 condition: Condition::DestinationUnreachable,
                 subject_kind: SubjectKind::Destination,
                 site: None,
@@ -1514,7 +1729,7 @@ fn group_not_deployed(
             let since_millis = starts
                 .get(&FactKey::new(GROUP_NOT_DEPLOYED, worker_id.clone()))
                 .copied();
-            Warning { scope: None,
+            Warning { area: None,
                 condition: Condition::GroupNotDeployed,
                 subject_kind: SubjectKind::Worker,
                 site: None,
@@ -1542,6 +1757,84 @@ fn trailing_climb(points: &[(i64, f64)]) -> (usize, i64) {
         start -= 1;
     }
     (points.len() - start, points[start].0)
+}
+
+/// How long a paced destination must run near its share of the pool before [`destinations_memory_bound`] says so:
+/// long enough that a burst filling it is not the reason.
+const MEMORY_BOUND_FOR: Duration = Duration::from_secs(5 * 60);
+
+/// How far a paced destination's link stood below its share of the pool, as a share of it (`Pacing::headroom`),
+/// averaged over time, as egress reports it.
+const PACE_HEADROOM_METRIC: &str = "smeltr_destination_pace_headroom_ratio";
+
+/// The mean headroom, as a share of the pool's share (`PACE_HEADROOM_METRIC`), under which a destination
+/// counts as running at its share.
+const MEMORY_BOUND_HEADROOM: f64 = 0.1;
+
+/// The ten-second buckets of [`MEMORY_BOUND_FOR`] a destination may deliver nothing in and still be judged. A
+/// destination that stops delivering keeps its last reading, so one that stalled must not be called bound.
+const MEMORY_BOUND_IDLE_BUCKETS: usize = 3;
+
+/// Every (group, destination) whose link measured near enough its share of the pool, on the mean of the last
+/// [`MEMORY_BOUND_FOR`], to leave less than [`MEMORY_BOUND_HEADROOM`] of it (`egress::pacing::Pacing::headroom`):
+/// its workers' memory, more likely than its link, is what bounds it. A model cannot measure past the memory it has,
+/// so it cannot be sure, and the sentence says so. An Info: nothing is wrong. Only buckets the destination delivered
+/// in are read, and it must have delivered in nearly all of them, so a destination that stalled or stopped reporting
+/// is not called bound.
+fn destinations_memory_bound(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
+    let Some(store) = store else { return Vec::new() };
+    let bucket = Tier::TenSeconds.bucket_ms();
+    let buckets = (MEMORY_BOUND_FOR.as_millis() as i64 / bucket) as usize;
+    let since = now_ms - MEMORY_BOUND_FOR.as_millis() as i64;
+    let Ok(series) = store.series_since(PACE_HEADROOM_METRIC, Tier::TenSeconds, since) else {
+        return Vec::new();
+    };
+    let mut delivered: HashMap<(String, String), HashSet<i64>> = HashMap::new();
+    for (key, points) in store
+        .series_since(super::BYTES_DELIVERED_METRIC, Tier::TenSeconds, since)
+        .unwrap_or_default()
+    {
+        let Some(labels) = subject_labels(&key) else { continue };
+        if let (Some(group), Some(destination)) = (label(&labels, "group"), label(&labels, "destination")) {
+            delivered
+                .entry((group.to_string(), destination.to_string()))
+                .or_default()
+                .extend(points.iter().filter(|(_, bytes)| *bytes > 0.0).map(|(at, _)| *at));
+        }
+    }
+    let mut out: Vec<Warning> = series
+        .into_iter()
+        .filter_map(|(subject_key, points)| {
+            let labels = subject_labels(&subject_key)?;
+            let (group, destination) = (label(&labels, "group")?, label(&labels, "destination")?);
+            let moving = delivered.get(&(group.to_string(), destination.to_string()))?;
+            let read: Vec<(i64, f64)> = points.into_iter().filter(|(at, _)| moving.contains(at)).collect();
+            if read.len() + MEMORY_BOUND_IDLE_BUCKETS < buckets {
+                return None;
+            }
+            let mean = read.iter().map(|(_, headroom)| headroom).sum::<f64>() / read.len() as f64;
+            if mean >= MEMORY_BOUND_HEADROOM {
+                return None;
+            }
+            Some(Warning {
+                area: None,
+                condition: Condition::DestinationMemoryBound,
+                subject_kind: SubjectKind::Destination,
+                site: None,
+                subject_id: destination.to_string(),
+                group: Some(group.to_string()),
+                severity: Severity::Info,
+                since_millis: read.first().map(|(at, _)| *at),
+                message: format!(
+                    "destination {destination} in group {group:?} has run for {} minutes with its buffer as large as \
+                     its workers' memory allows; if it should move faster, give its workers more memory",
+                    MEMORY_BOUND_FOR.as_secs() / 60
+                ),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| (&a.group, &a.subject_id).cmp(&(&b.group, &b.subject_id)));
+    out
 }
 
 /// A delay of at least [`LAG_WARN_BEHIND`] in the largest whole unit that reads naturally.
@@ -1669,7 +1962,7 @@ pub fn outside_normal_warnings(
                 throughput::Outside::Above => Condition::SourceRowsAbove,
             };
             Warning {
-                scope: None,
+                area: None,
                 condition,
                 subject_kind: SubjectKind::Source,
                 site: None,
@@ -1840,7 +2133,7 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
             continue; // climbing, but by less than a minute of what this source reads
         }
         out.push(Warning {
-            scope: None,
+            area: None,
             condition: Condition::LagClimbing,
             subject_kind: SubjectKind::Source,
             site: None,
@@ -2012,7 +2305,7 @@ fn worker_logged_warnings(logged: &[Logged]) -> Vec<Warning> {
             let what = if row.level == "error" { "an error" } else { "a warning" };
             let fields = crate::logs::render_fields(l.fields.iter().map(|(k, v)| (k.as_str(), v.clone())));
             Warning {
-                scope: None,
+                area: None,
                 condition: Condition::WorkerLoggedWarnings,
                 subject_kind: SubjectKind::Worker,
                 subject_id: row.worker_id.clone(),
@@ -2087,7 +2380,7 @@ fn worker_not_deploying_its_target(
         .filter_map(|(worker_id, t)| {
             let supervising = t.supervising.as_ref()?;
             let desired = supervising.desired_commit.as_deref()?;
-            (t.commit.as_deref() != Some(desired)).then_some((
+            not_running_as_found(t.commit.as_deref(), desired, supervising.failure.as_deref()).then_some((
                 worker_id,
                 BehindTarget {
                     desired,
@@ -2116,7 +2409,7 @@ fn worker_not_deploying_its_target(
                 return None;
             }
             Some(Warning {
-                scope: None,
+                area: None,
                 condition: Condition::WorkerNotDeployingItsTarget,
                 subject_kind: SubjectKind::Worker,
                 site: None,
@@ -2128,11 +2421,17 @@ fn worker_not_deploying_its_target(
                 // operator about every other failure here -- that the old bundle is still processing -- is the
                 // opposite of true for this one.
                 message: match (failure, running) {
+                    (Some(why), Some(running)) if running == desired => {
+                        format!(
+                            "worker {worker_id} could not restart {desired} with the certificates it holds now: {why}. It keeps \
+                             running {desired} unchanged"
+                        )
+                    }
                     (Some(why), Some(_)) => {
                         format!("worker {worker_id} has not deployed {desired}: {why}. It is still running what it had")
                     }
                     (Some(why), None) => {
-                        format!("worker {worker_id} has not deployed {desired}: {why}. It is running nothing")
+                        format!("worker {worker_id} has not deployed {desired}: {why}. It is not processing")
                     }
                     (None, _) => format!("worker {worker_id} has found {desired} and is not running it; read its logs"),
                 },
@@ -2150,13 +2449,11 @@ pub const NOT_DEPLOYING: &str = "workerNotDeployingItsTarget";
 /// worker gives a runtime, so a deployment that is merely slow is never reported as one that failed.
 const NOT_DEPLOYING_AFTER_MS: i64 = 5 * 60 * 1000;
 
-/// The fixed catalog (design doc, Control plane), read fresh from `snapshot` and `credentials` on every call.
-/// `starts` is the fact clock's answer (`Registry::observe_facts`) for whichever facts need one; a warning with no
-/// entry there carries no start time. `series_store` is the durable registry's series half
-/// (`crate::leader::registry::Registry::series`), which only [`lag_climbing`] and
-/// [`recent_logs`] need; `deployed_groups` is every group the deployed commit holds a subtree for, which
-/// only [`group_not_deployed`] needs -- the rest read `snapshot` alone.
-#[allow(clippy::too_many_arguments)]
+/// The fleet's part of the fixed catalog (design doc, Control plane), read fresh from `snapshot` and `credentials` on
+/// every call. `starts` is the fact clock's answer (`Registry::observe_facts`) for whichever facts need one; a warning
+/// with no entry there carries no start time. `series_store` is the durable registry's series half
+/// (`crate::leader::registry::Registry::series`), and `deployed_groups` is every group the deployed commit holds a
+/// subtree for.
 pub fn derive(
     snapshot: &[ThreadHealth],
     credentials: &[WorkerCredentialRecord],
@@ -2165,13 +2462,6 @@ pub fn derive(
     heartbeat_interval: Duration,
     series_store: Option<&RegistryStore>,
     deployed_groups: &HashSet<String>,
-    signing: Option<&crate::leader::tls::Described>,
-    rotating: &Rotating,
-    codes: &[crate::leader::store::UsableEnrollmentCode],
-    presenting: &crate::leader::enrollment_codes::Presenting,
-    deployed_certificates: &[DeployedCertificate],
-    held: Option<&crate::leader::git::Hold>,
-    remote: Option<&crate::leader::remote::Failure>,
 ) -> Vec<Warning> {
     let mut out = worker_silent(snapshot, credentials, now_ms, heartbeat_interval);
     out.extend(enrolled_never_heartbeating(snapshot, credentials));
@@ -2180,6 +2470,7 @@ pub fn derive(
     out.extend(destination_refusing(snapshot, starts, now_ms, heartbeat_interval));
     out.extend(destination_unreachable(snapshot, starts, heartbeat_interval));
     out.extend(lag_climbing(series_store));
+    out.extend(destinations_memory_bound(series_store, now_ms));
     let logged = recent_logs(series_store, credentials, now_ms);
     out.extend(worker_logged_warnings(&logged));
     out.extend(group_not_deployed(snapshot, deployed_groups, starts));
@@ -2189,13 +2480,13 @@ pub fn derive(
         crate::version::commit(),
         crate::version::RELEASE,
     ));
+    out.extend(workers_on_another_release(
+        snapshot,
+        crate::version::commit(),
+        crate::version::RELEASE,
+    ));
     out.extend(workers_memory_high(snapshot, heartbeat_interval));
     out.extend(authority_expiring(snapshot, credentials, now_ms));
-    out.extend(authority_aging(signing, rotating, now_ms));
-    out.extend(enrollment_code_names_outgoing_authority(codes, presenting));
-    out.extend(identity_expiring(deployed_certificates, now_ms));
-    out.extend(held.map(deploy_held));
-    out.extend(remote.map(remote_not_followed));
     out.extend(declared_fields_drifted(series_store, now_ms));
     out.extend(streams_unrouted(series_store, now_ms));
     fold_logged_details(&mut out, &logged);
@@ -2204,10 +2495,10 @@ pub fn derive(
 
 /// The fleet held behind `main`'s head by a rollback. Raised for as long as the hold lasts, because a fleet that does
 /// not take what is deployed after it looks, to anyone who did not do the rollback, like a deploy that failed.
-fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
+pub fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
     let short = super::git::short;
     Warning {
-        scope: None,
+        area: None,
         condition: Condition::DeployHeld,
         subject_kind: SubjectKind::Leader,
         site: None,
@@ -2229,9 +2520,9 @@ fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
 
 /// The fleet does not run the head of the remote the leader follows, and why. Raised until a sync succeeds: a remote
 /// commit the fleet does not run is one a person merged on the host and expects to be running.
-fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
+pub fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
     Warning {
-        scope: None,
+        area: None,
         condition: Condition::RemoteNotFollowed,
         subject_kind: SubjectKind::Leader,
         site: None,
@@ -2243,11 +2534,240 @@ fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
     }
 }
 
+/// A published release newer than this leader's own (`leader::updates`). Info: running an older release is no fault.
+pub fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
+    Warning {
+        area: None,
+        condition: Condition::NewerRelease,
+        subject_kind: SubjectKind::Leader,
+        site: None,
+        subject_id: "leader".to_string(),
+        group: None,
+        severity: Severity::Info,
+        since_millis: Some(newer.since),
+        message: format!("smeltr {} is out, and this leader runs {own}", newer.release),
+    }
+}
+
+/// A certificate this leader issued: its name, how it is issued, and its newest chain described.
+pub type IssuedChain = (String, crate::leader::store::Issued, Vec<crate::leader::tls::Described>);
+
+/// Why a certificate this leader issued is due for its next version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Due {
+    /// Two thirds of the way through its newest version's life, as an ordered one is, since the time it holds.
+    Aged(i64),
+    /// Ending at a root other than the one the leader signs under, which a rotation's cutover leaves it doing.
+    OtherRoot,
+    /// Its newest chain cannot be read, so nothing says it is not due.
+    Unreadable,
+}
+
+/// Whether the certificate whose newest chain is `chain`, described, is due for its next version under `signing`.
+pub fn issued_due(chain: &[crate::leader::tls::Described], signing: &str, now_ms: i64) -> Option<Due> {
+    let (Some(leaf), Some(root)) = (chain.first(), chain.last()) else {
+        return Some(Due::Unreadable);
+    };
+    let renew_after = leaf.not_before_millis + (leaf.not_after_millis - leaf.not_before_millis) * 2 / 3;
+    if root.fingerprint != signing {
+        Some(Due::OtherRoot)
+    } else if now_ms >= renew_after {
+        Some(Due::Aged(renew_after))
+    } else {
+        None
+    }
+}
+
+/// How long a certificate may stay due before it is a warning. The leader looks for one due every hour, so a day is
+/// a renewal that failed, not one that has yet to run.
+const RENEWAL_GRACE_MILLIS: i64 = 24 * 60 * 60 * 1000;
+
+/// The certificates this leader issued that it should have renewed and has not, by name and newest chain described.
+/// Only the aged ones: after a cutover every one is due at once and is renewed within the hour, and a failure there
+/// is in the log, as one here is.
+pub fn issued_certificates_not_renewed(issued: &[IssuedChain], signing: &str, now_ms: i64) -> Vec<Warning> {
+    let mut out = Vec::new();
+    for (name, _, chain) in issued {
+        let Some(Due::Aged(since)) = issued_due(chain, signing, now_ms) else {
+            continue;
+        };
+        if now_ms < since + RENEWAL_GRACE_MILLIS {
+            continue;
+        }
+        let remaining = chain[0].not_after_millis - now_ms;
+        let when = if remaining <= 0 {
+            "has expired".to_string()
+        } else {
+            format!("expires in {} days", remaining / (24 * 60 * 60 * 1000))
+        };
+        out.push(Warning {
+            area: None,
+            condition: Condition::IssuedCertificateNotRenewed,
+            subject_kind: SubjectKind::Certificate,
+            site: None,
+            subject_id: name.clone(),
+            group: None,
+            severity: if remaining <= 0 {
+                Severity::Failed
+            } else {
+                Severity::Warning
+            },
+            since_millis: Some(since),
+            message: format!(
+                "{when}, and this leader has not renewed it. The leader's log says why: Status → Logs \
+                 (leader.certificate_renewal_failed)"
+            ),
+        });
+    }
+    out
+}
+
+/// What the key's failure is about, as the Issues page names it.
+const KEY_SUBJECT: &str = "secrets encryption key";
+
+/// The facts the secrets encryption key's warnings start from, so each says how long it has held.
+pub fn encryption_key_facts(standing: &KeyStanding) -> HashSet<FactKey> {
+    if standing.broken() {
+        return HashSet::from([FactKey::new("secretsKeyUnusable", KEY_SUBJECT)]);
+    }
+    standing
+        .unopenable
+        .iter()
+        .map(|u| FactKey::new("secretNeedsValue", unopenable_id(u)))
+        .collect()
+}
+
+/// A key that is missing or wrong, as one failure: nothing sealed can be stored or changed until it is fixed. Once
+/// it holds again, each value it cannot open is a warning of its own, which clears when that value is entered again.
+/// A warning rather than a failure, because a running worker still holds what it was given.
+/// `issued` names the certificates this leader issued, which are renewed rather than replaced.
+pub fn encryption_key_warnings(
+    standing: &KeyStanding,
+    kept: &std::collections::BTreeMap<String, crate::leader::store::Kept>,
+    starts: &HashMap<FactKey, i64>,
+) -> Vec<Warning> {
+    let leader = |condition, subject_id: String, severity, message| Warning {
+        area: None,
+        condition,
+        subject_kind: SubjectKind::Leader,
+        site: None,
+        since_millis: starts.get(&FactKey::new(condition.name(), subject_id.clone())).copied(),
+        subject_id,
+        group: None,
+        severity,
+        message,
+    };
+    if let Some(problem) = standing.problem() {
+        return vec![leader(
+            Condition::SecretsKeyUnusable,
+            KEY_SUBJECT.to_string(),
+            Severity::Failed,
+            problem,
+        )];
+    }
+    standing
+        .unopenable
+        .iter()
+        .map(|u| {
+            let (subject_kind, message) = match u {
+                Unopenable::Secret(_) => (
+                    SubjectKind::Secret,
+                    "encrypted with a key this leader no longer has. Store a new version".to_string(),
+                ),
+                Unopenable::Certificate(name) => (
+                    SubjectKind::Certificate,
+                    match kept.get(name) {
+                        Some(crate::leader::store::Kept::Issued(_)) => {
+                            "encrypted with a key this leader no longer has. The leader issues a new version within \
+                             the hour, and workers take it on their next heartbeat"
+                                .to_string()
+                        }
+                        Some(crate::leader::store::Kept::Acme) => format!(
+                            "encrypted with a key this leader no longer has. Order it again in {LEADER_CERTIFICATE_TAB}"
+                        ),
+                        None => {
+                            format!("encrypted with a key this leader no longer has. Replace it in {CERTIFICATE_LIST}")
+                        }
+                    },
+                ),
+                Unopenable::Setting(key) => (
+                    SubjectKind::Leader,
+                    format!(
+                        "encrypted with a key this leader no longer has. Enter it again under {}",
+                        sealed_setting_place(key).1
+                    ),
+                ),
+            };
+            Warning {
+                subject_kind,
+                ..leader(
+                    Condition::SecretNeedsValue,
+                    unopenable_id(u),
+                    Severity::Warning,
+                    message,
+                )
+            }
+        })
+        .collect()
+}
+
+fn unopenable_id(u: &Unopenable) -> String {
+    match u {
+        Unopenable::Secret(name) | Unopenable::Certificate(name) => name.clone(),
+        Unopenable::Setting(key) => sealed_setting_place(key).0.to_string(),
+    }
+}
+
+/// What a sealed leader setting is called, and where it is entered.
+pub(crate) fn sealed_setting_place(key: &str) -> (&str, &'static str) {
+    match key {
+        crate::leader::remote::TOKEN_KEY => ("Git remote token", "System, Git remote"),
+        crate::leader::oidc::CLIENT_SECRET_KEY => ("Single sign-on client secret", "Accounts, Single sign-on"),
+        crate::leader::model::API_KEY_KEY => ("AI agents API key", "System, AI agents"),
+        crate::leader::acme::EAB_HMAC_KEY => ("ACME EAB HMAC key", "System, Certificates"),
+        crate::leader::acme::CLOUDFLARE_TOKEN_KEY => ("Cloudflare API token", "System, Certificates"),
+        other => (other, "System"),
+    }
+}
+
 /// What is wrong with the deployed commit, as warnings: [`derive`]'s catalog takes these beside its own.
 pub fn deploy_checked(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Vec<Warning> {
     let mut out = deploy_does_not_load(checks, starts);
     out.extend(deploy_fails_tests(checks, starts));
+    out.extend(deploy_breaks_schemas(checks, starts));
     out
+}
+
+/// The schema findings at the deployed commit, one warning per pipeline of a group. A finding refuses nothing: the
+/// rows flow as they are, and whoever reads them by the schema meets what does not fit.
+fn deploy_breaks_schemas(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Vec<Warning> {
+    let short = super::git::short(&checks.commit);
+    let mut by_pipeline: BTreeMap<(&str, &str), Vec<&str>> = BTreeMap::new();
+    for (group, f) in &checks.schemas {
+        by_pipeline.entry((group, &f.pipeline)).or_default().push(&f.message);
+    }
+    by_pipeline
+        .into_iter()
+        .map(|((group, pipeline), each)| Warning {
+            area: None,
+            condition: Condition::DeployBreaksSchemas,
+            subject_kind: SubjectKind::Pipeline,
+            site: None,
+            subject_id: pipeline.to_string(),
+            group: Some(group.to_string()),
+            severity: Severity::Warning,
+            since_millis: starts.get(&breaks_schemas_key(group, pipeline)).copied(),
+            message: format!(
+                "{} at the deployed commit {short}: {}",
+                if each.len() == 1 {
+                    "a schema finding".to_string()
+                } else {
+                    format!("{} schema findings", each.len())
+                },
+                each.join(" "),
+            ),
+        })
+        .collect()
 }
 
 /// A group the deployed commit holds that does not load. Its workers refuse it and keep running what they had, and a
@@ -2258,7 +2778,7 @@ fn deploy_does_not_load(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Ve
         .not_loading
         .iter()
         .map(|n| Warning {
-            scope: None,
+            area: None,
             condition: Condition::DeployDoesNotLoad,
             subject_kind: SubjectKind::Group,
             site: None,
@@ -2267,8 +2787,8 @@ fn deploy_does_not_load(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Ve
             severity: Severity::Failed,
             since_millis: starts.get(&does_not_load_key(&n.group)).copied(),
             message: format!(
-                "group {:?} does not load at the deployed commit {short}: {}. Its workers keep running what they \
-                 had. Deploy a fix, or roll back on the History page",
+                "group {:?} does not load at the deployed commit {short}: {}. Running workers keep their old config, \
+                 but a restarted worker stops processing. Deploy a fix, or roll back on the History page",
                 n.group, n.why
             ),
         })
@@ -2342,7 +2862,7 @@ fn declared_fields_drifted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Wa
             let many = named.len() > 1;
             let named = named.join(", ");
             Warning {
-                scope: None,
+                area: None,
                 condition: if gone {
                     Condition::DeclaredFieldGone
                 } else {
@@ -2388,7 +2908,7 @@ fn streams_unrouted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> 
     sources
         .into_iter()
         .map(|s| Warning {
-            scope: None,
+            area: None,
             condition: Condition::StreamUnrouted,
             subject_kind: SubjectKind::Source,
             site: None,
@@ -2446,7 +2966,7 @@ fn deploy_fails_tests(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Vec<
             };
             let each: Vec<String> = tests.iter().map(|t| format!("{:?}: {}", t.name, t.why)).collect();
             Warning {
-                scope: None,
+                area: None,
                 condition: Condition::DeployFailsTests,
                 subject_kind,
                 site: None,
@@ -2481,7 +3001,7 @@ mod tests {
     #[test]
     fn every_condition_keeps_the_name_its_clients_know() {
         let wire = |c: Condition| serde_json::to_string(&c).unwrap();
-        assert_eq!(wire(Condition::IdentityExpiring), "\"identityExpiring\"");
+        assert_eq!(wire(Condition::CertificateExpiring), "\"certificateExpiring\"");
         assert_eq!(wire(Condition::WorkerSilent), "\"workerSilent\"");
         assert_eq!(wire(Condition::WorkerNeverHeartbeated), "\"workerNeverHeartbeated\"");
         assert_eq!(wire(Condition::SourceBlocked), "\"sourceBlocked\"");
@@ -2574,6 +3094,14 @@ mod tests {
                 failing("east", "routes", None),
                 failing("shared", "c", Some("enrich")),
             ],
+            schemas: vec![(
+                "east".to_string(),
+                crate::config_file::SchemaFinding {
+                    pipeline: "orders".to_string(),
+                    step: None,
+                    message: "Login requires `x`; the rows lack it.".to_string(),
+                },
+            )],
         };
         let registry = crate::leader::registry::Registry::default();
         let starts: HashMap<FactKey, i64> = deploy_facts(&checks, &registry).into_iter().zip(1..).collect();
@@ -2621,7 +3149,18 @@ mod tests {
                     None,
                     Severity::Warning
                 ),
+                (
+                    Condition::DeployBreaksSchemas,
+                    SubjectKind::Pipeline,
+                    "orders",
+                    Some("east"),
+                    Severity::Warning
+                ),
             ]
+        );
+        assert_eq!(
+            warnings[4].message,
+            "a schema finding at the deployed commit 01234567: Login requires `x`; the rows lack it."
         );
         assert!(warnings[0].message.contains("01234567"), "{}", warnings[0].message);
         assert!(
@@ -2682,27 +3221,40 @@ mod tests {
         );
 
         let just_now = HashMap::from([(not_deploying_key("w1", "newer"), NOW)]);
-        let warnings = derive(
-            &snapshot,
-            &[],
-            &just_now,
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&snapshot, &[], &just_now, NOW, INTERVAL, None, &deployed());
         assert!(
             !warnings
                 .iter()
                 .any(|w| w.condition == Condition::WorkerNotDeployingItsTarget),
             "a deployment that has only just started is not a failure"
+        );
+    }
+
+    /// A worker on the commit it found that refused to restart onto a new version of a certificate it presents keeps
+    /// presenting the old one until it expires. Nothing else says so: the expiry warning reads the newest version.
+    #[test]
+    fn a_worker_refusing_to_restart_what_it_runs_is_a_warning() {
+        let refusing =
+            "source \"in\" presents a certificate whose Extended Key Usage does not permit client authentication";
+        let snapshot = vec![behind("w1", Some("newer"), "newer", Some(refusing))];
+        assert!(
+            currently_active_facts(&snapshot, NOW, INTERVAL, &deployed()).contains(&not_deploying_key("w1", "newer"))
+        );
+        let stuck = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 600_000)]);
+        let warnings = derive(&snapshot, &[], &stuck, NOW, INTERVAL, None, &deployed());
+        let raised = (warnings.iter())
+            .find(|w| w.condition == Condition::WorkerNotDeployingItsTarget)
+            .expect("a worker refusing to restart is a warning");
+        assert_eq!(
+            raised.message,
+            format!(
+                "worker w1 could not restart newer with the certificates it holds now: {refusing}. It keeps running newer unchanged"
+            )
+        );
+
+        let running = vec![behind("w1", Some("newer"), "newer", None)];
+        assert!(
+            !currently_active_facts(&running, NOW, INTERVAL, &deployed()).contains(&not_deploying_key("w1", "newer"))
         );
     }
 
@@ -2717,22 +3269,7 @@ mod tests {
             Some("it names a credential this host lacks"),
         )];
         let stuck = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 600_000)]);
-        let warnings = derive(
-            &snapshot,
-            &[],
-            &stuck,
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&snapshot, &[], &stuck, NOW, INTERVAL, None, &deployed());
         let raised = warnings
             .iter()
             .find(|w| w.condition == Condition::WorkerNotDeployingItsTarget)
@@ -2758,48 +3295,18 @@ mod tests {
         let stuck_on_first = vec![behind("w1", None, "first", Some("it will not compile"))];
         let long_ago = HashMap::from([(not_deploying_key("w1", "first"), NOW - 600_000)]);
         assert!(
-            derive(
-                &stuck_on_first,
-                &[],
-                &long_ago,
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            )
-            .iter()
-            .any(|w| w.condition == Condition::WorkerNotDeployingItsTarget),
+            derive(&stuck_on_first, &[], &long_ago, NOW, INTERVAL, None, &deployed())
+                .iter()
+                .any(|w| w.condition == Condition::WorkerNotDeployingItsTarget),
             "a worker past its grace on the commit it is stuck behind is a warning"
         );
 
         // Discovery has since found another commit, and this worker is at the very start of deploying it.
         let now_on_second = vec![behind("w1", None, "second", None)];
         assert!(
-            derive(
-                &now_on_second,
-                &[],
-                &long_ago,
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            )
-            .iter()
-            .all(|w| w.condition != Condition::WorkerNotDeployingItsTarget),
+            derive(&now_on_second, &[], &long_ago, NOW, INTERVAL, None, &deployed())
+                .iter()
+                .all(|w| w.condition != Condition::WorkerNotDeployingItsTarget),
             "the replacement commit inherited the grace the one before it had already spent"
         );
     }
@@ -2815,22 +3322,7 @@ mod tests {
             Some("it names a credential this host lacks"),
         )];
         let stuck = HashMap::from([(not_deploying_key("w1", "first"), NOW - 600_000)]);
-        let warnings = derive(
-            &snapshot,
-            &[],
-            &stuck,
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&snapshot, &[], &stuck, NOW, INTERVAL, None, &deployed());
         let raised = warnings
             .iter()
             .find(|w| w.condition == Condition::WorkerNotDeployingItsTarget)
@@ -2841,7 +3333,7 @@ mod tests {
             raised.message
         );
         assert!(
-            raised.message.contains("running nothing"),
+            raised.message.contains("not processing"),
             "it does not say what is actually true of it: {}",
             raised.message
         );
@@ -2852,22 +3344,7 @@ mod tests {
     fn a_worker_running_the_commit_it_found_is_not_a_warning() {
         let snapshot = vec![behind("w1", Some("same"), "same", None)];
         let long_ago = HashMap::from([(not_deploying_key("w1", "same"), NOW - 600_000)]);
-        let warnings = derive(
-            &snapshot,
-            &[],
-            &long_ago,
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&snapshot, &[], &long_ago, NOW, INTERVAL, None, &deployed());
         assert!(
             !warnings
                 .iter()
@@ -2952,20 +3429,165 @@ mod tests {
         }
     }
 
-    // -- a deployed identity's certificates -----------------------------------
+    // -- the certificate this leader serves -----------------------------------
 
-    /// One certificate an identity carries: how long it is good for, and how much of that is left. Every caller
-    /// not testing a split rollout wants the same commit, so two certificates it built are one trust store unless
-    /// `on_commit` says otherwise.
-    fn carried(identity: &str, half: Half, life_days: i64, remaining_days: i64) -> DeployedCertificate {
-        on_commit(identity, half, life_days, remaining_days, "c0")
+    /// What this leader serves: a 45-day certificate with `remaining_days` left, from `source`.
+    fn serving(source: crate::leader::acme::Source, remaining_days: i64) -> Serving {
+        let not_after_millis = NOW + remaining_days * DAY;
+        Serving {
+            certificate: crate::leader::tls::Described {
+                subject: "smeltr.example.com".to_string(),
+                fingerprint: "cd".repeat(32),
+                names: vec!["smeltr.example.com".to_string()],
+                not_before_millis: not_after_millis - 45 * DAY,
+                not_after_millis,
+            },
+            source,
+            entry: None,
+            acme: crate::leader::acme::State {
+                renew_after_millis: Some(not_after_millis - 15 * DAY),
+                ..Default::default()
+            },
+        }
     }
 
-    fn on_commit(identity: &str, half: Half, life_days: i64, remaining_days: i64, commit: &str) -> DeployedCertificate {
+    /// The last try, at `NOW`, failed with `error`.
+    fn failing(mut serving: Serving, error: &str) -> Serving {
+        serving.acme.last_error = Some(error.to_string());
+        serving.acme.last_attempt_millis = Some(NOW);
+        serving
+    }
+
+    /// Said once a renewal is due and the last try failed, dated from when it fell due: the leader has been trying
+    /// since then.
+    #[test]
+    fn a_failing_acme_renewal_is_said_from_when_it_fell_due() {
+        let due = failing(
+            serving(crate::leader::acme::Source::Acme, 12),
+            "the authority refused the order.",
+        );
+        let said = leader_certificate(&due, NOW);
+        assert_eq!(said.len(), 1);
+        assert_eq!(said[0].condition, Condition::AcmeRenewalFailing);
+        assert_eq!(said[0].severity, Severity::Warning);
+        assert_eq!(said[0].since_millis, due.acme.renew_after_millis);
+        assert_eq!(said[0].subject_id, "smeltr.example.com");
+        assert!(
+            said[0].message.ends_with("Last error: the authority refused the order"),
+            "{}",
+            said[0].message
+        );
+        assert!(said[0].message.contains("expires in 12 days"), "{}", said[0].message);
+    }
+
+    /// A renewal not yet due, or one that has not failed, is nothing to say.
+    #[test]
+    fn an_acme_certificate_renewing_on_time_is_not_said() {
+        let early = failing(serving(crate::leader::acme::Source::Acme, 20), "the authority is down");
+        assert!(leader_certificate(&early, NOW).is_empty(), "failed before it was due");
+        let quiet = serving(crate::leader::acme::Source::Acme, 10);
+        assert!(leader_certificate(&quiet, NOW).is_empty(), "due, and nothing failed");
+    }
+
+    /// An error from before the renewal fell due, such as a Renew now that failed early, is not the renewal
+    /// failing: nothing has tried since.
+    #[test]
+    fn an_error_from_before_the_renewal_fell_due_is_not_said() {
+        let mut stale = failing(serving(crate::leader::acme::Source::Acme, 12), "the authority is down");
+        stale.acme.last_attempt_millis = stale.acme.renew_after_millis.map(|due| due - 1);
+        assert!(leader_certificate(&stale, NOW).is_empty());
+    }
+
+    /// ACME turned off, or its names no longer orderable, tries nothing and records no failure: the certificate
+    /// still has to be said before it runs out.
+    #[test]
+    fn an_acme_certificate_nothing_renews_is_said_in_its_last_tenth() {
+        let said = leader_certificate(&serving(crate::leader::acme::Source::Acme, 4), NOW);
+        assert_eq!(said[0].condition, Condition::LeaderCertificateRunningOut);
+        assert!(
+            said[0]
+                .message
+                .starts_with("this leader's certificate expires in 4 days, and ACME is not renewing it"),
+            "{}",
+            said[0].message
+        );
+    }
+
+    #[test]
+    fn an_acme_certificate_that_ran_out_is_a_failure() {
+        let expired = failing(serving(crate::leader::acme::Source::Acme, -1), "the authority is down");
+        let said = leader_certificate(&expired, NOW);
+        assert_eq!(said[0].severity, Severity::Failed);
+        assert!(
+            said[0]
+                .message
+                .starts_with("this leader could not renew its certificate, and the certificate has expired"),
+            "{}",
+            said[0].message
+        );
+    }
+
+    /// An uploaded certificate is said in its last tenth, by the entry it is a copy of, where it is replaced.
+    #[test]
+    fn an_uploaded_certificate_is_said_in_its_last_tenth() {
+        let mut uploaded = serving(crate::leader::acme::Source::Upload, 5);
+        uploaded.entry = Some("web".to_string());
+        assert!(
+            leader_certificate(&uploaded, NOW).is_empty(),
+            "45 days, 5 left: not in its last tenth yet"
+        );
+
+        let mut uploaded = serving(crate::leader::acme::Source::Upload, 4);
+        uploaded.entry = Some("web".to_string());
+        let said = leader_certificate(&uploaded, NOW);
+        assert_eq!(said[0].condition, Condition::LeaderCertificateRunningOut);
+        assert_eq!(
+            said[0].since_millis,
+            Some(uploaded.certificate.not_after_millis - 45 * DAY / 10)
+        );
+        assert!(
+            said[0]
+                .message
+                .starts_with("this leader's certificate \"web\" expires in 4 days. Replace it")
+        );
+    }
+
+    #[test]
+    fn the_leaders_own_certificate_says_its_renewal_failed() {
+        let said = leader_certificate(&serving(crate::leader::acme::Source::Own, 0), NOW + 1);
+        assert_eq!(said[0].severity, Severity::Failed);
+        assert_eq!(
+            said[0].message,
+            "this leader's certificate has expired, and renewing it failed. It tries again every hour. Status → Logs \
+             says why"
+        );
+    }
+
+    /// An authority's error goes inside a sentence, so it must not end the sentence or swamp the row.
+    #[test]
+    fn an_authority_error_is_one_clause() {
+        assert_eq!(one_line("refused.\ndetail"), "refused");
+        let long = "word ".repeat(60);
+        let clipped = one_line(&long);
+        assert!(clipped.chars().count() <= 201, "{clipped}");
+        assert!(clipped.ends_with("word…"), "{clipped}");
+    }
+
+    // -- a deployed connector's certificates -----------------------------------
+
+    /// One certificate a source carries: how long it is good for, and how much of that is left. Every caller
+    /// not testing a split rollout wants the same commit, so two certificates it built are one trust store unless
+    /// `on_commit` says otherwise.
+    fn carried(source: &str, half: Half, life_days: i64, remaining_days: i64) -> DeployedCertificate {
+        on_commit(source, half, life_days, remaining_days, "c0")
+    }
+
+    fn on_commit(source: &str, half: Half, life_days: i64, remaining_days: i64, commit: &str) -> DeployedCertificate {
         DeployedCertificate {
             group: "g".to_string(),
             commit: commit.to_string(),
-            identity: identity.to_string(),
+            subject_kind: SubjectKind::Source,
+            subject_id: source.to_string(),
             half,
             not_before_millis: NOW + remaining_days * DAY - life_days * DAY,
             not_after_millis: NOW + remaining_days * DAY,
@@ -2975,25 +3597,50 @@ mod tests {
     #[test]
     fn a_certificate_with_most_of_its_life_left_is_not_work_yet() {
         let year = carried("acme", Half::Presented, 365, 200);
-        assert!(identity_expiring(&[year], NOW).is_empty());
+        assert!(certificate_expiring(&[year], NOW).is_empty());
     }
 
     #[test]
-    fn the_certificate_an_identity_presents_is_worth_saying_before_it_goes() {
-        let said = identity_expiring(&[carried("acme", Half::Presented, 365, 20)], NOW);
+    fn the_certificate_a_source_presents_is_worth_saying_before_it_goes() {
+        let said = certificate_expiring(&[carried("acme", Half::Presented, 365, 20)], NOW);
         assert_eq!(said.len(), 1);
-        assert_eq!(said[0].condition, Condition::IdentityExpiring);
-        assert_eq!(said[0].subject_kind, SubjectKind::Identity);
+        assert_eq!(said[0].condition, Condition::CertificateExpiring);
+        assert_eq!(said[0].subject_kind, SubjectKind::Source);
         assert_eq!(said[0].subject_id, "acme");
         assert_eq!(said[0].group.as_deref(), Some("g"));
         assert_eq!(said[0].severity, Severity::Warning);
         assert!(said[0].message.contains("expires in 20 days"), "{}", said[0].message);
     }
 
+    /// A source and a destination may share an id, and each is its own connector with its own certificate.
+    #[test]
+    fn a_source_and_a_destination_sharing_an_id_are_warned_about_apart() {
+        let source = carried("kafka", Half::Presented, 365, 5);
+        let destination = DeployedCertificate {
+            subject_kind: SubjectKind::Destination,
+            ..carried("kafka", Half::Presented, 365, 20)
+        };
+        let said = certificate_expiring(&[source, destination], NOW);
+        let messages: Vec<&str> = said.iter().map(|w| w.message.as_str()).collect();
+        assert_eq!(said.len(), 2, "{messages:?}");
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.starts_with("source \"kafka\"") && m.contains("in 5 days")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.starts_with("destination \"kafka\"") && m.contains("in 20 days")),
+            "{messages:?}"
+        );
+    }
+
     /// Working and something is off, until the day it is not working at all.
     #[test]
     fn a_certificate_that_has_run_out_is_a_failure_rather_than_a_warning() {
-        let said = identity_expiring(&[carried("acme", Half::Presented, 365, -1)], NOW);
+        let said = certificate_expiring(&[carried("acme", Half::Presented, 365, -1)], NOW);
         assert_eq!(said.len(), 1);
         assert_eq!(said[0].severity, Severity::Failed);
         assert!(
@@ -3008,7 +3655,7 @@ mod tests {
     /// ordinary "expires soon" check at all.
     #[test]
     fn a_certificate_not_valid_yet_is_a_failure_however_far_off_it_expires() {
-        let said = identity_expiring(&[carried("acme", Half::Presented, 365, 400)], NOW);
+        let said = certificate_expiring(&[carried("acme", Half::Presented, 365, 400)], NOW);
         assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(said[0].severity, Severity::Failed);
         assert!(said[0].message.contains("not valid yet"), "{}", said[0].message);
@@ -3034,7 +3681,7 @@ mod tests {
             "the intermediate must not be the decisive member on its own expiry"
         );
 
-        let said = identity_expiring(&[leaf, intermediate], NOW);
+        let said = certificate_expiring(&[leaf, intermediate], NOW);
         assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(said[0].severity, Severity::Failed);
         assert!(said[0].message.contains("not valid yet"), "{}", said[0].message);
@@ -3042,18 +3689,18 @@ mod tests {
 
     #[test]
     fn an_authority_not_valid_yet_is_a_failure_however_far_off_it_expires() {
-        let said = identity_expiring(&[carried("acme", Half::Trusted, 365, 400)], NOW);
+        let said = certificate_expiring(&[carried("acme", Half::Trusted, 365, 400)], NOW);
         assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(said[0].severity, Severity::Failed);
         assert!(said[0].message.contains("not valid yet"), "{}", said[0].message);
     }
 
     /// A trust store's roots are alternatives, not a chain: staging tomorrow's rollover root today, ahead of the
-    /// swap, must not report the identity failed while the root actually in use still verifies fine. Picking the
+    /// swap, must not report the source failed while the root actually in use still verifies fine. Picking the
     /// largest `not_after` among candidates -- without asking whether one is even valid yet -- is exactly the bug
     /// that would have outranked the good root with the pre-staged one.
     #[test]
-    fn a_pre_staged_rollover_root_does_not_fail_an_identity_a_current_root_still_verifies() {
+    fn a_pre_staged_rollover_root_does_not_fail_a_source_a_current_root_still_verifies() {
         let current = carried("acme", Half::Trusted, 3650, 3600);
         let pre_staged = carried("acme", Half::Trusted, 3650, 4000);
         assert!(
@@ -3065,7 +3712,7 @@ mod tests {
             "the fixture must actually not be valid yet"
         );
 
-        let said = identity_expiring(&[current, pre_staged], NOW);
+        let said = certificate_expiring(&[current, pre_staged], NOW);
         assert!(
             said.is_empty(),
             "a root the fleet can still verify against was outranked by one not valid yet: {said:?}"
@@ -3082,31 +3729,22 @@ mod tests {
     fn a_certificate_warning_begins_when_its_notice_did() {
         let year = carried("acme", Half::Presented, 365, 20);
         let notice = (365 * DAY) / 10;
-        let said = identity_expiring(std::slice::from_ref(&year), NOW);
+        let said = certificate_expiring(std::slice::from_ref(&year), NOW);
         assert_eq!(said[0].since_millis, Some(year.not_after_millis - notice));
-    }
-
-    /// The thirty-day floor on notice is longer than a two-day certificate's whole life, so the naive start
-    /// predates the certificate itself. Clamped to when the certificate actually began.
-    #[test]
-    fn a_short_certificates_warning_never_begins_before_it_did() {
-        let short = carried("acme", Half::Presented, 2, 1);
-        let said = identity_expiring(std::slice::from_ref(&short), NOW);
-        assert_eq!(said[0].since_millis, Some(short.not_before_millis));
     }
 
     /// A chain is only as good as its soonest part: an intermediate that has run out breaks it whatever the leaf
     /// says about itself.
     #[test]
     fn a_presented_chain_runs_out_with_its_soonest_part() {
-        let said = identity_expiring(
+        let said = certificate_expiring(
             &[
                 carried("acme", Half::Presented, 3650, 2000),
                 carried("acme", Half::Presented, 365, 10),
             ],
             NOW,
         );
-        assert_eq!(said.len(), 1, "one identity, one thing to say about what it presents");
+        assert_eq!(said.len(), 1, "one source, one thing to say about what it presents");
         assert!(said[0].message.contains("expires in 10 days"), "{}", said[0].message);
     }
 
@@ -3119,11 +3757,11 @@ mod tests {
             carried("acme", Half::Trusted, 3650, 2000),
         ];
         assert!(
-            identity_expiring(&rolling_over, NOW).is_empty(),
+            certificate_expiring(&rolling_over, NOW).is_empty(),
             "an outgoing root beside an incoming one is not trust running out"
         );
 
-        let said = identity_expiring(
+        let said = certificate_expiring(
             &[
                 carried("acme", Half::Trusted, 3650, 5),
                 carried("acme", Half::Trusted, 3650, 20),
@@ -3134,12 +3772,12 @@ mod tests {
         assert!(said[0].message.contains("last authority"), "{}", said[0].message);
     }
 
-    /// A group mid-rollout runs two commits, and the same identity id in each is never one trust store: a worker
+    /// A group mid-rollout runs two commits, and the same source in each is never one trust store: a worker
     /// on the old commit has only its own roots, so a fresh root the new commit added must not hide the old
     /// commit's own running out.
     #[test]
     fn a_commits_own_authorities_are_never_hidden_by_anothers() {
-        let said = identity_expiring(
+        let said = certificate_expiring(
             &[
                 on_commit("acme", Half::Trusted, 3650, 5, "old"),
                 on_commit("acme", Half::Trusted, 3650, 2000, "new"),
@@ -3154,15 +3792,15 @@ mod tests {
         assert!(said[0].message.contains("expires in 5 days"), "{}", said[0].message);
     }
 
-    /// An ordinary rollout has both commits still carrying the same certificate for an identity neither is
+    /// An ordinary rollout has both commits still carrying the same certificate for a source neither is
     /// rotating: two decisive entries, one per commit, saying the exact same thing. That is one warning, not a
     /// duplicate in the ribbon.
     #[test]
     fn two_commits_carrying_the_same_untouched_certificate_are_one_warning() {
-        let said = identity_expiring(
+        let said = certificate_expiring(
             &[
-                on_commit("acme", Half::Trusted, 30, 5, "old"),
-                on_commit("acme", Half::Trusted, 30, 5, "new"),
+                on_commit("acme", Half::Trusted, 30, 2, "old"),
+                on_commit("acme", Half::Trusted, 30, 2, "new"),
             ],
             NOW,
         );
@@ -3171,8 +3809,8 @@ mod tests {
 
     /// Each half fails on its own and is said on its own.
     #[test]
-    fn the_two_halves_of_one_identity_are_counted_apart() {
-        let said = identity_expiring(
+    fn the_two_halves_of_one_source_are_counted_apart() {
+        let said = certificate_expiring(
             &[
                 carried("acme", Half::Presented, 365, 10),
                 carried("acme", Half::Trusted, 365, 10),
@@ -3183,15 +3821,15 @@ mod tests {
         assert!(said.iter().all(|w| w.subject_id == "acme"));
     }
 
-    /// `shared/` declares one identity and every group that names it runs its own deployment, so each group is
+    /// `shared/` declares one source and every group runs its own deployment of it, so each group is
     /// told separately -- which is what the fleet view rolls up by.
     #[test]
-    fn an_identity_two_groups_deploy_is_said_once_for_each() {
+    fn a_source_two_groups_deploy_is_said_once_for_each() {
         let mut west = carried("corp-root", Half::Presented, 365, 10);
         west.group = "west".to_string();
         let mut east = carried("corp-root", Half::Presented, 365, 10);
         east.group = "east".to_string();
-        let said = identity_expiring(&[west, east], NOW);
+        let said = certificate_expiring(&[west, east], NOW);
         assert_eq!(said.len(), 2);
         assert_eq!(
             said.iter().map(|w| w.group.clone().unwrap()).collect::<Vec<_>>(),
@@ -3215,14 +3853,6 @@ mod tests {
         assert_eq!(said.len(), 1, "a tenth of a decade left and nothing said");
         assert_eq!(said[0].severity, Severity::Warning);
         assert_eq!(said[0].subject_kind, SubjectKind::Leader);
-    }
-
-    /// A tenth of a very short authority is no notice at all, and a leader configured with one is always about to
-    /// lose it. Saying so from the start is what that means.
-    #[test]
-    fn a_short_lived_authority_is_never_out_of_its_last_part() {
-        let brief = authority(2, 1);
-        assert_eq!(authority_aging(Some(&brief), &Rotating::None, NOW).len(), 1);
     }
 
     /// The answer is already under way, and a warning nobody can clear is one an operator learns to ignore.
@@ -3680,7 +4310,7 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         for (source, failed, at) in [("a", 1, 1_000), ("a", 2, 5_000), ("b", 0, 6_000)] {
             store
-                .record_streams("prod", &declared_window(source, 10, failed), None, true, at)
+                .record_streams("prod", &declared_window(source, 10, failed), true, at)
                 .unwrap();
         }
         let warnings = declared_fields_drifted(Some(&store), 5_000 + HOUR);
@@ -3740,7 +4370,7 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let beat = |keys: &[(&str, u64)], at: i64| {
             store
-                .record_streams("prod", &untaken_window("hec", keys), None, true, at)
+                .record_streams("prod", &untaken_window("hec", keys), true, at)
                 .unwrap();
         };
         beat(&[("okta:system", 3), ("pan:threat", 2)], 1_000);
@@ -3778,7 +4408,7 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let said = |keys: &[(&str, u64)]| {
             store
-                .record_streams("prod", &untaken_window("in", keys), None, true, 1_000)
+                .record_streams("prod", &untaken_window("in", keys), true, 1_000)
                 .unwrap();
             streams_unrouted(Some(&store), 1_000).remove(0).message
         };
@@ -3797,7 +4427,7 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let beat = |source: &str, present: u64, at: i64| {
             store
-                .record_streams("prod", &declared_window(source, present, 0), None, true, at)
+                .record_streams("prod", &declared_window(source, present, 0), true, at)
                 .unwrap();
         };
         beat("a", 10, 1_000);
@@ -3857,13 +4487,6 @@ mod tests {
             INTERVAL,
             Some(store),
             &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
         )
     }
 
@@ -4099,13 +4722,6 @@ mod tests {
             INTERVAL,
             Some(&store),
             &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
         );
 
         assert!(
@@ -4139,7 +4755,7 @@ mod tests {
     /// A catalog warning as its own function would raise it, for [`fold_logged_details`] to tell a log on.
     fn catalog(condition: Condition, subject_kind: SubjectKind, subject_id: &str, group: &str) -> Warning {
         Warning {
-            scope: None,
+            area: None,
             condition,
             subject_kind,
             subject_id: subject_id.to_string(),
@@ -4310,8 +4926,8 @@ mod tests {
                         "stalled",
                         &[("subject", "archive"), ("error", "archive refused")],
                     ),
-                    site_event(2, NOW - 40_000, "kafka.link", "first", &[("subject", "a")]),
-                    site_event(3, NOW - 10_000, "kafka.link", "second", &[("subject", "b")]),
+                    site_event(2, NOW - 40_000, "kafka.message_ceiling", "first", &[("subject", "a")]),
+                    site_event(3, NOW - 10_000, "kafka.message_ceiling", "second", &[("subject", "b")]),
                 ],
             )
             .unwrap();
@@ -4384,13 +5000,6 @@ mod tests {
             INTERVAL,
             None,
             &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
         );
         assert!(warnings.is_empty());
     }
@@ -4398,22 +5007,7 @@ mod tests {
     #[test]
     fn worker_silent_raises_past_the_threshold_and_is_absent_within_it() {
         let quiet = vec![thread_health("w1", "t0", 10_000, vec![])];
-        let warnings = derive(
-            &quiet,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&quiet, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Worker);
         assert_eq!(warnings[0].subject_id, "w1");
@@ -4423,23 +5017,7 @@ mod tests {
 
         let fresh = vec![thread_health("w1", "t0", 500, vec![])];
         assert!(
-            derive(
-                &fresh,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            )
-            .is_empty(),
+            derive(&fresh, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "within the threshold, silence is absent -- this is the point of derived, never stored"
         );
     }
@@ -4455,13 +5033,6 @@ mod tests {
             INTERVAL,
             None,
             &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
         );
         assert!(warnings.is_empty(), "revocation is deliberate, not a failure");
     }
@@ -4518,6 +5089,59 @@ mod tests {
             workers_on_another_build(&[stopped], "1a2b3c4", None).is_empty(),
             "a stopped worker is not deploying"
         );
+    }
+
+    #[test]
+    fn a_worker_on_another_release_it_is_compatible_with_is_info() {
+        let on = |worker_id: &str, commit: &str, release: Option<&str>| {
+            let mut t = thread_health(worker_id, "reader-0", 0, vec![]);
+            t.smeltr_version = format!("2026.1.1+main.{commit}");
+            t.release = release.map(str::to_string);
+            t
+        };
+        let fleet = [
+            on("w1", "1111111", Some("1.2.0")),
+            on("w2", "2222222", Some("1.3.1")),
+            on("w3", "3333333", Some("2.0.0")),
+            on("w4", "4444444", None),
+            on("w5", "5555555", Some("1.4.0-rc1")),
+            on("w6", "6666666", Some("1.4.0")),
+        ];
+        let raised = workers_on_another_release(&fleet, "2222222", Some("1.3.1"));
+        assert_eq!(
+            raised.iter().map(|w| w.subject_id.as_str()).collect::<Vec<_>>(),
+            ["w1", "w6"],
+            "older or newer within the major; not the leader's own, another major, a dev build or a pre-release"
+        );
+        assert!(raised.iter().all(|w| w.severity == Severity::Info), "{raised:?}");
+        assert_eq!(raised[0].message, "worker w1 is on 1.2.0, and this leader on 1.3.1");
+
+        assert!(
+            workers_on_another_release(&fleet, "2222222", None).is_empty(),
+            "a leader that is no release has none to compare"
+        );
+        let mut stopped = on("w1", "1111111", Some("1.2.0"));
+        stopped.stopped_at_millis = Some(NOW);
+        assert!(
+            workers_on_another_release(&[stopped], "2222222", Some("1.3.1")).is_empty(),
+            "a stopped worker runs nothing"
+        );
+    }
+
+    #[test]
+    fn a_newer_release_is_info_about_this_leader_since_it_was_first_seen() {
+        let newer = crate::leader::updates::Newer {
+            release: "1.3.0".into(),
+            url: "https://github.com/smeltr-sh/smeltr/releases/tag/v1.3.0".into(),
+            since: 42,
+        };
+        let w = newer_release(&newer, "1.2.0");
+        assert_eq!(
+            (w.severity, w.subject_kind, w.since_millis),
+            (Severity::Info, SubjectKind::Leader, Some(42))
+        );
+        assert_eq!(w.group, None, "for administrators only");
+        assert_eq!(w.message, "smeltr 1.3.0 is out, and this leader runs 1.2.0");
     }
 
     #[test]
@@ -4591,13 +5215,6 @@ mod tests {
                 INTERVAL,
                 None,
                 &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
             )
         };
 
@@ -4623,22 +5240,7 @@ mod tests {
     #[test]
     fn enrolled_never_heartbeating_raises_and_clears_once_a_thread_appears() {
         let creds = vec![credential("w2", false)];
-        let warnings = derive(
-            &[],
-            &creds,
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&[], &creds, &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Worker);
         assert_eq!(warnings[0].subject_id, "w2");
@@ -4657,14 +5259,7 @@ mod tests {
                 NOW,
                 INTERVAL,
                 None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
+                &deployed()
             )
             .is_empty(),
             "absent the moment a thread shows up, even an empty bootstrap one"
@@ -4681,13 +5276,6 @@ mod tests {
             INTERVAL,
             None,
             &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
         );
         assert!(warnings.is_empty());
     }
@@ -4703,22 +5291,7 @@ mod tests {
                 "destination 2 refused a record and is set to block: bad schema. fix the schema, then it resumes.",
             )],
         )];
-        let warnings = derive(
-            &held,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&held, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
         assert_eq!(w.subject_kind, SubjectKind::Source);
@@ -4729,23 +5302,7 @@ mod tests {
 
         let resumed = vec![thread_health("w1", "reader-3", 0, vec![])];
         assert!(
-            derive(
-                &resumed,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            )
-            .is_empty(),
+            derive(&resumed, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "the fact clears the moment the reader stops reporting a reason"
         );
     }
@@ -4763,22 +5320,7 @@ mod tests {
             thread_health("w1", "reader-3", 0, vec![caused("waiting")]),
             thread_health("w2", "reader-3", 0, vec![caused("held")]),
         ];
-        let w = derive(
-            &health,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let w = derive(&health, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         let got: Vec<_> = w.iter().map(|w| (w.condition, w.message.as_str())).collect();
         assert_eq!(got.len(), 2, "{w:?}");
         assert!(
@@ -4803,22 +5345,7 @@ mod tests {
                 m.labels.push(("cause".to_string(), cause.to_string()));
             }
             let health = vec![thread_health("w1", "reader-3", 0, vec![m])];
-            let w = derive(
-                &health,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            );
+            let w = derive(&health, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
             assert_eq!(w.len(), 1, "{w:?}");
             (w[0].condition, w[0].severity)
         };
@@ -4837,41 +5364,11 @@ mod tests {
         let held = vec![thread_health("w1", "reader-3", 0, vec![blocked_metric("7", "blocked")])];
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(SOURCE_BLOCKED, scoped_subject("g", "7")), NOW - 240_000);
-        let warnings = derive(
-            &held,
-            &[],
-            &starts,
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&held, &[], &starts, NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings[0].since_millis, Some(NOW - 240_000));
 
         // No entry in the clock (as if this were the fact's first heartbeat) leaves it unknown rather than "now".
-        let warnings = derive(
-            &held,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&held, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings[0].since_millis, None);
     }
 
@@ -4889,22 +5386,7 @@ mod tests {
                  'kafka-nowhere.invalid:9092': Name or service not known",
             )],
         )];
-        let warnings = derive(
-            &unreachable,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&unreachable, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
         assert_eq!(w.condition, Condition::SourceUnreachable);
@@ -4918,23 +5400,7 @@ mod tests {
         // `SourceBlocked` clearing once a reader stops reporting a block reason.
         let recovered = vec![thread_health("w1", "reader-3", 0, vec![])];
         assert!(
-            derive(
-                &recovered,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            )
-            .is_empty(),
+            derive(&recovered, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "the fact clears the moment the reader stops reporting a reason"
         );
     }
@@ -5010,25 +5476,7 @@ mod tests {
                 value: MetricValueDto::Counter(40),
             }],
         )];
-        assert!(
-            derive(
-                &idle,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            )
-            .is_empty()
-        );
+        assert!(derive(&idle, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty());
     }
 
     #[test]
@@ -5041,40 +5489,10 @@ mod tests {
         )];
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(SOURCE_UNREACHABLE, scoped_subject("g", "7")), NOW - 60_000);
-        let warnings = derive(
-            &unreachable,
-            &[],
-            &starts,
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&unreachable, &[], &starts, NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings[0].since_millis, Some(NOW - 60_000));
 
-        let warnings = derive(
-            &unreachable,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&unreachable, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings[0].since_millis, None);
     }
 
@@ -5088,22 +5506,7 @@ mod tests {
             0,
             vec![blocked_metric("7", "blocked"), unreachable_metric("7", "down")],
         )];
-        let warnings = derive(
-            &both,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&both, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 2);
         assert!(warnings.iter().any(|w| w.condition == Condition::SourceBlocked));
         assert!(warnings.iter().any(|w| w.condition == Condition::SourceUnreachable));
@@ -5119,22 +5522,7 @@ mod tests {
             0,
             vec![destination_healthy_metric("2", 0.0)],
         )];
-        let warnings = derive(
-            &down,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&down, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
         assert_eq!(w.condition, Condition::DestinationUnreachable);
@@ -5152,23 +5540,7 @@ mod tests {
             vec![destination_healthy_metric("2", 1.0)],
         )];
         assert!(
-            derive(
-                &recovered,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            )
-            .is_empty(),
+            derive(&recovered, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "the fact clears the moment the gauge reports healthy again"
         );
     }
@@ -5189,24 +5561,9 @@ mod tests {
         // The worker itself going silent is its own, correct warning (`WorkerSilent`); what must not also appear
         // is a `DestinationUnreachable` extrapolated from a row nothing has refreshed in just as long.
         assert!(
-            !derive(
-                &frozen,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            )
-            .iter()
-            .any(|w| w.condition == Condition::DestinationUnreachable),
+            !derive(&frozen, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed())
+                .iter()
+                .any(|w| w.condition == Condition::DestinationUnreachable),
             "a frozen row from a thread that has gone silent is not a current fact"
         );
     }
@@ -5220,24 +5577,9 @@ mod tests {
         let mut orphan = thread_health("w1", "egress-2", 0, vec![destination_healthy_metric("2", 0.0)]);
         orphan.report.kind = None;
         assert!(
-            !derive(
-                &[orphan],
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            )
-            .iter()
-            .any(|w| w.condition == Condition::DestinationUnreachable),
+            !derive(&[orphan], &[], &HashMap::new(), NOW, INTERVAL, None, &deployed())
+                .iter()
+                .any(|w| w.condition == Condition::DestinationUnreachable),
             "a leftover carried under a thread id nothing runs is not this worker's current say"
         );
     }
@@ -5255,40 +5597,10 @@ mod tests {
             FactKey::new(DESTINATION_UNREACHABLE, scoped_subject("g", "2")),
             NOW - 90_000,
         );
-        let warnings = derive(
-            &down,
-            &[],
-            &starts,
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&down, &[], &starts, NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings[0].since_millis, Some(NOW - 90_000));
 
-        let warnings = derive(
-            &down,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&down, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings[0].since_millis, None);
     }
 
@@ -5300,22 +5612,7 @@ mod tests {
             egress_thread_health("w1", "egress-2", 0, vec![destination_healthy_metric("2", 0.0)]),
             egress_thread_health("w2", "egress-2", 0, vec![destination_healthy_metric("2", 1.0)]),
         ];
-        let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         let w = warnings
             .iter()
             .find(|w| w.condition == Condition::DestinationUnreachable)
@@ -5333,22 +5630,7 @@ mod tests {
             egress_thread_health("w1", "egress-2", 0, vec![destination_healthy_metric("2", 0.0)]),
             egress_thread_health("w2", "egress-2", stale_ago, vec![destination_healthy_metric("2", 1.0)]),
         ];
-        let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         let w = warnings
             .iter()
             .find(|w| w.condition == Condition::DestinationUnreachable)
@@ -5369,22 +5651,7 @@ mod tests {
                 destination_healthy_metric("2", 0.0),
             ],
         )];
-        let warnings = derive(
-            &both,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&both, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 2);
         assert!(warnings.iter().any(|w| w.condition == Condition::DestinationRefusing));
         assert!(
@@ -5402,22 +5669,7 @@ mod tests {
             0,
             vec![refusal_metric("2", NOW - 500, "429 es_rejected_execution_exception")],
         )];
-        let warnings = derive(
-            &fresh,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&fresh, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Destination);
         assert_eq!(warnings[0].subject_id, "2");
@@ -5432,23 +5684,7 @@ mod tests {
             vec![refusal_metric("2", stale_at, "429 ...")],
         )];
         assert!(
-            derive(
-                &old,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            )
-            .is_empty(),
+            derive(&old, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "the ring keeps history; a warning is not a log of what once happened"
         );
     }
@@ -5464,28 +5700,76 @@ mod tests {
             ),
             thread_health("w2", "egress-2", 0, vec![refusal_metric("2", NOW - 100, "new wording")]),
         ];
-        let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(
             warnings.len(),
             1,
             "one destination is one warning, however many workers dispatch to it"
         );
         assert!(warnings[0].message.contains("new wording"));
+    }
+
+    /// A store holding destination "out"'s mean pace headroom, one value per ten-second bucket, the last at `last`,
+    /// with bytes delivered in each bucket `delivered` says.
+    fn store_with_headroom(values: &[f64], delivered: impl Fn(usize) -> bool, last: i64) -> RegistryStore {
+        let store = RegistryStore::open(Path::new(":memory:")).unwrap();
+        let key = serde_json::to_string(&[("destination", "out"), ("group", "g")]).unwrap();
+        let first = last - (values.len() as i64 - 1) * 10_000;
+        for (i, v) in values.iter().enumerate() {
+            let at = first + i as i64 * 10_000;
+            store.record_gauge_max(PACE_HEADROOM_METRIC, &key, at, *v).unwrap();
+            if delivered(i) {
+                store
+                    .record_delta(super::super::BYTES_DELIVERED_METRIC, &key, at, 4096.0)
+                    .unwrap();
+            }
+        }
+        store
+    }
+
+    #[test]
+    fn a_destination_near_its_share_for_five_minutes_is_held_back_by_memory() {
+        let now = 1_000_000_000;
+        // Mostly at its share, with the dips a running estimate makes.
+        let mut values = vec![0.0; 30];
+        for (i, dip) in [(3, 0.3), (6, 0.5), (11, 0.4), (18, 0.2), (24, 0.1)] {
+            values[i] = dip;
+        }
+        let warnings = destinations_memory_bound(Some(&store_with_headroom(&values, |_| true, now)), now);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].condition, Condition::DestinationMemoryBound);
+        assert_eq!(warnings[0].severity, Severity::Info);
+        assert_eq!(warnings[0].subject_id, "out");
+        assert_eq!(warnings[0].since_millis, Some(now - 29 * 10_000));
+    }
+
+    #[test]
+    fn a_destination_with_room_or_too_little_time_is_not_held_back() {
+        let now = 1_000_000_000;
+        let mut values = vec![0.0; 30];
+        values[10] = 3.5;
+        assert!(
+            destinations_memory_bound(Some(&store_with_headroom(&values, |_| true, now)), now).is_empty(),
+            "a mean of more than a tenth"
+        );
+        assert!(
+            destinations_memory_bound(Some(&store_with_headroom(&[0.0; 26], |_| true, now)), now).is_empty(),
+            "less than five minutes"
+        );
+    }
+
+    #[test]
+    fn a_destination_that_stopped_delivering_is_not_held_back() {
+        let now = 1_000_000_000;
+        // It stalled half way, and its last reading stood.
+        let store = store_with_headroom(&[0.0; 30], |i| i < 15, now);
+        assert!(destinations_memory_bound(Some(&store), now).is_empty());
+        let store = store_with_headroom(&[0.0; 30], |i| i != 7, now);
+        assert_eq!(
+            destinations_memory_bound(Some(&store), now).len(),
+            1,
+            "a quiet moment is not a stall"
+        );
     }
 
     #[test]
@@ -5677,22 +5961,7 @@ mod tests {
     #[test]
     fn derive_folds_lag_climbing_into_the_catalog() {
         let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0]);
-        let warnings = derive(
-            &[],
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            Some(&store),
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&[], &[], &HashMap::new(), NOW, INTERVAL, Some(&store), &deployed());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].condition, Condition::LagClimbing);
     }
@@ -5708,13 +5977,6 @@ mod tests {
             INTERVAL,
             None,
             &HashSet::new(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -5734,23 +5996,7 @@ mod tests {
     fn group_not_deployed_is_absent_once_main_holds_the_groups_subtree() {
         let heartbeating = vec![thread_health("w1", "t0", 0, vec![])];
         assert!(
-            derive(
-                &heartbeating,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            )
-            .is_empty(),
+            derive(&heartbeating, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "the worker is fine -- the group it reports is what main lacks"
         );
     }
@@ -5760,22 +6006,7 @@ mod tests {
         let heartbeating = vec![thread_health("w1", "t0", 0, vec![])];
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(GROUP_NOT_DEPLOYED, "w1"), NOW - 60_000);
-        let warnings = derive(
-            &heartbeating,
-            &[],
-            &starts,
-            NOW,
-            INTERVAL,
-            None,
-            &HashSet::new(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&heartbeating, &[], &starts, NOW, INTERVAL, None, &HashSet::new());
         assert_eq!(warnings[0].since_millis, Some(NOW - 60_000));
     }
 
@@ -5795,7 +6026,7 @@ mod tests {
     #[test]
     fn a_warning_serializes_to_the_wire_spelling() {
         let w = Warning {
-            scope: None,
+            area: None,
             condition: Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
             site: None,
@@ -5832,22 +6063,7 @@ mod tests {
             thread_health_in("g2", "w2", "reader-3", 0, vec![blocked_metric("7", "blocked in g2")]),
         ];
         let deployed = HashSet::from(["g1".to_string(), "g2".to_string()]);
-        let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed,
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed);
         let held: Vec<&Warning> = warnings
             .iter()
             .filter(|w| w.condition == Condition::SourceBlocked)
@@ -5873,22 +6089,7 @@ mod tests {
             thread_health_in("g2", "w2", "reader-3", 0, vec![]), // g2 runs it too, but it is fine there
         ];
         let deployed = HashSet::from(["g1".to_string(), "g2".to_string()]);
-        let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed,
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed);
         let held: Vec<&Warning> = warnings
             .iter()
             .filter(|w| w.condition == Condition::SourceBlocked)
@@ -5914,22 +6115,7 @@ mod tests {
             thread_health("w2", "reader-3", 0, vec![idle_poll("7")]),
             thread_health("w3", "reader-3", 0, vec![idle_poll("7")]),
         ];
-        let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         let w = warnings
             .iter()
             .find(|w| w.condition == Condition::SourceUnreachable)
@@ -5945,22 +6131,7 @@ mod tests {
             thread_health("w1", "egress-2", 0, vec![refusal_metric("2", NOW - 100, "429")]),
             thread_health("w2", "egress-2", 0, vec![refusal_metric("2", NOW - 100, "429")]),
         ];
-        let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         let w = warnings
             .iter()
             .find(|w| w.condition == Condition::DestinationRefusing)
@@ -5983,22 +6154,7 @@ mod tests {
         };
         let snapshot = vec![thread_health("w1", "capture", 0, vec![from_capture])];
 
-        let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
-            NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-        );
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
 
         assert!(
             warnings.is_empty(),
@@ -6014,23 +6170,7 @@ mod tests {
             vec![unreachable_metric("orders-west", "no brokers")],
         )];
         assert!(
-            !derive(
-                &as_a_fact,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-            )
-            .is_empty(),
+            !derive(&as_a_fact, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "the harness raises when the name is one the catalog reads"
         );
     }
@@ -6108,6 +6248,128 @@ mod tests {
         assert!(
             authority_aging(Some(&dying), &Rotating::UnderWay, NOW).is_empty(),
             "a rotation that can still finish is an answer already coming"
+        );
+    }
+
+    fn standing(key: crate::leader::store::KeyState, unopenable: Vec<Unopenable>) -> KeyStanding {
+        KeyStanding {
+            path: std::path::PathBuf::from("/var/lib/smeltr-keys/sealing.key"),
+            key,
+            unopenable,
+        }
+    }
+
+    /// Issue 21: a leader whose key is gone says so once, as a failure about itself, and names the fix.
+    #[test]
+    fn a_missing_encryption_key_is_one_failure_that_names_the_fix() {
+        let broken = standing(
+            crate::leader::store::KeyState::Missing,
+            vec![
+                Unopenable::Secret("es-auth".to_string()),
+                Unopenable::Setting(crate::leader::remote::TOKEN_KEY.to_string()),
+            ],
+        );
+        let facts = encryption_key_facts(&broken);
+        let starts: HashMap<FactKey, i64> = facts.iter().map(|f| (f.clone(), NOW)).collect();
+        let said = encryption_key_warnings(&broken, &Default::default(), &starts);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0].condition, Condition::SecretsKeyUnusable);
+        assert_eq!(said[0].severity, Severity::Failed);
+        assert_eq!(said[0].subject_kind, SubjectKind::Leader);
+        assert_eq!(said[0].since_millis, Some(NOW));
+        assert!(
+            said[0]
+                .message
+                .contains("is missing, so the 2 stored secrets cannot be opened"),
+            "{}",
+            said[0].message
+        );
+        assert!(
+            said[0].message.contains("Secrets, Encryption key"),
+            "{}",
+            said[0].message
+        );
+    }
+
+    /// After a regeneration each value to enter again is its own warning, named where it is entered.
+    #[test]
+    fn each_value_a_regenerated_key_cannot_open_is_its_own_warning() {
+        let held = standing(
+            crate::leader::store::KeyState::Held {
+                key_id: "5be1a09c44d7f312".to_string(),
+            },
+            vec![
+                Unopenable::Secret("es-auth".to_string()),
+                Unopenable::Setting(crate::leader::oidc::CLIENT_SECRET_KEY.to_string()),
+                Unopenable::Certificate("ingest-tls".to_string()),
+                Unopenable::Certificate("receiver-tls".to_string()),
+                Unopenable::Certificate("acme".to_string()),
+            ],
+        );
+        let issued = crate::leader::store::Kept::Issued(crate::leader::store::Issued {
+            names: vec!["receiver.example.com".to_string()],
+            validity_days: 365,
+        });
+        let kept = [
+            ("receiver-tls".to_string(), issued),
+            ("acme".to_string(), crate::leader::store::Kept::Acme),
+        ]
+        .into_iter()
+        .collect();
+        let said = encryption_key_warnings(&held, &kept, &HashMap::new());
+        assert_eq!(said.len(), 5);
+        assert!(
+            said.iter()
+                .all(|w| w.condition == Condition::SecretNeedsValue && w.severity == Severity::Warning)
+        );
+        assert_eq!(
+            (said[0].subject_kind, said[0].subject_id.as_str()),
+            (SubjectKind::Secret, "es-auth")
+        );
+        assert!(said[0].message.ends_with("Store a new version"));
+        assert_eq!(
+            (said[1].subject_kind, said[1].subject_id.as_str()),
+            (SubjectKind::Leader, "Single sign-on client secret")
+        );
+        assert!(
+            said[1]
+                .message
+                .ends_with("Enter it again under Accounts, Single sign-on"),
+            "{}",
+            said[1].message
+        );
+        assert_eq!(
+            (said[2].subject_kind, said[2].subject_id.as_str()),
+            (SubjectKind::Certificate, "ingest-tls")
+        );
+        assert!(
+            said[2].message.ends_with("Replace it in Admin → Certificates"),
+            "{}",
+            said[2].message
+        );
+        assert!(
+            said[3]
+                .message
+                .contains("The leader issues a new version within the hour"),
+            "{}",
+            said[3].message
+        );
+        assert!(
+            said[4]
+                .message
+                .ends_with("Order it again in Admin → System → Leader certificate"),
+            "{}",
+            said[4].message
+        );
+        assert!(said.iter().all(|w| w.group.is_none()), "an administrator's to act on");
+
+        assert!(
+            encryption_key_warnings(
+                &standing(crate::leader::store::KeyState::Absent, vec![]),
+                &Default::default(),
+                &HashMap::new()
+            )
+            .is_empty()
         );
     }
 }

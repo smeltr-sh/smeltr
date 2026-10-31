@@ -391,3 +391,47 @@ Each value keeps the type it arrived with, and a nanosecond time is an `i64`,
 whole. Starlink moves its read position when it answers, so a batch the
 source holds when its worker stops is not asked for again: a smaller
 `batchSize` loses less.
+
+## 9. A schema from a file no reader takes (a BigQuery table's schema)
+
+A schema is read from JSON Schema, ECS, an OCSF class or a CSV of fields
+([Config plane](architecture/config-plane.md#schemas)). Any other file of
+fields is imported by a pipeline: Add schema, Import, pick the
+pipeline and a file, and each row it writes is a field, with `field`, `type`,
+and `required` and `description` where it has them. The file is cut into
+records as a source cuts its bytes. `bq show --format=prettyjson` writes a
+table as one JSON document, its columns under `schema.fields`, so the importer
+takes the file as one record, with a line breaker it never matches, `(\x00)`,
+and writes a row per column. A `RECORD` is
+`{...}`, which a row fits whatever it holds. In:
+`tests/fixtures/bigquery-table.json`.
+
+```ts
+let table = json(_raw);
+let columns: array<{...}> = table.schema.fields;
+let ty = c => {
+  let t = c.type == "TIMESTAMP" ? "datetime"
+    : c.type == "INTEGER" || c.type == "INT64" ? "i64"
+    : c.type == "FLOAT" || c.type == "FLOAT64" ? "f64"
+    : c.type == "BOOLEAN" || c.type == "BOOL" ? "bool"
+    : c.type == "RECORD" ? "{...}"
+    : "str";
+  c.mode == "REPEATED" ? "array<" + t + ">" : t
+};
+let found: array<{field: str, type: str, required: bool, description: str}> = [];
+for (let column of columns) {
+  let c: {name: str, type: str, mode: str, description: str, ...} = column;
+  found = found.push({field: c.name, type: ty(c), required: c.mode == "REQUIRED", description: c.description});
+}
+out = found;
+unroll(out, false);
+$ = out;
+```
+
+Out, the schema's first rows:
+
+```json
+{"field": "event_time", "type": "datetime", "required": true, "description": "When the request was served."}
+{"field": "client_ip", "type": "str", "description": "The address the request came from."}
+{"field": "tags", "type": "array<str>", "description": "Labels the edge gave the request."}
+```

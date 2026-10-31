@@ -12,8 +12,7 @@ use std::time::Duration;
 use smeltr::io::line_breaker::LineBreaker;
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
 use smeltr::plan::topology::{
-    HecReceiverConfig, HeldSecrets, Identity, Receiver, ReceiverConfig, S2sReceiverConfig, SecretRef, SourceKind,
-    SourceMeta,
+    HecReceiverConfig, HeldSecrets, Receiver, ReceiverConfig, S2sReceiverConfig, SecretRef, SourceKind, SourceMeta, Tls,
 };
 
 const TOKEN: &str = "0d2a5f6c-4b1e-4c3a-9f7d-2e8b6a1c5d40";
@@ -26,12 +25,7 @@ fn free_port() -> SocketAddr {
 }
 
 /// An S2S receiver on `listen` that breaks sourcetype `java` before lines starting `ERROR`, taking `token` when given.
-fn receiver(
-    listen: SocketAddr,
-    token: Option<&str>,
-    identity: Option<Identity>,
-    secrets: &mut HeldSecrets,
-) -> Box<dyn Source> {
+fn receiver(listen: SocketAddr, token: Option<&str>, tls: Option<Tls>, secrets: &mut HeldSecrets) -> Box<dyn Source> {
     let java = LineBreaker(regex::bytes::Regex::new(r"([\r\n]+)ERROR").unwrap());
     let mut tokens = Vec::new();
     if let Some(token) = token {
@@ -50,7 +44,7 @@ fn receiver(
         }),
         listen,
         tokens,
-        identity: identity.map(Arc::new),
+        tls,
         max_request_bytes: 1 << 20,
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());
@@ -618,7 +612,7 @@ fn the_last_event_id_there_is_closes_the_connection() {
     nothing_arrives(&mut source);
 }
 
-/// Served under an identity, a receiver speaks S2S inside TLS. A forwarder that compresses over TLS sends its v3
+/// Served under a certificate, a receiver speaks S2S inside TLS. A forwarder that compresses over TLS sends its v3
 /// messages plain, and only its v4 compressed.
 #[test]
 fn a_forwarder_is_served_over_tls() {
@@ -626,19 +620,21 @@ fn a_forwarder_is_served_over_tls() {
     let authority = crate::certs::Authority::new("s2s tests");
     let served = authority.issue("receiver", vec!["localhost".to_string()]);
     let mut secrets = HeldSecrets::default();
-    secrets.set_stored([("receiver-key".to_string(), 1, served.key.clone())]);
-    let identity = Identity {
-        id: "receiver".into(),
-        certificate: Some(served.certificate.clone()),
-        key: Some(SecretRef::LeaderStored {
-            name: "receiver-key".into(),
-            version: 1,
-        }),
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "receiver".into(),
+        version: 1,
+        value: served.key.clone(),
+        chain: Some(served.certificate.clone()),
+    }]);
+    let tls = Tls {
+        of: "source \"receiver\"".into(),
+        certificate: Some("receiver".into()),
         authorities: None,
-        trust_public: true,
+        trust_public: false,
+        side: smeltr::io::trust::Side::Server,
     };
     let at = free_port();
-    let mut source = receiver(at, None, Some(identity), &mut secrets);
+    let mut source = receiver(at, None, Some(tls), &mut secrets);
 
     let mut roots = rustls::RootCertStore::empty();
     for root in crate::certs::certificates(&authority.pem) {
@@ -708,7 +704,7 @@ fn hec_receiver(listen: SocketAddr, max: usize) -> Box<dyn Source> {
             ("forwarders".to_string(), stored("forwarders")),
             ("acker".to_string(), stored("acker")),
         ],
-        identity: None,
+        tls: None,
         max_request_bytes: max,
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());

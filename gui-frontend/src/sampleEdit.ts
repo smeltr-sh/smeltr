@@ -1,8 +1,9 @@
-// Editing a saved sample's records (`SampleEditor.svelte`). A record is edited as its own fields, one cell each;
-// what its source set, under `__source`, is never shown as a cell and rides along untouched, so a pipeline that
-// reads where a record was read from runs as before. A record added by paste was read from nowhere and has none.
+// Editing a saved sample's records (`SampleEditor.svelte`). A record is edited as its fields, one cell each. An internal
+// field that holds an object, as `__source` and `__capture` do, is a cell per field inside it, named by its path
+// (`__source.offset`), as the capture's columns name them.
 
 import {
+  isInternal,
   pastedElements,
   recordsFromText,
   sampleSource,
@@ -14,18 +15,59 @@ import {
 const TAG = 'smeltr';
 const MISTYPED = 'mistyped';
 
-/** One column of the editor: a top-level field of the records, and its type where the capture recorded one. */
+/** One column of the editor: a field of the records, or a path into an internal object, and its type where the capture
+ * recorded one. */
 export interface EditColumn {
   name: string;
   type?: string;
 }
 
-/** The fields a record shows as cells: everything but what its source set and a tag field that holds only its list of
- * mistyped fields. A tag that also holds a destination's messages is a field like any other. */
-function ownKeys(record: SampleRecordDto): string[] {
+/** The columns a record shows: its fields, an internal object's fields as their paths, and not a tag field that holds
+ * only its list of mistyped fields, which shows as the cells it marks. A tag that also holds a destination's messages
+ * is a field like any other. */
+function recordColumns(record: SampleRecordDto): string[] {
   const onlyMistyped =
     mistypedOf(record) !== null && Object.keys(record[TAG] as Record<string, unknown>).length === 1;
-  return Object.keys(record).filter((k) => k !== '__source' && !(k === TAG && onlyMistyped));
+  return Object.keys(record)
+    .filter((k) => !(k === TAG && onlyMistyped))
+    .flatMap((k) =>
+      inner(record, k) ? Object.keys(inner(record, k)!).map((f) => `${k}.${f}`) : [k],
+    );
+}
+
+/** The object an internal field `key` holds, whose fields are columns of their own. */
+function inner(record: SampleRecordDto, key: string): Record<string, unknown> | null {
+  const v = record[key];
+  return isInternal(key) && v !== null && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+}
+
+/** `column`'s field, and the field inside it a path names. */
+function split(column: string): [string, string | null] {
+  const dot = column.indexOf('.');
+  return isInternal(column) && dot > 0
+    ? [column.slice(0, dot), column.slice(dot + 1)]
+    : [column, null];
+}
+
+function valueAt(record: SampleRecordDto, column: string): unknown {
+  const [field, path] = split(column);
+  return path === null ? record[field] : inner(record, field)?.[path];
+}
+
+/** Sets `column` in `record`, a copy the caller owns, or removes it for `undefined`. */
+function setAt(record: SampleRecordDto, column: string, value: unknown) {
+  const [field, path] = split(column);
+  if (path === null) {
+    if (value === undefined) delete record[field];
+    else record[field] = value;
+    return;
+  }
+  const object = { ...(inner(record, field) ?? {}) };
+  if (value === undefined) delete object[path];
+  else object[path] = value;
+  record[field] = object;
 }
 
 /** The record's list of mistyped fields, or `null` when it has none to keep. */
@@ -50,42 +92,14 @@ function inCaptureOrder(found: string[], captured: string[]): string[] {
 export function editColumns(sample: SampleDto): EditColumn[] {
   const types = new Map((sample.columns ?? []).map((c) => [c.name, c.type]));
   const names: string[] = [];
-  for (const r of sample.records) for (const k of ownKeys(r)) if (!names.includes(k)) names.push(k);
+  for (const r of sample.records)
+    for (const k of recordColumns(r)) if (!names.includes(k)) names.push(k);
   return inCaptureOrder(names, [...types.keys()]).map((name) => ({ name, type: types.get(name) }));
-}
-
-/** The `__source` fields that tell `sample`'s records apart: those whose value is not the same on every record. The
- * source's name and type never do, nor its bytes, which are the record itself. A SQL source's fields are one
- * table's, the same on every row, so it has none. */
-export function readFromFields(sample: SampleDto): string[] {
-  const sources = sample.records.map((r) => sampleSource(r) ?? {});
-  const keys: string[] = [];
-  for (const s of sources) for (const k of Object.keys(s)) if (!keys.includes(k)) keys.push(k);
-  const captured = (sample.columns ?? [])
-    .map((c) => c.name)
-    .filter((n) => n.startsWith('__source.'))
-    .map((n) => n.slice('__source.'.length));
-  return inCaptureOrder(keys, captured).filter((k) => {
-    if (k === 'name' || k === 'type' || k === 'bytes') return false;
-    const first = JSON.stringify(sources[0][k]);
-    return sources.some((s) => JSON.stringify(s[k]) !== first);
-  });
-}
-
-/** Where `record` was read from, as `fields` name it: `p0 · 18233`-style, its values joined. Empty for a pasted one. */
-export function readFrom(record: SampleRecordDto, fields: string[]): string {
-  const source = sampleSource(record);
-  if (!source) return '';
-  return fields
-    .map((f) => source[f])
-    .filter((v) => v !== undefined && v !== null)
-    .map((v) => (typeof v === 'string' ? v : JSON.stringify(v)))
-    .join(' · ');
 }
 
 /** A cell's text: a string as it is, a missing field empty, anything else as JSON. */
 export function cellText(record: SampleRecordDto, column: string): string {
-  const v = record[column];
+  const v = valueAt(record, column);
   if (v === undefined) return '';
   return typeof v === 'string' ? v : JSON.stringify(v);
 }
@@ -129,11 +143,10 @@ export function withCell(
   text: string,
 ): SampleRecordDto {
   const next: SampleRecordDto = { ...record };
-  const previous = record[column.name];
+  const previous = valueAt(record, column.name);
   const { value, mistyped } = parseCell(text, column.type, previous);
   const cleared = text === '' && typeof previous !== 'string' && column.type !== 'str';
-  if (cleared) delete next[column.name];
-  else next[column.name] = value;
+  setAt(next, column.name, cleared ? undefined : value);
   // A byte record is read from the bytes its source stored, ahead of `_raw` (`read_stored`), so an edit to its text
   // is an edit to them.
   const source = sampleSource(record);
@@ -162,14 +175,15 @@ function base64(text: string): string {
 }
 
 /** Records pasted into a sample whose records are `columns`, read as Add sample reads a paste (`recordsFromText`): one
- * JSON value, an array's elements a record, or else a line a record. A sample of `_raw` text takes them as text; one
- * of other fields takes each as a JSON object of its fields. `error` names the first that is not one. */
+ * JSON value, an array's elements a record, or else a line a record. A sample with `_raw` takes a whole record, an
+ * object with a `_raw` field, as it is, and anything else as `_raw` text; one without takes each as a JSON object of
+ * its fields. `error` names the first that is not one. */
 export function pastedRecords(
   text: string,
   columns: EditColumn[],
 ): { records: SampleRecordDto[] } | { error: string } {
-  const raw = columns.length === 0 || (columns.length === 1 && columns[0].name === '_raw');
-  if (raw) return { records: recordsFromText(text) };
+  if (columns.length === 0 || columns.some((c) => c.name === '_raw'))
+    return { records: recordsFromText(text) };
   const isObject = (v: unknown) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const elements = pastedElements(text);
   if (elements) {
@@ -194,8 +208,15 @@ export function pastedRecords(
   return { records };
 }
 
-/** Whether `record` holds `query`, in any of its own fields or where it was read from. Case does not count. */
+/** Whether `record` holds `query` in any of its fields. Case does not count. */
 export function matches(record: SampleRecordDto, query: string): boolean {
   const q = query.trim().toLowerCase();
-  return q === '' || JSON.stringify(record).toLowerCase().includes(q);
+  return q === '' || holds(record, q);
+}
+
+/** Whether a value, or any value inside it, holds `q` as its text reads: not as JSON, where `\` and `"` are escaped. */
+function holds(value: unknown, q: string): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'object') return Object.values(value).some((v) => holds(v, q));
+  return String(value).toLowerCase().includes(q);
 }

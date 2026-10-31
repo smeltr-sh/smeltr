@@ -46,40 +46,55 @@ impl SecretRefDto {
     }
 }
 
-/// One identity a worker connects out under, as a bundle holds it. See [`crate::plan::topology::Identity`].
-///
-/// A certificate is public, so it is committed here in full. Its private key is a credential, so this names one.
-/// `config_file::load` refuses an identity that declares neither half, and one whose halves are not both present
-/// or both absent.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+/// The TLS a source or destination connects out under, as its own fields: the certificate it presents, an entry of the
+/// leader's certificate list by name, and the authorities it verifies the far end by. A worker presents the entry's
+/// newest version.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct IdentityDto {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// PEM, leaf first, with any intermediates after it.
+pub struct TlsDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub certificate: Option<String>,
-    /// The credential holding `certificate`'s private key, never the key itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<SecretRefDto>,
     /// PEM. A trust store holds more than one root, so several may follow one another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authorities: Option<String>,
-    /// Absent is true: a client under it trusts the public roots as well as `authorities`.
+    pub trusted_authorities: Option<String>,
+    /// Absent is true: a client also trusts the public roots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_public: Option<bool>,
 }
 
-impl IdentityDto {
-    /// Every credential this identity names, by the field naming it.
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
-        self.key.iter().map(|r| ("key", r)).collect()
+impl TlsDto {
+    /// Whether the connector says anything about its TLS.
+    pub fn is_set(&self) -> bool {
+        self.certificate.is_some() || self.trusted_authorities.is_some() || self.trust_public.is_some()
+    }
+}
+
+/// The TLS a receiver serves: the certificate it serves to every sender, and the authorities a sender's certificate
+/// must chain to. It serves TLS when it names a certificate, and admits only senders whose certificate chains to its
+/// authorities when it names any. A receiver trusts no public root, so it has no say over them.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ServedTlsDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<String>,
+    /// PEM, one or more certificates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_authorities: Option<String>,
+}
+
+impl ServedTlsDto {
+    /// Whether the receiver says anything about its TLS.
+    pub fn is_set(&self) -> bool {
+        self.certificate.is_some() || self.trusted_authorities.is_some()
     }
 
-    /// `secrets`, for the leader to move one onto a new version.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
-        self.key.iter_mut().collect()
+    /// The same settings as any connector's.
+    pub fn tls(&self) -> TlsDto {
+        TlsDto {
+            certificate: self.certificate.clone(),
+            trusted_authorities: self.trusted_authorities.clone(),
+            trust_public: None,
+        }
     }
 }
 
@@ -129,8 +144,8 @@ pub struct FileConfig {
     pub lookup_tables: Vec<LookupTableDto>,
     #[serde(default, rename = "grokPatterns")]
     pub grok_patterns: Vec<GrokPatternDto>,
-    #[serde(default)]
-    pub identities: Vec<IdentityDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schemas: Vec<SchemaDto>,
     /// The group's answer to every exception kind. Absent means encoding is ignored, delivery blocks, and every other
     /// category is tagged.
     #[serde(default, rename = "exceptions", skip_serializing_if = "Option::is_none")]
@@ -390,27 +405,26 @@ impl SourceDto {
         }
     }
 
-    /// The identity this source connects out or serves under, by id. `None` from a source naming none, and from a
-    /// kind that never does.
-    pub fn identity(&self) -> Option<&str> {
+    /// The TLS this source connects out or serves under. `None` from a kind that speaks none.
+    pub fn tls(&self) -> Option<TlsDto> {
         match &self.kind {
-            SourceKindDto::Kafka { identity, .. }
-            | SourceKindDto::S3Sqs { identity, .. }
-            | SourceKindDto::S3List { identity, .. }
-            | SourceKindDto::GcsList { identity, .. }
-            | SourceKindDto::AzureBlobList { identity, .. }
-            | SourceKindDto::AzureBlobQueue { identity, .. }
-            | SourceKindDto::GcsPubSub { identity, .. }
-            | SourceKindDto::HttpApi { identity, .. }
-            | SourceKindDto::OktaLogs { identity, .. } => identity.as_deref(),
-            SourceKindDto::Postgres(s) | SourceKindDto::MySql(s) => s.identity.as_deref(),
-            SourceKindDto::HttpReceiver { listener, .. }
-            | SourceKindDto::HecReceiver { listener, .. }
-            | SourceKindDto::S2sReceiver { listener, .. }
-            | SourceKindDto::OtlpReceiver { listener, .. }
-            | SourceKindDto::PrometheusReceiver { listener, .. }
-            | SourceKindDto::ElasticReceiver { listener, .. }
-            | SourceKindDto::SyslogReceiver { listener, .. } => listener.identity.as_deref(),
+            SourceKindDto::Kafka { tls, .. }
+            | SourceKindDto::S3Sqs { tls, .. }
+            | SourceKindDto::S3List { tls, .. }
+            | SourceKindDto::GcsList { tls, .. }
+            | SourceKindDto::AzureBlobList { tls, .. }
+            | SourceKindDto::AzureBlobQueue { tls, .. }
+            | SourceKindDto::GcsPubSub { tls, .. }
+            | SourceKindDto::HttpApi { tls, .. }
+            | SourceKindDto::OktaLogs { tls, .. } => Some(tls.clone()),
+            SourceKindDto::Postgres(s) | SourceKindDto::MySql(s) => Some(s.tls.clone()),
+            SourceKindDto::HttpReceiver { tls, .. }
+            | SourceKindDto::HecReceiver { tls, .. }
+            | SourceKindDto::S2sReceiver { tls, .. }
+            | SourceKindDto::OtlpReceiver { tls, .. }
+            | SourceKindDto::PrometheusReceiver { tls, .. }
+            | SourceKindDto::ElasticReceiver { tls, .. }
+            | SourceKindDto::SyslogReceiver { tls, .. } => Some(tls.tls()),
             SourceKindDto::EventHubs { .. }
             | SourceKindDto::Sftp { .. }
             | SourceKindDto::Metrics { .. }
@@ -430,10 +444,8 @@ pub enum SourceKindDto {
         /// (`load::fill_default_group_ids`).
         #[serde(default, skip_serializing_if = "String::is_empty")]
         group_id: String,
-        /// The [`IdentityDto`] this consumer connects under, by id. Absent means no certificate and the platform's
-        /// own roots.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(default, skip_serializing_if = "StartPositionDto::is_default")]
         start: StartPositionDto,
         /// `None` is an unbounded streaming source.
@@ -504,9 +516,8 @@ pub enum SourceKindDto {
         queue_url: String,
         #[serde(flatten)]
         access: S3AccessDto,
-        /// The [`IdentityDto`] this client connects under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(flatten)]
         framing: ObjectFramingDto,
         #[serde(default, flatten)]
@@ -531,9 +542,8 @@ pub enum SourceKindDto {
         prefix: String,
         #[serde(flatten)]
         access: S3AccessDto,
-        /// The [`IdentityDto`] this client connects under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(flatten)]
         framing: ObjectFramingDto,
         #[serde(default, flatten)]
@@ -562,9 +572,8 @@ pub enum SourceKindDto {
         prefix: String,
         #[serde(flatten)]
         access: GcsAccessDto,
-        /// The [`IdentityDto`] this client connects under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(flatten)]
         framing: ObjectFramingDto,
         #[serde(default, flatten)]
@@ -592,9 +601,8 @@ pub enum SourceKindDto {
         prefix: String,
         #[serde(flatten)]
         access: AzureAccessDto,
-        /// The [`IdentityDto`] this client connects under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(flatten)]
         framing: ObjectFramingDto,
         #[serde(default, flatten)]
@@ -649,9 +657,8 @@ pub enum SourceKindDto {
         queue_url: String,
         #[serde(flatten)]
         access: AzureAccessDto,
-        /// The [`IdentityDto`] this client connects under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(flatten)]
         framing: ObjectFramingDto,
         #[serde(default, flatten)]
@@ -674,9 +681,8 @@ pub enum SourceKindDto {
         pubsub_endpoint: Option<String>,
         #[serde(flatten)]
         access: GcsAccessDto,
-        /// The [`IdentityDto`] this client connects under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(flatten)]
         framing: ObjectFramingDto,
         #[serde(default, flatten)]
@@ -708,9 +714,8 @@ pub enum SourceKindDto {
         /// Header name -> the credential holding its value.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         credentials: BTreeMap<String, SecretRefDto>,
-        /// The [`IdentityDto`] this client connects under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         /// `"body"` (default), `"lines"` or `"array"`.
         #[serde(default, skip_serializing_if = "ApiRecordsDto::is_default")]
         records: ApiRecordsDto,
@@ -754,9 +759,8 @@ pub enum SourceKindDto {
         /// Which of the service app's keys `privateKey` is, for an app with several.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key_id: Option<String>,
-        /// The [`IdentityDto`] this client connects under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
         poll_interval_secs: PollIntervalSecs,
         /// `"everything"` (default) reads what Okta lists with no start, its last seven days; `"new"` reads what
@@ -777,6 +781,8 @@ pub enum SourceKindDto {
     HttpReceiver {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
+        #[serde(flatten)]
+        tls: ServedTlsDto,
         /// The path senders POST to.
         #[serde(default = "root_path", skip_serializing_if = "is_root_path")]
         path: String,
@@ -796,6 +802,8 @@ pub enum SourceKindDto {
     HecReceiver {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
+        #[serde(flatten)]
+        tls: ServedTlsDto,
         /// Token name -> a token a sender may present as `Authorization: Splunk`, and whether its senders use
         /// indexer acknowledgement.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -811,6 +819,8 @@ pub enum SourceKindDto {
     S2sReceiver {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
+        #[serde(flatten)]
+        tls: ServedTlsDto,
         /// Token name -> the credential holding a token a forwarder may present, its outputs.conf `token`. A
         /// forwarder presenting none, or another, is cut off.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -828,6 +838,8 @@ pub enum SourceKindDto {
     OtlpReceiver {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
+        #[serde(flatten)]
+        tls: ServedTlsDto,
         /// The signal it takes. Absent is logs.
         #[serde(default, skip_serializing_if = "is_logs")]
         signal: Signal,
@@ -842,6 +854,8 @@ pub enum SourceKindDto {
     PrometheusReceiver {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
+        #[serde(flatten)]
+        tls: ServedTlsDto,
         /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         tokens: BTreeMap<String, SecretRefDto>,
@@ -853,6 +867,8 @@ pub enum SourceKindDto {
     ElasticReceiver {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
+        #[serde(flatten)]
+        tls: ServedTlsDto,
         /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`, as
         /// `Authorization: ApiKey` (the key as sent, or the `id:key` it encodes), or as the password of
         /// `Authorization: Basic`, whose user is not read.
@@ -860,15 +876,17 @@ pub enum SourceKindDto {
         tokens: BTreeMap<String, SecretRefDto>,
     },
     /// What syslog senders send to `port`, as RFC 5424 or RFC 3164 messages: over TCP framed by octet count or ended
-    /// by a newline (RFC 6587), under TLS (RFC 5425) when it names an identity; over UDP one to a datagram (RFC 5426).
+    /// by a newline (RFC 6587), under TLS (RFC 5425) when it names a certificate; over UDP one to a datagram (RFC 5426).
     /// Every worker of the group listens, and each message is one record. Syslog has no acknowledgement, so delivery
     /// is best-effort. A full receiver stops reading TCP, so the sender's window fills, and drops UDP.
     #[serde(rename_all = "camelCase")]
     SyslogReceiver {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
+        #[serde(flatten)]
+        tls: ServedTlsDto,
         /// The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token, so
-        /// this is what admits a sender, unless the receiver's identity names authorities a sender's certificate
+        /// this is what admits a sender, unless the receiver names authorities a sender's certificate
         /// must chain to.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         allow_from: Vec<String>,
@@ -915,17 +933,13 @@ impl SourceKindDto {
     }
 }
 
-/// What every receiver takes: where it listens, the TLS it serves and how large a request it reads. Flattened into
-/// each receiver's own fields.
+/// What every receiver takes: where it listens and how large a request it reads. Flattened into each receiver's own
+/// fields, beside the TLS it serves.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ReceiverSettingsDto {
     /// The port it listens on, at the address its worker's startup settings name.
     pub port: u16,
-    /// The [`IdentityDto`] it serves TLS under, by id. Its authorities, when it has them, are what a sender's
-    /// certificate must chain to.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub identity: Option<String>,
     #[serde(default, skip_serializing_if = "MaxRequestBytes::is_default")]
     pub max_request_bytes: MaxRequestBytes,
 }
@@ -951,6 +965,11 @@ pub struct SourcetypeDto {
     /// Absent, or `PER_LINE`, an event per line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_breaker: Option<String>,
+}
+
+/// `$`. serde's default is a function, and Rust cannot name one `$`.
+fn root() -> String {
+    crate::plan::tree::ROOT.to_string()
 }
 
 fn root_path() -> String {
@@ -1182,6 +1201,9 @@ pub struct DestinationDto {
     /// The destination's answer to `Refused`, over the group's. It names no other kind.
     #[serde(default, rename = "exceptions", skip_serializing_if = "Option::is_none")]
     pub on_exception: Option<OnExceptionDto>,
+    /// The schemas, by id, a pipeline that sends here produces one of. Empty accepts any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepts: Vec<String>,
     #[serde(flatten)]
     pub kind: DestinationKindDto,
 }
@@ -1250,7 +1272,9 @@ impl DestinationDto {
                 .chain(sign_in.secrets())
                 .chain(schema_registry.iter().flat_map(|r| r.secrets()))
                 .collect(),
-            DestinationKindDto::Elasticsearch { auth, .. } => auth.iter().map(|r| ("auth", r)).collect(),
+            DestinationKindDto::Elasticsearch { auth, password, .. } => (auth.iter().map(|r| ("auth", r)))
+                .chain(password.iter().map(|r| ("password", r)))
+                .collect(),
             DestinationKindDto::SplunkHec { token, .. } => vec![("token", token)],
             DestinationKindDto::S3 { access, .. } => access.secrets(),
             DestinationKindDto::Gcs { access, .. } => access.secrets(),
@@ -1295,7 +1319,9 @@ impl DestinationDto {
             } => (connection_string.iter_mut().chain(sign_in.secrets_mut()))
                 .chain(schema_registry.iter_mut().flat_map(|r| r.secrets_mut()))
                 .collect(),
-            DestinationKindDto::Elasticsearch { auth, .. } => auth.iter_mut().collect(),
+            DestinationKindDto::Elasticsearch { auth, password, .. } => {
+                auth.iter_mut().chain(password.iter_mut()).collect()
+            }
             DestinationKindDto::SplunkHec { token, .. } => vec![token],
             DestinationKindDto::S3 { access, .. } => access.secrets_mut(),
             DestinationKindDto::Gcs { access, .. } => access.secrets_mut(),
@@ -1321,23 +1347,21 @@ impl DestinationDto {
         }
     }
 
-    /// The identity this destination connects out under, by id. `None` from a kind naming none.
-    pub fn identity(&self) -> Option<&str> {
+    /// The TLS this destination connects out under. `None` from a kind that speaks none.
+    pub fn tls(&self) -> Option<TlsDto> {
         match &self.kind {
-            DestinationKindDto::Kafka { identity, .. } => identity.as_deref(),
-            DestinationKindDto::EventHubs { .. } => None,
-            DestinationKindDto::Elasticsearch { identity, .. } => identity.as_deref(),
-            DestinationKindDto::SplunkHec { identity, .. } => identity.as_deref(),
-            DestinationKindDto::S3 { cloud, .. }
-            | DestinationKindDto::Gcs { cloud, .. }
-            | DestinationKindDto::AzureBlob { cloud, .. } => cloud.identity.as_deref(),
-            DestinationKindDto::Sftp { .. } => None,
-            DestinationKindDto::Http { identity, .. }
-            | DestinationKindDto::Prometheus { identity, .. }
-            | DestinationKindDto::LogAnalytics { identity, .. } => identity.as_deref(),
-            DestinationKindDto::Iceberg { identity, .. } | DestinationKindDto::Delta { identity, .. } => {
-                identity.as_deref()
-            }
+            DestinationKindDto::Kafka { tls, .. }
+            | DestinationKindDto::Elasticsearch { tls, .. }
+            | DestinationKindDto::SplunkHec { tls, .. }
+            | DestinationKindDto::S3 { tls, .. }
+            | DestinationKindDto::Gcs { tls, .. }
+            | DestinationKindDto::AzureBlob { tls, .. }
+            | DestinationKindDto::Http { tls, .. }
+            | DestinationKindDto::Prometheus { tls, .. }
+            | DestinationKindDto::LogAnalytics { tls, .. }
+            | DestinationKindDto::Iceberg { tls, .. }
+            | DestinationKindDto::Delta { tls, .. } => Some(tls.clone()),
+            DestinationKindDto::EventHubs { .. } | DestinationKindDto::Sftp { .. } => None,
         }
     }
 }
@@ -1349,10 +1373,8 @@ pub enum DestinationKindDto {
     Kafka {
         brokers: String,
         default_topic: String,
-        /// The [`IdentityDto`] this producer connects under, by id. Absent means no certificate and the platform's
-        /// own roots.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(default, skip_serializing_if = "FormatDto::is_default")]
         format: FormatDto,
         /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
@@ -1360,6 +1382,8 @@ pub enum DestinationKindDto {
         field: Option<String>,
         #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
         compression: CompressionDto,
+        #[serde(default, skip_serializing_if = "AcksDto::is_default")]
+        acks: AcksDto,
         /// Seconds one batch may take to deliver before it is a stall.
         #[serde(default, skip_serializing_if = "StallAfter::is_default")]
         stall_after_secs: StallAfter,
@@ -1412,13 +1436,17 @@ pub enum DestinationKindDto {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         zone_urls: BTreeMap<String, String>,
         default_index: String,
-        /// The [`IdentityDto`] this client connects under, by id. Absent means no certificate and the platform's
-        /// own roots -- which an internally-issued server certificate will not be under.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
-        /// The credential holding the `Authorization` header value, never the value itself.
+        #[serde(flatten)]
+        tls: TlsDto,
+        /// The credential holding the API key or a whole `Authorization` header value, never the value itself.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auth: Option<SecretRefDto>,
+        /// Basic auth, in place of `auth`: `username` and `password` together.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+        /// The credential holding `username`'s password.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<SecretRefDto>,
         /// `"auto"` (default), `"dedupe"`, or `"overwrite"`; see `plan::topology::DocIdPolicy`.
         #[serde(default, skip_serializing_if = "DocIdPolicyDto::is_default")]
         doc_id: DocIdPolicyDto,
@@ -1475,9 +1503,8 @@ pub enum DestinationKindDto {
         /// `"indexer"` (default) or `"receipt"`; see `plan::topology::Acknowledgement`.
         #[serde(default, skip_serializing_if = "AcknowledgementDto::is_default")]
         acknowledgement: AcknowledgementDto,
-        /// The [`IdentityDto`] this client connects under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(default, skip_serializing_if = "InFlight::is_default")]
         in_flight: InFlight,
         #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
@@ -1501,6 +1528,8 @@ pub enum DestinationKindDto {
         objects: ObjectSettingsDto,
         #[serde(flatten)]
         cloud: CloudSettingsDto,
+        #[serde(flatten)]
+        tls: TlsDto,
     },
     /// Objects written to a Google Cloud Storage bucket, one open file per prefix.
     #[serde(rename_all = "camelCase")]
@@ -1512,6 +1541,8 @@ pub enum DestinationKindDto {
         objects: ObjectSettingsDto,
         #[serde(flatten)]
         cloud: CloudSettingsDto,
+        #[serde(flatten)]
+        tls: TlsDto,
     },
     /// Blobs written to an Azure Blob Storage container, one open file per prefix.
     #[serde(rename_all = "camelCase")]
@@ -1523,6 +1554,8 @@ pub enum DestinationKindDto {
         objects: ObjectSettingsDto,
         #[serde(flatten)]
         cloud: CloudSettingsDto,
+        #[serde(flatten)]
+        tls: TlsDto,
     },
     /// Files written to one directory of an SFTP server, one open file per prefix, each renamed into place whole.
     #[serde(rename_all = "camelCase")]
@@ -1560,13 +1593,12 @@ pub enum DestinationKindDto {
         /// Header name -> the credential holding its value.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         credentials: BTreeMap<String, SecretRefDto>,
-        /// The [`IdentityDto`] this client connects under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(default, skip_serializing_if = "InFlight::is_default")]
         in_flight: InFlight,
-        #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
-        max_request_bytes: RequestBytes,
+        #[serde(default, skip_serializing_if = "HttpRequestBytes::is_default")]
+        max_request_bytes: HttpRequestBytes,
         /// Unset means the default, or one whole request if that is larger.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         buffer_bytes: Option<BufferBytes>,
@@ -1588,9 +1620,8 @@ pub enum DestinationKindDto {
         /// Header name -> the credential holding its value.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         credentials: BTreeMap<String, SecretRefDto>,
-        /// The [`IdentityDto`] this client connects under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
         max_request_bytes: RequestBytes,
         /// Unset means the default, or one whole request if that is larger.
@@ -1612,9 +1643,8 @@ pub enum DestinationKindDto {
         stream: String,
         #[serde(flatten)]
         sign_in: EntraSignInDto,
-        /// The [`IdentityDto`] this client connects under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         #[serde(default, skip_serializing_if = "InFlight::is_default")]
         in_flight: InFlight,
         #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
@@ -1661,9 +1691,8 @@ pub enum DestinationKindDto {
         /// Storage credentials of its own. None of its fields set uses what the catalog vends.
         #[serde(flatten)]
         access: S3AccessDto,
-        /// The [`IdentityDto`] this client connects under, to the catalog and to storage, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         /// Absent is zstd.
         #[serde(default = "CompressionDto::zstd", skip_serializing_if = "CompressionDto::is_zstd")]
         compression: CompressionDto,
@@ -1697,9 +1726,8 @@ pub enum DestinationKindDto {
         /// How the bucket is reached and signed for. None of its fields set takes the host's.
         #[serde(flatten)]
         access: S3AccessDto,
-        /// The [`IdentityDto`] this client connects to storage under, by id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        identity: Option<String>,
+        #[serde(flatten)]
+        tls: TlsDto,
         /// Absent is zstd.
         #[serde(default = "CompressionDto::zstd", skip_serializing_if = "CompressionDto::is_zstd")]
         compression: CompressionDto,
@@ -2187,12 +2215,11 @@ pub struct SqlSourceDto {
     pub password: Option<SecretRefDto>,
     /// `"require"` (default) encrypts and verifies the server's certificate and name; `"disable"` sends
     /// everything, the password too, in the clear.
-    #[serde(default, skip_serializing_if = "SqlTlsDto::is_default")]
-    pub tls: SqlTlsDto,
-    /// The [`IdentityDto`] this client connects under, by id: the certificate it presents and the authorities
-    /// it trusts. Only with `tls` `"require"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub identity: Option<String>,
+    // The file's `tls` is this mode; `tls` in Rust is the TLS settings below, as on every other connector.
+    #[serde(default, rename = "tls", skip_serializing_if = "SqlTlsDto::is_default")]
+    pub encrypted: SqlTlsDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
     /// A `SELECT` or a `WITH`, with no `ORDER BY` or `LIMIT` of its own. smeltr runs it inside a statement of its
     /// own, which adds the position test, the order and the batch limit.
     pub query: String,
@@ -2349,7 +2376,7 @@ impl SqlStartDto {
     }
 }
 
-/// A Confluent Schema Registry, reached under its connector's identity.
+/// A Confluent Schema Registry, reached under its connector's TLS.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SchemaRegistryDto {
@@ -2577,9 +2604,6 @@ pub struct CloudSettingsDto {
     /// One of the cloud's own storage classes. Absent is the bucket's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_class: Option<String>,
-    /// The [`IdentityDto`] this client connects under, by id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub identity: Option<String>,
 }
 
 /// Where an S3 destination with no `endpoint` is reached.
@@ -2769,27 +2793,65 @@ impl AcknowledgementDto {
     }
 }
 
-/// Bytes of events one HEC request may carry before the destination sends early. Stated as a size or a number of
-/// bytes, like every byte figure in a bundle.
+/// Bytes of events one request may carry before the destination sends early, `DEFAULT` when unset. Stated as a size
+/// or a number of bytes, like every byte figure in a bundle.
+///
+/// The default is the HEC content limit Splunk Cloud's service details give
+/// (<https://docs.splunk.com/Documentation/SplunkCloud/latest/Service/SplunkCloudservice>).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct RequestBytes(#[serde(with = "super::bytes")] pub usize);
+pub struct RequestBytes<const DEFAULT: usize = { 1024 * 1024 }>(#[serde(with = "super::bytes")] pub usize);
+
+/// An HTTP destination's request size: one whole batch by default, so a batch is one request. A literal, so a change
+/// to the batch size does not change what a stored destination means.
+pub type HttpRequestBytes = RequestBytes<{ 4 * 1024 * 1024 }>;
+const _: () = assert!(
+    HttpRequestBytes::DEFAULT >= crate::worker::TICK_MAX_BYTES,
+    "a batch is one request"
+);
 
 impl RequestBytes {
-    /// The HEC content limit Splunk Cloud's service details give
-    /// (<https://docs.splunk.com/Documentation/SplunkCloud/latest/Service/SplunkCloudservice>).
-    pub const DEFAULT: usize = 1024 * 1024;
     pub const MIN: usize = 4 * 1024;
     pub const MAX: usize = 100 * 1024 * 1024;
+}
+
+impl<const DEFAULT: usize> RequestBytes<DEFAULT> {
+    pub const DEFAULT: usize = DEFAULT;
 
     pub fn is_default(&self) -> bool {
-        self.0 == Self::DEFAULT
+        self.0 == DEFAULT
     }
 }
 
-impl Default for RequestBytes {
+impl<const DEFAULT: usize> Default for RequestBytes<DEFAULT> {
     fn default() -> Self {
-        RequestBytes(Self::DEFAULT)
+        RequestBytes(DEFAULT)
+    }
+}
+
+/// How many brokers hold a Kafka batch before it counts as delivered. Kafka's `acks` in `props` is reserved, so this is
+/// the one place it is set.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AcksDto {
+    None,
+    One,
+    #[default]
+    All,
+}
+
+impl AcksDto {
+    pub fn is_default(&self) -> bool {
+        *self == AcksDto::All
+    }
+
+    pub fn to_plan(self) -> crate::plan::topology::Acks {
+        use crate::plan::topology::Acks;
+        match self {
+            AcksDto::None => Acks::None,
+            AcksDto::One => Acks::One,
+            AcksDto::All => Acks::All,
+        }
     }
 }
 
@@ -3083,6 +3145,9 @@ pub struct PipelineDto {
     pub name: String,
     #[serde(default)]
     pub steps: Vec<StepDto>,
+    /// The schemas it produces, by id: each row keeps one of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub produces: Vec<String>,
 }
 
 /// `plan::config::OnException`, over the answers of the layer below: the built-in ones, then the group's. Each key
@@ -3150,6 +3215,14 @@ pub enum StepDto {
         disabled: bool,
         pairs: Vec<RenamePairDto>,
     },
+    Remove {
+        id: String,
+        #[serde(default)]
+        filter: Option<String>,
+        #[serde(default)]
+        disabled: bool,
+        fields: Vec<String>,
+    },
     Parser {
         id: String,
         #[serde(default)]
@@ -3157,6 +3230,9 @@ pub enum StepDto {
         #[serde(default)]
         disabled: bool,
         input: String,
+        /// The object the parse writes into. A step written before it reads `$`, the record.
+        #[serde(default = "root")]
+        into: String,
         kind: ParserKindDto,
         #[serde(default)]
         declared: Vec<FieldDto>,
@@ -3236,6 +3312,9 @@ pub enum ParserKindDto {
         /// Whether a key is split at its dots into a path; absent is the parser's default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         split_dots: Option<bool>,
+        /// Whether the parse rebuilds its input, each skipped column left empty.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        rebuild: bool,
     },
     #[serde(rename_all = "camelCase")]
     KeyValue {
@@ -3249,6 +3328,9 @@ pub enum ParserKindDto {
         /// Whether a key is split at its dots into a path; absent is the parser's default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         split_dots: Option<bool>,
+        /// Whether the parse rebuilds its input, each skipped pair left out.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        rebuild: bool,
     },
     #[serde(rename_all = "camelCase")]
     Grok {
@@ -3266,6 +3348,43 @@ pub enum ParserKindDto {
 pub struct CustomPatternDto {
     pub name: String,
     pub pattern: String,
+}
+
+/// A schema the bundle declares (`schema`): a table of fields, named by id from the pipelines that produce it and
+/// the destinations that accept it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaDto {
+    pub id: String,
+    /// Shown for it. The id where empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default)]
+    pub fields: Vec<SchemaFieldDto>,
+}
+
+/// One field of a schema: a row of its table.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaFieldDto {
+    /// Its keys from the record's root, dotted.
+    pub field: String,
+    /// What it must hold, spelled as a declaration spells a type: `str`, `array<i64>`, `{...}` for an object.
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// Whether a row must hold it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// A value it may hold, as text: what a standard or a spreadsheet gives as its example.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub example: String,
+    /// How it maps in an Elasticsearch index: a field's mapping, laid over the one its type has (`io::elastic_mapping`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elasticsearch: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// A named grok pattern, declared once for the bundle and named as `%{id}` from any grok in it.

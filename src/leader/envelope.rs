@@ -1,19 +1,25 @@
 //! The shape every JSON route answers in: `ok`, the errors when it is not, and the route's own fields beside them.
 //! A page reads `ok` and `errors` the same way whatever it asked, and the editor puts an error on the step, row or
 //! field it names.
+//!
+//! The status says whether the route succeeded, and `ok` repeats it: a 2xx answers `ok: true`, a 4xx or 5xx
+//! `ok: false`, and no failure is answered at 200 (`docs/architecture/api.md`, The answer). On a 2xx, `errors` holds
+//! warnings. An envelope is answered only as a response, never through `Json`, so its status cannot be dropped.
+
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 
 use crate::config_file;
 use crate::plan;
 
-/// `ok` says whether the route did what it was asked; `errors` says what went wrong. The constructors here tie the
-/// two together, and a route that answers otherwise -- a listing that read most of what it could, a conflict that
-/// is its own answer -- builds the envelope itself and says why. `body` is flattened into the same object, so the
-/// route's own fields sit beside `ok` and `errors`; a body with nothing to say is `Empty`.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+/// A route's answer: its status, what went wrong, and its own fields. The constructors tie the status to the
+/// errors; a route that answers otherwise -- a listing that read most of what it could, a conflict that is its own
+/// answer -- names its status with [`Envelope::with`]. `body` is flattened into the same object, so the route's own
+/// fields sit beside `ok` and `errors`; a body with nothing to say is `Empty`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Envelope<T = Empty> {
-    pub ok: bool,
+    pub status: StatusCode,
     pub errors: Vec<ApiError>,
-    #[serde(flatten)]
     pub body: T,
 }
 
@@ -24,35 +30,36 @@ pub struct Empty;
 impl<T> Envelope<T> {
     pub fn ok(body: T) -> Self {
         Envelope {
-            ok: true,
+            status: StatusCode::OK,
             errors: Vec::new(),
             body,
         }
     }
 
-    /// A body that stands whether or not there are errors: a listing that read most of what it was asked for, a
-    /// preview that names which stage failed.
-    pub fn with(body: T, errors: Vec<ApiError>) -> Self {
-        Envelope {
-            ok: errors.is_empty(),
-            errors,
-            body,
-        }
+    /// A body that stands at `status`, with `errors` beside it: a listing that read most of what it was asked for,
+    /// a preview that names which stage failed, a conflict whose body is what conflicts.
+    pub fn with(body: T, status: StatusCode, errors: Vec<ApiError>) -> Self {
+        Envelope { status, errors, body }
+    }
+
+    /// Whether the route did what it was asked: what `ok` answers.
+    pub fn succeeded(&self) -> bool {
+        self.status.is_success()
+    }
+
+    /// The answer as its JSON object, as a response carries it.
+    pub fn to_json(&self) -> serde_json::Value
+    where
+        T: serde::Serialize,
+    {
+        serde_json::to_value(Wire::of(self)).expect("an answer serializes")
     }
 }
 
 impl<T: Default> Envelope<T> {
-    pub fn failed(errors: Vec<ApiError>) -> Self {
-        debug_assert!(!errors.is_empty(), "a failure says what went wrong");
-        Envelope {
-            ok: false,
-            errors,
-            body: T::default(),
-        }
-    }
-
-    pub fn failed_one(error: impl Into<ApiError>) -> Self {
-        Self::failed(vec![error.into()])
+    pub fn refused(refusal: impl Into<Refusal>) -> Self {
+        let Refusal { status, errors } = refusal.into();
+        Envelope::with(T::default(), status, errors)
     }
 }
 
@@ -62,11 +69,17 @@ impl Envelope {
     }
 }
 
-impl<T: Default, E: Into<ApiError>> From<Result<T, E>> for Envelope<T> {
+impl<T: Default> From<Refusal> for Envelope<T> {
+    fn from(refusal: Refusal) -> Self {
+        Envelope::refused(refusal)
+    }
+}
+
+impl<T: Default, E: Into<Refusal>> From<Result<T, E>> for Envelope<T> {
     fn from(result: Result<T, E>) -> Self {
         match result {
             Ok(body) => Envelope::ok(body),
-            Err(e) => Envelope::failed(vec![e.into()]),
+            Err(e) => Envelope::refused(e),
         }
     }
 }
@@ -81,6 +94,130 @@ impl<T> std::ops::Deref for Envelope<T> {
 impl<T> std::ops::DerefMut for Envelope<T> {
     fn deref_mut(&mut self) -> &mut T {
         &mut self.body
+    }
+}
+
+/// What an envelope is on the wire.
+#[derive(serde::Serialize)]
+struct Wire<'a, T> {
+    ok: bool,
+    errors: &'a [ApiError],
+    #[serde(flatten)]
+    body: &'a T,
+}
+
+impl<'a, T: serde::Serialize> Wire<'a, T> {
+    fn of(envelope: &'a Envelope<T>) -> Self {
+        // A body's own `ok` or `errors` would be written a second time, and a reader keeps the last.
+        debug_assert!(
+            serde_json::to_value(&envelope.body).map_or(true, |b| b.get("ok").is_none() && b.get("errors").is_none()),
+            "an answer's body has a field of its own named ok or errors"
+        );
+        Wire {
+            ok: envelope.succeeded(),
+            errors: &envelope.errors,
+            body: &envelope.body,
+        }
+    }
+}
+
+impl<T: serde::Serialize> IntoResponse for Envelope<T> {
+    fn into_response(self) -> Response {
+        let json = match serde_json::to_vec(&Wire::of(&self)) {
+            Ok(json) => json,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("the answer did not serialize: {e}"),
+                )
+                    .into_response();
+            }
+        };
+        (self.status, [(header::CONTENT_TYPE, "application/json")], json).into_response()
+    }
+}
+
+/// A route refusing: the status and what went wrong. What a handler's `?` carries out, and what each error type
+/// that a route can meet converts to, so the status is chosen once for each kind of failure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Refusal {
+    pub status: StatusCode,
+    pub errors: Vec<ApiError>,
+}
+
+impl Refusal {
+    pub fn new(status: StatusCode, error: impl Into<ApiError>) -> Self {
+        Refusal::all(status, vec![error.into()])
+    }
+
+    pub fn all(status: StatusCode, errors: Vec<ApiError>) -> Self {
+        debug_assert!(
+            !status.is_success() && !errors.is_empty(),
+            "a refusal fails and says why"
+        );
+        Refusal { status, errors }
+    }
+
+    /// 400: the request could not be read.
+    pub fn bad_request(error: impl Into<ApiError>) -> Self {
+        Refusal::new(StatusCode::BAD_REQUEST, error)
+    }
+
+    /// 403: not allowed.
+    pub fn forbidden(error: impl Into<ApiError>) -> Self {
+        Refusal::new(StatusCode::FORBIDDEN, error)
+    }
+
+    /// 404: no such thing.
+    pub fn not_found(error: impl Into<ApiError>) -> Self {
+        Refusal::new(StatusCode::NOT_FOUND, error)
+    }
+
+    /// 409: the state refuses it.
+    pub fn conflict(error: impl Into<ApiError>) -> Self {
+        Refusal::new(StatusCode::CONFLICT, error)
+    }
+
+    /// 422: understood, and refused by validation.
+    pub fn invalid(error: impl Into<ApiError>) -> Self {
+        Refusal::new(StatusCode::UNPROCESSABLE_ENTITY, error)
+    }
+
+    /// 500: the leader's fault.
+    pub fn internal(error: impl Into<ApiError>) -> Self {
+        Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, error)
+    }
+
+    /// 503: try later.
+    pub fn unavailable(error: impl Into<ApiError>) -> Self {
+        Refusal::new(StatusCode::SERVICE_UNAVAILABLE, error)
+    }
+
+    /// What went wrong, as one line, for a caller that reports it rather than answering it.
+    pub fn message(&self) -> String {
+        self.errors
+            .iter()
+            .map(|e| e.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message())
+    }
+}
+
+impl IntoResponse for Refusal {
+    fn into_response(self) -> Response {
+        Envelope::<Empty>::refused(self).into_response()
+    }
+}
+
+impl From<&config_file::ValidationError> for Refusal {
+    fn from(e: &config_file::ValidationError) -> Self {
+        Refusal::new(StatusCode::UNPROCESSABLE_ENTITY, ApiError::from_validation(e))
     }
 }
 
@@ -161,9 +298,54 @@ impl From<&str> for ApiError {
     }
 }
 
-impl From<super::store::StoreError> for ApiError {
+/// What kind of failure an error is, which is the status a route answers it at. The leader's own error types carry
+/// one, so the status is chosen where the failure is known and nowhere else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// The leader could not do it: 500.
+    Failed,
+    /// The state refuses it: a name that exists, a ref another write moved first, a review in the wrong state: 409.
+    Conflict,
+    /// There is no such thing: 404.
+    NotFound,
+    /// What was asked for is not well formed: 422.
+    Invalid,
+    /// This caller may not, where another may: 403.
+    Forbidden,
+}
+
+impl ErrorKind {
+    pub fn status(self) -> StatusCode {
+        match self {
+            ErrorKind::Failed => StatusCode::INTERNAL_SERVER_ERROR,
+            ErrorKind::Conflict => StatusCode::CONFLICT,
+            ErrorKind::NotFound => StatusCode::NOT_FOUND,
+            ErrorKind::Invalid => StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorKind::Forbidden => StatusCode::FORBIDDEN,
+        }
+    }
+}
+
+impl From<super::store::StoreError> for Refusal {
     fn from(e: super::store::StoreError) -> Self {
-        ApiError::new(String::from(e))
+        Refusal::new(e.kind.status(), e.message)
+    }
+}
+
+/// A conflict wants an operator to do something else first; an unreadable file wants nothing from them, and a client
+/// watching this leader has to be able to tell the two apart.
+impl From<super::tls::Refused> for Refusal {
+    fn from(e: super::tls::Refused) -> Self {
+        match e {
+            super::tls::Refused::Conflict(message) => Refusal::conflict(message),
+            super::tls::Refused::Unavailable(message) => Refusal::unavailable(message),
+        }
+    }
+}
+
+impl From<super::git::GitError> for Refusal {
+    fn from(e: super::git::GitError) -> Self {
+        Refusal::new(e.kind.status(), e.message)
     }
 }
 
@@ -177,24 +359,84 @@ mod tests {
         struct Body {
             commit: Option<String>,
         }
-        let json = serde_json::to_value(Envelope::ok(Body {
+        let json = Envelope::ok(Body {
             commit: Some("abc".into()),
-        }))
-        .unwrap();
+        })
+        .to_json();
         assert_eq!(json, serde_json::json!({"ok": true, "errors": [], "commit": "abc"}));
-        let json = serde_json::to_value(Envelope::<Body>::failed_one("no")).unwrap();
+        let json = Envelope::<Body>::refused(Refusal::invalid("no")).to_json();
         assert_eq!(json["ok"], false);
         assert_eq!(json["errors"][0]["message"], "no");
         assert_eq!(json["commit"], serde_json::Value::Null);
         assert_eq!(
-            serde_json::to_value(Envelope::done()).unwrap(),
+            Envelope::done().to_json(),
             serde_json::json!({"ok": true, "errors": []})
         );
     }
 
+    /// `ok` repeats the status, and a failure is never answered at 200.
     #[test]
-    fn with_is_ok_exactly_when_nothing_is_wrong() {
-        assert!(Envelope::with(Empty, vec![]).ok);
-        assert!(!Envelope::with(Empty, vec![ApiError::new("x")]).ok);
+    fn ok_is_the_status() {
+        assert!(Envelope::with(Empty, StatusCode::OK, vec![ApiError::new("a warning")]).to_json()["ok"] == true);
+        let refused = Envelope::<Empty>::refused(Refusal::conflict("taken"));
+        assert_eq!(refused.status, StatusCode::CONFLICT);
+        assert_eq!(refused.to_json()["ok"], false);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "named ok or errors")]
+    fn a_body_has_no_ok_of_its_own() {
+        Envelope::ok(serde_json::json!({"ok": false})).to_json();
+    }
+
+    #[test]
+    fn a_failure_answers_its_status() {
+        let response = Refusal::not_found("gone").into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+        assert_eq!(Envelope::done().into_response().status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn each_error_kind_answers_its_status() {
+        use crate::leader::{git::GitError, store::StoreError};
+        let status = |r: Refusal| r.status;
+        assert_eq!(
+            status(StoreError::failed("disk").into()),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(status(StoreError::conflict("taken").into()), StatusCode::CONFLICT);
+        assert_eq!(status(StoreError::not_found("gone").into()), StatusCode::NOT_FOUND);
+        assert_eq!(
+            status(GitError::failed("bad object").into()),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(status(GitError::conflict("main moved").into()), StatusCode::CONFLICT);
+        assert_eq!(status(GitError::not_found("no branch").into()), StatusCode::NOT_FOUND);
+        assert_eq!(
+            status(GitError::invalid("no title").into()),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            status(GitError::of(ErrorKind::Forbidden, "your own").into()),
+            StatusCode::FORBIDDEN
+        );
+        use crate::leader::tls::Refused;
+        assert_eq!(
+            status(Refused::Conflict("rotating".into()).into()),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status(Refused::Unavailable("unreadable".into()).into()),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        let invalid = config_file::ValidationError {
+            field: Some("topic"),
+            ..config_file::ValidationError::from("no topic".to_string())
+        };
+        let refused = Refusal::from(&invalid);
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(refused.errors, vec![ApiError::from_validation(&invalid)]);
     }
 }

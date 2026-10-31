@@ -1,6 +1,6 @@
 <!--
-  Destinations page: `destinations.json`, read through `GET /api/config`
-  and written with `PUT /api/destinations`, plus the raw-JSON page.
+  Destinations page: `destinations.json`, read through `GET /api/areas/:area`
+  and written with `PUT /api/areas/:area/destinations`, plus the raw-JSON page.
 -->
 <script lang="ts">
   import Connections from './Connections.svelte';
@@ -12,12 +12,13 @@
   import SaveConflictPanel from './SaveConflict.svelte';
   import HeldEdit from './HeldEdit.svelte';
   import { SectionEditor } from './sectionEditor.svelte';
-  import { sharedConfig, fieldCatalogs } from './api';
+  import { sharedConfig, fieldCatalogs, NO_KAFKA_FACTS, type KafkaFacts } from './api';
   import ObjectList from './ObjectList.svelte';
   import Field from './Field.svelte';
   import ExceptionsFold from './ExceptionsFold.svelte';
   import { BUILT_IN, lay, overrideCount, problems } from './exceptions';
   import DestinationFields from './DestinationFields.svelte';
+  import SchemaChips from './SchemaChips.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
   import CaptureFlow from './CaptureFlow.svelte';
   import {
@@ -27,11 +28,14 @@
     putDestinations,
     type DestinationDto,
     type ExceptionsDto,
+    type FileConfigDto,
+    type PipelineDto,
     type RouteDto,
-    type IdentityDto,
+    type SchemaDto,
     type SecretDto,
   } from './api';
   import { mayCapture } from './access';
+  import { bundleRoutes } from './routeFlow';
   import { at, typeLabel, writes } from './destinations';
   import NewDestination from './NewDestination.svelte';
 
@@ -47,15 +51,24 @@
   /** What `shared/` declares, which this group delivers to as well. Never saved from here: the page writes its
    * own scope, and these belong to the bundle every group draws on. */
   let sharedDestinations: DestinationDto[] = $state([]);
-  /** Every identity a destination here may name: this scope's own and `shared/`'s, the same two
-   * subtrees the group runs merged. */
-  let identities: IdentityDto[] = $state([]);
   /** The group's exception answers and routes, as read: what a destination's own answer to Refused lays over, and
    * what the load checks beside it. */
   let group = $state<ExceptionsDto | undefined>(undefined);
   let routes: RouteDto[] = $state([]);
+  let pipelines: PipelineDto[] = $state([]);
+  let shared = $state<FileConfigDto | null>(null);
+  /** What an accepts list may name beside the built-ins. */
+  let ownSchemas: SchemaDto[] = $state([]);
+  let sharedSchemas: SchemaDto[] = $state([]);
+  let schemas = $derived([...sharedSchemas, ...ownSchemas]);
   let all = $derived([...destinations, ...sharedDestinations]);
-  let refusals = $derived(problems(group, routes, all));
+  let refusals = $derived(
+    problems(
+      group,
+      bundleRoutes({ routes, pipelines }, shared).slice(shared?.routes.length ?? 0),
+      all,
+    ),
+  );
   /** The destination being captured at, by id, and the scope that declares it. Only a group runs a
    * destination, so `shared/`'s own page offers none. */
   let capturing: { id: string; scope: string } | null = $state(null);
@@ -73,26 +86,27 @@
     put: putDestinations,
     validation,
     onLoaded: async (config) => {
-      identities = config.identities;
       group = config.exceptions;
       routes = config.routes;
+      pipelines = config.pipelines;
+      ownSchemas = config.schemas ?? [];
       await loadShared();
     },
   });
 
   /** `shared/`'s own. A group runs the two merged, so a page showing only its own hides half of what runs. */
   async function loadShared() {
-    const shared = await sharedConfig();
+    shared = await sharedConfig();
     sharedDestinations = shared ? shared.destinations : [];
-    if (shared) identities = [...shared.identities, ...identities];
+    sharedSchemas = shared?.schemas ?? [];
   }
 
   void editor.load();
 
   /** What this leader's build can select, for the security section, and the secret catalog. */
-  let mechanisms: string[] = $state([]);
+  let kafka: KafkaFacts = $state(NO_KAFKA_FACTS);
   let secrets: SecretDto[] = $state([]);
-  void fieldCatalogs().then((c) => ({ secrets, mechanisms } = c));
+  void fieldCatalogs().then((c) => ({ secrets, kafka } = c));
 
   /** Ids the suggestion must not walk into. This scope's alone: the leader refuses a collision with the other
    * subtree, which this page cannot see. */
@@ -190,12 +204,28 @@
         {#snippet body(destination)}
           <Connections kind="destination" id={destination.id} />
           <div class="pair">
-            <Field field="id" label="id">
+            <Field required field="id" label="id">
               <input type="text" bind:value={destination.id} />
             </Field>
             <Field label="type"><span class="fixed">{typeLabel(destination.type)}</span></Field>
           </div>
-          <DestinationFields {destination} {identities} {secrets} {mechanisms} />
+          <DestinationFields {destination} {secrets} {kafka} />
+          <Field field="accepts" label="accepts">
+            {#snippet help()}
+              A pipeline sending here should produce one of these schemas. Review says where one
+              does not; nothing blocks it. Left empty, any pipeline may send here.
+            {/snippet}
+            <div class="accepts">
+              <SchemaChips
+                bind:ids={
+                  () => destination.accepts ?? [],
+                  (ids) => (destination.accepts = ids.length > 0 ? ids : undefined)
+                }
+                declared={schemas}
+                adding="Add a schema it accepts"
+              />
+            </div>
+          </Field>
           <ExceptionsFold
             bind:value={destination.exceptions}
             name={destination.id}
@@ -225,9 +255,8 @@
       <NewDestination
         open={adding}
         unavailable={unavailable()}
-        {identities}
         {secrets}
-        {mechanisms}
+        {kafka}
         onadd={add}
         oncancel={() => (adding = false)}
       />
@@ -278,11 +307,14 @@
     max-width: var(--width-prose);
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   input {
     font-family: var(--mono);
+  }
+
+  .accepts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
   }
 </style>

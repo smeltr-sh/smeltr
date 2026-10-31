@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::FunctionId;
-use smeltr::format::encoding::Encoding;
 use smeltr::io::fake::FakeDestination;
 use smeltr::io::logs::{LogsSource, LogsSourceConfig};
 use smeltr::metrics::{Metrics, MetricsHandle};
@@ -65,7 +64,6 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
     let mut w = Worker::new(
         9,
         Box::new(source),
-        Encoding::Auto,
         topology,
         Vec::new(),
         MemoryBudget::unlimited(),
@@ -79,7 +77,6 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
         on_reject: Answer::Block,
         wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
-        id_field: None,
     });
 
     // The drain thread is what fills the queue, so poll for it rather than race it.
@@ -121,7 +118,7 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
 /// other source's. Declaring the field is what keeps that expressible.
 #[test]
 fn a_route_can_select_logs_rows_by_their_topic() {
-    use smeltr::plan::plan::compile;
+    use smeltr::plan::compile::compile;
 
     let p = PipelineConfig {
         id: 0,

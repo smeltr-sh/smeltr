@@ -39,11 +39,12 @@ fn dest(brokers: &str, topic: &str, props: &[(&str, &str)]) -> KafkaDestination 
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: brokers.to_string(),
             default_topic: topic.to_string(),
             service: smeltr::plan::topology::KafkaService::Kafka,
-            identity: None,
+            tls: None,
             buffer_bytes: 64 * 1024 * 1024,
             props: KafkaProps {
                 literal: props.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
@@ -88,7 +89,6 @@ fn base_producer_flush_has_no_fixed_cost() {
     let topic = unique("flushcost-base");
     let p: BaseProducer = rdkafka::ClientConfig::new()
         .set("bootstrap.servers", &brokers)
-        .set("enable.idempotence", "true")
         .create()
         .expect("producer");
 

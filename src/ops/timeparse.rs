@@ -230,7 +230,7 @@ fn take_month_name(text: &[u8], pos: &mut usize) -> Option<u32> {
     if let Some(i) = position_ignoring_case(&FULL_MONTHS, word) {
         return Some(i as u32 + 1);
     }
-    // An abbreviation is three letters. A longer run beginning with one keeps only those, so `%b` against `JanX`
+    // An abbreviation is three letters. A longer run beginning with one keeps only those, so `%b` against `Janx`
     // consumes `Jan` and leaves the rest to the format, as a fixed-width read did.
     let i = position_ignoring_case(&MONTHS, word.get(..3)?)?;
     *pos = start + 3;

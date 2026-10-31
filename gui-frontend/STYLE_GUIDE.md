@@ -53,16 +53,19 @@ that folds the section rail, the section's own menu.
 A glyph is drawn once and used wherever its operation is offered, so the sign
 and the operation stay one thing: `src/PencilIcon.svelte` is edit -- open this
 object's editor -- and `src/ColumnsIcon.svelte` is stats, how much went each
-way. `src/TrashIcon.svelte` is remove -- take this object out of the list
-it is in. Renaming is not its own sign: it is the editor a worker group happens to
+way. `src/GearIcon.svelte` is view -- how the records are drawn,
+the reader's own choice. `src/CrossIcon.svelte` is remove or close -- take this item out
+of the list it is in, or close or clear what is on screen -- and `src/CrossButton.svelte` is the control that
+offers it. Only remove reddens on hover: it is the one Save makes stick. `src/DisableIcon.svelte` is disable -- keep a step in its pipeline but
+out of play. `src/ChevronIcon.svelte` is fold -- it points right while what it folds is
+closed and down while it is open; a button that is only the chevron is an `icon` control. Renaming is not its own sign: it is the editor a worker group happens to
 have, having nothing else to change in place.
 
-A state can have a sign too, when the page routes on it. `src/FailedIcon.svelte`
-is failed -- a row the pipeline could not process -- a triangle with a bar
-standing in it. It goes wherever those rows are named or wired: the
-pipeline's failure setting, and the routes page's account of how a path
-takes failed rows. The caller colors it:
-ink in a heading, `--warn` where the row's state is the point.
+A state has a sign, `src/StateMark.svelte`: a dot for info, a check for ok,
+a triangle for a warning, an octagon struck with an X for an error. Wherever
+the GUI shows one of these four, the sign goes with it, so the shape alone tells the
+four apart for a reader who cannot tell red from green; the state's color
+says it again. A dot, a stripe or a tint never carries one of them by itself.
 
 `src/stepGlyphs.ts` holds the step badges' paths, one per `StepType`; the
 badge sets the glyph before its label at the label's own text size.
@@ -87,9 +90,9 @@ one dark (see "Theme"). A palette changes colors only.
 A palette is one base hue and an accent well round the wheel from it,
 as Foundry is steel against molten orange. The base colors the band, and
 in dark it tints the surfaces faintly; light surfaces keep Foundry's
-near-white, so the band is the only large field of color. The accent keeps
-clear of the state hues -- green, yellow and red -- so a primary action
-never reads as a status.
+near-white, so the band is the only large field of color. The accent says
+"look here", so it may share its warmth with `--warn`; it keeps clear of
+green and red, so a primary action never reads as worked or failed.
 
 | Token | Role |
 |---|---|
@@ -97,7 +100,7 @@ never reads as a status.
 | `--panel` | Grouped surface: cards, editor panes, menus |
 | `--field` | Where typed values sit: an input, a step card at rest. The lightest surface in light, the darkest in dark |
 | `--ink` | Primary text, prose included |
-| `--dim` | What a reader may skip: a date, a count, a note under a field |
+| `--dim` | What a reader may skip: a date, a count |
 | `--border` | Hairlines, card and input outlines |
 | `--accent` | The one primary action per view, the active tab's underline, focus rings, the open step's rail, critical text |
 | `--on-accent` | Text on an accent-filled surface |
@@ -121,7 +124,7 @@ its values in every palette:
 | Token | Light | Dark | Role |
 |---|---|---|---|
 | `--error` | `oklch(48% 0.2 25)` | `oklch(70% 0.19 25)` | Validation errors, danger actions |
-| `--warn` | `oklch(60% 0.14 85)` | *(same)* | Warnings |
+| `--warn` | `oklch(52% 0.13 55)` | `oklch(78% 0.16 85)` | Warnings |
 | `--added` | `oklch(46% 0.13 145)` | `oklch(66% 0.15 145)` | Diff view, added |
 | `--removed` | `oklch(54% 0.18 25)` | `oklch(68% 0.17 20)` | Diff view, removed |
 | `--changed` | `oklch(56% 0.15 42)` | `oklch(66% 0.16 42)` | Diff view, rewritten by a step |
@@ -131,6 +134,17 @@ The `--tok-*` tokens color code in an expression field and on the
 website, which copies them. Each kind takes its own hue, so no two kinds
 blur together; numbers and the literals `true`, `false`, `null` share the
 orange family at two hues.
+
+A warning or error bar is `.callout.warn` or `.callout.error` (`app.css`):
+a stripe in the state's color on a light tint of it, with the text in
+`--ink`. A state color on its own tint reads poorly, so in a bar only the
+stripe and the glyph carry the color.
+
+A tint over a surface mixes in oklab:
+`color-mix(in oklab, var(--error) 12%, var(--panel))`. A surface is a
+near-gray whose hue is the palette's base, and oklch blends hue on its
+own, so a mix in it carries the base's hue into the tint: an error band
+over Foundry's steel panel reads blue.
 
 `--accent` lightens in dark mode to stay vivid; `--on-accent` exists
 because a fixed white label would then lose contrast.
@@ -207,12 +221,16 @@ no help at all.
   has a subtitle.
 - **Field label.** The field's name. `--text-label`, weight 600. A
   parenthetical that is part of the name -- `fetch buffer (bytes)` --
-  belongs here; a parenthetical that explains does not.
-- **Field note.** One line under the input, stating only what the field
-  takes: its default, its format, its limit. `--text-note`, weight
-  **400** -- it is a sentence, not a second label. Always visible, because
-  a default behind a click is a default nobody reads. A note that explains
-  is an explainer.
+  belongs here; a parenthetical that explains does not. A field the save
+  refuses empty ends in a `*`, in `--error`; one that may be left empty
+  carries no mark.
+- **Field note.** One line under the input, only for what must be known
+  about the value: a choice that moves a source, a list with nothing yet
+  to pick, a port the authority must reach. `--text-note`, weight **400**,
+  in `--accent`. A field shows its default itself, as the value it starts
+  with, its placeholder or its first choice, so no note repeats it. A
+  default the field cannot show, a format or a limit goes in the
+  explainer.
 - **Explainer.** Behind a `?` beside the title or label it belongs to, and
   only where that label leaves out something a first-time user needs to
   use the control correctly. A `?` on a label that says it all is noise.
@@ -220,7 +238,8 @@ no help at all.
   ancestor can clip it, and Escape and click-away come from the platform.
   It explains only the thing it sits beside, usually in one sentence, and
   never repeats another `?` or explains something else on the page. It holds
-  `<code>` and emphasis.
+  `<code>` and emphasis. A field's opens with **Required.** or **Optional.**,
+  and an optional one says what empty does where nobody could guess it.
 - **Critical.** An instruction that must be read before acting: data is
   lost, a step cannot be undone, a condition blocks the task.
   `.critical` (`app.css`): `--accent`, weight 600. The only prose a page
@@ -248,13 +267,20 @@ definition, not a page's own rule.
   - `danger` -- the answer that destroys something, filled `--error`. A
     button that only opens the question is a plain button.
   - `compact` -- an action inside a row of a list.
+  - `icon` -- a control that is only a glyph (✕, ✎, ‹, ƒ), named by its
+    `aria-label`: bare and dim until hovered, on a 24px target, with an
+    accent ring on keyboard focus.
   - `large` -- a call to action on a page of the website.
 - **Text field.** Every text `input`, `select` and `textarea`: `--field`
   on a 1px `--border`, `--text-body`, 1rem on a phone so it does not zoom.
   A value field may set the mono face. One whose value does not hold
   (`aria-invalid`) takes an `--error` border.
 - **Field.** `Field.svelte`: the label, a `?` when the label leaves
-  something out, the control, then its note or its error.
+  something out, the control, then its note or its error. `required` or
+  `optional` says whether it may be left empty; a toggle or a select that
+  always holds a value is neither.
+- **Filter.** `Chips.svelte`: All, then one chip per value, each with its count.
+- **Fold all.** `FoldAllButton.svelte`: one button that folds every item of a list or unfolds them all.
 - **Card.** `Panel.svelte`, below.
 - **Error.** In `--error`, drawn by one of three components, never by
   hand. `ErrorBar.svelte` shows what a call refused or failed, under the nav
@@ -424,7 +450,7 @@ the page from that control's own corner. The chip stays where it was: what
 was pressed has to remain visible, or the list belongs to nothing.
 
 **Hover means the row responds.** It tints toward `--ink` over the panel
-it sits on -- `color-mix(in oklch, var(--ink) 10%, var(--panel))`. Tinting
+it sits on -- `color-mix(in oklab, var(--ink) 10%, var(--panel))`. Tinting
 toward `--bg` takes the color of the page *behind* the menu, which reads as
 a hole rather than as emphasis.
 
@@ -585,7 +611,7 @@ Six rules that keep the accent meaning something.
    underline: the one accent on a page with no primary action. Focus rings
    and the open step's rail are not spending. A selected or chosen thing is
    an ink tint, never an accent one.
-2. **Prose is ink.** `--dim` is for a date, a count, a note under a field.
+2. **Prose is ink.** `--dim` is for a date, a count.
    A paragraph is never dim.
 3. **A border is a boundary.** Two levels of container below the page.
    Lists are rows parted by hairlines or space, not stacks of cards.
@@ -635,6 +661,7 @@ Save button, and a modal's own OK/Cancel would be a second one.
    live value makes the visible config a lie. For the same reason it
    opens, and its header counts them, when a field inside has an error
    (`errors`).
-4. Every field states its default in its note, in the words the code
-   uses.
+4. Every field shows its default, in the words the code uses: as the
+   value it starts with, its placeholder or its first choice, or, where
+   it can show none of these, in its explainer.
 

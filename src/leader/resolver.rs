@@ -13,7 +13,6 @@
 //! the leader's own port, naming the name it is validating, and asking for `acme-tls/1`.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
 use rustls::pki_types::PrivateKeyDer;
@@ -30,18 +29,18 @@ pub struct Resolver {
 }
 
 impl Resolver {
-    /// Resolver the certificate at `cert_path`, signed with the key at `key_path`.
-    pub fn load(cert_path: &Path, key_path: &Path) -> Result<Arc<Resolver>, String> {
+    /// Resolver for the certificate `chain`, signed with `key`: both PEM.
+    pub fn load(chain: &[u8], key: &[u8]) -> Result<Arc<Resolver>, String> {
         Ok(Arc::new(Resolver {
-            served: RwLock::new(read(cert_path, key_path)?),
+            served: RwLock::new(read(chain, key)?),
             proofs: Mutex::new(HashMap::new()),
         }))
     }
 
-    /// Presents the certificate at `cert_path` from the next handshake on. A pair that cannot be read or does not
-    /// match leaves what is presented as it was.
-    pub fn reload(&self, cert_path: &Path, key_path: &Path) -> Result<(), String> {
-        let key = read(cert_path, key_path)?;
+    /// Presents the certificate `chain` from the next handshake on. A pair that cannot be read or does not match
+    /// leaves what is presented as it was.
+    pub fn reload(&self, chain: &[u8], key: &[u8]) -> Result<(), String> {
+        let key = read(chain, key)?;
         *self.served.write().unwrap_or_else(|e| e.into_inner()) = key;
         Ok(())
     }
@@ -98,12 +97,16 @@ impl ResolvesServerCert for Resolver {
     }
 }
 
-fn read(cert_path: &Path, key_path: &Path) -> Result<Arc<CertifiedKey>, String> {
-    let chain = crate::io::trust::certificates_file(cert_path)?;
-    let key = crate::io::trust::key_file(key_path)?;
+fn read(chain: &[u8], key: &[u8]) -> Result<Arc<CertifiedKey>, String> {
+    use rustls::pki_types::pem::PemObject;
+    let chain = rustls::pki_types::CertificateDer::pem_slice_iter(chain)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("the certificate is not a PEM certificate: {e}"))?;
+    let key =
+        PrivateKeyDer::from_pem_slice(key).map_err(|e| format!("the private key is not a PEM private key: {e}"))?;
     CertifiedKey::from_der(chain, key, &crate::crypto::in_use())
         .map(Arc::new)
-        .map_err(|e| format!("{}: {e}", cert_path.display()))
+        .map_err(|e| format!("the certificate: {e}"))
 }
 
 /// The server name a validator asks for `name` by: the name itself, lower-cased, or an address in its reverse-DNS
@@ -160,15 +163,12 @@ mod tests {
     use super::*;
 
     /// A certificate and key on disk, as `tls::ensure` leaves them.
-    fn pair(tag: &str, name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("smeltr-resolver-{}-{tag}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+    fn pair(name: &str) -> (Vec<u8>, Vec<u8>) {
         let signed = rcgen::generate_simple_self_signed(vec![name.to_string()]).unwrap();
-        let cert = dir.join("cert.pem");
-        let key = dir.join("key.pem");
-        std::fs::write(&cert, signed.cert.pem()).unwrap();
-        std::fs::write(&key, signed.signing_key.serialize_pem()).unwrap();
-        (cert, key)
+        (
+            signed.cert.pem().into_bytes(),
+            signed.signing_key.serialize_pem().into_bytes(),
+        )
     }
 
     /// Handshakes with `resolver` as `server_name`, offering `alpn`, and gives back the certificate it was shown.
@@ -265,12 +265,12 @@ mod tests {
 
     #[test]
     fn a_browser_is_shown_the_certificate_in_force_and_a_reload_moves_it() {
-        let (cert, key) = pair("browser", "first.test");
+        let (cert, key) = pair("first.test");
         let resolver = Resolver::load(&cert, &key).unwrap();
         let shown_first = shown(&resolver, "first.test", &[b"h2", b"http/1.1"]).unwrap();
         assert!(names_in(&shown_first).iter().any(|n| n.contains("first.test")));
 
-        let (cert, key) = pair("browser-second", "second.test");
+        let (cert, key) = pair("second.test");
         resolver.reload(&cert, &key).unwrap();
         let shown_second = shown(&resolver, "first.test", &[b"http/1.1"]).unwrap();
         assert!(names_in(&shown_second).iter().any(|n| n.contains("second.test")));
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn a_validator_is_shown_the_proof_for_the_name_it_asks_for_and_nothing_for_another() {
-        let (cert, key) = pair("validator", "leader.test");
+        let (cert, key) = pair("leader.test");
         let resolver = Resolver::load(&cert, &key).unwrap();
         let digest = [7u8; 32];
         resolver.prove("Leader.Example", &digest).unwrap();
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn an_address_is_proved_under_its_reverse_name() {
-        let (cert, key) = pair("address", "leader.test");
+        let (cert, key) = pair("leader.test");
         let resolver = Resolver::load(&cert, &key).unwrap();
         resolver.prove("127.0.0.1", &[9u8; 32]).unwrap();
         let proof = shown(&resolver, "1.0.0.127.in-addr.arpa", &[ACME_TLS]).unwrap();
@@ -331,9 +331,9 @@ mod tests {
 
     #[test]
     fn a_pair_that_does_not_match_is_refused_and_changes_nothing() {
-        let (cert, key) = pair("mismatch", "kept.test");
+        let (cert, key) = pair("kept.test");
         let resolver = Resolver::load(&cert, &key).unwrap();
-        let (other_cert, _) = pair("mismatch-other", "other.test");
+        let (other_cert, _) = pair("other.test");
         assert!(resolver.reload(&other_cert, &key).is_err());
         let still = shown(&resolver, "kept.test", &[b"h2"]).unwrap();
         assert!(names_in(&still).iter().any(|n| n.contains("kept.test")));

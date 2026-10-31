@@ -1,9 +1,11 @@
 <script lang="ts">
   import Logo from './Logo.svelte';
   import { diagramGlyphs } from '#lib/diagram-glyphs.ts';
-  import example from '#lib/filtering-example.json';
+  import example from '#lib/home-flow-example.json';
   import { destinations, sources, type Connection } from '#lib/connections.ts';
   const kept = example.rows.filter((row) => row.output !== null);
+  /** The start of a raw line: enough to show its vendor's format. */
+  const excerpt = (raw: string) => (raw.length > 90 ? raw.slice(0, 90) + '…' : raw);
   // Smeltr's own logs and metrics are not systems a reader brings.
   const outside = sources.filter((source) => source.id !== 'logs' && source.id !== 'metrics');
   /** The named kinds of `list`, in the order of `ids`, and how many more it has. */
@@ -20,10 +22,10 @@
   ]);
   const writes = named(destinations, ['splunk', 'elasticsearch', 's3', 'kafka', 'iceberg']);
   const steps = [
-    { title: 'Filter', detail: 'Keep useful records and fields' },
-    { title: 'Parse', detail: 'Turn raw text into named fields' },
-    { title: 'Enrich', detail: 'Add context from your data' },
-    { title: 'Route', detail: 'Choose where each record goes' },
+    { title: 'Parse', detail: "Read each vendor's own format" },
+    { title: 'Filter', detail: 'Drop what nobody searches' },
+    { title: 'Map', detail: 'Put every field in your schema' },
+    { title: 'Route', detail: 'Send each record where it belongs' },
   ];
 </script>
 
@@ -40,17 +42,10 @@
         >
       </p>
       <div class="records">
-        {#each example.rows as row}
+        {#each example.rows as row, i (i)}
           <div class="record">
-            <span class="record-type"
-              >{row.input.event_type === 'health_check'
-                ? 'Health check'
-                : row.input.event_type === 'order'
-                  ? 'Order'
-                  : 'Error'}</span
-            >
-            <span class="message">{row.input.message}</span>
-            <code class="debug">debug: {row.input.debug}</code>
+            <span class="record-type">{row.vendor}{row.output ? '' : ` · ${row.reason}`}</span>
+            <code class="debug">{excerpt(row.raw)}</code>
           </div>
         {/each}
       </div>
@@ -84,20 +79,21 @@
         >
       </p>
       <div class="records">
-        {#each kept as row}
+        {#each kept as row, i (i)}
           <div class="record kept">
-            <span class="record-type">{row.input.event_type === 'order' ? 'Order' : 'Error'}</span>
-            <span class="message">{row.output?.message}</span>
+            {#each Object.entries(row.output ?? {}) as [field, value] (field)}
+              <code class="debug"><span class="field">{field}</span> {value}</code>
+            {/each}
           </div>
         {/each}
       </div>
-      <p class="ready">Useful records.<br />Only the fields you need.</p>
+      <p class="ready">Fewer records.<br />The same fields.</p>
       <p class="uses">Search · Detection · Reporting</p>
     </div>
   </div>
   <figcaption id="flow-caption">
-    Example policy: drop health checks and remove debug fields. Three records in, two smaller
-    records out.
+    Three firewall records in. The NTP record is dropped, and both denied connections come out in
+    the same fields, named as in ECS, the Elastic Common Schema.
   </figcaption>
 </figure>
 
@@ -168,10 +164,8 @@
     font-weight: 600;
     color: var(--ink);
   }
-  .message {
-    font-size: 0.85rem;
-    overflow-wrap: anywhere;
-    color: var(--dim);
+  .field {
+    color: var(--ink);
   }
   .debug {
     font-size: 0.7rem;

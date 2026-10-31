@@ -51,6 +51,7 @@
 # Setting the CA is only necessary if the leader has a TLS-terminating proxy in front of it.
 # If the leader manages its own TLS then the worker picks up the CA during enrollment.
 # ca = "/etc/smeltr/leader-ca.pem"      # SMELTR_LEADER_CA
+# trust_public = true                   # SMELTR_LEADER_TRUST_PUBLIC, also trust the public roots for the leader
 
 [worker.storage]
 # state_dir = "smeltr-worker-data"   # SMELTR_WORKER_STATE_DIR

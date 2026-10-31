@@ -114,12 +114,10 @@ fn time(bundle: &str, source: Box<dyn Source>, meta: SourceMeta) -> (f64, refere
         on_reject: system.topology.destinations[0].on_reject.clone(),
         wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
-        id_field: None,
     }];
     let mut worker = Worker::new(
         system.topology.sources[0].id,
         source,
-        system.topology.sources[0].kind.encoding(),
         topology,
         destinations,
         MemoryBudget::unlimited(),

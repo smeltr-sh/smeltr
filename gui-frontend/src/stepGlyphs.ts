@@ -12,6 +12,10 @@ export const STEP_GLYPHS: Record<StepType, Glyph> = {
   code: { d: 'M6 15 L12 9 L35 32 L12 55 L6 49 L23 32 Z M34 47 H54 L57 55 H31 Z' },
   drop: { d: 'M10 14 H54 V21 H10 Z M26 8 H38 V14 H26 Z M14 25 H50 L45 56 H19 Z' },
   rename: { d: 'M50.6 5 L59 13.4 L55 17.4 L46.6 9 Z M45 11 L53 19 L26.2 46.2 L10 54 L17.8 37.8 Z' },
+  // `CrossIcon`'s cross: remove, as everywhere else.
+  remove: {
+    d: 'M14 19 L19 14 L32 27 L45 14 L50 19 L37 32 L50 45 L45 50 L32 37 L19 50 L14 45 L27 32 Z',
+  },
   lookup: {
     d: 'M26 8 A18 18 0 1 0 26 44 A18 18 0 1 0 26 8 Z M26 15 A11 11 0 1 1 26 37 A11 11 0 1 1 26 15 Z M36 40 L42 34 L58 50 L52 56 Z',
     evenodd: true,

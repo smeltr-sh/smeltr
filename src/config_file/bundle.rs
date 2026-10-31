@@ -1,4 +1,4 @@
-//! A deployment as a directory of small JSON files. One file per pipeline, so editing
+//! A deployment as a directory of small JSON files. One file per pipeline and per schema, so editing
 //! pipeline A never touches B's file and a diff on one file is the review for one pipeline's change. Sources,
 //! destinations, routes and lookup tables stay single files.
 //!
@@ -9,8 +9,8 @@
 //! routes.json            [RouteDto, ...]         (optional, default [])
 //! lookup-tables.json     [LookupTableDto, ...]   (optional, default [])
 //! grok-patterns.json     [GrokPatternDto, ...]   (optional, default [])
-//! identities.json        [IdentityDto, ...]      (optional, default [])
 //! pipelines/<slug>.json  one PipelineDto per file; the filename is `slugify` of the pipeline's own `id`
+//! schemas/<slug>.json    one SchemaDto per file, named the same way
 //! lookups/<name>         a file a lookup table names, CSV or MMDB
 //! ```
 //!
@@ -28,7 +28,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::dto::{
-    DestinationDto, FileConfig, GrokPatternDto, IdentityDto, LookupTableDto, PipelineDto, RouteDto, SourceDto,
+    DestinationDto, FileConfig, GrokPatternDto, LookupTableDto, PipelineDto, RouteDto, SchemaDto, SourceDto,
 };
 use super::load::{BundleAt, LoadError};
 use super::{CURRENT_VERSION, LoadedSystem};
@@ -75,13 +75,15 @@ pub enum BundleError {
         source: serde_json::Error,
     },
     /// The filename and the file's own `id` disagree.
-    PipelineIdMismatch {
+    IdMismatch {
+        kind: &'static str,
         path: String,
         filename_id: String,
         content_id: String,
     },
-    /// Two pipeline ids produce one filename.
+    /// Two ids of one kind produce one filename.
     DuplicateSlug {
+        kind: &'static str,
         slug: String,
         first_id: String,
         second_id: String,
@@ -108,23 +110,26 @@ impl std::fmt::Display for BundleError {
         match self {
             BundleError::Io { path, message } => write!(f, "{path}: {message}"),
             BundleError::Json { path, source } => write!(f, "{path}: invalid JSON: {source}"),
-            BundleError::PipelineIdMismatch {
+            BundleError::IdMismatch {
+                kind,
                 path,
                 filename_id,
                 content_id,
             } => write!(
                 f,
-                "{path}: filename says pipeline id {filename_id:?}, but the file's own \
+                "{path}: filename says {kind} id {filename_id:?}, but the file's own \
                  \"id\" is {content_id:?}"
             ),
             BundleError::DuplicateSlug {
+                kind,
                 slug,
                 first_id,
                 second_id,
             } => write!(
                 f,
-                "pipeline ids {first_id:?} and {second_id:?} both produce the filename \
-                 \"pipelines/{slug}.json\" -- rename one of them"
+                "{kind} ids {first_id:?} and {second_id:?} both produce the filename \
+                 \"{}/{slug}.json\" -- rename one of them",
+                dir_of(kind)
             ),
             BundleError::DuplicateAcrossSubtrees {
                 kind,
@@ -156,11 +161,51 @@ pub trait FileSet {
     /// Every `.json` file directly under `dir`, as paths relative to the bundle.
     fn json_paths_under(&mut self, dir: &str) -> std::io::Result<Vec<String>>;
 
-    /// Every pipeline file. A deployment reads these and nothing else under a directory, which is what keeps
-    /// `samples/` out of what reaches a worker.
+    /// Every pipeline file. A deployment reads these and the schema files and nothing else under a directory,
+    /// which is what keeps `samples/` out of what reaches a worker.
     fn pipeline_paths(&mut self) -> std::io::Result<Vec<String>> {
-        self.json_paths_under("pipelines")
+        self.json_paths_under(PIPELINES_DIR)
     }
+
+    /// Every schema file.
+    fn schema_paths(&mut self) -> std::io::Result<Vec<String>> {
+        self.json_paths_under(SCHEMAS_DIR)
+    }
+}
+
+/// The directory a kind of per-file object lives in, as `kind_file` names its kinds.
+fn dir_of(kind: &str) -> &'static str {
+    match kind {
+        "schema" => SCHEMAS_DIR,
+        _ => PIPELINES_DIR,
+    }
+}
+
+/// One per-file object, read strictly: the file must parse, and its name must be its own id's slug, so a renamed
+/// file cannot stand for an object it does not hold.
+fn read_per_file<T: DeserializeOwned>(
+    files: &mut dyn FileSet,
+    kind: &'static str,
+    path: &str,
+    named: impl Fn(&str) -> String,
+    id_of: impl Fn(&T) -> &str,
+) -> Result<T, BundleError> {
+    let bytes = require(files, path)?;
+    let item: T = parse_json(&named(path), &bytes)?;
+    let filename_id = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_string();
+    if filename_id != slugify(id_of(&item)) {
+        return Err(BundleError::IdMismatch {
+            kind,
+            path: named(path),
+            filename_id,
+            content_id: id_of(&item).to_string(),
+        });
+    }
+    Ok(item)
 }
 
 /// The directory half of the seam. `leader::tree::TreeFiles` is the other: a commit.
@@ -231,7 +276,7 @@ struct Parts {
     routes: Vec<RouteDto>,
     lookup_tables: Vec<LookupTableDto>,
     grok_patterns: Vec<GrokPatternDto>,
-    identities: Vec<IdentityDto>,
+    schemas: Vec<SchemaDto>,
     pipelines: Vec<PipelineDto>,
 }
 
@@ -263,21 +308,11 @@ fn read_parts(files: &mut dyn FileSet, at: &str) -> Result<Parts, BundleError> {
 
     let mut pipelines = Vec::new();
     for path in files.pipeline_paths().map_err(|e| io_err(&named("pipelines/"), e))? {
-        let bytes = require(files, &path)?;
-        let pipeline: PipelineDto = parse_json(&named(&path), &bytes)?;
-        let filename_id = Path::new(&path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_string();
-        if filename_id != slugify(&pipeline.id) {
-            return Err(BundleError::PipelineIdMismatch {
-                path: named(&path),
-                filename_id,
-                content_id: pipeline.id,
-            });
-        }
-        pipelines.push(pipeline);
+        pipelines.push(read_per_file(files, "pipeline", &path, named, |p: &PipelineDto| &p.id)?);
+    }
+    let mut schemas = Vec::new();
+    for path in files.schema_paths().map_err(|e| io_err(&named("schemas/"), e))? {
+        schemas.push(read_per_file(files, "schema", &path, named, |s: &SchemaDto| &s.id)?);
     }
 
     Ok(Parts {
@@ -287,7 +322,7 @@ fn read_parts(files: &mut dyn FileSet, at: &str) -> Result<Parts, BundleError> {
         routes: read_optional_array(files, "routes.json").map_err(|e| at_path(e, at))?,
         lookup_tables: read_optional_array(files, "lookup-tables.json").map_err(|e| at_path(e, at))?,
         grok_patterns: read_optional_array(files, GROK_PATTERNS_FILE).map_err(|e| at_path(e, at))?,
-        identities: read_optional_array(files, "identities.json").map_err(|e| at_path(e, at))?,
+        schemas,
         pipelines,
     })
 }
@@ -328,7 +363,7 @@ fn assemble_at(
         routes: parts.routes,
         lookup_tables: parts.lookup_tables,
         grok_patterns: parts.grok_patterns,
-        identities: parts.identities,
+        schemas: parts.schemas,
     };
     super::validate_at(file, declared_at).map_err(BundleError::Load)
 }
@@ -354,16 +389,18 @@ pub const GROUPS_DIR: &str = "groups";
 pub const SHARED_DIR: &str = "shared";
 
 /// A bundle's section files: each a JSON array of objects keyed by a unique `id`.
-pub const SECTION_FILES: [&str; 6] = [
+pub const SECTION_FILES: [&str; 5] = [
     "sources.json",
     "destinations.json",
     "routes.json",
     LOOKUP_TABLES_FILE,
     GROK_PATTERNS_FILE,
-    "identities.json",
 ];
 pub const LOOKUP_TABLES_FILE: &str = "lookup-tables.json";
 pub const GROK_PATTERNS_FILE: &str = "grok-patterns.json";
+/// The directories of a bundle's per-file objects, one JSON file per object named by `slugify` of its id.
+pub const PIPELINES_DIR: &str = "pipelines";
+pub const SCHEMAS_DIR: &str = "schemas";
 
 /// Where a bundle keeps its lookup files, and where an upload puts one. A table names its file by a path under this,
 /// relative to the bundle that declares the table.
@@ -539,7 +576,7 @@ fn merge(shared: Parts, group: Parts, group_at: &str) -> Result<Parts, BundleErr
             |p| &p.id,
             group_at,
         ),
-        check("identity", &shared.identities, &group.identities, |i| &i.id, group_at),
+        check("schema", &shared.schemas, &group.schemas, |s| &s.id, group_at),
         check("pipeline", &shared.pipelines, &group.pipelines, |p| &p.id, group_at),
     ];
     if let Some(e) = checks.into_iter().flatten().next() {
@@ -557,7 +594,7 @@ fn merge(shared: Parts, group: Parts, group_at: &str) -> Result<Parts, BundleErr
         routes: cat(shared.routes, group.routes),
         lookup_tables: cat(shared.lookup_tables, group.lookup_tables),
         grok_patterns: cat(shared.grok_patterns, group.grok_patterns),
-        identities: cat(shared.identities, group.identities),
+        schemas: cat(shared.schemas, group.schemas),
         pipelines: cat(shared.pipelines, group.pipelines),
     })
 }
@@ -570,7 +607,7 @@ fn kind_file(kind: &str) -> &'static str {
         "route" => "routes.json",
         "lookup table" => "lookup-tables.json",
         "grok pattern" => GROK_PATTERNS_FILE,
-        "identity" => "identities.json",
+        "schema" => "schemas/",
         _ => "pipelines/",
     }
 }
@@ -643,25 +680,9 @@ pub fn read_raw_from(files: &mut dyn FileSet) -> RawBundle {
     let routes = read_array_lenient(files, "routes.json", &mut unreadable);
     let lookup_tables = read_array_lenient(files, "lookup-tables.json", &mut unreadable);
     let grok_patterns = read_array_lenient(files, GROK_PATTERNS_FILE, &mut unreadable);
-    let identities = read_array_lenient(files, "identities.json", &mut unreadable);
 
-    let mut pipelines = Vec::new();
-    match files.pipeline_paths() {
-        Ok(paths) => {
-            for path in paths {
-                match files.read(&path) {
-                    Ok(Some(bytes)) => match serde_json::from_slice::<PipelineDto>(&bytes) {
-                        Ok(p) => pipelines.push(p),
-                        Err(e) => unreadable.push((path, format!("invalid JSON: {e}"))),
-                    },
-                    // Listed, then removed before the read.
-                    Ok(None) => {}
-                    Err(e) => unreadable.push((path.clone(), e.to_string())),
-                }
-            }
-        }
-        Err(e) => unreadable.push(("pipelines/".to_string(), e.to_string())),
-    }
+    let pipelines = read_per_file_lenient(files, PIPELINES_DIR, files_under::pipelines, &mut unreadable);
+    let schemas = read_per_file_lenient(files, SCHEMAS_DIR, files_under::schemas, &mut unreadable);
 
     RawBundle {
         file: FileConfig {
@@ -674,16 +695,54 @@ pub fn read_raw_from(files: &mut dyn FileSet) -> RawBundle {
             routes,
             lookup_tables,
             grok_patterns,
-            identities,
+            schemas,
         },
         unreadable,
     }
 }
 
+/// Every per-file object under `dir` that parses, and `(path, message)` in `unreadable` for each that does not.
+fn read_per_file_lenient<T: DeserializeOwned>(
+    files: &mut dyn FileSet,
+    dir: &str,
+    paths: fn(&mut dyn FileSet) -> std::io::Result<Vec<String>>,
+    unreadable: &mut Vec<(String, String)>,
+) -> Vec<T> {
+    let mut out = Vec::new();
+    match paths(files) {
+        Ok(paths) => {
+            for path in paths {
+                match files.read(&path) {
+                    Ok(Some(bytes)) => match serde_json::from_slice::<T>(&bytes) {
+                        Ok(p) => out.push(p),
+                        Err(e) => unreadable.push((path, format!("invalid JSON: {e}"))),
+                    },
+                    // Listed, then removed before the read.
+                    Ok(None) => {}
+                    Err(e) => unreadable.push((path.clone(), e.to_string())),
+                }
+            }
+        }
+        Err(e) => unreadable.push((format!("{dir}/"), e.to_string())),
+    }
+    out
+}
+
+/// `FileSet`'s listings as plain functions, so a lenient read can be handed one.
+mod files_under {
+    use super::FileSet;
+    pub fn pipelines(files: &mut dyn FileSet) -> std::io::Result<Vec<String>> {
+        files.pipeline_paths()
+    }
+    pub fn schemas(files: &mut dyn FileSet) -> std::io::Result<Vec<String>> {
+        files.schema_paths()
+    }
+}
+
 // -- writing --------------------------------------------------------------
 
-/// A pipeline id as a filename stem: lowercased, every run outside `[a-z0-9]` collapsed to one `-`, ends trimmed.
-/// Pipeline ids are free-text names, so this is what keeps the paths portable.
+/// A pipeline's or schema's id as a filename stem: lowercased, every run outside `[a-z0-9]` collapsed to one `-`,
+/// ends trimmed. Ids are free-text names, so this is what keeps the paths portable.
 pub fn slugify(id: &str) -> String {
     let mut out = String::with_capacity(id.len());
     let mut last_was_dash = true; // suppresses a leading dash
@@ -707,19 +766,34 @@ pub fn slugify(id: &str) -> String {
 /// The single place a pipeline's filename is decided, so every writer refuses the same collision. Writing both would
 /// keep whichever went last and lose the other, which no reader could then tell from a pipeline nobody wrote.
 pub fn slugged_pipelines(file: &FileConfig) -> Result<Vec<(String, &PipelineDto)>, BundleError> {
+    slugged("pipeline", &file.pipelines, |p| &p.id)
+}
+
+/// Each schema's `(slug, SchemaDto)`, as `slugged_pipelines` for schemas.
+pub fn slugged_schemas(file: &FileConfig) -> Result<Vec<(String, &SchemaDto)>, BundleError> {
+    slugged("schema", &file.schemas, |s| &s.id)
+}
+
+fn slugged<'a, T>(
+    kind: &'static str,
+    items: &'a [T],
+    id_of: impl Fn(&T) -> &str,
+) -> Result<Vec<(String, &'a T)>, BundleError> {
     let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
-    let mut out = Vec::with_capacity(file.pipelines.len());
-    for p in &file.pipelines {
-        let slug = slugify(&p.id);
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let id = id_of(item);
+        let slug = slugify(id);
         if let Some(&first_id) = seen.get(&slug) {
             return Err(BundleError::DuplicateSlug {
+                kind,
                 slug,
                 first_id: first_id.to_string(),
-                second_id: p.id.clone(),
+                second_id: id.to_string(),
             });
         }
-        seen.insert(slug.clone(), &p.id);
-        out.push((slug, p));
+        seen.insert(slug.clone(), id);
+        out.push((slug, item));
     }
     Ok(out)
 }
@@ -750,10 +824,12 @@ pub fn bundle_files(file: &FileConfig) -> Result<Vec<(String, Vec<u8>)>, BundleE
         ("routes.json".to_string(), to_json_bytes(&file.routes)),
         ("lookup-tables.json".to_string(), to_json_bytes(&file.lookup_tables)),
         (GROK_PATTERNS_FILE.to_string(), to_json_bytes(&file.grok_patterns)),
-        ("identities.json".to_string(), to_json_bytes(&file.identities)),
     ];
     for (slug, p) in slugged_pipelines(file)? {
-        files.push((format!("pipelines/{slug}.json"), to_json_bytes(p)));
+        files.push((format!("{PIPELINES_DIR}/{slug}.json"), to_json_bytes(p)));
+    }
+    for (slug, s) in slugged_schemas(file)? {
+        files.push((format!("{SCHEMAS_DIR}/{slug}.json"), to_json_bytes(s)));
     }
     Ok(files)
 }
@@ -1064,9 +1140,36 @@ mod tests {
         .unwrap();
 
         let err = load_bundle_dir(&dir).unwrap_err();
-        assert!(matches!(err, BundleError::PipelineIdMismatch { .. }), "{err}");
+        assert!(matches!(err, BundleError::IdMismatch { .. }), "{err}");
         assert!(err.to_string().contains("wrong-name"));
         assert!(err.to_string().contains("actual-id"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_schema_is_one_file_named_by_its_id_and_read_back() {
+        let dir = temp_dir("schema-per-file");
+        let mut file = example_file();
+        file.schemas = vec![crate::config_file::SchemaDto {
+            id: "ECS 9".to_string(),
+            title: "ECS".to_string(),
+            ..Default::default()
+        }];
+        let files = bundle_files(&file).unwrap();
+        assert!(files.iter().any(|(path, _)| path == "schemas/ecs-9.json"), "{files:?}");
+        for (path, bytes) in &files {
+            let at = dir.join(path);
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::fs::write(at, bytes).unwrap();
+        }
+        let raw = read_raw_from(&mut DirFileSet { root: &dir });
+        assert_eq!(raw.file.schemas.len(), 1);
+        assert_eq!(raw.file.schemas[0].id, "ECS 9");
+        assert!(raw.unreadable.is_empty(), "{:?}", raw.unreadable);
+
+        std::fs::rename(dir.join("schemas/ecs-9.json"), dir.join("schemas/other.json")).unwrap();
+        let err = load_bundle_dir(&dir).unwrap_err();
+        assert!(matches!(err, BundleError::IdMismatch { kind: "schema", .. }), "{err}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1254,7 +1357,7 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
+            schemas: vec![],
         };
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("system.json"), manifest_bytes(&file)).unwrap();
@@ -1278,7 +1381,7 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
+            schemas: vec![],
         };
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("system.json"), manifest_bytes(&file)).unwrap();

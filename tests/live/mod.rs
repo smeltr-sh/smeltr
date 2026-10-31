@@ -282,3 +282,22 @@ pub fn keycloak(test_name: &str) -> Option<String> {
 pub fn pebble(test_name: &str) -> Option<String> {
     service(test_name, "PEBBLE_TEST_DIRECTORY", "a Pebble (`just live-up`)")
 }
+
+/// A Pebble that validates DNS-01 against challtestsrv, and challtestsrv's DNS and management addresses
+/// (`just live-up`), or `None` to skip this test.
+pub struct PebbleDns {
+    pub directory: String,
+    pub dns: std::net::SocketAddr,
+    pub management: String,
+}
+
+pub fn pebble_dns(test_name: &str) -> Option<PebbleDns> {
+    let what = "a Pebble and its challtestsrv (`just live-up`)";
+    Some(PebbleDns {
+        directory: service(test_name, "PEBBLE_DNS_TEST_DIRECTORY", what)?,
+        dns: service(test_name, "CHALLTESTSRV_TEST_DNS", what)?
+            .parse()
+            .expect("CHALLTESTSRV_TEST_DNS is an address and port"),
+        management: service(test_name, "CHALLTESTSRV_TEST_MANAGEMENT", what)?,
+    })
+}

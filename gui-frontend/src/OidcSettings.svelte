@@ -1,5 +1,5 @@
 <!--
-  Admin -> System -> Single sign-on: the OpenID Connect provider people sign
+  Admin -> Accounts -> Single sign-on: the OpenID Connect provider people sign
   in through. The client secret goes in and never comes back out: the leader
   says only whether one is stored, and forgets it when the issuer or client
   id changes, since a secret belongs to the client it was issued to.
@@ -11,13 +11,11 @@
     issuer: string;
     clientId: string;
     secretHeld: boolean;
-    requiredGroup: string;
   }): string[] {
     return [
       form.issuer.trim() === '' ? 'issuer URL' : '',
       form.clientId.trim() === '' ? 'client ID' : '',
       form.secretHeld ? '' : 'client secret',
-      form.requiredGroup.trim() === '' ? 'required group' : '',
     ].filter((name) => name !== '');
   }
 
@@ -85,7 +83,7 @@
   import Help from './Help.svelte';
   import Panel from './Panel.svelte';
   import Field from './Field.svelte';
-  import PasswordField from './PasswordField.svelte';
+  import LeaderSecretField from './LeaderSecretField.svelte';
   import Toggle from './Toggle.svelte';
   import Advanced from './Advanced.svelte';
 
@@ -100,8 +98,8 @@
   let issuer = $state('');
   let clientId = $state('');
   let clientSecret = $state('');
+  let replacingSecret = $state(false);
   let groupsClaim = $state(DEFAULT_GROUPS_CLAIM);
-  let requiredGroup = $state('');
 
   function adopt(next: OidcSettingsDto) {
     settings = next;
@@ -109,9 +107,9 @@
     issuer = next.issuer;
     clientId = next.clientId;
     clientSecret = '';
+    replacingSecret = false;
     copied = false;
     groupsClaim = next.groupsClaim;
-    requiredGroup = next.requiredGroup;
   }
 
   $effect(() => {
@@ -134,7 +132,6 @@
           issuer,
           clientId,
           secretHeld: clientSecret !== '' || secretKept,
-          requiredGroup,
         })
       : [],
   );
@@ -145,8 +142,7 @@
         issuer.trim() !== settings.issuer ||
         clientId.trim() !== settings.clientId ||
         clientSecret !== '' ||
-        groupsClaim.trim() !== settings.groupsClaim ||
-        requiredGroup.trim() !== settings.requiredGroup),
+        groupsClaim.trim() !== settings.groupsClaim),
   );
   const savable = $derived(
     dirty && !busy && issuerError === '' && claimProblem === '' && missing.length === 0,
@@ -168,7 +164,6 @@
         clientId: clientId.trim(),
         clientSecret: clientSecret === '' ? undefined : clientSecret,
         groupsClaim: groupsClaim.trim(),
-        requiredGroup: requiredGroup.trim(),
       });
       if (!refused(result)) answer(result);
     } catch (e) {
@@ -235,7 +230,7 @@
             >
           </div>
         </Field>
-        <Field label="Issuer URL" error={(!partialScheme(issuer) && issuerError) || null}>
+        <Field required label="Issuer URL" error={(!partialScheme(issuer) && issuerError) || null}>
           {#snippet help()}
             The provider's issuer URL. The leader reads <code
               >/.well-known/openid-configuration</code
@@ -244,37 +239,22 @@
           {/snippet}
           <input bind:value={issuer} placeholder="https://example.okta.com" class="mono" />
         </Field>
-        <Field label="Client ID">
+        <Field required label="Client ID">
           <input bind:value={clientId} class="mono" />
         </Field>
-        <Field label="Client secret">
+        <Field optional label="Client secret" group>
           {#snippet help()}
-            Stored encrypted and never shown again. Left empty, the stored one is kept while the
-            issuer and client ID stay the same.
+            Stored encrypted and never shown again.
           {/snippet}
-          <PasswordField
+          <LeaderSecretField
             bind:value={clientSecret}
+            bind:replacing={replacingSecret}
+            stored={secretKept}
             ariaLabel="client secret"
-            placeholder={secretKept ? 'stored' : ''}
           />
         </Field>
-      </div>
-    </div>
-
-    <div class="setting">
-      <div>
-        <h3>Who gets in</h3>
-      </div>
-      <div class="fields">
-        <Field label="Required group">
-          {#snippet help()}
-            A group the provider must name in the groups claim for the account to be let in.
-          {/snippet}
-          <input bind:value={requiredGroup} class="mono" />
-        </Field>
         <Advanced modified={groupsClaim.trim() !== DEFAULT_GROUPS_CLAIM}>
-          <Field label="Groups claim" error={claimProblem || null}>
-            {#snippet note()}Default <code class="mono">{DEFAULT_GROUPS_CLAIM}</code>.{/snippet}
+          <Field required label="Groups claim" error={claimProblem || null}>
             <input bind:value={groupsClaim} class="mono" />
           </Field>
         </Advanced>

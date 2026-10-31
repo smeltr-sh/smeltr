@@ -1,4 +1,4 @@
-//! A leader's logs stay on its own console.
+//! A process that is no worker, and whose leader does not keep its own logs, queues none.
 //!
 //! Its own binary because the property is about what this process never does: name a worker. A name is set once,
 //! so a test that sets one cannot also test the case where none is.

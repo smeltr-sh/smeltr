@@ -14,21 +14,21 @@
     system,
     rows,
     onclose,
-    footer,
+    controls,
   }: {
     stack: MapCard;
     /** What the members' system is called. */
     system: string;
     rows: MapRow[];
     onclose: () => void;
-    footer?: Snippet;
+    controls?: Snippet;
   } = $props();
 </script>
 
 <MapPanel kind={stack.kind} group={stack.group} title={stack.name} {onclose}>
   <div class="sub dim">{system}</div>
   <MapRows {rows} />
-  {#if footer}<div class="footer">{@render footer()}</div>{/if}
+  {#if controls}<div class="controls">{@render controls()}</div>{/if}
 </MapPanel>
 
 <style>
@@ -37,11 +37,7 @@
     font-size: var(--text-label);
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
-  .footer {
+  .controls {
     margin-top: 1rem;
   }
 </style>

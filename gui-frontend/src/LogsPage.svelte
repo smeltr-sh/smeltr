@@ -282,7 +282,7 @@
             <td class="mono site">
               <button
                 type="button"
-                class="link"
+                class="link-button"
                 onclick={() => go({ ...resetCursor(filters), site: row.site })}
               >
                 {row.site}
@@ -316,7 +316,7 @@
             <td class="mono who">
               <button
                 type="button"
-                class="link"
+                class="link-button"
                 onclick={() => go({ ...resetCursor(filters), worker: row.workerId })}
               >
                 {row.workerId}
@@ -377,12 +377,13 @@
   .chip.on.error {
     background: color-mix(in srgb, var(--error) 15%, transparent);
     border-color: var(--error);
-    color: var(--error);
+    /* A state color on its own tint reads poorly (app.css, .callout). */
+    color: var(--ink);
   }
   .chip.on.warn {
     background: color-mix(in srgb, var(--warn) 18%, transparent);
     border-color: var(--warn);
-    color: var(--warn);
+    color: var(--ink);
   }
   .chip.on.info,
   .chip.on.debug,
@@ -423,22 +424,15 @@
     font-family: ui-monospace, monospace;
     font-size: 0.9em;
   }
+  /* Faded rather than in the dim color, so a dim link keeps its link color. */
   .dim {
+    color: inherit;
     opacity: 0.65;
   }
   .pager {
     display: flex;
     gap: 0.4rem;
     margin-top: 0.75rem;
-  }
-  .link {
-    background: none;
-    border: none;
-    padding: 0;
-    font: inherit;
-    color: inherit;
-    text-decoration: underline dotted;
-    cursor: pointer;
   }
   .fields {
     margin-left: 0.4rem;

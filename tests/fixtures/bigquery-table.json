@@ -1,0 +1,62 @@
+{
+  "kind": "bigquery#table",
+  "tableReference": {
+    "projectId": "example",
+    "datasetId": "edge",
+    "tableId": "requests"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "event_time",
+        "type": "TIMESTAMP",
+        "mode": "REQUIRED",
+        "description": "When the request was served."
+      },
+      {
+        "name": "client_ip",
+        "type": "STRING",
+        "mode": "NULLABLE",
+        "description": "The address the request came from."
+      },
+      {
+        "name": "status",
+        "type": "INTEGER",
+        "mode": "NULLABLE",
+        "description": "The HTTP status sent back."
+      },
+      {
+        "name": "latency_ms",
+        "type": "FLOAT",
+        "mode": "NULLABLE",
+        "description": "How long the response took."
+      },
+      {
+        "name": "cached",
+        "type": "BOOLEAN",
+        "mode": "NULLABLE",
+        "description": "Whether a cache served it."
+      },
+      {
+        "name": "tags",
+        "type": "STRING",
+        "mode": "REPEATED",
+        "description": "Labels the edge gave the request."
+      },
+      {
+        "name": "headers",
+        "type": "RECORD",
+        "mode": "NULLABLE",
+        "description": "The request's headers.",
+        "fields": [
+          {
+            "name": "user_agent",
+            "type": "STRING",
+            "mode": "NULLABLE",
+            "description": "The client's name for itself."
+          }
+        ]
+      }
+    ]
+  }
+}

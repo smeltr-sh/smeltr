@@ -13,6 +13,7 @@ let page: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 let posts: string[];
 let deletes: string[];
+let puts: Record<string, unknown>[];
 
 const YEAR = 365 * 24 * 60 * 60 * 1000;
 
@@ -32,14 +33,20 @@ const CERTIFICATES = {
   served: described('leader.example'),
   supplied: false,
   source: 'own',
+  entry: null,
+  names: ['localhost', '127.0.0.1', 'leader.example'],
+  workerName: null,
   restartRequired: false,
+  unserved: null,
   rotation: {
     incoming: described('smeltr authority 2'),
     startedMillis: Date.now(),
     deadlineMillis: Date.now() + YEAR,
+    latestDeadlineMillis: Date.now() + 2 * YEAR,
     installs: 'nextKey',
     source: 'own',
     notFollowing: [],
+    workers: [],
   },
 };
 
@@ -53,13 +60,27 @@ const ACME = {
   authority: '',
   eabKeyId: '',
   eabHmacSet: false,
+  dnsProvider: 'cloudflare',
+  cloudflareTokenSet: false,
   httpPort: 80,
-  issued: null,
   notAfterMillis: null,
   renewAfterMillis: null,
   lastAttemptMillis: null,
   lastError: null,
 };
+
+/** The certificate list the leader's chooser offers. */
+const LISTED = [
+  {
+    name: 'corporate',
+    description: '',
+    versions: [{ version: 1, setAt: 0, usable: true }],
+    chain: [],
+    served: false,
+    forServers: true,
+    forClients: true,
+  },
+];
 
 function json(body: unknown) {
   return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
@@ -75,8 +96,11 @@ async function show(
     vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method === 'POST') posts.push(url);
       if (init?.method === 'DELETE') deletes.push(url);
-      if (url.startsWith('/api/settings/certificates')) return json(certificates);
-      if (url.startsWith('/api/settings/acme')) return json(acme);
+      if (init?.method === 'PUT') puts.push(JSON.parse(String(init.body)));
+      if (url.startsWith('/api/settings/tls/acme')) return json(acme);
+      if (url.startsWith('/api/settings/tls')) return json(certificates);
+      if (url.startsWith('/api/certificates'))
+        return json({ ok: true, errors: [], certificates: LISTED });
       throw new Error(`unexpected ${url}`);
     }),
   );
@@ -104,6 +128,7 @@ async function settle() {
 beforeEach(() => {
   posts = [];
   deletes = [];
+  puts = [];
   ask.mockReset();
   target = document.createElement('div');
   document.body.append(target);
@@ -128,25 +153,18 @@ describe('the certificate actions', () => {
 
     ask.mockResolvedValueOnce(true);
     button('Cut over now')!.click();
-    await vi.waitFor(() => expect(posts).toEqual(['/api/settings/certificates/rotation/cutover']));
-  });
-
-  it('issues a new certificate only once it is confirmed', async () => {
-    await show();
-    ask.mockResolvedValueOnce(false);
-    button('Issue a new one')!.click();
-    await settle();
-    expect(ask).toHaveBeenCalledTimes(1);
-    expect(posts).toEqual([]);
-
-    ask.mockResolvedValueOnce(true);
-    button('Issue a new one')!.click();
-    await vi.waitFor(() => expect(posts).toEqual(['/api/settings/certificates/reissue']));
+    await vi.waitFor(() => expect(posts).toEqual(['/api/settings/tls/rotation/cutover']));
   });
 });
 
 describe('the source', () => {
-  const UPLOADED = { ...CERTIFICATES, supplied: true, source: 'upload', rotation: null };
+  const UPLOADED = {
+    ...CERTIFICATES,
+    supplied: true,
+    source: 'upload',
+    entry: 'theirs',
+    rotation: null,
+  };
 
   it('opens on the source in force and marks it', async () => {
     await show(UPLOADED, 'Serve this certificate');
@@ -161,14 +179,14 @@ describe('the source', () => {
     flushSync();
     expect(button('Switch to Leader issued')).toBeDefined();
     expect(button('Serve this certificate')).toBeUndefined();
-    expect(deletes).toEqual([]);
+    expect(puts).toEqual([]);
 
     button('Switch to Leader issued')!.click();
-    await vi.waitFor(() => expect(deletes).toEqual(['/api/settings/certificates/supplied']));
+    await vi.waitFor(() => expect(puts).toEqual([{ certificate: 'leader' }]));
   });
 
   it('offers rotation only under Leader issued', async () => {
-    await show({ ...CERTIFICATES, rotation: null }, 'Issue a new one');
+    await show({ ...CERTIFICATES, rotation: null }, 'Rotate authority');
     expect(target.textContent).toContain('Rotate authority');
     option('Uploaded')!.click();
     flushSync();
@@ -188,7 +206,6 @@ describe('the source', () => {
     await show(switching, 'Abandon switch');
     expect(target.textContent).toContain('Switch to Uploaded in progress');
     expect(button('Serve this certificate')).toBeUndefined();
-    expect(button('Issue a new one')).toBeUndefined();
     expect(option('Leader issued')!.getAttribute('aria-current')).toBe('true');
     option('Uploaded')!.click();
     flushSync();
@@ -197,12 +214,43 @@ describe('the source', () => {
     expect(button('Serve this certificate')).toBeDefined();
   });
 
+  it('lists each worker a switch waits for, and whether it holds the incoming authority', async () => {
+    const switching = {
+      ...CERTIFICATES,
+      supplied: true,
+      source: 'upload',
+      entry: 'theirs',
+      rotation: {
+        ...CERTIFICATES.rotation,
+        installs: 'supplied',
+        source: 'own',
+        workers: [
+          { id: 'w-1', holdsIncoming: true },
+          { id: 'w-2', holdsIncoming: false },
+        ],
+      },
+    };
+    await show(switching, 'Abandon switch');
+    expect(target.textContent).toContain('1 of 2 hold it');
+    const rows = [...target.querySelectorAll('.workers li')].map((li) => li.textContent);
+    expect(rows[0]).toContain('w-1');
+    expect(rows[0]).toContain('holds it');
+    expect(rows[1]).toContain('w-2');
+    expect(rows[1]).toContain('waiting');
+  });
+
   it('names the workers a switch does not wait for', async () => {
     const switching = {
       ...CERTIFICATES,
       supplied: true,
       source: 'upload',
-      rotation: { ...CERTIFICATES.rotation, installs: 'own', notFollowing: ['ops-1', 'ops-2'] },
+      entry: 'theirs',
+      rotation: {
+        ...CERTIFICATES.rotation,
+        installs: 'supplied',
+        source: 'own',
+        notFollowing: ['ops-1', 'ops-2'],
+      },
     };
     await show(switching, 'Abandon switch');
     expect(target.textContent).toContain('Switch to Leader issued in progress');
@@ -215,24 +263,27 @@ describe('the source', () => {
       'fetch',
       vi.fn(async (url: string, init?: RequestInit) => {
         if (init?.method === 'PUT') {
+          puts.push(JSON.parse(String(init.body)));
           answered = {
             ...CERTIFICATES,
             rotation: { ...CERTIFICATES.rotation, installs: 'supplied', source: 'upload' },
           };
         }
-        if (url.startsWith('/api/settings/certificates')) return json(answered);
-        if (url.startsWith('/api/settings/acme')) return json(ACME);
+        if (url.startsWith('/api/settings/tls/acme')) return json(ACME);
+        if (url.startsWith('/api/settings/tls')) return json(answered);
+        if (url.startsWith('/api/certificates'))
+          return json({ ok: true, errors: [], certificates: LISTED });
         throw new Error(`unexpected ${url}`);
       }),
     );
     page = mount(CertificatesSettings, { target });
-    await vi.waitFor(() => expect(button('Issue a new one')).toBeDefined());
+    await vi.waitFor(() => expect(button('Rotate authority')).toBeDefined());
     option('Uploaded')!.click();
     flushSync();
-    for (const area of target.querySelectorAll('textarea')) {
-      area.value = 'pem';
-      area.dispatchEvent(new Event('input', { bubbles: true }));
-    }
+    const chooser = target.querySelector('select')!;
+    await vi.waitFor(() => expect(chooser.options).toHaveLength(2));
+    chooser.value = 'corporate';
+    chooser.dispatchEvent(new Event('change', { bubbles: true }));
     flushSync();
     button('Serve this certificate')!.click();
     await vi.waitFor(() =>
@@ -241,10 +292,14 @@ describe('the source', () => {
       ),
     );
     expect(target.textContent).toContain('Switch to Uploaded in progress');
+    expect(puts).toEqual([{ certificate: 'corporate' }]);
   });
 
   it('keeps a rotation already open in reach while an uploaded certificate is in force', async () => {
-    await show({ ...CERTIFICATES, supplied: true, source: 'upload' }, 'Serve this certificate');
+    await show(
+      { ...CERTIFICATES, supplied: true, source: 'upload', entry: 'theirs' },
+      'Serve this certificate',
+    );
     option('Leader issued')!.click();
     flushSync();
     expect(button('Abandon rotation')).toBeDefined();
@@ -267,6 +322,32 @@ describe('uploading during a switch', () => {
   });
 });
 
+describe('a certificate a start could not serve', () => {
+  it('says why, and that the leader serves its own', async () => {
+    const why =
+      'This leader is serving a "Leader issued" certificate instead of "theirs", which cannot be served because the certificate has already expired. Choose a certificate under Source.';
+    await show(
+      {
+        ...CERTIFICATES,
+        supplied: false,
+        source: 'upload',
+        entry: 'theirs',
+        unserved: why,
+        rotation: null,
+      },
+      'Serve this certificate',
+    );
+    expect(target.textContent).toContain(why);
+    expect(target.textContent).not.toContain('Restart the leader');
+
+    option('Leader issued')!.click();
+    flushSync();
+    expect(button('Rotate authority')).toBeUndefined();
+    button('Switch to Leader issued')!.click();
+    await vi.waitFor(() => expect(puts).toEqual([{ certificate: 'leader' }]));
+  });
+});
+
 describe('ACME', () => {
   const ORDERED = {
     ...ACME,
@@ -274,14 +355,19 @@ describe('ACME', () => {
     directory: 'https://acme-v02.api.letsencrypt.org/directory',
     contact: 'ops@example.com',
     names: ['leader.example'],
-    issued: 'ab'.repeat(32),
     notAfterMillis: Date.now() + YEAR,
     renewAfterMillis: Date.now() + YEAR / 2,
   };
-  const IN_FORCE = { ...CERTIFICATES, supplied: true, source: 'acme', rotation: null };
+  const IN_FORCE = {
+    ...CERTIFICATES,
+    supplied: true,
+    source: 'acme',
+    entry: 'acme',
+    rotation: null,
+  };
 
   it('orders only once the terms are agreed to, and fills the names from the certificate', async () => {
-    await show({ ...CERTIFICATES, rotation: null }, 'Issue a new one');
+    await show({ ...CERTIFICATES, rotation: null }, 'Rotate authority');
     option('ACME')!.click();
     flushSync();
     const get = button('Get certificate')!;
@@ -313,7 +399,7 @@ describe('ACME', () => {
     target.querySelector<HTMLButtonElement>('button[aria-label="remove old.example"]')!.click();
     flushSync();
     button('Save')!.click();
-    await vi.waitFor(() => expect(posts).toEqual(['/api/settings/acme/order']));
+    await vi.waitFor(() => expect(posts).toEqual(['/api/settings/tls/acme/order']));
   });
 
   it('says what the last order failed with', async () => {
@@ -333,5 +419,35 @@ describe('ACME', () => {
     await show(moving, 'Cut over now', ORDERED);
     expect(target.textContent).toContain('Moving workers to a new root');
     expect(button('Renew now')).toBeDefined();
+  });
+
+  it('asks DNS-01 for its provider and token, and names the zones instead of a port', async () => {
+    await show(IN_FORCE, 'Save', { ...ORDERED, challenge: 'dns-01' });
+    expect(target.textContent).toContain('DNS provider');
+    expect(target.querySelector('[aria-label="API token"]')).not.toBeNull();
+    expect(target.textContent).not.toContain('must reach this leader');
+  });
+
+  it('sends a typed token, and keeps a stored one when none is typed', async () => {
+    await show(IN_FORCE, 'Save', { ...ORDERED, challenge: 'dns-01', cloudflareTokenSet: true });
+    expect(target.textContent).toContain('Stored');
+    button('Save')!.click();
+    await vi.waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toMatchObject({
+      challenge: 'dns-01',
+      dnsProvider: 'cloudflare',
+      cloudflareToken: null,
+    });
+    await vi.waitFor(() => expect(target.textContent).toContain('settings saved'));
+
+    target.querySelector<HTMLButtonElement>('button[aria-label="replace the API token"]')!.click();
+    flushSync();
+    const input = target.querySelector<HTMLInputElement>('input[aria-label="API token"]')!;
+    input.value = 'cf-token';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    button('Save')!.click();
+    await vi.waitFor(() => expect(puts).toHaveLength(2));
+    expect(puts[1]).toMatchObject({ cloudflareToken: 'cf-token' });
   });
 });

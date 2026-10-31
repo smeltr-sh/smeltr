@@ -9,8 +9,10 @@
   import { unreported } from './errors.svelte';
   import { onDestroy } from 'svelte';
   import Field from './Field.svelte';
+  import InlineError from './InlineError.svelte';
+  import Nested from './Nested.svelte';
   import Advanced from './Advanced.svelte';
-  import IdentityPicker from './IdentityPicker.svelte';
+  import TlsFields from './TlsFields.svelte';
   import SecretRefInput from './SecretRefInput.svelte';
   import ValidatedField from './ValidatedField.svelte';
   import { CaptureSession, groupToAsk } from './captureSession.svelte';
@@ -23,7 +25,6 @@
     FIELD_TYPES,
     saveCapture,
     sqlStatement,
-    type IdentityDto,
     type SecretDto,
     type SourceDto,
     type SqlColumn,
@@ -51,13 +52,11 @@
 
   let {
     source,
-    identities,
     secrets,
     readAt,
     onsaved,
   }: {
     source: SqlSource;
-    identities: IdentityDto[];
     secrets: SecretDto[];
     /** The commit the page read its sources at. A sample is saved against it, so its commit follows that one. */
     readAt?: string | null;
@@ -74,10 +73,6 @@
   /** How long Run waits for a worker before it gives up. */
   const RUN_SECS = 30;
 
-  let identity = $derived(
-    source.identity === undefined ? undefined : identities.find((i) => i.id === source.identity),
-  );
-
   // The statement follows every edit. Asked again once typing pauses, and an answer that arrives after a later
   // question is dropped.
   let statements: SqlStatementsResult | null = $state(null);
@@ -86,7 +81,7 @@
     const body = JSON.stringify(source);
     const at = ++asked;
     const timer = setTimeout(() => {
-      sqlStatement(JSON.parse(body) as SourceDto, identity)
+      sqlStatement(JSON.parse(body) as SourceDto)
         .then((res) => at === asked && (statements = res))
         .catch(() => at === asked && (statements = null));
     }, 300);
@@ -124,7 +119,9 @@
       source.database,
       source.user,
       source.tls,
-      source.identity,
+      source.certificate,
+      source.trustedAuthorities,
+      source.trustPublic,
     ]);
 
   async function startRun() {
@@ -144,7 +141,6 @@
     await run.start({
       group,
       source: $state.snapshot(source) as SourceDto,
-      identity: identity ? ($state.snapshot(identity) as IdentityDto) : undefined,
       maxMatches: RUN_ROWS,
       deadlineSecs: RUN_SECS,
     });
@@ -305,10 +301,10 @@
 </script>
 
 <div class="pair">
-  <Field field="host" label="host">
+  <Field required field="host" label="host">
     <input type="text" bind:value={source.host} placeholder="db.internal" />
   </Field>
-  <Field field="port" label="port" note={`Default ${defaultPort}.`}>
+  <Field optional field="port" label="port">
     <input
       type="number"
       min="1"
@@ -322,10 +318,10 @@
   </Field>
 </div>
 <div class="pair">
-  <Field field="database" label="database">
+  <Field required field="database" label="database">
     <input type="text" bind:value={source.database} />
   </Field>
-  <Field field="user" label="user">
+  <Field required field="user" label="user">
     {#snippet help()}
       A user that can only read. smeltr runs only a <code>SELECT</code> or a <code>WITH</code>, in a
       read-only transaction, but the database is what enforces it.
@@ -333,7 +329,7 @@
     <input type="text" bind:value={source.user} />
   </Field>
 </div>
-<Field field="password" label="password" group>
+<Field optional field="password" label="password" group>
   <SecretRefInput
     value={source.password}
     {secrets}
@@ -342,13 +338,16 @@
   />
 </Field>
 <Field field="tls" label="TLS">
-  {#snippet note()}Default <code>require</code>.{/snippet}
   <select
     value={source.tls ?? 'require'}
     onchange={(e) => {
       const v = e.currentTarget.value as 'require' | 'disable';
       source.tls = v === 'require' ? undefined : v;
-      if (v === 'disable') source.identity = undefined;
+      if (v === 'disable') {
+        source.certificate = undefined;
+        source.trustedAuthorities = undefined;
+        source.trustPublic = undefined;
+      }
     }}
   >
     <option value="require">require &mdash; encrypted, the server verified</option>
@@ -356,25 +355,23 @@
   </select>
 </Field>
 {#if (source.tls ?? 'require') === 'require'}
-  <IdentityPicker
-    value={source.identity}
-    {identities}
-    farEnd="source"
-    onchange={(v) => (source.identity = v)}
-  />
+  <Nested>
+    <TlsFields value={source} farEnd="source" />
+  </Nested>
 {/if}
 
-<Field field="query" label="query" group>
+<Field required field="query" label="query" group>
   {#snippet help()}
     Yours, run as written inside smeltr's own statement. Leave out <code>ORDER BY</code> and
-    <code>LIMIT</code>: the statement orders by the position and sets the batch size.
+    <code>LIMIT</code>: the statement orders by the position and sets the batch size. A
+    <code>SELECT</code> or a <code>WITH</code>, as the database accepts it.
   {/snippet}
-  {#snippet note()}A <code>SELECT</code> or a <code>WITH</code>, as the database accepts it.{/snippet}
   <ValidatedField
     bind:value={source.query}
     multiline
     rows={4}
     ariaLabel="query"
+    required
     paint={(text: string) => highlightSql(text, source.type)}
     placeholder="SELECT event_id, occurred_at, user_name FROM auth.events"
   />
@@ -382,10 +379,11 @@
 
 {#snippet statement()}
   {#if statements && !statements.ok}
-    <p class="banner bad">{errorText(statements.errors)}</p>
+    <InlineError callout message={errorText(statements.errors)} />
   {:else if !statements?.first}
     <p class="dim">Type a query.</p>
   {:else if !opened}
+    {#if statements.warning}<p class="banner callout warn">{statements.warning}</p>{/if}
     {#if statements.run}<pre class="statement">{@html highlightSql(
           statements.run.sql,
           source.type,
@@ -455,12 +453,12 @@
   </span>
 </div>
 {#if runError}
-  <div class="banner bad" role="alert">
+  <InlineError callout>
     <strong>Run failed.</strong>
     {runError}{#if failedRun?.worker}{' '}(worker {failedRun.worker}{source.user
         ? `, as ${source.user}`
         : ''}){/if}. The query and the connection stay as they were; fix and run again.
-  </div>
+  </InlineError>
 {/if}
 
 {#if opened}
@@ -469,8 +467,6 @@
       Cheapest first: each one down costs the database and the leader more, so the first that fits
       your data is the one to pick.
     {/snippet}
-    {#snippet note()}The first that fits your data is the one to pick: each one down costs the
-      database and the leader more.{/snippet}
     <span class="cheapest">cheapest first</span>
     <div class="modes" role="radiogroup">
       {#each MODES as m (m.type)}
@@ -502,14 +498,12 @@
                 <Field
                   field="mode.position"
                   label={mode.type === 'incrementing' ? 'incrementing column' : 'updated at column'}
+                  help={suggested &&
+                  'position' in suggested &&
+                  suggested.position[0] === mode.position[0]
+                    ? 'Picked for you from the columns the query returned.'
+                    : undefined}
                 >
-                  {#snippet note()}
-                    {suggested &&
-                    'position' in suggested &&
-                    suggested.position[0] === mode.position[0]
-                      ? 'suggested from the result'
-                      : 'an integer or a time'}
-                  {/snippet}
                   <select
                     value={mode.position[0] ?? ''}
                     onchange={(e) => (mode.position = positionFor(shown, e.currentTarget.value))}
@@ -528,10 +522,7 @@
                     {#snippet help()}
                       A batch can end between two rows with the same <code>{mode.position[0]}</code
                       >. This column puts them in a fixed order, so the next poll resumes exactly
-                      there.
-                    {/snippet}
-                    {#snippet note()}
-                      needed: {mode.position[0]} can repeat, it has no unique index
+                      there. This is needed because {mode.position[0]} can repeat: it has no unique index.
                     {/snippet}
                     <span class="controls">
                       <select
@@ -558,14 +549,10 @@
                   </Field>
                 {/if}
                 {#if positionIsTime}
-                  <Field field="mode.settleSecs" label="wait for late commits (seconds)">
+                  <Field optional field="mode.settleSecs" label="wait for late commits (seconds)">
                     {#snippet help()}
                       A poll reads only rows at least this far behind the database's clock, so a
                       transaction that commits late is still read.
-                    {/snippet}
-                    {#snippet note()}
-                      reads to now − {mode.settleSecs ?? DEFAULT_SETTLE_SECS} s, so late commits are still
-                      read
                     {/snippet}
                     <input
                       type="number"
@@ -581,14 +568,13 @@
                 {/if}
                 <Field field="mode.start" label="start from">
                   {#snippet help()}
-                    Where a source with no progress begins. One with progress resumes from it.
-                  {/snippet}
-                  {#snippet note()}
-                    {mode.start === 'from'
-                      ? positionIsTime
-                        ? 'a time with its offset'
-                        : 'an integer'
-                      : 'or the beginning, or a value you give'}
+                    Where a source with no progress begins: now, the beginning, or a value you give.
+                    A source with progress resumes from it.
+                    {#if mode.start === 'from'}
+                      {positionIsTime
+                        ? 'The value is a time with its offset.'
+                        : 'The value is an integer.'}
+                    {/if}
                   {/snippet}
                   <span class="controls">
                     <select
@@ -627,7 +613,7 @@
               {:else if source.mode.type === 'comparing'}
                 {@const mode = source.mode}
                 <Field field="mode.key" label="key">
-                  {#snippet note()}a column unique in the result{/snippet}
+                  {#snippet help()}Tells rows apart: a column no two rows share.{/snippet}
                   <select
                     value={mode.key[0] ?? ''}
                     onchange={(e) => (mode.key = [e.currentTarget.value])}
@@ -637,8 +623,7 @@
                   </select>
                 </Field>
               {/if}
-              <Field field="pollIntervalSecs" label="poll every (seconds)">
-                {#snippet note()}Default {LIMITS.pollIntervalSecs.default}.{/snippet}
+              <Field optional field="pollIntervalSecs" label="poll every (seconds)">
                 <input
                   type="number"
                   min={LIMITS.pollIntervalSecs.min}
@@ -660,7 +645,7 @@
   </Field>
 
   <Advanced label="Advanced" modified={source.batch !== undefined}>
-    <Field field="batch" label="batch" note="Default 5000.">
+    <Field optional field="batch" label="batch">
       {#snippet help()}
         The most rows one poll reads by a position, and the most a poll of every row may return.
       {/snippet}
@@ -678,7 +663,7 @@
   </Advanced>
 
   <Field field="fields" label="columns, as fields of the record" group>
-    {#snippet note()}Names and types come from the database. ▾ changes a type or turns a column off.{/snippet}
+    {#snippet help()}Names and types come from the database. ▾ changes a type or turns a column off.{/snippet}
     <div class="table">
       <table>
         <thead>
@@ -747,7 +732,7 @@
         and reads only the rows past the last one sent.
       </p>
     {:else}
-      <p class="banner warn">
+      <p class="banner callout warn">
         <strong>Each poll scans all of <code>{ran.verdict.relation}</code></strong>, about
         {ran.verdict.rows.toLocaleString()} rows. Index the position, or filter inside your query with
         <code>:last.{positionColumn}</code>.
@@ -860,26 +845,19 @@
 
   .banner {
     margin: 0;
+  }
+
+  .banner:not(.callout) {
     padding: 0.5rem 0.75rem;
     border-left: 3px solid var(--border);
     border-radius: var(--radius);
-    background: var(--field);
     font-size: var(--text-label);
+    background: var(--field);
   }
 
   .banner.good {
     border-left-color: var(--added);
     background: color-mix(in srgb, var(--added) 10%, var(--field));
-  }
-
-  .banner.warn {
-    border-left-color: var(--warn);
-    background: color-mix(in srgb, var(--warn) 14%, var(--field));
-  }
-
-  .banner.bad {
-    border-left-color: var(--error);
-    background: color-mix(in srgb, var(--error) 10%, var(--field));
   }
 
   .cheapest {

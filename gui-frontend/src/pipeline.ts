@@ -42,14 +42,15 @@ export type TypeKey =
 /** The named types in the order a picker lists them, the common ones first. */
 const PICKED_NAMED: NamedType[] = ['str', 'i64', 'f64', 'bool', 'variant'];
 
-/** A declared field's picker, one group per run between separators. `skip` is CSV's alone. */
-export function declaredTypeGroups(csv: boolean): TypeKey[][] {
+/** A declared field's picker, one group per run between separators. `skip` is a CSV column's or a key-value key's
+ * alone: a parser that skips. */
+export function declaredTypeGroups(skips: boolean): TypeKey[][] {
   const groups: TypeKey[][] = [
     [...PICKED_NAMED, 'datetime'],
     PICKED_NAMED.map((t) => `array of ${t}` as const),
     ['object', 'array of objects'],
   ];
-  return csv ? [...groups, ['skip']] : groups;
+  return skips ? [...groups, ['skip']] : groups;
 }
 
 /** An object's own field takes a named type only. */
@@ -135,12 +136,21 @@ export interface FieldSpec {
 /** `quote` is a single character, or `''` for none. `nextKey` is whether an
  * unquoted value runs to the separator before the next key; absent means on.
  * `splitDots` is whether a key the parser reads is split at its dots into a
- * path; absent means the format's own default (`SPLIT_DOTS_DEFAULT`). */
+ * path; absent means the format's own default (`SPLIT_DOTS_DEFAULT`).
+ * `rebuild` is whether the parse writes the field it reads back without what it
+ * skips; absent means off. */
 export type ParserKind = { splitDots?: boolean } & (
   | { type: 'json' }
   /** The columns are the step's own `declared` list, in order. */
-  | { type: 'csv'; delimiter: string }
-  | { type: 'keyValue'; pairSep: string; kvSep: string; quote: string; nextKey?: boolean }
+  | { type: 'csv'; delimiter: string; rebuild?: boolean }
+  | {
+      type: 'keyValue';
+      pairSep: string;
+      kvSep: string;
+      quote: string;
+      nextKey?: boolean;
+      rebuild?: boolean;
+    }
   | { type: 'grok'; patterns: string[]; customPatterns: { name: string; pattern: string }[] }
 );
 
@@ -226,9 +236,12 @@ export type Step =
   | (FunctionCommon & { type: 'code'; body: string })
   | (FunctionCommon & { type: 'drop'; condition: string })
   | (FunctionCommon & { type: 'rename'; pairs: { from: string; to: string }[] })
+  | (FunctionCommon & { type: 'remove'; fields: string[] })
   | (FunctionCommon & {
       type: 'parser';
       input: string;
+      /** The object the parse writes into; `$`, the record. */
+      into: string;
       kind: ParserKind;
       declared: FieldSpec[];
     })
@@ -255,6 +268,7 @@ export const STEP_TYPES = [
   'code',
   'drop',
   'rename',
+  'remove',
   'lookup',
   'unroll',
   'call',
@@ -307,6 +321,8 @@ export function newStep(type: StepType, parseInput = '_raw'): Step {
         disabled: false,
         pairs: [{ from: '', to: '' }],
       };
+    case 'remove':
+      return { type, id: nextId('remove'), filter: '', disabled: false, fields: [] };
     case 'parser':
       return {
         type,
@@ -314,6 +330,7 @@ export function newStep(type: StepType, parseInput = '_raw'): Step {
         filter: '',
         disabled: false,
         input: parseInput,
+        into: '$',
         kind: { type: 'json' },
         declared: [],
       };
@@ -358,12 +375,13 @@ function dataTypeDto(ty: DataTypeSpec): unknown {
 
 /** `quote` is `Option<u8>` on the wire and the loader requires exactly one
  * character when present, so an empty quote is omitted, not sent as `""`.
- * `nextKey` and `splitDots` are omitted at their defaults. */
+ * `nextKey`, `splitDots` and `rebuild` are omitted at their defaults. */
 function parserKindDto(kind: ParserKind): unknown {
   const { splitDots, ...base } = kind;
   const out: Record<string, unknown> = { ...base };
   if (base.type === 'keyValue' && base.quote === '') delete out.quote;
   if (base.type === 'keyValue' && base.nextKey !== false) delete out.nextKey;
+  if ((base.type === 'csv' || base.type === 'keyValue') && !base.rebuild) delete out.rebuild;
   if (splitDots !== undefined && splitDots !== SPLIT_DOTS_DEFAULT[kind.type]) {
     out.splitDots = splitDots;
   }
@@ -403,11 +421,14 @@ export function stepToDto(step: Step): unknown {
       return { type: 'drop', ...functionFields(step), condition: step.condition };
     case 'rename':
       return { type: 'rename', ...functionFields(step), pairs: step.pairs };
+    case 'remove':
+      return { type: 'remove', ...functionFields(step), fields: step.fields };
     case 'parser':
       return {
         type: 'parser',
         ...functionFields(step),
         input: step.input,
+        into: step.into.trim(),
         kind: parserKindDto(step.kind),
         declared: step.declared.map((f) => ({ name: f.name, type: dataTypeDto(f.ty) })),
       };
@@ -440,19 +461,10 @@ export function stepToDto(step: Step): unknown {
 }
 
 /** Every lookup table id any `lookup` step, at any depth, refers to. */
-export function collectLookupTables(steps: Step[]): string[] {
+function collectLookupTables(steps: Step[]): string[] {
   const found = new Set<string>();
-  const visit = (list: Step[]) => {
-    for (const s of list) {
-      if (s.type === 'lookup') {
-        if (s.table.trim() !== '') found.add(s.table.trim());
-      } else if (s.type === 'if') {
-        visit(s.then);
-        visit(s.else);
-      }
-    }
-  };
-  visit(steps);
+  for (const s of flatSteps(steps))
+    if (s.type === 'lookup' && s.table.trim() !== '') found.add(s.table.trim());
   return [...found];
 }
 
@@ -488,6 +500,7 @@ interface RawPipelineDto {
   id: string;
   name: string;
   steps: unknown[];
+  produces?: string[];
 }
 
 /**
@@ -506,12 +519,19 @@ export function buildFileConfig(
   otherPipelines: RawPipelineDto[],
   lookupTables: unknown[],
   grokPatterns: unknown[] = [],
+  schemas: unknown[] = [],
+  produces: string[] = [],
 ): unknown {
   const callerSteps = steps.map(stepToDto);
   const byId = new Map(otherPipelines.map((p) => [p.id, p]));
 
   const includedPipelines: RawPipelineDto[] = [
-    { id: pipelineId, name: pipelineName, steps: callerSteps },
+    {
+      id: pipelineId,
+      name: pipelineName,
+      steps: callerSteps,
+      ...(produces.length > 0 ? { produces } : {}),
+    },
   ];
   const visited = new Set([pipelineId]);
   const toVisit: string[] = [];
@@ -538,6 +558,7 @@ export function buildFileConfig(
     destinations: [],
     lookupTables,
     grokPatterns,
+    schemas,
     pipelines: includedPipelines,
   };
 }
@@ -545,7 +566,7 @@ export function buildFileConfig(
 /**
  * The step tree as it stood right before (`includeTarget: false`) or right
  * after (`true`) `target` ran; a per-step diff runs both through
- * `/api/preview` like a normal Run. `target` is the step the caller holds,
+ * `/api/areas/:area/preview/pipeline` like a normal Run. `target` is the step the caller holds,
  * matched by identity, so two steps that share an id cannot be confused.
  *
  * Everything from `target`'s position on is dropped, including the other
@@ -578,6 +599,46 @@ export function truncateSteps(steps: Step[], target: Step, includeTarget: boolea
   return null;
 }
 
+/** Every step in the order an author reads them: an `if` before its branches, `then` before `else`. */
+export function flatSteps(steps: Step[]): Step[] {
+  return steps.flatMap((s) =>
+    s.type === 'if' ? [s, ...flatSteps(s.then), ...flatSteps(s.else)] : [s],
+  );
+}
+
+/** The steps `truncateSteps` keeps, as `steps` holds them: those that have run
+ * at that point. An ancestor `if` of `target` is among them. */
+export function stepsRun(steps: Step[], target: Step, includeTarget: boolean): Set<Step> | null {
+  const cut = truncateSteps(steps, target, includeTarget);
+  if (cut === null) return null;
+  const run = new Set<Step>();
+  // Each list `truncateSteps` keeps is a prefix of the one it came from.
+  const pair = (whole: Step[], kept: Step[]) =>
+    kept.forEach((k, i) => {
+      const s = whole[i];
+      run.add(s);
+      if (s.type === 'if' && k.type === 'if') {
+        pair(s.then, k.then);
+        pair(s.else, k.else);
+      }
+    });
+  pair(steps, cut);
+  return run;
+}
+
+/** The object a parser's `into` names, as its header and its Advanced show it: none for `$`, where every parser
+ * writes unless told otherwise, nor for a blank box, which names nothing. */
+export function shownInto(into: string): string | null {
+  const name = into.trim();
+  return name === '' || name === '$' ? null : name;
+}
+
+/** A step as the records name it: its number in the step list, its type and
+ * what it does. */
+export function stepName(step: Step, number: number): string {
+  return `Step ${number} · ${STEP_LABELS[step.type]} · ${stepSummary(step)}`;
+}
+
 export function stepSummary(step: Step): string {
   switch (step.type) {
     case 'if':
@@ -596,8 +657,12 @@ export function stepSummary(step: Step): string {
       return step.pairs.length
         ? step.pairs.map((p) => `${p.from || '…'} → ${p.to || '…'}`).join(', ')
         : '(no pairs)';
+    case 'remove':
+      return step.fields.length
+        ? `${step.fields.length} ${step.fields.length === 1 ? 'name' : 'names'}: ${step.fields.join(', ')}`
+        : '(no names)';
     case 'parser':
-      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
+      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
     case 'lookup':
       return `${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
     case 'unroll':
@@ -752,7 +817,11 @@ function dtoToParserFormat(o: Record<string, unknown>, where: string): ParserKin
   const t = o.type;
   if (t === 'json') return { type: 'json' };
   if (t === 'csv') {
-    return { type: 'csv', delimiter: str(o, 'delimiter', where) };
+    return {
+      type: 'csv',
+      delimiter: str(o, 'delimiter', where),
+      ...(o.rebuild === true && { rebuild: true }),
+    };
   }
   if (t === 'keyValue') {
     return {
@@ -761,6 +830,7 @@ function dtoToParserFormat(o: Record<string, unknown>, where: string): ParserKin
       kvSep: str(o, 'kvSep', where),
       quote: optStr(o, 'quote'),
       ...(o.nextKey === false && { nextKey: false }),
+      ...(o.rebuild === true && { rebuild: true }),
     };
   }
   if (t === 'grok') {
@@ -828,12 +898,25 @@ function dtoToStep(dto: unknown, where: string): Step {
         }),
       };
     }
+    case 'remove': {
+      const id = str(o, 'id', where);
+      return {
+        type: 'remove',
+        ...common(id),
+        fields: arr(o, 'fields', where).map((f) => {
+          if (typeof f !== 'string')
+            throw new PipelineJsonError(`${where}: expected each of "fields" to be a string`);
+          return f;
+        }),
+      };
+    }
     case 'parser': {
       const id = str(o, 'id', where);
       return {
         type: 'parser',
         ...common(id),
         input: str(o, 'input', where),
+        into: typeof o.into === 'string' ? o.into : '$',
         kind: dtoToParserKind(o.kind, `${where}.kind`),
         declared: optArr(o, 'declared').map((f) => {
           const fo = rec(f, `${where}.declared`);
@@ -908,6 +991,7 @@ export function stepsFromDto(dtoSteps: unknown[]): Step[] {
 export function parsePipelineDtoJson(text: string): {
   pipelineName: string;
   steps: Step[];
+  produces: string[];
 } {
   let doc: unknown;
   try {
@@ -919,6 +1003,7 @@ export function parsePipelineDtoJson(text: string): {
   return {
     pipelineName: str(root, 'name', '(root)'),
     steps: stepsFromDto(arr(root, 'steps', '(root)')),
+    produces: 'produces' in root ? arr(root, 'produces', '(root)').map(String) : [],
   };
 }
 
@@ -947,18 +1032,7 @@ export interface PreviewError {
 
 /** Every step, by its own id, at any depth. */
 function stepsById(steps: Step[]): Map<string, Step> {
-  const found = new Map<string, Step>();
-  const visit = (list: Step[]) => {
-    for (const step of list) {
-      found.set(step.id, step);
-      if (step.type === 'if') {
-        visit(step.then);
-        visit(step.else);
-      }
-    }
-  };
-  visit(steps);
-  return found;
+  return new Map(flatSteps(steps).map((s) => [s.id, s]));
 }
 
 /** Errors grouped by the step they belong to, found by id, keeping each
@@ -984,27 +1058,17 @@ export function errorsByStep(steps: Step[], errors: PreviewError[]): Map<Step, P
   return result;
 }
 
-/** The steps `byStep` names, in the order the pipeline lists them rather than
- * the order errors happened to arrive in -- an `if` before its branches, same
- * as `stepsById` -- so "the first one" means the first an author would
- * scroll past, not whichever the API answered first. */
+/** The steps `byStep` names, in `flatSteps`'s order rather than the order
+ * errors happened to arrive in, so "the first one" means the first an author
+ * would scroll past, not whichever the API answered first. */
 export function orderedStepErrors(
   steps: Step[],
   byStep: Map<Step, PreviewError[]>,
 ): { step: Step; messages: string[] }[] {
-  const found: { step: Step; messages: string[] }[] = [];
-  const visit = (list: Step[]) => {
-    for (const step of list) {
-      const errs = byStep.get(step);
-      if (errs) found.push({ step, messages: errs.map((e) => e.message) });
-      if (step.type === 'if') {
-        visit(step.then);
-        visit(step.else);
-      }
-    }
-  };
-  visit(steps);
-  return found;
+  return flatSteps(steps).flatMap((step) => {
+    const errs = byStep.get(step);
+    return errs ? [{ step, messages: errs.map((e) => e.message) }] : [];
+  });
 }
 
 export const STEP_LABELS: Record<StepType, string> = {
@@ -1013,6 +1077,7 @@ export const STEP_LABELS: Record<StepType, string> = {
   code: 'Code',
   drop: 'Drop',
   rename: 'Rename',
+  remove: 'Remove',
   lookup: 'Lookup',
   unroll: 'Unroll',
   call: 'Call',
@@ -1027,6 +1092,7 @@ export const STEP_SUMMARIES: Record<StepType, string> = {
   code: 'Runs a program on each record.',
   drop: 'Removes each record where a condition is true.',
   rename: 'Moves fields to new names.',
+  remove: 'Takes fields out of each record.',
   lookup: 'Adds fields from the rows of a lookup table that match a value.',
   unroll: 'Turns each item of an array field into its own record.',
   call: "Runs another pipeline's steps in place.",

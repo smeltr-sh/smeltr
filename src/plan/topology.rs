@@ -20,9 +20,9 @@ use crate::expr::ir::{Ir, IrKind, flatten};
 use crate::format::encoding::Encoding;
 use crate::metrics::{MetricsHandle, MetricsSourceConfig};
 use crate::ops::BinOp;
+use crate::plan::compile::parse;
+use crate::plan::compile::{Plan, compile, ingest_fields};
 use crate::plan::config::{Answer, CompileError, OnException, Payload, PipelineConfig};
-use crate::plan::plan::parse;
-use crate::plan::plan::{Plan, compile, ingest_fields};
 use crate::plan::resolve::{ResourceBuilder, SymbolTable, resolve};
 
 // -- what a record carries ---------------------------------------------------
@@ -122,6 +122,8 @@ pub struct SourceMeta {
     kind: &'static str,
     record: RecordFields,
     source: &'static [(&'static str, DataType)],
+    /// How a byte source's payload becomes `_raw`'s text (`format::encoding`).
+    encoding: Encoding,
 }
 
 /// The fields of a source's record, each with its type, in slot order. A source's own kinds declare theirs in a
@@ -396,6 +398,7 @@ impl SourceMeta {
         kind: "kafka",
         record: PAYLOAD_RECORD,
         source: KAFKA_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an Event Hubs record carries: a Kafka record's fields, with the event hub as its topic.
@@ -403,6 +406,7 @@ impl SourceMeta {
         kind: "eventHubs",
         record: PAYLOAD_RECORD,
         source: KAFKA_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a metrics record carries: its source's name and kind, and the topic it is stamped with.
@@ -410,6 +414,7 @@ impl SourceMeta {
         kind: "metrics",
         record: PAYLOAD_RECORD,
         source: METRICS_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a logs record carries, which is the same.
@@ -417,6 +422,7 @@ impl SourceMeta {
         kind: "logs",
         record: PAYLOAD_RECORD,
         source: LOGS_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an SQS/S3 record carries: the object it was read from, and its record number there.
@@ -424,6 +430,7 @@ impl SourceMeta {
         kind: "s3Sqs",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a Listing/S3 record carries: the same as an SQS/S3 record.
@@ -431,6 +438,7 @@ impl SourceMeta {
         kind: "s3List",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a Listing/GCS record carries: the same as an SQS/S3 record.
@@ -438,6 +446,7 @@ impl SourceMeta {
         kind: "gcsList",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a Listing/Azure Blob record carries: the same, with the container as its bucket.
@@ -445,6 +454,7 @@ impl SourceMeta {
         kind: "azureBlobList",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an SFTP record carries: the same, with the directory as its bucket and the path under it as its key.
@@ -452,6 +462,7 @@ impl SourceMeta {
         kind: "sftp",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a Queue/Azure Blob record carries: the same, with the container as its bucket.
@@ -459,6 +470,7 @@ impl SourceMeta {
         kind: "azureBlobQueue",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a Pub/Sub/GCS record carries: the same.
@@ -466,6 +478,7 @@ impl SourceMeta {
         kind: "gcsPubSub",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an HTTP API record carries: the address of the page it was read from.
@@ -473,6 +486,7 @@ impl SourceMeta {
         kind: "httpApi",
         record: PAYLOAD_RECORD,
         source: API_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an Okta System Log record carries: the same.
@@ -480,6 +494,7 @@ impl SourceMeta {
         kind: "oktaLogs",
         record: PAYLOAD_RECORD,
         source: API_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a PostgreSQL source's record carries before it declares its fields, which every one does.
@@ -487,6 +502,7 @@ impl SourceMeta {
         kind: "postgres",
         record: PAYLOAD_RECORD,
         source: SQL_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a MySQL or MariaDB source's record carries before it declares its fields, which every one does.
@@ -494,6 +510,7 @@ impl SourceMeta {
         kind: "mysql",
         record: PAYLOAD_RECORD,
         source: SQL_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an HTTP receiver's record carries: the address of the sender that delivered it.
@@ -501,6 +518,7 @@ impl SourceMeta {
         kind: "httpReceiver",
         record: PAYLOAD_RECORD,
         source: RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a HEC receiver's record carries: its sender's address, and what the sender filed its event under.
@@ -508,6 +526,7 @@ impl SourceMeta {
         kind: "hecReceiver",
         record: PAYLOAD_RECORD,
         source: HEC_RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an S2S receiver's record carries: its forwarder's address, and what the forwarder filed its event under.
@@ -515,6 +534,7 @@ impl SourceMeta {
         kind: "s2sReceiver",
         record: PAYLOAD_RECORD,
         source: HEC_RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an Elasticsearch receiver's record carries: a document, its sender's address, and what its action named.
@@ -522,6 +542,7 @@ impl SourceMeta {
         kind: "elasticReceiver",
         record: PAYLOAD_RECORD,
         source: ELASTIC_RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a syslog receiver's record carries: a message, and its sender's address.
@@ -529,6 +550,7 @@ impl SourceMeta {
         kind: "syslogReceiver",
         record: PAYLOAD_RECORD,
         source: RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an OTLP receiver of logs carries: a log record, its sender's address, and its resource and scope.
@@ -536,6 +558,7 @@ impl SourceMeta {
         kind: "otlpReceiver",
         record: OTLP_LOG,
         source: OTLP_RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an OTLP receiver of traces carries: a span, its sender's address, and its resource and scope.
@@ -543,6 +566,7 @@ impl SourceMeta {
         kind: "otlpReceiver",
         record: OTLP_SPAN,
         source: OTLP_RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an OTLP receiver of `signal` carries: a log record, a metric's data point or a span, its sender's address,
@@ -555,6 +579,7 @@ impl SourceMeta {
                 kind: "otlpReceiver",
                 record: otlp_metric_point(),
                 source: OTLP_RECEIVER_FIELDS,
+                encoding: Encoding::Auto,
             },
             Signal::Traces => SourceMeta::OTLP_TRACES,
         }
@@ -567,6 +592,7 @@ impl SourceMeta {
             kind: "prometheusReceiver",
             record: prometheus_record(),
             source: PROMETHEUS_RECEIVER_FIELDS,
+            encoding: Encoding::Auto,
         }
     }
 
@@ -605,6 +631,7 @@ impl SourceMeta {
         kind: "",
         record: PAYLOAD_RECORD,
         source: &[(SOURCE_BYTES, DataType::Bytes)],
+        encoding: Encoding::Auto,
     };
 
     /// This meta with `record` as its record's fields in place of `_raw`, and without `__source.bytes`. A field's name is a path, as a pipeline
@@ -710,15 +737,23 @@ impl SourceMeta {
     }
 
     /// This meta for a source that declares `encoding`. A source that reads bytes and declares `none` decodes
-    /// nothing, so its record has no `_raw`.
+    /// nothing, so its record has no `_raw`. A source that reads no bytes has nothing to decode, so its meta keeps
+    /// none.
     pub fn with_encoding(self, encoding: Encoding) -> SourceMeta {
         match encoding {
-            Encoding::None if self.reads_bytes() => SourceMeta {
+            _ if !self.reads_bytes() => self,
+            Encoding::None => SourceMeta {
                 record: std::borrow::Cow::Borrowed(&[]),
+                encoding,
                 ..self
             },
-            _ => self,
+            _ => SourceMeta { encoding, ..self },
         }
+    }
+
+    /// How this source's payload becomes `_raw`'s text.
+    pub fn encoding(&self) -> Encoding {
+        self.encoding
     }
 
     /// Whether this source's record is its payload decoded, `_raw`: it reads bytes and decodes them.
@@ -1160,6 +1195,18 @@ pub enum SourceKind {
 }
 
 impl SourceKind {
+    /// The TLS this source speaks, where it speaks any of its own.
+    pub fn tls(&self) -> Option<&Tls> {
+        match self {
+            SourceKind::Kafka(k) => k.tls.as_ref(),
+            SourceKind::Objects(o) => o.tls.as_ref(),
+            SourceKind::Api(a) => a.tls.as_ref(),
+            SourceKind::Receiver(r) => r.tls.as_ref(),
+            SourceKind::Sql(c) => c.database.tls(),
+            SourceKind::Metrics(_) | SourceKind::Logs(_) => None,
+        }
+    }
+
     /// Sets a Kafka source's `fetchBytes`. Other kinds have none.
     pub fn set_fetch_bytes(&mut self, bytes: usize) {
         if let SourceKind::Kafka(k) = self {
@@ -1302,32 +1349,28 @@ impl SecretRef {
     }
 }
 
-/// One identity a worker connects out under: the certificate it shows a source or a destination, the credential
-/// holding that certificate's private key, and the authorities it verifies that far end against.
+/// The TLS a connector speaks: the certificate it presents, an entry of the leader's certificate list by name, and
+/// the authorities it verifies the far end by.
 ///
 /// A far end that asks for no certificate needs only the authorities, and one served from a public root needs only
-/// the certificate, so either half may be absent -- but not both, which `config_file::load` refuses. `authorities`
-/// absent means the platform's own roots.
-///
-/// A certificate is public and travels in the bundle; its key is named, like every other credential, and resolved
-/// when the client is built.
-///
-/// Held behind an `Arc` wherever a connector names one: a deployment usually speaks one organization's PKI, so the
-/// same certificate and the same authorities are named by many connectors and copied into none of them.
+/// the certificate, so either may be absent -- but not both, which `config_file::load` refuses. `authorities` absent
+/// means the platform's own roots. The worker is sent the entry's newest chain and private key together, and the
+/// client is built from them.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Identity {
-    /// What the bundle calls it, for a message an operator reads.
-    pub id: String,
-    /// PEM, leaf first, with any intermediates after it.
+pub struct Tls {
+    /// The connector it belongs to, for a message an operator reads: `source "in"`.
+    pub of: String,
     pub certificate: Option<String>,
-    pub key: Option<SecretRef>,
     /// PEM, one or more roots.
     pub authorities: Option<String>,
     /// Whether a client under it also trusts the public roots (`io::trust`). A receiver never does.
     pub trust_public: bool,
+    /// Which side presents `certificate`, which is what its leaf has to permit: a receiver to its senders, every
+    /// other connector connecting out.
+    pub side: crate::io::trust::Side,
 }
 
-/// A Confluent Schema Registry: where it is, and who signs in to it. Reached under its connector's identity.
+/// A Confluent Schema Registry: where it is, and who signs in to it. Reached under its connector's TLS.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SchemaRegistry {
     pub url: String,
@@ -1373,8 +1416,8 @@ pub struct KafkaSourceConfig {
     pub brokers: String,
     pub topics: Vec<String>,
     pub group_id: String,
-    /// What this consumer connects under. `None` is no certificate and the platform's own roots.
-    pub identity: Option<std::sync::Arc<Identity>>,
+    /// The TLS this consumer speaks. `None` is no certificate and the platform's own roots.
+    pub tls: Option<Tls>,
     /// Where it reads from. A committed offset is read on from, unless it descends from another `start` and a
     /// deployed commit older than this one's: then the partition moves here once (`io::kafka::client::resolve_starts`).
     pub start: StartPosition,
@@ -1511,6 +1554,21 @@ pub fn take_zone(url: &mut String, zone_urls: &mut std::collections::BTreeMap<St
 }
 
 impl DestinationKind {
+    /// The TLS this destination speaks, where it speaks any of its own.
+    pub fn tls(&self) -> Option<&Tls> {
+        match self {
+            DestinationKind::Kafka(k) => k.tls.as_ref(),
+            DestinationKind::Elasticsearch(e) => e.tls.as_ref(),
+            DestinationKind::SplunkHec(h) => h.tls.as_ref(),
+            DestinationKind::Objects(o) => o.tls.as_ref(),
+            DestinationKind::Http(h) => h.tls.as_ref(),
+            DestinationKind::Prometheus(p) => p.tls.as_ref(),
+            DestinationKind::LogAnalytics(l) => l.http.tls.as_ref(),
+            DestinationKind::Iceberg(i) => i.tls.as_ref(),
+            DestinationKind::Delta(d) => d.tls.as_ref(),
+        }
+    }
+
     /// Sends to `zone`'s own address where the destination names one, in place of its `url`. `None` (a worker that
     /// names no zone) keeps `url`. Either way the other zones' addresses are dropped: this worker uses none of them.
     pub fn take_zone(&mut self, zone: Option<&str>) {
@@ -1618,6 +1676,15 @@ impl DestinationKind {
         }
     }
 
+    /// Whether the destination writes files, and so acknowledges a batch only once the file holding it is
+    /// committed: when it holds most of its buffer, or its interval passes.
+    pub fn writes_files(&self) -> bool {
+        matches!(
+            self,
+            DestinationKind::Objects(_) | DestinationKind::Iceberg(_) | DestinationKind::Delta(_)
+        )
+    }
+
     /// The destination's `bufferBytes`: all it holds of what it has not yet delivered, egress's queue and, for Kafka,
     /// librdkafka's own queue together.
     pub fn buffer_bytes(&self) -> usize {
@@ -1690,23 +1757,25 @@ pub struct ElasticDestinationConfig {
     pub zone_urls: std::collections::BTreeMap<String, String>,
     /// Used when a row has no live `__destination.index`.
     pub default_index: String,
-    /// The credential holding a complete `Authorization` header value (`ApiKey <base64>` or `Basic <base64>`).
-    /// `None` for a cluster with security disabled.
+    /// The credential holding the API key, or a complete `Authorization` header value (`io::elastic::authorization`).
+    /// `None` for a cluster with security disabled, or one signed in to as `basic`.
     pub auth: Option<SecretRef>,
-    /// What this client connects under. `None` is no certificate and the platform's own roots -- which an
+    /// Basic auth: the user, and where the password lives. Never beside `auth`.
+    pub basic: Option<(String, SecretRef)>,
+    /// The TLS this client speaks. `None` is no certificate and the platform's own roots -- which an
     /// internally-issued server certificate will not be under.
-    pub identity: Option<std::sync::Arc<Identity>>,
+    pub tls: Option<Tls>,
     /// Where each document's `_id` comes from, and therefore what a re-send after a crash does. See `DocIdPolicy`.
     pub doc_id: DocIdPolicy,
     /// How many bulk requests this destination starts with outstanding, each on its own connection.
     ///
-    /// Where the loop begins, not where it stays: see `max_in_flight` for where it stops, and
-    /// `io::pipelined::Pool::note_outcome` for what moves it.
+    /// Where it begins, not where it stays: see `max_in_flight` for where it stops, and `egress::pacing` for what
+    /// moves it.
     ///
     /// Concurrency is what buys throughput here, because a bulk round trip costs about the same whatever the batch
     /// carries -- so a worker with one request outstanding cannot go faster than `1/round-trip` no matter what else is
     /// tuned. The ceiling is the cluster's own write capacity, past which it answers 429 and everything queues anyway,
-    /// which is the signal the loop reads rather than a figure anyone has to guess.
+    /// which is the signal pacing reads rather than a figure anyone has to guess.
     pub in_flight: usize,
     /// Bytes of documents one bulk request may carry before the destination sends early.
     pub max_bulk_bytes: usize,
@@ -1767,8 +1836,8 @@ pub struct SplunkHecDestinationConfig {
     /// What each event is: the record, one field's text, or, on the raw endpoint, the source's bytes.
     pub payload: Payload,
     pub acknowledgement: Acknowledgement,
-    /// What this client connects under. `None` is no certificate and the platform's own roots.
-    pub identity: Option<std::sync::Arc<Identity>>,
+    /// The TLS this client speaks. `None` is no certificate and the platform's own roots.
+    pub tls: Option<Tls>,
     /// How many requests this destination starts with outstanding. See `ElasticDestinationConfig::in_flight`.
     pub in_flight: usize,
     /// Bytes of events one request may carry before the destination sends early.
@@ -1803,8 +1872,8 @@ pub struct IcebergDestinationConfig {
     /// Storage credentials of its own. `None` uses what the catalog vends.
     pub storage: Option<S3Access>,
     pub compression: Compression,
-    /// What this client connects under, to the catalog and to storage.
-    pub identity: Option<std::sync::Arc<Identity>>,
+    /// The TLS this client speaks, to the catalog and to storage.
+    pub tls: Option<Tls>,
     /// Parts of one file uploading at once.
     pub in_flight: usize,
     /// The largest data file, compressed.
@@ -1833,8 +1902,8 @@ pub struct DeltaDestinationConfig {
     /// How the bucket is reached and signed for.
     pub storage: S3Access,
     pub compression: Compression,
-    /// What this client connects under.
-    pub identity: Option<std::sync::Arc<Identity>>,
+    /// The TLS this client speaks.
+    pub tls: Option<Tls>,
     /// Parts of one file uploading at once.
     pub in_flight: usize,
     /// The largest data file, compressed.
@@ -1894,8 +1963,8 @@ pub struct HttpDestinationConfig {
     pub headers: Vec<(String, String)>,
     /// Headers whose values are credentials: the header's name, and where its value lives.
     pub credentials: Vec<(String, SecretRef)>,
-    /// What this client connects under. `None` is no certificate and the platform's own roots.
-    pub identity: Option<std::sync::Arc<Identity>>,
+    /// The TLS this client speaks. `None` is no certificate and the platform's own roots.
+    pub tls: Option<Tls>,
     /// How many requests this destination starts with outstanding. See `ElasticDestinationConfig::in_flight`.
     pub in_flight: usize,
     /// Bytes of rows one request may carry, before compression, before the destination sends early.
@@ -1950,8 +2019,8 @@ pub struct PrometheusDestinationConfig {
     pub headers: Vec<(String, String)>,
     /// Headers whose values are credentials: the header's name, and where its value lives.
     pub credentials: Vec<(String, SecretRef)>,
-    /// What this client connects under. `None` is no certificate and the platform's own roots.
-    pub identity: Option<std::sync::Arc<Identity>>,
+    /// The TLS this client speaks. `None` is no certificate and the platform's own roots.
+    pub tls: Option<Tls>,
     /// Bytes of samples one request may carry, before compression, before the destination sends early: each sample
     /// counted with its labels, which a request sends once per series, so a request is smaller.
     pub max_request_bytes: usize,
@@ -1999,8 +2068,8 @@ pub struct ObjectsDestinationConfig {
     pub compression: Compression,
     /// One of the cloud's own classes. `None` leaves the bucket's default.
     pub storage_class: Option<String>,
-    /// What this client connects under. `None` is no certificate and the platform's own roots.
-    pub identity: Option<std::sync::Arc<Identity>>,
+    /// The TLS this client speaks. `None` is no certificate and the platform's own roots.
+    pub tls: Option<Tls>,
     /// Parts of one file uploading at once.
     pub in_flight: usize,
     /// The largest file this destination puts in its bucket, compressed; one is finished there, even within one batch.
@@ -2053,12 +2122,12 @@ pub struct S3Access {
 pub struct ReceiverConfig {
     pub receiver: Receiver,
     pub listen: std::net::SocketAddr,
-    /// The tokens a sender may present, each by its name. Empty is a receiver that admits whoever its identity's
-    /// authorities vouch for.
+    /// The tokens a sender may present, each by its name. Empty is a receiver that admits whoever its authorities
+    /// vouch for.
     pub tokens: Vec<(String, SecretRef)>,
-    /// What it serves TLS under: its certificate and key, and, with `authorities`, the roots a sender's own
-    /// certificate must chain to. `None` serves plain TCP.
-    pub identity: Option<std::sync::Arc<Identity>>,
+    /// What it serves: its certificate and key, and, with `authorities`, the roots a sender's own certificate must
+    /// chain to. `None` serves plain TCP.
+    pub tls: Option<Tls>,
     /// The largest request body it reads. A larger one is refused whole.
     pub max_request_bytes: usize,
 }
@@ -2213,11 +2282,11 @@ impl SqlDatabase {
         }
     }
 
-    /// The identity it connects under, if it names one.
-    pub fn identity(&self) -> Option<&std::sync::Arc<Identity>> {
+    /// The TLS it speaks, where it speaks any of its own.
+    pub fn tls(&self) -> Option<&Tls> {
         match self {
-            SqlDatabase::Postgres(p) => p.identity.as_ref(),
-            SqlDatabase::MySql(m) => m.identity.as_ref(),
+            SqlDatabase::Postgres(p) => p.tls.as_ref(),
+            SqlDatabase::MySql(m) => m.tls.as_ref(),
         }
     }
 
@@ -2236,8 +2305,8 @@ impl SqlDatabase {
 #[derive(Clone, Debug)]
 pub struct ApiSourceConfig {
     pub api: Api,
-    /// What this client connects under. `None` is no certificate and the platform's own roots.
-    pub identity: Option<std::sync::Arc<Identity>>,
+    /// The TLS this client speaks. `None` is no certificate and the platform's own roots.
+    pub tls: Option<Tls>,
     /// How long after a poll starts the next one does.
     pub poll_interval: std::time::Duration,
 }
@@ -2376,8 +2445,8 @@ pub struct Since {
 #[derive(Clone, Debug)]
 pub struct ObjectSourceConfig {
     pub queue: ObjectQueue,
-    /// What this client connects under. `None` is no certificate and the platform's own roots.
-    pub identity: Option<std::sync::Arc<Identity>>,
+    /// The TLS this client speaks. `None` is no certificate and the platform's own roots.
+    pub tls: Option<Tls>,
     /// How an object's bytes, decompressed, become records.
     pub framing: Framing,
     /// How a record's bytes become text.
@@ -2658,6 +2727,28 @@ impl Compression {
     }
 }
 
+/// How many brokers hold a Kafka batch before it counts as delivered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Acks {
+    /// Delivered once sent.
+    None,
+    /// Once the partition's leader has written it.
+    One,
+    /// Once every in-sync replica has written it.
+    All,
+}
+
+impl Acks {
+    /// librdkafka's `acks` value.
+    pub fn as_property(self) -> &'static str {
+        match self {
+            Acks::None => "0",
+            Acks::One => "1",
+            Acks::All => "all",
+        }
+    }
+}
+
 /// Which HEC endpoint a destination sends to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Endpoint {
@@ -2751,14 +2842,15 @@ pub struct KafkaDestinationConfig {
     /// What each message's value is.
     pub payload: Payload,
     pub compression: Compression,
+    pub acks: Acks,
     /// How long one batch may take to deliver before it is a stall.
     pub stall_after: std::time::Duration,
     pub brokers: String,
     /// Used when a row has no live `__destination.topic` (see the design doc's "Pipeline-set config variables") — the
     /// destination's own default, not a per-row override.
     pub default_topic: String,
-    /// What this producer connects under. `None` is no certificate and the platform's own roots.
-    pub identity: Option<std::sync::Arc<Identity>>,
+    /// The TLS this producer speaks. `None` is no certificate and the platform's own roots.
+    pub tls: Option<Tls>,
     /// The most one worker may hold for this destination, in all: half in the egress queue and half in the
     /// producer's own queue, since each keeps its copy of a batch until the broker acknowledges it. An upper bound
     /// rather than the exact figure -- see `config_file::dto::BufferBytes`.
@@ -2856,9 +2948,8 @@ pub struct TopologyConfig {
     /// missing is a startup failure" checkable before a deployment is torn down: the answer depends only on the
     /// bundle, so a worker can ask it of a new commit while still running the old one.
     pub named_secrets: Vec<NamedSecret>,
-    /// Every identity a connector of this bundle connects under, once each and in the order they are first named:
-    /// the ones whose certificate and key a connection depends on.
-    pub identities: Vec<std::sync::Arc<Identity>>,
+    /// Every certificate this bundle names, read from the bundle at load as `named_secrets` is.
+    pub named_certificates: Vec<NamedCertificate>,
 }
 
 impl TopologyConfig {
@@ -2881,22 +2972,40 @@ pub struct NamedSecret {
     pub what: String,
 }
 
+/// One certificate a bundle names but does not carry: the entry of the leader's list, and the connector presenting
+/// it. The worker runs the entry's newest version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedCertificate {
+    pub name: String,
+    /// What to say when it is missing, e.g. `source "in"`.
+    pub what: String,
+}
+
 /// A variable set to the empty string counts as unset, matching `startup_config`: that is what an unset
 /// docker-compose variable expands to, and an empty credential authenticates as nobody.
 fn usable(read: Option<String>) -> Option<String> {
     read.filter(|v| !v.is_empty())
 }
 
-/// The credentials a worker can obtain: its own environment, plus what the leader has sent it. Keyed by name *and*
-/// version, because a rotation in flight means holding the version that is running alongside the one a bundle is
-/// about to quote.
+/// The credentials a worker can obtain: its own environment, plus what the leader has sent it. Secrets are keyed by
+/// name *and* version, because a rotation in flight means holding the version that is running alongside the one a
+/// bundle is about to quote. Certificates are keyed by name: a worker runs the newest version the leader has sent.
 #[derive(Clone, Default)]
 pub struct HeldSecrets {
     stored: std::collections::BTreeMap<(String, i64), String>,
+    certificates: std::collections::BTreeMap<String, HeldCertificate>,
+}
+
+/// The newest version of a certificate entry the leader has sent: its chain, PEM, and its private key.
+#[derive(Clone)]
+struct HeldCertificate {
+    version: i64,
+    chain: String,
+    key: String,
 }
 
 /// Names and versions, never values. This holds every credential the deployment uses, so one `{:?}` reaching a
-/// panic message or a log line would be all of them at once -- the reason `leader::secrets::SealingKey` derives
+/// panic message or a log line would be all of them at once -- the reason `leader::secrets::EncryptionKey` derives
 /// nothing at all.
 impl std::fmt::Debug for HeldSecrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2905,48 +3014,94 @@ impl std::fmt::Debug for HeldSecrets {
 }
 
 impl HeldSecrets {
-    /// Replaces what the leader has sent. Each entry is a name, a version, and that version's value.
+    /// Replaces what the leader has sent with plain values: each entry is a name, a version, and that version's value.
     pub fn set_stored(&mut self, values: impl IntoIterator<Item = (String, i64, String)>) {
         self.stored = values.into_iter().map(|(n, v, value)| ((n, v), value)).collect();
     }
 
-    /// The name, version and value of every credential in `wanted` that this worker holds, for handing to the
+    /// Every credential in `wanted` and every certificate in `presented` that this worker holds, for handing to the
     /// process that will use them. The one place a value is read back out: it crosses to a runtime on a private
-    /// pipe and nowhere else, and a runtime is given what its own bundle quotes rather than everything this
-    /// worker has ever been sent.
-    pub fn deliveries_for(&self, wanted: &[NamedSecret]) -> Vec<(String, i64, String)> {
-        self.stored
+    /// pipe and nowhere else, and a runtime is given what its own bundle quotes rather than everything this worker
+    /// has ever been sent.
+    pub fn deliveries_for(
+        &self,
+        wanted: &[NamedSecret],
+        presented: &[NamedCertificate],
+    ) -> Vec<crate::heartbeat::SecretDelivery> {
+        let secrets = self
+            .stored
             .iter()
             .filter(|((name, version), _)| {
                 wanted.iter().any(|s| {
                     matches!(&s.reference, SecretRef::LeaderStored { name: n, version: v } if n == name && v == version)
                 })
             })
-            .map(|((name, version), value)| (name.clone(), *version, value.clone()))
-            .collect()
+            .map(|((name, version), value)| crate::heartbeat::SecretDelivery {
+                name: name.clone(),
+                version: *version,
+                value: value.clone(),
+                chain: None,
+            });
+        let certificates = self
+            .certificates
+            .iter()
+            .filter(|(name, _)| presented.iter().any(|c| &c.name == *name))
+            .map(|(name, held)| crate::heartbeat::SecretDelivery {
+                name: name.clone(),
+                version: held.version,
+                value: held.key.clone(),
+                chain: Some(held.chain.clone()),
+            });
+        secrets.chain(certificates).collect()
     }
 
     /// Adds what the leader has just sent, keeping everything else. The leader answers with what this worker lacks,
-    /// so an empty delivery means nothing changed rather than that nothing is held.
-    pub fn take(&mut self, delivered: impl IntoIterator<Item = crate::heartbeat::SecretDelivery>) {
+    /// so an empty delivery means nothing changed rather than that nothing is held. A delivery with a chain is a
+    /// certificate, kept by name at its newest version; the names whose version this replaced are answered, since
+    /// what presents them has to be built again.
+    pub fn take(&mut self, delivered: impl IntoIterator<Item = crate::heartbeat::SecretDelivery>) -> Vec<String> {
+        let mut replaced = Vec::new();
         for d in delivered {
-            self.stored.insert((d.name, d.version), d.value);
+            let Some(chain) = d.chain else {
+                self.stored.insert((d.name, d.version), d.value);
+                continue;
+            };
+            let version = self.certificates.get(&d.name).map(|c| c.version);
+            if version.is_some_and(|v| v >= d.version) {
+                continue;
+            }
+            if version.is_some() {
+                replaced.push(d.name.clone());
+            }
+            self.certificates.insert(
+                d.name,
+                HeldCertificate {
+                    version: d.version,
+                    chain,
+                    key: d.value,
+                },
+            );
         }
+        replaced
     }
 
-    /// Drops everything `wanted` does not name -- what a worker does once a deployment has loaded, so the versions
-    /// it carries are the ones something runs on rather than every one it has ever been sent.
-    pub fn keep_only(&mut self, wanted: &[NamedSecret]) {
+    /// Drops everything `wanted` and `presented` do not name -- what a worker does once a deployment has loaded, so
+    /// the versions it carries are the ones something runs on rather than every one it has ever been sent.
+    pub fn keep_only(&mut self, wanted: &[NamedSecret], presented: &[NamedCertificate]) {
         self.stored.retain(|(name, version), _| {
             wanted.iter().any(|s| {
                 matches!(&s.reference, SecretRef::LeaderStored { name: n, version: v } if n == name && v == version)
             })
         });
+        self.certificates
+            .retain(|name, _| presented.iter().any(|c| &c.name == name));
     }
 
-    /// Every `(name, version)` held, which is what a worker tells the leader so it is sent only what it lacks.
+    /// Every `(name, version)` held, certificates included, which is what a worker tells the leader so it is sent
+    /// only what it lacks.
     pub fn versions(&self) -> Vec<(String, i64)> {
-        self.stored.keys().cloned().collect()
+        let certificates = self.certificates.iter().map(|(n, c)| (n.clone(), c.version));
+        self.stored.keys().cloned().chain(certificates).collect()
     }
 
     /// The value, or `None` when this worker cannot obtain it. A leader-stored reference matches one version and no
@@ -2957,41 +3112,52 @@ impl HeldSecrets {
             SecretRef::LeaderStored { name, version } => self.stored.get(&(name.clone(), *version)).cloned(),
         }
     }
+
+    /// The version of the certificate `name` this holder has, which is its newest.
+    pub fn certificate_version(&self, name: &str) -> Option<i64> {
+        self.certificates.get(name).map(|held| held.version)
+    }
+
+    /// The chain and private key of the certificate `name`, PEM both, at the newest version this worker holds.
+    pub fn certificate(&self, name: &str) -> Option<(String, String)> {
+        let held = self.certificates.get(name)?;
+        Some((held.chain.clone(), held.key.clone()))
+    }
 }
 
-/// Whether `identity`'s certificate and key belong together, when both are named and the key is one `held` has.
-/// `None` when there is nothing to check yet: an identity presenting nothing pairs with nothing, and a key this
-/// holder does not have at all is [`TopologyConfig::missing_secrets`]' concern, not this one's.
+/// Why `tls`'s certificate cannot be presented from the side its bundle presents it, once the worker holds it.
+/// `None` when there is nothing to check yet: no certificate named, or one this holder does not have at all, which
+/// is [`TopologyConfig::missing_secrets`]' concern.
 ///
-/// A free function rather than a method, so [`crate::worker::capture`]'s cold path -- which builds one identity's
-/// source and never has a whole [`TopologyConfig`] to ask -- can run the same check on the one identity it has.
-pub fn identity_pairing_error(identity: &Identity, held: &HeldSecrets) -> Option<String> {
-    let (certificate, key_ref) = (identity.certificate.as_ref()?, identity.key.as_ref()?);
-    let key = held.value(key_ref)?;
-    crate::leader::tls::is_pair(certificate.as_bytes(), key.as_bytes())
+/// A free function rather than a method, so [`crate::worker::capture`]'s cold path -- which builds one source and
+/// never has a whole [`TopologyConfig`] to ask -- can run the same check on the one it has.
+pub fn certificate_error(tls: &Tls, held: &HeldSecrets) -> Option<String> {
+    let (chain, _) = held.certificate(tls.certificate.as_ref()?)?;
+    crate::io::trust::refuse_unless_usable(&chain, tls.side)
         .err()
         .map(|why| {
-            format!(
-                "identity {:?} names a key that is not its certificate's: {why}",
-                identity.id
-            )
+            let verb = if tls.side == crate::io::trust::Side::Server {
+                "serves"
+            } else {
+                "presents"
+            };
+            format!("{} {verb} a certificate {why}", tls.of)
         })
 }
 
-/// The key an identity names, as one entry of [`TopologyConfig::named_secrets`].
-pub(crate) fn identity_secret(identity: Option<&Identity>, what: &str) -> Option<NamedSecret> {
-    let identity = identity?;
-    Some(NamedSecret {
-        reference: identity.key.clone()?,
-        what: format!("{what}: the identity {:?}", identity.id),
-    })
-}
-
 impl TopologyConfig {
-    /// The named credentials this worker cannot obtain, as ready-to-print lines. Empty means the bundle can be
-    /// deployed here.
+    /// The TLS every connector of this bundle speaks, where it speaks any of its own.
+    pub fn tls(&self) -> impl Iterator<Item = &Tls> {
+        let sources = self.sources.iter().filter_map(|s| s.kind.tls());
+        let destinations = self.destinations.iter().filter_map(|d| d.kind.tls());
+        sources.chain(destinations)
+    }
+
+    /// The named credentials and certificates this worker cannot obtain, as ready-to-print lines. Empty means the
+    /// bundle can be deployed here.
     pub fn missing_secrets(&self, held: &HeldSecrets) -> Vec<String> {
-        self.named_secrets
+        let secrets = self
+            .named_secrets
             .iter()
             .filter(|s| held.value(&s.reference).is_none())
             .map(|s| {
@@ -3000,20 +3166,25 @@ impl TopologyConfig {
                     s.what,
                     s.reference.describe()
                 )
-            })
-            .collect()
+            });
+        let certificates = self
+            .named_certificates
+            .iter()
+            .filter(|c| held.certificate(&c.name).is_none())
+            .map(|c| {
+                format!(
+                    "{} names the certificate {:?}, which this worker does not have",
+                    c.what, c.name
+                )
+            });
+        secrets.chain(certificates).collect()
     }
 
-    /// Every identity naming both halves whose certificate and key do not belong together, among the keys this
-    /// worker holds. `put_identities` proves the pair at save time, but a secret's name and version are reusable --
-    /// deleted and recreated under the same reference, holding different content -- so that proof does not survive
-    /// to whenever this commit actually runs. Checked here instead, wherever a commit is about to, so a mismatch is
-    /// refused before anything is torn down rather than discovered at the handshake, after it already has been.
-    pub fn identity_pairing_errors(&self, held: &HeldSecrets) -> Vec<String> {
-        self.identities
-            .iter()
-            .filter_map(|identity| identity_pairing_error(identity, held))
-            .collect()
+    /// Every connector whose certificate cannot be presented the way it presents it, among the certificates this
+    /// worker holds. Checked wherever a commit is about to run, so a certificate a far end would refuse is refused
+    /// before anything is torn down rather than discovered at the handshake, after it already has been.
+    pub fn certificate_errors(&self, held: &HeldSecrets) -> Vec<String> {
+        self.tls().filter_map(|tls| certificate_error(tls, held)).collect()
     }
 }
 
@@ -3041,6 +3212,14 @@ pub struct CompiledRoute {
     pub compiled_patterns: Vec<crate::core::ctx::CompiledPattern>,
     /// `RouteConfig::on_exception`.
     pub on_exception: OnException,
+}
+
+impl CompiledRoute {
+    /// Whether this route sends rows to `dest`: a `deliver` rule's or an exception answer's target.
+    pub fn delivers_to(&self, dest: DestId) -> bool {
+        self.deliver.iter().any(|rule| rule.to.contains(&dest))
+            || self.on_exception.answers.iter().any(|a| a.targets().contains(&dest))
+    }
 }
 
 impl CompiledTopology {
@@ -3123,7 +3302,7 @@ pub(crate) fn condition(ir: Ir, src: &str, what: &str) -> Result<Ir, CompileErro
         ));
     }
     Ok(if ir.ty == DataType::Null {
-        flatten(crate::plan::plan::is_true(ir))
+        flatten(crate::plan::compile::is_true(ir))
     } else {
         ir
     })
@@ -3140,7 +3319,7 @@ fn compile_route(r: &RouteConfig, meta: &SourceMeta) -> Result<CompiledRoute, Co
             Some(condition(ir, src, "route condition")?)
         }
     };
-    let compiled_patterns = crate::plan::plan::compile_patterns(&res.patterns)?;
+    let compiled_patterns = crate::plan::compile::compile_patterns(&res.patterns)?;
     Ok(CompiledRoute {
         id: r.id.clone(),
         source: r.source,
@@ -3177,6 +3356,17 @@ pub struct CompiledTopology {
     /// What each destination writes of a row (`DestinationKind::payload`). Filled with `dlq_of`; one missing writes the
     /// record.
     pub payloads: HashMap<DestId, Payload>,
+    /// Each destination that names its documents by a field of the row, and that field
+    /// (`DestinationKind::id_field`). Filled with `dlq_of`.
+    pub id_fields: Vec<(DestId, String)>,
+}
+
+impl std::fmt::Debug for CompiledTopology {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledTopology")
+            .field("routes", &self.routes.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl CompiledTopology {
@@ -3222,6 +3412,40 @@ impl CompiledTopology {
         self.pipelines.get(&(self.meta_for(source), pipeline))
     }
 
+    /// Each route that sends rows to `dest`, with its index.
+    pub fn delivering(&self, dest: DestId) -> impl Iterator<Item = (usize, &CompiledRoute)> {
+        self.routes.iter().enumerate().filter(move |(_, r)| r.delivers_to(dest))
+    }
+
+    /// A route's finished record, as a condition over it reads it.
+    pub fn output_of(&self, route: &CompiledRoute) -> SymbolTable {
+        let meta = self.meta_for(route.source);
+        let plan = (self.plan_for(route.source, route.pipeline))
+            .expect("compile_topology validated every route's pipeline id");
+        output_symbols(plan, &route.on_exception.tag_field, &meta)
+    }
+
+    /// A capture filter at `dest`, compiled against the output of each route delivering there, by route index. A
+    /// filter runs on each of them it compiles on, since they may give `dest` rows of different shapes.
+    pub fn capture_filters(&self, dest: DestId, src: &str) -> Vec<(usize, Result<OutputCondition, CompileError>)> {
+        self.delivering(dest)
+            .map(|(idx, r)| {
+                let plan = (self.plan_for(r.source, r.pipeline))
+                    .expect("compile_topology validated every route's pipeline id");
+                (
+                    idx,
+                    output_condition(
+                        src,
+                        "a capture filter",
+                        plan,
+                        &r.on_exception.tag_field,
+                        &self.meta_for(r.source),
+                    ),
+                )
+            })
+            .collect()
+    }
+
     /// Whether anything `source`'s records reach reads its field `field`: a route's condition, its pipeline or its
     /// delivery rules.
     pub fn reads(&self, source: SourceId, field: &str) -> bool {
@@ -3265,8 +3489,9 @@ pub fn compile_topology_with(
 
     // What a plan depends on is the names in scope, which is the source's metadata -- not the source. Two Kafka sources
     // routed to one pipeline would compile it to the same instructions, the same slots and the same loaded lookup
-    // tables, so they share one plan. Route order, deduped, so the errors a config produces stay in the same order from
-    // run to run.
+    // tables, so they share one plan. The metadata carries the encoding, so two that differ only there compile apart,
+    // to the same plan twice. Route order, deduped, so the errors a config produces stay in the same order from run
+    // to run.
     let mut seen = std::collections::HashSet::new();
     let pairs: Vec<(SourceMeta, usize)> = routes
         .iter()
@@ -3319,7 +3544,7 @@ pub fn compile_topology_with(
         let reads = rule_reads
             .entry(key)
             .or_insert_with(|| vec![false; meta.source_fields().len()]);
-        crate::plan::plan::walk_slots(ir, &mut |slot| {
+        crate::plan::compile::walk_slots(ir, &mut |slot| {
             if let Some(i) = meta.source_field_at(slot) {
                 reads[i] = true;
             }
@@ -3345,7 +3570,6 @@ pub fn compile_topology_with(
                     compiled.deliver.push(c);
                 }
                 Err(mut e) => {
-                    e.message = format!("route {r}'s deliver rule: {}", e.message);
                     e.route = Some(r);
                     e.rule = Some(i as u32);
                     errors.push(e);
@@ -3383,6 +3607,7 @@ pub fn compile_topology_with(
             dlq_of: HashMap::new(),
             records: HashMap::new(),
             payloads: HashMap::new(),
+            id_fields: Vec::new(),
         })
     } else {
         Err(errors)
@@ -3420,6 +3645,20 @@ fn compile_deliver_rule(
     })
 }
 
+/// The names an expression over `plan`'s finished batch reads, for a row from a source of `meta`: the pipeline's
+/// output, the source's own fields, and the route's tag field.
+pub(crate) fn output_symbols(plan: &Plan, tag_field: &str, meta: &SourceMeta) -> SymbolTable {
+    SymbolTable::over_plan_output(
+        &plan.delivery_layout(),
+        &plan.tree,
+        &ingest_fields(meta),
+        &[(tag_field, plan.tag_slot())],
+    )
+}
+
+/// A condition over a finished batch, and the patterns `Ctx::patterns` is pointed at to evaluate it.
+pub type OutputCondition = (Ir, Vec<crate::core::ctx::CompiledPattern>);
+
 /// Compile `src`, called `what` in an error, as a condition over `plan`'s finished batch: what a `deliver` rule reads,
 /// and what a filter at a destination reads. Evaluated with `Ctx::patterns` pointed at the patterns it returns.
 pub(crate) fn output_condition(
@@ -3428,18 +3667,12 @@ pub(crate) fn output_condition(
     plan: &Plan,
     tag_field: &str,
     meta: &SourceMeta,
-) -> Result<(Ir, Vec<crate::core::ctx::CompiledPattern>), CompileError> {
+) -> Result<OutputCondition, CompileError> {
     let mut res = ResourceBuilder::default();
     let ast = parse(src, None)?;
-    let mut syms = SymbolTable::over_plan_output(
-        &plan.delivery_layout(),
-        &plan.tree,
-        &ingest_fields(meta),
-        &[(tag_field, plan.tag_slot())],
-    );
-    let ir = flatten(resolve(&ast, &mut syms, &mut res)?);
+    let ir = flatten(resolve(&ast, &mut output_symbols(plan, tag_field, meta), &mut res)?);
     let ir = condition(ir, src, what)?;
-    Ok((ir, crate::plan::plan::compile_patterns(&res.patterns)?))
+    Ok((ir, crate::plan::compile::compile_patterns(&res.patterns)?))
 }
 
 /// Evaluate every route belonging to `source` against `batch` — which must have the source's `ingest_fields` layout,
@@ -3573,7 +3806,7 @@ mod tests {
         let cond = meta.stream_condition(key).expect("a condition");
         let routes = compile_routes(&[route(0, Some(&cond), 0)], &SourceMetas::from([(0, meta.clone())]))
             .unwrap_or_else(|e| panic!("`{cond}` compiles: {e:?}"));
-        let layout: Vec<DataType> = crate::plan::plan::ingest_fields(&meta)
+        let layout: Vec<DataType> = crate::plan::compile::ingest_fields(&meta)
             .into_iter()
             .map(|(_, t)| t)
             .collect();
@@ -3703,7 +3936,7 @@ mod tests {
             headers: None,
         }];
         let meta = SourceMeta::KAFKA;
-        let layout: Vec<DataType> = crate::plan::plan::ingest_fields(&meta)
+        let layout: Vec<DataType> = crate::plan::compile::ingest_fields(&meta)
             .into_iter()
             .map(|(_, t)| t)
             .collect();
@@ -3746,8 +3979,13 @@ mod tests {
         assert_eq!(meta.field_type("_raw"), None);
         assert_eq!(meta.field_type(SOURCE_BYTES), Some(DataType::Bytes));
         assert_eq!(SourceMeta::KAFKA.with_encoding(Encoding::Auto), SourceMeta::KAFKA);
+        // A source that reads no bytes keeps no encoding, so the meta it declares and the meta it runs with are one.
+        assert_eq!(
+            SourceMeta::MYSQL.with_encoding(Encoding::Fixed(encoding_rs::UTF_8)),
+            SourceMeta::MYSQL
+        );
 
-        let layout: Vec<DataType> = crate::plan::plan::ingest_fields(&meta)
+        let layout: Vec<DataType> = crate::plan::compile::ingest_fields(&meta)
             .into_iter()
             .map(|(_, t)| t)
             .collect();
@@ -4158,69 +4396,115 @@ mod tests {
         assert!(missing[0].contains("SMELTR_TEST_DEFINITELY_UNSET_AUTH"), "{missing:?}");
     }
 
-    /// A certificate, and a key that either issued it or belongs to someone else's.
-    fn certificate_and_key(matching: bool) -> (String, String) {
-        let issuer_key = rcgen::KeyPair::generate().unwrap();
-        let params = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
-        let certificate = params.self_signed(&issuer_key).unwrap().pem();
-        let key = if matching {
-            issuer_key
-        } else {
-            rcgen::KeyPair::generate().unwrap()
-        };
-        (certificate, key.serialize_pem())
+    /// A certificate and its key, its Extended Key Usage naming `purposes` where any are given.
+    fn certificate_and_key(purposes: Vec<rcgen::ExtendedKeyUsagePurpose>) -> (String, String) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
+        params.extended_key_usages = purposes;
+        (params.self_signed(&key).unwrap().pem(), key.serialize_pem())
     }
 
-    /// A bundle with a connector that connects under `identity`.
-    fn with_identity(identity: Identity) -> TopologyConfig {
-        TopologyConfig {
-            identities: vec![std::sync::Arc::new(identity)],
-            ..Default::default()
+    /// A connector presenting `acme`'s certificate from `side`.
+    fn presenting(side: crate::io::trust::Side) -> Tls {
+        Tls {
+            of: "source \"in\"".to_string(),
+            certificate: Some("acme".to_string()),
+            authorities: None,
+            trust_public: true,
+            side,
         }
     }
 
-    /// The proof `put_identities` ran at save time does not survive a key's name and version being deleted and
-    /// recreated under different content -- so it is run again here, against whatever this worker actually holds.
+    /// What a worker holds once the leader has sent it the certificate `acme` at version 1.
+    fn holding_certificate(chain: String, key: String) -> HeldSecrets {
+        let mut h = HeldSecrets::default();
+        h.take([crate::heartbeat::SecretDelivery {
+            name: "acme".to_string(),
+            version: 1,
+            value: key,
+            chain: Some(chain),
+        }]);
+        h
+    }
+
+    /// A certificate whose Extended Key Usage leaves out the side it is presented from is refused before anything
+    /// is torn down, rather than at the handshake.
     #[test]
-    fn a_key_that_does_not_belong_to_its_certificate_is_refused() {
-        let (certificate, key) = certificate_and_key(false);
-        let t = with_identity(Identity {
-            id: "acme".to_string(),
-            certificate: Some(certificate),
-            key: Some(stored("acme-key", 1)),
-            authorities: None,
-            trust_public: true,
-        });
-        let errors = t.identity_pairing_errors(&held(&[("acme-key", 1, &key)]));
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].contains("acme"), "{errors:?}");
+    fn a_certificate_is_held_to_the_side_its_bundle_presents_it_from() {
+        use crate::io::trust::Side;
+        let (chain, key) = certificate_and_key(vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth]);
+        let held = holding_certificate(chain, key);
+        let error =
+            certificate_error(&presenting(Side::Client), &held).expect("a server certificate presented by a client");
+        assert!(
+            error.contains("source \"in\"") && error.contains("client authentication"),
+            "{error}"
+        );
+        assert!(certificate_error(&presenting(Side::Server), &held).is_none());
     }
 
     #[test]
-    fn a_key_that_belongs_to_its_certificate_is_not_refused() {
-        let (certificate, key) = certificate_and_key(true);
-        let t = with_identity(Identity {
-            id: "acme".to_string(),
-            certificate: Some(certificate),
-            key: Some(stored("acme-key", 1)),
-            authorities: None,
-            trust_public: true,
-        });
-        assert!(t.identity_pairing_errors(&held(&[("acme-key", 1, &key)])).is_empty());
+    fn a_certificate_with_no_extended_key_usage_is_presented_from_either_side() {
+        use crate::io::trust::Side;
+        let (chain, key) = certificate_and_key(Vec::new());
+        let held = holding_certificate(chain, key);
+        assert!(certificate_error(&presenting(Side::Client), &held).is_none());
+        assert!(certificate_error(&presenting(Side::Server), &held).is_none());
     }
 
-    /// A key this worker does not have yet is `missing_secrets`' concern -- there is nothing here to pair against.
+    /// A certificate this worker does not have yet is `missing_secrets`' concern.
     #[test]
-    fn an_identity_whose_key_this_worker_lacks_is_not_this_checks_concern() {
-        let (certificate, _) = certificate_and_key(true);
-        let t = with_identity(Identity {
-            id: "acme".to_string(),
-            certificate: Some(certificate),
-            key: Some(stored("acme-key", 1)),
-            authorities: None,
-            trust_public: true,
-        });
-        assert!(t.identity_pairing_errors(&HeldSecrets::default()).is_empty());
+    fn a_certificate_this_worker_lacks_is_not_this_checks_concern() {
+        assert!(certificate_error(&presenting(crate::io::trust::Side::Client), &HeldSecrets::default()).is_none());
+        let t = TopologyConfig {
+            named_certificates: vec![NamedCertificate {
+                name: "acme".to_string(),
+                what: "source \"in\"".to_string(),
+            }],
+            ..Default::default()
+        };
+        let missing = t.missing_secrets(&HeldSecrets::default());
+        assert_eq!(missing.len(), 1, "{missing:?}");
+        assert!(missing[0].contains("certificate \"acme\""), "{missing:?}");
+        assert!(
+            t.missing_secrets(&holding_certificate("chain".into(), "key".into()))
+                .is_empty()
+        );
+    }
+
+    /// The chain travels with its key, and both reach the runtime; the newest version is the one held, and a
+    /// version replacing an older one is said, since what presents it has to be built again.
+    #[test]
+    fn a_certificate_is_held_at_its_newest_version_with_its_chain() {
+        let mut held = holding_certificate("chain".into(), "key".into());
+        assert_eq!(held.certificate("acme"), Some(("chain".to_string(), "key".to_string())));
+        let presented = [NamedCertificate {
+            name: "acme".to_string(),
+            what: "source \"in\"".to_string(),
+        }];
+        let handed = held.deliveries_for(&[], &presented);
+        assert_eq!(handed.len(), 1);
+        assert_eq!(handed[0].chain.as_deref(), Some("chain"));
+        assert_eq!(handed[0].version, 1);
+
+        let newer = |version: i64| crate::heartbeat::SecretDelivery {
+            name: "acme".to_string(),
+            version,
+            value: format!("key{version}"),
+            chain: Some(format!("chain{version}")),
+        };
+        assert_eq!(held.take([newer(2)]), vec!["acme".to_string()]);
+        assert_eq!(
+            held.certificate("acme"),
+            Some(("chain2".to_string(), "key2".to_string()))
+        );
+        assert!(
+            held.take([newer(1)]).is_empty(),
+            "an older version does not replace the newest"
+        );
+        assert_eq!(held.versions(), vec![("acme".to_string(), 2)]);
+        held.keep_only(&[], &[]);
+        assert_eq!(held.certificate("acme"), None);
     }
 
     /// A deployment runs the version its bundle quotes or it does not run. Neither an older value nor a newer one
@@ -4255,7 +4539,7 @@ mod tests {
     fn keeping_only_what_a_deployment_names_drops_the_rest() {
         let mut h = held(&[("es-auth", 7, "old"), ("es-auth", 8, "new"), ("gone", 1, "x")]);
         let t = naming(r#"destination "prod-es": auth"#, stored("es-auth", 8));
-        h.keep_only(&t.named_secrets);
+        h.keep_only(&t.named_secrets, &[]);
         assert_eq!(h.versions(), vec![("es-auth".to_string(), 8)]);
     }
 
@@ -4277,6 +4561,7 @@ mod tests {
             name: "b".to_string(),
             version: 3,
             value: "three".to_string(),
+            chain: None,
         }]);
         assert_eq!(h.value(&stored("a", 1)).as_deref(), Some("one"));
         assert_eq!(
@@ -4393,6 +4678,7 @@ mod tests {
             dlq_of: std::collections::HashMap::from([(2, vec![5]), (8, vec![3])]),
             records: HashMap::new(),
             payloads: HashMap::new(),
+            id_fields: Vec::new(),
         };
 
         // Source 0: its own delivery target plus the DLQ that target salvages to -- a source can write to a
@@ -4572,11 +4858,12 @@ mod tests {
         let k = KafkaDestinationConfig {
             payload: crate::plan::config::Payload::Record,
             compression: Compression::None,
+            acks: Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: "k:9092".into(),
             default_topic: "t".into(),
             service: crate::plan::topology::KafkaService::Kafka,
-            identity: None,
+            tls: None,
             buffer_bytes: 200_000_001,
             props: KafkaProps {
                 literal: Vec::new(),

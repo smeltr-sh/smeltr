@@ -1,7 +1,7 @@
 /**
  * One file of the bundle, edited as a whole and saved as a whole.
  *
- * A section page -- sources, destinations, identities, lookup tables, routes --
+ * A section page -- sources, destinations, lookup tables, routes --
  * reads its file out of the config, holds what the reader types until it is
  * saved, and writes the file back against the commit it read. The page keeps
  * the value itself, in `$state` of its own, which its template and its dialogs

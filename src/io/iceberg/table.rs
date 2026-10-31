@@ -30,8 +30,8 @@ use object_store::{Attributes, ObjectStore, ObjectStoreExt, PutPayload};
 use super::catalog::{Auth, Catalog, CommitFailure, Loaded, Requirement, Signer, StorageCredential, Update};
 use super::manifest::{self, DataFileEntry, ManifestFile};
 use super::metadata::{
-    FIRST_PARTITION_ID, FORMAT_VERSION, MAIN, NestedField, PartitionField, PartitionSpec, Primitive, Schema, Snapshot,
-    TableMetadata, Transform, Type,
+    FIRST_PARTITION_ID, FORMAT_VERSION, MAIN, NestedField, PartitionField, PartitionSpec, Primitive,
+    ROW_LINEAGE_VERSION, Schema, Snapshot, SnapshotRef, TableMetadata, Transform, Type,
 };
 use super::schema::{table_schema, with_field_ids};
 use super::transform::{TablePartitioner, literal_of, partition_name, partition_term, result_type};
@@ -43,9 +43,9 @@ use crate::io::files::{
 };
 use crate::io::objects::{self, RENEW_BEFORE, Signing};
 use crate::io::parquet;
-use crate::io::table::one_record;
+use crate::io::table::{ROW_GROUP_BYTES, one_record};
 use crate::io::vended::Vended;
-use crate::plan::topology::{CatalogSignIn, HeldSecrets, IcebergDestinationConfig, Records, S3Access};
+use crate::plan::topology::{CatalogSignIn, Compression, HeldSecrets, IcebergDestinationConfig, Records, S3Access};
 
 /// The schemes of an S3 location.
 const S3_SCHEMES: [&str; 3] = ["s3", "s3a", "s3n"];
@@ -91,7 +91,7 @@ pub fn destination(
             credentials,
             access_point: None,
         }),
-        config.identity.as_deref(),
+        config.tls.as_ref(),
         config.stall_after,
         secrets,
         &runtime,
@@ -114,13 +114,16 @@ fn assemble(
         IcebergCommitter::new(catalog, config, metadata, schema, store.clone(), runtime.clone()).map_err(refused)?;
     let partitioner = TablePartitioner::new(&committer.spec, &committer.schema).map_err(refused)?;
     let file_schema = parquet::Schema::new(record).map_err(refused)?;
-    let written = with_field_ids(file_schema.arrow(), &committer.schema);
-    let format = ParquetFormat::new(vec![file_schema.with_written(written)], config.compression);
+    let (written, defaults) = with_field_ids(file_schema.arrow(), &committer.schema).map_err(refused)?;
+    let settings = WriteSettings::of(&committer.metadata.properties, config);
+    let file_schema = file_schema.with_written(written).with_defaults(defaults);
+    let format = ParquetFormat::new(vec![file_schema], settings.options);
     let files = FileConfig {
         format: Arc::new(format),
         partitioner: Arc::new(partitioner),
         commit_interval: config.file_interval,
-        max_file_bytes: config.max_object_bytes,
+        max_file_bytes: settings.file_bytes,
+        take_bytes: settings.row_group_bytes,
         buffer_bytes: config.buffer_bytes,
         stall_after: config.stall_after,
         attributes: Attributes::new(),
@@ -164,14 +167,13 @@ fn catalog(
                 access.region = Some(region);
             }
             Auth::Signed(Arc::new(AwsSigner {
-                service: objects::Aws::new(&access, config.identity.as_deref(), secrets, runtime)?
-                    .service(signing_name),
+                service: objects::Aws::new(&access, config.tls.as_ref(), secrets, runtime)?.service(signing_name),
                 runtime: runtime.clone(),
                 within: config.stall_after / 2,
             }))
         }
     };
-    let agent = crate::io::http::agent_config(config.identity.as_deref(), secrets)?.new_agent();
+    let agent = crate::io::http::agent_config(config.tls.as_ref(), secrets)?.new_agent();
     Ok(Catalog::new(
         config.catalog.clone(),
         config.warehouse.clone(),
@@ -234,18 +236,104 @@ fn open(
     };
     let table = &loaded.metadata;
     let refused = |why: String| IoError::transient(format!("iceberg table {}: {why}", config.table));
-    // Version 3 adds row lineage, which every snapshot must then carry; writing it is left for later.
-    if table.format_version != FORMAT_VERSION {
+    // A version 1 table upgrades in place, no file rewritten.
+    if table.format_version == 1 {
         return Err(refused(format!(
-            "it is of format version {}, and only version {FORMAT_VERSION} is written",
+            "it is of format version 1, and versions {FORMAT_VERSION} and {ROW_LINEAGE_VERSION} are written; upgrade \
+             it in place in Spark with ALTER TABLE {}.{} SET TBLPROPERTIES ('format-version'='{FORMAT_VERSION}')",
+            config.namespace.join("."),
+            config.table
+        )));
+    }
+    if !(FORMAT_VERSION..=ROW_LINEAGE_VERSION).contains(&table.format_version) {
+        return Err(refused(format!(
+            "it is of format version {}, and versions {FORMAT_VERSION} and {ROW_LINEAGE_VERSION} are written",
             table.format_version
         )));
     }
     // An encrypted table's manifests carry key metadata, which this writer neither makes nor keeps.
-    if table.properties.contains_key("encryption.key-id") {
+    let keys = table.other.get("encryption-keys").and_then(|k| k.as_array());
+    if table.properties.contains_key("encryption.key-id") || keys.is_some_and(|k| !k.is_empty()) {
         return Err(refused("it is encrypted, and an encrypted table is not written".into()));
     }
+    // A version 3 transform of several columns has no source column of its own to partition by.
+    let spec = table.spec().into_iter().flat_map(|s| &s.fields);
+    if let Some(field) = spec
+        .into_iter()
+        .find(|f| f.source_ids.as_ref().is_some_and(|ids| ids.len() > 1))
+    {
+        return Err(refused(format!(
+            "its partition field {} is a transform of several columns, and only a transform of one column is written",
+            field.name
+        )));
+    }
     evolve(catalog, config, record, loaded)
+}
+
+/// How the table asks its data files written, as its `write.*` properties say; what they leave unsaid is the
+/// destination's config, or Iceberg's own default where the config has no say.
+#[derive(Debug, PartialEq)]
+struct WriteSettings {
+    options: parquet::WriteOptions,
+    row_group_bytes: usize,
+    file_bytes: usize,
+}
+
+/// Iceberg's `write.parquet.bloom-filter-fpp.column.*` where a table sets none.
+const BLOOM_FILTER_FPP: f64 = 0.01;
+
+const CODEC: &str = "write.parquet.compression-codec";
+const BLOOM_FILTER: &str = "write.parquet.bloom-filter-enabled.column.";
+
+impl WriteSettings {
+    fn of(properties: &BTreeMap<String, String>, config: &IcebergDestinationConfig) -> WriteSettings {
+        let property = |key: &str| properties.get(key).map(String::as_str);
+        let bytes = |key: &str| property(key).and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
+        let codec = match property(CODEC).map(str::to_ascii_lowercase).as_deref() {
+            None => config.compression,
+            Some(name) => codec(name).unwrap_or_else(|| {
+                tracing::warn!(target: "iceberg.write", table = config.table, codec = name,
+                    "the table asks for a codec this writer has not, and its files take the destination's");
+                config.compression
+            }),
+        };
+        let bloom_filters = (properties.iter())
+            .filter_map(|(key, value)| Some((key.strip_prefix(BLOOM_FILTER)?, value)))
+            .filter(|(_, enabled)| enabled.eq_ignore_ascii_case("true"))
+            .map(|(column, _)| {
+                let fpp = property(&format!("write.parquet.bloom-filter-fpp.column.{column}"))
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .filter(|p| *p > 0.0 && *p < 1.0)
+                    .unwrap_or(BLOOM_FILTER_FPP);
+                (column.split('.').map(str::to_string).collect(), fpp)
+            })
+            .collect();
+        WriteSettings {
+            options: parquet::WriteOptions {
+                codec,
+                level: property("write.parquet.compression-level").and_then(|v| v.parse().ok()),
+                bloom_filters,
+            },
+            row_group_bytes: bytes("write.parquet.row-group-size-bytes").unwrap_or(ROW_GROUP_BYTES),
+            file_bytes: bytes("write.target-file-size-bytes").unwrap_or(config.max_object_bytes),
+        }
+    }
+}
+
+/// The name Iceberg gives `codec`: librdkafka's, but for none.
+fn codec_name(codec: Compression) -> &'static str {
+    match codec {
+        Compression::None => "uncompressed",
+        codec => codec.as_property(),
+    }
+}
+
+/// The codec Iceberg names `name`, where this writer has it.
+fn codec(name: &str) -> Option<Compression> {
+    use Compression as C;
+    [C::None, C::Gzip, C::Snappy, C::Lz4, C::Zstd]
+        .into_iter()
+        .find(|c| codec_name(*c) == name || c.as_property() == name)
 }
 
 /// Creates the table with the record as its schema and `partitionBy` as its spec. A table another writer created
@@ -257,6 +345,8 @@ fn create(catalog: &mut Catalog, config: &IcebergDestinationConfig, record: &Dat
     let properties = BTreeMap::from([
         ("format-version".to_string(), "2".to_string()),
         ("write.format.default".to_string(), "parquet".to_string()),
+        // So that every writer after this one writes as it does.
+        (CODEC.to_string(), codec_name(config.compression).to_string()),
     ]);
     catalog.create_table(&config.namespace, &config.table, &fresh.schema, &spec, &properties)
 }
@@ -282,6 +372,7 @@ fn spec_of(terms: &[String], schema: &Schema) -> Result<PartitionSpec, String> {
                 name: partition_name(&transform, &path),
                 transform,
                 source_id: source,
+                source_ids: None,
                 field_id,
             })
         })
@@ -656,8 +747,11 @@ impl Committer for IcebergCommitter {
             Update::AddSnapshot(snapshot),
             Update::SetSnapshotRef {
                 name: MAIN.to_string(),
-                snapshot_id: id,
-                kind: "branch".to_string(),
+                reference: SnapshotRef {
+                    snapshot_id: id,
+                    kind: "branch".to_string(),
+                    ..self.metadata.refs.get(MAIN).cloned().unwrap_or_default()
+                },
             },
         ];
         match self
@@ -775,8 +869,16 @@ impl IcebergCommitter {
         if let Some(parent) = parent {
             manifests.extend(self.carried(parent, snapshot_id)?);
         }
-        let list =
-            manifest::write_manifest_list(snapshot_id, parent.map(|p| p.snapshot_id), sequence_number, &manifests)?;
+        // Taken from the table as loaded for this attempt: a commit made again assigns row ids again.
+        let first_row_id = self.metadata.next_row_id();
+        let added_rows = first_row_id.map(|first| manifest::assign_row_ids(&mut manifests, first));
+        let list = manifest::write_manifest_list(
+            self.metadata.format_version,
+            snapshot_id,
+            parent.map(|p| p.snapshot_id),
+            sequence_number,
+            &manifests,
+        )?;
         let list_name = format!("snap-{snapshot_id}-1-{}.avro", objects::object_id());
         self.put(&self.meta.key(&list_name), list)?;
         Ok(Snapshot {
@@ -789,6 +891,8 @@ impl IcebergCommitter {
             manifest_list: self.meta.uri(&list_name),
             summary: summary(files, &entries, parent),
             schema_id: Some(self.schema.schema_id),
+            first_row_id,
+            added_rows,
         })
     }
 
@@ -830,7 +934,9 @@ impl IcebergCommitter {
         snapshot_id: i64,
         entries: &[DataFileEntry],
     ) -> Result<ManifestFile, String> {
-        let bytes = manifest::write_manifest(&self.schema, spec, entries)?;
+        let types = partition_types(spec, &self.schema, &self.metadata.schemas)?;
+        let types: Vec<Primitive> = types.into_iter().map(|(ty, _)| ty).collect();
+        let bytes = manifest::write_manifest(self.metadata.format_version, &self.schema, spec, &types, entries)?;
         let length = bytes.len() as u64;
         let name = format!("{}-m0.avro", objects::object_id());
         self.put(&self.meta.key(&name), bytes)?;
@@ -1108,6 +1214,7 @@ mod tests {
                 let mut spec: PartitionSpec = serde_json::from_value(body["partition-spec"].clone()).unwrap();
                 spec.spec_id = 0;
                 let table = TableMetadata {
+                    next_row_id: None,
                     format_version: 2,
                     table_uuid: "uuid-1".into(),
                     location: "s3://bucket/wh/t".into(),
@@ -1214,18 +1321,17 @@ mod tests {
                 let snapshot: Snapshot = serde_json::from_value(update["snapshot"].clone()).unwrap();
                 assert_eq!(snapshot.sequence_number, table.last_sequence_number + 1);
                 table.last_sequence_number = snapshot.sequence_number;
+                // As a catalog does: a snapshot takes its row ids from the table's next.
+                if let Some(next) = table.next_row_id() {
+                    assert_eq!(snapshot.first_row_id, Some(next), "a snapshot's first row id");
+                    table.next_row_id = Some(next + snapshot.added_rows.expect("a version 3 snapshot's added rows"));
+                }
                 table.snapshots.push(snapshot);
             }
             "set-snapshot-ref" => {
-                let id = update["snapshot-id"].as_i64().unwrap();
-                table.refs.insert(
-                    MAIN.into(),
-                    crate::io::iceberg::metadata::SnapshotRef {
-                        snapshot_id: id,
-                        kind: "branch".into(),
-                    },
-                );
-                table.current_snapshot_id = Some(id);
+                let main: SnapshotRef = serde_json::from_value(update.clone()).unwrap();
+                table.current_snapshot_id = Some(main.snapshot_id);
+                table.refs.insert(MAIN.into(), main);
             }
             other => panic!("unknown update {other}"),
         }
@@ -1233,6 +1339,50 @@ mod tests {
 
     fn st(fields: &[(&str, DataType)]) -> DataType {
         DataType::Struct(fields.iter().map(|(n, t)| (n.to_string(), t.clone())).collect(), false)
+    }
+
+    #[test]
+    fn a_table_says_how_its_files_are_written_and_the_config_says_the_rest() {
+        let config = config("http://catalog", &[]);
+        let unsaid = WriteSettings::of(&BTreeMap::new(), &config);
+        assert_eq!(
+            unsaid,
+            WriteSettings {
+                options: config.compression.into(),
+                row_group_bytes: ROW_GROUP_BYTES,
+                file_bytes: config.max_object_bytes,
+            }
+        );
+        let said = BTreeMap::from(
+            [
+                (CODEC, "SNAPPY"),
+                ("write.parquet.compression-level", "3"),
+                ("write.parquet.row-group-size-bytes", "8388608"),
+                ("write.target-file-size-bytes", "268435456"),
+                ("write.parquet.bloom-filter-enabled.column.http.host", "true"),
+                ("write.parquet.bloom-filter-fpp.column.http.host", "0.05"),
+                ("write.parquet.bloom-filter-enabled.column.id", "true"),
+                ("write.parquet.bloom-filter-enabled.column.off", "false"),
+            ]
+            .map(|(k, v)| (k.to_string(), v.to_string())),
+        );
+        assert_eq!(
+            WriteSettings::of(&said, &config),
+            WriteSettings {
+                options: parquet::WriteOptions {
+                    codec: Compression::Snappy,
+                    level: Some(3),
+                    bloom_filters: vec![
+                        (vec!["http".into(), "host".into()], 0.05),
+                        (vec!["id".into()], BLOOM_FILTER_FPP),
+                    ],
+                },
+                row_group_bytes: 8 << 20,
+                file_bytes: 256 << 20,
+            }
+        );
+        let brotli = BTreeMap::from([(CODEC.to_string(), "brotli".to_string())]);
+        assert_eq!(WriteSettings::of(&brotli, &config).options.codec, config.compression);
     }
 
     fn config(url: &str, partition_by: &[&str]) -> IcebergDestinationConfig {
@@ -1245,7 +1395,7 @@ mod tests {
             partition_by: partition_by.iter().map(|t| t.to_string()).collect(),
             storage: None,
             compression: Compression::Zstd,
-            identity: None,
+            tls: None,
             in_flight: 2,
             max_object_bytes: 1 << 20,
             buffer_bytes: 1 << 24,
@@ -1424,21 +1574,115 @@ mod tests {
         let record = st(&[("a", DataType::Str)]);
         committer(&url, &config, &record, &Arc::new(InMemory::new()));
 
-        fake.lock().unwrap().table.as_mut().unwrap().format_version = 3;
+        fake.lock().unwrap().table.as_mut().unwrap().format_version = 4;
         let Err(e) = open(&mut client(&url), &config, &record) else {
-            panic!("a version 3 table must be refused");
+            panic!("a version 4 table must be refused");
         };
-        assert!(e.message.contains("format version 3"), "{e}");
+        assert!(
+            e.message.contains("format version 4, and versions 2 and 3 are written"),
+            "{e}"
+        );
 
-        let mut fake = fake.lock().unwrap();
-        let table = fake.table.as_mut().unwrap();
+        fake.lock().unwrap().table.as_mut().unwrap().format_version = 1;
+        let Err(e) = open(&mut client(&url), &config, &record) else {
+            panic!("a version 1 table must be refused");
+        };
+        assert!(
+            e.message
+                .contains("in Spark with ALTER TABLE ns.t SET TBLPROPERTIES ('format-version'='2')"),
+            "{e}"
+        );
+
+        let mut held = fake.lock().unwrap();
+        let table = held.table.as_mut().unwrap();
         table.format_version = 2;
         table.properties.insert("encryption.key-id".into(), "k".into());
-        drop(fake);
+        drop(held);
         let Err(e) = open(&mut client(&url), &config, &record) else {
             panic!("an encrypted table must be refused");
         };
         assert!(e.message.contains("encrypted"), "{e}");
+
+        let mut held = fake.lock().unwrap();
+        let table = held.table.as_mut().unwrap();
+        table.format_version = 3;
+        table.properties.clear();
+        table.other.insert(
+            "encryption-keys".into(),
+            json!([{"key-id": "k", "encrypted-key-metadata": "AA=="}]),
+        );
+        drop(held);
+        let Err(e) = open(&mut client(&url), &config, &record) else {
+            panic!("a version 3 table with encryption keys must be refused");
+        };
+        assert!(e.message.contains("encrypted"), "{e}");
+
+        let mut held = fake.lock().unwrap();
+        let table = held.table.as_mut().unwrap();
+        table.other.clear();
+        table.partition_specs[0].fields.push(PartitionField {
+            name: "both".into(),
+            transform: Transform::Other("zorder".into()),
+            source_id: crate::io::iceberg::metadata::NO_SOURCE,
+            source_ids: Some(vec![1, 2]),
+            field_id: 1000,
+        });
+        drop(held);
+        let Err(e) = open(&mut client(&url), &config, &record) else {
+            panic!("a partition field of several columns must be refused");
+        };
+        assert!(
+            e.message
+                .contains("partition field both is a transform of several columns"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_version_3_table_takes_each_snapshot_s_row_ids_from_its_next() {
+        let fake = Arc::new(Mutex::new(Fake::default()));
+        let url = serve(fake.clone());
+        let record = st(&[("host", DataType::Str)]);
+        let store = Arc::new(InMemory::new());
+        let config = config(&url, &[]);
+        let mut committer = committer(&url, &config, &record, &store);
+        // Upgraded from version 2 after a first snapshot, which keeps no row ids.
+        committer.commit(&[file(&committer, &[], 3)]).unwrap();
+        {
+            let mut fake = fake.lock().unwrap();
+            let table = fake.table.as_mut().unwrap();
+            table.format_version = 3;
+            table.next_row_id = Some(100);
+            // So that the third commit merges the second's two manifests.
+            table
+                .properties
+                .insert("commit.manifest.min-count-to-merge".into(), "2".into());
+        }
+        let mut committer = self::committer(&url, &config, &record, &store);
+        committer
+            .commit(&[file(&committer, &[], 4), file(&committer, &[], 5)])
+            .unwrap();
+        committer.commit(&[file(&committer, &[], 6)]).unwrap();
+
+        let table = fake.lock().unwrap().table.clone().unwrap();
+        let rows: Vec<_> = table.snapshots.iter().map(|s| (s.first_row_id, s.added_rows)).collect();
+        // The second snapshot gives row ids to its own 9 rows and to the first snapshot's 3. The third gives them to
+        // its own 6, and to the manifest it merges the second's two into, whose files keep the ones they have.
+        assert_eq!(rows, [(None, None), (Some(100), Some(12)), (Some(112), Some(18))]);
+        assert_eq!(table.next_row_id, Some(130));
+        let list = manifest::read_manifest_list(&committer.get(&table.snapshots[2].manifest_list).unwrap()).unwrap();
+        assert_eq!(list.len(), 2, "the second snapshot's manifests are merged");
+
+        // Every live file's rows hold their own row ids, none shared.
+        let mut ranges: Vec<(i64, i64)> = live_files(&committer)
+            .into_iter()
+            .map(|e| {
+                let first = e.first_row_id.expect("every live file has a first row id");
+                (first, first + e.record_count)
+            })
+            .collect();
+        ranges.sort();
+        assert_eq!(ranges, [(100, 104), (104, 109), (109, 112), (112, 118)]);
     }
 
     #[test]
@@ -1479,6 +1723,32 @@ mod tests {
         live.sort_by_key(|(_, rows, _)| *rows);
         let host = |h: &str| vec![Some(Literal::String(h.into()))];
         assert_eq!(live, [(host("a"), 3, true), (host("b"), 4, true), (host("a"), 5, true)]);
+    }
+
+    #[test]
+    fn a_commit_keeps_the_retention_of_main() {
+        let fake = Arc::new(Mutex::new(Fake::default()));
+        let url = serve(fake.clone());
+        let record = st(&[("host", DataType::Str)]);
+        let mut committer = committer(&url, &config(&url, &[]), &record, &Arc::new(InMemory::new()));
+        committer.commit(&[file(&committer, &[], 3)]).unwrap();
+        let retention = |main: &mut SnapshotRef| {
+            main.min_snapshots_to_keep = Some(5);
+            main.max_snapshot_age_ms = Some(3_600_000);
+            main.max_ref_age_ms = Some(86_400_000);
+        };
+        retention(fake.lock().unwrap().table.as_mut().unwrap().refs.get_mut(MAIN).unwrap());
+        committer.reload().unwrap();
+
+        committer.commit(&[file(&committer, &[], 4)]).unwrap();
+        let table = fake.lock().unwrap().table.clone().unwrap();
+        let mut expected = SnapshotRef {
+            snapshot_id: table.snapshots[1].snapshot_id,
+            kind: "branch".into(),
+            ..SnapshotRef::default()
+        };
+        retention(&mut expected);
+        assert_eq!(table.refs[MAIN], expected);
     }
 
     #[test]
@@ -1854,6 +2124,7 @@ mod tests {
             required: false,
             field_type: Type::Primitive(Primitive::String),
             doc: None,
+            other: Default::default(),
         };
         let schema = |schema_id: i32, fields: Vec<NestedField>| Schema {
             kind: Default::default(),
@@ -1864,6 +2135,7 @@ mod tests {
         let earlier = schema(0, vec![column(1, "host"), column(2, "gone")]);
         let current = schema(1, vec![column(1, "host")]);
         let field = |name: &str, transform: Transform, source_id: i32| PartitionField {
+            source_ids: None,
             name: name.into(),
             transform,
             source_id,
@@ -1890,6 +2162,44 @@ mod tests {
         );
         // Any other transform reads its source, which must be in the current schema.
         assert!(partition_types(&spec(vec![field("gone", Transform::Identity, 2)]), &current, &schemas).is_err());
+    }
+
+    #[test]
+    fn a_table_partitioned_void_over_a_dropped_column_takes_commits() {
+        let fake = Arc::new(Mutex::new(Fake::default()));
+        let url = serve(fake.clone());
+        let store = Arc::new(InMemory::new());
+        let config = config(&url, &["host"]);
+        let before = st(&[("host", DataType::Str), ("gone", DataType::Str)]);
+        committer(&url, &config, &before, &store);
+        {
+            let mut fake = fake.lock().unwrap();
+            let table = fake.table.as_mut().unwrap();
+            let mut schema = table.schemas[0].clone();
+            schema.schema_id = 1;
+            let gone = schema.fields.pop().unwrap();
+            table.schemas.push(schema);
+            table.current_schema_id = 1;
+            let mut spec = table.partition_specs[0].clone();
+            spec.spec_id = 1;
+            spec.fields.push(PartitionField {
+                source_ids: None,
+                name: "gone_null".into(),
+                transform: Transform::Void,
+                source_id: gone.id,
+                field_id: 1001,
+            });
+            table.partition_specs.push(spec);
+            table.default_spec_id = 1;
+            table.last_partition_id = 1001;
+        }
+
+        let mut committer = committer(&url, &config, &st(&[("host", DataType::Str)]), &store);
+        committer
+            .commit(&[file(&committer, &[("host", "a"), ("gone_null", "null")], 3)])
+            .unwrap();
+        let live: Vec<_> = live_files(&committer).into_iter().map(|e| e.partition).collect();
+        assert_eq!(live, [vec![Some(Literal::String("a".into())), None]]);
     }
 
     #[test]

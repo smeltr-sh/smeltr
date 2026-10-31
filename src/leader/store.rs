@@ -1,15 +1,16 @@
-//! Durable leader state: people, worker credentials, enrollment codes, the secret catalog, every group's color, and
+//! Durable leader state: accounts, worker credentials, enrollment codes, the secret catalog, every group's color, and
 //! who holds each single-worker source with what it has delivered. A worker group's identity and configuration are
 //! not here at all -- it exists exactly when `main` holds a file under `groups/<id>/`, and that repository is what
 //! holds its name and configuration. Its color is the one thing about it kept here instead. Live heartbeat state is `registry`'s, in memory.
 //!
 //! Password verifiers live here too, so this file is the reason `leader.db` needs the filesystem protection the
-//! sealing key already has: a copy of it can be attacked offline.
+//! secrets encryption key already has: a copy of it can be attacked offline.
 
+use super::envelope::ErrorKind;
 use crate::heartbeat::{LedgerEntry, SourceKey};
 use crate::io::Progress;
 
-/// A worker's Bearer credential, as its hash. The raw token exists only in the response to the `POST /api/enroll` call
+/// A worker's Bearer credential, as its hash. The raw token exists only in the response to the `POST /api/worker/enroll` call
 /// that issued it.
 pub struct WorkerCredentialRecord {
     pub worker_id: String,
@@ -83,10 +84,37 @@ impl Custody {
     }
 }
 
+/// What a certificate this leader issued is issued for, and what each renewal issues it for again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Issued {
+    /// The DNS names and IP addresses it covers.
+    pub names: Vec<String>,
+    /// How long each version is valid, in days. Never past the leader's authority.
+    pub validity_days: i64,
+}
+
+impl Issued {
+    pub fn validity(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.validity_days.max(1) as u64 * 24 * 60 * 60)
+    }
+}
+
+/// How the leader keeps a certificate up to date on its own: an entry with one is never replaced by an upload.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Kept {
+    /// Issued under the leader's own authority, and issued again the same way.
+    Issued(Issued),
+    /// Ordered over ACME, under the `acme.*` settings, and ordered again under them.
+    Acme,
+}
+
 /// What the leader knows about a secret. Never its value.
 pub struct SecretRecord {
     pub name: String,
     pub description: String,
+    /// Whether this is a certificate's private key, with the certificate's public chain kept beside each version.
+    /// Listed on the Certificates page rather than with the secrets.
+    pub certificate: bool,
     /// Every version still held, oldest first. Non-empty exactly when custody is [`Custody::LeaderStored`]: the
     /// leader either holds values and has these facts about them, or holds nothing and has none.
     ///
@@ -121,7 +149,67 @@ impl SecretRecord {
     }
 }
 
-// -- people -----------------------------------------------------------------
+/// Where the secrets encryption key stands against the values sealed under it (`docs/architecture/security.md`,
+/// Secrets boundary).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyStanding {
+    /// Where the leader reads the key from.
+    pub path: std::path::PathBuf,
+    pub key: KeyState,
+    /// Every value whose newest copy the key cannot open, by name: what an admin enters again.
+    pub unopenable: Vec<Unopenable>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyState {
+    /// No key and nothing sealed: a leader that has stored nothing yet.
+    Absent,
+    /// The key opens every value sealed since it was written. Values sealed before it, under a key it replaced, are
+    /// [`KeyStanding::unopenable`] until entered again.
+    Held { key_id: String },
+    /// No key, and values sealed under one.
+    Missing,
+    /// A key that did not seal the stored values, nor replaced the key that did.
+    Mismatched { key_id: String },
+}
+
+/// One value the key cannot open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unopenable {
+    /// A leader-stored secret, by name.
+    Secret(String),
+    /// A certificate's private key, by the certificate's name.
+    Certificate(String),
+    /// A sealed leader setting, by its key.
+    Setting(String),
+}
+
+impl KeyStanding {
+    /// Whether the key is gone or wrong. While it is, nothing is sealed: a value sealed now would be sealed under a
+    /// key the restored one cannot open, or written beside values the leader can no longer read.
+    pub fn broken(&self) -> bool {
+        matches!(self.key, KeyState::Missing | KeyState::Mismatched { .. })
+    }
+
+    /// What is wrong, in the words the Issues page and a refused write both use. `None` while the key is not broken.
+    pub fn problem(&self) -> Option<String> {
+        let what = match self.key {
+            KeyState::Missing => "is missing",
+            KeyState::Mismatched { .. } => "does not match the stored secrets",
+            KeyState::Absent | KeyState::Held { .. } => return None,
+        };
+        let n = self.unopenable.len();
+        Some(format!(
+            "the secrets encryption key at {} {what}, so the {n} stored secret{} cannot be opened and no new ones can \
+             be stored. Restore it and restart the leader, or regenerate it under Admin, \
+             Secrets, Encryption key",
+            self.path.display(),
+            if n == 1 { "" } else { "s" },
+        ))
+    }
+}
+
+// -- accounts ---------------------------------------------------------------
 
 /// Where an account's credentials come from, fixed when the account is created.
 ///
@@ -135,6 +223,8 @@ pub enum AuthSource {
     Local,
     /// An issuer and a subject an OpenID provider vouches for. The leader holds no credential for it.
     Oidc,
+    /// A key the leader keeps the hash of, sent on every request ([`Store::api_key_by_hash`]). It never signs in.
+    Key,
 }
 
 impl AuthSource {
@@ -142,6 +232,7 @@ impl AuthSource {
         match self {
             AuthSource::Local => "local",
             AuthSource::Oidc => "oidc",
+            AuthSource::Key => "key",
         }
     }
 
@@ -149,12 +240,13 @@ impl AuthSource {
         match s {
             "local" => Some(AuthSource::Local),
             "oidc" => Some(AuthSource::Oidc),
+            "key" => Some(AuthSource::Key),
             _ => None,
         }
     }
 }
 
-/// A person. Never their credentials: a password hash reaches only [`Store::local_credential_by_username`], so
+/// An account, however it signs in. Never its credentials: a password hash reaches only [`Store::local_credential_by_username`], so
 /// nothing that logs, serializes or `Debug`s a user can carry one.
 #[derive(Clone, Debug)]
 pub struct UserRecord {
@@ -164,9 +256,6 @@ pub struct UserRecord {
     pub auth_source: AuthSource,
     pub display_name: String,
     pub enabled: bool,
-    /// A local account always is. An OIDC account never is by this flag: what it holds comes from its roles
-    /// (`access::Access::of`).
-    pub administrator: bool,
     /// Bumped by a password change, a reset and an explicit revocation. A session quoting an older one is refused,
     /// which is what makes those three take effect on the next request rather than at the next sweep.
     pub generation: i64,
@@ -199,7 +288,7 @@ pub struct SecurityEvent {
     pub actor: String,
     /// What was attempted, in a fixed vocabulary: `login`, `logout`, `password-change`, `account-create`,
     /// `account-disable`, `account-enable`, `password-reset`, `revoke-sessions`, `bootstrap`, `recover`, `role-put`,
-    /// `role-delete`.
+    /// `role-delete`, `account-rename`, `account-access`, `key-create`, `key-revoke`.
     pub action: String,
     /// What it was done to -- a user id, usually. Empty when the action names no object.
     pub target: String,
@@ -249,23 +338,23 @@ impl Actor {
     }
 
     /// An account, as the gate resolved it.
-    pub fn person(id: &str, display_name: &str) -> Actor {
+    pub fn account(id: &str, display_name: &str) -> Actor {
         Actor {
             id: id.to_string(),
             display_name: display_name.to_string(),
         }
     }
 
-    /// A person's agent acting for them: their account, named as theirs.
-    pub fn persons_agent(id: &str, display_name: &str) -> Actor {
+    /// An account's agent acting for it: its account, named as its.
+    pub fn agent_of(id: &str, display_name: &str) -> Actor {
         Actor {
             id: id.to_string(),
             display_name: format!("{display_name} (agent)"),
         }
     }
 
-    /// Whether this is a person rather than the leader or its host. What decides if an action needs a session.
-    pub fn is_person(&self) -> bool {
+    /// Whether this is an account rather than the leader, its host or nobody.
+    pub fn is_account(&self) -> bool {
         ![Actor::SYSTEM_ID, Actor::HOST_ID, Actor::ANONYMOUS_ID].contains(&self.id.as_str())
     }
 }
@@ -280,6 +369,10 @@ pub enum AccountError {
     NoSuchUser,
     /// The operation would leave no enabled administrator able to log in.
     LastAdministrator,
+    /// An OIDC account holds what its provider's groups give, and is given nothing here.
+    HeldByProvider,
+    /// The account is disabled, and takes no key until it is enabled.
+    Disabled,
     /// A local-credential operation named an account that is not local.
     WrongAuthSource,
     /// The account moved on since the caller read it: disabled, or its generation bumped by a reset or a
@@ -291,8 +384,13 @@ impl std::fmt::Display for AccountError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AccountError::UsernameTaken => write!(f, "that username is already taken"),
-            AccountError::NoSuchUser => write!(f, "no such user"),
-            AccountError::LastAdministrator => write!(f, "this is the last local administrator account"),
+            AccountError::NoSuchUser => write!(f, "no such account"),
+            AccountError::LastAdministrator => write!(f, "this is the last administrator who signs in with a password"),
+            AccountError::HeldByProvider => write!(
+                f,
+                "roles are not given here: an OIDC account holds the roles its provider's groups give"
+            ),
+            AccountError::Disabled => write!(f, "that account is disabled"),
             AccountError::WrongAuthSource => write!(f, "that account does not sign in with a password"),
             AccountError::Superseded => write!(f, "that account changed since it was read"),
         }
@@ -336,6 +434,43 @@ pub struct OidcIdentityRecord {
     pub last_sign_in: i64,
 }
 
+/// One key an account holds, as its roster shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApiKeyRecord {
+    pub id: String,
+    pub label: String,
+    pub created_at: i64,
+    /// When it stops letting anyone in. `None` for a key that never expires.
+    pub expires_at: Option<i64>,
+    /// When it last let a request in, to the minute. `None` for a key never used.
+    pub last_used_at: Option<i64>,
+}
+
+/// A key presented to the gate, as its row says: whose it is, and whether it still lets anyone in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PresentedKey {
+    pub id: String,
+    pub user_id: String,
+    pub revoked: bool,
+    pub expires_at: Option<i64>,
+    pub last_used_at: Option<i64>,
+}
+
+/// A new key account, which holds no key until one is made for it.
+pub struct NewKeyAccount<'a> {
+    pub id: &'a str,
+    pub display_name: &'a str,
+}
+
+/// A new key. The key itself is never here: the leader answers it once and keeps the hash.
+pub struct NewApiKey<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub token_hash: &'a str,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+}
+
 /// A conversation between a person and their agent. Its turns are kept apart, in order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConversationRecord {
@@ -349,12 +484,42 @@ pub struct ConversationRecord {
     pub updated_at: i64,
 }
 
+/// A store call that did not do what it was asked. `kind` says whether the store failed or refused, which is what
+/// a route answers it at (`envelope::Refusal`).
 #[derive(Debug)]
-pub struct StoreError(pub String);
+pub struct StoreError {
+    pub kind: ErrorKind,
+    pub message: String,
+}
+
+impl StoreError {
+    pub fn failed(message: impl Into<String>) -> Self {
+        StoreError::of(ErrorKind::Failed, message)
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        StoreError::of(ErrorKind::Conflict, message)
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        StoreError::of(ErrorKind::NotFound, message)
+    }
+
+    pub fn invalid(message: impl Into<String>) -> Self {
+        StoreError::of(ErrorKind::Invalid, message)
+    }
+
+    pub fn of(kind: ErrorKind, message: impl Into<String>) -> Self {
+        StoreError {
+            kind,
+            message: message.into(),
+        }
+    }
+}
 
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.message)
     }
 }
 
@@ -362,13 +527,13 @@ impl std::error::Error for StoreError {}
 
 impl From<String> for StoreError {
     fn from(message: String) -> Self {
-        StoreError(message)
+        StoreError::failed(message)
     }
 }
 
 impl From<StoreError> for String {
     fn from(e: StoreError) -> String {
-        e.0
+        e.message
     }
 }
 
@@ -596,6 +761,32 @@ pub trait Store: Send + Sync {
         value: Option<&str>,
     ) -> Result<(), StoreError>;
 
+    /// Declares `name` as a certificate: a leader-stored secret holding `key`, with `chain` beside its first
+    /// version. PEM both.
+    fn create_certificate(&self, name: &str, description: &str, chain: &str, key: &str) -> Result<(), StoreError>;
+
+    /// [`Store::create_certificate`] for one this leader keeps up to date as `kept` says.
+    fn create_kept_certificate(
+        &self,
+        name: &str,
+        description: &str,
+        kept: &Kept,
+        chain: &str,
+        key: &str,
+    ) -> Result<(), StoreError>;
+
+    /// The certificates this leader keeps up to date, each with how.
+    fn kept_certificates(&self) -> Result<std::collections::BTreeMap<String, Kept>, StoreError>;
+
+    /// Changes how this leader issues `name` from now on. Errors where it does not issue it.
+    fn set_issued(&self, name: &str, issued: &Issued) -> Result<(), StoreError>;
+
+    /// [`Store::add_secret_version`] for a certificate: `key` sealed as the new version, `chain` beside it.
+    fn add_certificate_version(&self, name: &str, chain: &str, key: &str) -> Result<i64, StoreError>;
+
+    /// The chain beside `name`'s `version`, PEM. `None` for a secret that is not a certificate, or a version not held.
+    fn certificate_chain(&self, name: &str, version: i64) -> Result<Option<String>, StoreError>;
+
     /// Seals `value` as a new version of `name` and returns its number -- what a bundle quotes to run it. Errors
     /// for an unknown name and for worker-local custody.
     ///
@@ -615,17 +806,8 @@ pub trait Store: Send + Sync {
     /// name, an unheld version, and a row the leader's key cannot open.
     fn verify_secret(&self, name: &str, version: i64, candidate: &str) -> Result<bool, StoreError>;
 
-    /// Whether the value at `name`/`version` is the private key `certificate` was issued for.
-    ///
-    /// A yes-or-no about a value, like `verify_secret`, and for the same reason: an outbound identity's certificate
-    /// is committed and its key is not, so nothing but the leader can tell whether a bundle names two that belong
-    /// together -- and a bundle that names two that do not deploys into a handshake nobody can explain.
-    ///
-    /// `false` for a value this leader cannot open, so an unopenable row is refused rather than waved through.
-    fn certificate_matches(&self, name: &str, version: i64, certificate: &str) -> Result<bool, StoreError>;
-
-    /// The values among `entitled` that a worker does not already hold, as name, version and value, for delivery on
-    /// the heartbeat. `entitled` is the exact `(name, version)` pairs the worker's group's bundle quotes.
+    /// The values among `entitled` that a worker does not already hold, each with the chain beside it where it is a
+    /// certificate entry's key, for delivery on the heartbeat. `entitled` is the exact `(name, version)` pairs the worker's group's bundle quotes.
     ///
     /// The one method here that returns a value, and it cannot be asked for one: it answers "what does this group
     /// lack", never "what is the value of X". A pair that is worker-local, unknown, no longer held, or sealed under
@@ -635,7 +817,16 @@ pub trait Store: Send + Sync {
         &self,
         entitled: &[(String, i64)],
         held: &[(String, i64)],
-    ) -> Result<Vec<(String, i64, String)>, StoreError>;
+    ) -> Result<Vec<crate::heartbeat::SecretDelivery>, StoreError>;
+
+    /// Where the secrets encryption key stands against what is sealed under it.
+    fn key_standing(&self) -> Result<KeyStanding, StoreError>;
+
+    /// Writes a new secrets encryption key in place of one that is missing or does not match, and records the keys
+    /// it replaces so the values they sealed read as values to enter again rather than as a wrong key. A
+    /// mismatched key file is moved aside, not overwritten: it may yet be the right one for something. Refused
+    /// while the key is not broken.
+    fn regenerate_key(&self, event: &SecurityEvent) -> Result<KeyStanding, StoreError>;
 
     /// Every hue chosen so far, keyed by whatever id it was set for -- a real group's, or `"shared"`'s. What a new
     /// group's color is picked distinct from.
@@ -680,7 +871,7 @@ pub trait Store: Send + Sync {
     /// reads any more; one that comes back starts afresh.
     fn forget_source(&self, group: &str, key: &SourceKey) -> Result<(), StoreError>;
 
-    // -- people ------------------------------------------------------------
+    // -- accounts ----------------------------------------------------------
     //
     // A password hash is written and compared, never listed: only `local_credential_by_username` returns one, so
     // the roster the GUI and the audit read cannot carry a verifier by accident.
@@ -693,16 +884,32 @@ pub trait Store: Send + Sync {
     /// written: the check and the insert are one transaction, so exactly one of two concurrent bootstraps wins.
     fn bootstrap_administrator(&self, user: NewLocalUser<'_>) -> Result<bool, StoreError>;
 
-    /// Create an enabled local administrator alongside the accounts already there.
+    /// Create an enabled local account alongside the accounts already there, holding the roles `roles` names.
     ///
     /// `event` lands in the same transaction: an account that exists with no record of who created it is the one
     /// case an audit is for, so the two are one write or neither is.
     fn create_local_user(
         &self,
         user: NewLocalUser<'_>,
+        roles: &[String],
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
+    /// The roles an administrator gave the account `user_id`, by name. Empty for an OIDC account, whose roles its
+    /// provider's groups give.
+    fn given_roles(&self, user_id: &str) -> Result<Vec<String>, StoreError>;
+
+    /// Replace the roles an administrator gives a local or key account, `event` in the same transaction. Refused
+    /// for an OIDC account, and when taking the administrator role from a local account would leave none who can
+    /// sign in.
+    fn change_access(
+        &self,
+        user_id: &str,
+        roles: &[String],
+        event: &SecurityEvent,
+    ) -> Result<Result<(), AccountError>, StoreError>;
+
+    /// Every account, however it signs in, oldest first.
     fn list_users(&self) -> Result<Vec<UserRecord>, StoreError>;
 
     fn get_user(&self, id: &str) -> Result<Option<UserRecord>, StoreError>;
@@ -738,7 +945,8 @@ pub trait Store: Send + Sync {
 
     /// Enable or disable an account. Disabling is refused when it would leave no enabled administrator holding a
     /// password -- checked inside the transaction, so two concurrent disables cannot remove the last one between
-    /// them -- and moves the generation, so no session issued before it survives being re-enabled.
+    /// them -- and moves the generation, so no session issued before it survives being re-enabled. It also revokes
+    /// every key the account holds, so enabling it again brings back none of them.
     fn set_user_enabled(
         &self,
         user_id: &str,
@@ -746,6 +954,7 @@ pub trait Store: Send + Sync {
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
+    /// Rename an account. Display names may repeat: the id tells accounts apart.
     fn set_display_name(&self, user_id: &str, display_name: &str) -> Result<Result<(), AccountError>, StoreError>;
 
     /// The account the identity `(issuer, subject)` signs in as, creating it on its first sign-in, with `created`
@@ -763,8 +972,8 @@ pub trait Store: Send + Sync {
     /// as it is.
     fn oidc_refreshed(&self, user_id: &str, groups: &[String], login: Option<&str>) -> Result<(), StoreError>;
 
-    /// Re-enable a local account and give it a fresh must-change password, bumping its generation: what recovery
-    /// from the host does, as one transaction.
+    /// Re-enable a local account, give it the administrator role and a fresh must-change password, and bump its
+    /// generation: what recovery from the host does, as one transaction.
     fn recover_local_user(
         &self,
         username: &str,
@@ -775,6 +984,40 @@ pub trait Store: Send + Sync {
 
     /// Newest first, capped at `limit`.
     fn list_security_events(&self, limit: usize) -> Result<Vec<SecurityEvent>, StoreError>;
+
+    // -- key accounts ------------------------------------------------------
+    //
+    // A key is written and compared as its hash, never listed: only `api_key_by_hash` reads a key's row by it.
+
+    /// Create an enabled key account with no key, holding the roles `roles` names, `event` in the same transaction.
+    fn create_key_account(
+        &self,
+        account: NewKeyAccount<'_>,
+        roles: &[String],
+        event: &SecurityEvent,
+    ) -> Result<(), StoreError>;
+
+    /// The keys the account `user_id` holds that are not revoked, expired or not, oldest first. Never a key or its
+    /// hash.
+    fn api_keys_of(&self, user_id: &str) -> Result<Vec<ApiKeyRecord>, StoreError>;
+
+    /// Give the enabled key account `id` a new key, `event` in the same transaction.
+    fn create_api_key(
+        &self,
+        id: &str,
+        key: NewApiKey<'_>,
+        event: &SecurityEvent,
+    ) -> Result<Result<(), AccountError>, StoreError>;
+
+    /// Revoke the key `key_id` of the key account `id` at `at`, `event` in the same transaction. Its row stays, so
+    /// the key stays out. False when the account holds no such key unrevoked.
+    fn revoke_api_key(&self, id: &str, key_id: &str, at: i64, event: &SecurityEvent) -> Result<bool, StoreError>;
+
+    /// The key whose hash is `token_hash`, revoked, expired or neither. `None` for a key never made.
+    fn api_key_by_hash(&self, token_hash: &str) -> Result<Option<PresentedKey>, StoreError>;
+
+    /// Record that the key `key_id` let a request in at `at`.
+    fn mark_api_key_used(&self, key_id: &str, at: i64) -> Result<(), StoreError>;
 
     /// What `user_id` lets their own agent use: the default until they have said.
     fn agent_permissions_of(&self, user_id: &str) -> Result<super::access::AgentPermissions, StoreError>;

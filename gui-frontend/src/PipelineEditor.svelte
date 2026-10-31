@@ -1,19 +1,23 @@
 <!--
-  One pipeline's builder: loaded from `GET /api/pipelines/:id` (blank for
+  One pipeline's builder: loaded from `GET /api/areas/:area/pipelines/:id` (blank for
   `id === 'new'`), run in-process against a saved sample through
-  `/api/preview`, and saved with `PUT /api/pipelines/:id`, which the
+  `/api/areas/:area/preview/pipeline`, and saved with `PUT /api/areas/:area/pipelines/:id`, which the
   backend validates against the whole bundle.
 
-  The sample is chosen from the library, never typed here: records are
-  authored on the Samples page, so what a preview ran over has a name and
-  is in the branch's history. Arriving with one named in the URL selects it
-  on load instead of defaulting to the first in the library.
+  The records come from a saved sample, so what a preview ran over has a
+  name and is in the branch's history; the sample menu also saves a
+  capture or pasted records as one. The editor opens on the sample named in
+  the URL, else on the one this pipeline last ran over in this browser.
 -->
 <script lang="ts">
+  import StateMark from './StateMark.svelte';
   import InlineError from './InlineError.svelte';
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
+  import { opening } from './StepEditor.svelte';
+  import { store, stored } from './stored';
   import StepList from './StepList.svelte';
   import Connections from './Connections.svelte';
+  import PipelineProduces from './PipelineProduces.svelte';
   import SectionShell from './SectionShell.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
   import Toggle from './Toggle.svelte';
@@ -27,6 +31,9 @@
     orderedStepErrors,
     unknownLookupTables,
     truncateSteps,
+    flatSteps,
+    STEP_LABELS,
+    stepsRun,
     parseInputFor,
     stepSummary,
     diffSteps,
@@ -42,21 +49,10 @@
     type FieldProposal,
     type OpenProposal,
   } from './proposal';
-  import { SvelteSet } from 'svelte/reactivity';
   import { fieldsSettled } from './grokFields';
   import { provideUnfinishedRows } from './unfinished.svelte';
-  import RecordFields from './RecordFields.svelte';
-  import { formatDiffValue } from './diff';
-  import {
-    cellOf,
-    columnsFor,
-    countStates,
-    declaredRecord,
-    diffRecords,
-    splitPath,
-    type Declared,
-    type FieldLeaf,
-  } from './recordDiff';
+  import RemovableChip from './RemovableChip.svelte';
+  import { declaredRecord, type Declared } from './recordDiff';
   import {
     sharedConfig,
     getPipeline,
@@ -75,21 +71,26 @@
     SHARED_SCOPE,
     previewFailure,
     previewPipeline,
+    afterDot,
+    type AskAt,
+    type DictionaryOut,
+    type Dictionary,
+    TAG_FIELD,
     errorText,
     type ApiError,
     errorMessage,
     type GrokPatternDto,
+    type SchemaDto,
     type LookupTableDto,
     type PipelineDto,
+    type Connected,
     type SampleRecordDto,
     type SampleSummary,
     type TestSummary,
     type SaveConflict,
-    type PreviewRow,
     type PreviewResult,
     type ParserProposal,
     parsersIn,
-    sampleSource,
   } from './api';
   import ChipPicker from './ChipPicker.svelte';
   import JumpLinks from './JumpLinks.svelte';
@@ -101,16 +102,15 @@
   import HeldEdit from './HeldEdit.svelte';
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
-  import Help from './Help.svelte';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import SamplePicker from './SamplePicker.svelte';
+  import RecordsPane, { type PauseRun } from './RecordsPane.svelte';
+  import { RECOMPUTE_MS } from './FindBox.svelte';
+  import SampleMenu from './SampleMenu.svelte';
   import PencilIcon from './PencilIcon.svelte';
   import { mintPipelineId } from './ids';
   import { announcePipelineNames, newPipelineHash, withPipeline, type Making } from './nav';
-  import { ago, count } from './time';
+  import { ago } from './time';
   import { editable, mayCapture } from './access';
-  import SortButton from './SortButton.svelte';
-  import { TableSort } from './sort.svelte';
 
   let {
     id,
@@ -137,6 +137,8 @@
   let pipelineId = $derived(loadedId || newId);
   let pipelineName = $state('New pipeline');
   let steps: Step[] = $state([]);
+  /** The schemas its rows are held to, by id (`PipelineDto.produces`). */
+  let produces: string[] = $state([]);
   let loading = $state(true);
   let loadFailed = $state(false);
 
@@ -152,12 +154,15 @@
   function signatureOf(theSteps: Step[]): string {
     return JSON.stringify(theSteps.map(stepToDto));
   }
-  function editSignatureOf(name: string, theSteps: Step[]): string {
-    return name + '::' + signatureOf(theSteps);
+  // Produces is added only when it names a schema, so a draft held by a build before Produces still compares.
+  function editSignatureOf(name: string, theSteps: Step[], theProduces: string[]): string {
+    const produced = theProduces.length > 0 ? '::' + JSON.stringify(theProduces) : '';
+    return name + '::' + signatureOf(theSteps) + produced;
   }
   const unfinished = provideUnfinishedRows();
-  let signature = $derived(signatureOf(unfinished.hold(steps).steps));
-  let editSignature = $derived(editSignatureOf(pipelineName, steps));
+  // What the pipeline produces is what its rows are checked against, so a change to it runs the preview again.
+  let signature = $derived(signatureOf(unfinished.hold(steps).steps) + JSON.stringify(produces));
+  let editSignature = $derived(editSignatureOf(pipelineName, steps, produces));
   let savedSignature = $state('');
   // What `savedSignature` names, kept whole (not just its signature) so
   // discarding an edit has something to revert to. Cloned in and out: `steps`
@@ -165,6 +170,7 @@
   // let that mutate the very snapshot discarding is meant to fall back on.
   let savedPipelineName = $state('');
   let savedSteps: Step[] = $state([]);
+  let savedProduces: string[] = $state([]);
   // `loading` guards the window between a route change and the fetch it
   // starts landing: `steps` still holds whatever the previous route left
   // there (or the "New pipeline" default) while `savedSignature` has not
@@ -192,15 +198,15 @@
 
   /** What is held, in the two forms a record needs: the steps to put back,
    * and the signature to compare by, in the form `savedSignature` takes. */
-  function snapshotFor(name: string, theSteps: Step[]) {
+  function snapshotFor(name: string, theSteps: Step[], theProduces: string[]) {
     return {
-      value: JSON.stringify({ pipelineName: name, steps: theSteps }),
-      signature: editSignatureOf(name, theSteps),
+      value: JSON.stringify({ pipelineName: name, steps: theSteps, produces: theProduces }),
+      signature: editSignatureOf(name, theSteps, theProduces),
     };
   }
 
-  /** A held draft. */
-  type Draft = { pipelineName: string; steps: Step[] };
+  /** A held draft. A draft held by a build before Produces has none. */
+  type Draft = { pipelineName: string; steps: Step[]; produces?: string[] };
 
   /** What to do about an edit held from an earlier visit, now that this
    * editor's own read has landed. Restore says nothing: the pipeline is what
@@ -214,6 +220,7 @@
     if (verdict.kind === 'restore') {
       pipelineName = draft.pipelineName;
       steps = draft.steps;
+      produces = draft.produces ?? [];
       return;
     }
     const rows = diffSteps(steps, draft.steps);
@@ -221,6 +228,13 @@
       rows.unshift({
         kind: 'changed',
         summary: `renamed from "${pipelineName}" to "${draft.pipelineName}"`,
+      });
+    }
+    const heldProduces = draft.produces ?? [];
+    if (JSON.stringify(heldProduces) !== JSON.stringify(produces)) {
+      rows.unshift({
+        kind: 'changed',
+        summary: `produces ${heldProduces.length > 0 ? heldProduces.join(', ') : 'no schema'}`,
       });
     }
     moved = { value: verdict.held.value, rows };
@@ -235,7 +249,7 @@
   $effect(() => {
     if (loading || moved) return;
     hold(FILE, {
-      ...snapshotFor(pipelineName, steps),
+      ...snapshotFor(pipelineName, steps, produces),
       baseline: savedSignature,
       readAtCommit,
       label: pipelineName,
@@ -247,12 +261,14 @@
   let ownPipelines: PipelineDto[] = $state([]);
   let ownLookupTables: LookupTableDto[] = $state([]);
   let ownGrokPatterns: GrokPatternDto[] = $state([]);
+  let ownSchemas: SchemaDto[] = $state([]);
   // A group runs with `shared/` merged in, so a `call` step may target a
   // shared pipeline and a lookup step read a shared table. The leader merges
   // them into a group's preview itself, so they are offered, never sent.
   let sharedPipelines: PipelineDto[] = $state([]);
   let sharedLookupTables: LookupTableDto[] = $state([]);
   let sharedGrokPatterns: GrokPatternDto[] = $state([]);
+  let sharedSchemas: SchemaDto[] = $state([]);
   // What a `call` step may target (a self-call is a cycle).
   let otherPipelines = $derived([...sharedPipelines, ...ownPipelines]);
   let pipelineIds = $derived(otherPipelines.map((p) => p.id));
@@ -274,11 +290,13 @@
       ownPipelines = res.config.pipelines.filter((p) => p.id !== id);
       ownLookupTables = res.config.lookupTables;
       ownGrokPatterns = res.config.grokPatterns ?? [];
+      ownSchemas = res.config.schemas ?? [];
     }
     if (shared) {
       sharedPipelines = shared.pipelines;
       sharedLookupTables = shared.lookupTables;
       sharedGrokPatterns = shared.grokPatterns ?? [];
+      sharedSchemas = shared.schemas ?? [];
     }
     configLoaded = true;
   });
@@ -307,14 +325,16 @@
       result = lastGoodResult = null;
       pipelineName = madeFor ? `${madeFor}-parse` : 'New pipeline';
       steps = [];
+      produces = [];
       loading = false;
       loadFailed = false;
       // Literals, not a read-back of `pipelineName`/`steps`: reading them
       // here, right after this same effect just wrote them, would make the
       // effect depend on its own output and re-run itself indefinitely.
-      savedSignature = editSignatureOf('New pipeline', []);
+      savedSignature = editSignatureOf('New pipeline', [], []);
       savedPipelineName = 'New pipeline';
       savedSteps = [];
+      savedProduces = [];
       readAtCommit = null;
       // Outside tracking too, for the same reason -- its own reads of
       // `steps`/`pipelineName`/`editSignature` would otherwise attach to
@@ -338,11 +358,14 @@
         if (res.ok && res.pipeline) {
           const loadedSteps = stepsFromDto(res.pipeline.steps);
           loadedId = res.pipeline.id;
+          const loadedProduces = res.pipeline.produces ?? [];
           pipelineName = res.pipeline.name;
           steps = loadedSteps;
-          savedSignature = editSignatureOf(res.pipeline.name, loadedSteps);
+          produces = loadedProduces;
+          savedSignature = editSignatureOf(res.pipeline.name, loadedSteps, loadedProduces);
           savedPipelineName = res.pipeline.name;
           savedSteps = $state.snapshot(loadedSteps);
+          savedProduces = [...loadedProduces];
           readAtCommit = res.commit ?? null;
           untrack(() => adoptHeld());
         } else {
@@ -409,8 +432,8 @@
   async function undoPipeline() {
     if (!readAtCommit) return;
     const ok = await ask({
-      title: `Undo changes to ${savedPipelineName}?`,
-      body: `Its edits are undone as a new save on ${editingBranch}.`,
+      title: 'undo changes',
+      body: `Undo the changes to ${savedPipelineName}, as a new save on ${editingBranch}.`,
       action: 'Undo changes',
       danger: true,
     });
@@ -421,8 +444,7 @@
       const res = await undoChanges(
         editingBranch,
         currentScope(),
-        'pipelines',
-        loadedId,
+        { section: 'pipelines', id: loadedId },
         readAtCommit,
       );
       if (!res.ok) {
@@ -483,10 +505,15 @@
     // A step's id is a string like any other and a hand-edited pipeline can
     // legally give one "" -- null, not falsy, is what "nothing to jump to" means.
     if (jumpToStepId === null) return;
-    document
-      .getElementById(`step-${jumpToStepId}`)
-      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const id = jumpToStepId;
     jumpToStepId = null;
+    // Opened first, so the scroll lands on the card as it will stand.
+    opening.id = id;
+    void tick().then(() =>
+      document
+        .getElementById(`step-${id}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
+    );
   });
 
   /** Reverts to what was last loaded or saved, dropping every edit since --
@@ -494,6 +521,7 @@
   function discard() {
     pipelineName = savedPipelineName;
     steps = $state.snapshot(savedSteps);
+    produces = [...savedProduces];
     moved = null;
   }
 
@@ -527,18 +555,21 @@
       // protecting it.
       const submittedName = pipelineName;
       const submittedSteps = $state.snapshot(steps);
+      const submittedProduces = [...produces];
       const targetId = pipelineId;
       const res = await putPipeline(targetId, {
         id: targetId,
         name: submittedName,
         steps: submittedSteps.map(stepToDto),
+        ...(submittedProduces.length > 0 ? { produces: submittedProduces } : {}),
       });
       if (res.ok) {
         loadedId = targetId;
         saveMessage = 'Saved.';
-        savedSignature = editSignatureOf(submittedName, submittedSteps);
+        savedSignature = editSignatureOf(submittedName, submittedSteps, submittedProduces);
         savedPipelineName = submittedName;
         savedSteps = $state.snapshot(submittedSteps);
+        savedProduces = submittedProduces;
         readAtCommit = res.commit ?? null;
         // Clear the draft under the URL this save was submitted from,
         // including `#/build/pipelines/new` on a new pipeline's first save.
@@ -581,7 +612,7 @@
   }
 
   async function saveFromJson(text: string): Promise<{ ok: boolean; errors: string }> {
-    let parsed: { pipelineName: string; steps: Step[] };
+    let parsed: { pipelineName: string; steps: Step[]; produces: string[] };
     try {
       parsed = parsePipelineDtoJson(text);
     } catch (e) {
@@ -592,14 +623,17 @@
       id: targetId,
       name: parsed.pipelineName,
       steps: parsed.steps.map(stepToDto),
+      ...(parsed.produces.length > 0 ? { produces: parsed.produces } : {}),
     });
     if (res.ok) {
       pipelineName = parsed.pipelineName;
       steps = parsed.steps;
+      produces = parsed.produces;
       loadedId = targetId;
-      savedSignature = editSignatureOf(parsed.pipelineName, parsed.steps);
+      savedSignature = editSignatureOf(parsed.pipelineName, parsed.steps, parsed.produces);
       savedPipelineName = parsed.pipelineName;
       savedSteps = $state.snapshot(parsed.steps);
+      savedProduces = [...parsed.produces];
       readAtCommit = res.commit ?? null;
       drop(`pipelines/${id}`);
       if (back) location.hash = withPipeline(back, targetId);
@@ -614,7 +648,12 @@
 
   function jsonDraft(): string {
     return JSON.stringify(
-      { id: pipelineId, name: pipelineName, steps: steps.map(stepToDto) },
+      {
+        id: pipelineId,
+        name: pipelineName,
+        steps: steps.map(stepToDto),
+        ...(produces.length > 0 ? { produces } : {}),
+      },
       null,
       2,
     );
@@ -627,6 +666,8 @@
   let selectedSample = $state('');
   let sampleRows: SampleRecordDto[] = $state([]);
   let capturing = $state(false);
+  /** The dialog is open on its catalog, for a sample pasted, uploaded or captured. */
+  let adding = $state(false);
 
   let result = $state<PreviewResult | null>(null);
   // The grid's own state: the last run that actually produced rows, kept
@@ -639,18 +680,6 @@
   let requestError = $state('');
   /** The sample the rows on screen came from. */
   let lastSample = $state('');
-  let includeSampled = $state(false);
-  let copiedMapping = $state(false);
-
-  async function copyMapping(mapping: unknown) {
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(mapping, null, 2));
-      copiedMapping = true;
-      setTimeout(() => (copiedMapping = false), 1500);
-    } catch {
-      // No clipboard access: the mapping is on screen to select by hand.
-    }
-  }
 
   async function loadSamples() {
     try {
@@ -659,9 +688,12 @@
       // `sample` came in from the URL (a sample row's "Run in a pipeline"
       // link, or a pipeline opened from the list while it held one). With
       // none, or a stale one not on this branch, the editor opens on the
-      // picker: which records to run is the author's to choose.
-      if (!selectedSample && sample && samples.some((s) => s.id === sample)) {
-        await chooseSample(sample);
+      // last one this pipeline ran over, else on none: which records to run is
+      // the author's to choose.
+      lastUsed = readLastUsed();
+      const opening = sample || lastUsed;
+      if (!selectedSample && opening && samples.some((s) => s.id === opening)) {
+        await chooseSample(opening);
       }
     } catch (e) {
       reported(e);
@@ -688,18 +720,33 @@
 
   async function captured(id: string) {
     capturing = false;
+    adding = false;
+    captureAt = null;
     await loadSamples();
     await chooseSample(id);
     if (making) await proposeFrom(sampleRows);
   }
 
+  // The sample a pipeline last ran over, remembered per pipeline in this browser: the editor
+  // opens on it, and the sample menu lists it first.
+  const sampleKey = (pipeline: string) => `smeltr-workspace-sample:${pipeline}`;
+  let lastUsed = $state('');
+  function readLastUsed(): string {
+    return stored(sampleKey(pipelineId)) ?? '';
+  }
+
   async function chooseSample(id: string) {
+    const pipeline = untrack(() => pipelineId);
     selectedSample = id;
+    if (id) {
+      lastUsed = id;
+      store(sampleKey(pipeline), id);
+    }
     sampleRows = [];
     // The rows on screen were the last sample's.
     lastGoodResult = null;
     lastSample = '';
-    outputQuery = '';
+    records?.clearFind();
     if (!id) return;
     try {
       const res = await getSample(id);
@@ -717,12 +764,21 @@
       ? errorsByStep(steps, result.errors)
       : new Map(),
   );
+  let warningsByStep = $derived(
+    result?.ok && result.warnings ? errorsByStep(steps, result.warnings) : new Map(),
+  );
   // A refused save's errors stay on the steps until the next save, over the preview's.
   let stepListErrors = $derived(saveErrors.length > 0 ? saveErrorsByStep : compileErrorsByStep);
   /** The steps showing the preview's errors, which the box above the sample jumps to. */
   let brokenSteps = $derived(
     stepListErrors === compileErrorsByStep ? orderedStepErrors(steps, compileErrorsByStep) : [],
   );
+  /** The preview's warnings no step shows: a field the schemas it produces require and no step writes. */
+  let unplacedWarnings = $derived.by(() => {
+    if (!result?.ok || !result.warnings) return [];
+    const placed = new Set([...warningsByStep.values()].flat());
+    return result.warnings.filter((w) => !placed.has(w));
+  });
   /** The preview's errors no step shows. */
   let unplacedErrors = $derived.by(() => {
     if (!result || result.ok) return [];
@@ -730,12 +786,12 @@
     return result.errors.filter((e) => !placed.has(e));
   });
 
-  /** One `/api/preview` call over `stepsSubset`: the whole tree for a
+  /** One `/api/areas/:area/preview/pipeline` call over `stepsSubset`: the whole tree for a
    * Run, a truncated one for each side of a per-step diff. Goes through
    * `previewPipeline`, like every other config call, so it carries the
    * branch being edited. The rows still being written stay out of it.
    *
-   * `atMicros` pins `now()`, which matters for the two sides of a diff:
+   * `at` pins `now()`, which matters for the two sides of a diff:
    * without it each side reads its own clock, and a `parseTime` given no
    * reference of its own -- a yearless syslog stamp takes its year from
    * `now()` -- can land on a different instant either side and be drawn as
@@ -743,8 +799,18 @@
   async function fetchPreview(
     stepsSubset: Step[],
     sample: string,
-    atMicros?: number,
-    filter?: string,
+    {
+      at,
+      filter,
+      attribution,
+    }: {
+      /** Microseconds since the epoch. */
+      at?: number;
+      /** An expression the rows must meet (`PreviewRequest.filter`). */
+      filter?: string;
+      /** Which steps touched, dropped and failed each row. */
+      attribution?: boolean;
+    } = {},
   ): Promise<PreviewResult> {
     const held = unfinished.hold(stepsSubset);
     const config = JSON.stringify(
@@ -755,6 +821,8 @@
         ownPipelines,
         ownLookupTables,
         ownGrokPatterns,
+        ownSchemas,
+        produces,
       ),
     );
     const res = await previewPipeline({
@@ -763,18 +831,87 @@
       sample: sample || undefined,
       // Always: whether an internal field is shown is the Columns choice.
       showInternal: true,
-      atMicros,
+      atMicros: at,
       filter,
+      attribution,
     });
     return { ...res, errors: res.errors.map(held.restore) };
   }
+
+  /** Previews of the record before a step, by the steps ahead of it and the sample: a step's own edits, which leave
+   * those alone, ask nothing. */
+  const recordsBefore = new Map<string, Promise<DictionaryOut | null>>();
+
+  /** The record before `step`, from a preview of the steps ahead of it over the sample, as the step diff runs it. */
+  async function readRecordBefore(step: Step): Promise<DictionaryOut | null> {
+    const before = truncateSteps(steps, step, false);
+    if (!before) return null;
+    const key = `${lastSample}\n${JSON.stringify(unfinished.hold(before).steps)}`;
+    let asked = recordsBefore.get(key);
+    if (!asked) {
+      if (recordsBefore.size > 32) recordsBefore.clear();
+      asked = fetchPreview(before, lastSample).then(
+        (res) => {
+          // A failed preview, or a refused request, is asked again.
+          if (!res.ok || !res.dictionary) recordsBefore.delete(key);
+          return res.ok ? (res.dictionary ?? null) : null;
+        },
+        () => (recordsBefore.delete(key), null),
+      );
+      recordsBefore.set(key, asked);
+    }
+    const d = await asked;
+    if (!d) return null;
+    // The dictionary holds the field a row's exceptions are tagged in, which the record only gets as it leaves. The
+    // editor previews under no group's answers, so that field is `TAG_FIELD`.
+    const own = (d: Dictionary): Dictionary => ({
+      ...d,
+      fields: d.fields.filter(([path]) => path !== TAG_FIELD && !path.startsWith(`${TAG_FIELD}.`)),
+    });
+    return { compiled: own(d.compiled), sampled: d.sampled && own(d.sampled) };
+  }
+
+  // Bumped as the steps and the sample settle, so a step showing the record before it asks again.
+  let recordsSettled = $state(0);
+  $effect(() => {
+    void [JSON.stringify(steps), lastSample];
+    const timer = setTimeout(() => recordsSettled++, RECOMPUTE_MS);
+    return () => clearTimeout(timer);
+  });
+  let recordBefore = $derived.by(() => {
+    void recordsSettled;
+    return (step: Step) => readRecordBefore(step);
+  });
+
+  /** Asks the engine what may follow a dot in a step's expression, over the steps as they are being written and the
+   * sample's columns. */
+  const askAt: AskAt = (at) => (text, dot) =>
+    afterDot({
+      config: JSON.stringify(
+        buildFileConfig(
+          pipelineId,
+          pipelineName,
+          unfinished.hold(steps).steps,
+          ownPipelines,
+          ownLookupTables,
+          ownGrokPatterns,
+          ownSchemas,
+          produces,
+        ),
+      ),
+      pipeline: pipelineId,
+      sample: lastSample || undefined,
+      at,
+      text,
+      dot,
+    });
 
   async function run() {
     running = true;
     requestError = '';
     const sample = selectedSample;
     try {
-      const res = await fetchPreview(steps, sample);
+      const res = await fetchPreview(steps, sample, { attribution: true });
       // A run of a sample put away while it ran answers for nothing on screen.
       if (sample !== selectedSample) return;
       result = res;
@@ -801,7 +938,6 @@
   // run behind the typing rather than one button behind it. Runs compile from
   // `steps` in memory, so nothing is saved to see them. With no sample a run
   // still compiles, for the steps' errors and the data dictionary.
-  const RECOMPUTE_MS = 400;
   $effect(() => {
     const key = signature;
     void selectedSample;
@@ -815,11 +951,13 @@
   //
   // The steps column takes half the width when the work is the steps and is
   // narrow when it is inside one of them. Drag it, or double-click to snap
-  // between the two. `null` is the half.
+  // between the two. `null` is the half. The width is the reader's, remembered in this browser.
 
   const STEPS_NARROW = 240;
   const STEPS_MIN = 200;
-  let stepsWidth = $state<number | null>(null);
+  const STEPS_WIDTH_KEY = 'smeltr-workspace-steps-width';
+  let stepsWidth = $state<number | null>(Number(stored(STEPS_WIDTH_KEY)) || null);
+  $effect(() => store(STEPS_WIDTH_KEY, stepsWidth === null ? null : String(stepsWidth)));
 
   function drag(e: PointerEvent) {
     const bar = e.currentTarget as HTMLElement;
@@ -841,78 +979,123 @@
     stepsWidth = (stepsWidth ?? half) > (half + STEPS_NARROW) / 2 ? STEPS_NARROW : null;
   }
 
-  // -- per-step diff --------------------------------------------------------
+  // -- the pause ----------------------------------------------------------------
   //
-  // No step selected: before is the record as it arrived, after is the whole
-  // pipeline's output. A step selected: before/after are the pipeline
-  // truncated to either side of that step (`truncateSteps`), each a real
-  // preview run, so the diff shows what that one step did.
+  // The records stop at a step. ◎ on a step pauses them after it; a compile error pauses them
+  // before the first broken step, where the pipeline still compiles. Paused, the grid shows the
+  // pipeline truncated after that step and each record's fold shows what that one step did, each
+  // side a real preview run (`truncateSteps`). Unpaused, it shows the whole pipeline against the
+  // records as they arrived.
 
-  // Every field, or only the ones this step touched. A mapping step rewrites
-  // most of a record, so the filter is what makes a later step's handful of
-  // changes findable without reading the whole thing.
-  let changedOnly = $state(false);
-  let showTypes = $state(true);
+  /** The step ◎ paused at. */
+  let pauseChoice: Step | null = $state(null);
+  /** The first step the preview's compile errors name. */
+  let brokenStep = $derived(orderedStepErrors(steps, compileErrorsByStep)[0]?.step ?? null);
 
-  let selectedStep: Step | null = $state(null);
-  let selectedDiff: {
-    before: PreviewRow[];
-    after: PreviewRow[];
-    declared: { before: Declared | null; after: Declared | null };
-  } | null = $state(null);
-  let selectedDiffLoading = $state(false);
-  let selectedDiffError = $state('');
+  type Pause = {
+    /** The step the records stand after; null for the records as they arrived. */
+    step: Step | null;
+    /** Its place in the step list, from 1; 0 for the records as they arrived. */
+    number: number;
+    /** The steps that have run by then, which the step list leaves undimmed. */
+    run: Set<Step>;
+    /** The pipeline right before and right after `step`. */
+    before: Step[];
+    after: Step[];
+    /** ◎ chose it, so ✕ clears it. A compile error's lasts as long as the error. */
+    chosen: boolean;
+  };
 
-  function onSelectStep(step: Step | null) {
-    selectedStep = step;
+  /** ◎'s pause, unless the steps it runs do not compile: then the compile error's. */
+  let pause = $derived.by((): Pause | null => {
+    const flat = flatSteps(steps);
+    const run = pauseChoice && stepsRun(steps, pauseChoice, true);
+    if (pauseChoice && run && !(brokenStep && run.has(brokenStep)))
+      return {
+        step: pauseChoice,
+        number: flat.indexOf(pauseChoice) + 1,
+        run,
+        before: truncateSteps(steps, pauseChoice, false)!,
+        after: truncateSteps(steps, pauseChoice, true)!,
+        chosen: true,
+      };
+    if (!brokenStep) return null;
+    const ran = stepsRun(steps, brokenStep, false)!;
+    // The last step that ran: an `if` holding the broken step, rather than a branch skipped.
+    let at: Step | null = null;
+    for (const s of flat.slice(0, flat.indexOf(brokenStep))) if (ran.has(s)) at = s;
+    return {
+      step: at,
+      number: at ? flat.indexOf(at) + 1 : 0,
+      run: ran,
+      before: at ? truncateSteps(steps, at, false)! : [],
+      after: truncateSteps(steps, brokenStep, false)!,
+      chosen: false,
+    };
+  });
+
+  let pauseRun = $state<PauseRun | null>(null);
+  let pauseLoading = $state(false);
+  let errorsOpen = $state(false);
+  /** A failed stage as the error chip names it. */
+  const stageName = (stage: string | null) =>
+    stage ? stage[0].toUpperCase() + stage.slice(1) : 'Preview';
+  let pauseError = $state('');
+
+  function onPause(step: Step | null) {
+    pauseChoice = step;
   }
 
-  async function loadSelectedDiff() {
-    selectedDiffError = '';
-    if (!selectedStep || !lastSample) {
-      selectedDiff = null;
+  let pauseAsked = 0;
+  async function loadPause(pause: Pause | null, sample: string) {
+    pauseError = '';
+    const asked = ++pauseAsked;
+    if (!pause || !sample) {
+      pauseRun = null;
       return;
     }
-    const beforeSteps = truncateSteps(steps, selectedStep, false);
-    const afterSteps = truncateSteps(steps, selectedStep, true);
-    if (beforeSteps === null || afterSteps === null) {
-      // The step is no longer in the tree: a stale selection.
-      selectedStep = null;
-      selectedDiff = null;
-      return;
-    }
-    selectedDiffLoading = true;
+    const { before, after } = pause;
+    pauseLoading = true;
     try {
       // One instant for both sides, so the only difference between them is
       // the step.
       const at = Date.now() * 1000;
       const [beforeRes, afterRes] = await Promise.all([
-        fetchPreview(beforeSteps, lastSample, at),
-        fetchPreview(afterSteps, lastSample, at),
+        fetchPreview(before, sample, { at }),
+        fetchPreview(after, sample, { at, attribution: true }),
       ]);
+      // A later pause answers for the screen.
+      if (asked !== pauseAsked) return;
       const failed = !beforeRes.ok ? beforeRes : !afterRes.ok ? afterRes : null;
       if (failed) {
-        selectedDiffError = previewFailure(failed);
-        selectedDiff = null;
+        pauseError = previewFailure(failed);
+        pauseRun = null;
         return;
       }
-      selectedDiff = {
+      pauseRun = {
         before: beforeRes.rows,
         after: afterRes.rows,
         declared: { before: declaredOf(beforeRes), after: declaredOf(afterRes) },
       };
     } catch (e) {
-      selectedDiffError = unreported(e);
-      selectedDiff = null;
+      if (asked !== pauseAsked) return;
+      pauseError = unreported(e);
+      pauseRun = null;
     } finally {
-      selectedDiffLoading = false;
+      if (asked === pauseAsked) pauseLoading = false;
     }
   }
 
-  // Tracks `selectedStep`, `steps` and `lastSample`: all read before the
-  // first `await`.
+  // Run as the steps settle, as the whole pipeline's preview is.
   $effect(() => {
-    loadSelectedDiff();
+    const [p, sample] = [pause, lastSample];
+    const timer = setTimeout(() => void loadPause(p, sample), RECOMPUTE_MS);
+    return () => clearTimeout(timer);
+  });
+
+  // A step deleted while the records are paused after it takes the pause with it.
+  $effect(() => {
+    if (pauseChoice && !flatSteps(steps).includes(pauseChoice)) pauseChoice = null;
   });
 
   // -- a pipeline for a route being made ---------------------------------------
@@ -930,6 +1113,17 @@
       ...(making.condition ? { filter: making.condition } : {}),
     },
   );
+  /** A capture the sample menu started, at one of the pipeline's sources: in place of the route's. */
+  let captureAt = $state<ReturnType<typeof sourceTarget> | null>(null);
+  function sourceTarget(c: Connected) {
+    return {
+      kind: 'source' as const,
+      id: c.id,
+      scope: c.area,
+      group: c.area === SHARED_SCOPE ? '' : c.area,
+    };
+  }
+
   /** What the proposal read, said over the steps it made. */
   let proposed = $state('');
   /** Why no proposal was made. Its calls are quiet: this is said beside the samples. */
@@ -975,7 +1169,7 @@
   //
   // What a parser step would declare, read off a fresh preview truncated to
   // just that step (`truncateSteps(..., true)`) -- the same request
-  // `loadSelectedDiff` makes for the "after" side of a per-step diff. One
+  // `loadPause` makes for the "after" side of a pause. One
   // proposal open at a time; asking for a different step replaces it.
 
   let proposalStep: Step | null = $state(null);
@@ -1031,15 +1225,6 @@
       : null,
   );
 
-  // What the record's source set is shown on every row, read or not, so an
-  // author sees what there is to read. It is never delivered, so the
-  // pipeline's output does not carry it.
-  function withSource(record: unknown, row: number): unknown {
-    const source = sampleRows[row] && sampleSource(sampleRows[row]);
-    if (!source || record === null || typeof record !== 'object') return record;
-    return { __source: source, ...record };
-  }
-
   /** The record type a preview compiled, or null where it did not. */
   function declaredOf(res: PreviewResult | null): Declared | null {
     const d = res?.dictionary?.compiled;
@@ -1064,173 +1249,100 @@
 
   let runDeclared = $derived(declaredOf(lastGoodResult));
 
-  /** The record on either side of the step shown: the selected step, or the
-   * whole pipeline from its sample row. */
-  function rowSides(row: PreviewRow): {
-    before: unknown;
-    after: unknown;
-    declared: { before: Declared | null; after: Declared | null };
-  } {
-    if (selectedStep && selectedDiff) {
-      const before = selectedDiff.before.find((r) => r.row === row.row);
-      const after = selectedDiff.after.find((r) => r.row === row.row);
-      return {
-        before: withSource(before?.json ?? null, row.row),
-        after: withSource(after?.json ?? null, row.row),
-        declared: selectedDiff.declared,
-      };
-    }
-    const before = sampleRows[row.row] ?? {};
-    return {
-      before: withSource(before, row.row),
-      after: withSource(row.json, row.row),
-      declared: { before: sampleDeclared, after: runDeclared },
+  /** The records pane, which the step list's counts add a find chip to. */
+  let records = $state<RecordsPane | undefined>();
+
+  /** The rows the grid shows: the pause's, once run, or else the whole pipeline's. */
+  let gridRows = $derived(pause && pauseRun ? pauseRun.after : (lastGoodResult?.rows ?? null));
+
+  // Which steps touched each field of a row, dropped it and raised its
+  // exceptions: the grid's own run carries it, by row.
+  let attribution = $derived(gridRows ? new Map(gridRows.map((r) => [r.row, r])) : null);
+
+  /** Each step by id, with its number in the step list. */
+  let stepNumbers = $derived(
+    new Map(flatSteps(steps).map((step, i) => [step.id, { step, number: i + 1 }])),
+  );
+
+  /** How many of the records shown each step dropped and failed. */
+  let stepCounts = $derived.by(() => {
+    const counts = new Map<Step, { dropped: number; failed: number }>();
+    const of = (id: string | undefined) => {
+      const step = id ? stepNumbers.get(id)?.step : undefined;
+      if (!step) return null;
+      let c = counts.get(step);
+      if (!c) counts.set(step, (c = { dropped: 0, failed: 0 }));
+      return c;
     };
-  }
-
-  function rowFields(row: PreviewRow): FieldLeaf[] {
-    const { before, after } = rowSides(row);
-    return diffRecords(before, after);
-  }
-
-  // Read once per run, not once per row per column: the columns are the union
-  // over every row, so the grid needs all of them in hand anyway.
-  let rowsFields = $derived(lastGoodResult ? lastGoodResult.rows.map(rowFields) : []);
-  let allColumns = $derived(columnsFor(rowsFields));
-
-  // What differs from each column's default, rather than what is shown: a
-  // step added along the way brings its fields with it, instead of arriving
-  // invisible behind a choice made before they existed. A field under a `__`
-  // key is internal, smeltr's own and never delivered, so it starts hidden,
-  // and an unfolded row shows it only while its column is shown. A root key
-  // the path has to quote (`["__a.b"]`) counts as well.
-  const startsHidden = (path: string) => path.startsWith('__') || path.startsWith('["__');
-  let toggledColumns = $state(new SvelteSet<string>());
-  const isShown = (path: string) => startsHidden(path) === toggledColumns.has(path);
-  let columns = $derived(allColumns.filter((c) => isShown(c.path)));
-
-  const unfoldedPath = (path: string) => !startsHidden(path) || isShown(path);
-  const unfolded = (f: FieldLeaf) => unfoldedPath(f.path);
-
-  function toggleColumn(path: string) {
-    if (toggledColumns.has(path)) toggledColumns.delete(path);
-    else toggledColumns.add(path);
-  }
-
-  function showAllColumns() {
-    toggledColumns.clear();
-    for (const c of allColumns) if (startsHidden(c.path)) toggledColumns.add(c.path);
-  }
-
-  let columnsOpen = $state(false);
-
-  // A record is a line until asked for, and any number can be open at once:
-  // comparing two is reading down the page rather than remembering the last.
-  let expanded = $state(new SvelteSet<number>());
-
-  function toggleRow(row: number) {
-    if (expanded.has(row)) expanded.delete(row);
-    else expanded.add(row);
-  }
-
-  // Every current row, rather than a count: `expanded` keeps the rows an
-  // author opened across a re-preview, so after a smaller sample its size can
-  // exceed the rows on screen and a count would leave `Fold all` unreachable.
-  let allOpen = $derived(
-    lastGoodResult !== null &&
-      lastGoodResult.rows.length > 0 &&
-      lastGoodResult.rows.every((r) => expanded.has(r.row)),
-  );
-
-  function toggleAll() {
-    if (allOpen) expanded.clear();
-    else for (const row of lastGoodResult?.rows ?? []) expanded.add(row.row);
-  }
-
-  const dictionarySort = new TableSort<'field' | 'type'>();
-  const sortDictionary = (fields: [string, string][]) =>
-    dictionarySort.apply(fields, { field: ([name]) => name, type: ([, type]) => type });
-
-  // Keyed apart from the field paths: a record may carry a field named `row`, but
-  // no field has an empty path.
-  const ROW_KEY = '';
-  const gridSort = new TableSort<string>();
-  // -- the Output tab's search ---------------------------------------------
-  //
-  // A keyword by default: a row stays when one of its shown cells holds the
-  // text. Text with an operator or a call in it is tried as an expression over
-  // the pipeline's output (`PreviewRequest.filter`). One that compiles to a
-  // Bool filters the rows on the leader; anything else stays a keyword, so a
-  // bare word like `slow` is searched for rather than read as a field.
-
-  let paneTab = $state<'output' | 'dictionary'>('output');
-  /** The record the steps write, from the last run that compiled: with no sample, a run that
-   * read no records. */
-  let dictionary = $derived(
-    (result?.ok ? result.dictionary : undefined) ?? lastGoodResult?.dictionary,
-  );
-  let outputQuery = $state('');
-  /** The row numbers the expression kept, or null while the search is a keyword. */
-  let expressionRows = $state<Set<number> | null>(null);
-  const looksLikeExpression = (q: string) => /[=<>!&|()]/.test(q);
-
-  $effect(() => {
-    const [q, sample] = [outputQuery.trim(), lastSample];
-    void signature;
-    if (!q || !sample || !looksLikeExpression(q)) {
-      expressionRows = null;
-      return;
-    }
-    let current = true;
-    const timer = setTimeout(async () => {
-      try {
-        const res = await fetchPreview(
-          untrack(() => steps),
-          sample,
-          undefined,
-          q,
-        );
-        if (current) expressionRows = res.ok ? new Set(res.rows.map((r) => r.row)) : null;
-      } catch {
-        if (current) expressionRows = null;
+    for (const r of gridRows ?? []) {
+      for (const id of new Set(r.exceptions.map((e) => e.step))) {
+        const c = of(id);
+        if (c) c.failed++;
       }
-    }, RECOMPUTE_MS);
-    return () => {
-      current = false;
-      clearTimeout(timer);
-    };
-  });
-
-  function matches(i: number): boolean {
-    const q = outputQuery.trim().toLowerCase();
-    if (!q) return true;
-    const row = lastGoodResult?.rows[i];
-    if (!row) return false;
-    if (expressionRows) return expressionRows.has(row.row);
-    return columns.some((col) => {
-      const field = cellOf(rowsFields[i] ?? [], col.path);
-      if (!field) return false;
-      const v = field.state === 'removed' ? field.before : field.after;
-      return formatDiffValue(v).toLowerCase().includes(q);
-    });
-  }
-
-  // Indices, not rows: `rowsFields` is position-parallel to the run's rows.
-  let gridOrder = $derived.by(() => {
-    const rows = lastGoodResult?.rows ?? [];
-    const by: Record<string, (i: number) => number | string | undefined> = {
-      [ROW_KEY]: (i) => rows[i].row,
-    };
-    for (const col of columns)
-      by[col.path] = (i) => {
-        const field = cellOf(rowsFields[i] ?? [], col.path);
-        if (!field) return undefined;
-        const v = field.state === 'removed' ? field.before : field.after;
-        return typeof v === 'number' ? v : formatDiffValue(v);
-      };
-    return gridSort.apply(rows.map((_, i) => i).filter(matches), by);
+      const c = of(attribution?.get(r.row)?.droppedBy);
+      if (c) c.dropped++;
+    }
+    return counts;
   });
 </script>
+
+{#snippet stageChips()}
+  {#if (result && !result.ok) || (pause && selectedSample)}
+    <!-- Above the grid, not instead of it: a pipeline that does not compile still shows the
+         records as far as it does. A step's errors are written on the step; here they are listed
+         to jump to. -->
+    <div class="stage">
+      {#if result && !result.ok}
+        {@const failed = result}
+        <ChipPicker kind="error" align="left" bind:open={errorsOpen}>
+          {#snippet face()}<StateMark state="error" />
+            {stageName(failed.stage)} failed · {failed.errors.length} ▾{/snippet}
+          {#snippet children()}
+            <div class="stage-errors">
+              {#if unplacedErrors.length > 0}
+                <ul>
+                  {#each unplacedErrors as e}
+                    <li>{e.message}</li>
+                  {/each}
+                </ul>
+              {/if}
+              {#if brokenSteps.length > 0}
+                <JumpLinks
+                  links={brokenSteps.flatMap(({ step, messages }) =>
+                    messages.map((label) => ({
+                      label,
+                      onClick: () => {
+                        errorsOpen = false;
+                        jumpToStepId = step.id;
+                      },
+                    })),
+                  )}
+                />
+              {/if}
+            </div>
+          {/snippet}
+        </ChipPicker>
+      {/if}
+      {#if pause && selectedSample}
+        <RemovableChip
+          accent
+          label="Paused"
+          removeLabel="Show the whole pipeline"
+          onremove={pause.chosen ? () => onPause(null) : undefined}
+        >
+          ◉ {pause.step
+            ? `After step ${pause.number} · ${STEP_LABELS[pause.step.type].toUpperCase()}`
+            : 'Input records'}
+        </RemovableChip>
+        {#if pauseLoading}<span class="dim">loading…</span>{/if}
+      {/if}
+      {#if result && !result.ok && !pause && lastGoodResult && selectedSample}
+        <span class="dim">Showing the sample from before this.</span>
+      {/if}
+    </div>
+    <InlineError message={pauseError} />
+  {/if}
+{/snippet}
 
 {#if loading}
   <SectionShell><p class="dim">Loading…</p></SectionShell>
@@ -1283,6 +1395,12 @@
     <InlineError message={undoError} />
 
     {#if id !== 'new'}<Connections kind="pipeline" {id} />{/if}
+    <PipelineProduces
+      bind:produces
+      declared={[...sharedSchemas, ...ownSchemas]}
+      findings={result?.ok ? (result.schema_findings ?? 0) : undefined}
+      {readOnly}
+    />
 
     {#if moved}
       {@const held = moved.value}
@@ -1293,6 +1411,7 @@
           const draft = JSON.parse(held) as Draft;
           pipelineName = draft.pipelineName;
           steps = draft.steps;
+          produces = draft.produces ?? [];
           moved = null;
         }}
         ondiscard={() => {
@@ -1316,17 +1435,43 @@
           <StepList
             {steps}
             errorsByStep={stepListErrors}
+            {warningsByStep}
             {pipelineIds}
             {pipelineNames}
             {lookupTables}
             {grokPatterns}
             parseInput={parseInputFor(sampleRows[0])}
-            {selectedStep}
-            {onSelectStep}
+            pausedAt={pause?.step ?? null}
+            ran={pause?.run ?? null}
+            counts={stepCounts}
+            onCount={(step, kind) =>
+              records?.addChip(
+                kind === 'dropped'
+                  ? { kind: 'droppedBy', step: step.id }
+                  : { kind: 'failedAt', step: step.id },
+              )}
+            {onPause}
             onPropose={readOnly ? undefined : proposeFields}
             proposal={openProposal}
+            {askAt}
+            {recordBefore}
           />
         </div>
+
+        {#if unplacedWarnings.length > 0}
+          <div class="unplaced-warnings" role="status">
+            {#each unplacedWarnings as w, n (n)}
+              <div class="unplaced-warning">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
+                  <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
+                  <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
+                </svg>
+                <span>{w.message}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
 
         {#if !readOnly}
           <div class="run-row">
@@ -1366,376 +1511,64 @@
           <span class="grip" aria-hidden="true">&#8596;</span>
         </div>
 
-        <section class="right-col">
-          <InlineError message={proposeError} />
-          <AddSampleDialog
-            open={capturing}
-            start="capture"
-            target={captureTarget}
-            oncancel={() => (capturing = false)}
-            onsaved={captured}
-          />
-
-          {#if selectedSample}
-            <div class="sample-line">
-              <button
-                type="button"
-                class="compact"
-                onclick={() => {
-                  chooseSample('');
-                  paneTab = 'output';
-                }}>← Back</button
-              >
-              <span class="dim">Sample</span>
-              <strong>{selectedSampleName}</strong>
-              {#if lastGoodResult && lastSample === selectedSample}
-                <span class="dim">{count(lastGoodResult.rows.length, 'row')}</span>
-              {/if}
-            </div>
-          {/if}
-
-          <div class="subtabs" role="tablist" aria-label="Output">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={paneTab === 'output'}
-              onclick={() => (paneTab = 'output')}
-              >Output{#if selectedSample && lastGoodResult}
-                <span class="pill">{lastGoodResult.rows.length}</span>{/if}</button
-            >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={paneTab === 'dictionary'}
-              onclick={() => (paneTab = 'dictionary')}
-              >Data dictionary{#if dictionary}
-                <span class="pill">{dictionary.compiled.fields.length}</span>{/if}</button
-            >
-          </div>
-
-          {#if result && !result.ok}
-            <!-- Above the grid, not instead of it: a syntax slip mid-edit
-                 should not take the sample away from whoever is fixing it. -->
-            <!-- A step's errors are written on the step; here it is only named. -->
-            <div class="stage-error">
-              <strong>{result.stage} failed</strong>
-              {#if unplacedErrors.length > 0}
-                <ul>
-                  {#each unplacedErrors as e}
-                    <li>{e.message}</li>
-                  {/each}
-                </ul>
-              {/if}
-              {#if brokenSteps.length > 0}
-                <JumpLinks
-                  links={brokenSteps.map(({ step }) => ({
-                    label: stepSummary(step),
-                    onClick: () => (jumpToStepId = step.id),
-                  }))}
-                />
-              {/if}
-            </div>
-            {#if lastGoodResult && selectedSample}
-              <p class="dim stale-note">Showing the sample from before this.</p>
-            {/if}
-          {/if}
-
-          <div role="tabpanel">
-            {#if paneTab === 'dictionary'}
-              {#if dictionary}
-                {@const d = dictionary}
-                {@const dict = includeSampled && d.sampled ? d.sampled : d.compiled}
-                <div class="dictionary">
-                  <div class="run-row">
-                    {#if d.sampled}<label class="inline-checkbox">
-                        <Toggle
-                          bind:checked={includeSampled}
-                          ariaLabel="include fields seen in the sample"
-                        />
-                        <span class="field-name">include fields seen in the sample</span>
-                      </label>{/if}
-                    <span class="grow"></span>
-                    <button type="button" onclick={() => copyMapping(dict.elasticsearch)}>
-                      {copiedMapping ? 'Copied' : 'Copy as Elasticsearch mapping'}
-                    </button>
-                    <Help label="Elasticsearch mapping">
-                      The mapping leaves out a <code>variant</code> field. Give the field a type to include
-                      it.
-                    </Help>
-                  </div>
-                  <table class="proposal-table">
-                    <thead>
-                      <tr>
-                        <th aria-sort={dictionarySort.aria('field')}
-                          ><SortButton sort={dictionarySort} key="field">Field</SortButton></th
-                        >
-                        <th aria-sort={dictionarySort.aria('type')}
-                          ><SortButton sort={dictionarySort} key="type">Type</SortButton></th
-                        >
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {#each sortDictionary(dict.fields) as [name, type]}
-                        <tr><td class="mono">{name}</td><td class="mono">{type}</td></tr>
-                      {/each}
-                    </tbody>
-                  </table>
-                  <details>
-                    <summary>Elasticsearch mapping</summary>
-                    <pre class="mono">{JSON.stringify(dict.elasticsearch, null, 2)}</pre>
-                  </details>
-                </div>
-              {/if}
-            {:else if !selectedSample}
-              {#if samples.length === 0}
-                <p class="dim">
-                  No samples yet. Capture one, or paste or upload records on the
-                  <a class="btn" href="#/build">Samples</a> page.
-                </p>
-              {:else}
-                <SamplePicker {samples} {lockedBy} onpick={chooseSample}>
-                  {#snippet tools()}
-                    <button type="button" onclick={() => (capturing = true)}>Capture</button>
-                    <a class="btn" href="#/build">Paste or upload</a>
-                  {/snippet}
-                </SamplePicker>
-              {/if}
-            {:else}
-              {#if selectedStep}
-                <div class="diff-scope">
-                  <span class="dim">Diffing:</span>
-                  <strong>{stepSummary(selectedStep)}</strong>
-                  {#if selectedDiffLoading}<span class="dim">loading…</span>{/if}
-                  <button type="button" class="compact" onclick={() => onSelectStep(null)}>
-                    show whole pipeline
-                  </button>
-                </div>
-                <InlineError message={selectedDiffError} />
-              {/if}
-
-              {#if lastGoodResult && lastGoodResult.rows.length > 0}
-                <div class="output-search">
-                  <label class="search"
-                    ><span aria-hidden="true">⌕</span><input
-                      type="search"
-                      class:mono={expressionRows !== null}
-                      bind:value={outputQuery}
-                      placeholder="Search the output, or filter with an expression such as status >= 500"
-                      aria-label="Search the output"
-                    />{#if outputQuery.trim()}<span
-                        class="mode"
-                        class:expression={expressionRows !== null}
-                        >{expressionRows !== null ? 'ƒ expression' : 'keyword'}</span
-                      >{/if}</label
-                  >
-                  {#if outputQuery.trim()}
-                    <span class="dim count"
-                      >{gridOrder.length} of {lastGoodResult.rows.length} rows</span
-                    >
-                  {/if}
-                </div>
-              {/if}
-              <div class="output-actions">
-                <button
-                  type="button"
-                  onclick={toggleAll}
-                  disabled={!lastGoodResult || lastGoodResult.rows.length === 0}
-                >
-                  {allOpen ? 'Fold all' : 'Unfold all'}
-                </button>
-                <button
-                  type="button"
-                  class="toggle"
-                  class:on={changedOnly}
-                  aria-pressed={changedOnly}
-                  onclick={() => (changedOnly = !changedOnly)}
-                >
-                  Changed only
-                </button>
-                <button type="button" onclick={() => (showTypes = !showTypes)}>
-                  {showTypes ? 'Hide types' : 'Show types'}
-                </button>
-                {#if allColumns.length > 0}
-                  <ChipPicker
-                    kind="columns"
-                    align="left"
-                    bind:open={columnsOpen}
-                    ariaLabel="Choose columns"
-                  >
-                    {#snippet face()}
-                      Columns{#if columns.length < allColumns.length}
-                        <span class="dim">{columns.length} of {allColumns.length}</span>
-                      {/if}
-                    {/snippet}
-                    {#snippet children()}
-                      <div class="column-list">
-                        {#each allColumns as col (col.path)}
-                          {@const name = splitPath(col.path)}
-                          {@const shown = isShown(col.path)}
-                          <button
-                            type="button"
-                            class="pick"
-                            class:on={shown}
-                            aria-pressed={shown}
-                            onclick={() => toggleColumn(col.path)}
-                          >
-                            <span class="tick">{shown ? '✓' : ''}</span>
-                            <span class="mono"
-                              ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
-                            >
-                          </button>
-                        {/each}
-                      </div>
-                      {#if columns.length < allColumns.length}
-                        <button type="button" class="pick show-all" onclick={showAllColumns}>
-                          Show all {allColumns.length}
-                        </button>
-                      {/if}
-                    {/snippet}
-                  </ChipPicker>
-                {/if}
-                <span class="grow"></span>
-                {#if !readOnly}
-                  <button
-                    type="button"
-                    class="primary"
-                    data-guide="lock-test"
-                    onclick={goLockTest}
-                    disabled={!canLockTest}
-                  >
-                    Lock this as a test
-                  </button>
-                {/if}
-              </div>
-
-              <div class="results">
-                {#if !lastGoodResult}
-                  {#if !result}
-                    <p class="dim">Run the pipeline to see output rows here.</p>
-                  {/if}
-                {:else if lastGoodResult.rows.length === 0}
-                  <p class="dim">No sample rows.</p>
-                {:else}
-                  <!-- A table, so a column is only as wide as what it holds.
-                   `.cell`'s max-width caps that: one long value would otherwise
-                   set the width of its column for every row. -->
-                  <div class="grid-wrap">
-                    <table class="grid">
-                      <thead>
-                        <tr>
-                          <th class="fold-cell"></th>
-                          <th class="index-cell" aria-sort={gridSort.aria(ROW_KEY)}
-                            ><SortButton sort={gridSort} key={ROW_KEY}>row</SortButton></th
-                          >
-                          {#each columns as col (col.path)}
-                            <!-- A field the step treated the same way in every row
-                             says so once, here. Where the rows disagree the
-                             header stays plain and each cell speaks for itself. -->
-                            {@const name = splitPath(col.path)}
-                            <th
-                              class="cell state-{col.state ?? 'none'}"
-                              aria-sort={gridSort.aria(col.path)}
-                              ><SortButton sort={gridSort} key={col.path}
-                                ><span class="path-prefix">{name.prefix}</span
-                                >{name.leaf}</SortButton
-                              ></th
-                            >
-                          {/each}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {#each gridOrder as i (lastGoodResult.rows[i].row)}
-                          {@const row = lastGoodResult.rows[i]}
-                          {@const fields = (rowsFields[i] ?? []).filter(unfolded)}
-                          {@const marks = countStates(fields)}
-                          {@const open = expanded.has(row.row)}
-                          <tr class="grid-row" class:dropped={row.json === null} class:open>
-                            <td class="fold-cell">
-                              <button
-                                type="button"
-                                class="fold"
-                                aria-expanded={open}
-                                aria-label={`row ${row.row}`}
-                                onclick={() => toggleRow(row.row)}>{open ? '▾︎' : '▸︎'}</button
-                              >
-                            </td>
-                            <td class="index-cell">{row.row}</td>
-                            {#each columns as col (col.path)}
-                              {@const field = cellOf(fields, col.path)}
-                              <td class="cell">
-                                {#if !field}
-                                  <span class="dim">&mdash;</span>
-                                {:else if field.state === 'removed'}
-                                  <!-- What the step took away is what the grid is
-                                   being read for. The value stands, struck
-                                   through, rather than an em dash saying only
-                                   that something used to be here. -->
-                                  <span class="state-removed">{formatDiffValue(field.before)}</span>
-                                {:else if col.state === null}
-                                  <span class="state-{field.state}"
-                                    >{formatDiffValue(field.after)}</span
-                                  >
-                                {:else}
-                                  {formatDiffValue(field.after)}
-                                {/if}
-                              </td>
-                            {/each}
-                          </tr>
-
-                          {#if open}
-                            {@const sides = rowSides(row)}
-                            <tr class="expanded-row">
-                              <td
-                                class="expanded-cell"
-                                class:changed={marks.added + marks.changed + marks.removed > 0}
-                                colspan={columns.length + 2}
-                              >
-                                <div class="row-head-wrap">
-                                  <div class="row-head">
-                                    <span class="row-index">row {row.row}</span>
-                                    {#each row.exceptions as a}
-                                      <span class="badge">{a.message}</span>
-                                    {/each}
-                                    {#if row.json === null}
-                                      <span class="badge dropped-badge">dropped</span>
-                                    {/if}
-                                    <!-- Beside the row number: pushing it to the far
-                                     side needed the row-head to reliably span the
-                                     visible width, which a `colspan` cell wider
-                                     than the viewport does not give it. -->
-                                    {#if marks.added > 0}<span class="mark added"
-                                        >+{marks.added}</span
-                                      >{/if}
-                                    {#if marks.changed > 0}<span class="mark changed"
-                                        >~{marks.changed}</span
-                                      >{/if}
-                                    {#if marks.removed > 0}<span class="mark removed"
-                                        >&minus;{marks.removed}</span
-                                      >{/if}
-                                  </div>
-                                </div>
-                                <RecordFields
-                                  before={sides.before}
-                                  after={sides.after}
-                                  keep={unfoldedPath}
-                                  declared={sides.declared}
-                                  {changedOnly}
-                                  {showTypes}
-                                />
-                              </td>
-                            </tr>
-                          {/if}
-                        {/each}
-                      </tbody>
-                    </table>
-                  </div>
-                {/if}
-              </div>
-            {/if}
-          </div>
-        </section>
+        <RecordsPane
+          bind:this={records}
+          {pipelineId}
+          {steps}
+          {signature}
+          {sampleRows}
+          {selectedSample}
+          {lastSample}
+          {result}
+          {lastGoodResult}
+          {gridRows}
+          {attribution}
+          {stepNumbers}
+          {pause}
+          {pauseRun}
+          declared={{ before: sampleDeclared, after: runDeclared }}
+          canLock={canLockTest}
+          onlock={goLockTest}
+          onjump={(step) => (jumpToStepId = step.id)}
+          preview={(steps, sample, filter) => fetchPreview(steps, sample, { filter })}
+        >
+          {#snippet head()}<InlineError message={proposeError} />{/snippet}
+          {#snippet sampleMenu()}
+            <SampleMenu
+              {samples}
+              selected={selectedSample}
+              {lastUsed}
+              records={selectedSample && lastGoodResult && lastSample === selectedSample
+                ? lastGoodResult.rows.length
+                : null}
+              {lockedBy}
+              pipeline={loadedId}
+              mayCapture={(c) => mayCapture(sourceTarget(c))}
+              onpick={chooseSample}
+              onadd={() => (adding = true)}
+              oncapture={(c) => {
+                captureAt = sourceTarget(c);
+                capturing = true;
+              }}
+            />
+          {/snippet}
+          {#snippet stage()}{@render stageChips()}{/snippet}
+        </RecordsPane>
       {/if}
     </div>
+    {#if !readOnly}
+      <AddSampleDialog
+        open={capturing || adding}
+        start={capturing ? 'capture' : undefined}
+        target={captureAt ?? captureTarget}
+        oncancel={() => {
+          capturing = false;
+          adding = false;
+          captureAt = null;
+        }}
+        onsaved={captured}
+      />
+    {/if}
   </SectionShell>
   <SaveBar
     dirty={isDirty || neverSaved}
@@ -1746,15 +1579,6 @@
 {/if}
 
 <style>
-  .dim {
-    color: var(--dim);
-  }
-
-  code {
-    font-family: var(--mono);
-    font-size: 0.9em;
-  }
-
   .head {
     display: flex;
     align-items: center;
@@ -1768,10 +1592,6 @@
     display: inline-flex;
     color: var(--dim);
     cursor: text;
-  }
-
-  .grow {
-    flex-grow: 1;
   }
 
   .changed-badge {
@@ -1863,23 +1683,24 @@
     }
   }
 
-  .editor-head {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    margin-bottom: 0.9rem;
-  }
-
-  .diff-scope {
+  .stage {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    font-size: var(--text-label);
     margin: 0.6rem 0 0.4rem;
+    font-size: var(--text-label);
   }
 
-  .diff-scope button {
-    margin-left: auto;
+  .stage-errors {
+    width: min(32rem, 80vw);
+    padding: 0.5rem;
+    color: var(--error);
+    font-size: var(--text-label);
+  }
+
+  .stage-errors ul {
+    margin: 0;
+    padding-left: 1.2rem;
   }
 
   /* The steps sit on the panel, so a step at rest is drawn by its own
@@ -1910,143 +1731,11 @@
     margin: 0 0 0.35rem;
   }
 
-  .right-col label {
-    margin-top: 0;
-  }
-
   /* The label register: the field's name, weight 600. */
   .field-name {
     display: flex;
     align-items: center;
     font-weight: 600;
-  }
-
-  .sample-line {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    margin-bottom: 0.4rem;
-    font-size: var(--text-body);
-  }
-
-  /* ChangeDetailPage's tabs. */
-  .subtabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1.2rem;
-    margin: 0 0 0.9rem;
-    border-bottom: 1px solid var(--border);
-  }
-  .subtabs button {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    background: none;
-    padding: 0.35rem 0;
-    border-width: 0 0 3px;
-    border-radius: 0;
-    border-color: transparent;
-    color: var(--dim);
-    font-size: var(--text-body);
-  }
-  .subtabs button[aria-selected='true'] {
-    color: var(--ink);
-    font-weight: 600;
-    border-color: var(--accent);
-  }
-  .pill {
-    padding: 0 0.4rem;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--panel);
-    color: var(--dim);
-    font-size: var(--text-micro);
-    font-weight: 500;
-  }
-
-  .output-search {
-    display: flex;
-    align-items: center;
-    gap: 0.7rem;
-  }
-  /* ClusterPage's worker search. */
-  .search {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex: 1;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 0 0.7rem;
-    color: var(--dim);
-    font-weight: 400;
-  }
-  .search input {
-    width: 100%;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    color: var(--ink);
-    font: inherit;
-    padding: 1px 2px;
-  }
-  .search input.mono {
-    font-family: var(--mono);
-  }
-  .mode {
-    flex: none;
-    font-size: var(--text-note);
-    color: var(--dim);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 0 0.5rem;
-    white-space: nowrap;
-  }
-  .mode.expression {
-    color: var(--accent);
-    border-color: var(--accent);
-    font-family: var(--mono);
-  }
-  .count {
-    font-size: var(--text-note);
-    white-space: nowrap;
-  }
-
-  .proposal-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--text-label);
-  }
-
-  .proposal-table th,
-  .proposal-table td {
-    text-align: left;
-    padding: 0.35rem 0.5rem;
-    border-bottom: 1px solid var(--border);
-    vertical-align: top;
-  }
-
-  .proposal-table th {
-    color: var(--dim);
-    font-weight: 700;
-    font-size: var(--text-micro);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-
-  .proposal-table tbody tr:last-child td {
-    border-bottom: 0;
-  }
-
-  .add-small {
-    align-self: flex-start;
-    background: none;
-    color: var(--ink);
-    border: 1px dashed var(--dim);
-    border-radius: var(--radius);
-    padding: 0.15rem 0.5rem;
-    font-size: var(--text-micro);
-    cursor: pointer;
   }
 
   .run-row {
@@ -2069,257 +1758,40 @@
 
   /* A grid item is `min-width: auto` by default, so a step wider than the
      column would push into the output rather than scroll inside its own
-     half. Both halves are told they may be narrower than their content. */
-  .editor,
-  .right-col {
+     half. */
+  .editor {
     min-width: 0;
     overflow-x: auto;
   }
 
-  .right-col {
+  /* A warning about the whole pipeline, under its steps: the step-placed ones' look, in a box of its own. */
+  .unplaced-warnings {
     display: flex;
     flex-direction: column;
-    gap: 0;
-  }
-
-  .output-actions {
-    display: flex;
-    align-items: center;
-    margin-top: 0.75rem;
-  }
-
-  .results {
-    margin-top: 1rem;
-    min-height: 200px;
-  }
-
-  .stage-error {
-    border: 1px solid var(--error);
+    gap: 0.4rem;
+    margin-top: 0.6rem;
+    padding: 0.55rem 0.7rem;
+    background: color-mix(in oklab, var(--warn) 12%, var(--panel));
     border-radius: var(--radius);
-    padding: 0.8rem 1rem;
-    color: var(--error);
   }
 
-  .stage-error ul {
-    margin: 0.4rem 0 0;
-    padding-left: 1.2rem;
-  }
-
-  .stale-note {
-    margin: 0.6rem 0 0;
-    font-size: var(--text-note);
-  }
-
-  .row {
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 0.6rem 0.8rem;
-    margin-bottom: 0.6rem;
-  }
-
-  .row.dropped {
-    opacity: 0.7;
-  }
-
-  /* A rule under it, not just a gap, so the row it names and the fields
-     below it read as three things -- the folded row above, this head, the
-     record -- rather than one tinted block. On the wrapper, not `.row-head`
-     itself, so it spans the cell's full width rather than shrinking to the
-     sticky content's `width: max-content`. */
-  .row-head-wrap {
-    padding: 0.4rem 0;
-    margin-bottom: 0.4rem;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .row-head {
+  .unplaced-warning {
     display: flex;
-    align-items: center;
-    flex-wrap: wrap;
     gap: 0.5rem;
-  }
-
-  .row-index {
-    font-size: var(--text-micro);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--dim);
-  }
-
-  .badge {
-    font-size: var(--text-micro);
-    font-weight: 600;
-    padding: 0.15rem 0.5rem;
-    border-radius: var(--radius);
-    max-width: 100%;
-    white-space: normal;
-    background: color-mix(in srgb, var(--error) 15%, transparent);
-    color: var(--error);
-  }
-
-  .badge.dropped-badge {
-    background: color-mix(in srgb, var(--dim) 20%, transparent);
-    color: var(--dim);
-  }
-
-  /* A record is one line until it is asked for. The whole grid scrolls
-     sideways rather than dropping columns: a field stays where it was, and
-     the alphabetical order means it stays findable once scrolled to. */
-  /* The bar sits at the bottom of the padding box, so without this it is
-     drawn over the last row rather than under it. */
-  .grid-wrap {
-    overflow-x: auto;
-    padding-bottom: 0.85rem;
-    scrollbar-gutter: stable;
-  }
-
-  /* At least the width of the panel, so a pipeline that has produced one
-     field spends the whole panel on it rather than leaving it empty; wider
-     than the panel when the columns need it, which is what scrolls. */
-  .grid {
-    border-collapse: collapse;
-    min-width: 100%;
-    font-family: var(--mono);
+    align-items: flex-start;
     font-size: var(--text-note);
+    color: var(--warn);
+    line-height: 1.45;
   }
 
-  .grid th,
-  .grid td {
-    text-align: left;
-    font-weight: inherit;
-    padding: 0.15rem 0.5rem;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .grid thead th {
-    color: var(--dim);
-    font-size: var(--text-micro);
-    position: sticky;
-    top: 0;
-    background: var(--bg);
-  }
-
-  /* Tinted the same as the record beneath it, so the two read as one open
-     group -- but still a hairline apart, or the row that was clicked and
-     the record it opened would run together into one shape. */
-  .grid-row.open > td {
-    background: color-mix(in srgb, var(--ink) 8%, transparent);
-  }
-
-  .grid-row.dropped .cell {
-    opacity: 0.55;
-  }
-
-  .fold-cell {
-    width: 1.2rem;
-  }
-
-  .fold {
-    border: none;
-    background: none;
-    padding: 0;
-    color: var(--dim);
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .index-cell {
-    color: var(--dim);
-    text-align: right;
-  }
-
-  /* Wide enough for what it holds, up to the point where one value would
-     push every other column off the panel. */
-  .cell {
-    max-width: 14rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* The rail marks how far the open record reaches, and stays put while the
-     grid scrolls sideways under it. A record the step changed takes the
-     added color, as a diff does. */
-  .expanded-cell {
-    background: color-mix(in oklch, var(--ink) 6%, transparent);
-    box-shadow: inset 3px 0 0 var(--border);
-    padding: 0.5rem 0.5rem 0.5rem 0.75rem;
-  }
-
-  .expanded-cell.changed {
-    background: color-mix(in oklch, var(--added) 7%, transparent);
-    box-shadow: inset 3px 0 0 var(--added);
-  }
-
-  /* The head of an open record follows the left edge rather than scrolling
-     away: this cell is as wide as the whole table. A floor rather than
-     shrink-to-fit, so the row's own identity and its summary have room to
-     sit at opposite ends instead of crowding together on the left. */
-  .expanded-cell .row-head {
-    position: sticky;
-    left: 0.75rem;
-    width: max-content;
-  }
-
-  /* The nesting recedes so the eye lands on the field's own name. */
-  .path-prefix {
-    opacity: 0.6;
-  }
-
-  .toggle.on {
-    border-color: var(--ink);
-    color: var(--ink);
-    font-weight: 600;
-  }
-
-  /* A wide record has a column per field, so the list scrolls rather than
-     running off the bottom of the window. */
-  .column-list {
-    max-height: 18rem;
-    overflow-y: auto;
-  }
-
-  .tick {
-    width: 0.7rem;
+  .unplaced-warning svg {
+    width: 15px;
+    height: 15px;
     flex-shrink: 0;
-    color: var(--dim);
+    margin-top: 0.1rem;
   }
 
-  .show-all {
-    border-top: 1px solid var(--border);
-    color: var(--ink);
-  }
-
-  .state-added {
-    color: var(--added);
-  }
-
-  .state-changed {
-    color: var(--changed);
-  }
-
-  .state-removed {
-    color: var(--removed);
-    text-decoration: line-through;
-  }
-
-  /* What this step did to the row, before reading a line of it. */
-  .mark {
-    font-family: var(--mono);
-    font-size: var(--text-micro);
-    font-weight: 600;
-  }
-
-  .mark.added {
-    color: var(--added);
-  }
-
-  .mark.changed {
-    color: var(--changed);
-  }
-
-  .mark.removed {
-    color: var(--removed);
+  .unplaced-warning .cutout {
+    fill: var(--field);
   }
 </style>

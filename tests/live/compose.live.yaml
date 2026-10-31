@@ -367,3 +367,30 @@ services:
       - "15000:15000"
     # No healthcheck: the image holds Pebble alone, no shell to run one, and Pebble listens within a second of
     # starting. `--wait` takes it as ready once running.
+
+  # A second Pebble, for DNS-01: it asks challtestsrv below for every name, where the first asks the host's DNS
+  # and so cannot see a record the tests publish. The tests publish into challtestsrv through its management port,
+  # standing in for a DNS provider, and ask its DNS port as the zone's one nameserver.
+  pebble-dns:
+    image: ghcr.io/letsencrypt/pebble:2.10.1
+    command: ["-config", "/test/config/pebble-config.json", "-strict", "-dnsserver", "challtestsrv:8053"]
+    environment:
+      PEBBLE_VA_NOSLEEP: "1"
+      PEBBLE_WFE_NONCEREJECT: "0"
+    volumes:
+      - ./pebble/pebble-config.json:/test/config/pebble-config.json:ro
+    ports:
+      - "14001:14000"
+      - "15001:15000"
+    depends_on:
+      - challtestsrv
+
+  # Pebble's test DNS server: a TXT record set on its management port is answered on its DNS port. Nothing else it
+  # can serve is served.
+  challtestsrv:
+    image: ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1
+    command: ["-dnsserver", ":8053", "-management", ":8055", "-http01", "", "-https01", "", "-tlsalpn01", "", "-doh", "", "-defaultIPv4", "", "-defaultIPv6", ""]
+    ports:
+      - "18053:8053/udp"
+      - "18053:8053/tcp"
+      - "18055:8055"

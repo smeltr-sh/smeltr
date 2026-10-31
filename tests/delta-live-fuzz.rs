@@ -7,7 +7,10 @@
 //! - a log of consecutive versions, each readable;
 //! - each delivered row in exactly one added file, under the row's own partition values, and no file added twice;
 //! - every added file in the bucket, and every data file in the bucket added;
-//! - each checkpoint what replaying the commits up to it gives.
+//! - each checkpoint what replaying the commits up to it gives;
+//! - where the table has an identity column, a value of it in every row, on its grid, within the mark the row's
+//!   commit leaves, and in no other row;
+//! - where the table keeps in-commit timestamps, each commit opening with one later than the commit's before it.
 //!
 //! Point it at `S3_TEST_ENDPOINT`. Under `SMELTR_LIVE_TESTS=required` a missing one fails rather than skips.
 
@@ -17,7 +20,7 @@ use crate::live;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int32Type, Int64Type};
@@ -281,6 +284,10 @@ struct Case {
     file_interval: Duration,
     /// The `delta.checkpointInterval` another writer sets right after the table is made, or the default's.
     checkpoint_interval: Option<u32>,
+    /// The start and step of the identity column `seq` another writer adds before any row is written.
+    identity: Option<(i64, i64)>,
+    /// Whether another writer enables in-commit timestamps before any row is written.
+    in_commit_timestamps: bool,
     writers: Vec<Vec<Batch>>,
     /// Each row's partition values by its id, in `partition_by`'s order.
     rows: BTreeMap<i64, Vec<Option<String>>>,
@@ -303,7 +310,7 @@ impl Case {
             .collect();
         format!(
             "fields [{}], partitionBy {:?}, unity {}, {:?}, maxObjectBytes {}, bufferBytes {}, fileInterval {:?}, \
-             checkpointInterval {:?}, batches {writers:?}",
+             checkpointInterval {:?}, identity {:?}, inCommitTimestamps {}, batches {writers:?}",
             fields.join("; "),
             self.partition_by,
             self.unity,
@@ -311,7 +318,9 @@ impl Case {
             self.max_object_bytes,
             self.buffer_bytes,
             self.file_interval,
-            self.checkpoint_interval
+            self.checkpoint_interval,
+            self.identity,
+            self.in_commit_timestamps
         )
     }
 }
@@ -449,6 +458,20 @@ fn case(seed: u64, rng: &mut Rng, coverage: &mut Coverage) -> Case {
         }
         writers.push(batches);
     }
+    let identity = rng
+        .chance(2)
+        .then(|| (*rng.pick(&[1, -100, 1 << 40]), *rng.pick(&[1, 3, -2])));
+    coverage.reach(match identity {
+        Some(_) if writer_count == 2 => "identity two writers",
+        Some(_) => "identity one writer",
+        None => "no identity column",
+    });
+    let in_commit_timestamps = rng.chance(2);
+    coverage.reach(if in_commit_timestamps {
+        "in-commit timestamps"
+    } else {
+        "no in-commit timestamps"
+    });
     Case {
         fields,
         partition_by,
@@ -458,6 +481,8 @@ fn case(seed: u64, rng: &mut Rng, coverage: &mut Coverage) -> Case {
         buffer_bytes,
         file_interval,
         checkpoint_interval,
+        identity,
+        in_commit_timestamps,
         writers,
         rows,
     }
@@ -510,6 +535,11 @@ fn live_generated_tables_hold_every_row_once_in_a_consistent_log() {
             "compression zstd",
             "checkpoint interval set",
             "checkpoint interval default",
+            "identity one writer",
+            "identity two writers",
+            "no identity column",
+            "in-commit timestamps",
+            "no in-commit timestamps",
             "writers 1",
             "writers 2",
             "then Nothing",
@@ -593,7 +623,7 @@ fn run(s3: &str, seed: u64, case: &Case) -> Seen {
             role: None,
         },
         compression: case.compression,
-        identity: None,
+        tls: None,
         in_flight: 2,
         max_object_bytes: case.max_object_bytes,
         buffer_bytes: case.buffer_bytes,
@@ -640,12 +670,22 @@ fn run(s3: &str, seed: u64, case: &Case) -> Seen {
         })
         .collect();
     // Setting the interval needs the table: the first writer makes it, and finds the change on its first commit.
-    // Otherwise the writers race to make it.
-    let mut first = case.checkpoint_interval.map(|interval| {
-        let d = build();
-        set_checkpoint_interval(s3, &root, interval);
-        d
-    });
+    // An identity column and in-commit timestamps are there before any writer opens the table, as they are for a
+    // table another engine made. Otherwise the writers race to make it.
+    let before = case.identity.is_some() || case.in_commit_timestamps;
+    let mut first = match (before, case.checkpoint_interval) {
+        (true, interval) => {
+            drop(build());
+            amend(s3, &root, interval, case.identity, case.in_commit_timestamps);
+            None
+        }
+        (false, Some(interval)) => {
+            let d = build();
+            amend(s3, &root, Some(interval), None, false);
+            Some(d)
+        }
+        (false, None) => None,
+    };
     std::thread::scope(|scope| {
         for batches in writers {
             let made = first.take();
@@ -660,21 +700,43 @@ fn run(s3: &str, seed: u64, case: &Case) -> Seen {
     verify(s3, &root, case)
 }
 
-/// Sets the table's `delta.checkpointInterval` in commit 1, as another writer would.
-fn set_checkpoint_interval(s3: &str, root: &str, interval: u32) {
+/// Sets the table's `delta.checkpointInterval` in commit 1, adds the identity column `seq` of `identity`'s start and
+/// step, and enables in-commit timestamps where `timestamps` says, as another writer would.
+fn amend(s3: &str, root: &str, interval: Option<u32>, identity: Option<(i64, i64)>, timestamps: bool) {
     let created = commit(s3, root, 0).expect("commit 0");
     let mut metadata = created
         .iter()
         .find_map(|a| a.get("metaData"))
         .expect("metaData")
         .clone();
-    metadata["configuration"]["delta.checkpointInterval"] = json!(interval.to_string());
-    let body = [
-        json!({"commitInfo": {"timestamp": 0, "operation": "SET TBLPROPERTIES", "engineInfo": "fuzz"}}),
-        json!({"metaData": metadata}),
-    ]
-    .map(|a| a.to_string())
-    .join("\n");
+    let mut actions = vec![json!({"commitInfo": {"timestamp": 0, "operation": "SET TBLPROPERTIES",
+                                                  "engineInfo": "fuzz"}})];
+    if let Some(interval) = interval {
+        metadata["configuration"]["delta.checkpointInterval"] = json!(interval.to_string());
+    }
+    let mut features = Vec::new();
+    if timestamps {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+        actions[0]["commitInfo"]["inCommitTimestamp"] = json!(now);
+        metadata["configuration"]["delta.enableInCommitTimestamps"] = json!("true");
+        features.push("inCommitTimestamp");
+    }
+    if let Some((start, step)) = identity {
+        let mut schema: Value = serde_json::from_str(metadata["schemaString"].as_str().unwrap()).unwrap();
+        schema["fields"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "seq", "type": "long", "nullable": false,
+            "metadata": {"delta.identity.start": start, "delta.identity.step": step,
+                         "delta.identity.allowExplicitInsert": false}}));
+        metadata["schemaString"] = json!(schema.to_string());
+        features.push("identityColumns");
+    }
+    if !features.is_empty() {
+        actions.push(json!({"protocol": {"minReaderVersion": 1, "minWriterVersion": 7, "writerFeatures": features}}));
+    }
+    actions.push(json!({"metaData": metadata}));
+    let body = actions.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
     ureq::put(object_url(s3, &format!("{root}/_delta_log/{:020}.json", 1)))
         .header("If-None-Match", "*")
         .send(body)
@@ -753,9 +815,21 @@ fn verify(s3: &str, root: &str, case: &Case) -> Seen {
     let mut at = BTreeMap::new();
     let mut ever = HashSet::new();
     let mut adds: BTreeMap<String, (i64, Value)> = BTreeMap::new();
+    // `seq`'s high-water mark as each version leaves it.
+    let mut marks: BTreeMap<i64, Option<i64>> = BTreeMap::new();
+    let mut timestamp = None;
     for &version in &versions {
         let actions = commit(s3, root, version).unwrap_or_else(|e| panic!("version {version} unreadable: {e}"));
         assert!(!actions.is_empty(), "version {version} is empty");
+        if case.in_commit_timestamps && version > 0 {
+            let t = actions[0]["commitInfo"]["inCommitTimestamp"].as_i64();
+            let t = t.unwrap_or_else(|| panic!("version {version} opens with no inCommitTimestamp: {actions:?}"));
+            assert!(
+                timestamp < Some(t),
+                "version {version}'s inCommitTimestamp {t} is not after {timestamp:?}"
+            );
+            timestamp = Some(t);
+        }
         for action in actions {
             if let Some(p) = action.get("protocol") {
                 state.protocol = (
@@ -786,6 +860,12 @@ fn verify(s3: &str, root: &str, case: &Case) -> Seen {
                 adds.remove(path);
             }
         }
+        let schema: Value = serde_json::from_str(&state.schema).unwrap();
+        let seq = (schema["fields"].as_array().unwrap().iter()).find(|f| f["name"] == "seq");
+        marks.insert(
+            version,
+            seq.and_then(|f| f["metadata"]["delta.identity.highWaterMark"].as_i64()),
+        );
         if checkpoints.contains(&version) {
             at.insert(version, state.clone());
         }
@@ -816,6 +896,7 @@ fn verify(s3: &str, root: &str, case: &Case) -> Seen {
     // Each delivered row is in exactly one added file, under its own partition values.
     let mut found: BTreeMap<i64, usize> = BTreeMap::new();
     let mut per_commit_partition = HashSet::new();
+    let mut sequence = HashSet::new();
     for (path, (version, add)) in &adds {
         let key = format!("{root}/{}", percent_decode(path));
         assert!(keys.contains(&key), "{path} is added and not in the bucket");
@@ -845,6 +926,25 @@ fn verify(s3: &str, root: &str, case: &Case) -> Seen {
                 }
                 *found.entry(id).or_default() += 1;
                 count += 1;
+            }
+            if let Some((start, step)) = case.identity {
+                let seq = (batch.column_by_name("seq"))
+                    .unwrap_or_else(|| panic!("{path} has no seq column"))
+                    .as_primitive::<Int64Type>();
+                let mark = marks[version].unwrap_or_else(|| panic!("version {version} adds seq values and no mark"));
+                for v in seq.iter() {
+                    let v = v.unwrap_or_else(|| panic!("{path} has a row with no seq"));
+                    let k = (v as i128 - start as i128) / step as i128;
+                    assert!(
+                        k >= 0 && start as i128 + k * step as i128 == v as i128,
+                        "{path}'s seq {v} is off its grid"
+                    );
+                    assert!(
+                        (v as i128 - mark as i128) * (step.signum() as i128) <= 0,
+                        "{path}'s seq {v} is past {mark}"
+                    );
+                    assert!(sequence.insert(v), "seq {v} is in two rows");
+                }
             }
         }
         if let Some(stats) = add["stats"].as_str() {

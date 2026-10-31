@@ -13,7 +13,7 @@ use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutPayload};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use tokio_util::bytes::Bytes;
 
 use super::checkpoint;
@@ -27,6 +27,7 @@ const MAX_JSON_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_HELD_BYTES: usize = 16 * 1024 * 1024;
 
 /// A table's `_delta_log` in its store. Every call is bounded by `stall_after`, so a store that goes quiet is an error.
+#[derive(Clone, Debug)]
 pub struct Log {
     store: Arc<dyn ObjectStore>,
     runtime: Arc<tokio::runtime::Runtime>,
@@ -64,6 +65,11 @@ impl Log {
                 format!("{table}/_delta_log")
             },
         }
+    }
+
+    /// How long a call may take.
+    pub fn stall_after(&self) -> Duration {
+        self.stall_after
     }
 
     fn path(&self, name: &str) -> Result<Path, String> {
@@ -339,6 +345,13 @@ impl Metadata {
     pub fn property(&self, key: &str) -> Option<&str> {
         self.configuration.get(key).map(String::as_str)
     }
+
+    /// The true-or-false table property `key`; None when it is unset or neither.
+    pub fn flag(&self, key: &str) -> Option<bool> {
+        let value = self.property(key)?.trim();
+        (value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false"))
+            .then(|| value.eq_ignore_ascii_case("true"))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -446,8 +459,16 @@ pub enum Action {
     Sidecar(Sidecar),
     CheckpointMetadata(CheckpointMetadata),
     File(FileAction),
-    /// `commitInfo`, or an action this writer does not read.
+    CommitInfo(CommitInfo),
+    /// An action this writer does not read.
     Other,
+}
+
+/// What this writer reads of a `commitInfo`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitInfo {
+    pub in_commit_timestamp: Option<i64>,
 }
 
 impl Action {
@@ -463,6 +484,7 @@ impl Action {
             checkpoint_metadata: Option<CheckpointMetadata>,
             add: Option<Box<RawValue>>,
             remove: Option<Box<RawValue>>,
+            commit_info: Option<CommitInfo>,
         }
         let line: Line = serde_json::from_str(line).map_err(|e| format!("a line of the log: {e}"))?;
         Ok(if let Some(p) = line.protocol {
@@ -481,6 +503,8 @@ impl Action {
             Action::File(FileAction::parse(true, add)?)
         } else if let Some(remove) = line.remove {
             Action::File(FileAction::parse(false, remove)?)
+        } else if let Some(c) = line.commit_info {
+            Action::CommitInfo(c)
         } else {
             Action::Other
         })
@@ -559,9 +583,23 @@ pub struct Snapshot {
     pub since: Since,
     /// The application this writer's commits carry.
     pub app_id: String,
+    /// The `inCommitTimestamp` of the commit at `version`; None when it has none, or when the snapshot was read
+    /// from a checkpoint at `version` of a table that keeps none.
+    pub in_commit_timestamp: Option<i64>,
 }
 
 impl Snapshot {
+    /// The configuration of the domain `name`; None when the table has no such domain. Err when it does not read as
+    /// a `T`.
+    pub fn domain<T: serde::de::DeserializeOwned>(&self, name: &str) -> Result<Option<T>, String> {
+        let Some(domain) = self.domains.get(name) else {
+            return Ok(None);
+        };
+        serde_json::from_str(&domain.configuration)
+            .map(Some)
+            .map_err(|e| format!("the table's domain {name} does not read: {e}"))
+    }
+
     /// The table as the log has it now, its commits read from the last checkpoint on; None when it has no commit.
     /// Commits carrying `app_id`'s transaction are taken as this writer's.
     pub fn load(log: &Log, app_id: &str) -> Result<Option<Snapshot>, String> {
@@ -613,6 +651,20 @@ impl Snapshot {
                 ));
             }
         }
+        if snapshot.in_commit_timestamps()
+            && snapshot
+                .checkpoint
+                .as_ref()
+                .is_some_and(|c| c.version == snapshot.version)
+        {
+            // A checkpoint keeps no commitInfo: the next commit's timestamp follows the commit's own.
+            log.lines(&commit_name(snapshot.version), |line| {
+                if let Action::CommitInfo(c) = Action::parse(line)? {
+                    snapshot.in_commit_timestamp = c.in_commit_timestamp;
+                }
+                Ok(())
+            })?;
+        }
         Ok(Some(snapshot))
     }
 
@@ -651,6 +703,7 @@ impl Snapshot {
         if let Some(m) = state.metadata {
             self.metadata = m;
         }
+        self.in_commit_timestamp = state.in_commit_timestamp;
         self.since.take(actions, state.ours);
         self.version = version;
         Ok(true)
@@ -659,6 +712,7 @@ impl Snapshot {
     /// Takes this writer's own commit of `actions` as the table's next version.
     pub fn committed(&mut self, actions: Vec<Action>) {
         let mut files = Vec::new();
+        self.in_commit_timestamp = None;
         for action in actions {
             match action {
                 Action::Protocol(p) => self.protocol = p,
@@ -673,11 +727,28 @@ impl Snapshot {
                     self.domains.insert(d.domain.clone(), d);
                 }
                 Action::File(f) => files.push(f),
+                Action::CommitInfo(c) => self.in_commit_timestamp = c.in_commit_timestamp,
                 Action::Sidecar(_) | Action::CheckpointMetadata(_) | Action::Other => {}
             }
         }
         self.since.take(files, true);
         self.version += 1;
+    }
+
+    /// Whether each commit carries an `inCommitTimestamp`.
+    pub fn in_commit_timestamps(&self) -> bool {
+        self.metadata.flag("delta.enableInCommitTimestamps") == Some(true)
+    }
+
+    /// The `commitInfo` of the commit after this version, attempted at `now`. Where the table keeps in-commit
+    /// timestamps it carries one, later than this commit's; it is the commit's first action.
+    pub fn commit_info(&self, now: i64, operation: &str) -> Value {
+        let mut info = json!({"timestamp": now, "operation": operation, "engineInfo": "smeltr"});
+        if self.in_commit_timestamps() {
+            let after = self.in_commit_timestamp.map_or(i64::MIN, |t| t.saturating_add(1));
+            info["inCommitTimestamp"] = json!(now.max(after));
+        }
+        info
     }
 
     /// This writer's last transaction the table holds.
@@ -752,6 +823,7 @@ struct State {
     sidecars: bool,
     /// A transaction of this writer's was read.
     ours: bool,
+    in_commit_timestamp: Option<i64>,
 }
 
 impl State {
@@ -774,6 +846,7 @@ impl State {
             checkpoint,
             since,
             app_id: app_id.to_string(),
+            in_commit_timestamp: self.in_commit_timestamp,
         })
     }
 
@@ -797,6 +870,7 @@ impl State {
             }
             Action::CheckpointMetadata(_) => self.sidecars = true,
             Action::File(f) => files.push(f),
+            Action::CommitInfo(c) => self.in_commit_timestamp = c.in_commit_timestamp,
             Action::Other => {}
         }
         Ok(())
@@ -1074,9 +1148,38 @@ mod tests {
     }
 
     #[test]
-    fn commit_info_and_unknown_actions_are_other() {
+    fn an_in_commit_timestamp_is_the_later_of_now_and_one_after_the_last() {
+        let mut snapshot = Snapshot {
+            version: 0,
+            protocol: serde_json::from_value(json!({"minReaderVersion": 1, "minWriterVersion": 7})).unwrap(),
+            metadata: serde_json::from_str::<Value>(&metadata("m"))
+                .map(|v| serde_json::from_value(v["metaData"].clone()).unwrap())
+                .unwrap(),
+            txns: BTreeMap::new(),
+            domains: BTreeMap::new(),
+            checkpoint: None,
+            since: Since::default(),
+            app_id: APP.to_string(),
+            in_commit_timestamp: Some(100),
+        };
+        assert_eq!(snapshot.commit_info(50, "WRITE").get("inCommitTimestamp"), None);
+        (snapshot.metadata.configuration).insert("delta.enableInCommitTimestamps".into(), "true".into());
+        assert_eq!(snapshot.commit_info(50, "WRITE")["inCommitTimestamp"], 101);
+        assert_eq!(snapshot.commit_info(500, "WRITE")["inCommitTimestamp"], 500);
+        snapshot.in_commit_timestamp = None;
+        assert_eq!(snapshot.commit_info(50, "WRITE")["inCommitTimestamp"], 50);
+    }
+
+    #[test]
+    fn unknown_actions_are_other() {
         let info = json!({"commitInfo": {"timestamp": 1, "operation": "WRITE"}});
-        assert!(matches!(Action::parse(&info.to_string()).unwrap(), Action::Other));
+        assert!(
+            matches!(Action::parse(&info.to_string()).unwrap(), Action::CommitInfo(c) if c.in_commit_timestamp.is_none())
+        );
+        let info = json!({"commitInfo": {"timestamp": 1, "inCommitTimestamp": 7}});
+        assert!(
+            matches!(Action::parse(&info.to_string()).unwrap(), Action::CommitInfo(c) if c.in_commit_timestamp == Some(7))
+        );
         let cdc = json!({"cdc": {"path": "c", "size": 1, "dataChange": false}});
         assert!(matches!(Action::parse(&cdc.to_string()).unwrap(), Action::Other));
         assert!(Action::parse("not json").is_err());

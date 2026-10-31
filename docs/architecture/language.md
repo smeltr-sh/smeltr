@@ -219,6 +219,7 @@ $ = json(_raw)                                     // replaces the record
 app: {msg: str, ...} = json(log);                  // into a name, typed
 json(text, {splitDots: true})                      // a dotted key is a path
 kv(text, {pairSep: " ", kvSep: "=", quote: "\"", escapes: true})
+kv(text, {skip: ["devid", "tz"]})                  // keys that make no field
 cef(text)                                          // CEF header fields and extension
 csv(text, ["a", null, "c"], {delimiter: ","})      // null: a column that makes no field
 csv(text, ["a", "b"], {quote: "'", escape: "\\", squeeze: true, trim: true})
@@ -266,6 +267,15 @@ fewer than seven header fields, or text before its first extension key, is a
 
 A `json`, `kv`, `cef` or `csv` record that does not parse whole keeps the
 fields read before it broke off.
+
+`csvRebuild` and `kvRebuild` write a record's text back without what a parse
+skips: a CSV column left empty, so every column after it keeps its place, and
+a key-value pair left out. They read the text as `csv` and `kv` do and keep
+every other byte as it was written, its quotes and spacing too, so whatever
+reads the line downstream reads it as it read the original. Text that does
+not read whole comes back as it was. A CSV or key-value Parser step with
+`rebuild` lowers to its parse and then one of these, written to the field it
+read.
 
 Each function takes `formats`, which maps a `datetime` field it writes to the
 format its text is read in; without one the field is read in any format the

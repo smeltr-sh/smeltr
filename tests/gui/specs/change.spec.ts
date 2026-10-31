@@ -13,7 +13,7 @@ function table(id: string, value = '1'): Table {
 
 /** Saves `tables` as `shared/`'s whole set of lookup tables on `branch`, as one commit. */
 async function putTables(api: Api, branch: string, tables: Table[]) {
-  await api.put(`/api/lookup-tables?branch=${encodeURIComponent(branch)}&scope=shared`, tables);
+  await api.put(`/api/areas/shared/lookups?branch=${encodeURIComponent(branch)}`, tables);
 }
 
 /** A branch carrying `tables`, opened for review as `title`. */
@@ -45,7 +45,7 @@ async function addTable(page: Page, leader: Leader, id: string) {
 
 /** The table ids `shared/` holds on `branch`. */
 async function tablesOn(api: Api, branch: string): Promise<string[]> {
-  const res = await api.get(`/api/config?branch=${encodeURIComponent(branch)}&scope=shared`);
+  const res = await api.get(`/api/areas/shared?branch=${encodeURIComponent(branch)}`);
   return res.config.lookupTables.map((t: Table) => t.id);
 }
 
@@ -193,7 +193,7 @@ test('a change behind main is brought current, and its conflict is the author’
 
   await expect(admin.getByText('Current with main', { exact: true })).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Approve & deploy' })).toBeEnabled();
-  const mine = (await api.get('/api/config?branch=mine&scope=shared')).config.lookupTables;
+  const mine = (await api.get('/api/areas/shared?branch=mine')).config.lookupTables;
   expect(mine[0].rows).toEqual([['red', '1']]);
 });
 
@@ -209,7 +209,7 @@ test('approving deploys the change as one commit on main and deletes its branch'
   await admin.getByRole('button', { name: 'Approve & deploy' }).click();
   const confirm = admin.getByRole('dialog', { name: 'approve & deploy' });
   await expect(confirm).toContainText('deletes the branch ship-it');
-  await confirm.getByRole('button', { name: 'Approve & deploy' }).click();
+  await confirm.getByRole('button', { name: 'Approve & deploy', exact: true }).click();
 
   await expect(admin).not.toHaveURL(/#\/changes\/review/);
   expect(await branchNames(api)).toEqual([]);
@@ -356,7 +356,7 @@ test('the branch list shows every branch with its state, and deletes one', async
   await putTables(api, 'parked', [table('colors')]);
   await arrangeChange(api, 'in-review', 'Add sizes', [table('sizes')]);
   await arrangeChange(api, 'turned-down', 'Add shapes', [table('shapes')]);
-  await api.post('/api/changes/turned-down/close', { reason: '' });
+  await api.post('/api/branches/turned-down/close', { reason: '' });
 
   await goto(admin, leader, '#/changes');
   const row = (name: string) => admin.getByRole('row').filter({ hasText: name });
@@ -378,14 +378,58 @@ test('the branch list shows every branch with its state, and deletes one', async
   expect(await branchNames(api)).not.toContain('parked');
 });
 
+test('a sample the branch deleted is put back from its card on the change page', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  // W3
+  await api.put('/api/areas/shared/samples/keep?branch=seed', {
+    id: 'keep',
+    name: 'keep',
+    records: [{ _raw: 'a line' }],
+  });
+  // A sample reaches main only with a test that uses it.
+  await api.put('/api/areas/shared/pipelines/p?branch=seed', {
+    id: 'p',
+    name: 'p',
+    steps: [{ type: 'drop', id: 'none', condition: 'false' }],
+  });
+  await api.put('/api/areas/shared/tests/keep?branch=seed', {
+    id: 'keep',
+    name: 'keep',
+    pipeline: 'p',
+    sample: 'keep',
+    lockedAt: 0,
+    rowsIn: 1,
+    expected: [null],
+  });
+  await api.openChange('seed', 'Add a sample');
+  await api.deploy('seed');
+  await api.delete('/api/areas/shared/samples/keep?branch=tidy');
+  await api.openChange('tidy', 'Tidy the samples');
+
+  await goto(admin, leader, '#/changes');
+  await admin.getByRole('link', { name: /Tidy the samples/ }).click();
+  await expect(admin.getByText('sample · shared')).toBeVisible();
+  await admin.getByRole('button', { name: 'Undo changes' }).click();
+  await admin
+    .getByRole('dialog', { name: 'undo changes' })
+    .getByRole('button', { name: 'Undo changes' })
+    .click();
+  await expect(admin.getByText('No objects changed.')).toBeVisible();
+  const { sample } = await api.get('/api/areas/shared/samples/keep?branch=tidy');
+  expect(sample.records).toEqual([{ _raw: 'a line' }]);
+});
+
 test('a deployed commit that fails its own tests is deployed, and flagged on the Issues page', async ({
   admin,
   api,
   leader,
 }) => {
   // W11
-  const on = '?branch=broken-orders&scope=shared';
-  await api.put(`/api/pipelines/orders${on}`, {
+  const on = '?branch=broken-orders';
+  await api.put(`/api/areas/shared/pipelines/orders${on}`, {
     id: 'orders',
     name: 'orders',
     steps: [
@@ -398,13 +442,13 @@ test('a deployed commit that fails its own tests is deployed, and flagged on the
       },
     ],
   });
-  await api.put(`/api/samples${on}`, {
+  await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
     id: 'orders-sample',
     name: 'orders',
     records: [{ _raw: '{"id":1}' }],
   });
   // Locks an output the pipeline does not make, so the test fails at every commit that carries it.
-  await api.put(`/api/tests${on}`, {
+  await api.put(`/api/areas/shared/tests/orders-keep-id${on}`, {
     id: 'orders-keep-id',
     name: 'orders keep their id',
     pipeline: 'orders',
@@ -449,4 +493,30 @@ test('History shows who changed what, who deployed it, and when', async ({
       exact: true,
     }),
   ).toBeVisible();
+});
+
+test('a review sets apart the samples no test uses, which the deploy leaves out', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  const on = '?branch=scratch';
+  await putTables(api, 'scratch', [table('colors')]);
+  await api.put(`/api/areas/shared/samples/tried${on}`, {
+    id: 'tried',
+    name: 'capture 14:20',
+    records: [{ _raw: 'a' }],
+  });
+  await api.openChange('scratch', 'Colors, and a capture');
+
+  await goto(admin, leader, '#/changes/review/scratch');
+  const staying = admin.locator('.left-out');
+  await expect(staying.getByRole('heading', { name: 'Left out' })).toBeVisible();
+  await expect(staying.getByText('capture 14:20', { exact: true })).toBeVisible();
+  await expect(staying.getByRole('button', { name: 'Undo changes' })).toHaveCount(0);
+  await expect(admin.getByText('1 sample left out', { exact: true })).toBeVisible();
+
+  await api.deploy('scratch');
+  const main = await api.get('/api/areas/shared/samples?branch=main');
+  expect(main.samples).toEqual([]);
 });

@@ -18,8 +18,9 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
 
-use super::envelope::Envelope;
+use super::envelope::{Envelope, Refusal};
 use super::series::{RegistryStore, SubjectPoints, Tier};
 use super::store::{Actor, Store};
 use super::warnings::label;
@@ -451,8 +452,8 @@ pub struct WarningSettings {
 }
 
 impl WarningSettings {
-    fn answer(percent: Result<f64, String>) -> Json<Envelope<WarningSettings>> {
-        Json(match percent {
+    fn answer(percent: Result<f64, Refusal>) -> Envelope<WarningSettings> {
+        match percent {
             Ok(percent) => Envelope::ok(WarningSettings {
                 settings: Some(WarningSettingsDto {
                     source_rows_band_percent: percent,
@@ -461,8 +462,8 @@ impl WarningSettings {
                     max_percent: MAX_BAND_PERCENT,
                 }),
             }),
-            Err(error) => Envelope::failed_one(error),
-        })
+            Err(refusal) => Envelope::refused(refusal),
+        }
     }
 }
 
@@ -474,15 +475,14 @@ pub struct PutWarningSettings {
 
 /// `GET /api/settings/warnings`. A stored band the bounds no longer allow is answered with the error and the band
 /// itself, so the form shows what to correct.
-pub async fn get_settings(State(state): State<AppState>) -> Json<Envelope<WarningSettings>> {
+pub async fn get_settings(State(state): State<AppState>) -> Envelope<WarningSettings> {
     let read = run_store(state.store, |s| Ok(band_percent(s).map_err(|e| (e, stored_percent(s))))).await;
-    match read.unwrap_or_else(|e| Err((e.to_string(), None))) {
-        Ok(percent) => WarningSettings::answer(Ok(percent)),
-        Err((error, stored)) => {
-            let Json(mut answer) = WarningSettings::answer(Ok(stored.unwrap_or(DEFAULT_BAND_PERCENT)));
-            answer.ok = false;
-            answer.errors = vec![error.into()];
-            Json(answer)
+    match read {
+        Err(e) => Envelope::refused(e),
+        Ok(Ok(percent)) => WarningSettings::answer(Ok(percent)),
+        Ok(Err((error, stored))) => {
+            let answer = WarningSettings::answer(Ok(stored.unwrap_or(DEFAULT_BAND_PERCENT)));
+            Envelope::with(answer.body, StatusCode::UNPROCESSABLE_ENTITY, vec![error.into()])
         }
     }
 }
@@ -497,18 +497,18 @@ pub async fn put_settings(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Json(request): Json<PutWarningSettings>,
-) -> Json<Envelope<WarningSettings>> {
+) -> Envelope<WarningSettings> {
     let actor = actor.map(|a| a.0).unwrap_or_else(Actor::system);
     let percent = match checked(request.source_rows_band_percent) {
         Ok(percent) => percent,
-        Err(e) => return WarningSettings::answer(Err(e)),
+        Err(e) => return WarningSettings::answer(Err(Refusal::invalid(e))),
     };
     let event = super::accounts::event_for(&actor, "warning-settings-change", "", "ok");
     let written = run_store(state.store, move |s| {
         s.put_settings(&[(BAND_KEY, percent.to_string())], Some(&event))
     })
     .await;
-    WarningSettings::answer(written.map(|()| percent).map_err(|e| e.to_string()))
+    WarningSettings::answer(written.map(|()| percent).map_err(Refusal::from))
 }
 
 #[cfg(test)]

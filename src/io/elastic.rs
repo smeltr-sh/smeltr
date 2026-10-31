@@ -56,7 +56,7 @@ pub fn classify_response(body: &[u8], count: usize, policy: DocIdPolicy) -> Resu
 /// [`classify_response`]'s outcome, and how many documents a data stream's failure store took: each answered as
 /// written, though not to the index it was sent to.
 fn classify(body: &[u8], count: usize, policy: DocIdPolicy) -> Result<(Outcome, usize), IoError> {
-    let (errors, items) = bulk(body).map_err(|_| IoError::transient("bulk response was not JSON"))?;
+    let Bulk { errors, items } = bulk(body).map_err(|_| IoError::transient("bulk response was not JSON"))?;
     let failure_stored = items.iter().flatten().flatten().filter(|a| a.failure_stored).count();
 
     if errors == Some(false) {
@@ -114,10 +114,16 @@ struct Answered {
     failure_stored: bool,
 }
 
-/// A bulk answer's `errors`, where it is true or false, and its `items`, where it is a list: each item's answer, or
-/// `None` for one that is no object holding one.
-#[allow(clippy::type_complexity)]
-fn bulk(body: &[u8]) -> Result<(Option<bool>, Option<Vec<Option<Answered>>>), Malformed> {
+/// What a bulk answer says of the whole request.
+struct Bulk {
+    /// Its `errors`, where it is true or false.
+    errors: Option<bool>,
+    /// Its `items`, where it is a list: each item's answer, or `None` for one that is no object holding one.
+    items: Option<Vec<Option<Answered>>>,
+}
+
+/// Reads a bulk answer.
+fn bulk(body: &[u8]) -> Result<Bulk, Malformed> {
     let mut r = Reader::new(body)?;
     let top = r.value()?;
     if top != Next::Object {
@@ -151,7 +157,7 @@ fn bulk(body: &[u8]) -> Result<(Option<bool>, Option<Vec<Option<Answered>>>), Ma
         }
     }
     match r.end() {
-        true => Ok((errors, items)),
+        true => Ok(Bulk { errors, items }),
         false => Err(Malformed),
     }
 }
@@ -329,10 +335,36 @@ impl Protocol for Elastic {
     }
 }
 
+/// The `Authorization` header value the destination's credential stands for: the credential as it is when it names
+/// its scheme (`ApiKey <base64>`, `Basic <base64>`), and `ApiKey <credential>` when it is the bare key Elasticsearch
+/// hands out.
+pub fn authorization(credential: String) -> String {
+    if credential.contains(' ') {
+        credential
+    } else {
+        format!("ApiKey {credential}")
+    }
+}
+
 /// A transport to the cluster at `url`, e.g. `https://es.internal:9200`. `auth` is a complete `Authorization` header
-/// value (`ApiKey <base64>` or `Basic <base64>`), or `None` for a cluster with security disabled.
+/// value (`authorization`), or `None` for a cluster with security disabled.
 pub fn transport(url: &str, auth: Option<String>, config: &ureq::config::Config) -> HttpTransport {
     let headers = auth.map(|a| ("Authorization".to_string(), a)).into_iter().collect();
     // The Bulk API rejects `application/json`.
     HttpTransport::new(url, "application/x-ndjson", headers, config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_key_is_sent_as_an_api_key_and_a_named_scheme_as_it_is() {
+        assert_eq!(
+            authorization("VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw==".into()),
+            "ApiKey VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw=="
+        );
+        assert_eq!(authorization("ApiKey abc".into()), "ApiKey abc");
+        assert_eq!(authorization("Basic dXNlcjpwYXNz".into()), "Basic dXNlcjpwYXNz");
+    }
 }

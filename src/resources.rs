@@ -152,12 +152,6 @@ pub fn own_memory_bytes() -> u64 {
     platform::tree_memory(&[std::process::id()])
 }
 
-/// This process's container's memory limit. `None` where it has none, or none could be read.
-pub fn container_memory_limit_bytes() -> Option<u64> {
-    let memory = platform::sample(&mut Default::default()).1;
-    memory.limit_bytes.filter(|_| memory.limited)
-}
-
 /// Every logical core the host reports, for whichever platform found no real limit to measure
 /// against instead. `1.0` on a host that will not answer, so a caller dividing by it still gets a
 /// number rather than a NaN.

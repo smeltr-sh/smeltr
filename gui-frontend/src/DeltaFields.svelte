@@ -10,12 +10,13 @@
   import Advanced from './Advanced.svelte';
   import TableDelivery from './TableDelivery.svelte';
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import UrlField from './UrlField.svelte';
-  import IdentityPicker from './IdentityPicker.svelte';
-  import ObjectStoreAccess from './ObjectStoreAccess.svelte';
+  import TlsFields from './TlsFields.svelte';
+  import ConnectorAccess from './ConnectorAccess.svelte';
   import SecretRefInput from './SecretRefInput.svelte';
   import TokenListInput from './TokenListInput.svelte';
-  import type { IdentityDto, SecretDto } from './api';
+  import type { SecretDto } from './api';
   import {
     TABLE_NAMINGS,
     catalogTableRefusal,
@@ -32,11 +33,7 @@
     type TableNaming,
   } from './delta';
 
-  let {
-    value: d,
-    secrets,
-    identities,
-  }: { value: DeltaDestination; secrets: SecretDto[]; identities: IdentityDto[] } = $props();
+  let { value: d, secrets }: { value: DeltaDestination; secrets: SecretDto[] } = $props();
 
   const naming = $derived(namingOf(d));
 
@@ -60,73 +57,84 @@
     {/each}
   </select>
 </Field>
-{#if d.unityCatalog}
-  <UrlField
-    field="unityCatalog.workspace"
-    label="workspace"
-    bind:value={d.unityCatalog.workspace}
-    sends
-    error={workspaceRefusal(d.unityCatalog.workspace) ?? null}
-    placeholder="https://dbc-1234.cloud.databricks.com"
-  >
-    {#snippet help()}
-      The Databricks workspace's address, and nothing after its host.
-    {/snippet}
-  </UrlField>
-  <Field
-    field="unityCatalog.table"
-    label="table"
-    error={catalogTableRefusal(d.unityCatalog.table) ?? null}
-  >
-    {#snippet help()}
-      The external table it writes, by its three parts. A missing table is created from the route's
-      record.
-    {/snippet}
-    <input type="text" bind:value={d.unityCatalog.table} placeholder="main.web.access_log" />
-  </Field>
-  <Field field="region" label="region" error={regionRefusal(d) ?? null}>
-    {#snippet help()}
-      The region of the table's bucket.
-    {/snippet}
-    <input
-      type="text"
-      value={d.region ?? ''}
-      oninput={(e) => (d.region = optional(e.currentTarget.value))}
-      placeholder="us-west-2"
-    />
-  </Field>
-  <Field
-    field="unityCatalog.clientId"
-    label="client id"
-    error={clientIdRefusal(d.unityCatalog.clientId) ?? null}
-  >
-    {#snippet help()}
-      The OAuth client id of the service principal it signs in as.
-    {/snippet}
-    <input type="text" bind:value={d.unityCatalog.clientId} />
-  </Field>
-  <Field field="unityCatalog.clientSecret" label="client secret">
-    {#snippet help()}
-      The secret holding the service principal's OAuth secret.
-    {/snippet}
-    <SecretRefInput
-      value={d.unityCatalog.clientSecret}
-      {secrets}
-      label="client secret"
-      onchange={(v) => {
-        if (d.unityCatalog) d.unityCatalog.clientSecret = v ?? '';
-      }}
-    />
-  </Field>
-{:else}
-  <Field field="location" label="location" error={locationRefusal(d.location ?? '') ?? null}>
-    {#snippet help()}
-      The table's root in S3. A missing table is created there from the route's record.
-    {/snippet}
-    <input type="text" bind:value={d.location} placeholder="s3://lake/tables/access_log" />
-  </Field>
-{/if}
+<Nested>
+  {#if d.unityCatalog}
+    <UrlField
+      required
+      field="unityCatalog.workspace"
+      label="workspace"
+      bind:value={d.unityCatalog.workspace}
+      sends
+      error={workspaceRefusal(d.unityCatalog.workspace) ?? null}
+      placeholder="https://dbc-1234.cloud.databricks.com"
+    >
+      {#snippet help()}
+        The Databricks workspace's address, and nothing after its host.
+      {/snippet}
+    </UrlField>
+    <Field
+      required
+      field="unityCatalog.table"
+      label="table"
+      error={catalogTableRefusal(d.unityCatalog.table) ?? null}
+    >
+      {#snippet help()}
+        The external table it writes, by its three parts. A missing table is created from the
+        route's record.
+      {/snippet}
+      <input type="text" bind:value={d.unityCatalog.table} placeholder="main.web.access_log" />
+    </Field>
+    <Field optional field="region" label="region" error={regionRefusal(d) ?? null}>
+      {#snippet help()}
+        The region of the table's bucket.
+      {/snippet}
+      <input
+        type="text"
+        value={d.region ?? ''}
+        oninput={(e) => (d.region = optional(e.currentTarget.value))}
+        placeholder="us-west-2"
+      />
+    </Field>
+    <Field
+      required
+      field="unityCatalog.clientId"
+      label="client id"
+      error={clientIdRefusal(d.unityCatalog.clientId) ?? null}
+    >
+      {#snippet help()}
+        The OAuth client id of the service principal it signs in as.
+      {/snippet}
+      <input type="text" bind:value={d.unityCatalog.clientId} />
+    </Field>
+    <Field required field="unityCatalog.clientSecret" label="client secret">
+      {#snippet help()}
+        The secret holding the service principal's OAuth secret.
+      {/snippet}
+      <SecretRefInput
+        value={d.unityCatalog.clientSecret}
+        {secrets}
+        label="client secret"
+        onchange={(v) => {
+          if (d.unityCatalog) d.unityCatalog.clientSecret = v ?? '';
+        }}
+      />
+    </Field>
+  {:else}
+    <Field
+      required
+      field="location"
+      label="location"
+      error={locationRefusal(d.location ?? '') ?? null}
+    >
+      {#snippet help()}
+        The table's root in S3. A missing table is created there from the route's record.
+      {/snippet}
+      <input type="text" bind:value={d.location} placeholder="s3://lake/tables/access_log" />
+    </Field>
+  {/if}
+</Nested>
 <Field
+  optional
   field="partitionBy"
   label="partition by"
   group
@@ -134,9 +142,8 @@
 >
   {#snippet help()}
     The columns a table it creates is partitioned by, each a top-level column of the record. A table
-    that exists keeps its own.
+    that exists keeps its own. Default none: an unpartitioned table.
   {/snippet}
-  {#snippet note()}Default none: an unpartitioned table.{/snippet}
   <TokenListInput
     bind:values={
       () => d.partitionBy ?? [],
@@ -149,14 +156,9 @@
   />
 </Field>
 {#if naming === 'location'}
-  <ObjectStoreAccess store="s3" value={d} show="credential" {secrets} />
+  <ConnectorAccess store="s3" value={d} show="credential" {secrets} />
 {/if}
-<IdentityPicker
-  value={d.identity}
-  {identities}
-  farEnd="destination"
-  onchange={(v) => (d.identity = v)}
-/>
+<TlsFields value={d} farEnd="destination" />
 <Advanced label="Storage" modified={storageModified(d)} bind:open={storageOpen}>
   {#if naming === 'unityCatalog'}
     <UrlField
@@ -173,7 +175,7 @@
       {/snippet}
     </UrlField>
   {:else}
-    <ObjectStoreAccess
+    <ConnectorAccess
       store="s3"
       value={d}
       show="advanced"
@@ -181,7 +183,7 @@
     />
   {/if}
 </Advanced>
-<TableDelivery value={d} calls="the store" commit="a version the table's log keeps" />
+<TableDelivery value={d} calls="the store" commit="a version to the table's log" />
 
 <style>
   input,

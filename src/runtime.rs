@@ -20,7 +20,6 @@ use crate::core::column::{Column, DataType};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind, INGEST_FUNCTION, Read};
 use crate::core::id::{DestId, SlotId, SourceId};
-use crate::format::encoding::Encoding;
 use crate::format::json::scalar_text;
 use crate::format::record::RecordView;
 use crate::handoff::{Acks, BlockCause, Handed, Handoff, Ready, Report, Reports, Taken};
@@ -31,10 +30,10 @@ use crate::io::{
     SourceRecord, TopicPartition,
 };
 use crate::metrics::MetricsHandle;
+use crate::plan::compile::Plan;
 use crate::plan::config::{Answer, Payload};
 use crate::plan::exec;
 use crate::plan::output::{RaisedIn, answer_rows, tag_column, tag_or_not};
-use crate::plan::plan::Plan;
 use crate::plan::topology::{CompiledRoute, CompiledTopology, Placement, SourceMeta, route_masks};
 
 /// The block reason for a destination that stopped taking records. The cause is quoted: a missing topic, an unreachable
@@ -143,8 +142,6 @@ pub struct DestinationTarget {
     /// Whether this destination keys documents on the row's `__destination.id`, so a row without one is counted
     /// (`smeltr_rows_without_doc_id_total`).
     pub wants_doc_id: bool,
-    /// The row field that supplies the document identity when the pipeline set no `__destination.id`.
-    pub id_field: Option<String>,
     /// The `__destination` field that places a row in it, if it reads one.
     pub placement: Option<Placement>,
 }
@@ -301,6 +298,30 @@ struct Salvage {
     left: Vec<DestId>,
 }
 
+/// Decode every record's `__source.bytes` with the source's encoding into its `_raw`; a row, which has none, has no
+/// text. One pass per batch:
+/// `_raw` is rebuilt per route, but from this text, so nothing decodes twice and a note is recorded once.
+pub(crate) fn decode_records<'a>(records: &'a [SourceRecord], meta: &SourceMeta) -> RawText<'a> {
+    let encoding = meta.encoding();
+    let mut text = Vec::with_capacity(records.len());
+    let mut notes = Vec::new();
+    for (row, read) in meta.read_bytes_each(records).enumerate() {
+        let Some(bytes) = read else {
+            text.push(Cow::Borrowed(""));
+            continue;
+        };
+        let decoded = encoding.decode(bytes);
+        if decoded.replaced {
+            notes.push((row as u32, ExceptionKind::InvalidUtf8));
+        }
+        if let Some(guess) = decoded.guessed {
+            notes.push((row as u32, ExceptionKind::GuessedEncoding { encoding: guess.name() }));
+        }
+        text.push(decoded.text);
+    }
+    RawText { text, notes }
+}
+
 /// One source's side of transform: the facts every batch of its records is run against, and what is parked waiting to
 /// be re-run. Shared, so more than one transform thread can serve the same source; the exclusive half -- the egress
 /// handles a batch's rows are handed to -- stays on [`Transform`].
@@ -309,10 +330,8 @@ pub struct Lane {
     /// The id the author gave this source, which is what a capture names. `None` on the single-source tick driver:
     /// that is not a deployment, and a capture only ever reaches one.
     pub source_name: Option<String>,
-    /// What this source's records carry; the ingest batch is built from it.
+    /// What this source's records carry, and how their bytes become `_raw`'s text; the ingest batch is built from it.
     pub meta: SourceMeta,
-    /// How this source's record bytes become `_raw`'s text (`format::encoding`).
-    pub encoding: Encoding,
     /// Batches this source's reader has polled and no transform thread has taken.
     pub batches: Handoff,
     /// Every destination reachable from this source: what its batches are dispatched to, and what its reader waits on.
@@ -321,36 +340,27 @@ pub struct Lane {
     destinations: Mutex<Vec<DestId>>,
     /// Where a batch's outcome goes: this source's reader, and no other.
     pub reports: Reports,
-    /// Woken when this lane has work, so a thread watching several of them need not poll each.
-    ready: Arc<Ready>,
     parked: Mutex<Parked>,
 }
 
 impl Lane {
-    /// A lane whose arrivals are announced on `ready`. Every lane one transform thread drains shares one.
-    ///
-    /// One argument per fact the lane holds, and every one of them is a different thing a batch of this source's
-    /// records is run against; grouping them into a struct would name a thing that only exists to be unpacked here.
-    #[allow(clippy::too_many_arguments)]
+    /// A lane fed through `batches`. Its parked batches are announced on the same `Ready` as its arrivals, which every
+    /// lane one transform thread drains shares.
     pub fn new(
         source_id: SourceId,
         source_name: Option<String>,
         meta: SourceMeta,
-        encoding: Encoding,
+        batches: Handoff,
         destinations: Vec<DestId>,
         reports: Reports,
-        ready: Arc<Ready>,
-        capacity: usize,
     ) -> Lane {
         Lane {
             source_id,
             source_name,
             meta,
-            encoding,
-            batches: Handoff::watched(ready.clone(), capacity),
+            batches,
             destinations: Mutex::new(destinations),
             reports,
-            ready,
             parked: Mutex::new(Parked::default()),
         }
     }
@@ -410,7 +420,7 @@ impl Lane {
             shown: HashSet::new(),
             _hold: None,
         });
-        self.ready.signal();
+        self.batches.ready().signal();
     }
 
     /// Show the records the held batch blocked on to each capture of `name` that has not been shown them. Under the
@@ -426,7 +436,7 @@ impl Lane {
         }
         let records: Vec<SourceRecord> = held.blocking.iter().map(|(i, _)| held.records[*i].clone()).collect();
         let why: Vec<String> = held.blocking.iter().map(|(_, why)| why.clone()).collect();
-        let raw = decode_records(&records, &self.meta, self.encoding);
+        let raw = decode_records(&records, &self.meta);
         let text: Vec<&str> = raw.text.iter().map(|t| t.as_ref()).collect();
         captures.tap_held(name, &mut held.shown, &records, &text, &why);
     }
@@ -509,7 +519,7 @@ pub struct Transform {
     captures: Option<Arc<crate::worker::capture::Captures>>,
     /// Each capture at a destination's filter, compiled against each route feeding it, by session, admission and route
     /// index. Compiled once per session rather than per batch: a parser has no place on the hot path.
-    capture_filters: HashMap<(String, u64, usize), Option<Arc<OutputFilter>>>,
+    capture_filters: HashMap<(String, u64, usize), RouteFilter>,
     /// Recent refusals every destination this thread hands batches to gave, for the heartbeat. Shared with the reader
     /// threads of the same lanes; a fresh, private ring until [`Transform::with_refusals`] injects a deployment-wide
     /// one.
@@ -642,7 +652,6 @@ impl Worker {
     pub fn new(
         source_id: SourceId,
         source: Box<dyn Source>,
-        encoding: Encoding,
         topology: CompiledTopology,
         destinations: Vec<DestinationTarget>,
         memory: MemoryBudget,
@@ -653,13 +662,11 @@ impl Worker {
             source_id,
             None,
             topology.meta_for(source_id),
-            encoding,
+            Handoff::new(),
             destinations.iter().map(|d| d.id).collect(),
             reports,
-            Arc::new(Ready::new()),
-            crate::handoff::HANDOFF_BYTES,
         ));
-        let ready = lane.ready.clone();
+        let ready = lane.batches.ready().clone();
         Worker {
             reader: Reader::new(
                 source_id,
@@ -795,7 +802,7 @@ impl Reader {
                 ("source".to_string(), self.source_id.to_string()),
                 ("cause".to_string(), cause.name().to_string()),
             ],
-            value: crate::heartbeat::MetricValueDto::Text(reason),
+            value: crate::heartbeat::MetricValueDto::text(&reason),
         })
     }
 
@@ -808,7 +815,7 @@ impl Reader {
         Some(crate::heartbeat::MetricSampleDto {
             metric: "smeltr_source_connection_error".to_string(),
             labels: vec![("source".to_string(), self.source_id.to_string())],
-            value: crate::heartbeat::MetricValueDto::Text(reason),
+            value: crate::heartbeat::MetricValueDto::text(&reason),
         })
     }
 }
@@ -944,29 +951,22 @@ impl Transform {
     /// One turn: take a batch -- an undelivered one, or the next off some lane's queue -- run it, hand the rows on,
     /// and report to the lane it came from.
     pub fn step(&mut self, pop_timeout: Duration) -> Result<usize, IoError> {
-        let Some(Turn {
-            lane: lane_idx,
-            batch,
-            records,
-            unprocessable,
-            waiting_since,
-        }) = self.take_next(pop_timeout)
-        else {
+        let Some(turn) = self.take_next(pop_timeout) else {
             // An idle turn is what collects completions.
             self.collect()?;
             return Ok(0);
         };
-        if unprocessable {
+        if turn.unprocessable {
             // Back for room or after a failed hand-over: no pipeline runs it again.
-            return self.divert_unprocessable(lane_idx, batch, records, waiting_since, true);
+            return self.divert_unprocessable(turn);
         }
-        let lane = self.lanes[lane_idx].clone();
+        let (lane, batch) = (self.lanes[turn.lane].clone(), turn.batch);
         let reports = lane.reports.clone();
         let source_label = lane.source_id.to_string();
 
         let process_start = std::time::Instant::now();
         let mut out = Output::default();
-        let outcome = catch_unwind(AssertUnwindSafe(|| self.process_batch(&lane, &records, &mut out)));
+        let outcome = catch_unwind(AssertUnwindSafe(|| self.process_batch(&lane, &turn.records, &mut out)));
         self.metrics.incr_seconds(
             "smeltr_tick_process_seconds_total",
             &[("source", source_label.as_str())],
@@ -979,12 +979,12 @@ impl Transform {
                 .gauge("smeltr_memory_peak_bytes", &[], self.memory.peak() as f64);
             self.metrics.gauge("smeltr_memory_budget_bytes", &[], limit as f64);
         }
-        let row_count = records.len();
+        let row_count = turn.records.len();
         match outcome {
             Ok(Ok(())) => {
                 let t = std::time::Instant::now();
                 let dests = lane.destinations();
-                match self.hand_off(lane_idx, batch, records, waiting_since, false, &dests, out.rows) {
+                match self.hand_off(turn, &dests, out.rows) {
                     Err(e) => {
                         reports.send(Report::Block(BlockCause::Waiting, undeliverable(&e)));
                         return Err(e);
@@ -1015,7 +1015,7 @@ impl Transform {
             Ok(Err(held)) => {
                 lane.park_held(
                     batch,
-                    records,
+                    turn.records,
                     std::mem::take(&mut out.blocking),
                     self.captures.as_ref(),
                 );
@@ -1027,7 +1027,11 @@ impl Transform {
                 // routes produced before the panic goes with `out`.
                 self.metrics
                     .incr("smeltr_batches_poisoned_total", &[("source", source_label.as_str())], 1);
-                return self.divert_unprocessable(lane_idx, batch, records, None, false);
+                let turn = Turn {
+                    waiting_since: None,
+                    ..turn
+                };
+                return self.divert_unprocessable(turn);
             }
         }
 
@@ -1052,17 +1056,19 @@ impl Transform {
     /// having ended clean. A routed batch asks every destination its lane reaches, including ones it has nothing for:
     /// `track` put all of them on the batch's waiting list at poll time, and one handed nothing completes at once. An
     /// unprocessable one asks only where its answer sends it: the reader has stopped waiting on the rest.
-    #[allow(clippy::too_many_arguments)]
     fn hand_off(
         &mut self,
-        lane: usize,
-        id: BatchId,
-        records: Vec<SourceRecord>,
-        waiting_since: Option<std::time::Instant>,
-        unprocessable: bool,
+        turn: Turn,
         dests: &[DestId],
         mut rows: HashMap<DestId, Vec<OwnedRecord>>,
     ) -> Result<HandOff, IoError> {
+        let Turn {
+            lane,
+            batch: id,
+            records,
+            unprocessable,
+            waiting_since,
+        } = turn;
         for &dest_id in dests {
             let Some(i) = self.destinations.iter().position(|d| d.id == dest_id) else {
                 // `deploy` gives every thread a handle for every destination, so this is a worker built by hand with a
@@ -1142,6 +1148,12 @@ impl Transform {
                 self.note_held(dest, held);
             }
             for c in self.destinations[i].destination.poll_completions()? {
+                // Egress sends undelivered rows again and reports the batch once they land; this is never handed them.
+                debug_assert!(
+                    c.undelivered.is_none(),
+                    "batch {} reached the runtime with rows undelivered",
+                    c.batch
+                );
                 // A completion names only its batch, so the lane comes from what this thread dispatched.
                 let owed = self.owed.get(&c.batch).filter(|o| o.outstanding.contains_key(&dest));
                 let Some(lane) = owed.map(|o| o.lane) else {
@@ -1370,11 +1382,9 @@ impl Transform {
     /// single record, and only a record that will not fit alone leaves the pipeline. Backing off would retry the same
     /// allocation forever; diverting the batch would punish a whole poll for one oversized record.
     fn process_batch(&mut self, lane: &Lane, records: &[SourceRecord], out: &mut Output) -> Result<(), IoError> {
-        let id_fields: Vec<(DestId, String)> = self
-            .destinations
-            .iter()
-            .filter_map(|d| d.id_field.clone().map(|f| (d.id, f)))
-            .collect();
+        // A handle of its own, so `self` stays free to be borrowed mutably below.
+        let topology = Arc::clone(&self.topology);
+        let id_fields = &topology.id_fields;
 
         // Each split strictly shrinks its range, so this reaches single records at worst. Later ranges pushed first, so
         // delivery follows source order.
@@ -1394,7 +1404,7 @@ impl Transform {
             attempt
                 .now_micros
                 .get_or_insert_with(crate::core::ctx::wall_clock_micros);
-            let Refused { resume_from, over } = match self.run_attempt(lane, records, &attempt, &id_fields, out)? {
+            let Refused { resume_from, over } = match self.run_attempt(lane, records, &attempt, id_fields, out)? {
                 None => continue,
                 Some(refused) => refused,
             };
@@ -1488,7 +1498,7 @@ impl Transform {
         let mut errors = ErrorSink::new();
         let began = std::time::Instant::now();
 
-        let raw = decode_records(slice, &lane.meta, lane.encoding);
+        let raw = decode_records(slice, &lane.meta);
 
         // A capture sees what this batch is about to be run over: after decode, before any pipeline, so what it
         // keeps is the record as it arrived. A worker nobody is debugging answers `watching` from one atomic load
@@ -1580,10 +1590,8 @@ impl Transform {
                 self.captures.as_deref(),
                 &self.destinations,
                 &at_destinations,
-                &self.topology.routes[route_idx],
+                &self.topology,
                 route_idx,
-                plan,
-                &lane.meta,
             );
             // The one batch this interval describes for the leader (`streams::Streams::due`): its Parsers tally
             // what they produce, which every other batch skips. A batch the route took no row of is not it.
@@ -1660,68 +1668,66 @@ impl Transform {
         Ok(None)
     }
 
-    /// What route `route_idx`, running `plan` over `meta`'s records, copies for each capture in `at`: those at a
-    /// destination of this thread's the route delivers to, each with its filter compiled against the route's output.
-    /// A filter that will not compile there ends its capture, saying which route. `filters` keeps each compiled filter.
-    #[allow(clippy::too_many_arguments)]
+    /// What route `route_idx` copies for each capture in `at`: those at a destination of this thread's the route
+    /// delivers to, each with its filter compiled against the route's output. A filter runs on each route delivering
+    /// there that it compiles on, since those routes may give the destination rows of different shapes; one that
+    /// compiles on none of them ends its capture, saying why for each. `filters` keeps what each route makes of it.
     fn route_taps(
-        filters: &mut HashMap<(String, u64, usize), Option<Arc<OutputFilter>>>,
+        filters: &mut HashMap<(String, u64, usize), RouteFilter>,
         captures: Option<&crate::worker::capture::Captures>,
         destinations: &[DestinationTarget],
         at: &[crate::worker::capture::AtDestination],
-        route: &CompiledRoute,
+        topology: &CompiledTopology,
         route_idx: usize,
-        plan: &Plan,
-        meta: &SourceMeta,
     ) -> Vec<RouteTap> {
         if at.is_empty() {
             return Vec::new();
         }
-        let delivers_to = |dest: DestId| {
-            route.deliver.iter().any(|rule| rule.to.contains(&dest))
-                || route.on_exception.answers.iter().any(|a| a.targets().contains(&dest))
-        };
         let mut taps = Vec::new();
         for (i, at) in at.iter().enumerate() {
             let Some(target) = destinations.iter().find(|t| t.name == at.destination) else {
                 continue;
             };
-            if !delivers_to(target.id) {
+            if !topology.routes[route_idx].delivers_to(target.id) {
                 continue;
             }
-            let filter = match filters.get(&(at.session.clone(), at.admission, route_idx)) {
-                Some(filter) => filter.clone(),
-                None => {
-                    let compiled = match &at.filter {
-                        None => Ok(None),
-                        Some(src) => crate::plan::topology::output_condition(
-                            src,
-                            "a capture filter",
-                            plan,
-                            &route.on_exception.tag_field,
-                            meta,
-                        )
-                        .map(|(ir, patterns)| Some(Arc::new(OutputFilter { ir, patterns }))),
-                    };
-                    match compiled {
-                        Ok(filter) => {
-                            filters.insert((at.session.clone(), at.admission, route_idx), filter.clone());
-                            filter
-                        }
-                        Err(e) => {
-                            if let Some(captures) = captures {
-                                captures.fail_at(at, format!("on route {:?}: {e}", route.id));
-                            }
-                            continue;
-                        }
-                    }
+            let key = |idx: usize| (at.session.clone(), at.admission, idx);
+            if !filters.contains_key(&key(route_idx)) {
+                let (mut errors, mut compiles) = (Vec::new(), false);
+                let compiled: Vec<_> = match &at.filter {
+                    None => topology.delivering(target.id).map(|(idx, _)| (idx, Ok(None))).collect(),
+                    Some(src) => (topology.capture_filters(target.id, src).into_iter())
+                        .map(|(idx, c)| {
+                            (
+                                idx,
+                                c.map(|(ir, patterns)| Some(Arc::new(OutputFilter { ir, patterns }))),
+                            )
+                        })
+                        .collect(),
+                };
+                for (idx, compiled) in compiled {
+                    let filter = compiled.map_or_else(
+                        |e| {
+                            errors.push(format!("on route {:?}: {e}", topology.routes[idx].id));
+                            RouteFilter::Skips
+                        },
+                        RouteFilter::Keeps,
+                    );
+                    compiles |= matches!(filter, RouteFilter::Keeps(_));
+                    filters.insert(key(idx), filter);
                 }
+                if let (false, Some(captures)) = (compiles, captures) {
+                    captures.fail_at(at, errors.join("; "));
+                }
+            }
+            let RouteFilter::Keeps(filter) = &filters[&key(route_idx)] else {
+                continue;
             };
             taps.push(RouteTap {
                 at: i,
                 dest: target.id,
                 placement: target.placement,
-                filter,
+                filter: filter.clone(),
                 wanted: at.wanted,
                 room: at.room,
             });
@@ -1967,25 +1973,19 @@ impl Transform {
     /// A batch a pipeline panicked on, answered as `Unprocessable` is: held, dropped, or sent where it names, each record
     /// as it arrived. Delivered, it is handed over like a routed
     /// batch -- parked for room, re-run on a failed hand-over -- to every destination it names, and its commit waits
-    /// for each, and for every DLQ one of them sends a refusal to. `again` is a batch parked here before: the reader
-    /// already waits on these alone.
-    fn divert_unprocessable(
-        &mut self,
-        lane_idx: usize,
-        batch: BatchId,
-        records: Vec<SourceRecord>,
-        waiting_since: Option<std::time::Instant>,
-        again: bool,
-    ) -> Result<usize, IoError> {
-        let lane = self.lanes[lane_idx].clone();
+    /// for each, and for every DLQ one of them sends a refusal to. A turn already unprocessable was parked here before:
+    /// the reader already waits on these alone.
+    fn divert_unprocessable(&mut self, mut turn: Turn) -> Result<usize, IoError> {
+        let again = turn.unprocessable;
+        let (lane, batch) = (self.lanes[turn.lane].clone(), turn.batch);
         let source_label = lane.source_id.to_string();
-        let rows = records.len();
+        let rows = turn.records.len();
         match self.topology.on_exception.answer(&ExceptionKind::Unprocessable).clone() {
             // Load refuses ignore and tag: no record is left to carry on.
             Answer::Block | Answer::Ignore | Answer::Tag => {
                 // Which record panicked is not known, so every one of them is shown.
                 let blocking = (0..rows).map(|i| (i, PANICKED.to_string())).collect();
-                lane.park_held(batch, records, blocking, self.captures.as_ref());
+                lane.park_held(batch, turn.records, blocking, self.captures.as_ref());
                 lane.reports.send(Report::Block(
                     BlockCause::Held,
                     unprocessable_block_reason(rows, PANICKED),
@@ -2018,10 +2018,11 @@ impl Transform {
                     });
                 }
                 let mut out = Output::default();
-                let these: Vec<_> = records.iter().enumerate().collect();
+                let these: Vec<_> = turn.records.iter().enumerate().collect();
                 self.place_delivered(&mut out, &targets, &these, &lane, None, DROPPED_UNPROCESSABLE);
                 drop(these);
-                match self.hand_off(lane_idx, batch, records, waiting_since, true, &to, out.rows) {
+                turn.unprocessable = true;
+                match self.hand_off(turn, &to, out.rows) {
                     Err(e) => {
                         lane.reports.send(Report::Block(BlockCause::Waiting, undeliverable(&e)));
                         return Err(e);
@@ -2075,7 +2076,7 @@ impl Transform {
             .iter()
             .map(|&(i, r)| match (text, lane.meta.read_bytes(r)) {
                 (Some(text), _) => Cow::Borrowed(text[i].as_ref()),
-                (None, Some(bytes)) => lane.encoding.decode(bytes).text,
+                (None, Some(bytes)) => lane.meta.encoding().decode(bytes).text,
                 (None, None) => Cow::Borrowed(""),
             })
             .collect();
@@ -2264,7 +2265,7 @@ impl RefusalRing {
                     ("destination".to_string(), dest.to_string()),
                     ("at_millis".to_string(), r.at_millis.to_string()),
                 ],
-                value: crate::heartbeat::MetricValueDto::Text(r.message),
+                value: crate::heartbeat::MetricValueDto::text(&r.message),
             })
             .collect()
     }
@@ -2743,34 +2744,11 @@ struct Ingest<'a> {
 }
 
 /// A batch's records as text, decoded once per attempt and rebuilt as a column for routing and for each route.
-struct RawText<'a> {
-    text: Vec<Cow<'a, str>>,
+pub(crate) struct RawText<'a> {
+    pub(crate) text: Vec<Cow<'a, str>>,
     /// What a decode had to do, per row. Replayed into every route's exception window, so a repaired or guessed-at
     /// row is marked wherever it is delivered.
     notes: Vec<(u32, ExceptionKind)>,
-}
-
-/// Decode every record's `__source.bytes` with the source's encoding into its `_raw`; a row, which has none, has no
-/// text. One pass per batch:
-/// `_raw` is rebuilt per route, but from this text, so nothing decodes twice and a note is recorded once.
-fn decode_records<'a>(records: &'a [SourceRecord], meta: &SourceMeta, encoding: Encoding) -> RawText<'a> {
-    let mut text = Vec::with_capacity(records.len());
-    let mut notes = Vec::new();
-    for (row, read) in meta.read_bytes_each(records).enumerate() {
-        let Some(bytes) = read else {
-            text.push(Cow::Borrowed(""));
-            continue;
-        };
-        let decoded = encoding.decode(bytes);
-        if decoded.replaced {
-            notes.push((row as u32, ExceptionKind::InvalidUtf8));
-        }
-        if let Some(guess) = decoded.guessed {
-            notes.push((row as u32, ExceptionKind::GuessedEncoding { encoding: guess.name() }));
-        }
-        text.push(decoded.text);
-    }
-    RawText { text, notes }
 }
 
 /// A record in the form `payload` names, for a row no pipeline made: what it read as it arrived, the document a
@@ -2802,6 +2780,14 @@ struct Egress<'a> {
 struct OutputFilter {
     ir: crate::expr::ir::Ir,
     patterns: Vec<crate::core::ctx::CompiledPattern>,
+}
+
+/// A capture at a destination's filter, as one route delivering there makes of it.
+enum RouteFilter {
+    /// `None` keeps every row bound there.
+    Keeps(Option<Arc<OutputFilter>>),
+    /// It does not compile against the route's output: the route copies nothing for it.
+    Skips,
 }
 
 /// One capture at a destination, as one route run copies rows for it.
@@ -3401,7 +3387,7 @@ fn seed_ingest_batch(
     source: Option<&str>,
 ) -> Batch {
     let rows = records.len();
-    let layout: Vec<DataType> = crate::plan::plan::ingest_fields(meta)
+    let layout: Vec<DataType> = crate::plan::compile::ingest_fields(meta)
         .into_iter()
         .map(|(_, t)| t)
         .collect();
@@ -3486,35 +3472,34 @@ pub fn preview_memory_budget() -> MemoryBudget {
 /// as UTF-8.
 pub fn preview_routes(
     topology: &CompiledTopology,
-    destinations: &[crate::plan::topology::DestinationConfig],
-    source: SourceId,
-    source_name: &str,
+    source: &crate::plan::topology::SourceConfig,
     records: &[SourceRecord],
     budget: MemoryBudget,
 ) -> Vec<PreviewedRow> {
-    let meta = topology.meta_for(source);
+    let meta = topology.meta_for(source.id);
     let texts: Vec<String> = records
         .iter()
         .map(|r| String::from_utf8_lossy(meta.read_bytes(r).unwrap_or_default()).into_owned())
         .collect();
-    preview_routes_at(
-        topology,
-        destinations,
+    let sample = Sample {
         source,
-        source_name,
         records,
-        &texts,
-        budget,
-        crate::core::ctx::wall_clock_micros(),
-    )
+        texts: &texts,
+    };
+    preview_routes_at(topology, &sample, budget, crate::core::ctx::wall_clock_micros())
 }
 
-/// Route `records` as if they had arrived through `source`, named `source_name` in the deployment, and say where each
-/// would go.
-///
-/// `texts` are the records' `_raw`, one per record, as a sample holds it (`config_file::sample`): a paste arrives as
-/// text and a capture decodes with its source's encoding, so nothing decodes here and no row can pick up a decode
-/// exception the real ingest would not have given it. A record's bytes are its payload as read.
+/// Records as if they had arrived through `source`, and each one's `_raw`, one per record, as a sample holds it
+/// (`config_file::sample`): a paste arrives as text and a capture decodes with its source's encoding, so a preview
+/// decodes nothing and no row can pick up a decode exception the real ingest would not have given it. A record's
+/// bytes are its payload as read.
+pub struct Sample<'a> {
+    pub source: &'a crate::plan::topology::SourceConfig,
+    pub records: &'a [SourceRecord],
+    pub texts: &'a [String],
+}
+
+/// Route `sample`'s records as if they had arrived through its source, and say where each would go.
 ///
 /// **One record at a time.** A pipeline does not preserve row identity -- `Op::Unroll` replaces the batch with one
 /// row per array element -- so a batch's output rows cannot be attributed back to the records that produced them.
@@ -3531,22 +3516,15 @@ pub fn preview_routes(
 /// than a preview may hold is reported on that record and the rest of the sample still previews. A live batch
 /// splits on a refusal and retries; a preview cannot, because halving a record's output would answer a question
 /// nobody asked.
-#[allow(clippy::too_many_arguments)]
 pub fn preview_routes_at(
     topology: &CompiledTopology,
-    destinations: &[crate::plan::topology::DestinationConfig],
-    source: SourceId,
-    source_name: &str,
-    records: &[SourceRecord],
-    texts: &[String],
+    sample: &Sample,
     budget: MemoryBudget,
     now_micros: i64,
 ) -> Vec<PreviewedRow> {
+    let Sample { source, records, texts } = *sample;
+    let (source_name, source) = (source.name.as_str(), source.id);
     let meta = topology.meta_for(source);
-    let id_fields: Vec<(DestId, String)> = destinations
-        .iter()
-        .filter_map(|d| d.kind.id_field().map(|f| (d.id, f.to_string())))
-        .collect();
 
     // Counters this run produces are thrown away with it: a preview is not traffic, and adding it to the process
     // registry would put it in the leader's own metrics and in anything reading them.
@@ -3628,7 +3606,7 @@ pub fn preview_routes_at(
                         &metrics,
                         Egress {
                             route,
-                            id_fields: &id_fields,
+                            id_fields: &topology.id_fields,
                             dlq_of: &topology.dlq_of,
                             columns: None,
                             taps: &[],
@@ -3898,7 +3876,6 @@ mod tests {
         }"#;
         let system = config_file::load_str(json).unwrap_or_else(|e| panic!("load: {e}"));
         let compiled = system.compile_topology().unwrap_or_else(|e| panic!("compile: {e:?}"));
-        let source = system.topology.sources[0].id;
         let records = [SourceRecord {
             chunk: crate::io::RecordChunk::of_bytes(b"{}"),
             row: 0,
@@ -3908,19 +3885,15 @@ mod tests {
             headers: None,
         }];
 
-        let pinned = 1_700_000_000_000_000i64;
-        let run = || {
-            preview_routes_at(
-                &compiled,
-                &system.topology.destinations,
-                source,
-                "orders",
-                &records,
-                &["{}".to_string()],
-                preview_memory_budget(),
-                pinned,
-            )
+        let texts = ["{}".to_string()];
+        let sample = Sample {
+            source: &system.topology.sources[0],
+            records: &records,
+            texts: &texts,
         };
+
+        let pinned = 1_700_000_000_000_000i64;
+        let run = || preview_routes_at(&compiled, &sample, preview_memory_budget(), pinned);
         let doc = |rows: Vec<PreviewedRow>| -> String {
             let row = rows.into_iter().next().expect("one record in, one row out");
             let route = row.through.into_iter().next().expect("the route kept the record");
@@ -3967,7 +3940,7 @@ mod tests {
         }"#;
         let system = config_file::load_str(json).unwrap_or_else(|e| panic!("load: {e}"));
         let compiled = system.compile_topology().unwrap_or_else(|e| panic!("compile: {e:?}"));
-        let source = system.topology.sources[0].id;
+        let source = &system.topology.sources[0];
         let record = |raw: &[u8], offset: i64| SourceRecord {
             chunk: crate::io::RecordChunk::of_bytes(raw),
             row: 0,
@@ -3978,14 +3951,7 @@ mod tests {
         };
         let records = [record(br#"{"status":0}"#, 0), record(br#"{"status":2}"#, 1)];
 
-        let rows = preview_routes(
-            &compiled,
-            &system.topology.destinations,
-            source,
-            "orders",
-            &records,
-            preview_memory_budget(),
-        );
+        let rows = preview_routes(&compiled, source, &records, preview_memory_budget());
 
         let row = &rows[0];
         assert_eq!(row.matched.len(), 2, "both routes took it");
@@ -4033,7 +3999,7 @@ mod tests {
             );
             let system = config_file::load_str(&json).unwrap_or_else(|e| panic!("load: {e}"));
             let compiled = system.compile_topology().unwrap_or_else(|e| panic!("compile: {e:?}"));
-            let source = system.topology.sources[0].id;
+            let source = &system.topology.sources[0];
             let records = [SourceRecord {
                 chunk: crate::io::RecordChunk::of_bytes(b"y"),
                 row: 0,
@@ -4042,14 +4008,7 @@ mod tests {
                 topic: Arc::from("orders"),
                 headers: None,
             }];
-            let rows = preview_routes(
-                &compiled,
-                &system.topology.destinations,
-                source,
-                "orders",
-                &records,
-                preview_memory_budget(),
-            );
+            let rows = preview_routes(&compiled, source, &records, preview_memory_budget());
             let route = &rows[0].through[0];
             assert_eq!(route.answer, answer, "{unmatched}");
             match answer {
@@ -4088,11 +4047,11 @@ mod tests {
           ]
         }"#;
         let system = config_file::load_str(json).unwrap_or_else(|e| panic!("load: {e}"));
-        let source = system.topology.sources[0].id;
+        let source = &system.topology.sources[0];
         let meta = SourceMeta::KAFKA
             .declaring(vec![("id".into(), DataType::I64), ("name".into(), DataType::Str)])
             .unwrap();
-        let metas = crate::plan::topology::SourceMetas::from([(source, meta.clone())]);
+        let metas = crate::plan::topology::SourceMetas::from([(source.id, meta.clone())]);
         let compiled = crate::plan::topology::compile_topology_with(
             &system.topology.routes,
             &system.pipelines,
@@ -4110,14 +4069,7 @@ mod tests {
         let stored: Vec<_> = objects.iter().map(|o| (o, &fields)).collect();
         let records = meta.read_stored(&stored).unwrap();
 
-        let rows = preview_routes(
-            &compiled,
-            &system.topology.destinations,
-            source,
-            "orders",
-            &records,
-            preview_memory_budget(),
-        );
+        let rows = preview_routes(&compiled, source, &records, preview_memory_budget());
 
         let doc = |row: &PreviewedRow| -> serde_json::Value {
             serde_json::from_str(&row.through[0].documents[0].document).unwrap()
@@ -4185,7 +4137,7 @@ mod tests {
         }"#;
         let system = config_file::load_str(json).unwrap_or_else(|e| panic!("load: {e}"));
         let compiled = system.compile_topology().unwrap_or_else(|e| panic!("compile: {e:?}"));
-        let source = system.topology.sources[0].id;
+        let source = &system.topology.sources[0];
         let record = |offset: i64| SourceRecord {
             chunk: crate::io::RecordChunk::of_bytes(b"{}"),
             row: 0,
@@ -4195,14 +4147,7 @@ mod tests {
             headers: None,
         };
 
-        let rows = preview_routes(
-            &compiled,
-            &system.topology.destinations,
-            source,
-            "orders",
-            &[record(0), record(1)],
-            preview_memory_budget(),
-        );
+        let rows = preview_routes(&compiled, source, &[record(0), record(1)], preview_memory_budget());
 
         assert_eq!(rows[0].matched.len(), 1);
         assert!(rows[0].through.is_empty(), "held with the unmatched record");
@@ -4428,6 +4373,23 @@ mod tests {
             &fact.value,
             crate::heartbeat::MetricValueDto::Text(t) if t == &reason
         ));
+
+        let rambling = Reader::new(
+            7,
+            Box::new(FlakySource {
+                error: Some("x".repeat(10 * MAX_TEXT_LEN)),
+            }),
+            vec![],
+            MAX_IN_FLIGHT,
+            MetricsHandle::new(Arc::new(crate::metrics::Metrics::new()), "reader-7"),
+        );
+        assert!(
+            matches!(
+                rambling.connection_error_fact().map(|f| f.value),
+                Some(crate::heartbeat::MetricValueDto::Text(t)) if t.chars().count() <= MAX_TEXT_LEN + 1
+            ),
+            "a source's error rode the heartbeat whole"
+        );
     }
 
     /// A source that cannot be read, until it can.

@@ -1,7 +1,7 @@
 // What a system administrator does to smeltr itself: bring workers in and take them out, see what each runs,
 // configure the service, and hold its credentials. Each test drives the Admin and Status pages of a fleet of
 // its own; the API only arranges what a test is not about.
-import { test, expect, type Api } from '../fleet';
+import { test, expect, goto, withKey, type Api } from '../fleet';
 import { FakeModel, MODEL_KEY, request, say } from '../model';
 import {
   described,
@@ -13,6 +13,8 @@ import {
   workerRowOf,
 } from '../moves/admin';
 import { conversationLink, openAgent } from '../moves/agent';
+import { fullChain } from '../moves/certificates';
+import { issuedFor } from '../acme';
 
 test('an enrollment code minted under Enrollment codes brings a worker in', async ({
   admin,
@@ -26,7 +28,7 @@ test('an enrollment code minted under Enrollment codes brings a worker in', asyn
   await openWorkersTab(admin, 'Enrollment codes');
   await admin.getByRole('button', { name: '+ Add enrollment code' }).click();
   const mint = admin.getByRole('dialog', { name: 'new enrollment code' });
-  await expect(mint.getByLabel('Group')).toHaveValue('default');
+  await expect(mint.getByLabel(/^Group/)).toHaveValue('default');
   await mint.getByRole('button', { name: 'Mint' }).click();
 
   await expect(admin.getByText('Copy this enrollment code now')).toBeVisible();
@@ -176,21 +178,33 @@ test('the session deadlines are changed under System, and an impossible pair is 
   await expect(admin.getByLabel('Idle timeout')).toHaveValue('17');
 });
 
-test('the leader certificate is reissued under System', async ({ admin }) => {
+test('the leader certificate is the certificate leader in the list', async ({ admin }) => {
   // S6
   await openAdmin(admin, 'System');
-  await admin.getByRole('link', { name: 'Certificates', exact: true }).click();
+  await admin
+    .getByRole('navigation', { name: 'System settings' })
+    .getByRole('link', { name: 'Leader certificate', exact: true })
+    .click();
   await expect(admin.getByRole('heading', { name: /Current authority/ })).toBeVisible();
   await expect(admin.getByRole('link', { name: 'Download ca.pem' })).toBeVisible();
-
   const served = admin.getByRole('region', { name: /^Leader certificate/ });
   // The page shortens a fingerprint to its two ends, which is what a person compares.
-  const fingerprint = served.getByText(/^[0-9a-f]{16}…[0-9a-f]{8}$/);
-  const before = await fingerprint.innerText();
-  await served.getByRole('button', { name: 'Issue a new one' }).click();
-  await admin.getByRole('dialog').getByRole('button', { name: 'Issue a new one' }).click();
-  await expect(served.getByRole('status')).toHaveText('a new certificate is in force');
-  await expect(fingerprint).not.toHaveText(before);
+  await expect(served.getByText(/^[0-9a-f]{16}…[0-9a-f]{8}$/)).toBeVisible();
+
+  await served.getByRole('button', { name: 'About Leader certificate' }).click();
+  await expect(served).toContainText(
+    'This leader issued it under the current authority and renews it on its own.',
+  );
+  await expect(served.getByRole('button', { name: /^Issue/ })).toHaveCount(0);
+
+  await openAdmin(admin, 'Certificates');
+  await expect(
+    admin.getByRole('cell', { name: /^leader in use by the leader issued$/ }),
+  ).toBeVisible();
+  const row = admin
+    .getByRole('row')
+    .filter({ has: admin.getByRole('cell', { name: /^leader in use by the leader/ }) });
+  await expect(row.getByRole('button', { name: 'Delete' })).toHaveCount(0);
 });
 
 test('System and Cluster show the build each machine runs', async ({
@@ -200,12 +214,12 @@ test('System and Cluster show the build each machine runs', async ({
   api,
 }) => {
   // S7
-  const info = await api.get('/api/system/info');
+  const info = await api.get('/api/system');
   const shown: string = info.release ?? info.smeltrVersion;
   expect(shown).toBeTruthy();
 
   await openAdmin(admin, 'System');
-  const general = admin.getByRole('region', { name: 'General' });
+  const general = admin.getByRole('form', { name: 'General' });
   await expect(general.getByRole('heading', { name: 'Version' })).toBeVisible();
   await expect(general.getByText(shown, { exact: true })).toBeVisible();
 
@@ -248,7 +262,7 @@ test('a secret is set once, checked without being shown, and never read back', a
   await admin.reload();
   await expect(row).toBeVisible();
   expect(await admin.content()).not.toContain(value);
-  expect(JSON.stringify(await api.get('/api/secrets'))).not.toContain(value);
+  expect(JSON.stringify(await api.get('/api/secrets').then((a) => a.secrets))).not.toContain(value);
 });
 
 test('rotating a secret points what uses it at the new version, and deploying it runs that', async ({
@@ -263,7 +277,7 @@ test('rotating a secret points what uses it at the new version, and deploying it
     value: 'first-value',
   });
   const using = 'use-es-key';
-  await api.put(`/api/destinations?branch=${using}&scope=default`, [
+  await api.put(`/api/areas/default/destinations?branch=${using}`, [
     {
       id: 'es-out',
       type: 'elasticsearch',
@@ -327,6 +341,138 @@ test('a new value for a secret nothing names asks for no branch and drafts no ch
   expect((await api.get('/api/branches')).branches).toEqual([]);
 });
 
+test('a receiver names a certificate from the list, and replacing the certificate changes no receiver', async ({
+  admin,
+  api,
+  fleet,
+  leader,
+}) => {
+  const pki = fleet.externalPki();
+  await api.post('/api/certificates', {
+    kind: 'supplied',
+    name: 'receiver-tls',
+    description: '',
+    certificate: fullChain(pki),
+    privateKey: pki.privateKey,
+  });
+  await api.put('/api/areas/shared/sources?branch=work', [
+    { id: 'firewalls', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
+  ]);
+  const sources = async () => (await api.get('/api/areas/shared?branch=work')).config.sources;
+
+  await goto(admin, leader, '#/build/sources');
+  await admin.getByRole('button', { name: /^firewalls\b/ }).click();
+  await admin.getByRole('button', { name: /^Advanced/ }).click();
+  const certificate = admin.getByRole('combobox', { name: /^server certificate/ });
+  await expect(
+    admin.getByText('With none, traffic is received unencrypted.', { exact: false }),
+  ).toBeVisible();
+  await certificate.selectOption('receiver-tls');
+  await expect(admin.getByText(/localhost, 127\.0\.0\.1 · expires/)).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('receiver-certificate.png') });
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(sources).toEqual([
+    {
+      id: 'firewalls',
+      type: 'syslogReceiver',
+      port: 6514,
+      allowFrom: ['10.0.0.0/8'],
+      certificate: 'receiver-tls',
+    },
+  ]);
+
+  // A worker presents the newest version, so the receiver names the certificate by name alone.
+  await openAdmin(admin, 'Certificates');
+  const row = admin.getByRole('row').filter({ hasText: 'receiver-tls' });
+  await row.getByRole('button', { name: 'Replace' }).click();
+  const replace = admin.getByRole('dialog', { name: /^replace / });
+  await replace.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
+  await replace.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
+  await replace.getByRole('button', { name: 'Replace', exact: true }).click();
+  await expect(replace).toBeHidden();
+  const versions = async () =>
+    (await api.get('/api/certificates').then((a) => a.certificates)).find(
+      (c: { name: string }) => c.name === 'receiver-tls',
+    ).versions.length;
+  await expect.poll(versions).toBe(2);
+  await admin.screenshot({ path: test.info().outputPath('certificate-replaced.png') });
+  expect((await sources())[0].certificate).toBe('receiver-tls');
+});
+
+test('a new version without a purpose the newest has is refused', async ({ admin, api }) => {
+  const server = issuedFor(['events.example.com'], 'server');
+  await api.post('/api/certificates', {
+    kind: 'supplied',
+    name: 'events-tls',
+    description: '',
+    certificate: fullChain(server),
+    privateKey: server.privateKey,
+  });
+
+  await openAdmin(admin, 'Certificates');
+  const row = admin.getByRole('row').filter({ hasText: 'events-tls' });
+  await expect(row.getByRole('cell', { name: 'Server', exact: true })).toBeVisible();
+  await row.getByRole('button', { name: 'Replace' }).click();
+  const replace = admin.getByRole('dialog', { name: /^replace / });
+  const client = issuedFor(['events.example.com'], 'client');
+  await replace.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(client));
+  await replace.getByRole('textbox', { name: 'Private key' }).fill(client.privateKey);
+  await replace.getByRole('button', { name: 'Replace', exact: true }).click();
+  await expect(
+    replace.getByText('"events-tls" is usable as a server certificate, and this version is not.', {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('certificate-refused.png') });
+  const versions = (await api.get('/api/certificates').then((a) => a.certificates)).find(
+    (c: { name: string }) => c.name === 'events-tls',
+  ).versions.length;
+  expect(versions).toBe(1);
+});
+
+test('the leader issues a certificate for the names given, and a receiver presents it', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  await goto(admin, leader, '#/admin/certificates');
+  await admin.getByRole('button', { name: '+ Add certificate' }).click();
+  const dialog = admin.getByRole('dialog', { name: 'new certificate' });
+  await dialog.getByRole('button', { name: 'Issued by this leader' }).click();
+  await dialog.getByRole('textbox', { name: 'Name' }).fill('receiver-tls');
+  await dialog.getByRole('textbox', { name: 'Issued for' }).fill('receiver.example.com\n10.0.0.7');
+  const validFor = dialog.getByRole('combobox', { name: /^Valid for/ });
+  await expect(validFor).toHaveValue('365');
+  await validFor.selectOption({ label: '2 years' });
+  await admin.screenshot({ path: test.info().outputPath('certificate-issue.png') });
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+
+  const row = admin.getByRole('row').filter({ hasText: 'receiver-tls' });
+  await expect(row.getByText('issued', { exact: true })).toBeVisible();
+  await expect(row.getByText('receiver.example.com, 10.0.0.7')).toBeVisible();
+  await expect(row.getByRole('cell', { name: 'Server and client', exact: true })).toBeVisible();
+  await expect(row.getByRole('button', { name: 'Replace' })).toHaveCount(0);
+  await admin.screenshot({ path: test.info().outputPath('certificate-issued.png') });
+  const listed = (await api.get('/api/certificates').then((a) => a.certificates)) as {
+    name: string;
+    kept?: string;
+    chain: { notBeforeMillis: number; notAfterMillis: number }[];
+  }[];
+  const issued = listed.find((c) => c.name === 'receiver-tls');
+  expect(issued?.kept).toBe('issued');
+  const leaf = issued!.chain[0];
+  expect(Math.floor((leaf.notAfterMillis - leaf.notBeforeMillis) / 86_400_000)).toBe(730);
+
+  await api.put('/api/areas/shared/sources?branch=work', [
+    { id: 'hook', type: 'httpReceiver', port: 8088, tokens: { ci: 'HOOK_TOKEN' } },
+  ]);
+  await goto(admin, leader, '#/build/sources');
+  await admin.getByRole('button', { name: /^hook\b/ }).click();
+  await admin.getByRole('button', { name: /^Advanced/ }).click();
+  await admin.getByRole('combobox', { name: /^server certificate/ }).selectOption('receiver-tls');
+  await expect(admin.getByText(/receiver\.example\.com, 10\.0\.0\.7/)).toBeVisible();
+});
+
 test('the git remote form takes an http or https URL, and warns about a credential in plain text', async ({
   admin,
 }) => {
@@ -363,7 +509,7 @@ test.fixme('System → License shows the bytes this leader read this year', asyn
 async function agentsOn(api: Api, model?: FakeModel) {
   const endpoint = model ?? (await FakeModel.start());
   try {
-    await api.put('/api/settings/agents', {
+    await api.put('/api/settings/agent', {
       enabled: true,
       provider: 'anthropic',
       endpoint: endpoint.base,
@@ -389,17 +535,14 @@ test('AI agents turned on under System offer the agent screens', async ({ admin 
     await admin.getByRole('switch', { name: 'AI agents enabled' }).check();
     await expect(admin.getByRole('alert')).toHaveText('Turning AI agents on needs: API key.');
     await admin.getByRole('textbox', { name: /^Endpoint URL\b/ }).fill(model.base);
-    await admin.getByLabel('API key', { exact: true }).fill('sk-wrong');
+    await admin.getByRole('textbox', { name: 'API key', exact: true }).fill('sk-wrong');
     await expect(admin.getByText('Saving asks the endpoint for a short answer')).toBeVisible();
     await admin.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(admin.getByRole('alert')).toContainText('answered 401: invalid x-api-key');
 
-    await admin.getByLabel('API key', { exact: true }).fill(MODEL_KEY);
+    await admin.getByRole('textbox', { name: 'API key', exact: true }).fill(MODEL_KEY);
     await admin.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(admin.getByLabel('API key', { exact: true })).toHaveAttribute(
-      'placeholder',
-      'stored',
-    );
+    await expect(admin.getByRole('button', { name: 'replace the API key' })).toBeVisible();
 
     await admin.getByRole('button', { name: /^signed in as / }).click();
     await expect(admin.getByRole('button', { name: 'Agent permissions' })).toBeVisible();
@@ -407,6 +550,60 @@ test('AI agents turned on under System offer the agent screens', async ({ admin 
   } finally {
     await model.stop();
   }
+});
+
+test('a key account made under Accounts calls with its key until the key is revoked', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  // S5
+  await api.put('/api/roles/smeltr-readers', { areas: { shared: 'viewer' } });
+  await openAdmin(admin, 'Accounts');
+
+  await admin.getByRole('button', { name: '+ Add account' }).click();
+  const dialog = admin.getByRole('dialog', { name: 'new account' });
+  await dialog.getByRole('button', { name: 'Key' }).click();
+  await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill('nightly export');
+  await dialog.getByRole('checkbox', { name: 'smeltr-readers' }).check();
+  await dialog.getByRole('button', { name: 'Add' }).click();
+  const row = admin.getByRole('row').filter({ hasText: 'nightly export' });
+  await expect(row.getByText('smeltr-readers')).toBeVisible();
+  await expect(row.getByRole('cell', { name: 'Key', exact: true })).toBeVisible();
+
+  await admin.getByRole('button', { name: '+ New key' }).click();
+  await admin.getByRole('textbox', { name: /^Label\b/ }).fill('ci');
+  await admin.getByRole('button', { name: 'Create key' }).click();
+  const handover = admin.locator('section.handover');
+  await expect(handover.getByText('Copy the key below now: it is shown only once.')).toBeVisible();
+  const key = (await handover.locator('.secret code').innerText()).trim();
+  await handover.getByRole('button', { name: 'Done' }).click();
+  await expect(handover).toHaveCount(0);
+
+  expect(await withKey(leader, key, 'GET', '/api/areas/shared')).toBe(200);
+  expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(403);
+  await admin.reload();
+  await admin
+    .getByRole('row')
+    .filter({ hasText: 'nightly export' })
+    .getByRole('button', { name: 'Manage' })
+    .click();
+  const keyRow = admin
+    .getByRole('table', { name: 'Keys' })
+    .getByRole('row')
+    .filter({ hasText: 'ci' });
+  // Expires, then Last used.
+  await expect(keyRow.getByRole('cell').nth(2)).toHaveText('never');
+  await expect(keyRow.getByRole('cell').nth(3)).toHaveText(/ago$/);
+
+  await keyRow.getByRole('button', { name: 'Revoke' }).click();
+  await admin
+    .getByRole('dialog', { name: 'revoke key' })
+    .getByRole('button', { name: 'Revoke key' })
+    .click();
+  await expect(admin.getByRole('status')).toHaveText('key revoked');
+  await expect(admin.getByText('No keys.')).toBeVisible();
+  expect(await withKey(leader, key, 'GET', '/api/areas/shared')).toBe(403);
 });
 
 test('a person sets what their agent may use from their name', async ({ admin, api }) => {
@@ -422,15 +619,24 @@ test('a person sets what their agent may use from their name', async ({ admin, a
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByRole('status')).toHaveText('agent permissions saved');
   expect(await api.get('/api/me/agent-permissions')).toEqual({
-    kind: 'upto',
+    ok: true,
+    errors: [],
+    administrator: false,
     default: 'viewer',
     areas: { shared: 'editor' },
   });
 
-  await admin.getByRole('button', { name: 'Everything you hold' }).click();
+  await admin.getByRole('checkbox', { name: 'Your agent is an administrator' }).check();
+  await expect(admin.getByRole('combobox', { name: /^Every area\b/ })).toHaveCount(0);
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByRole('status')).toHaveText('agent permissions saved');
-  expect(await api.get('/api/me/agent-permissions')).toEqual({ kind: 'everything' });
+  expect(await api.get('/api/me/agent-permissions')).toEqual({
+    ok: true,
+    errors: [],
+    administrator: true,
+    default: 'viewer',
+    areas: { shared: 'editor' },
+  });
 });
 
 test('a person asks their agent, sees what it asked the leader, and deletes the conversation', async ({
@@ -442,8 +648,8 @@ test('a person asks their agent, sees what it asked the leader, and deletes the 
   try {
     await agentsOn(api, model);
     model.answer(
-      [request('GET', '/api/pipelines', { scope: 'shared' })],
-      [say('You have no pipelines yet.')],
+      [request('GET', '/api/areas/shared/pipelines')],
+      [say('You have **no pipelines** yet.')],
     );
     await admin.reload();
     await openAgent(admin);
@@ -452,9 +658,11 @@ test('a person asks their agent, sees what it asked the leader, and deletes the 
     await admin.getByRole('textbox', { name: 'Message' }).fill('What pipelines do I have?');
     await admin.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(admin.getByText('You have no pipelines yet.')).toBeVisible();
+    // The answer's Markdown is rendered, not shown as typed.
+    await expect(admin.locator('strong', { hasText: 'no pipelines' })).toBeVisible();
     await expect(conversationLink(admin, 'What pipelines do I have')).toBeVisible();
 
-    const call = admin.getByRole('button', { name: /GET \/api\/pipelines\?scope=shared/ });
+    const call = admin.getByRole('button', { name: /GET \/api\/areas\/shared\/pipelines/ });
     await expect(call).toContainText('200');
     await call.click();
     await expect(admin.getByRole('heading', { name: 'Answered' })).toBeVisible();
@@ -463,7 +671,7 @@ test('a person asks their agent, sees what it asked the leader, and deletes the 
 
     await admin.getByRole('button', { name: 'Delete conversation' }).click();
     await admin
-      .getByRole('dialog', { name: 'Delete this conversation?' })
+      .getByRole('dialog', { name: 'delete conversation' })
       .getByRole('button', { name: 'Delete', exact: true })
       .click();
     await expect(admin.getByText('No conversations yet.')).toBeVisible();

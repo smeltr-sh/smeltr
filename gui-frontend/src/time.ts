@@ -32,6 +32,28 @@ export function expiry(unixMillis: number, now: number = Date.now()): string {
   return `expires in ${count(Math.round(days / 365), 'year')}`;
 }
 
+const DAY = 86_400_000;
+
+/** Whether a certificate is running out, by the leader's rule for its warning
+ * (`leader::warnings::notice_millis`): within the last tenth of its life. */
+export function expiringSoon(
+  cert: { notBeforeMillis: number; notAfterMillis: number },
+  now: number = Date.now(),
+): boolean {
+  const notice = (cert.notAfterMillis - cert.notBeforeMillis) / 10;
+  return cert.notAfterMillis - now <= notice;
+}
+
+/** Time left until `unixMillis`, to the second, such as `1 day 06:22:51`: for a moment somebody is
+ * watching arrive, where the page ticks it each second. */
+export function countdown(unixMillis: number, now: number = Date.now()): string {
+  const left = Math.max(0, Math.floor((unixMillis - now) / 1000));
+  const days = Math.floor(left / 86_400);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const clock = `${pad(Math.floor(left / 3600) % 24)}:${pad(Math.floor(left / 60) % 60)}:${pad(left % 60)}`;
+  return days > 0 ? `${count(days, 'day')} ${clock}` : clock;
+}
+
 /** Wall-clock `HH:MM`, local time -- the axis under a chart spanning real time, where "how
  * long ago" is the wrong question because both ends are on screen at once. */
 export function clockTime(unixMillis: number): string {
@@ -45,6 +67,31 @@ export function dateTime(unixSeconds: number): string {
   const d = new Date(unixSeconds * 1000);
   const day = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   return `${day}, ${clockTime(unixSeconds * 1000)}`;
+}
+
+/** A date and its local time of day, such as `Oct 25, 2026, 1:59 AM`: for a moment somebody is waiting on,
+ * where the year can differ from this one. */
+export function localDateTime(unixMillis: number): string {
+  return new Date(unixMillis).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+/** Milliseconds as a `datetime-local` input takes them: the operator's own
+ * clock, since that is the clock they read a time off. */
+export function toLocalInput(millis: number): string {
+  const d = new Date(millis - new Date(millis).getTimezoneOffset() * 60_000);
+  return d.toISOString().slice(0, 16);
+}
+
+/** What a `datetime-local` input holds, as milliseconds; `undefined` while it holds no whole time. */
+export function fromLocalInput(text: string): number | undefined {
+  const millis = new Date(text).getTime();
+  return Number.isNaN(millis) ? undefined : millis;
 }
 
 /** `n` of something, pluralized by adding an s. */

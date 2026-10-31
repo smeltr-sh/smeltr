@@ -93,7 +93,7 @@ pub fn hash_password(password: &str) -> Result<String, StoreError> {
     argon2()
         .hash_password_with_salt(password.as_bytes(), &salt)
         .map(|hash| hash.to_string())
-        .map_err(|e| StoreError(format!("hashing a password: {e}")))
+        .map_err(|e| StoreError::failed(format!("hashing a password: {e}")))
 }
 
 /// Whether `password` matches `stored`. `Ok(None)` is a clean mismatch; an error is a hash this build cannot read,
@@ -101,7 +101,8 @@ pub fn hash_password(password: &str) -> Result<String, StoreError> {
 ///
 /// As expensive as [`hash_password`], and under the same rule about where it may run.
 pub fn verify_password(password: &str, stored: &str) -> Result<Option<Verified>, StoreError> {
-    let parsed = PasswordHash::new(stored).map_err(|e| StoreError(format!("reading a stored password hash: {e}")))?;
+    let parsed =
+        PasswordHash::new(stored).map_err(|e| StoreError::failed(format!("reading a stored password hash: {e}")))?;
     match argon2().verify_password(password.as_bytes(), &parsed) {
         Ok(()) => Ok(Some(Verified {
             needs_rehash: weaker_than_current(&parsed),
@@ -110,7 +111,9 @@ pub fn verify_password(password: &str, stored: &str) -> Result<Option<Verified>,
         // parameter set this build cannot compute -- is the store being unreadable, not the password being wrong,
         // and reporting it as a mismatch would leave an operator locked out with nothing to act on.
         Err(argon2::password_hash::Error::PasswordInvalid) => Ok(None),
-        Err(e) => Err(StoreError(format!("verifying against a stored password hash: {e}"))),
+        Err(e) => Err(StoreError::failed(format!(
+            "verifying against a stored password hash: {e}"
+        ))),
     }
 }
 
@@ -311,7 +314,7 @@ fn judge(store: &dyn Store, credential: LocalCredentialRecord, password: &str) -
     let Some(user) = store.get_user(&credential.user_id)? else {
         return Ok(Authenticated::Refused);
     };
-    if !user.enabled || !user.administrator {
+    if !user.enabled {
         return Ok(Authenticated::Refused);
     }
     // A reset that landed while this was hashing leaves the verifier just checked superseded. Refusing is the
@@ -367,7 +370,7 @@ pub fn change_own_password(
     };
     let (actor, generation) = match judge(store, credential, current)? {
         Authenticated::Refused => return Ok(PasswordChange::WrongPassword),
-        Authenticated::Ok { user, .. } => (Actor::person(&user.id, &user.display_name), user.generation),
+        Authenticated::Ok { user, .. } => (Actor::account(&user.id, &user.display_name), user.generation),
     };
     let hash = hash_password(new)?;
     // Bumps the generation, so every session this account holds -- including the one asking -- stops being
@@ -383,7 +386,7 @@ fn written(result: Result<i64, AccountError>) -> Result<PasswordChange, StoreErr
     match result {
         Ok(_) => Ok(PasswordChange::Changed),
         Err(AccountError::Superseded | AccountError::NoSuchUser) => Ok(PasswordChange::Superseded),
-        Err(e) => Err(StoreError(e.to_string())),
+        Err(e) => Err(StoreError::failed(e.to_string())),
     }
 }
 
@@ -402,7 +405,7 @@ pub fn choose_first_password(
     let Some(user) = store.get_user(user_id)? else {
         return Ok(PasswordChange::Superseded);
     };
-    let actor = Actor::person(&user.id, &user.display_name);
+    let actor = Actor::account(&user.id, &user.display_name);
     let hash = hash_password(new)?;
     let event = event_for(&actor, "password-change", user_id, "ok");
     written(store.set_local_password(user_id, &hash, false, Some(generation), Some(&event))?)
@@ -605,6 +608,7 @@ mod tests {
                     password_hash: &hash_password(GOOD).unwrap(),
                     must_change: false,
                 },
+                &[super::super::access::ADMINISTRATOR.to_string()],
                 &event_for(&Actor::system(), "account-create", "", "ok"),
             )
             .unwrap()
@@ -682,6 +686,7 @@ mod tests {
                     password_hash: &hash_password("the other account's passphrase").unwrap(),
                     must_change: false,
                 },
+                &[super::super::access::ADMINISTRATOR.to_string()],
                 &event_for(&Actor::system(), "account-create", "u_2", "ok"),
             )
             .unwrap()
@@ -747,7 +752,7 @@ mod tests {
     fn a_required_change_loses_to_whatever_moved_the_account_meanwhile() {
         let store = store_with_admin(GOOD);
         let before = store.get_user("u_1").unwrap().unwrap().generation;
-        let event = event_for(&Actor::person("u_2", "Someone"), "session-revoke", "u_1", "ok");
+        let event = event_for(&Actor::account("u_2", "Someone"), "session-revoke", "u_1", "ok");
         store.revoke_sessions("u_1", &event).unwrap().unwrap();
         assert_eq!(
             choose_first_password(&store, "u_1", before, "a brand new passphrase").unwrap(),
@@ -840,7 +845,10 @@ mod tests {
             must_change: false,
         };
         let event = event_for(&Actor::system(), "account-create", "u_2", "ok");
-        disabled.create_local_user(other, &event).unwrap().unwrap();
+        disabled
+            .create_local_user(other, &[super::super::access::ADMINISTRATOR.to_string()], &event)
+            .unwrap()
+            .unwrap();
         let credential = disabled.local_credential_by_username("admin").unwrap().unwrap();
         let event = event_for(&Actor::system(), "account-disable", "u_1", "ok");
         disabled.set_user_enabled("u_1", false, &event).unwrap().unwrap();

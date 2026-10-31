@@ -3,8 +3,8 @@
 //! The gate let in anyone viewing somewhere, so the snapshots are narrowed to the groups the caller holds
 //! ([`ClusterStatus::visible_to`]).
 
-use axum::Json;
 use smeltr::leader::access::{Access, Level};
+use smeltr::leader::envelope::Envelope;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,8 +51,8 @@ impl ClusterStatus {
 pub async fn cluster_status(
     axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
     axum::Extension(access): axum::Extension<Access>,
-) -> Json<ClusterStatus> {
-    Json(read(state).await.visible_to(&access))
+) -> Envelope<ClusterStatus> {
+    Envelope::ok(read(state).await.visible_to(&access))
 }
 
 async fn read(state: smeltr::leader::AppState) -> ClusterStatus {

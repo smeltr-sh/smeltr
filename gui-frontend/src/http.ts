@@ -3,7 +3,7 @@
 // The Rust side is the authority: `config_file::load` refuses each of these. Everything here says the same thing
 // earlier, in the row or field that caused it.
 
-import type { DestinationDto } from './api';
+import type { DestinationDto, TlsDto } from './api';
 
 export type HttpDestination = Extract<DestinationDto, { type: 'http' }>;
 /** A destination that POSTs to a URL with headers: `http`, and `prometheus` with the remote_write body. */
@@ -94,11 +94,23 @@ export function urlWarning(
   return said.length > 0 ? said.join(' ') : undefined;
 }
 
-/** Why `url` cannot carry `identity`, or nothing. Plain HTTP negotiates no TLS for an identity to answer. Whether it is
+/** Whether `tls` sets anything, as `config_file::dto::TlsDto::is_set` reads it. */
+export function tlsSet(tls: TlsDto): boolean {
+  return (
+    tls.certificate !== undefined ||
+    tls.trustedAuthorities !== undefined ||
+    tls.trustPublic !== undefined
+  );
+}
+
+/** What a connector reached over plain HTTP is told of its TLS settings. */
+export const PLAIN_HTTP_TLS =
+  'Plain HTTP negotiates no TLS, so the certificate and trusted authorities would go unused. Use an https:// URL.';
+
+/** Why `url` cannot carry `tls`, or nothing. Plain HTTP negotiates no TLS for the settings to answer. Whether it is
  * a URL at all is the save's to say. */
-export function identityRefusal(url: string, identity: string | undefined): string | undefined {
-  if (identity !== undefined && /^http:\/\//i.test(url.trim()))
-    return 'Plain HTTP negotiates no TLS, so the identity would go unused. Use an https:// URL.';
+export function tlsRefusal(url: string, tls: TlsDto): string | undefined {
+  if (tlsSet(tls) && /^http:\/\//i.test(url.trim())) return PLAIN_HTTP_TLS;
   return undefined;
 }
 

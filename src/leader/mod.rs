@@ -20,6 +20,7 @@
 pub mod access;
 pub mod accounts;
 pub mod acme;
+pub mod acme_dns;
 pub mod agent;
 pub mod auth;
 pub mod capture;
@@ -46,6 +47,7 @@ pub mod private_file;
 pub mod registry;
 pub mod remote;
 pub mod resolver;
+pub mod schema_catalog;
 pub mod secrets;
 pub mod series;
 pub mod sessions;
@@ -57,6 +59,7 @@ pub mod throttle;
 pub mod throughput;
 pub mod tls;
 pub mod tree;
+pub mod updates;
 pub mod warnings;
 
 use std::path::PathBuf;
@@ -67,12 +70,12 @@ use axum::Router;
 use axum::extract::{Extension, Json, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post};
 
 use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
-use envelope::Envelope;
-use registry::{Registry, ThreadHealth};
-use store::{Spend, Store, StoreError};
+use envelope::{Empty, Envelope, Refusal};
+use registry::{Registry, ThreadHealth, WorkerFacts};
+use store::{Issued, Kept, Spend, Store, StoreError};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -86,7 +89,7 @@ pub struct AppState {
     pub entitlements: Arc<Entitlements>,
     /// What bounds the rate a secret may be asked about.
     pub verify_limiter: Arc<VerifyLimiter>,
-    /// When each deployed identity's certificates run out, by the commit they were read at.
+    /// The TLS each deployed group's connectors speak, by the commit it was read at.
     pub expiries: Arc<Expiries>,
     /// Each source's last window against its normal, recomputed once per five-minute bucket (`throughput`).
     pub throughput: Arc<throughput::Readings>,
@@ -99,24 +102,59 @@ pub struct AppState {
     pub origin_hosts: Vec<String>,
     /// Syncs with the git remote this leader follows, when one is set.
     pub remote: Arc<remote::Syncing>,
+    /// The look for a newer release (`updates`), and what the last one found.
+    pub updates: Arc<updates::Updates>,
     /// What operators have asked of workers and the workers have not yet taken.
     pub directives: Arc<directives::Directives>,
 }
 
-/// What each group is entitled to, remembered per commit. The answer changes only when the bundle does, so it is
+/// What each group's bundle quotes, remembered per commit. The answer changes only when the bundle does, so it is
 /// computed when a deploy moves the fleet rather than on every heartbeat.
 #[derive(Default)]
-pub struct Entitlements(std::sync::Mutex<std::collections::HashMap<String, (String, Vec<SecretAt>)>>);
+pub struct Entitlements(std::sync::Mutex<std::collections::HashMap<String, (String, Quoted)>>);
 
 /// One credential a bundle quotes: its name, and the version that bundle runs.
 pub type SecretAt = (String, i64);
 
-/// When the certificates each deployed group's identities carry run out, remembered per `(group, commit)`.
-/// Answering means loading a bundle and parsing PEM, and the answer changes only when the bundle does -- the same
-/// reckoning [`Entitlements`] makes, about the same commit. Keyed by commit rather than overwritten in place: a
-/// group mid-rollout has workers on two commits at once, and each needs its own answer.
+/// What a bundle quotes: each leader-stored secret at the version it runs, and each certificate by name. A
+/// certificate runs at the list's newest version, which [`at_newest`] resolves when it is asked for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Quoted {
+    pub secrets: Vec<SecretAt>,
+    pub certificates: Vec<String>,
+}
+
+/// The newest version of every certificate in the list, by name.
+pub fn certificate_versions(store: &dyn Store) -> Result<std::collections::HashMap<String, i64>, String> {
+    Ok((store.list_secrets().map_err(|e| e.to_string())?.into_iter())
+        .filter(|r| r.certificate)
+        .filter_map(|r| r.current().map(|v| v.version).map(|v| (r.name, v)))
+        .collect())
+}
+
+/// Every version `quoted` runs: its secrets as quoted, and its certificates at `newest`. A name the list does not
+/// hold is left out, and the worker says so when it refuses the deploy.
+pub fn at_newest(quoted: &Quoted, newest: &std::collections::HashMap<String, i64>) -> Vec<SecretAt> {
+    let certificates = (quoted.certificates.iter()).filter_map(|name| Some((name.clone(), *newest.get(name)?)));
+    quoted.secrets.iter().cloned().chain(certificates).collect()
+}
+
+/// The TLS each deployed group's connectors speak, remembered per `(group, commit)`. Answering means loading a
+/// bundle and parsing PEM, and the answer changes only when the bundle does -- the same reckoning
+/// [`Entitlements`] makes, about the same commit. Keyed by commit rather than overwritten in place: a group
+/// mid-rollout has workers on two commits at once, and each needs its own answer.
 #[derive(Default)]
-pub struct Expiries(std::sync::Mutex<std::collections::HashMap<(String, String), Vec<warnings::DeployedCertificate>>>);
+pub struct Expiries(std::sync::Mutex<std::collections::HashMap<(String, String), Vec<DeployedTls>>>);
+
+/// One deployed connector's TLS as its bundle says it: the list entry it presents, by name, and the authorities it
+/// trusts, described. The chain the entry holds is read when it is asked for, since it changes without the bundle.
+#[derive(Clone, Debug)]
+pub struct DeployedTls {
+    subject_kind: warnings::SubjectKind,
+    subject_id: String,
+    certificate: Option<String>,
+    trusted: Vec<tls::Described>,
+}
 
 /// Every `(group, version)` a deployed bundle quotes, by secret name: the deployed commit's, and the one each of `running`'s
 /// `(group, commit)` runs.
@@ -133,12 +171,13 @@ fn deployed_versions(
     data_dir: &std::path::Path,
     cache: &Entitlements,
     running: &std::collections::HashSet<(String, String)>,
+    newest: &std::collections::HashMap<String, i64>,
 ) -> Result<std::collections::HashMap<String, Vec<SecretAt>>, String> {
     let mut groups: Vec<String> = deployed_groups(data_dir).into_iter().collect();
     groups.sort();
     let mut out: std::collections::HashMap<String, Vec<SecretAt>> = std::collections::HashMap::new();
     for group in groups {
-        for (name, version) in entitled_secrets(data_dir, cache, &group) {
+        for (name, version) in at_newest(&entitled(data_dir, cache, &group), newest) {
             out.entry(name).or_default().push((group.clone(), version));
         }
     }
@@ -146,7 +185,7 @@ fn deployed_versions(
     for (group, commit) in running {
         let quoted = secrets_at(&repo, commit, group)
             .map_err(|e| format!("the bundle {group} is running at {commit} cannot be read: {e}"))?;
-        for (name, version) in quoted {
+        for (name, version) in at_newest(&quoted, newest) {
             out.entry(name).or_default().push((group.clone(), version));
         }
     }
@@ -157,20 +196,20 @@ fn deployed_versions(
     Ok(out)
 }
 
-/// The leader-stored secrets `group_id`'s bundle names in the commit the fleet runs.
+/// What `group_id`'s bundle quotes in the commit the fleet runs.
 ///
 /// Entitlement is what the bundle asks for: a worker is sent the credentials its own deployment needs and no
 /// others, and there is nothing for an admin to keep in step with the configuration. A group whose bundle does not
 /// load is entitled to nothing, which its worker meets as a refused deploy naming what it lacks.
 ///
 /// Blocking; the caller is inside `spawn_blocking`.
-fn entitled_secrets(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) -> Vec<SecretAt> {
+fn entitled(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) -> Quoted {
     let repo = git::repo_path(data_dir);
     if !git::repo_ready(&repo) {
-        return Vec::new();
+        return Quoted::default();
     }
     let Some(head) = git::deployed(&repo) else {
-        return Vec::new();
+        return Quoted::default();
     };
     if let Some((at, names)) = cache.0.lock().unwrap().get(group_id)
         && at == &head
@@ -186,31 +225,41 @@ fn entitled_secrets(data_dir: &std::path::Path, cache: &Entitlements, group_id: 
     names
 }
 
-/// The leader-stored secrets `group_id`'s bundle names at `rev`, once each.
-fn secrets_at(
-    repo: &std::path::Path,
-    rev: &str,
-    group_id: &str,
-) -> Result<Vec<SecretAt>, crate::config_file::BundleError> {
+/// What `group_id`'s bundle quotes at `rev`, each once.
+fn secrets_at(repo: &std::path::Path, rev: &str, group_id: &str) -> Result<Quoted, crate::config_file::BundleError> {
     use crate::plan::topology::SecretRef;
 
-    let mut names = tree::load_group_at(repo, rev, group_id).map(|system| {
-        system
-            .topology
-            .named_secrets
-            .into_iter()
-            .filter_map(|s| match s.reference {
-                SecretRef::LeaderStored { name, version } => Some((name, version)),
-                SecretRef::WorkerLocal(_) => None,
-            })
-            .collect::<Vec<_>>()
-    })?;
-    // `named_secrets` names one per connector, on purpose -- `missing_secrets` reads every one of those to say
-    // which connectors are stuck, not just the first. A credential several connectors share, an identity's key
-    // among them, would otherwise be sealed and sent once per connector naming it.
-    names.sort();
-    names.dedup();
-    Ok(names)
+    let topology = tree::load_group_at(repo, rev, group_id)?.topology;
+    // `named_secrets` and `named_certificates` name one per connector, on purpose -- `missing_secrets` reads every
+    // one of those to say which connectors are stuck, not just the first. A credential several connectors share
+    // would otherwise be sealed and sent once per connector naming it.
+    let mut secrets: Vec<SecretAt> = (topology.named_secrets.into_iter())
+        .filter_map(|s| match s.reference {
+            SecretRef::LeaderStored { name, version } => Some((name, version)),
+            SecretRef::WorkerLocal(_) => None,
+        })
+        .collect();
+    secrets.sort();
+    secrets.dedup();
+    let mut certificates: Vec<String> = topology.named_certificates.into_iter().map(|c| c.name).collect();
+    certificates.sort();
+    certificates.dedup();
+    Ok(Quoted { secrets, certificates })
+}
+
+/// The purposes the newest version of the certificate `name` has that `chain` lacks. A connector naming `name` may
+/// present it from any side it is usable from, and a worker refuses a restart onto a version it cannot present and
+/// keeps running the old one, so a new version keeps every purpose the newest has.
+fn purposes_lost(store: &dyn Store, name: &str, chain: &str) -> Result<Vec<&'static str>, StoreError> {
+    use crate::io::trust::{Side, refuse_unless_usable};
+    let Some((_, newest)) = newest_chain(store, name)? else {
+        return Ok(Vec::new());
+    };
+    Ok([(Side::Server, "server"), (Side::Client, "client")]
+        .into_iter()
+        .filter(|(side, _)| refuse_unless_usable(&newest, *side).is_ok() && refuse_unless_usable(chain, *side).is_err())
+        .map(|(_, purpose)| purpose)
+        .collect())
 }
 
 /// Every version [`deployed_versions`] names, and those `main`'s head names: what retention and deletion keep. A
@@ -223,12 +272,13 @@ fn kept_versions(
     data_dir: &std::path::Path,
     cache: &Entitlements,
     running: &std::collections::HashSet<(String, String)>,
+    newest: &std::collections::HashMap<String, i64>,
 ) -> Result<std::collections::HashMap<String, Vec<SecretAt>>, String> {
-    let mut out = deployed_versions(data_dir, cache, running)?;
+    let mut out = deployed_versions(data_dir, cache, running, newest)?;
     let repo = git::repo_path(data_dir);
     if let Some(head) = git::repo_ready(&repo).then(|| git::main_head(&repo)).flatten() {
         for group in tree::groups_at(&repo, &head).unwrap_or_default() {
-            for (name, version) in secrets_at(&repo, &head, &group).unwrap_or_default() {
+            for (name, version) in at_newest(&secrets_at(&repo, &head, &group).unwrap_or_default(), newest) {
                 out.entry(name).or_default().push((group.clone(), version));
             }
         }
@@ -284,23 +334,19 @@ async fn heartbeat(
     // One blocking hop for both, and off the runtime's threads: each is a write transaction behind the registry's
     // one connection lock, and a fleet all beating at once would otherwise park every async thread the leader has.
     // Logs first and separately committed -- what a worker had to say about a deployment it is about to describe is
-    // worth having even if describing it fails.
+    // worth having even if describing it fails. The rest of the beat -- its state, and its window's points and
+    // streams -- is one transaction.
     {
         let registry = state.registry.clone();
         let worker = worker_id.clone();
         let events = std::mem::take(&mut req.logs);
         let streams = req.streams.take();
-        let streams_window = req.streams_window;
+        let seq = req.streams_window;
         let boot_id = req.boot_id;
         // Empty from a worker too old to state one, which is stored as no group rather than as a group named "".
         let group = Some(req.group_id.clone()).filter(|g| !g.is_empty());
-        let (stop_after, commit) = (req.stop_after_unreachable_secs, req.commit.clone());
-        let smeltr_version = req.smeltr_version.clone();
-        let release = req.release.clone();
-        let supervising = req.supervising.clone();
-        let resources = req.resources;
+        let facts = WorkerFacts::of(&req, now_ms);
         let data_dir = state.data_dir.clone();
-        let authority_expires = req.authority_expires_millis;
         // Kept by worker rather than by thread, so a worker running nothing still counts toward a rotation. Set
         // before the blocking hop, because the answer below is built from it.
         state
@@ -308,44 +354,41 @@ async fn heartbeat(
             .record_authority(&worker_id, req.authority_fingerprints.clone(), req.takes_authority);
         let recorded = tokio::task::spawn_blocking(move || {
             registry.record_logs(&worker, boot_id, group.as_deref(), &events);
-            if let Some(streams) = &streams {
-                let window = streams_window.map(|seq| series::StreamWindow {
-                    worker_id: &worker,
-                    boot_id,
-                    seq,
+            // A worker too old to state its group reports under none, and its streams go unrecorded.
+            let streams = streams
+                .as_ref()
+                .zip(group.as_deref())
+                .map(|(report, group_id)| series::Streams {
+                    group_id,
+                    report,
+                    // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart,
+                    // so the report counts as the deployed one.
+                    deployed: match (&facts.commit, git::deployed(&git::repo_path(&data_dir))) {
+                        (Some(running), Some(deployed)) => *running == deployed,
+                        _ => true,
+                    },
                 });
-                // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart, so
-                // the report counts as the deployed one.
-                let deployed = match (&commit, git::deployed(&git::repo_path(&data_dir))) {
-                    (Some(running), Some(deployed)) => *running == deployed,
-                    _ => true,
-                };
-                registry.record_streams(group.as_deref(), streams, window, deployed, now_ms);
-            }
-            registry.record_heartbeat(
-                &worker,
-                threads,
-                stop_after,
-                commit,
-                smeltr_version,
-                release,
-                supervising,
-                resources,
-                authority_expires,
-                stopping,
-                now_ms,
-            );
+            let window = series::Window { boot_id, seq, streams };
+            registry.record_heartbeat(&worker, threads, facts, window, now_ms)
         })
         .await;
         // Said rather than swallowed: this is what updates the live view as well as the durable one, so a worker
         // whose report never landed reads as silent on `/api/health` while still being answered here.
-        if let Err(e) = recorded {
-            tracing::warn!(
+        match recorded {
+            Err(e) => tracing::warn!(
                 target: "leader.heartbeat_not_recorded",
                 subject = %worker_id,
                 error = %e,
                 "a heartbeat could not be recorded, so this worker's threads stay as they were until the next one"
-            );
+            ),
+            // Refused, so the worker sends the window again rather than count it as recorded.
+            Ok(Err(e)) => {
+                return Err((
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    format!("could not record this heartbeat: {e}"),
+                ));
+            }
+            Ok(Ok(())) => {}
         }
     }
     // Before the forgetting below, so a stopping ephemeral worker's last progress lands and the worker is not
@@ -382,12 +425,22 @@ async fn heartbeat(
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
     let for_group = group_id.clone();
-    // One blocking hop for both: each reads the repository, and neither belongs on the async runtime's threads.
+    // One blocking hop for all: each reads the repository or the store, and none belongs on the async runtime's
+    // threads. A certificate is entitled at its newest version, resolved on every beat so that a new version
+    // reaches the fleet on the next one.
     let checks = state.deploy_checks.clone();
-    let (deployed, entitled, findings) = tokio::task::spawn_blocking(move || {
+    let store = state.store.clone();
+    let (deployed, pointer, entitled, findings) = tokio::task::spawn_blocking(move || {
+        // Read once, so the groups and the commit a worker is cued with are of the same deploy.
+        let pointer = deployed_pointer(&data_dir);
         (
-            deployed_groups(&data_dir),
-            entitled_secrets(&data_dir, &entitlements, &for_group),
+            groups_in(&data_dir, pointer.as_deref()),
+            pointer,
+            at_newest(
+                &entitled(&data_dir, &entitlements, &for_group),
+                // Unreadable, a beat entitles no certificate and the next one tries again.
+                &certificate_versions(&*store).unwrap_or_default(),
+            ),
             checks.findings(&data_dir),
         )
     })
@@ -411,7 +464,10 @@ async fn heartbeat(
     forget::sweep(&state, now_ms).await;
     if state.registry.prune_due(now_ms, PRUNE_PROGRESS_EVERY) {
         let state = state.clone();
-        tokio::spawn(async move { prune_source_progress(&state).await });
+        tokio::spawn(async move {
+            prune_source_progress(&state).await;
+            pack_repo(&state).await;
+        });
     }
 
     // A rotation ends on a fact workers report, and this is where they report it. The leader has no other
@@ -454,16 +510,14 @@ async fn heartbeat(
 
     Ok(Json(HeartbeatResponse {
         holds,
+        deployed: pointer,
         authority,
         directive,
         captures: captures_for
             .into_iter()
             .map(|invitation| crate::heartbeat::Invited::Readable(Box::new(invitation)))
             .collect(),
-        secrets: secrets
-            .into_iter()
-            .map(|(name, version, value)| crate::heartbeat::SecretDelivery { name, version, value })
-            .collect(),
+        secrets,
     }))
 }
 
@@ -495,11 +549,41 @@ async fn capture_report(
 pub async fn blocking<T, E>(f: impl FnOnce() -> Result<T, E> + Send + 'static) -> Result<T, E>
 where
     T: Send + 'static,
-    E: From<String> + Send + 'static,
+    E: From<Panicked> + Send + 'static,
 {
     tokio::task::spawn_blocking(f)
         .await
-        .unwrap_or_else(|e| Err(E::from(format!("internal error: {e}"))))
+        .unwrap_or_else(|e| Err(E::from(Panicked(format!("internal error: {e}")))))
+}
+
+/// [`blocking`] for work that answers for itself.
+pub async fn blocking_answer<T: Default + Send + 'static>(
+    f: impl FnOnce() -> Envelope<T> + Send + 'static,
+) -> Envelope<T> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .unwrap_or_else(|e| Envelope::refused(Panicked(format!("internal error: {e}"))))
+}
+
+/// Work on the blocking pool that never finished, which is the leader's fault.
+pub struct Panicked(String);
+
+impl From<Panicked> for String {
+    fn from(panicked: Panicked) -> String {
+        panicked.0
+    }
+}
+
+impl From<Panicked> for StoreError {
+    fn from(panicked: Panicked) -> StoreError {
+        StoreError::failed(panicked.0)
+    }
+}
+
+impl From<Panicked> for Refusal {
+    fn from(panicked: Panicked) -> Refusal {
+        Refusal::internal(panicked.0)
+    }
 }
 
 /// A `Store` call on the pool.
@@ -643,7 +727,20 @@ pub async fn prune_lookups(state: &AppState) {
     let _ = tokio::task::spawn_blocking(move || lookups::prune(&repo, keep, &running)).await;
 }
 
-/// How often the leader looks for the progress of sources no bundle reads.
+/// Pack what the leader's repository holds loose (`git::pack`). Every save and every follow adds objects, and
+/// unpacked they cost a file each.
+async fn pack_repo(state: &AppState) {
+    let repo = git::repo_path(&state.data_dir);
+    if let Err(e) = blocking(move || git::pack(&repo).map_err(|e| e.message)).await {
+        tracing::warn!(
+            target: "leader.repo_not_packed",
+            error = %e,
+            "the configuration repository could not be packed, so it is tried again later"
+        );
+    }
+}
+
+/// How often the leader looks for the progress of sources no bundle reads, and packs its repository.
 const PRUNE_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Forgets the stream shapes of every source, and the hold and progress of every single-worker source, that no
@@ -903,7 +1000,7 @@ pub fn health_snapshot(state: &AppState) -> HealthResponse {
     }
 }
 
-/// What `GET /api/system/info` serves: this leader process's own build, for Admin -> System -> General, and what
+/// What `GET /api/system` serves: this leader process's own build, for Admin -> System -> General, and what
 /// that build can do that another build of the same version might not.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -912,35 +1009,58 @@ pub struct SystemInfo {
     /// The release this build is (`version::RELEASE`); absent on any other build.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release: Option<&'static str>,
+    /// The newest published release, when it is newer than this one (`updates`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newer_release: Option<updates::Newer>,
+    /// The last look for one: when, and why it failed if it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_check: Option<updates::Looked>,
     /// The SASL mechanisms a Kafka client here can select. GSSAPI is in it only where a provider was linked, and a
     /// form that offered one this build does not carry would be offering a save that is refused.
     pub sasl_mechanisms: Vec<&'static str>,
+    /// The librdkafka properties a save refuses, each with why smeltr owns it, so a form refuses the same ones.
+    pub kafka_reserved: std::collections::BTreeMap<&'static str, &'static str>,
+    /// The librdkafka properties a save refuses beside a connector's own TLS settings, which answer the same question.
+    pub kafka_tls_props: &'static [&'static str],
 }
 
-async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+async fn health(State(state): State<AppState>) -> Envelope<HealthResponse> {
     forget::sweep(&state, warnings::now_millis()).await;
-    Json(health_snapshot(&state))
+    Envelope::ok(health_snapshot(&state))
 }
 
-async fn system_info() -> Json<SystemInfo> {
-    Json(SystemInfo {
+async fn system_info(State(state): State<AppState>) -> Envelope<SystemInfo> {
+    Envelope::ok(SystemInfo {
         smeltr_version: crate::version::VERSION,
         release: crate::version::RELEASE,
+        newer_release: state.updates.newer(),
+        release_check: state.updates.looked(),
         sasl_mechanisms: crate::io::kafka::available_sasl_mechanisms(),
+        kafka_reserved: crate::config_file::RESERVED_KAFKA_PROPS.iter().copied().collect(),
+        kafka_tls_props: crate::config_file::TLS_KAFKA_PROPS,
     })
 }
 
 // -- warnings ---------------------------------------------------------------
 
-/// What `GET /api/warnings` serves: the fixed catalog (design doc, Control plane), derived fresh from the registry
-/// and the worker roster on every call -- there is no warning table, so this is the only place the answer lives.
+/// The fixed catalog (design doc, Control plane) without its info entries: what every view that judges health reads,
+/// so none of them can count a fact that asks nothing as trouble. [`catalog`] is the whole of it.
+pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
+    let mut out = catalog(state).await?;
+    out.retain(|w| w.severity != warnings::Severity::Info);
+    Ok(out)
+}
+
+/// What `GET /api/warnings?info=true` serves: the fixed catalog (design doc, Control plane), info entries and all,
+/// derived fresh from the registry and the worker roster on every call -- there is no warning table, so this is the
+/// only place the answer lives.
 ///
 /// A route of its own rather than a field on [`HealthResponse`]: the "enrolled, never heartbeating" entry needs the
 /// worker roster, which lives in `Store` and so must be read on the blocking pool ([`run_store`]) -- and
 /// [`health_snapshot`] is also called synchronously from the in-process Cluster page, which a store read would
 /// block. The GUI pages that show warnings already poll `/api/health` on a timer; this rides the same timer as a
 /// second, independently-cheap fetch rather than reshaping the first.
-pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
+pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
     let now_ms = warnings::now_millis();
     // What the page polls, and so one of the reads a look for gone ephemeral workers rides: a fleet that has
     // scaled to nothing sends no heartbeat to carry it.
@@ -970,7 +1090,10 @@ pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning
         &recovering,
         heartbeat_interval,
     ));
+    let (key, kept) = run_store(state.store.clone(), |s| Ok((s.key_standing()?, s.kept_certificates()?))).await?;
+    active_facts.extend(warnings::encryption_key_facts(&key));
     let starts = state.registry.observe_facts(&active_facts, now_ms);
+    let key_warnings = warnings::encryption_key_warnings(&key, &kept, &starts);
     let normal_warnings =
         warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
@@ -979,6 +1102,7 @@ pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning
     // somebody is watching the rotation it promised would end.
     cut_over_if_due(state, now_ms).await;
     let (signing, rotating) = serving_authority(&state.data_dir);
+    let serving = serving_certificate(&state.data_dir);
     let presenting = enrollment_codes::Presenting::read(&tls::dir_of(&state.data_dir));
     // Read only while a rotation is open, which is the only time an enrollment code can be about to be stranded by one.
     // The steady state is every poll, and it does not pay for a table nothing would say anything about. Asked of the
@@ -992,14 +1116,19 @@ pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning
     // that it is done once per commit rather than once per poll.
     let data_dir = state.data_dir.clone();
     let expiries = state.expiries.clone();
+    let store = state.store.clone();
     let running = warnings::running_deployments(&snapshot, &credentials, heartbeat_interval);
-    let certificates = tokio::task::spawn_blocking(move || deployed_certificates(&data_dir, &expiries, running))
-        .await
-        .unwrap_or_default();
+    let certificates = tokio::task::spawn_blocking(move || {
+        let chain = |name: &str| newest_chain(&*store, name).ok().flatten().map(|(_, chain)| chain);
+        deployed_certificates(&data_dir, &expiries, running, &chain)
+    })
+    .await
+    .unwrap_or_default();
     // Off the async runtime: `worker_logged_warnings` reads the logs table the same way `GET /api/logs` does, and
     // that handler already makes this same trip through `spawn_blocking` rather than block the runtime on it.
     let registry = state.registry.clone();
     let remote_failure = state.remote.state().failure;
+    let newer_release = state.updates.newer();
     let deploy_warnings = warnings::deploy_checked(&findings, &starts);
     let mut out = tokio::task::spawn_blocking(move || {
         warnings::derive(
@@ -1010,24 +1139,35 @@ pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning
             heartbeat_interval,
             registry.series(),
             &deployed,
-            signing.as_ref(),
-            &rotating,
-            &codes,
-            &presenting,
-            &certificates,
-            held.as_ref(),
-            remote_failure.as_ref(),
         )
     })
     .await
     .unwrap_or_default();
+    out.extend(warnings::authority_aging(signing.as_ref(), &rotating, now_ms));
+    out.extend(warnings::enrollment_code_names_outgoing_authority(&codes, &presenting));
+    out.extend(warnings::certificate_expiring(&certificates, now_ms));
+    out.extend(held.as_ref().map(warnings::deploy_held));
+    out.extend(remote_failure.as_ref().map(warnings::remote_not_followed));
+    out.extend(
+        newer_release
+            .as_ref()
+            .zip(crate::version::RELEASE)
+            .map(|(n, own)| warnings::newer_release(n, own)),
+    );
     out.extend(deploy_warnings);
     out.extend(normal_warnings);
+    out.extend(key_warnings);
+    out.extend(issued_certificates_not_renewed(state, now_ms).await?);
+    out.extend(
+        serving
+            .map(|s| warnings::leader_certificate(&s, now_ms))
+            .unwrap_or_default(),
+    );
     for w in out
         .iter_mut()
         .filter(|w| w.subject_kind == warnings::SubjectKind::Pipeline)
     {
-        w.scope = match shared_pipelines.contains(&w.subject_id) {
+        w.area = match shared_pipelines.contains(&w.subject_id) {
             true => Some(crate::config_file::SHARED_DIR.to_string()),
             false => w.group.clone(),
         };
@@ -1058,27 +1198,41 @@ fn serving_authority(data_dir: &std::path::Path) -> (Option<tls::Described>, war
         },
         Err(why) => warnings::Rotating::Unreadable(why),
     };
-    let signing = tls::in_force(&dir)
+    let signing = tls::current(&dir)
         .ok()
         // An operator's certificate is issued by an authority this leader does not hold, and rotating it is
         // theirs to do wherever they issue it. Telling them to use a page that refuses is worse than silence.
-        .filter(|(materials, _)| !materials.supplied)
-        .and_then(|(materials, served)| tls::signing_root(&materials.ca_pem, &served).ok());
+        .filter(|materials| !materials.supplied)
+        .and_then(|materials| tls::signing_root(&materials.ca_pem, &materials.served).ok());
     (signing, rotating)
 }
 
-/// Every certificate the fleet is actually carrying, group by group.
-///
-/// Only identities a connector names, and only on the commit each worker itself reports running -- never `main`,
-/// which a worker still on an older commit, or one refusing the current one, is not. A group mid-rollout has
-/// workers split across two commits, and both are read: replacing an expired certificate on `main` must not clear
-/// the warning while a worker still runs the one it replaced, and a commit nothing has deployed yet must not raise
-/// one. A group whose bundle does not load contributes none -- something else already says so, and a warning about
-/// a certificate inside a bundle nothing can read would be the second answer to a question already asked.
+/// The certificate this leader serves, for its warnings. `None` where it serves plain HTTP, which has no certificate
+/// to run out, or where what it serves cannot be read, which the Leader certificate tab says.
+fn serving_certificate(data_dir: &std::path::Path) -> Option<warnings::Serving> {
+    if !crate::startup_config::leader_tls_enabled() {
+        return None;
+    }
+    let dir = tls::dir_of(data_dir);
+    let served = tls::current(&dir).ok()?.served;
+    Some(warnings::Serving {
+        certificate: tls::describe(&served, "the certificate this leader serves").ok()?,
+        source: acme::source(&dir).ok()?,
+        entry: tls::served(&dir).ok().flatten().map(|entry| entry.name),
+        acme: acme::state(&dir).unwrap_or_default(),
+    })
+}
+
+/// Every certificate the fleet's connectors present or trust, with its validity window, from what each `running`
+/// `(group, commit)` says and the chain each presented entry holds now, through `chain`. A commit's answer is
+/// remembered and dropped once nothing runs it. A group whose bundle does not load contributes none -- something
+/// else already says so, and a warning about a certificate inside a bundle nothing can read would be the second
+/// answer to a question already asked.
 fn deployed_certificates(
     data_dir: &std::path::Path,
     cache: &Expiries,
     running: std::collections::HashSet<(String, String)>,
+    chain: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<warnings::DeployedCertificate> {
     let repo = git::repo_path(data_dir);
     if !git::repo_ready(&repo) {
@@ -1094,55 +1248,66 @@ fn deployed_certificates(
         let key = (group.clone(), commit.clone());
         let found = cached.remove(&key).unwrap_or_else(|| {
             tree::load_group_at(&repo, &commit, &group)
-                .map(|system| certificates_of(&system.topology, &group, &commit))
+                .map(|system| tls_of(&system.topology))
                 .unwrap_or_default()
         });
-        out.extend(found.iter().cloned());
+        for deployed in &found {
+            let carried = |half, described: &tls::Described| warnings::DeployedCertificate {
+                group: group.clone(),
+                commit: commit.clone(),
+                subject_kind: deployed.subject_kind,
+                subject_id: deployed.subject_id.clone(),
+                half,
+                not_before_millis: described.not_before_millis,
+                not_after_millis: described.not_after_millis,
+            };
+            out.extend(deployed.trusted.iter().map(|c| carried(warnings::Half::Trusted, c)));
+            let presented = (deployed.certificate.as_deref().and_then(chain))
+                .and_then(|pem| tls::describe_each(pem.as_bytes(), "it").ok())
+                .unwrap_or_default();
+            out.extend(presented.iter().map(|c| carried(warnings::Half::Presented, c)));
+        }
         fresh.insert(key, found);
     }
     *cached = fresh;
     out
 }
 
-/// What a group's identities say about how long they are good for. PEM the connector would refuse is passed over:
-/// a bundle holding one never validated, and the save that refused it is where that is said.
-fn certificates_of(
-    topology: &crate::plan::topology::TopologyConfig,
-    group: &str,
-    commit: &str,
-) -> Vec<warnings::DeployedCertificate> {
-    let mut out = Vec::new();
-    for identity in &topology.identities {
-        for (half, pem) in [
-            (warnings::Half::Presented, identity.certificate.as_deref()),
-            (warnings::Half::Trusted, identity.authorities.as_deref()),
-        ] {
-            let Some(pem) = pem else { continue };
-            let Ok(described) = tls::describe_each(pem.as_bytes(), "it") else {
-                continue;
-            };
-            out.extend(described.into_iter().map(|c| warnings::DeployedCertificate {
-                group: group.to_string(),
-                commit: commit.to_string(),
-                identity: identity.id.clone(),
-                half,
-                not_before_millis: c.not_before_millis,
-                not_after_millis: c.not_after_millis,
-            }));
-        }
-    }
-    out
+/// What a group's connectors say about their TLS: the list entry each presents and the authorities each trusts.
+/// PEM the connector would refuse is passed over: a bundle holding one never validated, and the save that refused
+/// it is where that is said.
+fn tls_of(topology: &crate::plan::topology::TopologyConfig) -> Vec<DeployedTls> {
+    let sources =
+        (topology.sources.iter()).filter_map(|s| Some((warnings::SubjectKind::Source, s.name.as_str(), s.kind.tls()?)));
+    let destinations = (topology.destinations.iter())
+        .filter_map(|d| Some((warnings::SubjectKind::Destination, d.name.as_str(), d.kind.tls()?)));
+    sources
+        .chain(destinations)
+        .map(|(subject_kind, id, tls)| DeployedTls {
+            subject_kind,
+            subject_id: id.to_string(),
+            certificate: tls.certificate.clone(),
+            trusted: (tls.authorities.as_deref())
+                .and_then(|pem| tls::describe_each(pem.as_bytes(), "it").ok())
+                .unwrap_or_default(),
+        })
+        .collect()
 }
 
 fn deployed_groups(data_dir: &std::path::Path) -> std::collections::HashSet<String> {
+    groups_in(data_dir, deployed_pointer(data_dir).as_deref())
+}
+
+/// The commit the deployed pointer names. `None` before anything is deployed.
+fn deployed_pointer(data_dir: &std::path::Path) -> Option<String> {
     let repo = git::repo_path(data_dir);
-    if !git::repo_ready(&repo) {
-        return std::collections::HashSet::new();
-    }
-    let Some(deployed) = git::deployed(&repo) else {
-        return std::collections::HashSet::new();
-    };
-    tree::groups_at(&repo, &deployed)
+    git::repo_ready(&repo).then(|| git::deployed(&repo)).flatten()
+}
+
+/// The groups `commit` holds; none for no commit.
+fn groups_in(data_dir: &std::path::Path, commit: Option<&str>) -> std::collections::HashSet<String> {
+    commit
+        .and_then(|commit| tree::groups_at(&git::repo_path(data_dir), commit).ok())
         .unwrap_or_default()
         .into_iter()
         .collect()
@@ -1167,16 +1332,33 @@ fn deployed_shared_pipelines(data_dir: &std::path::Path) -> std::collections::Ha
         .collect()
 }
 
+/// `GET /api/warnings`'s query: whether the catalog's info entries come too.
+#[derive(serde::Deserialize)]
+struct WarningsQuery {
+    #[serde(default)]
+    info: bool,
+}
+
 /// The catalog narrowed to what the caller may see ([`warnings::Warning::visible_to`]): the gate let in anyone
 /// viewing somewhere, and the catalog is the whole fleet's.
 async fn list_warnings(
     State(state): State<AppState>,
     axum::Extension(access): axum::Extension<access::Access>,
-) -> Result<Json<Vec<warnings::Warning>>, (axum::http::StatusCode, String)> {
-    warnings_snapshot(&state)
-        .await
-        .map(|all| Json(all.into_iter().filter(|w| w.visible_to(&access)).collect()))
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    Query(query): Query<WarningsQuery>,
+) -> Result<Envelope<WarningList>, Refusal> {
+    let all = match query.info {
+        true => catalog(&state).await,
+        false => warnings_snapshot(&state).await,
+    };
+    let all = all.map_err(|e| Refusal::internal(e.to_string()))?;
+    Ok(Envelope::ok(WarningList {
+        warnings: all.into_iter().filter(|w| w.visible_to(&access)).collect(),
+    }))
+}
+
+#[derive(serde::Serialize)]
+struct WarningList {
+    warnings: Vec<warnings::Warning>,
 }
 
 // -- flow (E2) ----------------------------------------------------------------
@@ -1360,11 +1542,11 @@ async fn get_flow(
     State(state): State<AppState>,
     axum::Extension(access): axum::Extension<access::Access>,
     Query(query): Query<FlowQuery>,
-) -> Result<Json<FlowResponse>, (axum::http::StatusCode, String)> {
+) -> Result<Envelope<FlowResponse>, Refusal> {
     let minutes = query.window_minutes.clamp(1, MAX_WINDOW_MINUTES);
     flow_snapshot(&state, Duration::from_secs((minutes * 60) as u64))
-        .map(|flow| Json(flow.visible_to(&access)))
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map(|flow| Envelope::ok(flow.visible_to(&access)))
+        .map_err(|e| Refusal::internal(e.to_string()))
 }
 
 // -- streams ------------------------------------------------------------------
@@ -1393,7 +1575,7 @@ impl StreamsResponse {
 async fn get_streams(
     State(state): State<AppState>,
     axum::Extension(access): axum::Extension<access::Access>,
-) -> Result<Json<StreamsResponse>, (axum::http::StatusCode, String)> {
+) -> Result<Envelope<StreamsResponse>, Refusal> {
     let registry = state.registry.clone();
     let data_dir = state.data_dir.clone();
     // Off the runtime's threads: a blocking read behind the lock every heartbeat's write takes, and the bundles read
@@ -1411,9 +1593,8 @@ async fn get_streams(
         Ok::<_, StoreError>(stored)
     })
     .await
-    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(
+    .map_err(|e| Refusal::internal(e.to_string()))??;
+    Ok(Envelope::ok(
         StreamsResponse {
             parsers: stored.parsers,
             unmatched: stored.unmatched,
@@ -1446,6 +1627,31 @@ fn stream_conditions(data_dir: &std::path::Path, unmatched: &mut [series::Stored
 }
 
 // -- logs ---------------------------------------------------------------------
+
+/// The worker id a leader's own logs are kept under, where no worker of its own carries them.
+pub const LEADER_LOGS: &str = "leader";
+
+/// How often a leader writes what it has logged into its store.
+const LEADER_LOGS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Write what this leader logs into its own store, where `GET /api/logs` reads the fleet's. Runs for the life of the
+/// process; [`crate::logs::mark_leader_thread`] is what queues them.
+pub async fn keep_own_logs(state: AppState) {
+    loop {
+        tokio::time::sleep(LEADER_LOGS_EVERY).await;
+        let registry = state.registry.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let events = crate::logs::leader_pending_map(crate::heartbeat::LOGS_PER_HEARTBEAT, |event| {
+                crate::heartbeat::LogDto::from(event)
+            });
+            // Best-effort like a heartbeat's: a store that refuses them says so, and they are not held for a retry
+            // that would refuse them again.
+            registry.record_logs(LEADER_LOGS, crate::logs::boot_id(), None, &events);
+            crate::logs::leader_delivered(events.len());
+        })
+        .await;
+    }
+}
 
 /// `GET /api/logs`'s query. Every filter is optional and absent means "any", so the bare path asks for the newest
 /// of everything.
@@ -1495,10 +1701,10 @@ pub struct LogRow {
     pub fields: serde_json::Value,
 }
 
-/// What `GET /api/logs` serves: what the fleet's workers have said, newest first.
+/// What `GET /api/logs` serves: what the fleet's workers and this leader have said, newest first.
 ///
-/// A leader keeps its own logs on its console, so nothing here is the leader's own -- except where one
-/// process runs both roles, whose worker carries them (design doc, Observability).
+/// A leader writes its own under [`LEADER_LOGS`], whether or not a worker runs in the same process (design doc,
+/// Observability).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogsResponse {
@@ -1541,7 +1747,7 @@ mod logs_query_tests {
 async fn get_logs(
     State(state): State<AppState>,
     Query(query): Query<LogsQuery>,
-) -> Result<Json<LogsResponse>, (axum::http::StatusCode, String)> {
+) -> Result<Envelope<LogsResponse>, Refusal> {
     let limit = query.limit.unwrap_or(LOGS_PAGE).clamp(1, LOGS_PAGE_MAX);
     let levels: Vec<String> = query
         .level
@@ -1577,8 +1783,8 @@ async fn get_logs(
         )
     })
     .await
-    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e: StoreError| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    .map_err(|e| Refusal::internal(e.to_string()))?
+    .map_err(|e: StoreError| Refusal::from(e))?;
 
     // One row past the page: whether it came back is what tells a page cut short by `limit` from one that
     // ended on the last row, since both are the same length. A cursor offered on length alone steps onto an
@@ -1608,7 +1814,7 @@ async fn get_logs(
         )
     };
 
-    Ok(Json(LogsResponse {
+    Ok(Envelope::ok(LogsResponse {
         rows: rows
             .into_iter()
             .map(|r| LogRow {
@@ -1843,16 +2049,16 @@ async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -
 }
 
 /// Asks a heartbeating worker to end its deployment and start it again, on its next heartbeat.
-async fn restart_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Json<Envelope> {
+async fn restart_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Envelope {
     ask_worker(&state, &worker_id, crate::heartbeat::DirectiveAction::Restart).await
 }
 
 /// Asks a heartbeating worker to end its deployment and exit, as a SIGTERM would, on its next heartbeat.
-async fn shutdown_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Json<Envelope> {
+async fn shutdown_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Envelope {
     ask_worker(&state, &worker_id, crate::heartbeat::DirectiveAction::Shutdown).await
 }
 
-async fn ask_worker(state: &AppState, worker_id: &str, action: crate::heartbeat::DirectiveAction) -> Json<Envelope> {
+async fn ask_worker(state: &AppState, worker_id: &str, action: crate::heartbeat::DirectiveAction) -> Envelope {
     let id = worker_id.to_string();
     let revoked = run_store(state.store.clone(), move |s| {
         Ok(s.list_worker_credentials()?
@@ -1863,20 +2069,20 @@ async fn ask_worker(state: &AppState, worker_id: &str, action: crate::heartbeat:
     .await;
     // A worker gone without a word would take the request whenever it came back.
     if !state.registry.heartbeating(worker_id, heartbeat_window()) {
-        return Json(Envelope::failed_one(
+        return Envelope::refused(Refusal::conflict(
             "this worker is not heartbeating, so it cannot be asked anything",
         ));
     }
     match revoked {
         Ok(Some(false)) => match state.directives.ask(worker_id, action) {
-            Ok(()) => Json(Envelope::done()),
-            Err(e) => Json(Envelope::failed_one(e)),
+            Ok(()) => Envelope::done(),
+            Err(e) => Envelope::refused(Refusal::conflict(e)),
         },
-        Ok(Some(true)) => Json(Envelope::failed_one(
+        Ok(Some(true)) => Envelope::refused(Refusal::conflict(
             "this worker is revoked, so it hears nothing from this leader",
         )),
-        Ok(None) => Json(Envelope::failed_one("no such worker has ever enrolled")),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(None) => Envelope::refused(Refusal::not_found("no such worker has ever enrolled")),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -1885,7 +2091,7 @@ async fn ask_worker(state: &AppState, worker_id: &str, action: crate::heartbeat:
 /// since removing it would leave a process nobody can see still moving data. A revoked one is not: this leader
 /// already refuses its heartbeats, so the beats still inside the window are from before the revocation, and it can
 /// no longer be asked to shut down.
-async fn remove_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Json<Envelope> {
+async fn remove_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Envelope {
     let id = worker_id.clone();
     let revoked = run_store(state.store.clone(), move |s| {
         Ok(s.list_worker_credentials()?
@@ -1896,10 +2102,10 @@ async fn remove_worker(State(state): State<AppState>, Path(worker_id): Path<Stri
     match revoked {
         Ok(true) => {}
         Ok(false) if state.registry.heartbeating(&worker_id, heartbeat_window()) => {
-            return Json(Envelope::failed_one("this worker is heartbeating; shut it down first"));
+            return Envelope::refused(Refusal::conflict("this worker is heartbeating; shut it down first"));
         }
         Ok(false) => {}
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     }
     let id = worker_id.clone();
     let now_ms = warnings::now_millis();
@@ -1908,10 +2114,10 @@ async fn remove_worker(State(state): State<AppState>, Path(worker_id): Path<Stri
             state.registry.forget_worker(&worker_id);
             state.directives.forget(&worker_id);
             forget::free_holds(&state, &worker_id).await;
-            Json(Envelope::done())
+            Envelope::done()
         }
-        Ok(false) => Json(Envelope::failed_one("no such worker has ever enrolled")),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(false) => Envelope::refused(Refusal::not_found("no such worker has ever enrolled")),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -1923,16 +2129,16 @@ fn heartbeat_window() -> Duration {
 
 /// Soft revocation: blocks the worker's future heartbeats and fetches. The single-worker sources it held go to
 /// another worker on that one's next beat, since this one will never report their progress again.
-async fn revoke_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Json<Envelope> {
+async fn revoke_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Envelope {
     let id = worker_id.clone();
     let result = run_store(state.store.clone(), move |s| s.revoke_worker_credential(&id)).await;
     match result {
         Ok(true) => {
             forget::free_holds(&state, &worker_id).await;
-            Json(Envelope::done())
+            Envelope::done()
         }
-        Ok(false) => Json(Envelope::failed_one("no such worker has ever enrolled")),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(false) => Envelope::refused(Refusal::not_found("no such worker has ever enrolled")),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -2064,33 +2270,42 @@ impl VerifyLimiter {
     }
 }
 
-async fn list_secrets(State(state): State<AppState>) -> Result<Json<Vec<SecretOut>>, (axum::http::StatusCode, String)> {
+async fn list_secrets(State(state): State<AppState>) -> Result<Envelope<SecretList>, Refusal> {
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
     let running = running_deployments(&state).await;
     // What the catalog shows; a bundle it cannot read leaves the Running column empty rather than the page.
-    let mut deployed = tokio::task::spawn_blocking(move || deployed_versions(&data_dir, &entitlements, &running))
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default();
-    let rows = run_store(state.store, |s| s.list_secrets())
-        .await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(
-        rows.into_iter()
+    let store = state.store.clone();
+    let mut deployed = tokio::task::spawn_blocking(move || {
+        deployed_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?)
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .unwrap_or_default();
+    let rows = run_store(state.store, |s| s.list_secrets()).await?;
+    Ok(Envelope::ok(SecretList {
+        secrets: rows
+            .into_iter()
+            // Listed on their own page, and changed only through it.
+            .filter(|r| !r.certificate)
             .map(|r| {
                 let mut out = SecretOut::from(r);
                 out.deployed = deployed.remove(&out.name).unwrap_or_default();
                 out
             })
             .collect(),
-    ))
+    }))
 }
 
-async fn create_secret(State(state): State<AppState>, Json(req): Json<CreateSecretRequest>) -> Json<Envelope> {
+#[derive(serde::Serialize)]
+struct SecretList {
+    secrets: Vec<SecretOut>,
+}
+
+async fn create_secret(State(state): State<AppState>, Json(req): Json<CreateSecretRequest>) -> Envelope {
     let Some(custody) = store::Custody::parse(&req.custody) else {
-        return Json(Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::invalid(format!(
             "custody {:?} is neither \"worker-local\" nor \"leader-stored\"",
             req.custody
         )));
@@ -2100,9 +2315,90 @@ async fn create_secret(State(state): State<AppState>, Json(req): Json<CreateSecr
     })
     .await;
     match result {
-        Ok(()) => Json(Envelope::done()),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(()) => Envelope::done(),
+        Err(e) => Envelope::refused(e),
     }
+}
+
+/// Where the secrets encryption key stands, as the Secrets page shows it.
+#[derive(serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptionKeyOut {
+    /// `absent`, `held`, `missing` or `mismatched` (`store::KeyState`).
+    pub state: String,
+    /// The key's id, where there is a key file.
+    pub key_id: Option<String>,
+    pub path: String,
+    /// Each value whose newest copy the key cannot open.
+    pub unopenable: Vec<UnopenableOut>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnopenableOut {
+    /// `secret`, `certificate` or `setting`.
+    pub kind: &'static str,
+    /// A secret's or certificate's name, or a setting's key.
+    pub name: String,
+    /// What a person calls it: a secret's or certificate's name, or what the setting is.
+    pub label: String,
+}
+
+impl From<store::KeyStanding> for EncryptionKeyOut {
+    fn from(standing: store::KeyStanding) -> EncryptionKeyOut {
+        let (state, key_id) = match standing.key {
+            store::KeyState::Absent => ("absent", None),
+            store::KeyState::Held { key_id } => ("held", Some(key_id)),
+            store::KeyState::Missing => ("missing", None),
+            store::KeyState::Mismatched { key_id } => ("mismatched", Some(key_id)),
+        };
+        EncryptionKeyOut {
+            state: state.to_string(),
+            key_id,
+            path: standing.path.display().to_string(),
+            unopenable: standing
+                .unopenable
+                .into_iter()
+                .map(|u| match u {
+                    store::Unopenable::Secret(name) => UnopenableOut {
+                        kind: "secret",
+                        label: name.clone(),
+                        name,
+                    },
+                    store::Unopenable::Certificate(name) => UnopenableOut {
+                        kind: "certificate",
+                        label: name.clone(),
+                        name,
+                    },
+                    store::Unopenable::Setting(name) => UnopenableOut {
+                        kind: "setting",
+                        label: warnings::sealed_setting_place(&name).0.to_string(),
+                        name,
+                    },
+                })
+                .collect(),
+        }
+    }
+}
+
+async fn encryption_key(State(state): State<AppState>) -> Envelope<EncryptionKeyOut> {
+    run_store(state.store, |s| s.key_standing())
+        .await
+        .map(EncryptionKeyOut::from)
+        .into()
+}
+
+async fn regenerate_encryption_key(
+    State(state): State<AppState>,
+    // Inserted by the operator gate: who regenerated it is what the audit row says.
+    axum::Extension(actor): axum::Extension<store::Actor>,
+) -> Envelope<EncryptionKeyOut> {
+    let event = accounts::event_for(&actor, "key-regenerate", "", "ok");
+    let regenerated = run_store(state.store, move |s| s.regenerate_key(&event)).await;
+    if regenerated.is_ok() {
+        RENEW_NOW.notify_one();
+    }
+    regenerated.map(EncryptionKeyOut::from).into()
 }
 
 /// Stores a new value and forgets what retention no longer keeps.
@@ -2113,27 +2409,66 @@ async fn store_secret_value(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(req): Json<SecretValueRequest>,
-) -> Json<Envelope> {
+) -> Envelope {
+    match not_a_certificate(&state, &name).await {
+        Ok(()) => store_value(state, name, req.value, None).await,
+        Err(e) => Envelope::refused(e),
+    }
+}
+
+/// Refuses a secret route that means nothing for a certificate's key: its value is set with its chain, and nothing
+/// verifies it as a secret.
+async fn not_a_certificate(state: &AppState, name: &str) -> Result<(), Refusal> {
+    match is_certificate(state, name).await {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(Refusal::conflict(format!(
+            "{name:?} is a certificate; change it on the Certificates page"
+        ))),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Whether `name` is a certificate rather than a secret of any other kind.
+async fn is_certificate(state: &AppState, name: &str) -> Result<bool, StoreError> {
+    let name = name.to_string();
+    run_store(state.store.clone(), move |s| {
+        Ok(s.list_secrets()?.iter().any(|r| r.name == name && r.certificate))
+    })
+    .await
+}
+
+/// [`store_secret_value`] for a value already checked, with its certificate chain where it is a certificate's key.
+async fn store_value(state: AppState, name: String, value: String, chain: Option<String>) -> Envelope {
     let store = state.store.clone();
     let added = {
         let name = name.clone();
-        run_store(store, move |s| s.add_secret_version(&name, &req.value)).await
+        run_store(store, move |s| match chain {
+            Some(chain) => s.add_certificate_version(&name, &chain, &value),
+            None => s.add_secret_version(&name, &value),
+        })
+        .await
     };
     if let Err(e) = added {
-        return Json(Envelope::failed_one(e));
+        return Envelope::refused(e);
     }
 
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
     let wanted = name.clone();
     let running = running_deployments(&state).await;
+    let store = state.store.clone();
     let pinned = tokio::task::spawn_blocking(move || {
-        kept_versions(&data_dir, &entitlements, &running).map(|mut deployed| {
-            deployed
-                .remove(&wanted)
-                .unwrap_or_default()
-                .into_iter()
+        // What the leader serves is kept as what the fleet runs is.
+        let served = served_entries(&tls::dir_of(&data_dir))?;
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?).map(|mut deployed| {
+            (deployed.remove(&wanted).unwrap_or_default().into_iter())
                 .map(|(_, version)| version)
+                .chain(
+                    served
+                        .into_iter()
+                        .filter(|entry| entry.name == wanted)
+                        .map(|entry| entry.version),
+                )
                 .collect::<Vec<i64>>()
         })
     })
@@ -2142,7 +2477,7 @@ async fn store_secret_value(
     .and_then(|pinned| pinned);
     // Unknown pins forget nothing: the value is stored, and the next store prunes once the bundle reads again.
     let Ok(pinned) = pinned else {
-        return Json(Envelope::done());
+        return Envelope::done();
     };
 
     let keep = crate::startup_config::leader_secret_versions();
@@ -2161,20 +2496,389 @@ async fn store_secret_value(
     .await;
     match forgotten {
         // The value is stored either way; failing to forget an old one is not a failed rotation.
-        Ok(()) => Json(Envelope::done()),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(()) => Envelope::done(),
+        Err(e) => Envelope::with(Empty, StatusCode::OK, vec![e.message.into()]),
+    }
+}
+
+// -- certificates ------------------------------------------------------------
+//
+// A certificate is the secret holding its private key, sealed, versioned, retained and delivered as every secret is,
+// with its public chain kept beside each version. These routes are where one is added, replaced and read about.
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CertificateOut {
+    pub name: String,
+    pub description: String,
+    /// Every version still held, oldest first.
+    pub versions: Vec<SecretVersionOut>,
+    /// The newest version's chain, leaf first. Empty where this leader cannot open it.
+    pub chain: Vec<tls::Described>,
+    /// Whether the leader serves a copy of it.
+    pub served: bool,
+    /// Whether the newest version can be served, to a client enforcing its Extended Key Usage and Key Usage.
+    pub for_servers: bool,
+    /// Whether the newest version can be presented by a client, to a server enforcing them.
+    pub for_clients: bool,
+    /// How this leader keeps it up to date, `issued` or `acme`, where it does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kept: Option<&'static str>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CertificateRequest {
+    /// The new certificate's name. Ignored when replacing one, which the path names.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// PEM: the certificate, then any intermediates, then optionally the root.
+    pub certificate: String,
+    /// PEM, unencrypted.
+    pub private_key: String,
+}
+
+impl CertificateRequest {
+    /// Whether the certificate reads as one and the key is its key.
+    fn check(&self) -> Result<(), String> {
+        tls::describe_each(self.certificate.as_bytes(), "the certificate")?;
+        tls::is_pair(self.certificate.as_bytes(), self.private_key.as_bytes())
+    }
+}
+
+/// The newest version of the certificate `name` and its chain, `None` where it is no certificate.
+fn newest_chain(store: &dyn Store, name: &str) -> Result<Option<(i64, String)>, StoreError> {
+    let newest = (store.list_secrets()?.into_iter())
+        .find(|r| r.name == name && r.certificate)
+        .and_then(|r| r.current().map(|v| v.version));
+    let Some(version) = newest else {
+        return Ok(None);
+    };
+    Ok(store.certificate_chain(name, version)?.map(|chain| (version, chain)))
+}
+
+/// The newest version of the certificate `name`, with its chain and private key, `None` where it has none this leader
+/// can open.
+pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(i64, String, String)>, StoreError> {
+    let Some((version, chain)) = newest_chain(store, name)? else {
+        return Ok(None);
+    };
+    let opened = store.secrets_for_delivery(&[(name.to_string(), version)], &[])?;
+    Ok(opened.into_iter().next().map(|d| (version, chain, d.value)))
+}
+
+/// The list entries the leader serves, or is rotating to, each at the version it serves. None where it serves plain
+/// HTTP or holds no TLS folder.
+pub fn served_entries(tls_dir: &std::path::Path) -> Result<Vec<tls::Entry>, String> {
+    if !crate::startup_config::leader_tls_enabled() || !tls_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let rotating = tls::rotation(tls_dir)?.and_then(|rotation| rotation.entry);
+    Ok(tls::served(tls_dir)?.into_iter().chain(rotating).collect())
+}
+
+/// The names of [`served_entries`].
+pub fn served_names(tls_dir: &std::path::Path) -> Result<Vec<String>, String> {
+    Ok(served_entries(tls_dir)?.into_iter().map(|entry| entry.name).collect())
+}
+
+pub async fn list_certificates(State(state): State<AppState>) -> Result<Envelope<CertificateList>, Refusal> {
+    let data_dir = state.data_dir.clone();
+    run_store(state.store, move |s| {
+        // Only a badge, so a TLS folder that cannot be read shows none rather than hiding the list. Deleting refuses.
+        let served = served_names(&tls::dir_of(&data_dir)).unwrap_or_default();
+        let mut kept = s.kept_certificates()?;
+        let mut out = Vec::new();
+        for r in s.list_secrets()?.into_iter().filter(|r| r.certificate) {
+            let pem = newest_chain(s, &r.name)?.map(|(_, chain)| chain).unwrap_or_default();
+            let chain = tls::describe_each(pem.as_bytes(), "the certificate").unwrap_or_default();
+            let usable = |side| !chain.is_empty() && crate::io::trust::refuse_unless_usable(&pem, side).is_ok();
+            let (for_servers, for_clients) = (
+                usable(crate::io::trust::Side::Server),
+                usable(crate::io::trust::Side::Client),
+            );
+            let SecretOut {
+                name,
+                description,
+                versions,
+                ..
+            } = SecretOut::from(r);
+            let served = served.contains(&name);
+            let kept = kept.remove(&name).map(|k| match k {
+                Kept::Issued(_) => "issued",
+                Kept::Acme => "acme",
+            });
+            out.push(CertificateOut {
+                name,
+                description,
+                versions,
+                chain,
+                served,
+                for_servers,
+                for_clients,
+                kept,
+            });
+        }
+        Ok(out)
+    })
+    .await
+    .map(|certificates| Envelope::ok(CertificateList { certificates }))
+    .map_err(Refusal::from)
+}
+
+#[derive(serde::Serialize)]
+pub struct CertificateList {
+    pub certificates: Vec<CertificateOut>,
+}
+
+/// What `POST /api/certificates` lists: a certificate supplied with its key, or one this leader's authority issues.
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum NewCertificate {
+    Supplied(CertificateRequest),
+    Issued(IssueRequest),
+}
+
+pub async fn create_certificate(State(state): State<AppState>, Json(req): Json<NewCertificate>) -> Envelope {
+    match req {
+        NewCertificate::Supplied(req) => add_supplied(state, req).await,
+        NewCertificate::Issued(req) => issue_certificate(state, req).await,
+    }
+}
+
+async fn add_supplied(state: AppState, req: CertificateRequest) -> Envelope {
+    if let Err(e) = req.check() {
+        return Envelope::refused(Refusal::invalid(e));
+    }
+    match run_store(state.store, move |s| {
+        s.create_certificate(&req.name, &req.description, &req.certificate, &req.private_key)
+    })
+    .await
+    {
+        Ok(()) => Envelope::done(),
+        Err(e) => Envelope::refused(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IssueRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// The DNS names and IP addresses it is issued for.
+    pub names: Vec<String>,
+    /// How long each version is valid, at most until the leader's authority expires.
+    #[serde(default = "a_year")]
+    pub validity_days: i64,
+}
+
+fn a_year() -> i64 {
+    365
+}
+
+/// Lists a certificate this leader's own authority issues for the names asked.
+async fn issue_certificate(state: AppState, req: IssueRequest) -> Envelope {
+    let names: Vec<String> = (req.names.iter().map(|n| n.trim().to_string()))
+        .filter(|n| !n.is_empty())
+        .collect();
+    if names.is_empty() {
+        return Envelope::refused(Refusal::invalid("Issued for needs at least one DNS name or IP address"));
+    }
+    if req.validity_days < 1 {
+        return Envelope::refused(Refusal::invalid("a certificate must be valid for at least a day"));
+    }
+    let issued = Issued {
+        names,
+        validity_days: req.validity_days,
+    };
+    let (chain, key) = match sign_under_authority(&state, &issued).await {
+        Ok(signed) => signed,
+        Err(e) => return Envelope::refused(e),
+    };
+    match run_store(state.store, move |s| {
+        s.create_kept_certificate(&req.name, &req.description, &Kept::Issued(issued), &chain, &key)
+    })
+    .await
+    {
+        Ok(()) => Envelope::done(),
+        Err(e) => Envelope::refused(e),
+    }
+}
+
+/// A new version of a certificate this leader issues: a chain under its authority for `issued`, and the key.
+async fn sign_under_authority(state: &AppState, issued: &Issued) -> Result<(String, String), Refusal> {
+    let dir = tls::dir_of(&state.data_dir);
+    if !crate::startup_config::leader_tls_enabled() || !dir.exists() {
+        return Err(Refusal::conflict(
+            "this leader serves plain HTTP, so it cannot issue certificates. Set leader.tls.enabled = true and \
+                    restart it first",
+        ));
+    }
+    let issued = issued.clone();
+    blocking(move || {
+        let validity = issued.validity();
+        tls::issue(&dir, issued.names, validity)
+    })
+    .await
+    .map_err(Refusal::internal)
+}
+
+/// The signing root and each certificate this leader issued, with its newest chain described: empty where that
+/// cannot be read. `None` where the leader signs nothing, or its authority cannot be read: its own warnings say that.
+fn issued_chains(
+    s: &dyn Store,
+    dir: &std::path::Path,
+) -> Result<Option<(String, Vec<warnings::IssuedChain>)>, StoreError> {
+    let Some(signing) = dir.exists().then(|| tls::signing_root_fingerprint(dir).ok()).flatten() else {
+        return Ok(None);
+    };
+    let mut issued = Vec::new();
+    for (name, kept) in s.kept_certificates()? {
+        let Kept::Issued(how) = kept else { continue };
+        let chain = newest_chain(s, &name)?
+            .and_then(|(_, chain)| tls::describe_each(chain.as_bytes(), "the certificate").ok())
+            .unwrap_or_default();
+        issued.push((name, how, chain));
+    }
+    Ok(Some((signing, issued)))
+}
+
+/// The certificates this leader should have renewed and has not, as warnings
+/// ([`warnings::issued_certificates_not_renewed`]).
+async fn issued_certificates_not_renewed(state: &AppState, now_ms: i64) -> Result<Vec<warnings::Warning>, StoreError> {
+    let dir = tls::dir_of(&state.data_dir);
+    run_store(state.store.clone(), move |s| {
+        let Some((signing, issued)) = issued_chains(s, &dir)? else {
+            return Ok(Vec::new());
+        };
+        Ok(warnings::issued_certificates_not_renewed(&issued, &signing, now_ms))
+    })
+    .await
+}
+
+/// Asks the renewal pass to run now rather than at its next hour: a regenerated encryption key leaves every
+/// certificate this leader issued unopenable, its own among them, and the socket cannot reload until it is renewed.
+pub static RENEW_NOW: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// Issues the next version of each certificate this leader issued that is due ([`warnings::issued_due`]), or whose
+/// newest version a regenerated encryption key cannot open, for the names and lifetime it was issued with. What the
+/// leader does on its own; moving what names one to the new version is an admin's. Answers each it tried, and how
+/// that went.
+pub async fn renew_issued(state: &AppState, now_ms: i64) -> Result<Vec<(String, Result<(), String>)>, StoreError> {
+    let dir = tls::dir_of(&state.data_dir);
+    let due = run_store(state.store.clone(), move |s| {
+        let Some((signing, issued)) = issued_chains(s, &dir)? else {
+            return Ok(Vec::new());
+        };
+        let unopenable = s.key_standing()?.unopenable;
+        Ok(issued
+            .into_iter()
+            .filter(|(name, _, chain)| {
+                warnings::issued_due(chain, &signing, now_ms).is_some()
+                    || unopenable.contains(&store::Unopenable::Certificate(name.clone()))
+            })
+            .map(|(name, how, _)| (name, how))
+            .collect::<Vec<_>>())
+    })
+    .await?;
+    let mut out = Vec::new();
+    for (name, how) in due {
+        let renewed = match sign_under_authority(state, &how).await {
+            Ok((chain, key)) => {
+                let wanted = name.clone();
+                run_store(state.store.clone(), move |s| {
+                    s.add_certificate_version(&wanted, &chain, &key)
+                })
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+            }
+            Err(e) => Err(e.message()),
+        };
+        out.push((name, renewed));
+    }
+    Ok(out)
+}
+
+/// How this leader keeps `name` up to date, or `None` where it does not.
+async fn kept_as(state: &AppState, name: &str) -> Result<Option<Kept>, StoreError> {
+    let name = name.to_string();
+    run_store(state.store.clone(), move |s| Ok(s.kept_certificates()?.remove(&name))).await
+}
+
+/// Stores a new version of a certificate. The route is the binary's, which serves the new version too where the
+/// leader serves the certificate; a worker gets it on its next deploy.
+pub async fn replace_certificate(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<CertificateRequest>,
+) -> Envelope {
+    if let Err(e) = req.check() {
+        return Envelope::refused(Refusal::invalid(e));
+    }
+    let how = match kept_as(&state, &name).await {
+        Ok(Some(Kept::Issued(_))) => "issues",
+        Ok(Some(Kept::Acme)) => "orders over ACME",
+        Ok(None) => "",
+        Err(e) => return Envelope::refused(e),
+    };
+    if !how.is_empty() {
+        return Envelope::refused(Refusal::conflict(format!(
+            "this leader {how} {name:?} and renews it itself, so it cannot be replaced. To use your own \
+             certificate, add one under another name and choose it where this one is used"
+        )));
+    }
+    match is_certificate(&state, &name).await {
+        Ok(true) => {
+            let (wanted, chain) = (name.clone(), req.certificate.clone());
+            let lost = match run_store(state.store.clone(), move |s| purposes_lost(s, &wanted, &chain)).await {
+                Ok(lost) => lost,
+                Err(e) => return Envelope::refused(e),
+            };
+            if !lost.is_empty() {
+                return Envelope::refused(Refusal::conflict(format!(
+                    "{name:?} is usable as a {} certificate, and this version is not. To use this certificate, \
+                     add it under another name",
+                    lost.join(" and ")
+                )));
+            }
+            store_value(state, name, req.private_key, Some(req.certificate)).await
+        }
+        Ok(false) => Envelope::refused(Refusal::not_found(format!("no certificate named {name:?}"))),
+        Err(e) => Envelope::refused(e),
     }
 }
 
 /// Deleting a credential the fleet runs, or would run once released, would strand the groups that use it, with no way
-/// back: the value is gone. So the one case that cannot be undone is refused, and everything else deletes.
-async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
+/// back: the value is gone. So the one case that cannot be undone is refused, and everything else deletes. The
+/// certificate the leader serves is refused too, whichever route asks: the leader would serve one the list no longer
+/// shows. The leader's own entry is refused always: switching back to it must find it.
+async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) -> Envelope {
+    if name == tls::OWN_ENTRY {
+        return Envelope::refused(Refusal::conflict(format!(
+            "this leader renews the certificate {name:?} on its own, so it cannot be deleted"
+        )));
+    }
+    match served_names(&tls::dir_of(&state.data_dir)) {
+        Ok(served) if served.contains(&name) => {
+            return Envelope::refused(Refusal::conflict(format!(
+                "the leader serves {name:?}; choose another certificate under Admin → System → Leader certificate \
+                 first"
+            )));
+        }
+        Ok(_) => {}
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
+    }
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
     let wanted = name.clone();
     let running = running_deployments(&state).await;
+    let store = state.store.clone();
     let users = tokio::task::spawn_blocking(move || {
-        kept_versions(&data_dir, &entitlements, &running).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?).map(|mut deployed| {
             let mut groups: Vec<String> = deployed
                 .remove(&wanted)
                 .unwrap_or_default()
@@ -2190,18 +2894,18 @@ async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) 
     .and_then(|users| users);
     let users = match users {
         Ok(users) => users,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
     };
     if !users.is_empty() {
-        return Json(Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::conflict(format!(
             "{name:?} is named by the deployed bundle or by main's head; take the reference out first, or the \
              workers that run it lose a credential they cannot get back"
         )));
     }
     match run_store(state.store, move |s| s.delete_secret(&name)).await {
-        Ok(true) => Json(Envelope::done()),
-        Ok(false) => Json(Envelope::failed_one("no such secret")),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(true) => Envelope::done(),
+        Ok(false) => Envelope::refused(Refusal::not_found("no such secret")),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -2211,26 +2915,25 @@ async fn verify_secret(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(req): Json<VerifySecretRequest>,
-) -> Result<Json<VerifySecretResponse>, (axum::http::StatusCode, String)> {
+) -> Result<Envelope<VerifySecretResponse>, Refusal> {
     if !state.verify_limiter.allow(&name, std::time::Instant::now()) {
         tracing::warn!(
             target: "leader.secret_verify_refused",
             subject = %name,
             "refused a secret verification: too many attempts"
         );
-        return Err((
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
+        return Err(Refusal::new(
+            StatusCode::TOO_MANY_REQUESTS,
             format!(
                 "{name:?} has been asked about {VERIFY_ATTEMPTS} times in the last {} seconds",
                 VERIFY_WINDOW.as_secs()
             ),
         ));
     }
+    not_a_certificate(&state, &name).await?;
     let asked = name.clone();
     let version = req.version;
-    let matches = run_store(state.store, move |s| s.verify_secret(&name, version, &req.candidate))
-        .await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let matches = run_store(state.store, move |s| s.verify_secret(&name, version, &req.candidate)).await?;
     // Two sites, so an outcome is never folded into its opposite or lost among the other's count.
     if matches {
         tracing::info!(target: "leader.secret_verified", subject = %asked, version, "a secret verification matched");
@@ -2242,7 +2945,7 @@ async fn verify_secret(
             "a secret verification did not match"
         );
     }
-    Ok(Json(VerifySecretResponse { matches }))
+    Ok(Envelope::ok(VerifySecretResponse { matches }))
 }
 
 /// What one call to [`point_secret_references`] rewrote.
@@ -2270,18 +2973,17 @@ fn point_secret_references(
     name: &str,
     version: i64,
     actor: &store::Actor,
-    store: &dyn Store,
-) -> Result<Repointed, String> {
+) -> Result<Repointed, Refusal> {
     let repo = git::repo_path(data_dir);
     // The branch tip when there is one, so a bump lands on top of edits already there rather than reverting them.
     let expected = git::branch_tip(&repo, branch);
     let parent = expected
         .clone()
         .or_else(|| git::main_head(&repo))
-        .ok_or_else(|| format!("{} has no commit to build on", git::MAIN_BRANCH))?;
+        .ok_or_else(|| Refusal::internal(format!("{} has no commit to build on", git::MAIN_BRANCH)))?;
 
     let mut bundles: Vec<String> = tree::groups_at(&repo, &parent)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| Refusal::internal(e.to_string()))?
         .into_iter()
         .map(|g| format!("{}/{g}", crate::config_file::GROUPS_DIR))
         .collect();
@@ -2295,15 +2997,8 @@ fn point_secret_references(
     for prefix in bundles {
         let mut moved_here = 0;
         for (file, moved) in [
-            repoint_array::<crate::config_file::SourceDto>(
-                &repo,
-                &parent,
-                &prefix,
-                "sources.json",
-                name,
-                version,
-                store,
-            )?,
+            repoint_array::<crate::config_file::SourceDto>(&repo, &parent, &prefix, "sources.json", name, version)
+                .map_err(Refusal::internal)?,
             repoint_array::<crate::config_file::DestinationDto>(
                 &repo,
                 &parent,
@@ -2311,17 +3006,8 @@ fn point_secret_references(
                 "destinations.json",
                 name,
                 version,
-                store,
-            )?,
-            repoint_array::<crate::config_file::IdentityDto>(
-                &repo,
-                &parent,
-                &prefix,
-                "identities.json",
-                name,
-                version,
-                store,
-            )?,
+            )
+            .map_err(Refusal::internal)?,
         ]
         .into_iter()
         .flatten()
@@ -2345,16 +3031,14 @@ fn point_secret_references(
         });
     }
     if branch == git::MAIN_BRANCH {
-        return Err(format!(
+        return Err(Refusal::invalid(format!(
             "{} is what deploys move and is not edited directly -- name a branch and deploy it",
             git::MAIN_BRANCH
-        ));
+        )));
     }
 
     let message = format!("Point {name} at version {version}");
-    match git::commit_edits(&repo, branch, &parent, expected.as_deref(), &edits, &message, actor)
-        .map_err(|e| e.to_string())?
-    {
+    match git::commit_edits(&repo, branch, &parent, expected.as_deref(), &edits, &message, actor)? {
         git::Committed::At(commit) => Ok(Repointed {
             commit: Some(commit),
             files,
@@ -2362,8 +3046,10 @@ fn point_secret_references(
             references,
         }),
         // The read said something to change, so an unchanged tree means the edits raced a save that made them.
-        git::Committed::Unchanged => Err(format!("{name:?} already names version {version} on {branch:?}")),
-        git::Committed::Moved(at) => Err(moved_since_read(&parent, at.as_deref())),
+        git::Committed::Unchanged => Err(Refusal::conflict(format!(
+            "{name:?} already names version {version} on {branch:?}"
+        ))),
+        git::Committed::Moved(at) => Err(Refusal::conflict(moved_since_read(&parent, at.as_deref()))),
     }
 }
 
@@ -2376,7 +3062,6 @@ fn repoint_array<T>(
     file: &str,
     name: &str,
     version: i64,
-    store: &dyn Store,
 ) -> Result<Option<(git::FileEdit, usize)>, String>
 where
     T: serde::de::DeserializeOwned + serde::Serialize + PointsAtSecret,
@@ -2394,13 +3079,6 @@ where
     let moved: usize = items.iter_mut().map(|i| i.point_secret_at(name, version)).sum();
     if moved == 0 {
         return Ok(None);
-    }
-    let refusals: Vec<String> = items
-        .iter()
-        .flat_map(|i| i.refuses_version(store, name, version))
-        .collect();
-    if !refusals.is_empty() {
-        return Err(format!("{path}: {}", refusals.join("; ")));
     }
     let content = serde_json::to_vec_pretty(&items).map_err(|e| format!("{path}: {e}"))?;
     Ok(Some((
@@ -2423,13 +3101,6 @@ trait PointsAtSecret {
             .map(|r| usize::from(r.point_at(name, version)))
             .sum()
     }
-
-    /// Why this item cannot run at `version`, once the leader has looked at the value there. Empty for an item
-    /// whose meaning does not depend on what the value is, which is every one but an identity: one password is as
-    /// good as another at any version, and a private key is only ever its own certificate's.
-    fn refuses_version(&self, _store: &dyn Store, _name: &str, _version: i64) -> Vec<String> {
-        Vec::new()
-    }
 }
 
 impl PointsAtSecret for crate::config_file::SourceDto {
@@ -2441,31 +3112,6 @@ impl PointsAtSecret for crate::config_file::SourceDto {
 impl PointsAtSecret for crate::config_file::DestinationDto {
     fn secrets_mut(&mut self) -> Vec<&mut crate::config_file::SecretRefDto> {
         crate::config_file::DestinationDto::secrets_mut(self)
-    }
-}
-
-impl PointsAtSecret for crate::config_file::IdentityDto {
-    fn secrets_mut(&mut self) -> Vec<&mut crate::config_file::SecretRefDto> {
-        crate::config_file::IdentityDto::secrets_mut(self)
-    }
-
-    fn refuses_version(&self, store: &dyn Store, name: &str, version: i64) -> Vec<String> {
-        let Some(certificate) = &self.certificate else {
-            return Vec::new();
-        };
-        // A worker-local key is on a host this leader never sees, so there is nothing here to check.
-        if !matches!(&self.key, Some(crate::config_file::SecretRefDto::LeaderStored(k)) if k.secret == name) {
-            return Vec::new();
-        }
-        match store.certificate_matches(name, version, certificate) {
-            Ok(true) => Vec::new(),
-            Ok(false) => vec![format!(
-                "version {version} is not the private key the identity {:?} presents a certificate for. Rotating \
-                 a client key is one change with the certificate it belongs to, not a version on its own",
-                self.id
-            )],
-            Err(e) => vec![format!("the identity {:?} could not be checked: {e}", self.id)],
-        }
     }
 }
 
@@ -2510,7 +3156,7 @@ async fn point_secret(
     axum::Extension(actor): axum::Extension<store::Actor>,
     Path(name): Path<String>,
     Json(req): Json<PointSecretRequest>,
-) -> Json<Envelope<PointedSecret>> {
+) -> Envelope<PointedSecret> {
     let held = {
         let wanted = name.clone();
         let version = req.version;
@@ -2524,24 +3170,19 @@ async fn point_secret(
     // Never write a reference to a value the leader cannot produce: that is a bundle the fleet would refuse.
     match held {
         Ok(true) => {}
-        Ok(false) => return Json(Envelope::failed_one(format!("{name:?} has no version {}", req.version))),
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Ok(false) => return Envelope::refused(Refusal::not_found(format!("{name:?} has no version {}", req.version))),
+        Err(e) => return Envelope::refused(e),
     }
 
     let data_dir = state.data_dir.clone();
-    // The store comes along: moving an identity onto a key that is not its certificate's is the one repoint the
-    // value itself refuses, and only the leader can see both halves.
-    let pointing = state.store.clone();
-    let drafted = blocking(move || {
-        let done = point_secret_references(&data_dir, &req.branch, &name, req.version, &actor, pointing.as_ref())?;
+    let drafted = tokio::task::spawn_blocking(move || {
+        let done = point_secret_references(&data_dir, &req.branch, &name, req.version, &actor)?;
         // Nothing moved, so there is no change to open.
         if done.commit.is_none() {
             return Ok((done, false));
         }
         let repo = git::repo_path(&data_dir);
-        let already_open = git::read_change(&repo, &req.branch)
-            .map_err(|e| e.to_string())?
-            .is_some_and(|c| c.state == git::ChangeState::Open);
+        let already_open = git::read_change(&repo, &req.branch)?.is_some_and(|c| c.state == git::ChangeState::Open);
         if !already_open {
             let title = format!("Point {name} at version {}", req.version);
             let description = format!(
@@ -2550,21 +3191,22 @@ async fn point_secret(
                 if done.references == 1 { "" } else { "s" },
                 done.groups.join(", ")
             );
-            git::open_change(&repo, &req.branch, &title, &description, &actor).map_err(|e| e.to_string())?;
+            git::open_change(&repo, &req.branch, &title, &description, &actor)?;
         }
-        Ok::<_, String>((done, !already_open))
+        Ok::<_, Refusal>((done, !already_open))
     })
-    .await;
+    .await
+    .unwrap_or_else(|e| Err(Refusal::internal(format!("internal error: {e}"))));
 
     match drafted {
-        Ok((done, opened_change)) => Json(Envelope::ok(PointedSecret {
+        Ok((done, opened_change)) => Envelope::ok(PointedSecret {
             commit: done.commit,
             files: done.files,
             groups: done.groups,
             references: done.references,
             opened_change,
-        })),
-        Err(e) => Json(Envelope::failed_one(e)),
+        }),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -2572,16 +3214,42 @@ async fn point_secret(
 ///
 /// Refused while the deployed bundle or `main`'s head quotes that version, for the same reason deleting a whole
 /// secret is: the workers that run it would be left with a credential they cannot get back.
-async fn forget_secret_version(
-    State(state): State<AppState>,
-    Path((name, version)): Path<(String, i64)>,
-) -> Json<Envelope> {
+async fn forget_secret_version(State(state): State<AppState>, Path((name, version)): Path<(String, i64)>) -> Envelope {
+    if name == tls::OWN_ENTRY {
+        // Its newest is what a switch back serves, and what the socket presents when the chosen entry cannot be.
+        let store = state.store.clone();
+        match run_store(store, |s| certificate_versions(s).map_err(store::StoreError::failed)).await {
+            Ok(newest) if newest.get(tls::OWN_ENTRY) == Some(&version) => {
+                return Envelope::refused(Refusal::conflict(format!(
+                    "this leader keeps the newest version of its own certificate {name:?}, so v{version} cannot be \
+                     forgotten"
+                )));
+            }
+            Ok(_) => {}
+            Err(e) => return Envelope::refused(e),
+        }
+    }
+    match served_entries(&tls::dir_of(&state.data_dir)) {
+        Ok(served)
+            if served
+                .iter()
+                .any(|entry| entry.name == name && entry.version == version) =>
+        {
+            return Envelope::refused(Refusal::conflict(format!(
+                "the leader serves {name:?} v{version}; choose another certificate under Admin → System → Leader \
+                 certificate first"
+            )));
+        }
+        Ok(_) => {}
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
+    }
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
     let wanted = name.clone();
     let running = running_deployments(&state).await;
+    let store = state.store.clone();
     let users = tokio::task::spawn_blocking(move || {
-        kept_versions(&data_dir, &entitlements, &running).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?).map(|mut deployed| {
             deployed
                 .remove(&wanted)
                 .unwrap_or_default()
@@ -2596,17 +3264,17 @@ async fn forget_secret_version(
     .and_then(|users| users);
     let users = match users {
         Ok(users) => users,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
     };
     if !users.is_empty() {
-        return Json(Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::conflict(format!(
             "{name:?} v{version} is named by the deployed bundle or by main's head; point it at another version first"
         )));
     }
     match run_store(state.store, move |s| s.delete_secret_version(&name, version)).await {
-        Ok(true) => Json(Envelope::done()),
-        Ok(false) => Json(Envelope::failed_one("no such version")),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(true) => Envelope::done(),
+        Ok(false) => Envelope::refused(Refusal::not_found("no such version")),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -2663,11 +3331,16 @@ pub async fn worker_credentials_snapshot(state: &AppState) -> Result<Vec<WorkerO
         .collect())
 }
 
-async fn list_workers(State(state): State<AppState>) -> Result<Json<Vec<WorkerOut>>, (axum::http::StatusCode, String)> {
+async fn list_workers(State(state): State<AppState>) -> Result<Envelope<WorkerList>, Refusal> {
     worker_credentials_snapshot(&state)
         .await
-        .map(Json)
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map(|workers| Envelope::ok(WorkerList { workers }))
+        .map_err(|e| Refusal::internal(e.to_string()))
+}
+
+#[derive(serde::Serialize)]
+struct WorkerList {
+    workers: Vec<WorkerOut>,
 }
 
 /// The worker a presented token was issued to, put on the request by [`require_worker_auth`].
@@ -2735,7 +3408,7 @@ async fn require_worker_auth(
 fn worker_router(state: AppState) -> Router<AppState> {
     Router::new()
         .route(
-            "/api/heartbeat",
+            "/api/worker/heartbeat",
             // Stated rather than inherited from axum's default; [`crate::heartbeat::HEARTBEAT_BODY_LIMIT`] says
             // what it is measured against.
             post(heartbeat).layer(axum::extract::DefaultBodyLimit::max(
@@ -2743,12 +3416,12 @@ fn worker_router(state: AppState) -> Router<AppState> {
             )),
         )
         .route(
-            "/api/capture-report",
+            "/api/worker/capture-report",
             post(capture_report).layer(axum::extract::DefaultBodyLimit::max(capture::REPORT_BODY_LIMIT)),
         )
-        .route("/repo/*path", get(git_http).post(git_http))
-        .route("/api/lookup-store/:oid", get(lookup_file))
-        .route("/api/ledger", get(ledger))
+        .route("/api/worker/repo/*path", get(git_http).post(git_http))
+        .route("/api/worker/lookup-store/:oid", get(lookup_file))
+        .route("/api/worker/ledger", get(ledger))
         .route_layer(axum::middleware::from_fn_with_state(state, require_worker_auth))
 }
 
@@ -2760,8 +3433,8 @@ fn worker_router(state: AppState) -> Router<AppState> {
 /// worth having is the fingerprint in its enrollment code, checked against these bytes, not the secrecy of this route.
 fn enroll_router() -> Router<AppState> {
     Router::new()
-        .route("/api/enroll", post(enroll))
-        .route("/api/authority", get(authority))
+        .route("/api/worker/enroll", post(enroll))
+        .route("/api/worker/authority", get(authority))
 }
 
 /// The trust store to hand this worker, when what it reports holding is not what this leader publishes.
@@ -2798,18 +3471,8 @@ fn authority_to_hand(data_dir: &std::path::Path, held: &[String], takes_authorit
     String::from_utf8(materials.ca_pem).ok()
 }
 
-/// Signs under the incoming root once the fleet holds it, or once the operator's deadline says to stop waiting.
-///
-/// Called wherever the leader has a reason to look: the heartbeat that carries the evidence, and the page an
-/// operator watches it on -- a leader with no workers left has no beats and would otherwise wait out a deadline
-/// nobody is coming to satisfy.
-pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
-    let dir = tls::dir_of(&state.data_dir);
-    // Asked first, and cheaply: no rotation is the ordinary state, and everything below -- a roster read included
-    // -- is worth doing only while one is open.
-    let Ok(Some(rotation)) = tls::rotation(&dir) else {
-        return;
-    };
+/// Every worker an open rotation waits for, or `None` where the roster could not be read.
+async fn expected_workers(state: &AppState) -> Result<std::collections::HashSet<String>, String> {
     // Every worker enrolled, which is the roster rather than whoever has spoken: one that enrolled and has never
     // reported a thread, or has not beaten since this leader started, is exactly the worker a rotation must not
     // sign away from. Read here rather than kept, because an enrollment or a revocation during a rotation counts.
@@ -2821,7 +3484,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
     // only readiness: a store that stays unreadable would otherwise hold the rotation open past the deadline an
     // operator set for the case where waiting is not working, while the outgoing authority runs down.
     let credentials = match run_store(state.store.clone(), |s| s.list_worker_credentials()).await {
-        Ok(credentials) => Some(credentials),
+        Ok(credentials) => Ok(credentials),
         Err(e) => {
             tracing::warn!(
                 target: "leader.rotation_roster_unreadable",
@@ -2829,10 +3492,10 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
                 "could not read which workers are enrolled, so this leader cannot tell whether its fleet holds the \
                  authority it is rotating to. The deadline still decides"
             );
-            None
+            Err(format!("could not read which workers are enrolled: {e}"))
         }
     };
-    let holders = credentials.map(|credentials| {
+    credentials.map(|credentials| {
         let gone: std::collections::HashSet<&str> = credentials
             .iter()
             .filter(|c| c.revoked)
@@ -2851,8 +3514,38 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
                 .into_iter()
                 .filter(|worker| !gone.contains(worker.as_str())),
         );
-        state.registry.authorities_held(&expected)
-    });
+        expected
+    })
+}
+
+/// Each worker an open rotation waits for, by id, and whether it holds `incoming` yet. An error where the roster
+/// could not be read, which is not a fleet with nobody in it.
+pub async fn rotation_workers(state: &AppState, incoming: &str) -> Result<Vec<(String, bool)>, String> {
+    let expected = expected_workers(state).await?;
+    Ok(state
+        .registry
+        .holders(&expected)
+        .into_iter()
+        .map(|(worker, held)| (worker, held.iter().any(|root| root == incoming)))
+        .collect())
+}
+
+/// Signs under the incoming root once the fleet holds it, or once the operator's deadline says to stop waiting.
+///
+/// Called wherever the leader has a reason to look: the heartbeat that carries the evidence, and the page an
+/// operator watches it on -- a leader with no workers left has no beats and would otherwise wait out a deadline
+/// nobody is coming to satisfy.
+pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
+    let dir = tls::dir_of(&state.data_dir);
+    // Asked first, and cheaply: no rotation is the ordinary state, and everything below -- a roster read included
+    // -- is worth doing only while one is open.
+    let Ok(Some(rotation)) = tls::rotation(&dir) else {
+        return;
+    };
+    let holders = expected_workers(state)
+        .await
+        .ok()
+        .map(|expected| state.registry.authorities_held(&expected));
     let cut_over = match tls::cut_over_if_due(
         &dir,
         crate::startup_config::leader_certificate_names(&state.origin_hosts),
@@ -2892,7 +3585,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
     }
 }
 
-/// `GET /api/authority`: `ca.pem`, for a worker to pin against and an operator to hand around.
+/// `GET /api/worker/authority`: `ca.pem`, for a worker to pin against and an operator to hand around.
 async fn authority(State(state): State<AppState>) -> Response {
     // This file's whole purpose is to be pinned. While the socket is still presenting the certificate before the
     // last one, the disk describes a leader no handshake reaches: a worker that fetched this would pin a root its
@@ -2902,18 +3595,12 @@ async fn authority(State(state): State<AppState>) -> Response {
     let materials = match tls::current_if_agreed(&tls::dir_of(&state.data_dir)) {
         Ok(materials) => materials,
         Err(e) => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                [(header::CACHE_CONTROL, "no-store")],
-                e.message().to_string(),
-            )
-                .into_response();
+            return (StatusCode::SERVICE_UNAVAILABLE, e.message().to_string()).into_response();
         }
     };
     (
         [
             (header::CONTENT_TYPE, "application/x-pem-file"),
-            (header::CACHE_CONTROL, "no-store"),
             (
                 header::CONTENT_DISPOSITION,
                 "attachment; filename=\"smeltr-leader-ca.pem\"",
@@ -2929,7 +3616,7 @@ async fn authority(State(state): State<AppState>) -> Response {
 pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route("/api/health", get(health))
-        .route("/api/system/info", get(system_info))
+        .route("/api/system", get(system_info))
         .route("/api/warnings", get(list_warnings))
         .route("/api/flow", get(get_flow))
         .route("/api/streams", get(get_streams))
@@ -2946,7 +3633,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/workers/:worker_id/revoke", post(revoke_worker))
         .route("/api/workers/:worker_id/restart", post(restart_worker))
         .route("/api/workers/:worker_id/shutdown", post(shutdown_worker))
-        .route("/api/workers/:worker_id/remove", post(remove_worker))
+        .route("/api/workers/:worker_id", delete(remove_worker))
         .route(
             "/api/settings/workers",
             get(forget::get_settings).put(forget::put_settings),
@@ -2956,19 +3643,29 @@ pub fn admin_router() -> Router<AppState> {
             get(throughput::get_settings).put(throughput::put_settings),
         )
         .route(
+            "/api/settings/updates",
+            get(updates::get_settings).put(updates::put_settings),
+        )
+        .route(
             "/api/settings/git-remote",
             get(remote::get_settings).put(remote::put_settings),
         )
         .route("/api/settings/git-remote/sync", post(remote::post_sync))
         .route("/api/branches/:name/overwrite", post(remote::overwrite))
         .route("/api/secrets", get(list_secrets).post(create_secret))
-        .route("/api/secrets/:name", put(store_secret_value).delete(delete_secret))
+        .route("/api/secrets/:name", delete(delete_secret))
+        .route("/api/secrets/:name/versions", post(store_secret_value))
         .route(
             "/api/secrets/:name/versions/:version",
             axum::routing::delete(forget_secret_version),
         )
         .route("/api/secrets/:name/verify", post(verify_secret))
-        .route("/api/secrets/:name/references", put(point_secret))
+        .route("/api/secrets/:name/references", post(point_secret))
+        .route("/api/settings/encryption-key", get(encryption_key))
+        .route(
+            "/api/settings/encryption-key/regenerate",
+            post(regenerate_encryption_key),
+        )
 }
 
 /// Every leader route. `admin` is [`admin_router`], wrapped in the caller's operator gate and any routes that share it.
@@ -2983,16 +3680,23 @@ pub fn compose(state: AppState, admin: Router<AppState>) -> Router {
 /// [`compose`] with no operator gate, for the integration tests. Every request is an administrator's, since the
 /// handlers that answer per area read the caller's access the gate would otherwise have set.
 pub fn router(state: AppState) -> Router {
-    compose(
+    gzipped(compose(
         state.clone(),
         admin_router().layer(axum::Extension(access::Access::Administrator)),
-    )
+    ))
 }
 
-/// Where a store would write its sealing key. No fixture below stores a secret, so nothing is written -- but two
-/// must not name one file between them if one ever does.
+/// `app` answering gzipped to a client that takes it, by tower-http's defaults, and taking a gzipped request on every
+/// route. A route's body limit holds the body as inflated, so a small gzipped body cannot become a large one.
+pub fn gzipped(app: Router) -> Router {
+    app.layer(tower_http::compression::CompressionLayer::new())
+        .layer(tower_http::decompression::RequestDecompressionLayer::new())
+}
+
+/// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written --
+/// but two must not name one file between them if one ever does.
 #[cfg(test)]
-mod identity_expiry_tests {
+mod deployed_certificate_tests {
     use super::*;
     use crate::config_file::test_fixtures::example_json;
 
@@ -3005,38 +3709,32 @@ mod identity_expiry_tests {
         params.self_signed(&key).unwrap().pem()
     }
 
-    /// A bundle whose Kafka source names an identity trusting `authorities`.
+    /// A bundle whose Kafka source trusts `authorities`.
     fn deployed(authorities: &str) -> crate::plan::topology::TopologyConfig {
-        let identity = format!(
-            r#"{{"id": "acme", "authorities": {}}}"#,
-            serde_json::to_string(authorities).unwrap()
+        let json = example_json().replacen(
+            r#""groupId": "smeltr""#,
+            &format!(
+                r#""groupId": "smeltr", "properties": {{"security.protocol": "SSL"}}, "trustedAuthorities": {}"#,
+                serde_json::to_string(authorities).unwrap()
+            ),
+            1,
         );
-        let json = example_json()
-            .replacen(
-                r#""groupId": "smeltr""#,
-                r#""groupId": "smeltr", "properties": {"security.protocol": "SSL"}, "identity": "acme""#,
-                1,
-            )
-            .replacen(
-                r#""version": 1,"#,
-                &format!(r#""version": 1, "identities": [{identity}],"#),
-                1,
-            );
         crate::config_file::load_str(&json)
-            .expect("a bundle naming an identity")
+            .expect("a bundle trusting an authority")
             .topology
     }
 
     /// The window comes off the certificate itself, so a warning about it is about a date rather than about when
     /// anybody looked.
     #[test]
-    fn a_deployed_identitys_certificates_are_read_off_the_bundle() {
-        let found = certificates_of(&deployed(&certificate(90)), "g", "c0");
+    fn a_deployed_connectors_authorities_are_read_off_the_bundle() {
+        let found = tls_of(&deployed(&certificate(90)));
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].group, "g");
-        assert_eq!(found[0].identity, "acme");
-        assert_eq!(found[0].half, warnings::Half::Trusted);
-        let life = found[0].not_after_millis - found[0].not_before_millis;
+        assert_eq!(found[0].subject_kind, warnings::SubjectKind::Source);
+        assert_eq!(found[0].subject_id, "kafka-main");
+        assert_eq!(found[0].certificate, None);
+        assert_eq!(found[0].trusted.len(), 1);
+        let life = found[0].trusted[0].not_after_millis - found[0].trusted[0].not_before_millis;
         assert!(
             (89..=91).contains(&(life / (24 * 60 * 60 * 1000))),
             "read a life of {life}ms off a 90-day certificate"
@@ -3047,9 +3745,9 @@ mod identity_expiry_tests {
     #[test]
     fn every_authority_in_a_store_is_read_out_of_it() {
         let store = format!("{}{}", certificate(30), certificate(3650));
-        let found = certificates_of(&deployed(&store), "g", "c0");
-        assert_eq!(found.len(), 2);
-        assert!(found.iter().all(|c| c.half == warnings::Half::Trusted));
+        let found = tls_of(&deployed(&store));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].trusted.len(), 2);
     }
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
@@ -3058,22 +3756,16 @@ mod identity_expiry_tests {
         dir
     }
 
-    /// A group's own commit on `main`, naming an identity that trusts `authorities`.
+    /// A group's own commit on `main`, with a Kafka source presenting the certificate `acme` and trusting
+    /// `authorities`.
     fn commit_group(repo: &std::path::Path, parent: &str, group: &str, authorities: &str, message: &str) -> String {
-        let identity = format!(
-            r#"[{{"id": "acme", "authorities": {}}}]"#,
+        let source = format!(
+            r#"[{{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g","properties":{{"security.protocol":"SSL"}},"certificate":"acme","trustedAuthorities":{}}}]"#,
             serde_json::to_string(authorities).unwrap()
         );
         let edits = [
-            (
-                format!("groups/{group}/system.json"),
-                br#"{"version":1}"#.to_vec(),
-            ),
-            (
-                format!("groups/{group}/sources.json"),
-                br#"[{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g","properties":{"security.protocol":"SSL"},"identity":"acme"}]"#.to_vec(),
-            ),
-            (format!("groups/{group}/identities.json"), identity.into_bytes()),
+            (format!("groups/{group}/system.json"), br#"{"version":1}"#.to_vec()),
+            (format!("groups/{group}/sources.json"), source.into_bytes()),
         ]
         .map(|(path, content)| git::FileEdit {
             path,
@@ -3155,7 +3847,7 @@ mod identity_expiry_tests {
         );
 
         let running = std::collections::HashSet::from([("g".to_string(), old.clone())]);
-        let found = deployed_certificates(&data, &Expiries::default(), running);
+        let found = deployed_certificates(&data, &Expiries::default(), running, &|_| None);
 
         assert_eq!(found.len(), 1, "{found:?}");
         let life = found[0].not_after_millis - found[0].not_before_millis;
@@ -3185,12 +3877,45 @@ mod identity_expiry_tests {
         );
 
         let running = std::collections::HashSet::from([("g".to_string(), old), ("g".to_string(), new)]);
-        let found = deployed_certificates(&data, &Expiries::default(), running);
+        let found = deployed_certificates(&data, &Expiries::default(), running, &|_| None);
 
         assert_eq!(
             found.len(),
             2,
             "a worker on each commit contributes its own certificate: {found:?}"
+        );
+    }
+
+    /// The certificate a connector presents is read from the list at its newest version, on every poll: it changes
+    /// without the bundle.
+    #[test]
+    fn a_presented_certificate_is_read_from_the_list_as_it_is_now() {
+        let data = temp_dir("presented-from-list");
+        let repo = git::repo_path(&data);
+        git::init_bare_repo(&repo).unwrap();
+        git::ensure_main_commit(&repo).unwrap();
+        let root = git::main_head(&repo).unwrap();
+        let commit = commit_group(&repo, &root, "g", &certificate(3650), "name a certificate");
+        let running = std::collections::HashSet::from([("g".to_string(), commit)]);
+        let cache = Expiries::default();
+
+        let listed = certificate(30);
+        let chain = |name: &str| (name == "acme").then(|| listed.clone());
+        let found = deployed_certificates(&data, &cache, running.clone(), &chain);
+        let presented: Vec<_> = found.iter().filter(|c| c.half == warnings::Half::Presented).collect();
+        assert_eq!(presented.len(), 1, "{found:?}");
+        assert_eq!(presented[0].subject_id, "s");
+        let life = presented[0].not_after_millis - presented[0].not_before_millis;
+        assert!(life < 31 * 24 * 60 * 60 * 1000, "{life}ms");
+
+        let renewed = certificate(365);
+        let chain = |name: &str| (name == "acme").then(|| renewed.clone());
+        let found = deployed_certificates(&data, &cache, running, &chain);
+        let presented: Vec<_> = found.iter().filter(|c| c.half == warnings::Half::Presented).collect();
+        let life = presented[0].not_after_millis - presented[0].not_before_millis;
+        assert!(
+            life > 364 * 24 * 60 * 60 * 1000,
+            "the cached commit still reads the chain afresh: {life}ms"
         );
     }
 
@@ -3211,16 +3936,16 @@ mod identity_expiry_tests {
             "issue a certificate nobody has deployed",
         );
 
-        let found = deployed_certificates(&data, &Expiries::default(), std::collections::HashSet::new());
+        let found = deployed_certificates(&data, &Expiries::default(), std::collections::HashSet::new(), &|_| None);
         assert!(found.is_empty(), "{found:?}");
     }
 
-    /// Two sources sharing one identity name its key twice -- once each, so `missing_secrets` can say which
-    /// connector is stuck if either is. Entitlement is a different question: how many times the leader seals and
-    /// sends the same key, which is once, however many connectors named it.
+    /// Two sources sharing one certificate name it twice -- once each, so `missing_secrets` can say which connector
+    /// is stuck if either is. Entitlement is a different question: how many times the leader seals and sends the
+    /// same certificate, which is once, however many connectors named it, and at the list's newest version.
     #[test]
-    fn a_key_two_sources_share_is_entitled_once() {
-        let data = temp_dir("shared-identity-key");
+    fn a_certificate_two_sources_share_is_entitled_once_at_the_newest_version() {
+        let data = temp_dir("shared-certificate");
         let repo = git::repo_path(&data);
         git::init_bare_repo(&repo).unwrap();
         git::ensure_main_commit(&repo).unwrap();
@@ -3234,18 +3959,10 @@ mod identity_expiry_tests {
             (
                 "groups/g/sources.json".to_string(),
                 br#"[
-                    {"id":"s1","type":"kafka","brokers":"b:9092","topics":["t1"],"groupId":"g1","properties":{"security.protocol":"SSL"},"identity":"acme"},
-                    {"id":"s2","type":"kafka","brokers":"b:9092","topics":["t2"],"groupId":"g2","properties":{"security.protocol":"SSL"},"identity":"acme"}
+                    {"id":"s1","type":"kafka","brokers":"b:9092","topics":["t1"],"groupId":"g1","properties":{"security.protocol":"SSL"},"certificate":"acme"},
+                    {"id":"s2","type":"kafka","brokers":"b:9092","topics":["t2"],"groupId":"g2","properties":{"security.protocol":"SSL"},"certificate":"acme"}
                 ]"#
                 .to_vec(),
-            ),
-            (
-                "groups/g/identities.json".to_string(),
-                format!(
-                    r#"[{{"id":"acme","certificate":{},"key":{{"secret":"acme-key","version":1}}}}]"#,
-                    serde_json::to_string(&certificate(365)).unwrap()
-                )
-                .into_bytes(),
             ),
         ]
         .map(|(path, content)| git::FileEdit {
@@ -3258,7 +3975,7 @@ mod identity_expiry_tests {
             &root,
             Some(&root),
             &edits,
-            "two sources share one identity",
+            "two sources share one certificate",
             &store::Actor::system(),
         )
         .unwrap()
@@ -3269,11 +3986,20 @@ mod identity_expiry_tests {
             _ => panic!("the bundle did not land"),
         }
 
-        let entitled = entitled_secrets(&data, &Entitlements::default(), "g");
+        let quoted = entitled(&data, &Entitlements::default(), "g");
         assert_eq!(
-            entitled,
-            vec![("acme-key".to_string(), 1)],
-            "the same key named by two connectors is entitled once, not once per connector: {entitled:?}"
+            quoted,
+            Quoted {
+                secrets: Vec::new(),
+                certificates: vec!["acme".to_string()],
+            },
+            "the same certificate named by two connectors is quoted once, not once per connector"
+        );
+        let newest = std::collections::HashMap::from([("acme".to_string(), 3)]);
+        assert_eq!(at_newest(&quoted, &newest), vec![("acme".to_string(), 3)]);
+        assert!(
+            at_newest(&quoted, &std::collections::HashMap::new()).is_empty(),
+            "a certificate the list does not hold is entitled at no version"
         );
     }
 
@@ -3291,15 +4017,7 @@ mod identity_expiry_tests {
                 ("groups/g/system.json".to_string(), br#"{"version":1}"#.to_vec()),
                 (
                     "groups/g/sources.json".to_string(),
-                    br#"[{"id":"s1","type":"kafka","brokers":"b:9092","topics":["t1"],"groupId":"g1","properties":{"security.protocol":"SSL"},"identity":"acme"}]"#.to_vec(),
-                ),
-                (
-                    "groups/g/identities.json".to_string(),
-                    format!(
-                        r#"[{{"id":"acme","certificate":{},"key":{{"secret":"acme-key","version":{version}}}}}]"#,
-                        serde_json::to_string(&certificate(365)).unwrap()
-                    )
-                    .into_bytes(),
+                    format!(r#"[{{"id":"s1","type":"kafka","brokers":"b:9092","topics":["t1"],"groupId":"g1","properties":{{"security.protocol":"SASL_SSL"}},"credentials":{{"sasl.password":{{"secret":"acme","version":{version}}}}}}}]"#).into_bytes(),
                 ),
             ]
             .map(|(path, content)| git::FileEdit {
@@ -3326,15 +4044,16 @@ mod identity_expiry_tests {
         git::deploy_commit(&data, &newer, &store::Actor::system()).unwrap();
 
         let cache = Entitlements::default();
-        let deployed = deployed_versions(&data, &cache, &Default::default()).unwrap();
-        assert_eq!(deployed["acme-key"], vec![("g".to_string(), 2)]);
+        let newest = std::collections::HashMap::new();
+        let deployed = deployed_versions(&data, &cache, &Default::default(), &newest).unwrap();
+        assert_eq!(deployed["acme"], vec![("g".to_string(), 2)]);
         let running = [("g".to_string(), older)].into();
-        let with_older = deployed_versions(&data, &cache, &running).unwrap();
-        assert_eq!(with_older["acme-key"], vec![("g".to_string(), 1), ("g".to_string(), 2)]);
+        let with_older = deployed_versions(&data, &cache, &running, &newest).unwrap();
+        assert_eq!(with_older["acme"], vec![("g".to_string(), 1), ("g".to_string(), 2)]);
 
         let unreadable = [("g".to_string(), "0".repeat(40))].into();
         assert!(
-            deployed_versions(&data, &cache, &unreadable).is_err(),
+            deployed_versions(&data, &cache, &unreadable, &newest).is_err(),
             "a running bundle that cannot be read pins nothing it might quote, so nothing may be forgotten"
         );
     }
@@ -3454,6 +4173,7 @@ mod secrets_delivery_tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
             data_dir,
         }
@@ -3527,6 +4247,7 @@ mod secrets_delivery_tests {
             ["w1".to_string()].into(),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(listed(answer(&state, beat("g", vec![])).await), vec!["c1".to_string()]);
         assert_eq!(
@@ -3546,6 +4267,7 @@ mod secrets_delivery_tests {
             ["w1".to_string()].into(),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(listed(answer(&state, beat("g", vec![])).await), vec!["c2".to_string()]);
         state.captures.close("c2");
@@ -3596,7 +4318,6 @@ mod secrets_delivery_tests {
             }),
         )
         .await
-        .0
     }
 
     /// What the branch says `es`'s auth is, read back out of the commit rather than out of the response.
@@ -3621,7 +4342,7 @@ mod secrets_delivery_tests {
         state.store.add_secret_version("es-auth", "ApiKey def").unwrap();
 
         let out = point(&state, "es-auth", 2, "rotate-es").await;
-        assert!(out.ok, "{:?}", out.errors);
+        assert!(out.succeeded(), "{:?}", out.errors);
         assert_eq!(out.references, 1);
         assert_eq!(out.files, vec!["groups/g/destinations.json".to_string()]);
         assert_eq!(out.groups, vec!["g".to_string()]);
@@ -3649,7 +4370,7 @@ mod secrets_delivery_tests {
         state.store.add_secret_version("es-auth", "ApiKey def").unwrap();
 
         let out = point(&state, "es-auth", 2, git::MAIN_BRANCH).await;
-        assert!(!out.ok);
+        assert!(!out.succeeded());
         assert!(out.errors[0].message.contains(git::MAIN_BRANCH));
         assert_eq!(
             auth_on(&state, git::MAIN_BRANCH),
@@ -3666,7 +4387,7 @@ mod secrets_delivery_tests {
     async fn pointing_at_a_version_that_is_not_held_is_refused() {
         let state = state("point-absent");
         let out = point(&state, "es-auth", 9, "rotate-es").await;
-        assert!(!out.ok);
+        assert!(!out.succeeded());
         assert!(out.errors[0].message.contains("version 9"));
         assert!(git::branch_tip(&git::repo_path(&state.data_dir), "rotate-es").is_none());
     }
@@ -3676,7 +4397,7 @@ mod secrets_delivery_tests {
     async fn pointing_at_what_is_already_named_writes_nothing() {
         let state = state("point-noop");
         let out = point(&state, "es-auth", 1, "rotate-es").await;
-        assert!(out.ok, "{:?}", out.errors);
+        assert!(out.succeeded(), "{:?}", out.errors);
         assert_eq!(
             (out.references, out.commit.as_deref(), out.opened_change),
             (0, None, false)
@@ -3695,7 +4416,7 @@ mod secrets_delivery_tests {
 
         let main = git::main_head(&git::repo_path(&state.data_dir));
         let out = point(&state, "unused", 1, git::MAIN_BRANCH).await;
-        assert!(out.ok, "{:?}", out.errors);
+        assert!(out.succeeded(), "{:?}", out.errors);
         assert_eq!((out.references, out.commit.as_deref()), (0, None));
         assert_eq!(
             git::main_head(&git::repo_path(&state.data_dir)),
@@ -3715,7 +4436,7 @@ mod secrets_delivery_tests {
             .unwrap();
 
         let out = point(&state, "ES2_AUTH", 2, "rotate-es2").await;
-        assert!(out.ok, "{:?}", out.errors);
+        assert!(out.succeeded(), "{:?}", out.errors);
         assert_eq!(out.references, 0, "nothing names it at a version");
         assert!(git::branch_tip(&git::repo_path(&state.data_dir), "rotate-es2").is_none());
     }
@@ -3725,11 +4446,11 @@ mod secrets_delivery_tests {
     async fn pointing_joins_a_change_already_open() {
         let state = state("point-join");
         state.store.add_secret_version("es-auth", "ApiKey def").unwrap();
-        assert!(point(&state, "es-auth", 2, "wip").await.ok);
+        assert!(point(&state, "es-auth", 2, "wip").await.succeeded());
 
         state.store.add_secret_version("es-auth", "ApiKey ghi").unwrap();
         let out = point(&state, "es-auth", 3, "wip").await;
-        assert!(out.ok, "{:?}", out.errors);
+        assert!(out.succeeded(), "{:?}", out.errors);
         assert!(!out.opened_change, "the change was already open");
 
         let change = git::read_change(&git::repo_path(&state.data_dir), "wip")
@@ -3809,15 +4530,15 @@ mod secrets_delivery_tests {
         let state = state("delete-in-use");
 
         let refused = delete_secret(State(state.clone()), Path("es-auth".to_string())).await;
-        assert!(!refused.0.ok, "a deployed group names it");
-        assert!(refused.0.errors[0].message.contains("es-auth"));
+        assert!(!refused.succeeded(), "a deployed group names it");
+        assert!(refused.errors[0].message.contains("es-auth"));
         assert!(
             state.store.verify_secret("es-auth", 1, "ApiKey abc").unwrap(),
             "still there"
         );
 
         let gone = delete_secret(State(state.clone()), Path("unrelated".to_string())).await;
-        assert!(gone.0.ok, "nothing names it: {:?}", gone.0.errors);
+        assert!(gone.succeeded(), "nothing names it: {:?}", gone.errors);
         assert!(!state.store.verify_secret("unrelated", 1, "swordfish").unwrap());
     }
 
@@ -3833,7 +4554,7 @@ mod secrets_delivery_tests {
         git::deploy_commit(&state.data_dir, &first, &store::Actor::system()).unwrap();
 
         let refused = forget_secret_version(State(state.clone()), Path(("es-auth".to_string(), 2))).await;
-        assert!(!refused.0.ok, "main's head names v2");
+        assert!(!refused.succeeded(), "main's head names v2");
         assert!(
             state.store.verify_secret("es-auth", 2, "ApiKey def").unwrap(),
             "still there"
@@ -3939,33 +4660,57 @@ mod warnings_endpoint_tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
             data_dir,
         }
     }
 
+    /// A roster the store cannot read is an error, never a fleet with nobody in it: that would show an operator
+    /// a rotation with nothing left to wait for.
+    #[tokio::test]
+    async fn an_unreadable_roster_is_an_error_not_an_empty_fleet() {
+        let dir = temp_dir("roster-unreadable");
+        let db = dir.join("leader.db");
+        let store = SqliteStore::open(&db, &dir.join("sealing.key")).unwrap();
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch("DROP TABLE worker_credentials")
+            .unwrap();
+        let state = AppState {
+            store: Arc::new(store),
+            ..state("roster-unreadable")
+        };
+        let read = rotation_workers(&state, "incoming").await;
+        assert!(
+            read.as_ref()
+                .is_err_and(|e| e.starts_with("could not read which workers are enrolled: ")),
+            "{read:?}"
+        );
+    }
+
     #[tokio::test]
     async fn a_healthy_registry_and_roster_serve_no_warnings() {
         let state = state("healthy");
-        state.registry.record_heartbeat(
-            "w1",
-            vec![ThreadHeartbeat {
-                thread_id: "reader-1".to_string(),
-                group_id: "g".to_string(),
-                kind: Some(ThreadKind::Reader),
-                partitions_owned: vec![],
-                metrics: vec![],
-            }],
-            None,
-            None,
-            crate::version::VERSION.to_string(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
+        state
+            .registry
+            .record_heartbeat(
+                "w1",
+                vec![ThreadHeartbeat {
+                    thread_id: "reader-1".to_string(),
+                    group_id: "g".to_string(),
+                    kind: Some(ThreadKind::Reader),
+                    partitions_owned: vec![],
+                    metrics: vec![],
+                }],
+                WorkerFacts {
+                    smeltr_version: crate::version::VERSION.to_string(),
+                    ..Default::default()
+                },
+                series::Window::default(),
+                0,
+            )
+            .unwrap();
         assert!(warnings_snapshot(&state).await.unwrap().is_empty());
     }
 
@@ -4024,29 +4769,29 @@ mod warnings_endpoint_tests {
     #[tokio::test]
     async fn a_viewer_is_served_only_the_warnings_of_their_groups() {
         let state = state("visible-to");
-        state.registry.record_heartbeat(
-            "w1",
-            vec![ThreadHeartbeat {
-                thread_id: "reader-1".to_string(),
-                group_id: "g".to_string(),
-                kind: Some(ThreadKind::Reader),
-                partitions_owned: vec![],
-                metrics: vec![MetricSampleDto {
-                    metric: "smeltr_source_blocked_reason".to_string(),
-                    labels: vec![("source".to_string(), "7".to_string())],
-                    value: MetricValueDto::Text("held".to_string()),
+        state
+            .registry
+            .record_heartbeat(
+                "w1",
+                vec![ThreadHeartbeat {
+                    thread_id: "reader-1".to_string(),
+                    group_id: "g".to_string(),
+                    kind: Some(ThreadKind::Reader),
+                    partitions_owned: vec![],
+                    metrics: vec![MetricSampleDto {
+                        metric: "smeltr_source_blocked_reason".to_string(),
+                        labels: vec![("source".to_string(), "7".to_string())],
+                        value: MetricValueDto::Text("held".to_string()),
+                    }],
                 }],
-            }],
-            None,
-            None,
-            crate::version::VERSION.to_string(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
+                WorkerFacts {
+                    smeltr_version: crate::version::VERSION.to_string(),
+                    ..Default::default()
+                },
+                series::Window::default(),
+                0,
+            )
+            .unwrap();
         run_store(state.store.clone(), |s| s.store_worker_credential("w2", "hash"))
             .await
             .unwrap();
@@ -4059,13 +4804,18 @@ mod warnings_endpoint_tests {
         let served = |access: access::Access| {
             let state = state.clone();
             async move {
-                list_warnings(State(state), axum::Extension(access))
-                    .await
-                    .unwrap()
-                    .0
-                    .into_iter()
-                    .map(|w| w.subject_id)
-                    .collect::<Vec<_>>()
+                list_warnings(
+                    State(state),
+                    axum::Extension(access),
+                    Query(WarningsQuery { info: false }),
+                )
+                .await
+                .unwrap()
+                .body
+                .warnings
+                .into_iter()
+                .map(|w| w.subject_id)
+                .collect::<Vec<_>>()
             }
         };
 
@@ -4092,35 +4842,26 @@ mod warnings_endpoint_tests {
                 value: MetricValueDto::Text("held".to_string()),
             }],
         };
-        state.registry.record_heartbeat(
-            "w1",
-            vec![held.clone()],
-            None,
-            None,
-            crate::version::VERSION.to_string(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
+        state
+            .registry
+            .record_heartbeat(
+                "w1",
+                vec![held.clone()],
+                WorkerFacts {
+                    smeltr_version: crate::version::VERSION.to_string(),
+                    ..Default::default()
+                },
+                series::Window::default(),
+                0,
+            )
+            .unwrap();
 
         let first = warnings_snapshot(&state).await.unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        state.registry.record_heartbeat(
-            "w1",
-            vec![held],
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
+        state
+            .registry
+            .record_heartbeat("w1", vec![held], WorkerFacts::default(), series::Window::default(), 0)
+            .unwrap();
         let second = warnings_snapshot(&state).await.unwrap();
 
         assert_eq!(first.len(), 1);
@@ -4151,6 +4892,7 @@ mod logs_endpoint_tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         }
@@ -4173,7 +4915,7 @@ mod logs_endpoint_tests {
     }
 
     async fn get(state: &AppState, query: LogsQuery) -> LogsResponse {
-        get_logs(State(state.clone()), Query(query)).await.unwrap().0
+        get_logs(State(state.clone()), Query(query)).await.unwrap().body
     }
 
     #[tokio::test]
@@ -4375,6 +5117,7 @@ mod flow_endpoint_tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         }
@@ -4402,6 +5145,7 @@ mod flow_endpoint_tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         };
@@ -4684,6 +5428,7 @@ mod authority_delivery_tests {
 
     fn a_leader_with_an_authority(label: &str) -> std::path::PathBuf {
         let data_dir = temp_dir(label);
+        tls::tests::listing(&tls::dir_of(&data_dir));
         tls::ensure(
             &tls::dir_of(&data_dir),
             vec!["localhost".to_string()],
@@ -4724,9 +5469,10 @@ mod authority_delivery_tests {
         let data_dir = a_leader_with_an_authority("supplied");
         let dir = tls::dir_of(&data_dir);
         let materials = tls::current(&dir).expect("an authority");
-        let chain = std::fs::read(&materials.server_cert_path).unwrap();
-        let key = std::fs::read(&materials.server_key_path).unwrap();
-        tls::install(&dir, &chain, &key, &materials.ca_pem, &["localhost".to_string()], &[]).expect("a supplied set");
+        let (_, chain, key) = tls::to_serve(&dir).unwrap();
+        tls::tests::listing(&dir);
+        tls::tests::install(&dir, &chain, &key, &materials.ca_pem, &["localhost".to_string()], &[])
+            .expect("a supplied set");
 
         assert_eq!(
             authority_to_hand(&data_dir, &[], true).map(|pem| pem.into_bytes()),
@@ -4764,6 +5510,7 @@ mod authority_delivery_tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
             data_dir,
         };
@@ -4805,7 +5552,11 @@ mod worker_lifecycle_tests {
         let state = state("lifecycle-restart");
         heard(&state);
         assert!(answer(&state, accepting(None)).await.directive.is_none());
-        assert!(restart_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
+        assert!(
+            restart_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded()
+        );
         let sent = answer(&state, accepting(None)).await.directive.expect("asked");
         assert_eq!(sent.action, DirectiveAction::Restart);
         assert_eq!(answer(&state, accepting(None)).await.directive, Some(sent.clone()));
@@ -4817,7 +5568,11 @@ mod worker_lifecycle_tests {
         let state = state("lifecycle-older");
         heard(&state);
         answer(&state, beat("g", Vec::new())).await;
-        assert!(!shutdown_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
+        assert!(
+            !shutdown_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded()
+        );
     }
 
     #[tokio::test]
@@ -4825,12 +5580,20 @@ mod worker_lifecycle_tests {
         let state = state("lifecycle-remove-revoked");
         heard(&state);
         answer(&state, accepting(None)).await;
-        assert!(revoke_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
+        assert!(
+            revoke_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded()
+        );
         assert!(
             state.registry.heartbeating("w1", heartbeat_window()),
             "its last beat is still recent"
         );
-        assert!(remove_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
+        assert!(
+            remove_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded()
+        );
         assert!(state.store.list_worker_credentials().unwrap().is_empty());
     }
 
@@ -4840,7 +5603,9 @@ mod worker_lifecycle_tests {
         heard(&state);
         answer(&state, accepting(None)).await;
         assert!(
-            !remove_worker(State(state.clone()), Path("w1".to_string())).await.0.ok,
+            !remove_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded(),
             "a heartbeating worker is not removed"
         );
         answer(
@@ -4851,7 +5616,11 @@ mod worker_lifecycle_tests {
             },
         )
         .await;
-        assert!(remove_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
+        assert!(
+            remove_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded()
+        );
         assert!(state.store.list_worker_credentials().unwrap().is_empty());
         assert!(state.registry.snapshot().is_empty());
         assert!(
@@ -5075,8 +5844,418 @@ mod single_worker_tests {
         };
         assert_eq!(answer_as(&state, "w1", runs()).await.holds.len(), 1);
         assert!(answer_as(&state, "w2", runs()).await.holds.is_empty());
-        assert!(revoke_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
+        assert!(
+            revoke_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded()
+        );
         assert_eq!(answer_as(&state, "w2", runs()).await.holds.len(), 1);
         assert_eq!(fetch(&state, "w1").await.0, StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+mod certificate_list_tests {
+    use super::*;
+
+    const A_YEAR: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
+    fn names() -> Vec<String> {
+        vec!["localhost".to_string(), "127.0.0.1".to_string()]
+    }
+
+    /// A leader's TLS directory serving its own authority's certificate.
+    fn own(tag: &str) -> std::path::PathBuf {
+        let tls_dir = tls::tests::scratch(&format!("certificate-list-{tag}"));
+        tls::ensure(&tls_dir, names(), A_YEAR, &[]).expect("an authority");
+        tls_dir
+    }
+
+    /// The entry served is the one chosen, and the leader's own once it goes back to it.
+    #[test]
+    fn the_leader_serves_the_entry_chosen_by_name() {
+        let dir = own("chosen");
+        let theirs_dir = own("chosen-theirs");
+        let theirs = tls::current(&theirs_dir).unwrap();
+        let (_, chain, key) = tls::to_serve(&theirs_dir).unwrap();
+
+        tls::tests::install(&dir, &chain, &key, &theirs.ca_pem, &names(), &[]).unwrap();
+        assert_eq!(served_names(&dir).unwrap(), ["supplied"]);
+
+        tls::tests::give_back(&dir).unwrap();
+        assert_eq!(served_names(&dir).unwrap(), [tls::OWN_ENTRY]);
+    }
+
+    /// Regenerating the key asks the renewal pass to run now: everything this leader issued, its own among them, is
+    /// unopenable until it does.
+    #[tokio::test]
+    async fn regenerating_the_key_renews_at_once() {
+        let state = issuing("regenerate-renews");
+        std::fs::remove_file(state.data_dir.with_extension("key")).unwrap();
+        let regenerated =
+            regenerate_encryption_key(State(state.clone()), axum::Extension(store::Actor::system())).await;
+        assert!(regenerated.succeeded(), "{:?}", regenerated.errors);
+        tokio::time::timeout(Duration::from_secs(1), RENEW_NOW.notified())
+            .await
+            .expect("the renewal pass was not asked to run");
+        let renewed: Vec<String> = renew_issued(&state, crate::leader::warnings::now_millis())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(renewed.contains(&tls::OWN_ENTRY.to_string()), "{renewed:?}");
+    }
+
+    /// The leader's own entry keeps its newest version, served or not: switching back serves it.
+    #[tokio::test]
+    async fn the_leaders_own_newest_version_is_not_forgotten() {
+        let state = issuing("own-newest");
+        let mut more = names();
+        more.push("leader.example.com".to_string());
+        tls::ensure(&tls::dir_of(&state.data_dir), more, A_YEAR, &[]).expect("a version for the new names");
+        let newest = certificate_versions(state.store.as_ref()).unwrap()[tls::OWN_ENTRY];
+        assert_eq!(newest, 2);
+
+        let refused = forget_secret_version(State(state.clone()), Path((tls::OWN_ENTRY.to_string(), 2))).await;
+        assert!(
+            !refused.succeeded(),
+            "the newest version of the leader's own was forgotten"
+        );
+        let forgotten = forget_secret_version(State(state.clone()), Path((tls::OWN_ENTRY.to_string(), 1))).await;
+        assert!(forgotten.succeeded(), "{:?}", forgotten.errors);
+    }
+
+    /// The version the leader serves stays in the list until another is served: not deleted, not forgotten, and
+    /// not pruned however many come after it.
+    #[tokio::test]
+    async fn the_version_served_is_kept() {
+        let state = super::secrets_delivery_tests::state("served-version");
+        let dir = tls::dir_of(&state.data_dir);
+        tls::read_list(&dir, state.store.clone());
+        let own = tls::ensure(&dir, names(), A_YEAR, &[]).unwrap();
+        let (_, chain, key) = tls::to_serve(&dir).unwrap();
+        let (chain, key) = (String::from_utf8(chain).unwrap(), String::from_utf8(key).unwrap());
+        state.store.create_certificate("chosen", "", &chain, &key).unwrap();
+        let entry = tls::Entry {
+            name: "chosen".to_string(),
+            version: 1,
+            ca: String::from_utf8(own.ca_pem).unwrap(),
+        };
+        tls::serve(&dir, &entry, &names(), &[]).unwrap();
+
+        let refused = delete_secret(State(state.clone()), Path("chosen".to_string())).await;
+        assert!(!refused.succeeded(), "the served entry was deleted");
+        let refused = forget_secret_version(State(state.clone()), Path(("chosen".to_string(), 1))).await;
+        assert!(!refused.succeeded(), "the served version was forgotten");
+        let refused = delete_secret(State(state.clone()), Path(tls::OWN_ENTRY.to_string())).await;
+        assert!(
+            !refused.succeeded(),
+            "the leader's own entry was deleted while another was served"
+        );
+
+        for _ in 0..crate::startup_config::leader_secret_versions() + 1 {
+            let stored = store_value(state.clone(), "chosen".to_string(), key.clone(), Some(chain.clone())).await;
+            assert!(stored.succeeded(), "{:?}", stored.errors);
+        }
+        assert!(
+            state.store.certificate_chain("chosen", 1).unwrap().is_some(),
+            "the served version was pruned"
+        );
+        assert!(
+            state.store.certificate_chain("chosen", 2).unwrap().is_none(),
+            "nothing was pruned"
+        );
+    }
+
+    // -- certificates this leader issues ----------------------------------
+
+    /// A leader with an authority and a bundle whose receiver presents the certificate `acme`.
+    fn issuing(label: &str) -> AppState {
+        let state = super::secrets_delivery_tests::state(label);
+        tls::read_list(&tls::dir_of(&state.data_dir), state.store.clone());
+        tls::ensure(&tls::dir_of(&state.data_dir), names(), A_YEAR, &[]).expect("an authority");
+        let repo = git::repo_path(&state.data_dir);
+        let head = git::main_head(&repo).unwrap();
+        let edits = [
+            git::FileEdit {
+                path: "groups/g/system.json".to_string(),
+                content: Some(br#"{"version":1}"#.to_vec()),
+            },
+            git::FileEdit {
+                path: "groups/g/sources.json".to_string(),
+                content: Some(
+                    br#"[{"id":"receiver","type":"hecReceiver","port":8088,"certificate":"acme","tokens":{"t":{"token":"HEC_TOKEN"}}}]"#.to_vec(),
+                ),
+            },
+        ];
+        git::commit_edits(
+            &repo,
+            git::MAIN_BRANCH,
+            &head,
+            Some(&head),
+            &edits,
+            "a receiver",
+            &store::Actor::system(),
+        )
+        .unwrap();
+        state
+    }
+
+    async fn issue(state: &AppState, name: &str, names: &[&str]) -> Envelope {
+        issue_lasting(state, name, names, 365).await
+    }
+
+    async fn issue_lasting(state: &AppState, name: &str, names: &[&str], validity_days: i64) -> Envelope {
+        issue_certificate(
+            state.clone(),
+            IssueRequest {
+                name: name.to_string(),
+                description: String::new(),
+                names: names.iter().map(|n| n.to_string()).collect(),
+                validity_days,
+            },
+        )
+        .await
+    }
+
+    /// What the list says of `name`.
+    async fn listed(state: &AppState, name: &str) -> CertificateOut {
+        let all = list_certificates(State(state.clone())).await.expect("the list reads");
+        all.body
+            .certificates
+            .into_iter()
+            .find(|c| c.name == name)
+            .expect("listed")
+    }
+
+    /// An issued certificate is an entry like an upload: its chain carries the names asked, ends at the leader's
+    /// root, may be presented either way, and its key is its key.
+    #[tokio::test]
+    async fn the_leader_issues_a_certificate_for_the_names_asked() {
+        let state = issuing("issue");
+        let out = issue(&state, "acme", &["receiver.example.com", "10.0.0.7"]).await;
+        assert!(out.succeeded(), "{:?}", out.errors);
+
+        let entry = listed(&state, "acme").await;
+        assert_eq!(entry.kept, Some("issued"));
+        assert_eq!(entry.chain[0].names, ["receiver.example.com", "10.0.0.7"]);
+        let signing = tls::signing_root_fingerprint(&tls::dir_of(&state.data_dir)).unwrap();
+        assert_eq!(entry.chain.last().unwrap().fingerprint, signing);
+
+        let (_, chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
+        tls::is_pair(chain.as_bytes(), key.as_bytes()).expect("the key is the certificate's");
+        crate::io::trust::refuse_unless_usable(&chain, crate::io::trust::Side::Server).expect("serves");
+        crate::io::trust::refuse_unless_usable(&chain, crate::io::trust::Side::Client).expect("presents as a client");
+    }
+
+    #[tokio::test]
+    async fn issuing_for_no_names_or_no_time_is_refused() {
+        let state = issuing("issue-no-names");
+        assert!(!issue(&state, "acme", &[" "]).await.succeeded());
+        assert!(!issue_lasting(&state, "acme", &["a.example.com"], 0).await.succeeded());
+        assert_eq!(listed_names(&state).await, [tls::OWN_ENTRY]);
+    }
+
+    async fn listed_names(state: &AppState) -> Vec<String> {
+        let all = list_certificates(State(state.clone())).await.expect("the list reads");
+        all.body.certificates.into_iter().map(|c| c.name).collect()
+    }
+
+    /// The leader holds its key and issues each version, so nobody else's certificate takes its place under its name.
+    #[tokio::test]
+    async fn an_issued_certificate_is_not_replaced() {
+        let state = issuing("issue-replace");
+        assert!(issue(&state, "acme", &["receiver.example.com"]).await.succeeded());
+        let (_, chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
+        let out = replace_certificate(
+            State(state.clone()),
+            Path("acme".to_string()),
+            Json(CertificateRequest {
+                name: String::new(),
+                description: String::new(),
+                certificate: chain,
+                private_key: key,
+            }),
+        )
+        .await;
+        assert!(!out.succeeded());
+        assert!(
+            out.errors[0]
+                .message
+                .contains("renews it itself, so it cannot be replaced"),
+            "{:?}",
+            out.errors
+        );
+    }
+
+    /// A self-signed certificate and its key, its Extended Key Usage naming `purposes` where any are given.
+    fn for_purposes(purposes: Vec<rcgen::ExtendedKeyUsagePurpose>) -> CertificateRequest {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["receiver.example.com".to_string()]).unwrap();
+        params.extended_key_usages = purposes;
+        CertificateRequest {
+            name: "acme".to_string(),
+            description: String::new(),
+            certificate: params.self_signed(&key).unwrap().pem(),
+            private_key: key.serialize_pem(),
+        }
+    }
+
+    /// The kind says which fields a new certificate has, and a field the kind does not have is refused.
+    #[test]
+    fn a_new_certificate_is_supplied_or_issued() {
+        use serde_json::json;
+        let parse = |body: serde_json::Value| serde_json::from_value::<NewCertificate>(body);
+        let supplied = json!({"kind": "supplied", "name": "a", "certificate": "c", "privateKey": "k"});
+        assert!(matches!(parse(supplied), Ok(NewCertificate::Supplied(_))));
+        let issued = json!({"kind": "issued", "name": "a", "names": ["localhost"]});
+        assert!(matches!(parse(issued), Ok(NewCertificate::Issued(r)) if r.validity_days == 365));
+        assert!(parse(json!({"kind": "issued", "name": "a", "names": [], "privateKey": "k"})).is_err());
+        assert!(parse(json!({"name": "a", "certificate": "c", "privateKey": "k"})).is_err());
+    }
+
+    /// A connector naming a certificate may present it from any side it is usable from, so a new version keeps every
+    /// purpose the newest has, and may add one.
+    #[tokio::test]
+    async fn a_version_without_a_purpose_the_newest_has_is_refused() {
+        use rcgen::ExtendedKeyUsagePurpose::{ClientAuth, ServerAuth};
+        let state = issuing("replace-purpose");
+        assert!(
+            create_certificate(
+                State(state.clone()),
+                Json(NewCertificate::Supplied(for_purposes(vec![ServerAuth])))
+            )
+            .await
+            .succeeded()
+        );
+        let replace = |req| replace_certificate(State(state.clone()), Path("acme".to_string()), Json(req));
+        let newest = || newest_chain(state.store.as_ref(), "acme").unwrap().unwrap().0;
+
+        let refused = replace(for_purposes(vec![ClientAuth])).await;
+        assert!(!refused.succeeded());
+        assert!(
+            refused.errors[0].message.contains("usable as a server certificate"),
+            "{refused:?}"
+        );
+        assert_eq!(newest(), 1, "nothing was stored");
+
+        assert!(
+            replace(for_purposes(Vec::new())).await.succeeded(),
+            "no Extended Key Usage permits both"
+        );
+        assert_eq!(newest(), 2);
+        let refused = replace(for_purposes(vec![ServerAuth])).await;
+        assert!(
+            refused.errors[0].message.contains("usable as a client certificate"),
+            "{refused:?}"
+        );
+        assert!(replace(for_purposes(vec![ServerAuth, ClientAuth])).await.succeeded());
+    }
+
+    async fn renewed(state: &AppState, now_ms: i64) -> Vec<String> {
+        let tried = renew_issued(state, now_ms).await.unwrap();
+        for (name, outcome) in &tried {
+            assert!(outcome.is_ok(), "{name}: {outcome:?}");
+        }
+        tried.into_iter().map(|(name, _)| name).collect()
+    }
+
+    /// Not yet due, nothing is renewed; two thirds of the way through, the leader issues the next version on its
+    /// own, for the same names and as long as the first, and only warns where it could not.
+    #[tokio::test]
+    async fn a_due_certificate_is_renewed_unattended() {
+        let state = issuing("renew");
+        assert!(
+            issue_lasting(&state, "acme", &["receiver.example.com"], 90)
+                .await
+                .succeeded()
+        );
+        let leaf = listed(&state, "acme").await.chain[0].clone();
+        let lifetime = |c: &tls::Described| (c.not_after_millis - c.not_before_millis) / (24 * 60 * 60 * 1000);
+        assert_eq!(lifetime(&leaf), 90);
+
+        assert!(renewed(&state, leaf.not_before_millis + 1).await.is_empty());
+        let due = leaf.not_before_millis + (leaf.not_after_millis - leaf.not_before_millis) * 2 / 3;
+        let late = due + 2 * 24 * 60 * 60 * 1000;
+        let said = issued_certificates_not_renewed(&state, late).await.unwrap();
+        assert_eq!(said.len(), 1, "a day past due and not renewed is a warning");
+        assert_eq!(said[0].condition, warnings::Condition::IssuedCertificateNotRenewed);
+        assert_eq!(said[0].since_millis, Some(due));
+        assert!(
+            issued_certificates_not_renewed(&state, due + 1)
+                .await
+                .unwrap()
+                .is_empty(),
+            "not within the day the renewal has to run"
+        );
+
+        assert_eq!(renewed(&state, due).await, ["acme"]);
+        let renewed_entry = listed(&state, "acme").await;
+        assert_eq!(renewed_entry.versions.len(), 2);
+        assert_ne!(renewed_entry.chain[0].fingerprint, leaf.fingerprint);
+        assert_eq!(renewed_entry.chain[0].names, ["receiver.example.com"]);
+        assert_eq!(lifetime(&renewed_entry.chain[0]), 90);
+        let now = renewed_entry.chain[0].not_before_millis + 1;
+        assert!(renewed(&state, now).await.is_empty());
+        assert!(issued_certificates_not_renewed(&state, now).await.unwrap().is_empty());
+    }
+
+    /// A renewal needs nothing the old version sealed: after the key is regenerated, the leader issues a new key on
+    /// its own, and the certificate is no longer one to enter again.
+    #[tokio::test]
+    async fn a_certificate_a_regenerated_key_cannot_open_is_renewed() {
+        let state = issuing("renew-regenerated");
+        assert!(issue(&state, "acme", &["receiver.example.com"]).await.succeeded());
+        let leaf = listed(&state, "acme").await.chain[0].clone();
+        std::fs::remove_file(state.data_dir.with_extension("key")).unwrap();
+        let event = crate::leader::accounts::event_for(&store::Actor::system(), "key-regenerate", "", "ok");
+        let acme = store::Unopenable::Certificate("acme".to_string());
+        assert!(state.store.regenerate_key(&event).unwrap().unopenable.contains(&acme));
+
+        // The leader's own too: its key was sealed by the same key.
+        assert_eq!(
+            renewed(&state, leaf.not_before_millis + 1).await,
+            ["acme", tls::OWN_ENTRY]
+        );
+        assert!(!state.store.key_standing().unwrap().unopenable.contains(&acme));
+        let (_, chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
+        tls::is_pair(chain.as_bytes(), key.as_bytes()).expect("the new key is the new certificate's");
+    }
+
+    /// Only what the leader issued is renewed: an upload is the admin's to replace.
+    #[tokio::test]
+    async fn only_an_issued_certificate_is_renewed() {
+        let state = issuing("renew-not-issued");
+        let (chain, key) =
+            tls::issue(&tls::dir_of(&state.data_dir), vec!["a.example.com".to_string()], A_YEAR).unwrap();
+        state.store.create_certificate("uploaded", "", &chain, &key).unwrap();
+        assert_eq!(renewed(&state, i64::MAX / 2).await, [tls::OWN_ENTRY]);
+    }
+
+    /// One issued under a root the leader no longer signs with is due at once, whatever its age, and so is one
+    /// whose chain cannot be read. Neither warns: the next renewal, within the hour, issues it again.
+    #[test]
+    fn a_certificate_under_another_root_is_due() {
+        let dir = own("renew-root");
+        let (chain, _) = tls::issue(&dir, vec!["a.example.com".to_string()], A_YEAR).unwrap();
+        let chain = tls::describe_each(chain.as_bytes(), "c").unwrap();
+        let signing = tls::signing_root_fingerprint(&dir).unwrap();
+        let now = chain[0].not_before_millis + 1;
+        assert_eq!(warnings::issued_due(&chain, &signing, now), None);
+        assert_eq!(
+            warnings::issued_due(&chain, "another root", now),
+            Some(warnings::Due::OtherRoot)
+        );
+        assert_eq!(
+            warnings::issued_due(&[], &signing, now),
+            Some(warnings::Due::Unreadable)
+        );
+        let how = Issued {
+            names: vec!["a.example.com".to_string()],
+            validity_days: 365,
+        };
+        let issued = [("acme".to_string(), how, chain)];
+        assert!(warnings::issued_certificates_not_renewed(&issued, "another root", i64::MAX / 2).is_empty());
     }
 }

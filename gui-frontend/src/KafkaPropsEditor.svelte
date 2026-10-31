@@ -7,14 +7,20 @@
 -->
 <script lang="ts">
   import PropsEditor from './PropsEditor.svelte';
-  import type { KafkaProps, SecretDto } from './api';
+  import type { KafkaFacts, KafkaProps, SecretDto } from './api';
   import { propertyRefusal, SECTION_PROPS } from './kafka';
 
   let {
     value,
     secrets = [],
-    hasIdentity = false,
-  }: { value: KafkaProps; secrets?: SecretDto[]; hasIdentity?: boolean } = $props();
+    kafka,
+    hasTls = false,
+  }: {
+    value: KafkaProps;
+    secrets?: SecretDto[];
+    kafka: KafkaFacts;
+    hasTls?: boolean;
+  } = $props();
 </script>
 
 <PropsEditor
@@ -30,7 +36,7 @@
   }}
   {secrets}
   hidden={(key) => SECTION_PROPS.includes(key.trim().toLowerCase())}
-  refusal={(key, credential) => propertyRefusal(key, credential, hasIdentity)}
+  refusal={(key, credential) => propertyRefusal(key, credential, hasTls, kafka)}
 >
   {#snippet literalHelp()}
     Any other librdkafka property, by name and value, committed to the config repo.

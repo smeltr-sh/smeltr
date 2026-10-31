@@ -5,20 +5,19 @@
 //! other (`config_file::sample`), which is where capture and paste meet.
 
 use axum::Json;
-use axum::extract::{Extension, Path as AxPath, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Extension, Path as AxPath, State};
 use axum::response::{IntoResponse, Response};
 
 use smeltr::config_file;
 use smeltr::leader::access::{Access, Level};
 use smeltr::leader::capture::{CaptureRequest, CaptureStatus, Captures};
-use smeltr::leader::envelope::Envelope;
+use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::store::Actor;
 use smeltr::leader::{AppState, blocking};
 use smeltr::worker::capture::UNCLAIMED;
 
-use crate::config_api::{self, BranchQuery};
-use crate::gate::refuse;
+use crate::config_api;
+use crate::policy::Need;
 
 #[derive(Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,28 +45,36 @@ pub async fn start_capture(
     Extension(access): Extension<Access>,
     Json(request): Json<CaptureRequest>,
 ) -> Response {
-    if !access.allows(&request.group, Level::Editor) {
-        return refuse(
-            StatusCode::FORBIDDEN,
-            &format!("this needs {} in {}", Level::Editor.as_str(), request.group),
-        );
+    let need = Need::Area {
+        area: request.group.clone(),
+        level: Level::Editor,
+    };
+    if !need.met_by(&access) {
+        return Refusal::from(need).into_response();
     }
     open_capture(state, request).await.into_response()
 }
 
-async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope<StartedCapture>> {
+async fn open_capture(state: AppState, request: CaptureRequest) -> Envelope<StartedCapture> {
     if !takes_its_start(&request) {
-        return Json(Envelope::failed_one(
+        return Envelope::refused(Refusal::invalid(
             "only a Kafka or Event Hubs source's capture takes a start",
         ));
     }
+    // What the fleet ran when it opened, for a sample saved from it to record. A capture is no less worth taking for a
+    // leader that cannot read its own history, so a failed read records none.
+    let repo = smeltr::leader::git::repo_path(&state.data_dir);
+    let config = blocking(move || Ok::<_, String>(smeltr::leader::git::deployed(&repo)))
+        .await
+        .ok()
+        .flatten();
     let source = match (&request.source, &request.destination) {
         (Some(source), None) => source.clone(),
         (None, Some(destination)) => {
             let destination = destination.clone();
-            return Json(start_destination_capture(&state, request, &destination));
+            return start_destination_capture(&state, request, &destination, config);
         }
-        _ => return Json(Envelope::failed_one("a capture names one source or one destination")),
+        _ => return Envelope::refused(Refusal::invalid("a capture names one source or one destination")),
     };
     // The same check a save runs (`config_file::validate`), because this source travels to workers exactly as a
     // saved one does. Without it a credential written as a literal -- which `validate_kafka_props` refuses on the
@@ -80,20 +87,24 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
         routes: Vec::new(),
         lookup_tables: Vec::new(),
         grok_patterns: Vec::new(),
-        // Without it the source names an identity nothing declares, and the key that identity names is never
-        // resolved for the workers to receive.
-        identities: request.identity.clone().into_iter().collect(),
         on_exception: None,
         name: None,
+        schemas: Vec::new(),
     };
     let mut invalid = config_file::validation_errors(one_source.clone());
     // Run reads an SQL source's query before its author has declared fields or chosen a mode: the worker declares
     // every column the query returns and reads every poll (`worker::capture::run_sql_capture`).
     if source.kind.undeclared() {
         invalid.retain(|e| e.field != Some("fields"));
+        // Nor does it refuse the query's own ORDER BY, which only orders the rows Run shows; a save still does.
+        if let Some((kind, sql)) = source.kind.sql()
+            && smeltr::io::sql::Query::parse_for_run(&sql.query, kind.dialect()).is_ok()
+        {
+            invalid.retain(|e| e.field != Some("query"));
+        }
     }
     if !invalid.is_empty() {
-        return Json(Envelope::failed_one(
+        return Envelope::refused(Refusal::invalid(
             invalid.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
         ));
     }
@@ -102,14 +113,14 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
     // its syntax can be checked here.
     if let Some(filter) = request.filter.as_deref() {
         let compiled = if source.kind.undeclared() {
-            smeltr::plan::plan::parse(filter, None)
+            smeltr::plan::compile::parse(filter, None)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         } else {
             smeltr::worker::capture::Filter::compile(Some(filter), source.kind.meta(), &source.id).map(|_| ())
         };
         if let Err(e) = compiled {
-            return Json(Envelope::failed_one(e));
+            return Envelope::refused(Refusal::invalid(e));
         }
     }
 
@@ -122,19 +133,13 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
     // deployment is entitled to what its bundle names (design doc, Secrets boundary). Read once here rather than on
     // every heartbeat that hands the invitation on, and recorded, because this is the one way a value reaches a
     // worker without a commit on `main` naming it -- the trail the deploy path leaves for free.
-    let wanted = leader_stored_refs(&one_source);
-    let granted = if wanted.is_empty() {
-        Vec::new()
-    } else {
-        let store = state.store.clone();
-        let asked = wanted.clone();
-        match blocking(move || store.secrets_for_delivery(&asked, &[])).await {
-            Ok(v) => v,
-            Err(e) => return Json(Envelope::failed_one(e)),
-        }
+    let store = state.store.clone();
+    let granted = match blocking(move || lent(&*store, &one_source)).await {
+        Ok(v) => v,
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
     };
     if !granted.is_empty() {
-        let named: Vec<String> = granted.iter().map(|(n, v, _)| format!("{n} v{v}")).collect();
+        let named: Vec<String> = granted.iter().map(|d| format!("{} v{}", d.name, d.version)).collect();
         tracing::info!(
             target: "capture.secrets_granted",
             subject = %session,
@@ -143,44 +148,9 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
             "a capture carries credentials to its workers"
         );
     }
-    let granted: Vec<smeltr::heartbeat::SecretDelivery> = granted
-        .into_iter()
-        .map(|(name, version, value)| smeltr::heartbeat::SecretDelivery { name, version, value })
-        .collect();
-
     let invitation = state
         .captures
-        .open(session.clone(), request, expected, holding, granted);
-    Json(Envelope::ok(StartedCapture {
-        session: Some(session),
-        max_matches: Some(invitation.max_matches),
-        max_bytes: Some(invitation.max_bytes),
-        deadline_secs: Some(invitation.deadline_secs),
-    }))
-}
-
-/// Open a capture at a deployed destination. It carries no configuration and no credentials: a worker reads only
-/// what its own deployment sends there, and one that sends nothing there says so. Its filter reads each row as its
-/// pipeline finished it.
-fn start_destination_capture(state: &AppState, request: CaptureRequest, destination: &str) -> Envelope<StartedCapture> {
-    if destination.is_empty() {
-        return Envelope::failed_one("a capture at a destination names it");
-    }
-    if request.identity.is_some() {
-        return Envelope::failed_one("a capture at a destination reads what is sent there, under no identity");
-    }
-    // Only its syntax can be checked here: what it reads is each route's output, which the workers' deployment
-    // compiles. A filter a route's output does not resolve ends the capture there, saying which route.
-    if let Some(filter) = request.filter.as_deref()
-        && let Err(e) = smeltr::plan::plan::parse(filter, None)
-    {
-        return Envelope::failed_one(e.to_string());
-    }
-    let (expected, holding) = waits_for(state, &request.group, None, Some(destination));
-    let session = format!("{:016x}", rand_session());
-    let invitation = state
-        .captures
-        .open(session.clone(), request, expected, holding, Vec::new());
+        .open(session.clone(), request, expected, holding, granted, config);
     Envelope::ok(StartedCapture {
         session: Some(session),
         max_matches: Some(invitation.max_matches),
@@ -189,29 +159,78 @@ fn start_destination_capture(state: &AppState, request: CaptureRequest, destinat
     })
 }
 
+/// Open a capture at a deployed destination. It carries no configuration and no credentials: a worker reads only
+/// what its own deployment sends there, and one that sends nothing there says so. Its filter reads each row as its
+/// pipeline finished it.
+fn start_destination_capture(
+    state: &AppState,
+    request: CaptureRequest,
+    destination: &str,
+    config: Option<String>,
+) -> Envelope<StartedCapture> {
+    if destination.is_empty() {
+        return Envelope::refused(Refusal::invalid("a capture at a destination names it"));
+    }
+    // Only its syntax can be checked here: what it reads is each route's output, which the workers' deployment
+    // compiles. A filter a route's output does not resolve ends the capture there, saying which route.
+    if let Some(filter) = request.filter.as_deref()
+        && let Err(e) = smeltr::plan::compile::parse(filter, None)
+    {
+        return Envelope::refused(Refusal::invalid(e.to_string()));
+    }
+    let (expected, holding) = waits_for(state, &request.group, None, Some(destination));
+    let session = format!("{:016x}", rand_session());
+    let invitation = state
+        .captures
+        .open(session.clone(), request, expected, holding, Vec::new(), config);
+    Envelope::ok(StartedCapture {
+        session: Some(session),
+        max_matches: Some(invitation.max_matches),
+        max_bytes: Some(invitation.max_bytes),
+        deadline_secs: Some(invitation.deadline_secs),
+    })
+}
+
+/// What a capture of `one_source` lends its workers: the secrets it names, and the certificates it names at the
+/// list's newest version, as a deployment runs them. Nothing about it need be deployed.
+fn lent(
+    store: &dyn smeltr::leader::store::Store,
+    one_source: &config_file::FileConfig,
+) -> Result<Vec<smeltr::heartbeat::SecretDelivery>, String> {
+    let (wanted, certificates) = leader_stored_refs(one_source);
+    if wanted.is_empty() && certificates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let newest = smeltr::leader::certificate_versions(store)?;
+    let quoted = smeltr::leader::Quoted {
+        secrets: wanted,
+        certificates,
+    };
+    store
+        .secrets_for_delivery(&smeltr::leader::at_newest(&quoted, &newest), &[])
+        .map_err(|e| e.to_string())
+}
+
 /// Every leader-stored credential one source names, as the store addresses them. A worker-local one is a variable
 /// on the worker's own host and is nobody's to deliver.
-fn leader_stored_refs(one_source: &config_file::FileConfig) -> Vec<(String, i64)> {
+fn leader_stored_refs(one_source: &config_file::FileConfig) -> (Vec<(String, i64)>, Vec<String>) {
     use smeltr::plan::topology::SecretRef;
     let Ok(json) = serde_json::to_string(one_source) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
-    let references: Vec<SecretRef> = match config_file::load_str(&json) {
-        Ok(system) => system.topology.named_secrets.into_iter().map(|s| s.reference).collect(),
+    let (references, certificates): (Vec<SecretRef>, Vec<String>) = match config_file::load_str(&json) {
+        Ok(system) => (
+            system.topology.named_secrets.into_iter().map(|s| s.reference).collect(),
+            system.topology.named_certificates.into_iter().map(|c| c.name).collect(),
+        ),
         // An SQL source that declares no fields yet does not load, though Run reads it, so its credentials are read
         // from its connection.
-        Err(_) => match one_source
-            .sources
-            .first()
-            .and_then(|s| config_file::sql_connection(s, one_source.identities.first()))
-        {
-            Some(database) => database
-                .password()
-                .cloned()
-                .into_iter()
-                .chain(database.identity().and_then(|i| i.key.clone()))
-                .collect(),
-            None => Vec::new(),
+        Err(_) => match one_source.sources.first().and_then(config_file::sql_connection) {
+            Some(database) => (
+                database.password().cloned().into_iter().collect(),
+                database.tls().and_then(|t| t.certificate.clone()).into_iter().collect(),
+            ),
+            None => (Vec::new(), Vec::new()),
         },
     };
     let mut out: Vec<(String, i64)> = references
@@ -223,7 +242,7 @@ fn leader_stored_refs(one_source: &config_file::FileConfig) -> Vec<(String, i64)
         .collect();
     out.sort();
     out.dedup();
-    out
+    (out, certificates)
 }
 
 /// Enough entropy that two captures never collide, without a dependency: a hasher keyed by `RandomState`, which the
@@ -256,8 +275,8 @@ pub async fn capture_status(
     State(state): State<AppState>,
     Extension(access): Extension<Access>,
     AxPath(session): AxPath<String>,
-) -> Json<Envelope<Followed>> {
-    Json(status_of(&state.captures, &access, &session))
+) -> Envelope<Followed> {
+    status_of(&state.captures, &access, &session)
 }
 
 fn status_of(captures: &Captures, access: &Access, session: &str) -> Envelope<Followed> {
@@ -278,14 +297,19 @@ impl Followed {
     fn found(capture: Option<CaptureStatus>) -> Envelope<Followed> {
         match capture {
             Some(capture) => Envelope::ok(Followed { capture: Some(capture) }),
-            None => Envelope::failed_one("no capture by that id -- it may have been saved, or swept after finishing"),
+            None => Envelope::refused(Refusal::not_found(NO_CAPTURE)),
         }
     }
 }
 
+/// What a capture the caller cannot follow is answered with, whether it never was or is not theirs.
+const NO_CAPTURE: &str = "no capture by that id -- it may have been saved, or swept after finishing";
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveCaptureRequest {
+    /// The capture whose records the sample holds.
+    pub capture: String,
     /// The sample's id, minted by the GUI so a rename keeps it. Absent from a client that predates it, which gets
     /// the name as the id.
     #[serde(default)]
@@ -433,27 +457,26 @@ fn put_path(object: &mut serde_json::Map<String, serde_json::Value>, path: &str,
 }
 
 /// The capture `session` as a save would commit it, or why it cannot be saved.
-fn savable(captures: &Captures, access: &Access, session: &str) -> Result<CaptureStatus, String> {
+fn savable(captures: &Captures, access: &Access, session: &str) -> Result<CaptureStatus, Refusal> {
     let status = followed(captures, access, session)
         .then(|| captures.status(session))
         .flatten()
-        .ok_or("no capture by that id -- it may already have been saved")?;
+        .ok_or_else(|| Refusal::not_found("no capture by that id -- it may already have been saved"))?;
     if !status.done {
         let waiting = if status.waiting_on.is_empty() {
             String::new()
         } else {
             format!(" -- waiting on {}", status.waiting_on.join(", "))
         };
-        return Err(format!(
+        return Err(Refusal::conflict(format!(
             "this capture is still running{waiting}. Stop it first to save what it holds"
-        ));
+        )));
     }
     if status.batches.iter().all(|b| b.rows.is_empty()) {
-        return Err(
+        return Err(Refusal::conflict(
             "this capture caught nothing, and a sample of no records would preview as an empty pipeline \
-             rather than as the problem it is"
-                .to_string(),
-        );
+             rather than as the problem it is",
+        ));
     }
     Ok(status)
 }
@@ -466,27 +489,33 @@ pub async fn save_capture(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Extension(access): Extension<Access>,
-    AxPath(session): AxPath<String>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    at: config_api::Addressed,
     Json(request): Json<SaveCaptureRequest>,
-) -> Json<Envelope<SavedCapture>> {
+) -> Envelope<SavedCapture> {
+    let session = request.capture.clone();
     let status = match savable(&state.captures, &access, &session) {
         Ok(status) => status,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     };
 
     let source = match (&status.destination, request.source.clone()) {
         (Some(_), _) => None,
         (None, Some(source)) => Some(source),
         (None, None) => {
-            return Json(Envelope::failed_one(
+            return Envelope::refused(Refusal::invalid(
                 "name the source these records stand for, so the sample can be route-previewed",
             ));
         }
     };
-    let columns = sample_columns(&status.batches);
-    let records = status.batches.iter().flat_map(sample_records).collect();
+    let mut columns = sample_columns(&status.batches);
+    let mut records: Vec<smeltr::io::RecordObject> = status.batches.iter().flat_map(sample_records).collect();
+    // How it was taken, on every record as its `__source` fields are.
+    for (column, value) in state.captures.capture_fields(&session) {
+        for record in &mut records {
+            put_path(record, &column.name, value.clone());
+        }
+        columns.push(column);
+    }
     let sample = config_file::SampleDto {
         id: request.sample_id(),
         name: request.name,
@@ -496,16 +525,12 @@ pub async fn save_capture(
     };
     let records = sample.records.len();
 
-    let (branch, base, scope) = (
-        q.name().to_string(),
-        config_api::base_commit(&headers),
-        q.scope().to_string(),
-    );
     let saved = blocking(move || {
-        let path = config_file::sample_path(&sample.id).map_err(|e| e.to_string())?;
-        let writing = config_api::Writing::open(&branch, base.as_deref(), &scope)?;
+        let path = config_file::sample_path(&sample.id).map_err(|e| Refusal::invalid(e.to_string()))?;
+        let writing = at.open()?;
         let content = Some(config_file::sample_bytes(&sample));
-        config_api::refuse_sample_collision(&mut writing.files(), &path, &sample.id, &content)?;
+        config_api::refuse_sample_collision(&mut writing.files(), &path, &sample.id, &content)
+            .map_err(Refusal::conflict)?;
         writing.commit(
             vec![smeltr::leader::git::FileEdit { path, content }],
             &format!("save capture as sample {}", sample.name),
@@ -519,12 +544,12 @@ pub async fn save_capture(
             // Only once it is durable: a session dropped before the commit landed would lose the records with no
             // way to ask for them again.
             state.captures.close(&session);
-            Json(Envelope::ok(SavedCapture {
+            Envelope::ok(SavedCapture {
                 commit: Some(commit),
                 records: Some(records),
-            }))
+            })
         }
-        Err(e) => Json(Envelope::failed_one(e)),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -535,8 +560,8 @@ pub async fn stop_capture(
     State(state): State<AppState>,
     Extension(access): Extension<Access>,
     AxPath(session): AxPath<String>,
-) -> Json<Envelope<Followed>> {
-    Json(stop(&state.captures, &access, &session))
+) -> Envelope<Followed> {
+    stop(&state.captures, &access, &session)
 }
 
 fn stop(captures: &Captures, access: &Access, session: &str) -> Envelope<Followed> {
@@ -549,8 +574,11 @@ pub async fn discard_capture(
     State(state): State<AppState>,
     Extension(access): Extension<Access>,
     AxPath(session): AxPath<String>,
-) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": discard(&state.captures, &access, &session) }))
+) -> Envelope {
+    match discard(&state.captures, &access, &session) {
+        true => Envelope::done(),
+        false => Envelope::refused(Refusal::not_found(NO_CAPTURE)),
+    }
 }
 
 /// Whether `session` was found and forgotten.
@@ -606,13 +634,14 @@ mod tests {
     /// The id the GUI minted names the sample, so a rename keeps it; a client that sends none gets the name.
     #[test]
     fn a_save_takes_the_id_it_is_sent_and_falls_back_to_the_name() {
-        let minted: SaveCaptureRequest =
-            serde_json::from_str(r#"{"id":"sample-4k2p9x1a","name":"orders, ordinary hour","source":"orders"}"#)
-                .unwrap();
+        let minted: SaveCaptureRequest = serde_json::from_str(
+            r#"{"capture":"c1","id":"sample-4k2p9x1a","name":"orders, ordinary hour","source":"orders"}"#,
+        )
+        .unwrap();
         assert_eq!(minted.sample_id(), "sample-4k2p9x1a");
 
         let old: SaveCaptureRequest =
-            serde_json::from_str(r#"{"name":"orders, ordinary hour","source":"orders"}"#).unwrap();
+            serde_json::from_str(r#"{"capture":"c1","name":"orders, ordinary hour","source":"orders"}"#).unwrap();
         assert_eq!(old.sample_id(), "orders, ordinary hour");
     }
 
@@ -629,9 +658,9 @@ mod tests {
                 routes: Vec::new(),
                 lookup_tables: Vec::new(),
                 grok_patterns: Vec::new(),
-                identities: Vec::new(),
                 on_exception: None,
                 name: None,
+                schemas: Vec::new(),
             }
         };
 
@@ -641,7 +670,7 @@ mod tests {
         );
         assert_eq!(
             leader_stored_refs(&stored),
-            vec![("kafka-cred".to_string(), 4)],
+            (vec![("kafka-cred".to_string(), 4)], Vec::new()),
             "the one it quotes, at the version it quotes"
         );
 
@@ -650,20 +679,61 @@ mod tests {
                 "properties":{"security.protocol":"SASL_SSL"},"credentials":{"sasl.password":"KAFKA_PASSWORD"}}"#,
         );
         assert!(
-            leader_stored_refs(&local).is_empty(),
+            leader_stored_refs(&local).0.is_empty(),
             "a worker-local variable is the host's, and the leader has no value to send"
         );
 
         let none = one(r#"{"id":"s","type":"metrics","bucketSeconds":5}"#);
-        assert!(leader_stored_refs(&none).is_empty());
+        assert_eq!(leader_stored_refs(&none), (Vec::new(), Vec::new()));
 
         let fieldless = one(r#"{"id":"s","type":"postgres","host":"db","database":"d","user":"u",
                 "password":{"secret":"pg-cred","version":2},"query":"SELECT 1","mode":{"type":"everyPoll"},"fields":[]}"#);
         assert_eq!(
             leader_stored_refs(&fieldless),
-            vec![("pg-cred".to_string(), 2)],
+            (vec![("pg-cred".to_string(), 2)], Vec::new()),
             "Run reads an SQL source before it declares fields, with its own password"
         );
+    }
+
+    /// A source never deployed is captured with its certificate lent for the session, at the list's newest version,
+    /// chain beside key. A name the list does not hold is left out, for the worker to refuse.
+    #[test]
+    fn a_capture_lends_its_certificate_at_the_newest_version() {
+        use smeltr::leader::sqlite_store::SqliteStore;
+        use smeltr::leader::store::Store;
+        let key = std::env::temp_dir().join(format!("smeltr-capture-lent-{}.key", std::process::id()));
+        let _ = std::fs::remove_file(&key);
+        let store = SqliteStore::open(std::path::Path::new(":memory:"), &key).unwrap();
+        store.create_certificate("cli", "", "chain-1", "key-1").unwrap();
+        store.add_certificate_version("cli", "chain-2", "key-2").unwrap();
+        let source = |certificate: &str| config_file::FileConfig {
+            version: config_file::CURRENT_VERSION,
+            sources: vec![
+                serde_json::from_str(&format!(
+                    r#"{{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g",
+                        "properties":{{"security.protocol":"SSL"}},"certificate":"{certificate}"}}"#
+                ))
+                .unwrap(),
+            ],
+            destinations: Vec::new(),
+            pipelines: Vec::new(),
+            routes: Vec::new(),
+            lookup_tables: Vec::new(),
+            grok_patterns: Vec::new(),
+            on_exception: None,
+            name: None,
+            schemas: Vec::new(),
+        };
+
+        let lent_now = lent(&store, &source("cli")).unwrap();
+        let named: Vec<_> = lent_now
+            .iter()
+            .map(|d| (d.name.as_str(), d.version, d.value.as_str(), d.chain.as_deref()))
+            .collect();
+        assert_eq!(named, vec![("cli", 2, "key-2", Some("chain-2"))]);
+
+        assert!(lent(&store, &source("unlisted")).unwrap().is_empty());
+        let _ = std::fs::remove_file(&key);
     }
 
     /// A source batch saves as the sample records a paste would make: its fields by path in the record, its
@@ -795,6 +865,7 @@ mod tests {
             ["w1".to_string()].into(),
             Default::default(),
             Vec::new(),
+            None,
         );
         let editor = |area: &str| Access::Areas(BTreeMap::from([(area.to_string(), Level::Editor)]));
         (captures, editor("payments"), editor("search"))
@@ -805,13 +876,10 @@ mod tests {
     #[test]
     fn a_capture_in_a_group_the_caller_does_not_edit_answers_as_unknown() {
         let (captures, own, other) = payments_capture();
-        let unknown = serde_json::to_value(status_of(&captures, &own, "no-such-id")).unwrap();
+        let unknown = status_of(&captures, &own, "no-such-id").to_json();
 
-        assert_eq!(
-            serde_json::to_value(status_of(&captures, &other, "c1")).unwrap(),
-            unknown
-        );
-        assert_eq!(serde_json::to_value(stop(&captures, &other, "c1")).unwrap(), unknown);
+        assert_eq!(status_of(&captures, &other, "c1").to_json(), unknown);
+        assert_eq!(stop(&captures, &other, "c1").to_json(), unknown);
         assert!(
             !captures.status("c1").unwrap().stopped,
             "not stopped by the refused call"
@@ -824,18 +892,18 @@ mod tests {
         assert!(captures.status("c1").is_some(), "not discarded by the refused call");
 
         let viewer = Access::Areas([("payments".to_string(), Level::Viewer)].into());
-        assert_eq!(
-            serde_json::to_value(status_of(&captures, &viewer, "c1")).unwrap(),
-            unknown
-        );
+        assert_eq!(status_of(&captures, &viewer, "c1").to_json(), unknown);
 
-        assert!(status_of(&captures, &own, "c1").ok);
+        assert!(status_of(&captures, &own, "c1").succeeded());
         assert!(
-            savable(&captures, &own, "c1").unwrap_err().contains("still running"),
+            savable(&captures, &own, "c1")
+                .unwrap_err()
+                .message()
+                .contains("still running"),
             "its own group's editor reaches the save's own checks"
         );
         assert!(stop(&captures, &own, "c1").body.capture.unwrap().stopped);
-        assert!(status_of(&captures, &Access::Administrator, "c1").ok);
+        assert!(status_of(&captures, &Access::Administrator, "c1").succeeded());
         assert!(discard(&captures, &own, "c1"));
         assert!(captures.status("c1").is_none());
     }

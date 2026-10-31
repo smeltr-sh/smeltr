@@ -33,9 +33,10 @@ is its identity, and the leader keeps only hashes. An enrollment code names
 the root to accept as well as the secret, so the two cannot be copied apart --
 and cannot be re-pointed either, which is why replacing that root withdraws
 every enrollment code naming it. A worker accepts the leader's certificate
-when it chains to a root the worker trusts and carries the leader's name; the
-root is the system's, or one the worker was given out of band, which may be an
-authority the leader created for itself. Naming that root by fingerprint is
+when it chains to a root the worker trusts and carries the leader's name. The
+roots are the system's, and any the worker was given out of band, which may be an
+authority the leader created for itself; a worker told not to trust the system's
+roots trusts only those it was given (`trust_public`, as a connector's TLS). Naming that root by fingerprint is
 being given it out of band: the worker fetches the certificate, keeps the one
 that matches and refuses the rest. Such a leader signs the certificate it
 serves rather than being it, so replacing that certificate reaches no worker
@@ -43,8 +44,8 @@ while replacing the authority reaches every one. A worker holds as many roots
 as it was given, which is what lets an authority be replaced without stopping
 the fleet. Replacing the authority is those two facts in order, whether the
 leader is moving to another authority of its own or the certificate it serves
-is changing source -- an operator's uploaded certificate in place of the
-leader's own, or back: the incoming root is published beside the outgoing one
+is changing source -- a certificate an operator chose from the list in place of
+the leader's own, or back: the incoming root is published beside the outgoing one
 and reaches each worker on its next heartbeat, and the leader serves under it
 only once every worker it still expects to hear from holds it, once the wait
 has run out, or once the operator tells it to stop waiting. A worker whose
@@ -53,16 +54,18 @@ leader can hand it nothing: the operator gives it the incoming root, and the
 leader names it as theirs to see to. An operator
 rotating the leader's own authority sets the wait; a change of source waits
 until the certificate being served, or the one it is switching to, is about to
-run out, since nothing is lost by waiting until then. An uploaded certificate under the root already in force
-is a renewal, and is served at once, whatever rotation is open; an upload that
+run out, since nothing is lost by waiting until then. A chosen certificate under the root already in force
+is a renewal, and is served at once, whatever rotation is open; a choice that
 would change the root waits for the open rotation to finish or be abandoned. A
 certificate the leader orders for itself from a certificate authority over
 ACME (RFC 8555) arrives the same way, under the root that signed it, so a
-worker is given that root as it would be given an uploaded one; the leader
-proves it holds each name on the port it serves (TLS-ALPN-01) or on port 80
-(HTTP-01), listened on only while an order is open, and orders again two
-thirds of the way through the certificate's life, for as long as what it
-issued is what is served. The account it holds at
+worker is given that root as it would be given a chosen one; the leader
+proves it holds each name on the port it serves (TLS-ALPN-01), on port 80
+(HTTP-01), listened on only while an order is open, or with a TXT record
+published through the zone's DNS provider (DNS-01), removed when the order is
+over, and orders again two
+thirds of the way through the certificate's life, whether or not it is
+served, and at once when a regenerated key cannot open the newest order. The account it holds at
 the authority lives beside its certificates and outlives them. A worker gone quiet is still expected: what it last
 said it holds never ages out, so going quiet never ends the wait for it. A
 revoked worker is not expected, and neither is a forgotten one. Signing first
@@ -82,22 +85,35 @@ is how an ephemeral worker the leader forgot while it was away comes back.
 ## Identity and access
 
 Identity and access are the leader's alone; nothing in the data plane
-learns a person exists. A person signs in with a local account or through
-the organization's OpenID provider, and either ends in the same session, so
-the gate, its deadlines, disabling and revocation treat the two alike.
+learns a person exists. Whoever calls the operator API is an **account**, and an
+account signs in one way: a local account with a password, an OIDC account
+through the organization's OpenID provider, a key account with a key. How it
+signs in decides only how it proves who it is. What it reaches is what it
+holds, and renaming, disabling, its agent permissions and the audit are the
+same for every account. A local and an OIDC sign-in end in the same session,
+so the gate, its deadlines, disabling and revocation treat the two alike.
+Display names may repeat: an account is known by its id, which the audit and git record beside its name.
 
-A local account holds a username and a password the leader verifies. It is
-always an administrator: it is the way in when the provider is down or
-misconfigured. An OIDC account is one identity at one
+A local or key account holds the roles an administrator gives it. An OIDC
+account holds the roles its provider groups give it. The built-in
+**administrator** role holds everything; it is never removed, and only the
+groups that give it change. At least one enabled local account holds it: it is
+the way in when the provider is down or misconfigured. An administrator makes
+local and key accounts.
+
+A local account holds a username and a password the leader verifies. An OIDC account is one identity at one
 provider, named by the issuer and the subject the provider gives it and
 never by a name or an address. It holds no password. It is created the
 first time the provider vouches for the person, and records the groups the
 provider names at each sign-in and at each refresh. While a session lives the
 leader refreshes it at the provider every few minutes with the refresh token
 the sign-in gave, held in memory with the session: a provider that refuses the
-refresh, or whose fresh ID token no longer holds the required group, ends the
-session. Only a person holding the one group the leader requires is let in; without it, anyone who can sign up at the provider would
-reach whatever the leader's roles give. The sign-in is the authorization code
+refresh, or whose fresh ID token no longer names a group that gives a role,
+ends the session. Only a person holding a group that gives some role is let in;
+anyone else who can sign up at the provider would otherwise hold a session that
+gives nothing. A refused sign-in is logged with the groups the provider sent,
+since those are the names a role's groups must match before anybody has been
+let in. The sign-in is the authorization code
 flow with PKCE, bound to the browser that started it, and the ID token's
 signature is checked in the module that performs all the leader's other
 cryptography.
@@ -121,22 +137,25 @@ sequenceDiagram
   end
 ```
 
-Access is per area, and governs OIDC accounts. An area is `shared` or one
+Access is per area, and governs every account. An area is `shared` or one
 worker group, the scope every configuration read and write already names. A
-role is one group the provider names and what holding it gives: viewer,
-editor or deployer in each area, each including the ones before it, or
-administrator. An account holds the highest level any of its roles gives in
+role is a name, what holding it gives, viewer, editor or deployer in each area,
+each including the ones before it, and the provider groups that give it. The
+administrator role gives everything instead. An account holds the highest level any of its roles gives in
 each area, and reads `shared` if it holds any area, since a group is read
 merged with it. Objects carry nothing, so a team's access is set once rather
 than on every object it makes.
 
 ```text
-  provider groups ──► roles ──► level per area ──► the gate, on every request
-  (at sign-in and     (leader store)
-   each refresh)
+  provider groups ──────┐
+  (OIDC, at sign-in     │   each role's groups
+   and each refresh)    ├─► roles ──► level per area ──► the gate, on every request
+  given by an admin ────┘   (leader store)
+  (local, key)              administrator role ──► everything
 ```
 
-The gate names the area and level each route needs, and a route it does not
+The gate names the area and level each route needs
+([api.md](api.md), Who may call what), and a route it does not
 name is for administrators alone, so a route added without a decision is
 closed rather than open. Editor covers capture, preview and samples as well
 as saving, since they show production records. Approving or deploying a
@@ -157,13 +176,14 @@ roles that named it.
 
 The leader's AI agent is a principal of the same kind. Acting for a person, it
 carries their session and holds their **agent permissions**: the level in each
-area they let it use, viewer everywhere until they choose otherwise, up to
-everything they hold. The gate judges its requests by the lower of the person's
+area they let it use, viewer everywhere until they choose otherwise, and
+whether it holds the administrator role with them. The gate judges its requests by the lower of the person's
 level and the agent permissions in each area, so an agent never holds more than
 its person, and loses what they lose on their next request. Only the leader
 marks a request as the agent's. No agent changes its own permissions: only
 its person sets them. An administrator's agent is an administrator only when
-its permissions are everything. What it does is recorded as its person's
+its permissions name the administrator role; for anyone else, naming it gives
+nothing. What it does is recorded as its person's
 agent's, in the audit and in git.
 None of this acts until an administrator turns AI agents on and names the
 model endpoint they think with: until then no agent permissions are set, and
@@ -171,7 +191,7 @@ what was set before is kept. Turning them on asks the endpoint for a short answe
 setting that cannot work is refused when it is saved. What an agent reads to
 do its work is sent to that endpoint.
 An agent works by requests to the leader's own API, sent through the gate with
-its person's session, so each is judged as the GUI's would be. It reaches only
+the session or key it runs under, so each is judged as the GUI's would be. It reaches only
 the routes its catalog names, which leave out signing in and out and its
 person's conversations. What a request answers is data the agent reads, never
 an instruction to it: its permissions bound what an instruction written into
@@ -182,6 +202,21 @@ that data could do. A conversation is its person's alone.
                     ├─ lower of the two ─► the gate, on every agent request
   agent permissions ┘
 ```
+
+A key account is an account for a script outside the leader that calls its
+API. A person signs in with a password or through a provider and holds a
+session; a key account calls with one of its **keys**, sent as a Bearer token
+on every request, and holds no session. It needs no Origin or CSRF check, since
+no browser sends a key on its own. Only an administrator makes a key, and only
+a key account holds one. The leader keeps a key's hash and returns the key
+once, when it is made, as it does a worker's token. A key may be made to expire
+after a number of days. A key account holds any number of keys, so one is
+replaced without a gap. A revoked or expired key is refused, and disabling a
+key account revokes every key it holds.
+
+What a key reaches is what its account holds, as a session reaches what
+its person holds. What a key account does is recorded as its own: by its id in
+the audit, and in git under its display name and its id.
 
 A disable, a password reset or a revocation that lands while a sign-in is
 checking the password refuses that sign-in. Changing a
@@ -195,16 +230,16 @@ A receiver is where a worker takes the data it did not fetch: every
 worker of the group listens on the receiver's port, and whoever is admitted
 there puts records into the group's pipelines. So a receiver admits a sender
 that presents one of its tokens, each a credential like any other, or, served
-under an identity with authorities, a sender whose certificate chains to one
+under a certificate with trusted authorities, a sender whose certificate chains to one
 of them, and a receiver that would admit anyone is refused at load. A token
-crosses the network in every request; without an identity it crosses in the
+crosses the network in every request; without a certificate it crosses in the
 clear, which suits a receiver behind a balancer that ends TLS for it. A
 token is checked before any of the body is read, and the bodies being read
 count against what the receiver may hold, so a sender without one cannot
 make a worker hold anything. A gzip body counts as it inflates, and is held
 to the receiver's request limit. The health path needs no token, and says
-only whether the receiver takes requests; a receiver whose identity names
-authorities admits no connection without a certificate that chains to them,
+only whether the receiver takes requests; a receiver that names trusted authorities
+admits no connection without a certificate that chains to them,
 the health path's included. Syslog carries no token, so a syslog receiver admits
 by the networks a sender connects from, or by its certificate. Over UDP it has
 no certificate to check, and a datagram's source address can be forged, so a
@@ -241,7 +276,8 @@ version is exact: a deployment runs the version its bundle quotes or does not
 run, so rotation is two steps, storing a value and then committing the bundle
 that quotes it, reviewed like any other change. A value is never readable
 back; an admin may ask whether a candidate matches, bounded and logged. The
-sealing key lives outside the data directory so one backup cannot carry both.
+secrets encryption key lives outside the data directory so one backup cannot
+carry both.
 
 **The git host's token, the OIDC client secret and the model endpoint's API
 key are sealed leader settings.** Only the leader uses them. They are sealed under the same key,
@@ -254,16 +290,89 @@ with a git host every commit reaches `main` through the host, so the host's
 own token, kept that way, could be replaced only by using the token it
 replaces.
 
-### A certificate is not a credential
+**A certificate is the secret holding its private key, with more beside it.**
+The key is a leader-stored secret, sealed, versioned and retained as any is;
+the certificate's chain is public and kept beside each version of it, so
+listing certificates opens nothing. The Certificates page lists them and the
+Secrets page leaves them out. The leader serves the version an operator
+chooses straight from the list, with the root workers verify it by, fixed when
+it is chosen. What is served changes by one write, and the version served is
+never deleted, forgotten or pruned while it is. A new version of that entry
+has to be one the leader can serve, and is served once stored. A start that
+cannot serve it -- its key does not open, or it no longer passes the checks it
+was chosen under -- serves the leader's own certificate and says why, and
+workers keep the root they hold until a certificate is served again.
 
-It is public, so it is committed with the rest of the bundle and read in
-review like every other line of it. Its private key is a credential like any
-other. That splits one upload across the two, and leaves a pair nothing but
-the leader can check: the certificate is in the commit and the key is in the
-store, so the leader refuses an identity whose two halves do not belong
-together, and refuses to move one onto a version of the other it does not
-match. It is the one question about a value the leader answers for itself,
-alongside whether a candidate matches.
+### The secrets encryption key
+
+Every sealed value carries the id of the key that sealed it, so the leader
+knows, without opening anything, whether its key fits what it holds. A leader
+that starts with nothing sealed writes the key. One whose key is missing, or
+does not fit what it sealed, cannot open any of it, so it says so as a failure
+on Issues and in its log, and seals nothing until the key is restored or
+regenerated: a value sealed meanwhile would be one the restored key could not
+open.
+
+Regenerating writes a new key and records the ids of the keys it replaces. A
+value sealed under a replaced key is then a value to enter again, a warning of
+its own that clears when it is. A key file that is there but does not fit is
+moved aside rather than overwritten, since it may be the right key for
+something.
+
+```mermaid
+stateDiagram-v2
+  state "Held, values to enter again" as Regenerated
+  [*] --> Held: first start writes the key
+  Held --> Missing: key file lost
+  Held --> Mismatched: another key put in its place
+  Missing --> Held: key restored
+  Mismatched --> Held: original restored
+  Missing --> Regenerated: regenerate
+  Mismatched --> Regenerated: regenerate, old file moved aside
+  Regenerated --> Held: every value entered again
+  note right of Missing: nothing is sealed until restored or regenerated
+```
+
+### A certificate travels with its key
+
+A certificate a connector presents is an entry of the leader's certificate
+list: its chain beside the private key, which is sealed like any stored
+secret. The bundle names the entry by name alone, so the chain is not read in
+review with the rest of the bundle, and a worker presents the entry's newest
+version: a replaced or renewed certificate reaches every worker that names it
+at its next heartbeat, and the worker restarts its deployment. Every worker
+presenting it restarts within a beat of the others, and a restarted receiver
+drops the connections it held, so its senders reconnect. The two
+halves cannot drift apart: the list refuses a chain and a key that do not
+belong together, and one version holds both. A new version keeps every
+purpose the newest version has, server or client, as its Extended Key Usage
+says. A connector naming the entry may present it from either side it is
+usable from, and a worker that could not present a new version refuses to
+restart onto it and keeps presenting the old one. A new version the leader
+stores itself, renewing an entry it keeps, is not checked this way; a worker
+refusing one is raised as WorkerNotDeployingItsTarget, naming why.
+
+A worker is sent the entry's chain with its key. Before it tears down what it
+runs, it refuses a certificate it could not present the way its bundle
+presents it: connecting out, or serving a receiver's senders. A new version it
+refuses leaves the running deployment running on the version it was started
+with, and the worker reports why. The worker keeps only the newest version, so
+a runtime that exits after that starts on nothing until the entry is replaced.
+
+An entry is uploaded, issued by the leader under the authority it already
+holds, for the names and the lifetime an admin gives, so a sender verifies it
+against the leader's root, or ordered over ACME: each order the leader places
+for itself is a version of one entry, which it serves. The leader keeps the
+entries it issues and orders up to date. It issues an entry again two thirds of the way through its life, as
+soon as it signs under another root, which is what a rotation's cutover leaves
+it doing, and when a regenerated key cannot open its newest version, each time
+with the same names and lifetime; it orders again as the ACME paragraph above
+says. The leader's own certificate is the issued entry `leader`, for the names
+the leader is reached by: it is issued again when those names change, and the
+authority's next key issues it at a rotation's cutover. Where it serves the
+entry, it serves the new version, and so does every worker. The leader holds
+the key of an entry it issues or orders, so it is never replaced by an upload
+under its name.
 
 A worker is sent the credentials the configuration it is about to run names,
 and no others. That is minimization, not a wall: enrollment binds a worker to
@@ -289,18 +398,18 @@ There is one answer to which implementation performed a given operation.
 ### Kafka's is separate
 
 librdkafka carries its own TLS and SASL over its own OpenSSL, and the Kerberos
-and SASL libraries beside it rest on that same one. An identity is one object
-wherever it is used, so which module enforces it follows the destination
+and SASL libraries beside it rest on that same one. A connector's TLS is one
+shape wherever it is used, so which module enforces it follows the destination
 rather than anything an operator writes:
 
 ```text
                    +---------------- AWS-LC ---------------+
-  leader  --TLS----|                                       |
-  git     --TLS----|  an identity, the leader's authority, |
-  Elastic --TLS----|  enrollment secrets, sealed values    |
+  leader  --TLS----|  a connector's TLS, the leader's      |
+  git     --TLS----|  authority, enrollment secrets,       |
+  Elastic --TLS----|  sealed values                        |
                    +---------------------------------------+
                    +-------- librdkafka's OpenSSL ---------+
-  Kafka   --TLS----|  the same identity, and SASL          |
+  Kafka   --TLS----|  the same TLS, and SASL               |
                    +---------------------------------------+
 ```
 

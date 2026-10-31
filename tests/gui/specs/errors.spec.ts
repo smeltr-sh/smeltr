@@ -13,7 +13,7 @@ test('a refused call stays in the error bar until the same call succeeds', async
   api,
   leader,
 }) => {
-  await api.put('/api/lookup-tables?branch=parked&scope=shared', [
+  await api.put('/api/areas/shared/lookups?branch=parked', [
     { id: 'colors', type: 'inline', headers: ['key', 'value'], rows: [['red', '1']] },
   ]);
 
@@ -38,7 +38,7 @@ test('a refused save links from the error bar to the step that holds its error',
   api,
   leader,
 }) => {
-  await api.put('/api/pipelines/orders?branch=work&scope=shared', {
+  await api.put('/api/areas/shared/pipelines/orders?branch=work', {
     id: 'orders',
     name: 'orders',
     steps: [{ type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'x = 1;' }],
@@ -62,12 +62,13 @@ test('a failed deploy opens a popup, which stays in the error bar once dismissed
   api,
   leader,
 }) => {
-  await api.put('/api/lookup-tables?branch=ship-it&scope=shared', [
+  await api.put('/api/areas/shared/lookups?branch=ship-it', [
     { id: 'colors', type: 'inline', headers: ['key', 'value'], rows: [['red', '1']] },
   ]);
   await api.openChange('ship-it', 'Add the colors table');
-  await admin.route('**/api/changes/ship-it/deploy', (r) =>
+  await admin.route('**/api/branches/ship-it/deploy', (r) =>
     r.fulfill({
+      status: 500,
       json: {
         ok: false,
         errors: [
@@ -90,7 +91,7 @@ test('a failed deploy opens a popup, which stays in the error bar once dismissed
   await admin.getByRole('button', { name: 'Approve & deploy' }).click();
   await admin
     .getByRole('dialog', { name: 'approve & deploy' })
-    .getByRole('button', { name: 'Approve & deploy' })
+    .getByRole('button', { name: 'Approve & deploy', exact: true })
     .click();
 
   const popup = admin.getByRole('dialog', { name: 'not deployed' });
@@ -105,13 +106,15 @@ test('a refused route is marked on its condition, which the error bar opens its 
   api,
   leader,
 }) => {
-  const on = '?branch=work&scope=shared';
-  await api.put(`/api/sources${on}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
-  await api.put(`/api/pipelines/p${on}`, { id: 'p', name: 'p', steps: [] });
-  await api.put(`/api/destinations${on}`, [
+  const on = '?branch=work';
+  await api.put(`/api/areas/shared/sources${on}`, [
+    { id: 'm1', type: 'metrics', bucketSeconds: 10 },
+  ]);
+  await api.put(`/api/areas/shared/pipelines/p${on}`, { id: 'p', name: 'p', steps: [] });
+  await api.put(`/api/areas/shared/destinations${on}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
   ]);
-  await api.put(`/api/routes${on}`, [
+  await api.put(`/api/areas/shared/routes${on}`, [
     { id: 'r1', source: 'm1', condition: 'true', pipeline: 'p', deliver: [{ to: ['es-a'] }] },
   ]);
 
@@ -125,7 +128,7 @@ test('a refused route is marked on its condition, which the error bar opens its 
 
   await expect(condition).toHaveAttribute('aria-invalid', 'true');
   await expect(card.locator(':scope > .head')).toContainText('1 error');
-  const link = errorBar(admin).getByRole('link', { name: /r1/ });
+  const link = errorBar(admin).getByRole('link', { name: /m1 → p/ });
   await expect(link).toContainText('ipVersion');
 
   // Closed, the card opens to the field the link names, in a window short enough that the field opens low.
@@ -149,14 +152,16 @@ test('a refused delivery condition keeps its mark on its own rule as the rules c
   api,
   leader,
 }) => {
-  const on = '?branch=work&scope=shared';
-  await api.put(`/api/sources${on}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
-  await api.put(`/api/pipelines/p${on}`, { id: 'p', name: 'p', steps: [] });
-  await api.put(`/api/destinations${on}`, [
+  const on = '?branch=work';
+  await api.put(`/api/areas/shared/sources${on}`, [
+    { id: 'm1', type: 'metrics', bucketSeconds: 10 },
+  ]);
+  await api.put(`/api/areas/shared/pipelines/p${on}`, { id: 'p', name: 'p', steps: [] });
+  await api.put(`/api/areas/shared/destinations${on}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
     { id: 'es-b', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'b' },
   ]);
-  await api.put(`/api/routes${on}`, [
+  await api.put(`/api/areas/shared/routes${on}`, [
     {
       id: 'r1',
       source: 'm1',

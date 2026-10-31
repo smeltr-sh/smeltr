@@ -151,11 +151,13 @@ fn commit(repo: &Path, branch: &str, files: Vec<(String, Vec<u8>)>, title: &str)
     }
 }
 
-/// A leader's repository, holding `bytes` in its lookup store as an upload would.
-fn leader(bytes: &[u8]) -> (PathBuf, Pointer) {
+/// A leader's repository, holding `bytes` in its lookup store as an upload would, and the roots its fetch trusts.
+fn leader(bytes: &[u8]) -> (PathBuf, PathBuf, Pointer) {
     let data = std::env::temp_dir().join(unique("smeltr-git-live"));
     let repo = git::repo_path(&data);
     git::init_bare_repo(&repo).unwrap();
+    let roots = remote::roots_path(&data);
+    smeltr::io::trust::write_pem_file(smeltr::io::trust::public(), &roots).unwrap();
     git::ensure_main_commit(&repo).unwrap();
     let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, bytes);
     let pointer = Pointer {
@@ -165,7 +167,7 @@ fn leader(bytes: &[u8]) -> (PathBuf, Pointer) {
     let path = store::path_of(&repo, &pointer.oid);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, bytes).unwrap();
-    (repo, pointer)
+    (repo, roots, pointer)
 }
 
 #[test]
@@ -192,11 +194,11 @@ fn a_leader_seeds_pushes_to_and_follows_a_real_git_host() {
     };
 
     let bytes = b"ip,city\n10.0.0.1,Oslo\n";
-    let (repo, pointer) = leader(bytes);
+    let (repo, roots, pointer) = leader(bytes);
 
     // An empty repository is given the leader's main.
     let main = git::main_head(&repo).unwrap();
-    assert_eq!(remote::sync(&repo, &remote), Ok(Some(main.clone())));
+    assert_eq!(remote::sync(&repo, &roots, &remote), Ok(Some(main.clone())));
     assert_eq!(api.branch(&name, "main", Some(&main)), Some(main));
 
     // A save on a branch arrives with its lookup file in the host's LFS.
@@ -229,7 +231,7 @@ fn a_leader_seeds_pushes_to_and_follows_a_real_git_host() {
     let merged = api.branches(&name)["main"].clone();
     assert_ne!(merged, git::main_head(&repo).unwrap(), "the merge made a commit");
     std::fs::remove_file(store::path_of(&repo, &pointer.oid)).unwrap();
-    assert_eq!(remote::sync(&repo, &remote), Ok(Some(merged.clone())));
+    assert_eq!(remote::sync(&repo, &roots, &remote), Ok(Some(merged.clone())));
     assert_eq!(git::main_head(&repo), Some(merged.clone()));
     assert_eq!(git::deployed(&repo), Some(merged));
     assert_eq!(std::fs::read(store::path_of(&repo, &pointer.oid)).unwrap(), bytes);
@@ -280,7 +282,7 @@ fn a_leader_seeds_pushes_to_and_follows_a_real_git_host() {
     );
     more("al/protected");
     let refused = remote::approve(&data_dir, &remote, "al/protected", &Actor::system()).unwrap_err();
-    assert!(refused.contains("protected"), "{refused}");
+    assert!(refused.message().contains("protected"), "{refused}");
     assert_eq!(api.branches(&name)["main"], approved);
     assert_eq!(git::main_head(&repo), Some(approved));
 }

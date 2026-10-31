@@ -80,7 +80,7 @@
   import Panel from './Panel.svelte';
   import Field from './Field.svelte';
   import UnitInput from './UnitInput.svelte';
-  import PasswordField from './PasswordField.svelte';
+  import LeaderSecretField from './LeaderSecretField.svelte';
   import Toggle from './Toggle.svelte';
 
   let settings = $state<AgentSettingsDto | null>(null);
@@ -92,6 +92,7 @@
   let endpoint = $state('');
   let model = $state('');
   let apiKey = $state('');
+  let replacingKey = $state(false);
   let keepDays = $state(90);
   let contextTokens = $state(200000);
 
@@ -103,6 +104,7 @@
     endpoint = next.endpoint || defaults.endpoint;
     model = next.model || defaults.model;
     apiKey = '';
+    replacingKey = false;
     keepDays = next.keepDays;
     contextTokens = next.contextTokens;
   }
@@ -211,34 +213,35 @@
             {#each PROVIDERS as p (p.value)}<option value={p.value}>{p.label}</option>{/each}
           </select>
         </Field>
-        <Field label="Endpoint URL">
+        <Field required label="Endpoint URL">
           <input
             bind:value={endpoint}
             placeholder={provider === 'openai-compatible' ? 'https://models.example.com' : ''}
             class="mono"
           />
         </Field>
-        <Field label="Model">
+        <Field required label="Model">
           {#snippet help()}
             The model's name as the provider gives it.
           {/snippet}
           <input bind:value={model} class="mono" />
         </Field>
-        <Field label="Context window">
+        <Field required label="Context window">
           {#snippet help()}
             The most the model reads at once. Conversations begin being summarized at 75% full.
           {/snippet}
           <UnitInput bind:value={contextTokens} unit="tokens" min={4096} max={10000000} required />
         </Field>
-        <Field label="API key">
+        <Field required label="API key" group>
           {#snippet help()}
-            Stored encrypted and never shown again. Left empty, the stored one is kept while the
-            provider and endpoint stay the same.
+            Stored encrypted and never shown again.
           {/snippet}
-          <PasswordField
+          <LeaderSecretField
             bind:value={apiKey}
+            bind:replacing={replacingKey}
+            stored={keyKept}
             ariaLabel="API key"
-            placeholder={keyKept ? 'stored' : ''}
+            required
           />
         </Field>
       </div>
@@ -249,7 +252,7 @@
         <h3>Conversations</h3>
       </div>
       <div class="fields">
-        <Field label="Kept for">
+        <Field required label="Kept for">
           {#snippet help()}
             A conversation nobody has added to for this long is deleted.
           {/snippet}

@@ -4,7 +4,7 @@
 //!
 //! A group runs its own objects merged with `shared/`'s, so an object is linked within that merge
 //! ([`super::map::merged_file`]). An object `shared/` declares runs in every group, and is answered across all of
-//! them; each object it links to is named with the scope that declares it, since two groups may each
+//! them; each object it links to is named with the area that declares it, since two groups may each
 //! declare their own object under one id.
 
 use std::collections::{BTreeSet, HashSet};
@@ -21,7 +21,7 @@ pub struct Connected {
     pub kind: Kind,
     pub id: String,
     /// The group that declares it, or `shared`.
-    pub scope: String,
+    pub area: String,
 }
 
 /// What a change to one object reaches, and the groups that run it.
@@ -49,7 +49,7 @@ pub fn of(shared: &config_file::RawBundle, groups: &[GroupBundle], object: &Obje
         let links = Links::of(&file);
         let found = links.connections(object);
         let named = |o: Object| Connected {
-            scope: if declares(&shared.file, o.kind).contains(o.id.as_str()) {
+            area: if declares(&shared.file, o.kind).contains(o.id.as_str()) {
                 config_file::SHARED_DIR.to_string()
             } else {
                 group.id.clone()
@@ -86,7 +86,6 @@ fn declares(file: &FileConfig, kind: Kind) -> HashSet<&str> {
         Kind::Destination => file.destinations.iter().map(|o| o.id.as_str()).collect(),
         Kind::LookupTable => file.lookup_tables.iter().map(|o| o.id.as_str()).collect(),
         Kind::GrokPattern => file.grok_patterns.iter().map(|o| o.id.as_str()).collect(),
-        Kind::Identity => file.identities.iter().map(|o| o.id.as_str()).collect(),
     }
 }
 
@@ -132,11 +131,11 @@ mod tests {
         (shared, vec![edge, core])
     }
 
-    fn connected(kind: Kind, id: &str, scope: &str) -> Connected {
+    fn connected(kind: Kind, id: &str, area: &str) -> Connected {
         Connected {
             kind,
             id: id.to_string(),
-            scope: scope.to_string(),
+            area: area.to_string(),
         }
     }
 

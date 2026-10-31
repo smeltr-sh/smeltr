@@ -11,7 +11,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 
 use crate::enrollment_code::{Authority, EnrollmentCode};
-use crate::leader::envelope::Envelope;
+use crate::leader::envelope::{Envelope, Refusal};
 use crate::leader::store::{Actor, EnrollmentCodeRecord, NewEnrollmentCode, WorkerKind};
 use crate::leader::{AppState, auth, run_store, tls, warnings};
 
@@ -65,14 +65,14 @@ pub async fn mint(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Json(request): Json<MintRequest>,
-) -> Json<Envelope<Minted>> {
+) -> Envelope<Minted> {
     let actor = actor.map(|a| a.0).unwrap_or_else(Actor::system);
     let kind = match request.kind.as_deref() {
         None => WorkerKind::Permanent,
         Some(kind) => match WorkerKind::parse(kind) {
             Some(kind) => kind,
             None => {
-                return Json(Envelope::failed_one(format!(
+                return Envelope::refused(Refusal::invalid(format!(
                     "{kind:?} is not a kind of enrollment code: permanent or ephemeral."
                 )));
             }
@@ -82,13 +82,11 @@ pub async fn mint(
         WorkerKind::Permanent => {
             let max_uses = request.max_uses.unwrap_or(DEFAULT_USES);
             if max_uses < 1 {
-                return Json(Envelope::failed_one(
-                    "an enrollment code brings in at least one worker.",
-                ));
+                return Envelope::refused(Refusal::invalid("an enrollment code brings in at least one worker."));
             }
             let lifetime_hours = request.lifetime_hours.unwrap_or(DEFAULT_LIFETIME_HOURS);
             if lifetime_hours < 1 {
-                return Json(Envelope::failed_one("an enrollment code lasts at least an hour."));
+                return Envelope::refused(Refusal::invalid("an enrollment code lasts at least an hour."));
             }
             (Some(max_uses), Some(lifetime_hours))
         }
@@ -96,7 +94,7 @@ pub async fn mint(
         // night with nobody watching. Refused rather than ignored, so nobody believes they bounded one.
         WorkerKind::Ephemeral => {
             if request.max_uses.is_some() || request.lifetime_hours.is_some() {
-                return Json(Envelope::failed_one(
+                return Envelope::refused(Refusal::invalid(
                     "an ephemeral enrollment code has no cap and no expiry: it brings in workers until it is withdrawn.",
                 ));
             }
@@ -109,13 +107,13 @@ pub async fn mint(
     // minutes earlier and long forgotten. Empty is the worker naming its own.
     if !request.group_id.is_empty() {
         if let Err(e) = crate::config_file::group_subtree(&request.group_id) {
-            return Json(Envelope::failed_one(e));
+            return Envelope::refused(Refusal::invalid(e));
         }
         // Syntax alone would also accept a group only proposed on a branch, or deleted from `main` since. A worker
         // taking this enrollment code can name no group but the one baked into its command, so one `main` does not yet
         // or no longer serve is exactly the credential no deployment will ever answer for.
         if !super::deployed_groups(&state.data_dir).contains(&request.group_id) {
-            return Json(Envelope::failed_one(format!(
+            return Envelope::refused(Refusal::invalid(format!(
                 "{:?} is not a deployed worker group. Deploy it, or mint without naming one.",
                 request.group_id
             )));
@@ -129,18 +127,18 @@ pub async fn mint(
     // ends of it.
     match tls::rotation(&tls::dir_of(&state.data_dir)) {
         Ok(Some(_)) => {
-            return Json(Envelope::failed_one(
+            return Envelope::refused(Refusal::conflict(
                 "this leader is rotating its certificate authority, and an enrollment code minted now would name a \
                  root it is about to stop serving. Cut the rotation over, or abandon it, and mint again.",
             ));
         }
         Ok(None) => {}
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
     }
 
     let (authority, authority_expires) = match authority_of(&state) {
         Ok(answered) => answered,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
     };
 
     let secret = auth::generate_secret();
@@ -154,7 +152,7 @@ pub async fn mint(
     let lasts_until = lifetime_hours.map(|hours| now_ms.saturating_add(hours.saturating_mul(60 * 60 * 1000)));
     let expires_at = match authority_expires {
         Some(root_expires) if root_expires <= now_ms => {
-            return Json(Envelope::failed_one(
+            return Envelope::refused(Refusal::conflict(
                 "this leader's certificate authority has expired, so an enrollment code minted now would pin a worker \
                  to a certificate it will refuse. Replace the authority first.",
             ));
@@ -180,10 +178,10 @@ pub async fn mint(
     let event = super::accounts::event_for(&actor, "enrollment-code-minted", &id, "ok");
     let written = run_store(state.store, move |s| s.create_enrollment_code_recorded(&record, &event)).await;
     if let Err(e) = written {
-        return Json(Envelope::failed_one(e));
+        return Envelope::refused(e);
     }
 
-    Json(Envelope::ok(Minted {
+    Envelope::ok(Minted {
         code: Some(MintedEnrollmentCode {
             id,
             value: EnrollmentCode { authority, secret }.to_string(),
@@ -192,7 +190,7 @@ pub async fn mint(
             expires_at_millis: expires_at,
             max_uses,
         }),
-    }))
+    })
 }
 
 /// Whether this leader presents a certificate of its own, which is the only case where the root an enrollment code pins
@@ -254,10 +252,10 @@ impl Presenting {
             Err(_) => return Presenting::Unreadable,
             Ok(true) => {}
         }
-        let Ok((materials, served, rotation)) = tls::in_force_and_rotation(dir) else {
+        let Ok((materials, rotation)) = tls::current_and_rotation(dir) else {
             return Presenting::Unreadable;
         };
-        let Ok(root) = tls::signing_root(&materials.ca_pem, &served) else {
+        let Ok(root) = tls::signing_root(&materials.ca_pem, &materials.served) else {
             return Presenting::Unreadable;
         };
         if materials.supplied {
@@ -379,7 +377,7 @@ fn authority_of(state: &AppState) -> Result<(Authority, Option<i64>), String> {
     // and an enrollment code minted from the disk would pin a worker to a root no handshake presents -- which that
     // worker reads as permanent. Asked as one answer, because an upload swapping whole directories between the question
     // and the read pairs one set's authority with another's certificate.
-    let (materials, served) = tls::in_force_if_agreed(&dir).map_err(|e| match e {
+    let materials = tls::current_if_agreed(&dir).map_err(|e| match e {
         tls::Refused::Conflict(_) => "this leader is still serving the certificate before the last one, which is not \
              what is on disk. An enrollment code minted now would pin a worker to an authority no handshake presents. \
              Restart this leader first."
@@ -389,7 +387,7 @@ fn authority_of(state: &AppState) -> Result<(Authority, Option<i64>), String> {
     // The root that signs what this leader serves, of however many the file holds. An enrollment code names one
     // fingerprint and a worker keeps the certificate matching it; during a rollover, naming the wrong one of two would
     // pin a worker to a root that vouches for nothing this leader presents.
-    let root = tls::signing_root(&materials.ca_pem, &served)?;
+    let root = tls::signing_root(&materials.ca_pem, &materials.served)?;
     Ok((Authority::Pinned(root.fingerprint), Some(root.not_after_millis)))
 }
 
@@ -438,7 +436,7 @@ pub struct EnrollmentCodes {
 }
 
 /// `GET /api/enrollment-codes`: what is outstanding, and what brought a worker in.
-pub async fn list(State(state): State<AppState>) -> Json<Envelope<EnrollmentCodes>> {
+pub async fn list(State(state): State<AppState>) -> Envelope<EnrollmentCodes> {
     let presenting = Presenting::read(&tls::dir_of(&state.data_dir));
     let now_ms = warnings::now_millis();
     let listed = match run_store(state.store, move |s| {
@@ -459,15 +457,15 @@ pub async fn list(State(state): State<AppState>) -> Json<Envelope<EnrollmentCode
         // An empty list reads as "nothing outstanding", which is the one answer a leader that cannot read its own
         // enrollment code table must not give.
         Err(e) => {
-            return Json(Envelope::failed_one(e));
+            return Envelope::refused(e);
         }
     };
-    Json(Envelope::ok(EnrollmentCodes {
+    Envelope::ok(EnrollmentCodes {
         codes: listed
             .into_iter()
             .map(|(code, minted_by)| dto(code, minted_by, &presenting))
             .collect(),
-    }))
+    })
 }
 
 fn dto(code: EnrollmentCodeRecord, minted_by: String, presenting: &Presenting) -> EnrollmentCodeDto {
@@ -574,16 +572,16 @@ pub async fn withdraw(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Path(id): Path<String>,
-) -> Json<Envelope> {
+) -> Envelope {
     let actor = actor.map(|a| a.0).unwrap_or_else(Actor::system);
     let event = super::accounts::event_for(&actor, "enrollment-code-withdrawn", &id, "ok");
     // One transaction, like minting: an enrollment code that is gone with nobody recorded as having withdrawn it is the
     // same hole in the audit read from the other end.
     let result = run_store(state.store, move |s| s.withdraw_enrollment_code_recorded(&id, &event)).await;
     match result {
-        Ok(true) => Json(Envelope::done()),
-        Ok(false) => Json(Envelope::failed_one("that enrollment code is already gone")),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(true) => Envelope::done(),
+        Ok(false) => Envelope::refused(Refusal::not_found("that enrollment code is already gone")),
+        Err(e) => Envelope::refused(e),
     }
 }
 

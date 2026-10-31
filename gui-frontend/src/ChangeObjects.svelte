@@ -5,6 +5,7 @@
   this view does not show is listed at its top.
 -->
 <script lang="ts">
+  import StateMark from './StateMark.svelte';
   import InlineError from './InlineError.svelte';
   import { reported } from './errors.svelte';
   import {
@@ -23,6 +24,7 @@
     type TestSummary,
     type CommentAnchor,
     type TimelineEvent,
+    type UndoTarget,
   } from './api';
   import {
     LOOKUPS,
@@ -36,6 +38,7 @@
     objectChanges,
     scopeOf,
     testsCovering,
+    undoTarget,
     type FileSides,
     type ObjectChange,
     type RowChange,
@@ -100,6 +103,18 @@
   let scopes = $derived([...new Set(branch.touches.map(scopeOf))].sort());
 
   let changes = $state<ObjectChange[]>([]);
+  /** A sample no test names, which a deploy leaves out (`BranchDto.leftOut`). Only the whole change says, since
+   * one save does not deploy. */
+  let leftOutPaths = $derived(new Set(branch.leftOut ?? []));
+  function isLeftOut(c: ObjectChange): boolean {
+    return (
+      span.whole &&
+      c.section === SAMPLES &&
+      leftOutPaths.has(`${prefixOf(c.scope)}${SAMPLES}/${c.id}.json`)
+    );
+  }
+  let deploying = $derived(changes.filter((c) => !isLeftOut(c)));
+  let leftOutSamples = $derived(changes.filter(isLeftOut));
   let loading = $state(true);
   let loadFailed = $state(false);
   let loads = 0;
@@ -108,6 +123,16 @@
     const res = await configAt(branch.name, scope, at);
     // A scope with no bundle at this commit is one the change creates or removes.
     return res.config ?? emptyConfig();
+  }
+
+  /** `shared/` at both ends, which a group's routes are counted after (`routeName`); none for `shared/` itself. */
+  async function sharedOf(scope: string, from: string, to: string) {
+    if (scope === SHARED_SCOPE) return undefined;
+    const [before, after] = await Promise.all([
+      sideAt(SHARED_SCOPE, from),
+      sideAt(SHARED_SCOPE, to),
+    ]);
+    return { before, after };
   }
 
   function prefixOf(scope: string): string {
@@ -186,8 +211,12 @@
       const [sides, changed] = await Promise.all([
         Promise.all(
           scopes.map(async (scope) => {
-            const [before, after] = await Promise.all([sideAt(scope, from), sideAt(scope, to)]);
-            return { scope, before, after };
+            const [before, after, shared] = await Promise.all([
+              sideAt(scope, from),
+              sideAt(scope, to),
+              sharedOf(scope, from, to),
+            ]);
+            return { scope, before, after, shared };
           }),
         ),
         filesChanged(from, to),
@@ -286,10 +315,10 @@
     return `${c.scope} ${c.section} ${c.id}`;
   }
 
-  async function undo(c: SectionChange) {
+  async function undo(c: ObjectChange, what: UndoTarget) {
     const ok = await ask({
-      title: `Undo changes to ${c.label}?`,
-      body: `Its edits are undone as a new save on ${branch.name}.`,
+      title: 'undo changes',
+      body: `Undo the changes to ${c.label}, as a new save on ${branch.name}.`,
       action: 'Undo changes',
       danger: true,
     });
@@ -298,7 +327,7 @@
     undoing = key;
     undoErrors = { ...undoErrors, [key]: '' };
     try {
-      const res = await undoChanges(branch.name, c.scope, c.section, c.id, branch.head);
+      const res = await undoChanges(branch.name, c.scope, what, branch.head);
       if (res.ok) {
         onundone();
       } else {
@@ -365,7 +394,7 @@
   function anchorOf(c: SectionChange, step?: string): CommentAnchor {
     const anchor: CommentAnchor = {
       kind: 'object',
-      scope: c.scope,
+      area: c.scope,
       section: c.section,
       objectId: c.id,
     };
@@ -467,6 +496,130 @@
   </div>
 {/snippet}
 
+{#snippet objectCard(c: ObjectChange, leftOut: boolean)}
+  {@const key = keyOf(c)}
+  {@const tests = span.whole ? testsOf(c) : null}
+  {@const target = undoTarget(c)}
+  <div class="card">
+    <div class="obj-head">
+      {#if !leftOut}<span class="badge {c.status}">{c.status}</span>{/if}
+      {#if c.moved}<span class="dim note">moved</span>{/if}
+      <span class="label mono">{c.label}</span>
+      <span class="dim note kind">{c.noun} &middot; {c.scope}</span>
+      <span class="grow"></span>
+      {#if tests}
+        <span
+          class="note"
+          class:ok={tests.passed === tests.total}
+          class:bad={tests.passed < tests.total}
+          >{#if tests.passed === tests.total}<StateMark state="ok" />
+          {/if}{tests.passed}/{tests.total} tests</span
+        >
+      {/if}
+      {#if csvSides(c)}
+        <button
+          type="button"
+          class="compact"
+          disabled={comparing[key]}
+          onclick={() => compareRowsOf(c)}>{comparing[key] ? 'Comparing…' : 'Compare rows'}</button
+        >
+      {/if}
+      <button
+        type="button"
+        class="compact"
+        aria-pressed={!!showingJson[key]}
+        onclick={() => (showingJson = { ...showingJson, [key]: !showingJson[key] })}>JSON</button
+      >
+      <!-- A group's own card is read only: neither undo nor a comment names a manifest. A left-out sample
+        never reaches main, so it has nothing to undo. -->
+      {#if target && span.whole && !leftOut && canEdit(c.scope)}
+        <button
+          type="button"
+          class="compact"
+          disabled={undoing !== null}
+          onclick={() => undo(c, target)}>{undoing === key ? 'Undoing…' : 'Undo changes'}</button
+        >
+      {/if}
+      {#if isSectionChange(c)}{@render commentButton(c, c.label)}{/if}
+    </div>
+    {#if undoErrors[key]}<div class="card-note">
+        <InlineError message={undoErrors[key]} />
+      </div>{/if}
+    {#if compareErrors[key]}<div class="card-note">
+        <InlineError message={compareErrors[key]} />
+      </div>{/if}
+    {#if isSectionChange(c)}{@render threadsOn(c)}{/if}
+
+    {#if showingJson[key]}
+      <div class="json-scroll">
+        <pre class="json">{#each jsonDiff(c.before, c.after) as line, i (i)}<div
+              class={line.kind}>{line.kind === 'added'
+                ? '+'
+                : line.kind === 'removed'
+                  ? '-'
+                  : ' '} {line.text}</div>{/each}</pre>
+      </div>
+    {:else if !leftOut}
+      {#if c.fields.length > 0}
+        <table class="fields">
+          <tbody>
+            {#each c.fields as f (f.key)}
+              <tr>
+                <td class="dim">{f.key}</td>
+                <td class="mono">
+                  {#if f.kind !== 'added'}<span class:struck={f.kind === 'removed'}
+                      >{describe(f.before)}</span
+                    >{/if}
+                  {#if f.kind === 'changed'}<span class="dim"> &rarr; </span>{/if}
+                  {#if f.kind !== 'removed'}<span class:added={c.status === 'added'}
+                      >{describe(f.after)}</span
+                    >{/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+      {#if c.movesSource}
+        <p class="dim note card-note">Deploying this moves the source.</p>
+      {/if}
+      {#if c.steps && isSectionChange(c)}
+        {@render stepList(c, c.steps)}
+      {/if}
+      {#if c.rows}
+        {@const moved = c.rows.filter((r) => r.status !== 'same')}
+        {@const same = c.rows.length - moved.length}
+        {@const rowSort = rowSortOf(key)}
+        <div class="rows-scroll">
+          <table class="rowtable">
+            <thead>
+              <tr
+                >{#each c.headers ?? [] as h, i (i)}<th aria-sort={rowSort.aria(String(i))}
+                    ><SortButton sort={rowSort} key={String(i)}>{h}</SortButton></th
+                  >{/each}</tr
+              >
+            </thead>
+            <tbody>
+              {#each sortedRows(rowSort, moved, c.headers ?? []).slice(0, ROWS_SHOWN) as row, i (i)}
+                <tr class={row.status}>
+                  {#each row.cells as cell, j (j)}<td>{cell}</td>{/each}
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        {#if moved.length > ROWS_SHOWN || same > 0}
+          <p class="dim note card-note">
+            {#if moved.length > ROWS_SHOWN}{count(moved.length - ROWS_SHOWN, 'more row')} changed{/if}{#if moved.length > ROWS_SHOWN && same > 0}
+              &middot;
+            {/if}{#if same > 0}{count(same, 'row')} unchanged{/if}
+          </p>
+        {/if}
+      {/if}
+    {/if}
+  </div>
+{/snippet}
+
 <div class="pane">
   <div class="pane-head">
     <Segmented
@@ -478,7 +631,12 @@
       bind:value={view}
     />
     {#if view === 'objects' && !loading && !loadFailed}
-      <span class="dim note">{count(changes.length, 'object')}</span>
+      <span class="dim note"
+        >{count(
+          deploying.length,
+          'object',
+        )}{#if leftOutSamples.length > 0}{` · ${count(leftOutSamples.length, 'sample')} left out`}{/if}</span
+      >
     {/if}
     <select class="saves" aria-label="Saves" bind:value={range}>
       <option value="all">All saves</option>
@@ -522,130 +680,21 @@
   {:else if changes.length === 0}
     <p class="dim">No objects changed.</p>
   {:else}
-    {#each changes as c (keyOf(c))}
-      {@const key = keyOf(c)}
-      {@const tests = span.whole ? testsOf(c) : null}
-      <div class="card">
-        <div class="obj-head">
-          <span class="badge {c.status}">{c.status}</span>
-          {#if c.moved}<span class="dim note">moved</span>{/if}
-          <span class="label mono">{c.label}</span>
-          <span class="dim note kind">{c.noun} &middot; {c.scope}</span>
-          <span class="grow"></span>
-          {#if tests}
-            <span
-              class="note"
-              class:ok={tests.passed === tests.total}
-              class:bad={tests.passed < tests.total}
-              >{tests.passed === tests.total ? '✓ ' : ''}{tests.passed}/{tests.total} tests</span
-            >
-          {/if}
-          {#if csvSides(c)}
-            <button
-              type="button"
-              class="compact"
-              disabled={comparing[key]}
-              onclick={() => compareRowsOf(c)}
-              >{comparing[key] ? 'Comparing…' : 'Compare rows'}</button
-            >
-          {/if}
-          <button
-            type="button"
-            class="compact"
-            aria-pressed={!!showingJson[key]}
-            onclick={() => (showingJson = { ...showingJson, [key]: !showingJson[key] })}
-            >JSON</button
-          >
-          <!-- A group's own card is read only: neither undo nor a comment names a manifest. -->
-          {#if isSectionChange(c)}
-            {#if span.whole && canEdit(c.scope)}
-              <button
-                type="button"
-                class="compact"
-                disabled={undoing !== null}
-                onclick={() => undo(c)}>{undoing === key ? 'Undoing…' : 'Undo changes'}</button
-              >
-            {/if}
-            {@render commentButton(c, c.label)}
-          {/if}
-        </div>
-        {#if undoErrors[key]}<div class="card-note">
-            <InlineError message={undoErrors[key]} />
-          </div>{/if}
-        {#if compareErrors[key]}<div class="card-note">
-            <InlineError message={compareErrors[key]} />
-          </div>{/if}
-        {#if isSectionChange(c)}{@render threadsOn(c)}{/if}
-
-        {#if showingJson[key]}
-          <div class="json-scroll">
-            <pre class="json">{#each jsonDiff(c.before, c.after) as line, i (i)}<div
-                  class={line.kind}>{line.kind === 'added'
-                    ? '+'
-                    : line.kind === 'removed'
-                      ? '-'
-                      : ' '} {line.text}</div>{/each}</pre>
-          </div>
-        {:else}
-          {#if c.fields.length > 0}
-            <table class="fields">
-              <tbody>
-                {#each c.fields as f (f.key)}
-                  <tr>
-                    <td class="dim">{f.key}</td>
-                    <td class="mono">
-                      {#if f.kind !== 'added'}<span class:struck={f.kind === 'removed'}
-                          >{describe(f.before)}</span
-                        >{/if}
-                      {#if f.kind === 'changed'}<span class="dim"> &rarr; </span>{/if}
-                      {#if f.kind !== 'removed'}<span class:added={c.status === 'added'}
-                          >{describe(f.after)}</span
-                        >{/if}
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          {/if}
-          {#if c.movesSource}
-            <p class="dim note card-note">Deploying this moves the source.</p>
-          {/if}
-          {#if c.steps && isSectionChange(c)}
-            {@render stepList(c, c.steps)}
-          {/if}
-          {#if c.rows}
-            {@const moved = c.rows.filter((r) => r.status !== 'same')}
-            {@const same = c.rows.length - moved.length}
-            {@const rowSort = rowSortOf(key)}
-            <div class="rows-scroll">
-              <table class="rowtable">
-                <thead>
-                  <tr
-                    >{#each c.headers ?? [] as h, i (i)}<th aria-sort={rowSort.aria(String(i))}
-                        ><SortButton sort={rowSort} key={String(i)}>{h}</SortButton></th
-                      >{/each}</tr
-                  >
-                </thead>
-                <tbody>
-                  {#each sortedRows(rowSort, moved, c.headers ?? []).slice(0, ROWS_SHOWN) as row, i (i)}
-                    <tr class={row.status}>
-                      {#each row.cells as cell, j (j)}<td>{cell}</td>{/each}
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-            {#if moved.length > ROWS_SHOWN || same > 0}
-              <p class="dim note card-note">
-                {#if moved.length > ROWS_SHOWN}{count(moved.length - ROWS_SHOWN, 'more row')} changed{/if}{#if moved.length > ROWS_SHOWN && same > 0}
-                  &middot;
-                {/if}{#if same > 0}{count(same, 'row')} unchanged{/if}
-              </p>
-            {/if}
-          {/if}
-        {/if}
-      </div>
+    {#each deploying as c (keyOf(c))}
+      {@render objectCard(c, false)}
     {/each}
+    {#if leftOutSamples.length > 0}
+      <div class="card left-out">
+        <h2 class="card-note">Left out</h2>
+        <p class="card-note">
+          No test uses these samples. They stay on <code>{branch.name}</code> until it is deployed, then
+          are deleted with it. To deploy one, lock it as a test.
+        </p>
+        {#each leftOutSamples as c (keyOf(c))}
+          {@render objectCard(c, true)}
+        {/each}
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -666,17 +715,11 @@
     width: auto;
     max-width: 22rem;
   }
-  .dim {
-    color: var(--dim);
-  }
   .mono {
     font-family: var(--mono);
   }
   .note {
     font-size: var(--text-note);
-  }
-  .grow {
-    flex-grow: 1;
   }
   .ok {
     color: var(--added);
@@ -699,13 +742,13 @@
   }
   .obj-head {
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.6rem;
     padding: 0.55rem 0.8rem;
     border-bottom: 1px solid var(--border);
   }
-  /* One row however narrow the pane: the name and its kind give way, the buttons do not. */
+  /* However narrow the pane, nothing is clipped: what does not fit on a row wraps under it, and the buttons never shrink. */
   .obj-head > :global(*) {
     flex-shrink: 0;
     white-space: nowrap;
@@ -717,7 +760,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  /* The kind gives way first: the name is what the card is about, and gives way only past half the row. */
+  /* A name or kind wider than a whole row ellipsizes; the name gives way only past half the row. */
   .obj-head .label {
     flex-shrink: 0;
     max-width: 50%;
@@ -842,13 +885,30 @@
     border-bottom: 1px solid var(--border);
   }
 
-  .elsewhere h2 {
+  .elsewhere h2,
+  .left-out h2 {
     font-size: var(--text-micro);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--dim);
     border-bottom: 1px solid var(--border);
+  }
+  /* Its samples sit inside it, each folded to its head. */
+  .left-out {
+    display: grid;
+    gap: 0.6rem;
+    padding-bottom: 0.8rem;
+  }
+  .left-out > p {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  .left-out > .card {
+    margin: 0 0.8rem;
+  }
+  .left-out > .card .obj-head {
+    border-bottom: 0;
   }
   .away {
     display: grid;

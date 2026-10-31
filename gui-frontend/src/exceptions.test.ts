@@ -103,7 +103,9 @@ const elastic = (id: string): DestinationDto => ({
 describe('problems', () => {
   it('names a delivery to nowhere', () => {
     const group: ExceptionsDto = { kinds: { Unmatched: { deliver: [] } } };
-    const routes = [{ id: 'r', exceptions: { categories: { parse: { deliver: ['es'] } } } }];
+    const routes = [
+      { name: 's \u2192 p', exceptions: { categories: { parse: { deliver: ['es'] } } } },
+    ];
     expect(problems(group, routes, [elastic('es')])).toEqual([
       'the group delivers Unmatched to no destination',
     ]);

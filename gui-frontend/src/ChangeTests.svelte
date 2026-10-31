@@ -46,12 +46,12 @@
 
   /** Every route `t` covers, per its summary -- empty for a pipeline test. */
   function routesOf(t: TestResult): string[] {
-    return testSummaryByKey.get(scopedKey(t.scope, t.id))?.routes ?? [];
+    return testSummaryByKey.get(scopedKey(t.area, t.id))?.routes ?? [];
   }
 
   /** Every test `route` covers within `scope`, by `routesOf` -- the route counterpart of `testsCovering`. */
   function resultsForRoute(scope: string, route: string): TestResult[] {
-    return testResults.filter((t) => t.scope === scope && routesOf(t).includes(route));
+    return testResults.filter((t) => t.area === scope && routesOf(t).includes(route));
   }
 
   /** A short, actionable phrase naming the object the reason points at -- the table, the source, the
@@ -93,27 +93,27 @@
     const reached = touchedByScope.flatMap((si) => [
       ...si.pipelines.map((r) => ({
         kind: 'pipeline' as const,
-        scope: si.scope,
+        scope: si.area,
         id: r.id,
         reasons: r.reasons,
-        tests: testsCovering(testResults, testSummaryByKey, si.scope, r.id),
+        tests: testsCovering(testResults, testSummaryByKey, si.area, r.id),
       })),
       ...si.routes.map((r) => ({
         kind: 'route' as const,
-        scope: si.scope,
+        scope: si.area,
         id: r.id,
         reasons: r.reasons,
-        tests: resultsForRoute(si.scope, r.id),
+        tests: resultsForRoute(si.area, r.id),
       })),
     ]);
     // A test whose sample or lock changed runs though the change reaches nothing it covers.
     const covered = new Set(reached.flatMap((g) => g.tests));
-    const changed = [...new Set(testResults.map((t) => t.scope))].map((scope) => ({
+    const changed = [...new Set(testResults.map((t) => t.area))].map((scope) => ({
       kind: 'changed' as const,
       scope,
       id: '',
       reasons: [],
-      tests: testResults.filter((t) => t.scope === scope && !covered.has(t)),
+      tests: testResults.filter((t) => t.area === scope && !covered.has(t)),
     }));
     return [...reached, ...changed.filter((g) => g.tests.length > 0)];
   });
@@ -146,7 +146,7 @@
 
   /** Lock a failing test again, in the scope that holds it. */
   function relock(t: TestResult) {
-    setScope(t.scope, `#/build/tests/relock/${encodeURIComponent(t.id)}`);
+    setScope(t.area, `#/build/tests/relock/${encodeURIComponent(t.id)}`);
   }
 
   /** "held 3 records when locked, now 4": the sample itself changed under the test. */
@@ -322,9 +322,6 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--dim);
-  }
-  .dim {
     color: var(--dim);
   }
   .mono {

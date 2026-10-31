@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::FunctionId;
-use smeltr::format::encoding::Encoding;
 use smeltr::io::Source;
 use smeltr::io::fake::FakeDestination;
 use smeltr::metrics::{Metrics, MetricsHandle, MetricsSource, MetricsSourceConfig};
@@ -54,7 +53,6 @@ fn a_worker_around_a_metrics_source_ships_real_counters_as_ordinary_json_rows() 
             metrics.clone(),
             MetricsSourceConfig { bucket: Duration::ZERO },
         )),
-        Encoding::Auto,
         topology,
         Vec::new(),
         MemoryBudget::unlimited(),
@@ -68,7 +66,6 @@ fn a_worker_around_a_metrics_source_ships_real_counters_as_ordinary_json_rows() 
         on_reject: Answer::Block,
         wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
-        id_field: None,
     });
 
     // Beside it ride the worker's own counters for source 9, started at 0.
@@ -128,7 +125,7 @@ fn a_worker_around_a_metrics_source_ships_real_counters_as_ordinary_json_rows() 
 /// field is what keeps that expressible.
 #[test]
 fn a_route_can_select_metrics_rows_by_their_topic() {
-    use smeltr::plan::plan::compile;
+    use smeltr::plan::compile::compile;
     use smeltr::plan::topology::SourceMeta;
 
     let p = PipelineConfig {

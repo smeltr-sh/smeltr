@@ -25,7 +25,7 @@
   <WorkflowDiagram kind="review" />
   <h2 id="open">Open for review</h2>
   <ol>
-    <li>Save the branch and <a href="/build#test-heading">run its tests</a>.</li>
+    <li>Save the branch and <a href="/docs/steps#verify">run its tests</a>.</li>
     <li>
       Select <strong>Open for review</strong> in the branch bar, check the title, description and test
       results it fills in, and open the change.

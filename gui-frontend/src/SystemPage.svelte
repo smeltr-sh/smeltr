@@ -8,17 +8,20 @@
 <script lang="ts">
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
+  import InlineSaveBar from './InlineSaveBar.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
+  import Version from './Version.svelte';
   import Panel from './Panel.svelte';
   import Field from './Field.svelte';
   import Advanced from './Advanced.svelte';
   import UnitInput from './UnitInput.svelte';
+  import Toggle from './Toggle.svelte';
+  import { ago } from './time';
   import CertificatesSettings from './CertificatesSettings.svelte';
   import GitRemoteSettings from './GitRemoteSettings.svelte';
   import LicenseSettings from './LicenseSettings.svelte';
-  import OidcSettings from './OidcSettings.svelte';
   import AgentSettings from './AgentSettings.svelte';
   import SecondaryTabs from './SecondaryTabs.svelte';
   import { SYSTEM_SECTIONS, type SystemSection } from './nav';
@@ -28,10 +31,13 @@
     getSystemInfo,
     getWarningSettings,
     putWarningSettings,
+    getUpdateSettings,
+    putUpdateSettings,
     refused,
     type SessionSettingsDto,
     type SystemInfoDto,
     type WarningSettingsDto,
+    type UpdateSettingsDto,
   } from './api';
 
   let { section }: { section: SystemSection } = $props();
@@ -58,6 +64,44 @@
         reported(e);
       });
   });
+
+  let updates = $state<UpdateSettingsDto | null>(null);
+  let checkShown = $state(true);
+  let updatesMessage = $state('');
+  let updatesBusy = $state(false);
+
+  const checkDirty = $derived(updates !== null && checkShown !== updates.check);
+
+  function adoptUpdates(next: UpdateSettingsDto) {
+    updates = next;
+    checkShown = next.check;
+  }
+
+  $effect(() => {
+    if (section !== 'general') return;
+    getUpdateSettings()
+      .then((next) => {
+        if (next.settings) adoptUpdates(next.settings);
+      })
+      .catch(reported);
+  });
+
+  async function saveUpdates(event: SubmitEvent) {
+    event.preventDefault();
+    if (updatesBusy || updates === null) return;
+    updatesBusy = true;
+    updatesMessage = '';
+    try {
+      const result = await putUpdateSettings(checkShown);
+      if (!result.ok || !result.settings) return;
+      adoptUpdates(result.settings);
+      updatesMessage = 'saved';
+    } catch (e) {
+      reported(e);
+    } finally {
+      updatesBusy = false;
+    }
+  }
 
   let warnings = $state<WarningSettingsDto | null>(null);
   let bandShown = $state(99);
@@ -200,7 +244,7 @@
 
   <div class="sections">
     {#if section === 'general'}
-      <Panel title="General">
+      <Panel title="General" onsubmit={saveUpdates}>
         {#if infoFailed}
           <!-- The error bar says why. -->
         {:else if info === null}
@@ -211,15 +255,41 @@
               <h3>Version</h3>
             </div>
             <div class="fields">
-              {#if info.release}
-                <code>{info.release}</code>
-                <Help label="Build"><code>{info.smeltrVersion}</code></Help>
-              {:else}
-                <code>{info.smeltrVersion}</code>
-              {/if}
+              <Version {info} build newerHref={info.newerRelease?.url} />
             </div>
           </div>
+          {#if info.release && updates}
+            <div class="setting">
+              <div>
+                <h3>Updates</h3>
+              </div>
+              <div class="fields">
+                <Field label="Check for new releases" group>
+                  <Toggle bind:checked={checkShown} ariaLabel="Check for new releases" />
+                </Field>
+                {#if updates.check && info.releaseCheck}
+                  {@const check = info.releaseCheck}
+                  <p class="checked">
+                    {#if check.failure}
+                      Last check failed {ago(check.checkedAt / 1000)}: {check.failure}
+                    {:else}
+                      Checked {ago(check.checkedAt / 1000)}
+                    {/if}
+                  </p>
+                {/if}
+              </div>
+            </div>
+          {/if}
         {/if}
+        {#if updatesMessage}
+          <p class="message" role="status">{updatesMessage}</p>
+        {/if}
+        <InlineSaveBar
+          dirty={checkDirty}
+          label="Save updates"
+          disabled={updatesBusy}
+          ondiscard={() => updates && adoptUpdates(updates)}
+        />
       </Panel>
       {#if warnings}
         <Panel title="Warnings" onsubmit={saveWarnings}>
@@ -227,7 +297,7 @@
             label="Expected throughput"
             modified={warnings.sourceRowsBandPercent !== warnings.defaultPercent}
           >
-            <Field label="Range">
+            <Field required label="Range">
               {#snippet help()}
                 The expected range of a source's throughput based on this time of day.
               {/snippet}
@@ -244,20 +314,14 @@
           {#if warningsMessage}
             <p class="message" role="status">{warningsMessage}</p>
           {/if}
-          {#if bandDirty}
-            <div class="savebar">
-              <div class="buttons">
-                <button type="button" onclick={() => warnings && adoptWarnings(warnings)}
-                  >Discard</button
-                >
-                <button class="primary" type="submit" disabled={warningsBusy}>Save warnings</button>
-              </div>
-            </div>
-          {/if}
+          <InlineSaveBar
+            dirty={bandDirty}
+            label="Save warnings"
+            disabled={warningsBusy}
+            ondiscard={() => warnings && adoptWarnings(warnings)}
+          />
         </Panel>
       {/if}
-    {:else if section === 'oidc'}
-      <OidcSettings />
     {:else if section === 'certificates'}
       <CertificatesSettings />
     {:else if section === 'git'}
@@ -283,7 +347,7 @@
             </h3>
           </div>
           <div class="fields">
-            <Field label="Idle timeout">
+            <Field required label="Idle timeout">
               <UnitInput
                 bind:value={idleShown}
                 unit={idleUnit.label}
@@ -293,7 +357,7 @@
                 required
               />
             </Field>
-            <Field label="Maximum session age">
+            <Field required label="Maximum session age">
               <UnitInput
                 bind:value={absoluteShown}
                 unit={absoluteUnit.label}
@@ -314,19 +378,16 @@
           <p class="message" role="status">{message}</p>
         {/if}
 
-        {#if dirty}
-          <div class="savebar">
-            <p class="critical">
-              Shortening either deadline signs out every session already past it.
-            </p>
-            <div class="buttons">
-              <button type="button" onclick={discard}>Discard</button>
-              <button class="primary" type="submit" disabled={busy || impossible}
-                >Save sessions</button
-              >
-            </div>
-          </div>
-        {/if}
+        <InlineSaveBar
+          {dirty}
+          label="Save sessions"
+          disabled={busy || impossible}
+          ondiscard={discard}
+        >
+          <p class="critical">
+            Shortening either deadline signs out every session already past it.
+          </p>
+        </InlineSaveBar>
       </Panel>
     {/if}
   </div>
@@ -360,31 +421,14 @@
     gap: 0.9rem;
   }
 
-  code {
-    font-family: var(--mono);
+  .checked {
+    margin: 0;
+    color: var(--dim);
+    font-size: var(--text-note);
   }
 
   p {
     margin: 0;
-  }
-
-  .savebar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.8rem;
-    border-top: 1px solid var(--border);
-    padding-top: 0.9rem;
-  }
-
-  .savebar p {
-    font-size: var(--text-note);
-  }
-
-  .buttons {
-    display: flex;
-    gap: 0.5rem;
   }
 
   @media (max-width: 720px) {

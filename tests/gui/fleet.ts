@@ -13,7 +13,7 @@ import {
   type Page,
   type Request,
 } from '@playwright/test';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -23,7 +23,7 @@ import { RUN_DIR, recordPid } from './run';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TARGET = path.resolve(REPO, process.env.CARGO_TARGET_DIR ?? 'target');
-const BINARY = process.env.SMELTR_BINARY ?? path.join(TARGET, 'release', 'smeltr');
+const BINARY = process.env.SMELTR_BINARY ?? path.join(TARGET, 'debug', 'smeltr');
 
 /** The password the `admin` fixture chooses for the administrator. */
 export const ADMIN_PASSWORD = 'gui-tests-admin-password';
@@ -90,7 +90,7 @@ export class Api {
     const text = await res.text();
     expect(res.ok(), `${method} ${url} -> ${res.status()}: ${text}`).toBe(true);
     const body = text ? JSON.parse(text) : undefined;
-    // Many routes answer a refusal with 200 and `ok: false`; arranging never expects one.
+    // The status alone says a refusal (docs/architecture/api.md); this catches a route that answers one at 200.
     expect(body?.ok, `${method} ${url}: ${text}`).not.toBe(false);
     return body as T;
   }
@@ -101,13 +101,21 @@ export class Api {
 
   /** Opens `branch` for review as `title`. */
   openChange(branch: string, title: string, description = '') {
-    return this.post('/api/changes', { branch, title, description });
+    return this.post(`/api/branches/${encodeURIComponent(branch)}/open`, { title, description });
   }
 
   /** Approves the change open on `branch`, which merges it to main and deploys it. */
   deploy(branch: string) {
-    return this.post(`/api/changes/${encodeURIComponent(branch)}/deploy`, {});
+    return this.post(`/api/branches/${encodeURIComponent(branch)}/deploy`, {});
   }
+}
+
+/** A certificate and its key, and the authority that issued it with that authority's key. */
+export interface Pki {
+  certificate: string;
+  privateKey: string;
+  authority: string;
+  authorityKey: string;
 }
 
 /** Starts and stops the processes of one test. */
@@ -122,7 +130,8 @@ export class Fleet {
   }
 
   private spawn(name: string, dir: string, settings: Record<string, string>): Proc {
-    if (!fs.existsSync(BINARY)) throw new Error(`no binary at ${BINARY}: run \`just build\` first`);
+    if (!fs.existsSync(BINARY))
+      throw new Error(`no binary at ${BINARY}: run \`just build-dev\` first`);
     // The caller's environment without any Smeltr setting, so one exported for a developer's own fleet does
     // not point a test at that fleet's data.
     const env: NodeJS.ProcessEnv = {};
@@ -153,8 +162,8 @@ export class Fleet {
     while (Date.now() < deadline) {
       const username = /username: (\S+)/.exec(proc.output)?.[1];
       const password = /one-time password: (\S+)/.exec(proc.output)?.[1];
-      // The password is printed before the certificate is written, and a test may read the certificate.
-      const served = fs.existsSync(path.join(proc.dir, 'smeltr-leader-data', 'tls', 'cert.pem'));
+      // The password is printed before the certificate is served, and a test may read what is served.
+      const served = fs.existsSync(path.join(proc.dir, 'smeltr-leader-data', 'tls', 'served.json'));
       if (username && password && served && (await listening(port)))
         return {
           url: `https://127.0.0.1:${port}`,
@@ -208,19 +217,77 @@ export class Fleet {
     });
   }
 
-  /** A certificate, key and authority from a PKI that is somebody else's: a leader of its own, started only to
-   * mint them and stopped at once. It carries the names every test leader answers to. */
-  async externalPki(): Promise<{ certificate: string; privateKey: string; authority: string }> {
-    const other = await this.startLeader();
-    const tls = path.join(other.proc.dir, 'smeltr-leader-data', 'tls');
-    const read = (name: string) => fs.readFileSync(path.join(tls, name), 'utf8');
-    const pki = {
-      certificate: read('cert.pem'),
-      privateKey: read('key.pem'),
+  /** A certificate, key and authority from a PKI that is somebody else's, minted with `openssl`. It carries the
+   * names every test leader answers to. With `under`, the certificate is another under that one's authority: its
+   * renewal. */
+  externalPki(under?: Pki): Pki {
+    const dir = this.tempDir('pki');
+    const openssl = (...args: string[]) =>
+      execFileSync('openssl', args, { cwd: dir, stdio: 'pipe' });
+    const key = ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes'];
+    if (under) {
+      fs.writeFileSync(path.join(dir, 'ca.pem'), under.authority);
+      fs.writeFileSync(path.join(dir, 'ca.key'), under.authorityKey);
+    } else {
+      openssl(
+        'req',
+        '-x509',
+        ...key,
+        '-keyout',
+        'ca.key',
+        '-out',
+        'ca.pem',
+        '-days',
+        '30',
+        '-subj',
+        '/CN=somebody else',
+        '-addext',
+        'basicConstraints=critical,CA:TRUE',
+        '-addext',
+        'keyUsage=critical,keyCertSign',
+      );
+    }
+    fs.writeFileSync(
+      path.join(dir, 'leaf.ext'),
+      'subjectAltName=DNS:localhost,IP:127.0.0.1\nkeyUsage=critical,digitalSignature\n' +
+        'extendedKeyUsage=serverAuth,clientAuth\n',
+    );
+    openssl(
+      'req',
+      '-new',
+      ...key,
+      '-keyout',
+      'leaf.key',
+      '-out',
+      'leaf.csr',
+      '-subj',
+      '/CN=localhost',
+    );
+    openssl(
+      'x509',
+      '-req',
+      '-in',
+      'leaf.csr',
+      '-CA',
+      'ca.pem',
+      '-CAkey',
+      'ca.key',
+      '-set_serial',
+      String(Date.now()),
+      '-days',
+      '7',
+      '-extfile',
+      'leaf.ext',
+      '-out',
+      'leaf.pem',
+    );
+    const read = (name: string) => fs.readFileSync(path.join(dir, name), 'utf8');
+    return {
+      certificate: read('leaf.pem'),
+      privateKey: read('leaf.key'),
       authority: read('ca.pem'),
+      authorityKey: read('ca.key'),
     };
-    await other.proc.stop();
-    return pki;
   }
 
   /** Stops the worker named `name`. */
@@ -274,6 +341,25 @@ export async function signedIn(leader: Leader, username: string, password: strin
   return new Api(ctx, (await res.json()).csrf);
 }
 
+/** What `method path` answers for a script calling with `key`: no cookie, no `Origin`, no CSRF value. */
+export async function withKey(
+  leader: Leader,
+  key: string,
+  method: string,
+  path: string,
+): Promise<number> {
+  const ctx = await request.newContext({
+    baseURL: leader.url,
+    ignoreHTTPSErrors: true,
+    extraHTTPHeaders: { Authorization: `Bearer ${key}` },
+  });
+  try {
+    return (await ctx.fetch(path, { method })).status();
+  } finally {
+    await ctx.dispose();
+  }
+}
+
 /** A second administrator, past their first-sign-in password change, signed in over the API. */
 export async function addAccount(
   leader: Leader,
@@ -281,10 +367,15 @@ export async function addAccount(
   username: string,
   displayName: string,
 ): Promise<Api> {
-  const made = await api.post('/api/users', { username, displayName });
+  const made = await api.post('/api/accounts', {
+    authSource: 'local',
+    username,
+    displayName,
+    roles: ['administrator'],
+  });
   const first = await signedIn(leader, username, made.temporaryPassword);
   const password = `${username}-chosen-password`;
-  await first.post('/api/auth/password', { username, newPassword: password });
+  await first.put('/api/auth/password', { username, newPassword: password });
   await first.ctx.dispose();
   return signedIn(leader, username, password);
 }
@@ -354,7 +445,7 @@ export async function settled(page: Page) {
  * `ADMIN_PASSWORD`; changing it ends that session. */
 export async function claimAdmin(leader: Leader): Promise<Api> {
   const first = await signedIn(leader, leader.username, leader.oneTimePassword);
-  await first.post('/api/auth/password', {
+  await first.put('/api/auth/password', {
     username: leader.username,
     newPassword: ADMIN_PASSWORD,
   });

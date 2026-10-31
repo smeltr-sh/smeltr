@@ -16,6 +16,7 @@
   import SortButton from './SortButton.svelte';
   import { TableSort } from './sort.svelte';
   import { RESOURCES_TABS } from './nav';
+  import { dateTime } from './time';
   import { editable } from './access';
   import { nameOf, pipelineNamesAt, type PipelineNames } from './pipelineNames';
   import {
@@ -27,6 +28,7 @@
     currentBranch,
     currentScope,
     errorText,
+    capturedAt,
     type SampleSummary,
     type TestSummary,
     type TestResult,
@@ -57,12 +59,13 @@
   let pipelineNames: PipelineNames = $state({});
   pipelineNamesAt(currentBranch(), currentScope()).then((names) => (pipelineNames = names));
 
-  const sampleSort = new TableSort<'name' | 'source' | 'records'>();
+  const sampleSort = new TableSort<'name' | 'source' | 'records' | 'captured'>();
   let sortedSamples = $derived(
     sampleSort.apply(samples, {
       name: (s) => s.name,
       source: (s) => s.source ?? 'pasted',
       records: (s) => s.records,
+      captured: (s) => capturedAt(s) ?? 0,
     }),
   );
 
@@ -111,7 +114,7 @@
   async function removeTest(t: TestSummary) {
     const ok = await ask({
       title: 'delete test',
-      body: `Delete the test "${t.name}". This cannot be undone.`,
+      body: `Delete the test "${t.name}".`,
       action: 'Delete',
       danger: true,
     });
@@ -152,7 +155,7 @@
   async function remove(s: SampleSummary) {
     const ok = await ask({
       title: 'delete sample',
-      body: `Delete the sample "${s.name}". This cannot be undone.`,
+      body: `Delete the sample "${s.name}".`,
       action: 'Delete',
       danger: true,
     });
@@ -221,6 +224,9 @@
             <th aria-sort={sampleSort.aria('records')}
               ><SortButton sort={sampleSort} key="records">Records</SortButton></th
             >
+            <th aria-sort={sampleSort.aria('captured')}
+              ><SortButton sort={sampleSort} key="captured">Captured</SortButton></th
+            >
             <th></th><th></th><th></th>
           </tr>
         </thead>
@@ -230,6 +236,9 @@
               <td><strong>{s.name}</strong></td>
               <td class="mono dim">{s.source ?? 'pasted'}</td>
               <td class="mono">{s.records}</td>
+              <td class="dim"
+                >{#if capturedAt(s) !== undefined}{dateTime(capturedAt(s)! / 1000)}{/if}</td
+              >
               <td class="right">
                 <a class="btn" href={`#/build/pipelines/for/${encodeURIComponent(s.id)}`}
                   >Run in a pipeline</a
@@ -251,7 +260,7 @@
             </tr>
             {#if editing === s.id}
               <tr class="open">
-                <td colspan="6">
+                <td colspan="7">
                   <SampleEditor
                     id={s.id}
                     tests={testsOn(s.id)}
@@ -346,9 +355,6 @@
     display: flex;
     gap: 0.5rem;
     margin: 1.2rem 0;
-  }
-  .dim {
-    color: var(--dim);
   }
   .mono {
     font-family: var(--mono);

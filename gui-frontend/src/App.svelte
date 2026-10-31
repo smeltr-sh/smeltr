@@ -20,6 +20,8 @@
     type Route,
   } from './nav';
   import AuthScreen from './AuthScreen.svelte';
+  import CrossIcon from './CrossIcon.svelte';
+  import { store, stored } from './stored';
   import ErrorBar from './ErrorBar.svelte';
   import { isAdministrator, settleScope } from './access';
   import { pages, preload } from './pages.svelte';
@@ -43,6 +45,7 @@
   import DemoBar from './DemoBar.svelte';
   import Locked from './Locked.svelte';
   import HeldWork from './HeldWork.svelte';
+  import Version from './Version.svelte';
   import AgentPanel from './AgentPanel.svelte';
   import ChatIcon from './ChatIcon.svelte';
   import PersonIcon from './PersonIcon.svelte';
@@ -57,7 +60,9 @@
     SHARED_SCOPE,
     onBranchNeeded,
     MAIN_BRANCH,
+    getSystemInfo,
     type BranchDto,
+    type SystemInfoDto,
     type WorkerGroupDto,
   } from './api';
 
@@ -156,6 +161,16 @@
       hash: who.authenticated ? tabHome(t.tab) : '',
     })),
   );
+
+  /** Which smeltr this leader runs, for the band. Without an answer the band shows none, and whatever the
+   * person was doing reports the failure itself. */
+  let systemInfo = $state<SystemInfoDto | null>(null);
+  $effect(() => {
+    if (!shellShown) return;
+    getSystemInfo()
+      .then((next) => (systemInfo = next))
+      .catch(() => {});
+  });
 
   /** Pipeline names the pages have announced, so a crumb names a pipeline rather than its id. */
   let pipelineNames = $state<PipelineNames>({});
@@ -285,8 +300,8 @@
 
   let identityPicking = $state(false);
   /** Whether the agent panel is folded up, for this browser tab. */
-  let agentPanel = $state(sessionStorage.getItem('smeltr-agent-panel') === 'open');
-  $effect(() => sessionStorage.setItem('smeltr-agent-panel', agentPanel ? 'open' : ''));
+  let agentPanel = $state(stored('smeltr-agent-panel', 'session') === 'open');
+  $effect(() => store('smeltr-agent-panel', agentPanel ? 'open' : '', 'session'));
 
   // -- theme -------------------------------------------------------------
   // Light/dark and the palette, each remembered across visits. The root
@@ -316,14 +331,12 @@
   ];
 
   function loadTheme(): Theme {
-    if (typeof window === 'undefined') return 'system';
-    const saved = window.localStorage.getItem(THEME_KEY);
+    const saved = stored(THEME_KEY);
     return saved === 'light' || saved === 'dark' ? saved : 'system';
   }
 
   function loadPalette(): Palette {
-    if (typeof window === 'undefined') return 'foundry';
-    const saved = window.localStorage.getItem(PALETTE_KEY);
+    const saved = stored(PALETTE_KEY);
     return PALETTES.find((p) => p.value === saved)?.value ?? 'foundry';
   }
 
@@ -333,7 +346,7 @@
   $effect(() => {
     if (typeof document === 'undefined') return;
     const root = document.documentElement;
-    window.localStorage.setItem(THEME_KEY, theme);
+    store(THEME_KEY, theme);
     if (theme !== 'system') {
       root.setAttribute('data-theme', theme);
       return;
@@ -350,7 +363,7 @@
     // Foundry is the bare `:root`, so the default carries no attribute.
     if (palette === 'foundry') document.documentElement.removeAttribute('data-palette');
     else document.documentElement.setAttribute('data-palette', palette);
-    window.localStorage.setItem(PALETTE_KEY, palette);
+    store(PALETTE_KEY, palette);
   });
 
   // The pipeline editor is a two-pane workspace with its own draggable
@@ -538,6 +551,15 @@
           <a href={item.hash} class:active={route.tab === item.tab}>{item.label}</a>
         {/each}
       </div>
+      {#if systemInfo}
+        <span class="nav-version">
+          <!-- A newer release is the administrators' to act on, where the check for it is set. -->
+          <Version
+            info={systemInfo}
+            newerHref={administrator ? '#/admin/system/general' : undefined}
+          />
+        </span>
+      {/if}
     </div>
   </nav>
 
@@ -564,7 +586,7 @@
       {/each}
       {#if exit}
         <kbd class="key">Esc</kbd>
-        <a class="btn close" href={exit}>&times; Close</a>
+        <a class="btn close" href={exit}><CrossIcon /> Close</a>
       {/if}
     </nav>
   {/if}
@@ -611,11 +633,6 @@
         {@const DestinationsPage = pages.destinations}
         <DestinationsPage showJson={route.json} focus={route.focus} only={route.only} />
       {/if}
-    {:else if route.page === 'identities'}
-      {#if pages.identities}
-        {@const IdentitiesPage = pages.identities}
-        <IdentitiesPage showJson={route.json} />
-      {/if}
     {:else if route.page === 'samples'}
       {#if pages.samples}
         {@const SamplesPage = pages.samples}
@@ -630,6 +647,11 @@
       {#if pages.grok}
         {@const GrokPatternsPage = pages.grok}
         <GrokPatternsPage showJson={route.json} only={route.only} />
+      {/if}
+    {:else if route.page === 'schemas'}
+      {#if pages.schemas}
+        {@const SchemasPage = pages.schemas}
+        <SchemasPage showJson={route.json} open={route.open} />
       {/if}
     {:else if route.page === 'lookups'}
       {#if pages.lookups}
@@ -704,10 +726,15 @@
         {@const AdminPage = pages.groups}
         <Locked refusedInDemo><AdminPage page="groups" /></Locked>
       {/if}
+    {:else if route.page === 'certificates'}
+      {#if pages.certificates}
+        {@const CertificatesPage = pages.certificates}
+        <Locked refusedInDemo><CertificatesPage adding={route.adding ?? false} /></Locked>
+      {/if}
     {:else if route.page === 'secrets'}
       {#if pages.secrets}
         {@const SecretsPage = pages.secrets}
-        <Locked refusedInDemo><SecretsPage /></Locked>
+        <Locked refusedInDemo><SecretsPage section={route.section} /></Locked>
       {/if}
     {:else if route.page === 'accounts'}
       {#if pages.accounts}
@@ -1087,6 +1114,7 @@
      button drawn for the page reads right on it. The pickers those chips
      open are page surfaces, so the swap stops at the chip. */
   .tabs,
+  .nav-version,
   .nav-end > :global(:where(:not(.chip-picker))),
   .nav-end :global(.chip) {
     --bg: var(--band-bg);
@@ -1130,6 +1158,16 @@
   .nav-tabs {
     flex-wrap: wrap;
     row-gap: 0.4rem;
+  }
+
+  /* On the tabs' line rather than centered on their underline, and ending where the identity chip's text above it
+     does, inside that chip's padding and border. */
+  .nav-version {
+    margin-left: auto;
+    align-self: baseline;
+    padding-right: calc(0.6rem + 1px);
+    color: var(--dim);
+    font-size: var(--text-note);
   }
 
   /* The branch chip says on what before it says how -- "main" reads as
@@ -1181,7 +1219,7 @@
      behind the menu, which reads as a hole rather than as emphasis. */
   .pick:hover,
   .pick:focus-visible {
-    background: color-mix(in oklch, var(--ink) 10%, var(--panel));
+    background: color-mix(in oklab, var(--ink) 10%, var(--panel));
   }
 
   /* The ring sits inside the row: the panel clips at its own rounded edge,

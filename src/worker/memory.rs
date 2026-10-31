@@ -91,13 +91,13 @@ pub(super) fn source_parts<'a>(sources: impl IntoIterator<Item = &'a SourceConfi
     parts
 }
 
-/// Whether two Kafka sources read through one client: the same brokers, group, identity, properties, `fetchBytes`
+/// Whether two Kafka sources read through one client: the same brokers, group, TLS, properties, `fetchBytes`
 /// and fallback for a partition with no committed offset (`io::kafka::Clients`).
 fn one_client(a: &KafkaSourceConfig, b: &KafkaSourceConfig) -> bool {
     let latest = |k: &KafkaSourceConfig| matches!(k.start, StartPosition::Latest);
     a.brokers == b.brokers
         && a.group_id == b.group_id
-        && a.identity == b.identity
+        && a.tls == b.tls
         && a.props == b.props
         && a.fetch_bytes == b.fetch_bytes
         && latest(a) == latest(b)
@@ -146,27 +146,32 @@ pub(super) fn receiver_reserve(kind: &SourceKind) -> Option<usize> {
 
 /// What one sender of an HTTP-like destination holds whatever it sends: its thread, its connection, and what the
 /// allocator keeps of the requests it sent. Measured under load at about 6 MiB.
-const SENDER_BYTES: usize = 6 * 1024 * 1024;
+pub(super) const SENDER_BYTES: usize = 6 * 1024 * 1024;
 
 /// What the senders of a destination hold: one per request it may have outstanding. 0 for a destination with none.
 pub(super) fn senders_bytes(kind: &DestinationKind) -> usize {
     senders(kind).map_or(0, |s| s.most) * SENDER_BYTES
 }
 
-/// The senders of a destination that sends requests: the most it may have outstanding, the count it starts with, and
-/// the bytes of one request. `None` for a destination with none.
+/// What the senders a destination starts with hold. A destination sized to the worker's memory holds these whatever
+/// the traffic; each it spawns past them borrows its own from the pool (`egress::Egress::charging_senders`).
+pub(super) fn starting_senders_bytes(kind: &DestinationKind) -> usize {
+    senders(kind).map_or(0, |s| s.start) * SENDER_BYTES
+}
+
+/// The senders of a destination that sends requests: the most it may have outstanding and the count it starts with.
+/// `None` for a destination with none.
 struct Senders {
     most: usize,
     start: usize,
-    request_bytes: usize,
 }
 
 fn senders(kind: &DestinationKind) -> Option<Senders> {
-    let (most, start, request_bytes) = match kind {
-        DestinationKind::Elasticsearch(e) => (e.max_in_flight(), e.in_flight, e.max_bulk_bytes),
-        DestinationKind::SplunkHec(s) => (s.max_in_flight(), s.in_flight, s.max_request_bytes),
-        DestinationKind::Http(h) => (h.max_in_flight(), h.in_flight, h.max_request_bytes),
-        DestinationKind::LogAnalytics(s) => (s.http.max_in_flight(), s.http.in_flight, s.http.max_request_bytes),
+    let (most, start) = match kind {
+        DestinationKind::Elasticsearch(e) => (e.max_in_flight(), e.in_flight),
+        DestinationKind::SplunkHec(s) => (s.max_in_flight(), s.in_flight),
+        DestinationKind::Http(h) => (h.max_in_flight(), h.in_flight),
+        DestinationKind::LogAnalytics(s) => (s.http.max_in_flight(), s.http.in_flight),
         // Prometheus sends from the destination's own thread, one request at a time.
         DestinationKind::Kafka(_)
         | DestinationKind::Prometheus(_)
@@ -177,25 +182,7 @@ fn senders(kind: &DestinationKind) -> Option<Senders> {
     Some(Senders {
         most,
         start: start.clamp(1, most),
-        request_bytes,
     })
-}
-
-/// Cuts each of `kinds`' senders toward the count it starts with, in proportion, until together they hold no more than
-/// `bytes`, and never below the least buffer a bundle may state. A destination's senders are as many as its
-/// `bufferBytes` holds requests, so that is what is cut.
-fn cut_senders<'a>(kinds: impl Iterator<Item = &'a mut DestinationKind>, bytes: usize) {
-    let mut kinds: Vec<&mut DestinationKind> = kinds.collect();
-    let wanted: usize = kinds.iter().map(|k| senders_bytes(k)).sum();
-    if wanted <= bytes {
-        return;
-    }
-    for kind in kinds.iter_mut() {
-        let Some(s) = senders(kind) else { continue };
-        let cut = (s.most as u128 * bytes as u128 / wanted as u128) as usize;
-        // A cut destination runs a configuration its bundle could state.
-        kind.set_buffer_bytes((cut.max(s.start) * s.request_bytes).max(BufferBytes::MIN));
-    }
 }
 
 /// What `destination` holds, at most: its buffer, its senders, and for a file destination (objects, a table) the
@@ -252,22 +239,17 @@ pub(super) struct Fit {
 /// The least a batch may be cut to when memory is short: below it the work per batch outweighs the batch.
 const LEAST_BATCH_BYTES: usize = 512 * 1024;
 
-/// How many times its default a destination the bundle leaves unset may grow to, when other queues leave it room.
-/// Past that a busier destination gains little: its senders are all busy and its files are large.
-const CEILING_DEFAULTS: usize = 4;
-
 /// Sizes `topology` to `memory`, the bytes its worker may use, and gives what to run it under.
 ///
 /// The parts held whatever the traffic are set aside first:
 /// - the worker's two processes, and the lanes (`lane_batches` batches);
 /// - the fetch queue and buffer of every source and destination that states one;
-/// - the reserve of each destination queue the bundle leaves out (`TopologyConfig::fitted`), one batch, and every
-///   destination's senders;
+/// - the reserve of each destination queue the bundle leaves out (`TopologyConfig::fitted`), one batch, and the
+///   senders each starts with;
 /// - each receiver's reserve, one request of the largest it reads.
 ///
-/// Those grow with the count of sources and destinations, so two of them are cut when memory is short. A batch is
-/// 4 MiB, cut down to 512 KiB when the lanes and reserves would otherwise take more than half the memory. Senders are
-/// cut toward the count each destination starts with when together they would hold more than a quarter of it.
+/// Those grow with the count of sources and destinations, so the batch is cut when memory is short: 4 MiB, cut down
+/// to 512 KiB when the lanes and reserves would otherwise take more than half the memory.
 ///
 /// The rest is shared: the columnar budget, the fetch queues the bundle leaves out, the pool those destination queues
 /// borrow from above their reserves, and the pool the receivers borrow from above theirs. The columnar budget takes
@@ -276,9 +258,9 @@ const CEILING_DEFAULTS: usize = 4;
 /// another's; a receiver weighs as one default queue. A claim held at a bound gives the rest what its share would have
 /// exceeded.
 ///
-/// The queue of a destination left out may grow to its ceiling ([`queue_budget`]) while the pool has room, so a busy
-/// one takes what idle ones leave, and a stalled one holds no more than its ceiling. A receiver grows the same way, to
-/// `io::receiver::INBOX_BYTES`. Only `delivered` destinations are sized: the rest are never built.
+/// The queue of a destination left out holds what raises its throughput (`egress::pacing`), borrowing from the pool
+/// as far as its share of it, so a busy one takes what idle ones leave and a slow one holds little. A receiver grows
+/// to `io::receiver::INBOX_BYTES`. Only `delivered` destinations are sized: the rest are never built.
 ///
 /// Lookup tables are left out: they are mapped files, whose pages the kernel drops under pressure.
 pub(super) fn fit(
@@ -298,17 +280,6 @@ pub(super) fn fit(
             delivered.contains(&d.id) && topology.fitted.destinations.contains(&d.id)
         })
         .collect();
-    // The senders are held whatever the traffic, as the lanes and reserves are, so they are cut the same way: to a
-    // quarter of the memory, down to the count each starts with.
-    cut_senders(
-        topology
-            .destinations
-            .iter_mut()
-            .enumerate()
-            .filter(|(i, _)| destinations.contains(i))
-            .map(|(_, d)| &mut d.kind),
-        memory.saturating_sub(2 * BASELINE_BYTES) / 4,
-    );
     let pooled = || destinations.iter().map(|&i| &topology.destinations[i].kind);
     let batches = lane_batches + pooled().map(queue_charge).sum::<usize>();
     let batch_bytes = (memory.saturating_sub(2 * BASELINE_BYTES) / 2 / batches.max(1))
@@ -341,21 +312,20 @@ pub(super) fn fit(
             .map(|p| p.bytes)
             .sum::<u64>()
         + pooled()
-            .map(|k| (batch_bytes * queue_charge(k) + senders_bytes(k)) as u64)
+            .map(|k| (batch_bytes * queue_charge(k) + starting_senders_bytes(k)) as u64)
             .sum::<u64>();
     let left = (memory as u64).saturating_sub(fixed) as usize;
 
     let mut claims: Vec<Claim> = fetch_claims(sources.iter().map(|&i| &topology.sources[i].kind));
-    // The pool weighs what its queues would together: each its weight, as often as its buffer is held.
+    // The pool weighs what its queues would together: each its weight, as often as its buffer is held. Nothing
+    // bounds it above: a queue grows as far as its throughput asks and its share allows.
     let buffers: u64 = pooled().map(|k| buffer_weight(k) * buffer_halves(k)).sum();
     if buffers > 0 {
         claims.push(Claim {
             weight: buffers / 2,
             halves: 2,
             least: 0,
-            most: pooled()
-                .map(|k| queue_budget(k).saturating_sub(batch_bytes) * queue_charge(k))
-                .sum(),
+            most: usize::MAX,
         });
     }
     // The receivers weigh as many default queues: each receiver holds about as much as one.
@@ -404,27 +374,6 @@ pub(super) fn fit(
         batch_bytes,
         receivers,
     }
-}
-
-/// What the egress queue of a destination the bundle leaves unset may hold, borrowing: its queue at its ceiling. Its
-/// `bufferBytes` stays at its default, since that also sets its senders, and each sender holds memory of its own
-/// however little is queued.
-pub(super) fn queue_budget(kind: &DestinationKind) -> usize {
-    let mut ceiling = kind.clone();
-    ceiling.set_buffer_bytes(queue_ceiling(kind));
-    ceiling.queue_bytes()
-}
-
-/// The most a destination the bundle leaves unset may hold, as its `bufferBytes`: [`CEILING_DEFAULTS`] times its
-/// default, within what it may be set to and above the requests it starts with outstanding.
-fn queue_ceiling(kind: &DestinationKind) -> usize {
-    let (default, most) = match kind {
-        DestinationKind::Objects(_) | DestinationKind::Iceberg(_) | DestinationKind::Delta(_) => {
-            (BufferBytes::OBJECT_DEFAULT, BufferBytes::OBJECT_MAX)
-        }
-        _ => (BufferBytes::DEFAULT, BufferBytes::MAX),
-    };
-    (CEILING_DEFAULTS * default).min(most).max(kind.least_buffer_bytes())
 }
 
 /// The bytes of memory each byte in a destination's egress queue stands for: twice for Kafka, whose producer holds a
@@ -676,11 +625,8 @@ mod tests {
     /// The reserves of the buffers the bundle leaves out: Elasticsearch's 4 MiB, and the object store's held twice.
     const RESERVES: usize = 4 * MIB + 2 * 4 * MIB + SENDERS;
 
-    /// Elasticsearch's senders: one per 5 MiB bulk request its default 64 MiB buffer holds.
-    const SENDERS: usize = 12 * SENDER_BYTES;
-
-    /// What the pool may lend, at most: each buffer left out from its reserve to its ceiling, as often as it is held.
-    const POOL_MOST: usize = (4 * BufferBytes::DEFAULT - 4 * MIB) + 2 * (4 * BufferBytes::OBJECT_DEFAULT - 4 * MIB);
+    /// Elasticsearch's senders: the four it starts with. Those it spawns past them borrow from the pool.
+    const SENDERS: usize = 4 * SENDER_BYTES;
 
     #[test]
     fn the_columnar_budget_and_the_pool_share_what_the_bundle_leaves_half_each() {
@@ -695,22 +641,21 @@ mod tests {
             BufferBytes::DEFAULT,
             "a buffer left out keeps its default, and so its senders"
         );
-        let es = topology.destinations.iter().find(|d| d.name == "es").expect("named");
-        assert_eq!(
-            queue_budget(&es.kind),
-            4 * BufferBytes::DEFAULT,
-            "its queue grows to its ceiling"
-        );
         assert_eq!(buffer(&topology, "out"), 8 * MIB, "a stated buffer is kept");
     }
 
     #[test]
-    fn the_columnar_budget_stops_at_128_mib_a_thread_and_the_pool_at_what_its_queues_hold() {
+    fn the_columnar_budget_stops_at_128_mib_a_thread_and_the_pool_takes_the_rest() {
         let mut topology = bundle();
         let delivered = every(&topology);
+        let left = 4096 * MIB - FIXED - RESERVES;
         let fitted = fit(&mut topology, &delivered, 0, 4096 * MIB, 2, None);
         assert_eq!(fitted.columnar, 256 * MIB);
-        assert_eq!(fitted.pool, POOL_MOST);
+        assert_eq!(
+            fitted.pool,
+            left - 256 * MIB,
+            "a queue grows as far as its throughput asks"
+        );
     }
 
     #[test]
@@ -829,71 +774,6 @@ mod tests {
         let fitted = fit(&mut topology, &delivered, 0, 256 * MIB, 8, None);
         assert_eq!(fitted.columnar, LEAST_COLUMNAR_BYTES);
         assert_eq!(fitted.pool, 0, "each queue still holds its reserve");
-    }
-
-    #[test]
-    fn a_ceiling_is_above_the_requests_its_destination_starts_with() {
-        let topology = bundle();
-        for d in &topology.destinations {
-            assert!(queue_ceiling(&d.kind) >= d.kind.least_buffer_bytes());
-        }
-    }
-
-    #[test]
-    fn senders_are_cut_toward_their_start_when_they_would_hold_more_than_a_quarter_of_memory() {
-        let counts = |t: &TopologyConfig| -> Vec<(usize, usize)> {
-            t.destinations
-                .iter()
-                .filter_map(|d| senders(&d.kind))
-                .map(|s| (s.most, s.start))
-                .collect()
-        };
-        let senders_held =
-            |t: &TopologyConfig| -> usize { t.destinations.iter().map(|d| senders_bytes(&d.kind)).sum() };
-
-        let mut roomy = mix(1, 30, false);
-        let delivered = every(&roomy);
-        fit(&mut roomy, &delivered, 0, 32 * 1024 * MIB, 8, None);
-        assert!(
-            counts(&roomy).iter().all(|&(most, _)| most == 12),
-            "{:?}",
-            counts(&roomy)
-        );
-
-        let memory = 2048 * MIB;
-        let mut short = mix(1, 30, false);
-        fit(&mut short, &delivered, 0, memory, 8, None);
-        assert!(
-            counts(&short).iter().all(|&(most, start)| start <= most && most < 12),
-            "{:?}",
-            counts(&short)
-        );
-        assert!(senders_held(&short) <= (memory - 2 * BASELINE_BYTES) / 4);
-
-        let mut starved = mix(1, 600, false);
-        let delivered = every(&starved);
-        fit(&mut starved, &delivered, 0, memory, 8, None);
-        assert!(
-            counts(&starved).iter().all(|&(most, start)| most == start),
-            "never below the start"
-        );
-    }
-
-    #[test]
-    fn a_cut_buffer_is_never_below_what_a_bundle_may_state() {
-        let mut t = mix(1, 3, false);
-        let small = t
-            .destinations
-            .iter_mut()
-            .find_map(|d| match &mut d.kind {
-                DestinationKind::Elasticsearch(e) => Some(e),
-                _ => None,
-            })
-            .expect("the mix has an Elasticsearch destination");
-        small.max_bulk_bytes = MIB;
-        small.in_flight = 1;
-        cut_senders(t.destinations.iter_mut().map(|d| &mut d.kind), 0);
-        assert!(t.destinations.iter().all(|d| d.kind.buffer_bytes() >= BufferBytes::MIN));
     }
 
     fn part(name: &str, bytes: u64) -> Part {
@@ -1020,7 +900,7 @@ mod tests {
             + topology
                 .destinations
                 .iter()
-                .map(|d| (fitted.batch_bytes * queue_charge(&d.kind) + senders_bytes(&d.kind)) as u64)
+                .map(|d| (fitted.batch_bytes * queue_charge(&d.kind) + starting_senders_bytes(&d.kind)) as u64)
                 .sum::<u64>()
             + fitted.pool as u64
             + fitted.columnar as u64
@@ -1049,7 +929,7 @@ mod tests {
                     let reserves: u64 = topology
                         .destinations
                         .iter()
-                        .map(|d| (fitted.batch_bytes * queue_charge(&d.kind) + senders_bytes(&d.kind)) as u64)
+                        .map(|d| (fitted.batch_bytes * queue_charge(&d.kind) + starting_senders_bytes(&d.kind)) as u64)
                         .sum::<u64>()
                         + topology
                             .sources

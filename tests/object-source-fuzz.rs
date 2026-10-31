@@ -96,8 +96,8 @@ struct Draw {
     kind: Kind,
     /// The source's object in the bundle.
     source: Map<String, Value>,
-    /// The identity the bundle declares, by its id, when the source names one.
-    identity: Option<&'static str>,
+    /// Whether the source trusts an authority of its own.
+    tls: bool,
     /// The setting broken, if one was. `Some(None)` is a break the save refuses on no one field of it.
     broken: Option<Option<&'static str>>,
 }
@@ -112,7 +112,7 @@ const OPTIONS: &[&str] = &[
     "kind.azureBlobList",
     "kind.azureBlobQueue",
     "kind.sftp",
-    "identity",
+    "tls",
     "encoding",
     "framing.lines",
     "framing.object",
@@ -184,8 +184,8 @@ const OPTIONS: &[&str] = &[
     "broken.avroFields",
     "broken.avroFraming",
     "broken.avroEncoding",
-    "broken.identity",
-    "broken.identityPlain",
+    "broken.certificate",
+    "broken.tlsPlain",
     "mangled",
 ];
 
@@ -303,17 +303,16 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, only: Option<Kind>) ->
             ])),
         );
     }
-    let mut identity = None;
-    // An identity is the client's TLS, so only a source reached over https takes one.
-    if kind != Kind::Sftp && !target.live() && all_https(&d) && rng.chance(4) {
-        cov.reach("identity");
-        identity = Some("client");
-        d.insert("identity".into(), json!("client"));
+    // TLS settings are the client's, so only a source reached over https takes them.
+    let tls = kind != Kind::Sftp && !target.live() && all_https(&d) && rng.chance(4);
+    if tls {
+        cov.reach("tls");
+        d.insert("trustedAuthorities".into(), json!(authority_pem()));
     }
     let mut draw = Draw {
         kind,
         source: d,
-        identity,
+        tls,
         broken: None,
     };
     if !target.live() && rng.chance(2) {
@@ -409,7 +408,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
         false => vec!["lineBreaker", "encoding"],
     };
     if kind != Kind::Sftp {
-        breaks.extend(["identity", "identityPlain"]);
+        breaks.extend(["certificate", "tlsPlain"]);
     }
     match kind {
         Kind::S3Sqs => breaks.extend(["queueUrl", "visibilitySecs"]),
@@ -458,12 +457,12 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             set("encoding", json!(rng.pick(&["klingon", "", "utf-9"])));
             Some("encoding")
         }
-        "identity" => {
-            set("identity", json!("nobody"));
-            Some("identity")
+        "certificate" => {
+            set("certificate", json!(" "));
+            Some("certificate")
         }
-        "identityPlain" => {
-            // An identity is refused where no address it would sign negotiates TLS, at the first of them.
+        "tlsPlain" => {
+            // TLS settings are refused where no address they would guard negotiates TLS, at the first of them.
             d.remove("authEndpoint");
             let (endpoint, field) = match kind {
                 Kind::S3Sqs => {
@@ -481,11 +480,11 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
                     ("http://localhost:4443", "pubsubEndpoint")
                 }
                 Kind::GcsList => ("http://localhost:4443", "endpoint"),
-                Kind::Sftp => unreachable!("an SFTP source names no identity"),
+                Kind::Sftp => unreachable!("an SFTP source sets no TLS"),
             };
             d.insert("endpoint".into(), json!(endpoint));
-            d.insert("identity".into(), json!("client"));
-            draw.identity = Some("client");
+            d.insert("trustedAuthorities".into(), json!(authority_pem()));
+            draw.tls = true;
             Some(field)
         }
         "queueUrl" => {
@@ -599,19 +598,15 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
     }
 }
 
-/// `draw` as a whole bundle: the source, one route from it to a Kafka destination, and the identity it names.
+/// `draw` as a whole bundle: the source, and one route from it to a Kafka destination.
 fn bundle(draw: &Draw) -> Value {
-    let mut b = json!({
+    json!({
         "version": 1,
         "sources": [Value::Object(draw.source.clone())],
         "destinations": [{"id": "out", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t"}],
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["out"]}]}],
-    });
-    if let Some(id) = draw.identity {
-        b["identities"] = json!([{"id": id, "authorities": authority_pem()}]);
-    }
-    b
+    })
 }
 
 // -- what the save says ------------------------------------------------------------------------------------------
@@ -644,7 +639,7 @@ fn trimmed(d: &Map<String, Value>, key: &str) -> Option<String> {
 fn check_loaded(draw: &Draw, c: &ObjectSourceConfig, named: &[SecretRef]) -> Result<(), String> {
     let d = &draw.source;
     let mut cmp = Compare::default();
-    cmp.expect("identity", draw.identity.is_some(), c.identity.is_some());
+    cmp.expect("tls", draw.tls, c.tls.is_some());
     cmp.expect("framing", expected_framing(d), &c.framing);
     cmp.expect("format", text(d, "format"), c.avro.as_ref().map(|_| "avro".to_string()));
     let label = text(d, "encoding").unwrap_or("auto".into());
@@ -1060,20 +1055,6 @@ fn put(store: &dyn ObjectStore, runtime: &tokio::runtime::Runtime, key: &str, by
         .block_on(store.put(&path, PutPayload::from(bytes.to_vec())))
         .map(|_| ())
         .map_err(|e| format!("put {key:?}: {e}"))
-}
-
-/// Every key in `store`, with its bytes.
-fn all(store: &dyn ObjectStore, runtime: &tokio::runtime::Runtime) -> BTreeMap<String, Vec<u8>> {
-    runtime.block_on(async {
-        use futures_util::TryStreamExt;
-        let metas: Vec<_> = store.list(None).try_collect().await.unwrap();
-        let mut out = BTreeMap::new();
-        for m in metas {
-            let bytes = store.get(&m.location).await.unwrap().bytes().await.unwrap();
-            out.insert(m.location.to_string(), bytes.to_vec());
-        }
-        out
-    })
 }
 
 // -- notifications ----------------------------------------------------------------------------------------------
@@ -1515,22 +1496,53 @@ impl Announcer for FakeAnnouncer {
     }
 }
 
-/// Reads drawn objects in `stores`, by bucket, through the queue kind's notifications, each parsed as the kind parses
-/// it and sent with `announcer`, from the source `open` makes, and checks every message is deleted once its records
-/// are committed.
-#[allow(clippy::too_many_arguments)]
+/// What a seed's objects are put in and read from: the stores by bucket, the runtime they run on, and the pace they
+/// are read at. In memory offline; the service or its emulator live.
+struct Backend<'a> {
+    stores: BTreeMap<String, Arc<dyn ObjectStore>>,
+    runtime: &'a tokio::runtime::Runtime,
+    pace: Pace,
+}
+
+impl Backend<'_> {
+    fn put(&self, bucket: &str, key: &str, bytes: &[u8]) -> Result<(), String> {
+        put(self.stores[bucket].as_ref(), self.runtime, key, bytes)
+    }
+
+    /// Every key in `bucket`, with its bytes.
+    fn all(&self, bucket: &str) -> BTreeMap<String, Vec<u8>> {
+        let store = &self.stores[bucket];
+        self.runtime.block_on(async {
+            use futures_util::TryStreamExt;
+            let metas: Vec<_> = store.list(None).try_collect().await.unwrap();
+            let mut out = BTreeMap::new();
+            for m in metas {
+                let bytes = store.get(&m.location).await.unwrap().bytes().await.unwrap();
+                out.insert(m.location.to_string(), bytes.to_vec());
+            }
+            out
+        })
+    }
+}
+
+/// Reads drawn objects in `backend`'s stores, by bucket, through the queue's notifications, each parsed as its kind
+/// parses it and sent with the announcer, and checks every message is deleted once its records are committed.
 fn read_queue(
     rng: &mut Rng,
     cov: &mut Reached,
-    kind: Kind,
     c: &ObjectSourceConfig,
-    stores: &BTreeMap<String, Arc<dyn ObjectStore>>,
+    backend: Backend,
     announcer: &mut dyn Announcer,
     open: impl FnOnce() -> Result<Box<dyn Source>, String>,
-    runtime: &tokio::runtime::Runtime,
-    pace: Pace,
 ) -> Result<(), String> {
-    let buckets: Vec<&str> = stores.keys().map(String::as_str).collect();
+    let kind = match &c.queue {
+        ObjectQueue::Sqs { .. } => Kind::S3Sqs,
+        ObjectQueue::StorageQueue { .. } => Kind::AzureBlobQueue,
+        ObjectQueue::PubSub { .. } => Kind::GcsPubSub,
+        ObjectQueue::List { .. } => unreachable!("a listing reads by listing"),
+    };
+    let pace = backend.pace;
+    let buckets: Vec<&str> = backend.stores.keys().map(String::as_str).collect();
     let blobs = match &c.queue {
         ObjectQueue::StorageQueue { access, .. } => smeltr::io::storage_queue::blob_services(access),
         _ => Vec::new(),
@@ -1548,7 +1560,7 @@ fn read_queue(
         let mut announced = objects(rng, cov, c, &buckets, "", n, announcer.versions());
         for (i, o) in announced.iter_mut().enumerate() {
             o.key = format!("m{m}/{i}/{}", o.key);
-            put(stores[&o.bucket].as_ref(), runtime, &o.key, &o.body)?;
+            backend.put(&o.bucket, &o.key, &o.body)?;
         }
         let note = match kind {
             Kind::S3Sqs => s3_note(rng, cov, &announced),
@@ -1606,18 +1618,16 @@ fn read_queue(
     }
 }
 
-/// Reads drawn objects put in `store`, the bucket the source `open` makes lists, and checks each is kept, deleted or
-/// moved once committed, and nothing outside the prefix is read or touched.
-#[allow(clippy::too_many_arguments)]
+/// Reads drawn objects put in the bucket the source lists, and checks each is kept, deleted or moved once committed,
+/// and nothing outside the prefix is read or touched.
 fn read_listing(
     rng: &mut Rng,
     cov: &mut Reached,
     c: &ObjectSourceConfig,
-    store: Arc<dyn ObjectStore>,
+    backend: Backend,
     open: impl FnOnce() -> Result<Box<dyn Source>, String>,
-    runtime: &tokio::runtime::Runtime,
-    pace: Pace,
 ) -> Result<(), String> {
+    let pace = backend.pace;
     let ObjectQueue::List {
         place,
         prefix,
@@ -1638,7 +1648,7 @@ fn read_listing(
     if !prefix.is_empty() && rng.chance(2) {
         cov.reach("listing.decoy");
         for key in ["zz-decoy/1.log", "zz-decoy.log"] {
-            put(store.as_ref(), runtime, key, b"never read\n")?;
+            backend.put(&bucket, key, b"never read\n")?;
             decoys.insert(key.to_string(), b"never read\n".to_vec());
         }
     }
@@ -1648,7 +1658,7 @@ fn read_listing(
         old = objects(rng, cov, c, &[&bucket], prefix, n, false);
         for o in &mut old {
             o.key = format!("{prefix}old-{}", &o.key[prefix.len()..]);
-            put(store.as_ref(), runtime, &o.key, &o.body)?;
+            backend.put(&bucket, &o.key, &o.body)?;
         }
     }
     let mut source = open()?;
@@ -1672,7 +1682,7 @@ fn read_listing(
     let n = 1 + rng.below(4);
     let new = objects(rng, cov, c, &[&bucket], prefix, n, false);
     for o in &new {
-        put(store.as_ref(), runtime, &o.key, &o.body)?;
+        backend.put(&bucket, &o.key, &o.body)?;
     }
     let want = new.iter().map(|o| o.records.len()).sum();
     let records = reading.read(source.as_mut(), want)?;
@@ -1694,7 +1704,7 @@ fn read_listing(
     let until = Instant::now() + pace.patience;
     loop {
         reading.quiet(source.as_mut())?;
-        let held = all(store.as_ref(), runtime);
+        let held = backend.all(&bucket);
         if held == after {
             break;
         }
@@ -1781,6 +1791,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, runtime: &Arc<tokio::runtime::
         (Err(e), _) => return Err(format!("does not build: {e:?}\n{json}")),
     }
 
+    let mut announcer = FakeAnnouncer::default();
     let read = if draw.kind.listed() {
         let store = Arc::new(InMemory::new());
         let ObjectQueue::List {
@@ -1810,13 +1821,17 @@ fn offline_seed(seed: u64, reached: &mut Reached, runtime: &Arc<tokio::runtime::
             }
             in_memory(Arc::new(listing), store.clone(), &c, runtime)
         };
-        read_listing(&mut rng, reached, &c, store.clone(), open, runtime, OFFLINE)
+        let backend = Backend {
+            stores: BTreeMap::from([(list_root(place), store.clone() as Arc<dyn ObjectStore>)]),
+            runtime,
+            pace: OFFLINE,
+        };
+        read_listing(&mut rng, reached, &c, backend, open)
     } else {
         let stores: BTreeMap<String, Arc<dyn ObjectStore>> = ["logs", "other"]
             .iter()
             .map(|b| (b.to_string(), Arc::new(InMemory::new()) as Arc<dyn ObjectStore>))
             .collect();
-        let mut announcer = FakeAnnouncer::default();
         let queue = announcer.queue.clone();
         let by_bucket = stores.clone();
         let (framing, visibility, avro) = (c.framing.clone(), c.visibility, c.avro.clone());
@@ -1834,17 +1849,12 @@ fn offline_seed(seed: u64, reached: &mut Reached, runtime: &Arc<tokio::runtime::
             .map_err(|e| format!("no source: {e:?}"))?;
             Ok(Box::new(reading(source, avro.as_ref())?) as Box<dyn Source>)
         };
-        read_queue(
-            &mut rng,
-            reached,
-            draw.kind,
-            &c,
-            &stores,
-            &mut announcer,
-            open,
+        let backend = Backend {
+            stores,
             runtime,
-            OFFLINE,
-        )
+            pace: OFFLINE,
+        };
+        read_queue(&mut rng, reached, &c, backend, &mut announcer, open)
     };
     read.map_err(|e| format!("{e}\n{json}"))
 }
@@ -1922,24 +1932,16 @@ fn live_fuzz(
         let (secrets, _) = held(&draw.source);
         let stores = live_stores(&c, &secrets, &runtime, &made.buckets).map_err(|e| format!("{e:?}\n{json}"))?;
         let open = || smeltr::io::object_source::open(&c, &secrets).map_err(|e| format!("does not build: {e:?}"));
-        let read = match made.announcer.as_mut() {
-            None => {
-                let store = stores.into_values().next().expect("a listing's store");
-                read_listing(&mut rng, &mut reached, &c, store, open, &runtime, LIVE)
-            }
-            Some(announcer) => read_queue(
-                &mut rng,
-                &mut reached,
-                kind,
-                &c,
-                &stores,
-                announcer.as_mut(),
-                open,
-                &runtime,
-                LIVE,
-            ),
+        let backend = Backend {
+            stores,
+            runtime: &runtime,
+            pace: LIVE,
         };
-        read.map_err(|e| format!("{e}\n{json}"))?;
+        match made.announcer.as_mut() {
+            Some(announcer) => read_queue(&mut rng, &mut reached, &c, backend, &mut **announcer, open),
+            None => read_listing(&mut rng, &mut reached, &c, backend, open),
+        }
+        .map_err(|e| format!("{e}\n{json}"))?;
         reached.credit(&mut cov);
         Ok(())
     });

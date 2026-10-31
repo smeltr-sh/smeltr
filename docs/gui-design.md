@@ -305,7 +305,10 @@ line from a pipeline to a destination holds a delivery rule's: a condition over
 the pipeline's output, drawn as a box that feeds the destinations wired from
 it. A rule with no condition is plain lines. On a card drawn top to bottom, a
 condition's box sits centered over its destinations, and boxes that would
-overlap push each other aside. Lines turn in elbows, as the map's do, and none
+overlap push each other aside. A condition reads whole wherever there is room
+for it, as every condition field does (The workspace): its box takes the room it
+has, out to halfway to the boxes beside it, or its column's share of a line,
+and shrinks to the text laid out in it. Lines turn in elbows, as the map's do, and none
 runs through a box. The + beside "pipeline" adds a
 route from the same source, and the + beside "destination" brings one onto the
 card. Wiring is direct. A wire is drawn from a pipeline or a condition to a
@@ -376,7 +379,8 @@ pipeline captures from it as from any other.
 
 The leader reads the capture's text (`leader::onboard`) and proposes the step that
 parses it: a JSON, Key/value or CSV Parser, a Grok Parser on the built-in
-whole-line pattern of a syslog or web access log line, or for CEF a Code
+whole-line pattern of a syslog or web access log line, written out so each
+field it fills shows in the step, or for CEF a Code
 step that spreads `cef(_raw)`. A CSV capture that opens with a header row takes its
 column names from it, and a Drop step ahead of the Parser takes out that
 row, which a source sends once per file. Records that arrive as fields need
@@ -391,6 +395,12 @@ the rows it produces on the other, recomputed as the author types, so
 previewing is not an action anyone takes. Which side gets the room changes
 with the work, so the split is a divider that drags, with snap points,
 rather than a mode to choose.
+
+A condition, in a step or wherever else one is written, reads whole when it is
+left: laid out to the width it has, broken before its `&&` and `||`, a
+bracketed group broken only where it cannot fit on a line of its own, three
+lines at most. Written in, it grows with its text. An `if`'s condition takes a
+row of its own under the step's head, as another step's fields do.
 
 Every step has an id, an `if` included. A compile error pinned to a step
 names it by that id and lands on that step, in the preview as on save. An
@@ -424,7 +434,21 @@ leaves only the type to choose. Grok's fields follow the pattern as it is
 edited, in capture order. A name that survives keeps the type chosen for
 it. A new name starts as `str`. A name the pattern lost goes with it. A
 column CSV should drop is typed `skip`, which keeps the columns after it
-aligned without inventing a field.
+aligned without inventing a field. A key-value key typed `skip` makes no
+field either. Under Advanced, **rebuild the line** writes the field the
+parser reads back with each skipped column left empty, or each skipped pair
+left out, and says how many.
+
+A Remove step shows the record before it as a tree, from the data dictionary
+of a preview of the steps ahead of it, the same preview the step diff runs:
+the fields the compiler types, and with a sample the keys only its rows know.
+Each field and object is ticked while it is kept. Unticking an object removes
+everything under it, so its fields show struck through with their ticks
+locked, and the step names the object alone. Its search, Remove all and Keep
+all act on what the search shows, as the Fields menu's Select all does, and a
+match keeps the objects above it. A name that matches no field can still be
+removed, from a link under the search box. The step's head counts the names it
+holds; the list counts the fields they remove.
 
 ## Lists
 
@@ -489,8 +513,6 @@ flowchart LR
   source --> route --> pipeline --> destination -- refused --> destination2[destination]
   table --> pipeline
   pattern --> pipeline
-  identity --> source
-  identity --> destination
 ```
 
 Each row is a kind of object, named for the side it sits on where the
@@ -511,6 +533,36 @@ Tables live on the Lookup Tables page and steps reference them by id.
 Uploading a CSV or MMDB file is a commit like any other save; for CSV the
 header row comes back and is kept on the table so the column pickers work
 after a reload.
+
+## Schemas
+
+The Schemas page lists the bundle's own schemas, then `shared/`'s. A search
+reaches into fields, so a field's path finds the schemas that name it. A schema
+folds open to its table of fields, narrowed to the search, and any schema
+exports as JSON Schema or as an Elasticsearch mapping. The table's
+Elasticsearch view shows the type each field maps to, and on the bundle's own
+schemas chooses it from those the field's type allows, an integer's date as
+milliseconds or seconds since 1970, and names a date's own format where Edit
+JSON set one; a mapping's other parameters are set in Edit JSON. A schema is added from a standard (ECS, or
+an OCSF class with how many keys deep and which requirements), from a file (a
+CSV of fields, or JSON Schema), from a pipeline, or empty: one tile for each.
+A CSV shows its first rows, and after a gap a row for each type value they
+lack, as one table: over each column a choice of what it holds, preset where
+the header names it, and beside the type column the type each row's value
+reads as, one choice for each value, preset where smeltr knows the name and
+`str` where it does not, with how many rows hold it.
+From a pipeline, a pipeline of the bundle is picked and a file uploaded, the
+leader runs the pipeline over the file's records as a preview runs, and each
+row it writes is a field. A field's example shows in its own column when any
+field has one.
+
+A pipeline names what it produces in the editor's Produces row, and a
+destination what it accepts on its own form. Where the rows do not fit, the
+editor says so at the step that wrote the field, and gives each field a
+schema requires and the rows lack a column of its own, with the type to write
+it as, and lists it in the Fields menu. Review lists it under its
+Schemas tab and counts it in the dock, and none of it blocks a save or a
+deploy.
 
 ## Backed by the file
 

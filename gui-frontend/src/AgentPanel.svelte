@@ -5,21 +5,24 @@
 -->
 <script lang="ts">
   import Conversation from './Conversation.svelte';
+  import CrossButton from './CrossButton.svelte';
   import { reported } from './errors.svelte';
+  import { store, stored } from './stored';
+  import { firstLineText } from './markdown';
   import { listConversations, refused, type ConversationSummaryDto } from './api';
 
   let { onclose }: { onclose: () => void } = $props();
 
   const OPEN_KEY = 'smeltr-agent-panel-conversation';
   const HEIGHT_KEY = 'smeltr-agent-panel-height';
-  /** The share of the window the panel takes, and the least and most it may be dragged to. A phone gives it
-   * more, since a third of a phone holds little more than the message box. */
-  const HEIGHT = matchMedia('(max-width: 48rem)').matches ? 0.55 : 0.3;
+  /** The share of the window the panel takes, and the least and most it may be dragged to. A phone gives it a
+   * little more, since a third of a phone holds little more than the message box, and leaves the page the rest. */
+  const HEIGHT = matchMedia('(max-width: 48rem)').matches ? 0.35 : 0.3;
   const LEAST = 0.15;
   const MOST = 0.8;
 
-  let open = $state(sessionStorage.getItem(OPEN_KEY) ?? '');
-  let height = $state(Number(localStorage.getItem(HEIGHT_KEY)) || HEIGHT);
+  let open = $state(stored(OPEN_KEY, 'session') ?? '');
+  let height = $state(Number(stored(HEIGHT_KEY)) || HEIGHT);
   let conversations = $state<ConversationSummaryDto[]>([]);
   let body = $state<HTMLElement>();
 
@@ -39,7 +42,7 @@
   });
 
   $effect(() => {
-    sessionStorage.setItem(OPEN_KEY, open);
+    store(OPEN_KEY, open, 'session');
   });
 
   // A chat reads from its newest message: whatever the conversation grows by keeps the panel at its end.
@@ -51,10 +54,17 @@
     return () => grew.disconnect();
   });
 
-  // The page underneath scrolls past the panel, so nothing is hidden behind it.
+  // The page underneath scrolls past the panel, so nothing is hidden behind it, and whatever is scrolled into view
+  // (a focused field, a link followed to its place) stops above it rather than under it. The page's bottom bars
+  // ride on it through `--agent-panel`.
   $effect(() => {
-    document.body.style.paddingBottom = `${height * 100}vh`;
-    return () => (document.body.style.paddingBottom = '');
+    const root = document.documentElement;
+    root.style.setProperty('--agent-panel', `${height * 100}vh`);
+    document.body.style.paddingBottom = root.style.scrollPaddingBottom = 'var(--agent-panel)';
+    return () => {
+      root.style.removeProperty('--agent-panel');
+      document.body.style.paddingBottom = root.style.scrollPaddingBottom = '';
+    };
   });
 
   function drag(e: PointerEvent) {
@@ -65,7 +75,7 @@
     };
     const up = () => {
       handle.removeEventListener('pointermove', move);
-      localStorage.setItem(HEIGHT_KEY, String(height));
+      store(HEIGHT_KEY, String(height));
     };
     handle.addEventListener('pointermove', move);
     handle.addEventListener('pointerup', up, { once: true });
@@ -83,14 +93,12 @@
   <div class="bar">
     <select aria-label="Conversation" bind:value={open}>
       <option value="">New conversation</option>
-      {#each conversations as c (c.id)}<option value={c.id}>{c.title}</option>{/each}
+      {#each conversations as c (c.id)}<option value={c.id}>{firstLineText(c.title)}</option>{/each}
     </select>
     <span class="spacer"></span>
     <a href={open ? `#/me/agent/${open}` : '#/me/agent'} onclick={onclose}>Open on the Agent page</a
     >
-    <button type="button" class="compact" aria-label="Close the agent panel" onclick={onclose}
-      >&times;</button
-    >
+    <CrossButton label="Close the agent panel" onclick={onclose} />
   </div>
   <div class="body" bind:this={body}>
     <Conversation

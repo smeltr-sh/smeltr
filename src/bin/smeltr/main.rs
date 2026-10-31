@@ -11,6 +11,9 @@ use axum::Router;
 use axum::extract::{Json, Multipart};
 use axum::routing::{delete, get, patch, post, put};
 
+mod accounts_api;
+#[cfg(test)]
+mod accounts_fuzz;
 mod acme_api;
 mod agent_catalog;
 mod agents_api;
@@ -23,38 +26,38 @@ mod chat_api;
 mod cluster;
 mod config_api;
 mod docs_api;
+// What the crate's fuzzers share, compiled here as `tests/harness` compiles it: the library's is test-only.
+#[cfg(test)]
+#[path = "../../fuzz.rs"]
+mod fuzz;
 mod gate;
+mod key_accounts_api;
 mod oidc_api;
 mod policy;
 mod roles_api;
+mod schema_api;
+mod service;
 mod sql_api;
 mod test_api;
-mod users_api;
 mod worker_groups_api;
 
 use smeltr::config_file;
-use smeltr::leader::blocking;
-use smeltr::leader::envelope::{ApiError, Envelope};
+use smeltr::leader::envelope::{ApiError, Envelope, Refusal};
 use smeltr::leader::preview::{
-    GrokCaptures, GrokCapturesRequest, LineBreakerRequest, Preview, PreviewRequest, RoutePreview, RoutePreviewRequest,
-    captures_of, line_breaker_verdict, run_preview, run_route_preview, single_origin_declared_at,
+    FormatRequest, Formatted, GrokCaptures, GrokCapturesRequest, LineBreakerRequest, Preview, PreviewRequest,
+    RoutePreview, RoutePreviewRequest, captures_of, format_code, line_breaker_verdict, run_preview, run_route_preview,
+    single_origin_declared_at,
 };
 use smeltr::leader::sessions;
+use smeltr::leader::{blocking, blocking_answer};
 
 async fn route_preview(
+    axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
     Json(req): Json<RoutePreviewRequest>,
-) -> Json<Envelope<RoutePreview>> {
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
-    let read = move || {
-        Ok::<_, String>(route_preview_on(
-            &smeltr::startup_config::leader_data_dir(),
-            &branch,
-            &scope,
-            req,
-        ))
-    };
-    Json(blocking(read).await.unwrap_or_else(Envelope::failed_one))
+) -> Envelope<RoutePreview> {
+    let branch = q.name().to_string();
+    blocking_answer(move || route_preview_on(&smeltr::startup_config::leader_data_dir(), &branch, &area, req)).await
 }
 
 /// The route preview of `req.config` on `branch`, its sample read from that branch. A group's routes run with
@@ -69,7 +72,7 @@ fn route_preview_on(
 ) -> Envelope<RoutePreview> {
     let reading = match config_api::Reading::open_in(data_dir, branch, scope) {
         Ok(reading) => reading,
-        Err(e) => return Envelope::failed_one(e),
+        Err(e) => return Envelope::refused(e),
     };
     match config_file::read_sample(&mut reading.files(), &req.sample) {
         Ok(Some(sample)) => {
@@ -86,8 +89,11 @@ fn route_preview_on(
                 }
             }
         }
-        Ok(None) => Envelope::failed_one(format!("there is no sample {:?} on this branch", req.sample)),
-        Err(e) => Envelope::failed_one(e.to_string()),
+        Ok(None) => Envelope::refused(Refusal::not_found(format!(
+            "there is no sample {:?} on this branch",
+            req.sample
+        ))),
+        Err(e) => Envelope::refused(Refusal::internal(e.to_string())),
     }
 }
 
@@ -96,7 +102,7 @@ fn route_preview_on(
 // The whole fleet's compiled topology for a branch, as nodes and edges banded by worker group (design doc "The
 // map"; `smeltr::leader::map` builds it). Unlike preview and route preview (`leader::preview`), this reads the branch's own
 // stored bundle rather than a client-supplied draft: the map is a view of what is committed, not of an editor's
-// in-progress buffer, so it needs only a branch name -- never a `?scope=`, which names the bundle an *editor* is
+// in-progress buffer, so it needs only a branch name -- never an area, which names the bundle an *editor* is
 // working in and has nothing to say about what the fleet runs (`docs/user-stories.md` G2: "a group is a filter on
 // that view rather than a mode that hides the rest"). The gate let in anyone viewing somewhere, so the groups are
 // the ones the caller holds (`map::visible_groups`).
@@ -105,7 +111,7 @@ async fn get_map(
     axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
     axum::Extension(access): axum::Extension<smeltr::leader::access::Access>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-) -> Json<Envelope<smeltr::leader::map::Map>> {
+) -> Envelope<smeltr::leader::map::Map> {
     let branch = q.name().to_string();
     let read = move || -> Result<
         (
@@ -114,7 +120,7 @@ async fn get_map(
             Vec<smeltr::leader::map::GroupBundle>,
             String,
         ),
-        String,
+        Refusal,
     > {
         let shared = config_api::Reading::open(&branch, config_file::SHARED_DIR)?;
         let groups = group_bundles(&shared, visible_groups(&shared, &access)?)?;
@@ -122,16 +128,16 @@ async fn get_map(
     };
     let (shared_raw, shared_at, groups, commit) = match blocking(read).await {
         Ok(read) => read,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     };
     let warnings = match smeltr::leader::warnings_snapshot(&state).await {
         Ok(w) => w,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     };
     // Compiling is the expensive part -- `run_route_preview` above pays the same cost the same way -- so it runs
     // off the async executor too.
     let build = move || {
-        Ok::<_, String>(smeltr::leader::map::build(
+        Ok::<_, Refusal>(smeltr::leader::map::build(
             shared_raw,
             &shared_at,
             groups,
@@ -139,15 +145,13 @@ async fn get_map(
             state.registry.series(),
         ))
     };
-    Json(
-        blocking(build)
-            .await
-            .map(|map| smeltr::leader::map::Map {
-                commit: Some(commit),
-                ..map
-            })
-            .into(),
-    )
+    blocking(build)
+        .await
+        .map(|map| smeltr::leader::map::Map {
+            commit: Some(commit),
+            ..map
+        })
+        .into()
 }
 
 // -- map measurements ---------------------------------------------------------
@@ -160,12 +164,12 @@ async fn get_map_measurements(
     axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
     axum::Extension(access): axum::Extension<smeltr::leader::access::Access>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-) -> Json<Envelope<smeltr::leader::measurements::Measurements>> {
+) -> Envelope<smeltr::leader::measurements::Measurements> {
     use smeltr::leader::measurements::Measurements;
     let branch = q.name().to_string();
     let warnings = match smeltr::leader::warnings_snapshot(&state).await {
         Ok(w) => w,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     };
     let readings = smeltr::leader::throughput::readings(
         &state,
@@ -174,7 +178,7 @@ async fn get_map_measurements(
         true,
     )
     .await;
-    let answer = move || -> Result<Measurements, String> {
+    let answer = move || -> Result<Measurements, Refusal> {
         let commit = config_api::Reading::open(&branch, config_file::SHARED_DIR)?.commit;
         let held = state.store.held_sources().unwrap_or_else(|e| {
             tracing::warn!(
@@ -214,14 +218,14 @@ async fn get_map_measurements(
             .visible_to(&access)
         })
     };
-    Json(blocking(answer).await.into())
+    blocking(answer).await.into()
 }
 
 // -- object stats ------------------------------------------------------------
 //
 // One node's counts, for the map's focus view (`smeltr::leader::stats`). Reads one group's committed bundle rather
 // than every group's, which `/api/map` needs and this does not: the question is about one object, and the group it
-// runs in is part of naming it. The gate never reads `?group=`, so viewer in it is checked here.
+// runs in is part of naming it.
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -229,7 +233,6 @@ struct StatsQuery {
     /// Branch only, the same as the map's: stats are about what the fleet runs, never about an editor's buffer.
     #[serde(flatten)]
     branch: config_api::BranchQuery,
-    group: String,
     kind: smeltr::leader::map::NodeKind,
     id: String,
     #[serde(default = "default_stats_window_minutes")]
@@ -242,23 +245,11 @@ fn default_stats_window_minutes() -> i64 {
 
 async fn get_stats(
     axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
-    axum::Extension(access): axum::Extension<smeltr::leader::access::Access>,
+    axum::extract::Path(group): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<StatsQuery>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    use smeltr::leader::access::Level;
-    if !access.allows(&q.group, Level::Viewer) {
-        return gate::refuse(
-            axum::http::StatusCode::FORBIDDEN,
-            &format!("this needs {} in {}", Level::Viewer.as_str(), q.group),
-        );
-    }
-    stats_of(state, q).await.into_response()
-}
-
-async fn stats_of(state: smeltr::leader::AppState, q: StatsQuery) -> Json<Envelope<smeltr::leader::stats::Stats>> {
+) -> Envelope<smeltr::leader::stats::Stats> {
     let branch = q.branch.name().to_string();
-    let (group, kind, id) = (q.group.clone(), q.kind, q.id.clone());
+    let (kind, id) = (q.kind, q.id.clone());
     let window =
         std::time::Duration::from_secs((q.window_minutes.clamp(1, smeltr::leader::MAX_WINDOW_MINUTES) * 60) as u64);
 
@@ -267,10 +258,11 @@ async fn stats_of(state: smeltr::leader::AppState, q: StatsQuery) -> Json<Envelo
     // touching the registry back on the executor.
     let answer = {
         let (group, id) = (group.clone(), id.clone());
-        move || -> Result<Envelope<smeltr::leader::stats::Stats>, String> {
+        move || -> Result<Envelope<smeltr::leader::stats::Stats>, Refusal> {
             let loaded = config_api::Reading::open(&branch, &group).and_then(|reading| {
                 let repo = smeltr::leader::git::repo_path(&smeltr::startup_config::leader_data_dir());
-                smeltr::leader::tree::load_group_at(&repo, &reading.commit, &group).map_err(|e| e.to_string())
+                smeltr::leader::tree::load_group_at(&repo, &reading.commit, &group)
+                    .map_err(|e| Refusal::internal(e.to_string()))
             });
             Ok(match loaded {
                 Err(e) => smeltr::leader::stats::Stats::failed(&group, kind, &id, e),
@@ -291,7 +283,7 @@ async fn stats_of(state: smeltr::leader::AppState, q: StatsQuery) -> Json<Envelo
         }
     };
     let answered = blocking(answer).await;
-    Json(answered.unwrap_or_else(|e| smeltr::leader::stats::Stats::failed(&group, kind, &id, e)))
+    answered.unwrap_or_else(|e| smeltr::leader::stats::Stats::failed(&group, kind, &id, e))
 }
 
 /// Every group `shared`'s branch holds that `access` may see, by the same enumerator `worker_groups_api` lists them
@@ -299,9 +291,9 @@ async fn stats_of(state: smeltr::leader::AppState, q: StatsQuery) -> Json<Envelo
 fn visible_groups(
     shared: &config_api::Reading,
     access: &smeltr::leader::access::Access,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, Refusal> {
     let repo = smeltr::leader::git::repo_path(&smeltr::startup_config::leader_data_dir());
-    let all = smeltr::leader::tree::groups_at(&repo, &shared.commit).map_err(|e| e.to_string())?;
+    let all = smeltr::leader::tree::groups_at(&repo, &shared.commit).map_err(|e| Refusal::internal(e.to_string()))?;
     Ok(smeltr::leader::map::visible_groups(all, access))
 }
 
@@ -309,7 +301,7 @@ fn visible_groups(
 fn group_bundles(
     shared: &config_api::Reading,
     ids: Vec<String>,
-) -> Result<Vec<smeltr::leader::map::GroupBundle>, String> {
+) -> Result<Vec<smeltr::leader::map::GroupBundle>, Refusal> {
     ids.into_iter()
         .map(|id| {
             let reading = shared.sibling(&id)?;
@@ -327,31 +319,45 @@ fn group_bundles(
 // What a change to one object reaches, in each group that runs it (user story A5, blast radius): the editor's
 // question before anything changes, answered from the bundles alone (`leader::connections`).
 
-#[derive(serde::Deserialize)]
-struct ConnectionsQuery {
-    kind: config_file::Kind,
-    id: String,
+/// The kind of object a section of an area's path holds: `sources`, `pipelines`, and so on.
+fn kind_of_section(section: &str) -> Option<config_file::Kind> {
+    use config_file::Kind;
+    Some(match section {
+        "sources" => Kind::Source,
+        "routes" => Kind::Route,
+        "pipelines" => Kind::Pipeline,
+        "destinations" => Kind::Destination,
+        "lookups" => Kind::LookupTable,
+        "grok-patterns" => Kind::GrokPattern,
+        _ => return None,
+    })
 }
 
 async fn get_connections(
     axum::Extension(access): axum::Extension<smeltr::leader::access::Access>,
+    axum::extract::Path((area, section, id)): axum::extract::Path<(String, String, String)>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-    axum::extract::Query(object): axum::extract::Query<ConnectionsQuery>,
-) -> Json<Envelope<smeltr::leader::connections::ObjectConnections>> {
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
-    let read = move || -> Result<_, String> {
+) -> Envelope<smeltr::leader::connections::ObjectConnections> {
+    let Some(kind) = kind_of_section(&section) else {
+        return Envelope::refused(Refusal::not_found(format!(
+            "an area holds no section {section:?}; sections are sources, routes, pipelines, destinations, lookups, \
+             grok-patterns"
+        )));
+    };
+    let branch = q.name().to_string();
+    let read = move || -> Result<_, Refusal> {
         let shared = config_api::Reading::open(&branch, config_file::SHARED_DIR)?;
         // A group's own object runs in that group alone; one `shared/` declares, in every group the caller may see.
-        let groups = if scope == config_file::SHARED_DIR {
+        let groups = if area == config_file::SHARED_DIR {
             visible_groups(&shared, &access)?
         } else {
-            vec![scope.clone()]
+            vec![area.clone()]
         };
         let groups = group_bundles(&shared, groups)?;
-        let object = config_file::Object::new(object.kind, &object.id);
+        let object = config_file::Object::new(kind, &id);
         Ok(smeltr::leader::connections::of(&shared.raw(), &groups, &object))
     };
-    Json(blocking(read).await.into())
+    blocking(read).await.into()
 }
 
 // -- pipeline callers -------------------------------------------------------
@@ -368,11 +374,15 @@ struct PipelineCallers {
 }
 
 async fn pipeline_callers(
+    axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-) -> Json<Envelope<PipelineCallers>> {
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
-    let read = move || Ok::<_, String>(run_pipeline_callers(config_api::Reading::open(&branch, &scope)?.raw()));
-    Json(blocking(read).await.unwrap_or_else(Envelope::failed_one))
+) -> Envelope<PipelineCallers> {
+    let branch = q.name().to_string();
+    blocking_answer(move || match config_api::Reading::open(&branch, &area) {
+        Ok(reading) => run_pipeline_callers(reading.raw()),
+        Err(e) => Envelope::refused(e),
+    })
+    .await
 }
 
 fn run_pipeline_callers(raw: config_file::RawBundle) -> Envelope<PipelineCallers> {
@@ -386,19 +396,23 @@ fn run_pipeline_callers(raw: config_file::RawBundle) -> Envelope<PipelineCallers
         .into_iter()
         .map(|(called, by)| (called, by.into_iter().collect()))
         .collect();
-    Envelope::with(PipelineCallers { callers }, errors)
+    Envelope::with(
+        PipelineCallers { callers },
+        config_api::read_status(&raw.unreadable),
+        errors,
+    )
 }
 
 /// The captures of a grok pattern, with no sample and no pipeline.
 ///
-/// Deliberately not part of `/api/preview`: that needs a chosen sample and answers nothing once compilation fails, and
-/// both are exactly when an editor most needs the names -- a step whose pattern just gained a capture nothing declares
-/// does not compile, and it is this list that says what to declare.
-async fn grok_captures(Json(req): Json<GrokCapturesRequest>) -> Json<Envelope<GrokCaptures>> {
-    Json(captures_of(req))
+/// Deliberately not part of an area's `preview/pipeline`: that needs a chosen sample and answers nothing once
+/// compilation fails, and both are exactly when an editor most needs the names -- a step whose pattern just gained a
+/// capture nothing declares does not compile, and it is this list that says what to declare.
+async fn grok_captures(Json(req): Json<GrokCapturesRequest>) -> Envelope<GrokCaptures> {
+    captures_of(req)
 }
 
-/// The records of a captured sample, for `/api/onboard/propose`.
+/// The records of a captured sample, for `/api/preview/onboard`.
 #[derive(serde::Deserialize)]
 pub struct OnboardRequest {
     records: Vec<smeltr::io::RecordObject>,
@@ -410,47 +424,57 @@ pub struct OnboardRequest {
 
 /// What a captured sample reads as, and the first steps and route condition a pipeline for it would start from
 /// (`leader::onboard`). The records are the caller's own, so nothing here reads a branch.
-async fn onboard_propose(Json(req): Json<OnboardRequest>) -> Json<smeltr::leader::onboard::Proposal> {
-    Json(smeltr::leader::onboard::propose(&req.records, req.filed.as_deref()))
+async fn onboard_propose(Json(req): Json<OnboardRequest>) -> Envelope<smeltr::leader::onboard::Proposal> {
+    Envelope::ok(smeltr::leader::onboard::propose(&req.records, req.filed.as_deref()))
+}
+
+/// Pipeline code laid out in the style, asked when the editor leaves a code field.
+async fn format(Json(req): Json<FormatRequest>) -> Envelope<Formatted> {
+    format_code(req)
 }
 
 /// Whether a save would take a line breaker, asked as it is typed: the save's own check, with no bundle around it.
-async fn line_breaker(Json(req): Json<LineBreakerRequest>) -> Json<Envelope> {
-    Json(line_breaker_verdict(req))
+async fn line_breaker(Json(req): Json<LineBreakerRequest>) -> Envelope {
+    line_breaker_verdict(req)
 }
 
 async fn preview(
+    axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
     Json(req): Json<PreviewRequest>,
-) -> Json<Envelope<Preview>> {
+) -> Envelope<Preview> {
     // Reading the branch spawns git, so it goes off the async executor.
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
-    let read = move || {
-        Ok::<_, String>(preview_on(
+    let branch = q.name().to_string();
+    blocking_answer(move || {
+        preview_on(
             &smeltr::startup_config::leader_data_dir(),
             &branch,
-            &scope,
+            &area,
             req,
-        ))
-    };
-    Json(
-        blocking(read)
-            .await
-            .unwrap_or_else(|e| Preview::failed("load", vec![ApiError::new(e)], vec![])),
-    )
+            Vec::new(),
+        )
+    })
+    .await
 }
 
 /// A preview of what the editor is looking at on `branch`: its sample and any lookup path in it resolve the same way
 /// a save would, against the bundle on that branch. A group's preview runs with `shared/` merged in, as the group
 /// runs once deployed, so a pipeline calling a shared pipeline or reading a shared lookup table previews rather than
-/// naming it unknown. `data_dir` explicit, as for `Reading::open_in`.
-fn preview_on(data_dir: &std::path::Path, branch: &str, scope: &str, mut req: PreviewRequest) -> Envelope<Preview> {
+/// naming it unknown. `data_dir` explicit, as for `Reading::open_in`. `records` are run where the request names no
+/// sample: what an import hands over.
+fn preview_on(
+    data_dir: &std::path::Path,
+    branch: &str,
+    scope: &str,
+    mut req: PreviewRequest,
+    records: Vec<smeltr::io::RecordObject>,
+) -> Envelope<Preview> {
     let reading = match config_api::Reading::open_in(data_dir, branch, scope) {
         Ok(reading) => reading,
-        Err(e) => return Preview::failed("load", vec![ApiError::new(e)], vec![]),
+        Err(e) => return Envelope::refused(e),
     };
     let sample = match &req.sample {
-        None => Ok((Vec::new(), Vec::new())),
+        None => Ok((Vec::new(), records)),
         Some(id) => match config_file::read_sample(&mut reading.files(), id) {
             Ok(Some(sample)) => Ok((sample.columns, sample.records)),
             Ok(None) => Err(format!("there is no sample {id:?} on this branch")),
@@ -469,6 +493,62 @@ fn preview_on(data_dir: &std::path::Path, branch: &str, scope: &str, mut req: Pr
         }
         Err(message) => Preview::failed("sample", vec![ApiError::new(message)], vec![]),
     }
+}
+
+/// A schema imported by a pipeline: `pipeline` of `config` run over the records of `text`, an uploaded file, on
+/// `branch` as a preview runs, and each row it writes a field of the schema `id` (`schema_catalog::from_rows`).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportRequest {
+    /// A single-file `config_file` JSON document: the bundle the importer is in.
+    config: String,
+    /// The importer, by `PipelineDto::id`.
+    pipeline: String,
+    id: String,
+    #[serde(default)]
+    title: String,
+    /// The uploaded file, cut into records by `line_breaker` (`schema_catalog::records_of`).
+    text: String,
+    #[serde(default)]
+    line_breaker: Option<String>,
+}
+
+async fn import_schema(
+    axum::extract::Path(area): axum::extract::Path<String>,
+    axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
+    Json(req): Json<ImportRequest>,
+) -> Envelope<smeltr::leader::schema_catalog::ReadSchema> {
+    let branch = q.name().to_string();
+    blocking_answer(move || {
+        let records = match smeltr::leader::schema_catalog::records_of(&req.text, req.line_breaker.as_deref()) {
+            Ok(records) => records,
+            Err(message) => return Envelope::refused(Refusal::invalid(message)),
+        };
+        let preview = preview_on(
+            &smeltr::startup_config::leader_data_dir(),
+            &branch,
+            &area,
+            PreviewRequest {
+                config: req.config,
+                pipeline: Some(req.pipeline),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            records,
+        );
+        if !preview.succeeded() {
+            return Envelope::refused(Refusal::all(preview.status, preview.errors));
+        }
+        smeltr::leader::schema_catalog::from_rows(&req.id, &req.title, &preview.body.rows)
+            .map_err(Refusal::invalid)
+            .into()
+    })
+    .await
 }
 
 /// Rewrites `req.config`, a group's own bundle, into that bundle merged with `shared/` at the commit `reading`
@@ -539,28 +619,25 @@ struct UploadQuery {
 async fn upload_lookup(
     axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
     axum::extract::Extension(actor): axum::extract::Extension<smeltr::leader::store::Actor>,
-    axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
+    at: config_api::Addressed,
     axum::extract::Query(upload): axum::extract::Query<UploadQuery>,
-    headers: axum::http::HeaderMap,
     mut multipart: Multipart,
-) -> Json<Envelope<Upload>> {
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
-    let base = config_api::base_commit(&headers);
+) -> Envelope<Upload> {
     let delimiter = match config_file::to_byte(upload.delimiter.as_deref().unwrap_or(","), "delimiter") {
         Ok(delimiter) => delimiter,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(Refusal::invalid(e)),
     };
     // Opened before anything is stored: the store sits inside the repository, which a first save creates.
-    let writing = match blocking(move || config_api::Writing::open(&branch, base.as_deref(), &scope)).await {
+    let writing = match blocking(move || at.open()).await {
         Ok(writing) => writing,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     };
     let mut upload: Option<(String, smeltr::lookup::store::Incoming)> = None;
     loop {
         let mut field = match multipart.next_field().await {
             Ok(Some(f)) => f,
             Ok(None) => break,
-            Err(e) => return Json(Envelope::failed_one(format!("malformed upload: {e}"))),
+            Err(e) => return Envelope::refused(Refusal::bad_request(format!("malformed upload: {e}"))),
         };
         let (Some("file"), Some(filename)) = (field.name(), field.file_name().map(str::to_string)) else {
             continue;
@@ -568,32 +645,31 @@ async fn upload_lookup(
         // Streamed into the store as it arrives: a lookup file can be gigabytes, and this process holds a chunk.
         let mut incoming = match smeltr::lookup::store::Incoming::new(writing.repo()) {
             Ok(incoming) => incoming,
-            Err(e) => return Json(Envelope::failed_one(format!("couldn't store the upload: {e}"))),
+            Err(e) => return Envelope::refused(Refusal::internal(format!("couldn't store the upload: {e}"))),
         };
         loop {
             match field.chunk().await {
                 Ok(Some(chunk)) => {
                     if let Err(e) = tokio::task::block_in_place(|| std::io::Write::write_all(&mut incoming, &chunk)) {
-                        return Json(Envelope::failed_one(format!("couldn't store the upload: {e}")));
+                        return Envelope::refused(Refusal::internal(format!("couldn't store the upload: {e}")));
                     }
                 }
                 Ok(None) => break,
-                Err(e) => return Json(Envelope::failed_one(format!("couldn't read upload: {e}"))),
+                Err(e) => return Envelope::refused(Refusal::bad_request(format!("couldn't read upload: {e}"))),
             }
         }
         upload = Some((filename, incoming));
     }
     let Some((filename, incoming)) = upload else {
-        return Json(Envelope::failed_one("no `file` field in this upload"));
+        return Envelope::refused(Refusal::bad_request("no `file` field in this upload"));
     };
 
     // A lookup file is configuration the pipeline's behavior depends on, so its pointer belongs in the tree with the
     // config that names it: a rollback restores the table the previous deploy ran with, and the change is in the
     // review. Which makes it a save like any other -- one commit, refused if the branch has moved.
-    let saved =
-        blocking(move || Ok::<_, String>(save_lookup_file(&writing, &filename, incoming, delimiter, &actor))).await;
+    let saved = blocking_answer(move || save_lookup_file(&writing, &filename, incoming, delimiter, &actor)).await;
     smeltr::leader::prune_lookups(&state).await;
-    Json(saved.unwrap_or_else(Envelope::failed_one))
+    saved
 }
 
 /// Name an upload in the store and commit its pointer into the lookup directory `writing` names. A CSV's headers are
@@ -614,7 +690,7 @@ fn save_lookup_file(
         config_api::Naming::ByContent,
     ) {
         Ok(stored) => stored,
-        Err(e) => return Envelope::failed_one(e),
+        Err(e) => return Envelope::refused(e),
     };
     match writing.commit(
         vec![stored.edit],
@@ -626,7 +702,11 @@ fn save_lookup_file(
             headers: stored.headers,
             commit: Some(commit),
         }),
-        Err(e) => Envelope::failed_one(format!("could not commit the upload: {e}")),
+        Err(e) => {
+            let refusal = Refusal::from(e);
+            let message = format!("could not commit the upload: {}", refusal.message());
+            Envelope::refused(Refusal::new(refusal.status, message))
+        }
     }
 }
 
@@ -699,7 +779,7 @@ async fn leader_tls_config(
             path = %tls_dir.join(smeltr::leader::tls::CA_CERT).display(),
             "created this leader's certificate authority: copy this file into every worker's bootstrap config, \
              and trust it in any browser that opens this leader. It is what says a leader really is this one; \
-             the certificate served under it is reissued at every start"
+             the certificate issued under it is the entry \"leader\" in the certificate list"
         );
     }
 
@@ -707,9 +787,16 @@ async fn leader_tls_config(
     // above replaced what is served, so until this says so the two have parted -- which at a start is exactly
     // true, there being no socket at all until the line between these two.
     let generation = smeltr::leader::tls::disk_generation(&tls_dir);
-    let resolver = smeltr::leader::resolver::Resolver::load(&materials.server_cert_path, &materials.server_key_path)
-        .expect("load the leader's own certificate and key, just written");
-    smeltr::leader::tls::socket_took(&tls_dir, generation);
+    let resolver = smeltr::leader::tls::to_serve(&tls_dir)
+        .and_then(|(_, chain, key)| smeltr::leader::resolver::Resolver::load(&chain, &key))
+        .unwrap_or_else(|e| {
+            eprintln!("smeltr: refusing to start -- {e}");
+            std::process::exit(1);
+        });
+    // Where the entry named could not be served, the socket presents the leader's own and the two stay parted.
+    if smeltr::leader::tls::unserved(&tls_dir).is_none() {
+        smeltr::leader::tls::socket_took(&tls_dir, generation);
+    }
     Some((resolver, materials.ca_pem))
 }
 
@@ -737,7 +824,7 @@ fn spawn_embedded_worker(
         std::process::exit(1);
     }
 
-    // Under the leader's own data directory: this worker's identity and credential are the leader's to keep.
+    // Under the leader's own data directory: this worker's id and credential are the leader's to keep.
     let state_dir = data_dir.join("worker");
 
     // Only when there is nothing to enroll with. Minting on every start would leave a live enrollment code behind at
@@ -852,9 +939,10 @@ fn start_worker(
     // Every setting here can refuse, so all are read before anything says a worker is starting.
     cfg::worker_listen_address();
     let thread_limit = cfg::worker_thread_limit();
-    let memory = smeltr::worker::memory_to_fit(in_leader);
+    let memory = smeltr::worker::memory_to_fit();
     let heartbeat_interval = cfg::worker_heartbeat_interval();
     let stop_after_unreachable_secs = cfg::worker_stop_after_unreachable_secs();
+    let leader_trust_public = cfg::leader_trust_public();
     let metrics_endpoint = smeltr::worker::metrics_endpoint::open().unwrap_or_else(|e| {
         eprintln!("smeltr: refusing to start -- {e}");
         std::process::exit(1);
@@ -865,6 +953,7 @@ fn start_worker(
     smeltr::worker::run_worker(smeltr::worker::WorkerConfig {
         leader_url,
         leader_ca_pem,
+        leader_trust_public,
         leader_authority_dir,
         group_id,
         thread_limit,
@@ -889,6 +978,11 @@ struct LeaderSetup {
     leader: smeltr::leader::AppState,
 }
 
+/// How large a body a signed-in person may send: a bundle edited as JSON, an uploaded file to import or preview, a
+/// lookup table's contents. The sign-in gate refuses a request before its body is read, so only a person the leader
+/// knows can make it hold this much. Sign-in, enrollment and the worker routes keep axum's default.
+const PEOPLE_BODY_LIMIT: usize = 1 << 30;
+
 async fn setup_leader(
     port: u16,
     auth: gate::Auth,
@@ -903,6 +997,15 @@ async fn setup_leader(
     let data_dir =
         smeltr::paths::canonicalize_portable(&data_dir).expect("resolve leader data directory to an absolute path");
 
+    // Before the first sync: gix's curl reads the roots its fetch from the remote trusts only from this file.
+    smeltr::io::trust::write_pem_file(
+        smeltr::io::trust::public(),
+        &smeltr::leader::remote::roots_path(&data_dir),
+    )
+    .expect("write the roots the remote's fetch trusts");
+
+    // Before TLS: a certificate the leader serves from the list is read from it.
+    smeltr::leader::tls::read_list(&smeltr::leader::tls::dir_of(&data_dir), store.clone());
     let hosts = origin_hosts(&auth.origin);
     let tls = leader_tls_config(&data_dir, &hosts).await;
     let state = smeltr::leader::AppState {
@@ -917,11 +1020,18 @@ async fn setup_leader(
         deploy_checks: Default::default(),
         origin_hosts: hosts,
         remote: Default::default(),
+        updates: Default::default(),
         directives: Default::default(),
     };
     state.deploy_checks.set_runner(Arc::new(test_api::failing_at));
     tokio::spawn(smeltr::leader::remote::poll(state.clone()));
+    tokio::spawn(smeltr::leader::updates::poll(state.clone()));
     tokio::spawn(smeltr::leader::remote::push_saves(state.clone()));
+    // Without a worker in this process, what the leader's threads did not raise is the leader's too.
+    if !smeltr::startup_config::worker_enabled() {
+        smeltr::logs::runs_no_worker();
+    }
+    tokio::spawn(smeltr::leader::keep_own_logs(state.clone()));
 
     // A cutover changes the files and then withdraws the enrollment codes that named the root it retired. A process
     // that stopped between the two came back to a finished cutover with no rotation left to notice it, so the same
@@ -964,20 +1074,21 @@ async fn setup_leader(
         .route("/api/cluster", get(cluster::cluster_status))
         .route("/api/map", get(get_map))
         .route("/api/map/measurements", get(get_map_measurements))
-        .route("/api/stats", get(get_stats))
-        .route("/api/changes/:branch/deploy", post(branch_api::deploy_change))
-        .route("/api/deploy", post(branch_api::deploy_commit))
+        .route("/api/areas/:area/stats", get(get_stats))
+        .route("/api/branches/:name/deploy", post(branch_api::deploy_change))
+        .route("/api/main/deploy", post(branch_api::deploy_commit))
         // Here for `State<AppState>`: the listing says what of each branch the remote holds.
         .route(
             "/api/branches",
             get(branch_api::list_branches).post(branch_api::create_branch),
         )
-        .route("/api/sql/statement", post(sql_api::sql_statement))
+        .route("/api/preview/sql", post(sql_api::sql_statement))
         .route("/api/captures", post(capture_api::start_capture))
-        .route("/api/captures/:session", get(capture_api::capture_status))
+        .route(
+            "/api/captures/:session",
+            get(capture_api::capture_status).delete(capture_api::discard_capture),
+        )
         .route("/api/captures/:session/stop", post(capture_api::stop_capture))
-        .route("/api/captures/:session/save", post(capture_api::save_capture))
-        .route("/api/captures/:session/discard", post(capture_api::discard_capture))
         // Not on `app` below with the rest of the worker-groups routes: both need `State<AppState>` -- the listing
         // for `shared`'s hue, the create for a new group's -- the same reason `get_map` is here. `deploy_change`
         // asks the store whether a remote owns `main`.
@@ -986,20 +1097,25 @@ async fn setup_leader(
             get(worker_groups_api::list_worker_groups).post(worker_groups_api::create_worker_group),
         )
         .route("/api/worker-groups/:id/hue", put(worker_groups_api::set_group_hue))
-        // Not on `app` below with the rest of the config routes: saving an identity asks the secret store whether
-        // its certificate and the key it names are a pair, which needs `State<AppState>`.
-        .route("/api/identities", put(config_api::put_identities))
-        // Here for the same reason: undoing an identity runs the same pairing check.
-        .route("/api/undo", post(config_api::undo))
-        // Not on `app` below with the rest of the config routes: retention after an upload keeps what the fleet runs,
-        // which the registry knows. A lookup file is streamed to disk, so the limit is what a disk takes rather than
-        // what memory holds.
+        // Not on `app` below with the rest of the config routes: saving a connector asks the certificate list whether
+        // it holds the certificate named.
+        .route("/api/areas/:area/sources", put(config_api::put_sources))
+        .route("/api/areas/:area/destinations", put(config_api::put_destinations))
+        // Not on `app` below with the rest of the samples routes: the capture a sample is made from is held in
+        // `State<AppState>`.
+        .route("/api/areas/:area/samples", post(capture_api::save_capture))
+        // Not on `app` below with the rest of the config routes: retention after a table's saved contents and after an
+        // upload keeps what the fleet runs, which the registry knows. An edited CSV travels whole in this body, so it
+        // is as large as the file.
+        .route("/api/areas/:area/lookups", put(config_api::put_lookup_tables))
+        // A lookup file is streamed to disk, so the limit is what a disk takes rather than what memory holds.
         .route(
-            "/api/lookup/upload",
+            "/api/areas/:area/lookups/upload",
             post(upload_lookup).layer(axum::extract::DefaultBodyLimit::max(
                 smeltr::lookup::store::MAX_FILE_BYTES as usize,
             )),
         )
+        .layer(axum::extract::DefaultBodyLimit::max(PEOPLE_BODY_LIMIT))
         .route_layer(axum::middleware::from_fn_with_state(auth, gate::require_principal));
     let routes = smeltr::leader::compose(state.clone(), admin_and_cluster);
 
@@ -1059,6 +1175,7 @@ struct WorkerFileConfig {
 struct WorkerLeaderFileConfig {
     url: Option<String>,
     ca: Option<String>,
+    trust_public: Option<bool>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -1387,11 +1504,10 @@ fn is_local_host(host: &str) -> bool {
 /// session has to be able to reach them -- so each checks for itself what it needs.
 fn auth_router(auth: gate::Auth) -> Router {
     Router::new()
-        .route("/api/auth/session", get(auth_api::session))
+        .route("/api/auth/session", get(auth_api::session).delete(auth_api::logout))
         .route("/api/auth/login", post(auth_api::login))
-        .route("/api/auth/logout", post(auth_api::logout))
-        .route("/api/auth/activity", post(auth_api::activity))
-        .route("/api/auth/password", post(auth_api::password))
+        .route("/api/auth/session/activity", post(auth_api::activity))
+        .route("/api/auth/password", put(auth_api::password))
         .route("/api/auth/oidc", get(oidc_api::offered))
         .route(oidc_api::START_PATH, get(oidc_api::start))
         .route(oidc_api::CALLBACK_PATH, get(oidc_api::callback))
@@ -1467,6 +1583,7 @@ fn load_and_apply_config_file() {
     backfill_env("SMELTR_WORKER_LISTEN_ADDRESS", file.worker.listen_address);
     backfill_env("SMELTR_LEADER_URL", file.worker.leader.url);
     backfill_env("SMELTR_LEADER_CA", file.worker.leader.ca);
+    backfill_env("SMELTR_LEADER_TRUST_PUBLIC", file.worker.leader.trust_public);
     backfill_env("SMELTR_WORKER_STATE_DIR", file.worker.storage.state_dir);
     backfill_env("SMELTR_WORKER_THREAD_LIMIT", file.worker.runtime.thread_limit);
     backfill_env("SMELTR_WORKER_MEMORY", file.worker.runtime.memory);
@@ -1560,12 +1677,16 @@ fn stop_on_signal() {
 fn exit_after_stopping() {
     smeltr::worker::stop_before_exit();
     smeltr::logs::stop();
+    service::stopped();
     std::process::exit(0)
 }
 
 /// Runs the leader, GUI included, and never returns.
 fn run_as_leader() -> ! {
+    // Every thread the leader runs on, so its logs are stored as the leader's beside a worker in this process.
+    smeltr::logs::mark_leader_thread();
     tokio::runtime::Builder::new_multi_thread()
+        .on_thread_start(smeltr::logs::mark_leader_thread)
         .enable_all()
         .build()
         .expect("build tokio runtime")
@@ -1575,6 +1696,10 @@ fn run_as_leader() -> ! {
 }
 
 fn main() {
+    service::run(start, stop_on_signal)
+}
+
+fn start() {
     // AWS-LC is the only backend this build carries, and installing it is still what makes it the one in use:
     // `ureq` and `axum-server` are both given rustls without a provider of their own, and curl's own rustls takes
     // an installed default over the one its features name, so each reaches for this when it opens its first
@@ -1676,6 +1801,29 @@ fn refuse_damaged_repo(
     };
     eprintln!("smeltr: refusing to start -- {damage}. {repair}.");
     std::process::exit(1);
+}
+
+/// Writes the secrets encryption key on a leader that has sealed nothing yet, so the first secret stored is sealed
+/// under a key that has already been announced. A leader holding values its key cannot open says so as loudly as it
+/// can, and goes on: everything but the secrets still works, and the fix is on the Secrets page.
+fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path::Path) {
+    use smeltr::leader::store::KeyState;
+    let standing = match store.key_standing() {
+        Ok(standing) => standing,
+        Err(e) => {
+            eprintln!("smeltr: refusing to start -- {e}");
+            std::process::exit(1);
+        }
+    };
+    if standing.key == KeyState::Absent
+        && let Err(e) = smeltr::leader::secrets::load_or_create(path)
+    {
+        eprintln!("smeltr: refusing to start -- {e}");
+        std::process::exit(1);
+    }
+    if let Some(problem) = standing.problem() {
+        tracing::error!(target: "secrets.key_unusable", path = %path.display(), "{problem}");
+    }
 }
 
 /// Make sure somebody can sign in, and say so on the console when a password was written.
@@ -1801,9 +1949,9 @@ async fn run_leader() {
     };
 
     // Built here rather than in `setup_leader`, because seeding the default group needs it too, and seeding has to
-    // happen before `main` is read for the first time (above). The store reads the sealing key per operation rather
-    // than holding one, but a key file anyone can read is a startup problem: finding out when an admin first stores
-    // a secret is finding out too late.
+    // happen before `main` is read for the first time (above). The store reads the secrets encryption key per
+    // operation rather than holding one, but a key file anyone can read is a startup problem: finding out when an
+    // admin first stores a secret is finding out too late.
     let secret_key = smeltr::startup_config::leader_secret_key_path();
     if let Err(e) = smeltr::leader::secrets::load(&secret_key) {
         eprintln!("smeltr: refusing to start -- {e}");
@@ -1823,6 +1971,7 @@ async fn run_leader() {
         eprintln!("smeltr: refusing to start -- {e}");
         std::process::exit(1);
     });
+    check_secrets_key(store.as_ref(), &secret_key);
     let repo = smeltr::leader::git::repo_path(&data_dir);
     if let Err(damage) = smeltr::leader::git::check_repo(&repo) {
         refuse_damaged_repo(&repo, &damage, store.as_ref());
@@ -1891,81 +2040,87 @@ async fn run_leader() {
         Err(e) => tracing::warn!(
             target: "leader.main_unreadable",
             subject = smeltr::leader::git::MAIN_BRANCH,
-            error = %e,
+            error = %e.message(),
             "could not read the branch the fleet runs, so nothing was validated at startup"
         ),
     }
 
     let app = Router::new()
-        .route("/api/preview", post(preview))
-        .route("/api/grok-captures", post(grok_captures))
-        .route("/api/onboard/propose", post(onboard_propose))
-        .route("/api/line-breaker", post(line_breaker))
-        .route("/api/route-preview", post(route_preview))
-        .route("/api/lookup/file", get(config_api::get_lookup_file))
-        .route("/api/lookup/mmdb", get(config_api::get_lookup_mmdb))
-        .route("/api/branches/:name", delete(branch_api::delete_branch))
+        .route("/api/areas/:area/preview/pipeline", post(preview))
+        .route("/api/preview/grok", post(grok_captures))
+        .route("/api/preview/onboard", post(onboard_propose))
+        .route("/api/preview/line-breaker", post(line_breaker))
+        .route("/api/preview/format", post(format))
+        .route("/api/areas/:area/preview/routes", post(route_preview))
+        .route("/api/areas/:area/lookups/file", get(config_api::get_lookup_file))
+        .route("/api/areas/:area/lookups/mmdb", get(config_api::get_lookup_mmdb))
+        .route(
+            "/api/branches/:name",
+            delete(branch_api::delete_branch).patch(branch_api::retitle_change),
+        )
         // GET/POST `/api/worker-groups` and PUT `/api/worker-groups/:id/hue` are on `admin_and_cluster` instead:
         // both need `State<AppState>`, which only that router carries.
         .route(
             "/api/worker-groups/:id",
             put(worker_groups_api::update_worker_group).delete(worker_groups_api::delete_worker_group),
         )
-        .route("/api/changes", post(branch_api::open_change))
-        .route("/api/changes/:branch", patch(branch_api::retitle_change))
-        .route("/api/changes/:branch/close", post(branch_api::close_change))
-        .route("/api/changes/:branch/comments", post(branch_api::comment_on_change))
-        .route("/api/changes/:branch/threads/:id", post(branch_api::resolve_thread))
-        .route("/api/changes/:branch/reviews", post(branch_api::review_change))
-        .route("/api/changes/:branch/timeline", get(branch_api::change_timeline))
-        // `/api/changes/:branch/deploy` and `/api/deploy` are on `admin_and_cluster` instead: both wait their turn
+        .route("/api/branches/:name/open", post(branch_api::open_change))
+        .route("/api/branches/:name/close", post(branch_api::close_change))
+        .route("/api/branches/:name/comments", post(branch_api::comment_on_change))
+        .route("/api/branches/:name/threads/:id", post(branch_api::resolve_thread))
+        .route("/api/branches/:name/reviews", post(branch_api::review_change))
+        .route("/api/branches/:name/timeline", get(branch_api::change_timeline))
+        // `/api/branches/:name/deploy` and `/api/main/deploy` are on `admin_and_cluster` instead: both wait their turn
         // with the remote's syncs, which needs `State<AppState>`.
-        .route("/api/changes/:branch/bring-current", post(branch_api::bring_current))
-        .route("/api/history", get(branch_api::history))
+        .route("/api/branches/:name/bring-current", post(branch_api::bring_current))
+        .route("/api/main/history", get(branch_api::history))
         .route("/api/branches/:name/diff", get(branch_api::branch_diff))
-        .route("/api/diff", get(branch_api::commit_diff))
+        .route("/api/branches/:name/schema-findings", get(branch_api::schema_findings))
+        .route("/api/main/diff", get(branch_api::commit_diff))
+        .route("/api/areas/:area/samples", get(config_api::list_samples))
         .route(
-            "/api/samples",
-            get(config_api::list_samples).put(config_api::put_sample),
+            "/api/areas/:area/samples/:id",
+            get(config_api::get_sample)
+                .put(config_api::put_sample)
+                .delete(config_api::delete_sample),
         )
+        .route("/api/areas/:area/tests", get(test_api::list_tests))
         .route(
-            "/api/samples/:id",
-            get(config_api::get_sample).delete(config_api::delete_sample),
+            "/api/areas/:area/tests/:id",
+            get(test_api::get_test)
+                .put(test_api::put_test)
+                .delete(test_api::delete_test),
         )
-        .route("/api/tests", get(test_api::list_tests).put(test_api::put_test))
-        .route("/api/tests/:id", get(test_api::get_test).delete(test_api::delete_test))
-        .route("/api/tests/run", post(test_api::run_tests))
-        .route("/api/config", get(config_api::get_config))
-        .route("/api/config/unreadable", get(config_api::get_unreadable))
+        .route("/api/areas/:area/test-runs", post(test_api::run_tests))
+        .route("/api/branches/:name/tests", get(test_api::list_change_tests))
+        .route("/api/branches/:name/test-runs", post(test_api::run_change_tests))
+        .route("/api/areas/:area", get(config_api::get_config))
+        .route("/api/areas/:area/unreadable", get(config_api::get_unreadable))
         .route(
-            "/api/config/file",
+            "/api/areas/:area/files/*path",
             get(config_api::get_file)
                 .put(config_api::put_file)
                 .delete(config_api::delete_file),
         )
-        .route("/api/sources", put(config_api::put_sources))
-        .route("/api/destinations", put(config_api::put_destinations))
-        // `/api/identities` and `/api/undo` are on `admin_and_cluster` instead: an identity's certificate is
-        // committed and its key is not, so saving one asks the secret store whether the two are a pair, and
-        // `State<AppState>` is what carries it.
-        .route("/api/identities/describe", post(config_api::describe_certificates))
-        .route("/api/routes", put(config_api::put_routes))
-        .route("/api/grok-patterns", put(config_api::put_grok_patterns))
-        // An edited CSV travels whole in this body, so it is as large as the file.
+        .route("/api/preview/certificate", post(config_api::describe_certificates))
+        .route("/api/areas/:area/undo", post(config_api::undo))
+        .route("/api/areas/:area/routes", put(config_api::put_routes))
+        .route("/api/areas/:area/grok-patterns", put(config_api::put_grok_patterns))
+        .route("/api/areas/:area/schemas", put(config_api::put_schemas))
+        .route("/api/areas/:area/preview/schema-import", post(import_schema))
+        .route("/api/preview/schema-read", post(schema_api::read))
+        .route("/api/preview/schema-export", post(schema_api::export))
+        .route("/api/preview/schema-standards", get(schema_api::standards))
+        .route("/api/areas/:area/manifest", put(config_api::put_manifest))
+        .route("/api/areas/:area/pipelines", get(config_api::list_pipelines))
         .route(
-            "/api/lookup-tables",
-            put(config_api::put_lookup_tables).layer(axum::extract::DefaultBodyLimit::max(256 << 20)),
-        )
-        .route("/api/manifest", put(config_api::put_manifest))
-        .route("/api/pipelines", get(config_api::list_pipelines))
-        .route(
-            "/api/pipelines/:id",
+            "/api/areas/:area/pipelines/:id",
             get(config_api::get_pipeline)
                 .put(config_api::put_pipeline)
                 .delete(config_api::delete_pipeline),
         )
-        .route("/api/pipeline-callers", get(pipeline_callers))
-        .route("/api/connections", get(get_connections))
+        .route("/api/areas/:area/pipeline-callers", get(pipeline_callers))
+        .route("/api/areas/:area/:section/:id/connections", get(get_connections))
         .route("/api/docs", get(docs_api::list))
         .route("/api/docs/page", get(docs_api::page));
 
@@ -1976,11 +2131,16 @@ async fn run_leader() {
     // config routes above -- and it must be inside the gate, which is what `route_layer` below covers.
     let app = app.merge(
         Router::new()
-            .route("/api/users", get(users_api::list_users).post(users_api::create_user))
-            .route("/api/users/:id", patch(users_api::patch_user))
-            .route("/api/users/:id/reset-password", post(users_api::reset_password))
-            .route("/api/users/:id/revoke-sessions", post(users_api::revoke_sessions))
-            .route("/api/security-events", get(users_api::list_security_events))
+            .route(
+                "/api/accounts",
+                get(accounts_api::list_accounts).post(accounts_api::create_account),
+            )
+            .route("/api/accounts/:id", patch(accounts_api::patch_account))
+            .route("/api/accounts/:id/reset-password", post(accounts_api::reset_password))
+            .route("/api/accounts/:id/revoke-sessions", post(accounts_api::revoke_sessions))
+            .route("/api/accounts/:id/keys", post(key_accounts_api::create_key))
+            .route("/api/accounts/:id/keys/:key", delete(key_accounts_api::revoke_key))
+            .route("/api/security-events", get(accounts_api::list_security_events))
             .route(
                 "/api/me/agent-permissions",
                 get(agents_api::get_permissions).put(agents_api::put_permissions),
@@ -1992,14 +2152,14 @@ async fn run_leader() {
             )
             .route(
                 "/api/settings/sessions",
-                get(users_api::get_session_settings).put(users_api::put_session_settings),
+                get(accounts_api::get_session_settings).put(accounts_api::put_session_settings),
             )
             .route(
                 "/api/settings/oidc",
                 get(oidc_api::get_settings).put(oidc_api::put_settings),
             )
             .route(
-                "/api/settings/agents",
+                "/api/settings/agent",
                 get(agents_api::get_settings).put(agents_api::put_settings),
             )
             .route("/api/agent/models", get(chat_api::models))
@@ -2016,12 +2176,16 @@ async fn run_leader() {
 
     // `route_layer` covers only the routes above it; the auth routes below are merged after it because a person
     // with no session has to be able to reach them.
-    let app = app.route_layer(axum::middleware::from_fn_with_state(
-        auth.clone(),
-        gate::require_principal,
-    ));
+    let app = app
+        .layer(axum::extract::DefaultBodyLimit::max(PEOPLE_BODY_LIMIT))
+        .route_layer(axum::middleware::from_fn_with_state(
+            auth.clone(),
+            gate::require_principal,
+        ));
 
     let LeaderSetup { routes, tls, leader } = setup_leader(port, auth.clone(), store, registry).await;
+    // Before `leader` goes into the certificate state, which a leader serving plain HTTP has none of.
+    let list = leader.clone();
     let certificates = tls.as_ref().map(|(resolver, _)| {
         std::sync::Arc::new(certificates_api::Tls {
             // Spelled as the leader spells it, from the one absolute data directory. The certificate layer keeps
@@ -2071,13 +2235,21 @@ async fn run_leader() {
 
     let app = app
         .merge(routes)
-        .merge(certificates_api::router(auth.clone(), certificates.clone()))
+        .merge(certificates_api::router(
+            auth.clone(),
+            certificates.clone(),
+            list.clone(),
+        ))
         .merge(acme_api::router(auth.clone(), certificates.clone()))
         .merge(auth_router(auth.clone()))
         // Before the SPA fallback, so an API path nobody serves answers as an API. Without it a mistyped route
         // returns `index.html` with a `200`, and a caller parses a login page as its data.
         .route("/api/*rest", axum::routing::any(unknown_api))
         .fallback(assets::serve)
+        .layer(axum::middleware::from_fn(gate::shape))
+        .layer(axum::middleware::from_fn(gate::uncached));
+    // Outside `shape`, which reads a refusal's body.
+    let app = smeltr::leader::gzipped(app)
         // Outermost, so every answer carries the browser hardening headers, the assets and the fallback included.
         .layer(axum::middleware::from_fn(gate::harden));
     // What an agent's calls go through: this router, gate and all.
@@ -2086,7 +2258,7 @@ async fn run_leader() {
     tokio::spawn(chat_api::sweep(auth.clone()));
     tokio::spawn(refresh_oidc_sessions(auth.clone()));
     if let Some(serving) = certificates {
-        tokio::spawn(acme_api::renew_due(auth.clone(), serving));
+        tokio::spawn(certificates_api::keep_renewed(auth.clone(), serving, list));
     }
     tokio::spawn(sweep_sessions(auth));
 
@@ -2177,7 +2349,10 @@ fn bind_listener(addr: std::net::SocketAddr) -> std::net::TcpListener {
 
 #[cfg(test)]
 mod tests {
-    use super::{GrokCapturesRequest, LineBreakerRequest, captures_of, line_breaker_verdict};
+    use super::{
+        FormatRequest, GrokCapturesRequest, LineBreakerRequest, captures_of, format_code, line_breaker_verdict,
+    };
+    use smeltr::expr::pretty::Kind;
 
     fn column(name: &str, ty: &str) -> smeltr::heartbeat::CaptureColumn {
         smeltr::heartbeat::CaptureColumn {
@@ -2227,36 +2402,39 @@ mod tests {
         );
     }
 
-    /// Why a held record blocked is shown with it and saved in its sample, but is not the record's: a preview of the
-    /// sample neither reads it nor warns that it was captured and is left out.
+    /// A sample's internal fields -- where a record was read from, why a block held it, how it was captured -- are its
+    /// fields like any other: a pipeline previewed over the sample reads them, and a route preview, which reads the
+    /// record as its live source sets it, checks only the record's own fields and says nothing of them.
     #[test]
-    fn a_sample_s_exception_message_is_not_part_of_its_records() {
+    fn a_sample_s_internal_fields_are_read_as_any_field() {
         let (mut columns, mut records) = captured();
         columns.push(column(smeltr::worker::capture::EXCEPTION_MESSAGE, "str"));
-        records[0].insert(
-            "__exception".to_string(),
-            serde_json::json!({"message": "matched no route"}),
-        );
-        for meta in [
-            smeltr::plan::topology::SourceMeta::of_columns(
-                &smeltr::leader::preview::replayed(&columns).cloned().collect::<Vec<_>>(),
-            )
-            .unwrap(),
-            smeltr::plan::topology::SourceMeta::KAFKA
-                .declaring(vec![
-                    ("id".into(), smeltr::core::column::DataType::I64),
-                    ("user.name".into(), smeltr::core::column::DataType::Str),
-                ])
-                .unwrap(),
-        ] {
-            let smeltr::leader::preview::SampleRead {
-                records: read,
-                warnings,
-                ..
-            } = smeltr::leader::preview::read_sample(&meta, &columns, &records).unwrap();
-            assert!(warnings.is_empty(), "{warnings:?}");
-            assert!(!meta.record_object(&read[0], "").contains_key("__exception"));
+        columns.push(column("__capture.group", "str"));
+        for record in &mut records {
+            record.insert(
+                "__exception".to_string(),
+                serde_json::json!({"message": "matched no route"}),
+            );
+            record.insert("__capture".to_string(), serde_json::json!({"group": "west"}));
         }
+        let own = smeltr::plan::topology::SourceMeta::of_columns(&columns).unwrap();
+        let read = smeltr::leader::preview::read_sample(&own, &columns, &records).unwrap();
+        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+        let object = own.record_object(&read.records[0], "");
+        assert_eq!(
+            object["__exception"],
+            serde_json::json!({"message": "matched no route"})
+        );
+        assert_eq!(object["__capture"], serde_json::json!({"group": "west"}));
+
+        let live = smeltr::plan::topology::SourceMeta::KAFKA
+            .declaring(vec![
+                ("id".into(), smeltr::core::column::DataType::I64),
+                ("user.name".into(), smeltr::core::column::DataType::Str),
+            ])
+            .unwrap();
+        let read = smeltr::leader::preview::read_sample(&live, &columns, &records).unwrap();
+        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
     }
 
     /// A route preview reads a sample as its source declares now, and says how that differs from what was captured.
@@ -2349,6 +2527,9 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
             },
             Default::default(),
             &[
@@ -2360,7 +2541,7 @@ mod tests {
             records,
         );
         assert!(
-            previewed.ok,
+            previewed.succeeded(),
             "{:?}",
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -2368,6 +2549,91 @@ mod tests {
             previewed.rows[0].json,
             Some(serde_json::json!({"n": 2, "doubled": 4, "seen": "orders", "id": "d2"}))
         );
+    }
+
+    /// With attribution, each row says which steps changed each of its fields, in the order they ran, and which step
+    /// dropped it: a step in an `if` branch the row did not take changed nothing on it, and a dropped row has no fields.
+    #[test]
+    fn attribution_names_the_steps_that_changed_each_field_and_dropped_each_row() {
+        let config = r#"{"version":1,"sources":[],"destinations":[],"routes":[],
+            "pipelines":[{"id":"p","name":"p","steps":[
+                {"id":"set","type":"code","body":"a = n * 2; b = 1;"},
+                {"id":"big","type":"if","condition":"n > 1",
+                    "then":[{"id":"bump","type":"code","body":"a = a + 1;"}],
+                    "else":[{"id":"gone","type":"drop","condition":"true"}]},
+                {"id":"trim","type":"code","body":"delete(b);"}]}]}"#;
+        let previewed = super::run_preview(
+            super::PreviewRequest {
+                config: config.to_string(),
+                pipeline: None,
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: true,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &[column("n", "i64")],
+            serde_json::from_value(serde_json::json!([{"n": 2}, {"n": 1}])).unwrap(),
+        );
+        assert!(
+            previewed.succeeded(),
+            "{:?}",
+            previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        let steps = |row: usize| serde_json::to_value(&previewed.rows[row].steps).unwrap();
+        assert_eq!(steps(0), serde_json::json!({"a": ["set", "bump"]}));
+        assert_eq!(previewed.rows[0].dropped_by, None);
+        assert_eq!(steps(1), serde_json::Value::Null);
+        assert_eq!(previewed.rows[1].dropped_by.as_deref(), Some("gone"));
+    }
+
+    /// A called pipeline's steps are the call's doing, its exceptions included, and a write to an object's field is a
+    /// change to that field.
+    #[test]
+    fn attribution_names_a_call_for_what_its_pipeline_changed() {
+        let config = r#"{"version":1,"sources":[],"destinations":[],"routes":[],
+            "pipelines":[
+                {"id":"p","name":"p","steps":[
+                    {"id":"use_q","type":"call","pipeline":"q"},
+                    {"id":"nest","type":"code","body":"o.x = n; o.y = 2;"},
+                    {"id":"again","type":"code","body":"o.x = n + 1;"}]},
+                {"id":"q","name":"q","steps":[{"id":"inner","type":"code","body":"c = 1; z = 1 / 0;"}]}]}"#;
+        let previewed = super::run_preview(
+            super::PreviewRequest {
+                config: config.to_string(),
+                pipeline: Some("p".to_string()),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: true,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &[column("n", "i64")],
+            serde_json::from_value(serde_json::json!([{"n": 2}])).unwrap(),
+        );
+        assert!(
+            previewed.succeeded(),
+            "{:?}",
+            previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            serde_json::to_value(&previewed.rows[0].steps).unwrap(),
+            serde_json::json!({"c": ["use_q"], "o.x": ["nest", "again"], "o.y": ["nest"]})
+        );
+        assert_eq!(previewed.rows[0].exceptions[0].step.as_deref(), Some("use_q"));
+    }
+
+    /// An exception names the step that raised it.
+    #[test]
+    fn an_exception_names_its_step() {
+        let previewed = preview_of(r#"[{"_raw": "x"}]"#, "y = 1 / 0;");
+        assert_eq!(previewed.rows[0].exceptions[0].step.as_deref(), Some("c"));
     }
 
     /// A pasted sample has no columns, and reads as `_raw` text.
@@ -2405,6 +2671,9 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
             },
             Default::default(),
             columns,
@@ -2425,6 +2694,9 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: Some(filter.to_string()),
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
             },
             Default::default(),
             &[],
@@ -2437,7 +2709,7 @@ mod tests {
     fn a_preview_filter_keeps_the_rows_it_is_true_for() {
         let records = r#"[{"_raw":"a"},{"_raw":"b"},{"_raw":"c"}]"#;
         let previewed = filtered(r#"x = _raw; if (_raw == "a") { y = 1; }"#, records, r#"x != "b""#);
-        assert!(previewed.ok, "{:?}", previewed.errors);
+        assert!(previewed.succeeded(), "{:?}", previewed.errors);
         let kept: Vec<u32> = previewed.rows.iter().map(|r| r.row).collect();
         assert_eq!(kept, [0, 2]);
         assert_eq!(previewed.unfiltered, Some(3));
@@ -2450,7 +2722,7 @@ mod tests {
     fn a_preview_filter_reads_the_exception_tag() {
         let records = r#"[{"_raw":"1"},{"_raw":"x"}]"#;
         let previewed = filtered("n: i64 = _raw as i64;", records, "smeltr.exception != null");
-        assert!(previewed.ok, "{:?}", previewed.errors);
+        assert!(previewed.succeeded(), "{:?}", previewed.errors);
         let kept: Vec<u32> = previewed.rows.iter().map(|r| r.row).collect();
         assert_eq!(kept, [1]);
     }
@@ -2460,7 +2732,7 @@ mod tests {
     fn a_preview_filter_that_does_not_compile_fails_at_its_own_stage() {
         for filter in ["x ==", "x"] {
             let previewed = filtered("x = _raw;", r#"[{"_raw":"a"}]"#, filter);
-            assert!(!previewed.ok, "{filter}");
+            assert!(!previewed.succeeded(), "{filter}");
             assert_eq!(previewed.stage, Some("filter"), "{filter}: {:?}", previewed.errors);
         }
     }
@@ -2479,13 +2751,16 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
             },
             Default::default(),
             &[],
             serde_json::from_str(r#"[{"_raw":"{}"}]"#).unwrap(),
         );
         assert!(
-            previewed.ok,
+            previewed.succeeded(),
             "{:?}",
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -2515,7 +2790,7 @@ mod tests {
             "a = __source.name + \"/\" + (__source.headers.trace as str) + \"/\" + toString(__source.offset);",
         );
         assert!(
-            previewed.ok,
+            previewed.succeeded(),
             "{:?}",
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -2527,7 +2802,7 @@ mod tests {
     #[test]
     fn a_pasted_record_declares_no_source_fields() {
         let previewed = preview_of(r#"[{"_raw":"{}"}]"#, "a = __source.topic;");
-        assert!(!previewed.ok);
+        assert!(!previewed.succeeded());
         assert!(
             previewed.errors[0].message.contains("__source.topic"),
             "{}",
@@ -2590,7 +2865,7 @@ mod tests {
     #[test]
     fn a_patterns_captures_need_no_records() {
         let r = captures(&["%{WORD:action} %{INT:status}"]);
-        assert!(r.ok);
+        assert!(r.succeeded());
         assert_eq!(r.captures, vec!["action", "status"]);
         assert!(r.errors.is_empty());
     }
@@ -2623,6 +2898,22 @@ mod tests {
         assert!(verdict(r"(\n*)").unwrap().contains("can match no bytes at all"));
     }
 
+    /// Code is laid out as the leader's formatter lays it out, and code that does not parse yet is not touched.
+    #[test]
+    fn typed_code_is_formatted() {
+        let format = |code: &str, kind| {
+            format_code(FormatRequest {
+                code: code.into(),
+                kind,
+            })
+            .body
+            .code
+        };
+        assert_eq!(format("a&&b", Kind::Expr).as_deref(), Some("a && b"));
+        assert_eq!(format("x=1", Kind::Block).as_deref(), Some("x = 1;"));
+        assert_eq!(format("x = (", Kind::Block), None);
+    }
+
     /// An unnamed capture declares nothing, so it is not offered.
     #[test]
     fn an_unnamed_capture_is_not_a_field() {
@@ -2634,7 +2925,7 @@ mod tests {
     #[test]
     fn a_pattern_that_does_not_compile_says_so() {
         let r = captures(&["%{NOT_A_PATTERN:x}"]);
-        assert!(!r.ok);
+        assert!(!r.succeeded());
         assert!(r.captures.is_empty());
         assert!(r.errors[0].message.contains("NOT_A_PATTERN"), "names the pattern");
     }
@@ -2709,9 +3000,9 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
             on_exception: None,
             name: None,
+            schemas: vec![],
         }
     }
 
@@ -2747,6 +3038,7 @@ mod tests {
                         }],
                     },
                 ],
+                produces: vec![],
             }],
             ..empty_file()
         }
@@ -2797,6 +3089,7 @@ mod tests {
                 id: "enrich".to_string(),
                 name: "enrich".to_string(),
                 steps: vec![eval_step("mark", "enriched", "true")],
+                produces: vec![],
             }],
             ..empty_file()
         };
@@ -2858,11 +3151,15 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
             },
+            Vec::new(),
         );
 
         assert!(
-            response.ok,
+            response.succeeded(),
             "{:?}",
             response.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -2890,9 +3187,13 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
             },
+            Vec::new(),
         );
-        assert!(!response.ok, "{} rows", response.rows.len());
+        assert!(!response.succeeded(), "{} rows", response.rows.len());
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -2937,11 +3238,12 @@ mod tests {
         );
 
         assert!(
-            response.ok,
+            response.succeeded(),
             "{:?}",
             response.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
         assert_eq!(response.route_ids, vec!["audit-orders"]);
+        assert_eq!(response.route_names, vec!["orders \u{2192} audit"]);
         let through = &response.rows[0].through;
         assert_eq!(through.len(), 1, "the group's route took the record");
         let document: serde_json::Value = serde_json::from_str(&through[0].documents[0].document).unwrap();
@@ -3304,7 +3606,7 @@ mod tests {
         let response = super::run_route_preview(config, sample, declared_at, None);
 
         assert!(
-            response.ok,
+            response.succeeded(),
             "{:?}",
             response.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -3330,6 +3632,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps,
+            produces: vec![],
         };
         let raw = RawBundle {
             file: FileConfig {
@@ -3345,63 +3648,19 @@ mod tests {
                 routes: vec![],
                 lookup_tables: vec![],
                 grok_patterns: vec![],
-                identities: vec![],
                 on_exception: None,
                 name: None,
+                schemas: vec![],
             },
             unreadable: Vec::new(),
         };
 
         let response = super::run_pipeline_callers(raw);
 
-        assert!(response.ok, "{:?}", response.errors);
+        assert!(response.succeeded(), "{:?}", response.errors);
         assert_eq!(
             response.callers.get("enrich-geo"),
             Some(&vec!["audit".to_string(), "clicks".to_string(), "orders".to_string()])
         );
-    }
-    /// The gate never reads `?group=`, so a viewer of one group asking for another's stats is refused here, before
-    /// anything is read.
-    #[tokio::test]
-    async fn stats_for_a_group_the_caller_does_not_hold_is_refused() {
-        use std::sync::Arc;
-
-        use smeltr::leader::access::{Access, Level};
-
-        let key = std::env::temp_dir().join(format!("smeltr-main-stats-{}.key", std::process::id()));
-        let state = smeltr::leader::AppState {
-            store: Arc::new(
-                smeltr::leader::sqlite_store::SqliteStore::open(std::path::Path::new(":memory:"), &key).unwrap(),
-            ),
-            registry: Arc::new(smeltr::leader::registry::Registry::default()),
-            captures: Arc::new(smeltr::leader::capture::Captures::default()),
-            data_dir: std::env::temp_dir(),
-            entitlements: Arc::new(smeltr::leader::Entitlements::default()),
-            verify_limiter: Arc::new(smeltr::leader::VerifyLimiter::default()),
-            expiries: Default::default(),
-            throughput: Default::default(),
-            deploy_checks: Default::default(),
-            origin_hosts: Vec::new(),
-            remote: Default::default(),
-            directives: Default::default(),
-        };
-        let query: super::StatsQuery =
-            serde_json::from_value(serde_json::json!({"group": "search", "kind": "source", "id": "orders"})).unwrap();
-        let payments = Access::Areas(std::collections::BTreeMap::from([(
-            "payments".to_string(),
-            Level::Viewer,
-        )]));
-
-        let response = super::get_stats(
-            axum::extract::State(state),
-            axum::Extension(payments),
-            axum::extract::Query(query),
-        )
-        .await;
-
-        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(body["error"], "this needs viewer in search");
     }
 }

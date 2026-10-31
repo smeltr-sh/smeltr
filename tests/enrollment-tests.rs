@@ -64,16 +64,19 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
 
     let data_dir = temp_dir("leader-data");
     let returned_data_dir = data_dir.clone();
+    let tls_dir = smeltr::leader::tls::dir_of(&data_dir);
+    // The list a served certificate is an entry of, as `main` opens it before anything is served.
+    let store = crate::harness::leader_tls::listing(&tls_dir);
+    LISTS.lock().unwrap().push((tls_dir.clone(), store.clone()));
     let materials = smeltr::leader::tls::ensure(
-        &smeltr::leader::tls::dir_of(&data_dir),
+        &tls_dir,
         vec!["localhost".to_string(), "127.0.0.1".to_string()],
         Duration::from_secs(60 * 60),
         &[],
     )
     .expect("an authority and a certificate it signed");
     let ca_pem = materials.ca_pem.clone();
-    let cert_pem = std::fs::read(&materials.server_cert_path).unwrap();
-    let key_pem = std::fs::read(&materials.server_key_path).unwrap();
+    let (_, cert_pem, key_pem) = smeltr::leader::tls::to_serve(&tls_dir).unwrap();
     // What `main` says once it has built the socket from these files. `ensure` above replaced what is served, and
     // until this the two have parted -- which before a socket exists is exactly right, and afterward is not.
     socket_caught_up(&smeltr::leader::tls::dir_of(&returned_data_dir));
@@ -81,13 +84,8 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let store = SqliteStore::open(
-                std::path::Path::new(":memory:"),
-                &temp_dir("leader-key").join("sealing.key"),
-            )
-            .unwrap();
             let state = AppState {
-                store: Arc::new(store),
+                store,
                 registry: Arc::new(Registry::default()),
                 throughput: Default::default(),
                 captures: Arc::new(smeltr::leader::capture::Captures::default()),
@@ -97,6 +95,7 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
                 deploy_checks: Default::default(),
                 origin_hosts: Vec::new(),
                 remote: Default::default(),
+                updates: Default::default(),
                 data_dir,
                 directives: Default::default(),
             };
@@ -123,6 +122,40 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
     )
 }
 
+/// Serves again what `dir` serves: a replacement of what is on disk that changes nothing a client sees.
+fn serve_again(dir: &std::path::Path, names: &[String]) {
+    let entry = smeltr::leader::tls::served(dir).unwrap().expect("an entry served");
+    smeltr::leader::tls::serve(dir, &entry, names, &[]).expect("served again");
+}
+
+/// The certificate lists of these leaders, by their TLS directory.
+static LISTS: std::sync::Mutex<Vec<(std::path::PathBuf, Arc<SqliteStore>)>> = std::sync::Mutex::new(Vec::new());
+
+/// `chain` and `key` as the newest version of the entry `theirs` in the list of the leader serving from `dir`.
+fn listed(dir: &std::path::Path, chain: &[u8], key: &[u8], ca: &[u8]) -> smeltr::leader::tls::Entry {
+    use smeltr::leader::store::Store;
+    let list = LISTS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(d, _)| d == dir)
+        .map(|(_, list)| list.clone())
+        .expect("a leader serving from this directory");
+    let (chain, key) = (std::str::from_utf8(chain).unwrap(), std::str::from_utf8(key).unwrap());
+    let version = match list.add_certificate_version("theirs", chain, key) {
+        Ok(version) => version,
+        Err(_) => {
+            list.create_certificate("theirs", "", chain, key).unwrap();
+            1
+        }
+    };
+    smeltr::leader::tls::Entry {
+        name: "theirs".to_string(),
+        version,
+        ca: String::from_utf8(ca.to_vec()).unwrap(),
+    }
+}
+
 /// The sockets these leaders serve, by their TLS directory, so a replacement on disk reaches the one presenting it.
 static SOCKETS: std::sync::Mutex<Vec<(std::path::PathBuf, axum_server::tls_rustls::RustlsConfig)>> =
     std::sync::Mutex::new(Vec::new());
@@ -146,12 +179,12 @@ fn follow_disk(dir: &std::path::Path, config: axum_server::tls_rustls::RustlsCon
             // Off this thread: the replacement holds the lock `to_serve` takes.
             let dir = dir.to_path_buf();
             std::thread::spawn(move || {
-                let Ok((generation, materials)) = smeltr::leader::tls::to_serve(&dir) else {
+                let Ok((generation, chain, key)) = smeltr::leader::tls::to_serve(&dir) else {
                     return;
                 };
                 let took = tokio::runtime::Runtime::new()
                     .unwrap()
-                    .block_on(config.reload_from_pem_file(&materials.server_cert_path, &materials.server_key_path));
+                    .block_on(config.reload_from_pem(chain, key));
                 if took.is_ok() {
                     smeltr::leader::tls::socket_took(&dir, generation);
                 }
@@ -162,18 +195,17 @@ fn follow_disk(dir: &std::path::Path, config: axum_server::tls_rustls::RustlsCon
 
 /// A certificate, key and authority from somebody else's PKI, carrying the names these leaders answer to.
 fn external_pki(tag: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let dir = smeltr::leader::tls::dir_of(&temp_dir(tag));
+    crate::harness::leader_tls::listing(&dir);
     let materials = smeltr::leader::tls::ensure(
-        &smeltr::leader::tls::dir_of(&temp_dir(tag)),
+        &dir,
         vec!["localhost".to_string(), "127.0.0.1".to_string()],
         Duration::from_secs(60 * 60),
         &[],
     )
     .expect("their authority");
-    (
-        std::fs::read(&materials.server_cert_path).unwrap(),
-        std::fs::read(&materials.server_key_path).unwrap(),
-        materials.ca_pem,
-    )
+    let (_, chain, key) = smeltr::leader::tls::to_serve(&dir).unwrap();
+    (chain, key, materials.ca_pem)
 }
 
 /// Waits until the worker keeps `fingerprint` among the roots it verifies by.
@@ -215,7 +247,7 @@ fn finished(dir: &std::path::Path, within: Duration) -> bool {
 }
 
 fn mint(base: &str, ca_pem: &[u8], body: serde_json::Value) -> serde_json::Value {
-    let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let minted: serde_json::Value = agent
         .post(format!("{base}/api/enrollment-codes"))
         .send_json(body)
@@ -253,7 +285,7 @@ fn spawn_worker(base: &str, code: &str, state_dir: &std::path::Path) -> std::pro
 /// enrolled, heartbeating or not, so it reads as success for a worker whose every heartbeat is failing the
 /// handshake -- which is exactly the bug that shipped past an earlier version of this helper.
 fn heartbeating(base: &str, ca_pem: &[u8], within: Duration) -> bool {
-    let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let deadline = Instant::now() + within;
     while Instant::now() < deadline {
         let health = agent
@@ -354,7 +386,7 @@ fn heard_from(agent: &ureq::Agent, base: &str) -> Vec<serde_json::Value> {
 fn a_worker_that_says_it_is_stopping_is_not_reported_silent() {
     let _alone = alone();
     let (base, ca_pem) = start_leader_tls();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let code = mint(&base, &ca_pem, serde_json::json!({ "maxUses": 2 }));
     let value = code["value"].as_str().unwrap();
     let (told_dir, killed_dir) = (temp_dir("stops-saying-so"), temp_dir("killed-outright"));
@@ -406,14 +438,16 @@ fn a_worker_that_says_it_is_stopping_is_not_reported_silent() {
 
         // Past what this leader counts as silent: three of its own heartbeat intervals, at the default.
         std::thread::sleep(Duration::from_secs(6));
-        let warnings: Vec<serde_json::Value> = agent
+        let listed: serde_json::Value = agent
             .get(format!("{base}/api/warnings"))
             .call()
             .map_err(|e| e.to_string())?
             .body_mut()
             .read_json()
             .map_err(|e| e.to_string())?;
-        let silent: Vec<&str> = warnings
+        let silent: Vec<&str> = listed["warnings"]
+            .as_array()
+            .ok_or("the warnings are listed")?
             .iter()
             .filter(|w| w["condition"] == "workerSilent")
             .filter_map(|w| w["subjectId"].as_str())
@@ -457,20 +491,22 @@ fn exit_code(child: &mut std::process::Child, within: Duration) -> Result<Option
 fn a_forgotten_ephemeral_worker_enrolls_again_as_a_new_one() {
     let _alone = alone();
     let (base, ca_pem) = start_leader_tls();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let code = mint(&base, &ca_pem, serde_json::json!({ "kind": "ephemeral" }));
     let value = code["value"].as_str().unwrap();
     let state = temp_dir("pod-state");
     let id = || std::fs::read_to_string(state.join("worker_id")).ok();
     let roster = || -> Vec<String> {
-        let workers: Vec<serde_json::Value> = agent
+        let listed: serde_json::Value = agent
             .get(format!("{base}/api/workers"))
             .call()
             .unwrap()
             .body_mut()
             .read_json()
             .unwrap();
-        workers
+        listed["workers"]
+            .as_array()
+            .expect("the workers are listed")
             .iter()
             .map(|w| w["workerId"].as_str().unwrap().to_string())
             .collect()
@@ -561,14 +597,16 @@ fn an_ephemeral_enrollment_code_ends_with_the_authority_it_pins_to() {
 fn an_enrollment_code_naming_an_undeployed_group_is_refused() {
     let _alone = alone();
     let (base, ca_pem) = start_leader_tls();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
-    let response: serde_json::Value = agent
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let mut response = agent
         .post(format!("{base}/api/enrollment-codes"))
+        .config()
+        .http_status_as_error(false)
+        .build()
         .send_json(serde_json::json!({ "groupId": "west" }))
-        .expect("ask to mint an enrollment code")
-        .body_mut()
-        .read_json()
-        .unwrap();
+        .expect("ask to mint an enrollment code");
+    assert_eq!(response.status(), 422);
+    let response: serde_json::Value = response.body_mut().read_json().unwrap();
     assert_eq!(response["ok"], false, "{response}");
     assert!(
         response["errors"][0]["message"]
@@ -607,8 +645,10 @@ fn an_enrollment_code_naming_another_authority_is_refused_rather_than_trusted() 
     let real = code["value"].as_str().unwrap();
 
     // Someone else's authority, in an enrollment code that is otherwise well formed.
+    let elsewhere_dir = smeltr::leader::tls::dir_of(&temp_dir("elsewhere"));
+    crate::harness::leader_tls::listing(&elsewhere_dir);
     let elsewhere = smeltr::leader::tls::ensure(
-        &smeltr::leader::tls::dir_of(&temp_dir("elsewhere")),
+        &elsewhere_dir,
         vec!["localhost".to_string()],
         Duration::from_secs(60 * 60),
         &[],
@@ -756,7 +796,7 @@ fn a_worker_takes_a_rotated_authority_without_being_restarted() {
         "the fleet held the incoming root and the leader never signed under it"
     );
 
-    let served = std::fs::read(dir.join("cert.pem")).unwrap();
+    let (_, served, _) = smeltr::leader::tls::to_serve(&dir).unwrap();
     let bundle = std::fs::read(dir.join(smeltr::leader::tls::CA_CERT)).unwrap();
     assert_eq!(
         smeltr::leader::tls::signing_root(&bundle, &served).unwrap().fingerprint,
@@ -841,9 +881,9 @@ fn the_worker_whose_beat_ends_a_rotation_is_handed_the_authority_first() {
 fn the_authority_is_served_to_a_caller_with_no_credential() {
     let _alone = alone();
     let (base, ca_pem) = start_leader_tls();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let served = agent
-        .get(format!("{base}/api/authority"))
+        .get(format!("{base}/api/worker/authority"))
         .call()
         .expect("no credential needed")
         .body_mut()
@@ -859,17 +899,15 @@ fn the_authority_is_served_to_a_caller_with_no_credential() {
 fn the_authority_is_withheld_while_the_socket_has_not_taken_what_is_on_disk() {
     let _alone = alone();
     let (base, ca_pem, data_dir) = start_leader_tls_in();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
 
-    // A real reissue: the disk moves and this leader's socket, which nothing here reloads, keeps what it had.
-    smeltr::leader::tls::ensure_own(
+    // A real replacement: the disk moves and this leader's socket, which nothing here reloads, keeps what it had.
+    serve_again(
         &smeltr::leader::tls::dir_of(&data_dir),
-        vec!["localhost".to_string(), "127.0.0.1".to_string()],
-        Duration::from_secs(60 * 60),
-    )
-    .expect("a reissue");
+        &["localhost".to_string(), "127.0.0.1".to_string()],
+    );
     let refused = agent
-        .get(format!("{base}/api/authority"))
+        .get(format!("{base}/api/worker/authority"))
         .call()
         .expect_err("a file that vouches for nothing this leader presents");
     // Put back before asserting: these are two numbers for the whole process, shared with every test here.
@@ -877,7 +915,7 @@ fn the_authority_is_withheld_while_the_socket_has_not_taken_what_is_on_disk() {
     assert!(matches!(refused, ureq::Error::StatusCode(503)), "{refused}");
 
     agent
-        .get(format!("{base}/api/authority"))
+        .get(format!("{base}/api/worker/authority"))
         .call()
         .expect("served again once the two agree");
 }
@@ -889,7 +927,7 @@ fn the_authority_is_withheld_while_the_socket_has_not_taken_what_is_on_disk() {
 fn an_enrollment_code_says_it_names_an_authority_that_was_replaced_under_it() {
     let _alone = alone();
     let (base, ca_pem, data_dir) = start_leader_tls_in();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let pinned = mint(&base, &ca_pem, serde_json::json!({}));
 
     let outstanding = |agent: &ureq::Agent| -> serde_json::Value {
@@ -905,22 +943,10 @@ fn an_enrollment_code_says_it_names_an_authority_that_was_replaced_under_it() {
 
     // What an operator does when they bring their own certificate.
     let names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
-    let theirs = smeltr::leader::tls::ensure(
-        &smeltr::leader::tls::dir_of(&temp_dir("their-pki")),
-        names.clone(),
-        Duration::from_secs(60 * 60),
-        &[],
-    )
-    .unwrap();
-    smeltr::leader::tls::install(
-        &smeltr::leader::tls::dir_of(&data_dir),
-        &std::fs::read(&theirs.server_cert_path).unwrap(),
-        &std::fs::read(&theirs.server_key_path).unwrap(),
-        &theirs.ca_pem,
-        &names,
-        &[],
-    )
-    .expect("an operator's own certificate");
+    let (chain, key, theirs) = external_pki("their-pki");
+    let dir = smeltr::leader::tls::dir_of(&data_dir);
+    smeltr::leader::tls::serve(&dir, &listed(&dir, &chain, &key, &theirs), &names, &[])
+        .expect("an operator's own certificate");
     socket_caught_up(&smeltr::leader::tls::dir_of(&data_dir));
 
     // The connection is still the old one's, which is the point: replacing what is served does not end a session.
@@ -933,7 +959,7 @@ fn an_enrollment_code_says_it_names_an_authority_that_was_replaced_under_it() {
     // Refused at the point of use, not only described on a page. Spent, it would buy a credential for a leader
     // this worker pins a retired root for: an enrollment that reports success and a worker that never beats.
     let answered: serde_json::Value = agent
-        .post(format!("{base}/api/enroll"))
+        .post(format!("{base}/api/worker/enroll"))
         .send_json(serde_json::json!({ "code": pinned["value"], "workerId": "w-after-the-replacement" }))
         .expect("the enrollment was answered")
         .body_mut()
@@ -1051,13 +1077,14 @@ fn an_enrollment_code_naming_the_platforms_roots_puts_aside_a_kept_private_autho
 }
 
 /// A rotation is the leader promising its fleet a new root before signing under it, and the promise travels on the
-/// heartbeat. While the socket serves a certificate the disk does not describe, `/api/authority` is withheld and no
+/// heartbeat. While the socket serves a certificate the disk does not describe, `/api/worker/authority` is withheld and no
 /// worker can be handed anything -- so a deadline reached in that state would sign under a root the fleet has never
 /// been offered, stranding every worker at once. Neither end of a rotation runs there.
 #[test]
 fn a_rotation_neither_starts_nor_finishes_while_the_socket_and_the_disk_disagree() {
     let _alone = alone();
     let dir = temp_dir("rotation-disagrees").join("tls");
+    crate::harness::leader_tls::listing(&dir);
     let names = vec!["localhost".to_string()];
     let a_year = Duration::from_secs(365 * 24 * 60 * 60);
     smeltr::leader::tls::ensure(&dir, names.clone(), a_year, &[]).expect("an authority");
@@ -1067,8 +1094,8 @@ fn a_rotation_neither_starts_nor_finishes_while_the_socket_and_the_disk_disagree
     let deadline = now_ms + 60 * 1000;
     let rotation = smeltr::leader::tls::begin_rotation(&dir, a_year, deadline, now_ms).expect("a rotation");
 
-    // A real reissue moves the disk past what the socket has, with nothing here to reload it.
-    smeltr::leader::tls::ensure_own(&dir, names.clone(), a_year).expect("a reissue");
+    // A real replacement moves the disk past what the socket has, with nothing here to reload it.
+    serve_again(&dir, &names);
     let held = smeltr::leader::tls::cut_over_if_due(&dir, names.clone(), a_year, None, deadline + 1);
     let refused = smeltr::leader::tls::begin_rotation(&dir, a_year, deadline, now_ms);
     // The lock is what makes the answer binding: a caller can check, a reload can fail underneath it, and the
@@ -1117,27 +1144,24 @@ fn a_rotation_neither_starts_nor_finishes_while_the_socket_and_the_disk_disagree
 fn what_is_in_force_is_refused_whole_while_the_socket_has_not_taken_it() {
     let _alone = alone();
     let dir = temp_dir("agreed-read").join("tls");
+    crate::harness::leader_tls::listing(&dir);
     let names = vec!["localhost".to_string()];
     let a_year = Duration::from_secs(365 * 24 * 60 * 60);
     smeltr::leader::tls::ensure(&dir, names.clone(), a_year, &[]).expect("an authority");
     socket_caught_up(&dir);
 
-    assert!(smeltr::leader::tls::in_force_if_agreed(&dir).is_ok(), "the two agree");
     assert!(smeltr::leader::tls::current_if_agreed(&dir).is_ok(), "the two agree");
 
-    smeltr::leader::tls::ensure_own(&dir, names, a_year).expect("a reissue");
-    let whole = smeltr::leader::tls::in_force_if_agreed(&dir);
-    let paths = smeltr::leader::tls::current_if_agreed(&dir);
+    serve_again(&dir, &names);
+    let whole = smeltr::leader::tls::current_if_agreed(&dir);
     // Put back before asserting: two numbers for the whole process, shared with every test in this file.
     socket_caught_up(&dir);
 
     let whole = whole.expect_err("the socket has not taken it");
-    let paths = paths.expect_err("the socket has not taken it");
     assert!(
         matches!(whole, smeltr::leader::tls::Refused::Conflict(_)),
         "a restart is the remedy, not a retry"
     );
-    assert_eq!(whole.message(), paths.message(), "one condition, two answers");
 }
 
 /// An enrollment code names its root inside the value an operator pastes, so it cannot be re-pointed at what a rotation
@@ -1147,7 +1171,7 @@ fn what_is_in_force_is_refused_whole_while_the_socket_has_not_taken_it() {
 fn a_cutover_withdraws_the_enrollment_codes_that_named_the_authority_it_retired() {
     let _alone = alone();
     let (base, ca_pem, data_dir) = start_leader_tls_in();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let doomed = mint(&base, &ca_pem, serde_json::json!({}));
     let doomed_id = doomed["id"].as_str().unwrap().to_string();
 
@@ -1220,10 +1244,11 @@ fn a_worker_follows_the_certificate_to_an_uploaded_one_and_back() {
     let child = spawn_worker(&base, code["value"].as_str().unwrap(), &state_dir);
     assert!(heartbeating(&base, &ca_pem, Duration::from_secs(20)), "never enrolled");
 
+    let own = smeltr::leader::tls::served(&dir).unwrap().expect("the leader's own");
     let (chain, key, theirs) = external_pki("follows-theirs");
     let now_ms = smeltr::leader::warnings::now_millis();
-    let state = smeltr::leader::tls::begin_supplied_rotation(&dir, &chain, &key, &theirs, &names, &[], now_ms)
-        .expect("a switch");
+    let entry = listed(&dir, &chain, &key, &theirs);
+    let state = smeltr::leader::tls::begin_supplied_rotation(&dir, &entry, &names, &[], now_ms).expect("a switch");
     assert!(
         holds(&state_dir, &state.incoming, Duration::from_secs(20)),
         "the worker never took the uploaded certificate's root"
@@ -1232,7 +1257,7 @@ fn a_worker_follows_the_certificate_to_an_uploaded_one_and_back() {
         finished(&dir, Duration::from_secs(20)),
         "the fleet held the root and the leader never served the uploaded certificate"
     );
-    assert_eq!(std::fs::read(dir.join("supplied").join("cert.pem")).unwrap(), chain);
+    assert_eq!(smeltr::leader::tls::served(&dir).unwrap(), Some(entry));
     // The shortened bundle reaches it on the beat after: a beat made over the uploaded certificate, which only
     // the root it was handed verifies.
     assert!(
@@ -1244,10 +1269,9 @@ fn a_worker_follows_the_certificate_to_an_uploaded_one_and_back() {
         "the worker stopped reaching the leader once it served the uploaded certificate"
     );
 
-    // And back. The leader's own is minted first, as a withdrawal always does.
-    smeltr::leader::tls::ensure_own(&dir, names.clone(), Duration::from_secs(60 * 60)).expect("the leader's own");
-    let back =
-        smeltr::leader::tls::begin_own_rotation(&dir, smeltr::leader::warnings::now_millis()).expect("a switch back");
+    // And back to the leader's own.
+    let now_ms = smeltr::leader::warnings::now_millis();
+    let back = smeltr::leader::tls::begin_supplied_rotation(&dir, &own, &names, &[], now_ms).expect("a switch back");
     assert!(
         holds(&state_dir, &back.incoming, Duration::from_secs(20)),
         "the worker never took the leader's own root back"
@@ -1256,7 +1280,7 @@ fn a_worker_follows_the_certificate_to_an_uploaded_one_and_back() {
         finished(&dir, Duration::from_secs(20)),
         "the leader never withdrew the uploaded certificate"
     );
-    assert!(!dir.join("supplied").exists());
+    assert_eq!(smeltr::leader::tls::served(&dir).unwrap(), Some(own));
     assert!(
         holds_only(&state_dir, &back.incoming, Duration::from_secs(20)),
         "the worker was not handed the bundle without the uploaded certificate's root"

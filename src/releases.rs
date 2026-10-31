@@ -224,19 +224,21 @@ fn record_release() {
 
     let heartbeat = sample_heartbeat();
     let registry = crate::leader::registry::Registry::open(&data.join("registry.db")).expect("registry.db opens");
-    registry.record_heartbeat(
-        &heartbeat.worker_id,
-        heartbeat.threads.clone(),
-        heartbeat.stop_after_unreachable_secs,
-        heartbeat.commit.clone(),
-        heartbeat.smeltr_version.clone(),
-        heartbeat.release.clone(),
-        None,
-        None,
-        None,
-        false,
-        1,
-    );
+    registry
+        .record_heartbeat(
+            &heartbeat.worker_id,
+            heartbeat.threads.clone(),
+            crate::leader::registry::WorkerFacts {
+                stop_after_unreachable_secs: heartbeat.stop_after_unreachable_secs,
+                commit: heartbeat.commit.clone(),
+                smeltr_version: heartbeat.smeltr_version.clone(),
+                release: heartbeat.release.clone(),
+                ..Default::default()
+            },
+            crate::leader::series::Window::default(),
+            1,
+        )
+        .expect("the heartbeat records");
     drop(registry);
 
     let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bundle");

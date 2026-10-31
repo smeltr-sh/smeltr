@@ -7,16 +7,16 @@ import {
   type ObjectStore,
 } from './api';
 import { byteCount } from './bytes';
-import { accessModified } from './ObjectStoreAccess.svelte';
+import { accessModified } from './ConnectorAccess.svelte';
 import { requestDeliveryModified } from './RequestDelivery.svelte';
-import type { HeaderedDestination } from './http';
+import { tlsSet, type HeaderedDestination } from './http';
 import type { CatalogType } from './TypeCatalog.svelte';
 import { SYSTEM_GLYPHS, SYSTEM_LABELS } from './systemGlyphs';
 import { suggestId } from './ids';
 
 /** A destination that writes objects to a cloud's bucket or files to an SFTP server's directory. */
 export type ObjectDestination = Extract<DestinationDto, { type: ObjectStore }>;
-/** An object destination reached over HTTPS, which takes a storage class and an identity. */
+/** An object destination reached over HTTPS, which takes a storage class and TLS settings. */
 export type CloudDestination = Extract<DestinationDto, { type: CloudStore }>;
 
 export function isObjectStore(d: DestinationDto): d is ObjectDestination {
@@ -43,23 +43,27 @@ export function objectModified(d: ObjectDestination): boolean {
   );
 }
 
-/** Drives the HTTP and Prometheus Advanced header's marker: the identity and every delivery setting it hides. */
+/** Drives the HTTP and Prometheus Advanced header's marker: the TLS settings and every delivery setting it hides. */
 export function httpModified(d: HeaderedDestination): boolean {
   return (
-    d.identity !== undefined ||
+    tlsSet(d) ||
     (d.type === 'http' && d.zoneUrls !== undefined) ||
     (d.type === 'http' && (d.compression ?? 'none') !== 'none') ||
-    requestDeliveryModified(d, 'maxRequestBytes', LIMITS.maxRequestBytes.default)
+    requestDeliveryModified(
+      d,
+      'maxRequestBytes',
+      (d.type === 'http' ? LIMITS.httpRequestBytes : LIMITS.maxRequestBytes).default,
+    )
   );
 }
 
-/** Drives the Log Analytics Advanced header's marker: the identity, the sign-in's auth endpoint and every
+/** Drives the Log Analytics Advanced header's marker: the TLS settings, the sign-in's auth endpoint and every
  * delivery setting it hides. */
 export function logAnalyticsModified(
   d: Extract<DestinationDto, { type: 'logAnalytics' }>,
 ): boolean {
   return (
-    d.identity !== undefined ||
+    tlsSet(d) ||
     accessModified('logAnalytics', d) ||
     requestDeliveryModified(d, 'maxRequestBytes', LIMITS.logAnalyticsRequestBytes.default)
   );
@@ -69,7 +73,7 @@ export function logAnalyticsModified(
 /** Whether `d` sends a credential besides one in its URL, as `UrlField` and `ZoneUrls` take it: Elasticsearch's
  * auth, Splunk's token, or an HTTP or Prometheus credential header. */
 export function sendsCredential(d: DestinationDto): boolean {
-  if (d.type === 'elasticsearch') return d.auth !== undefined;
+  if (d.type === 'elasticsearch') return d.auth !== undefined || d.password !== undefined;
   if (d.type === 'splunkHec') return true;
   if (d.type === 'http' || d.type === 'prometheus')
     return Object.keys(d.credentials ?? {}).length > 0;

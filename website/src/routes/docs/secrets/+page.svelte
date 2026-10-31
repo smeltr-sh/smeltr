@@ -3,7 +3,7 @@
   import examples from '#lib/connector-examples.json';
   const sections = [
     { id: 'secrets', title: 'Create and rotate a secret' },
-    { id: 'identities', title: 'Connection identities' },
+    { id: 'encryption-key', title: 'Encryption key' },
     { id: 'kafka', title: 'Kafka security' },
   ];
 </script>
@@ -47,8 +47,8 @@
   <p>
     <strong>Check</strong> tests a candidate value without revealing the stored value. Keep old external
     credentials valid until deployments and rollback requirements no longer need them. Keep secrets that
-    deployed configurations still use. Change a secret through New value; replacing the sealing key would
-    stop the leader from decrypting existing values.
+    deployed configurations still use. Change a secret through New value; replacing the secrets encryption
+    key would stop the leader from decrypting existing values.
   </p>
   <p>
     A stored value belongs to no branch. The leader keeps the newest values of each secret, as many
@@ -56,40 +56,21 @@
     does not remove a value stored while working on it: an older value it pushed out is gone, and a rollback
     to a deployment that used that value fails, unless a running deployment still uses it.
   </p>
-  <h2 id="identities">Connection identities</h2>
+  <h2 id="encryption-key">Encryption key</h2>
   <p>
-    A connection identity contains the certificates a worker trusts when connecting to a data system
-    and, when needed, the client certificate it uses to identify itself. Create it under Build →
-    Resources → Connection identities, then select it in the source or destination's <strong
-      >identity</strong
-    > field.
+    Admin → Secrets → <strong>Encryption key</strong> shows the key the leader encrypts stored secrets
+    with, and the file it reads it from. The leader encrypts each value with AES-256-GCM. It also encrypts
+    the Git remote token, the single sign-on client secret and the AI agents API key. Keep a backup of
+    the file: without it, a restored leader cannot open the stored secrets. Kept apart from the leader
+    data, a stolen data backup reveals no secret.
   </p>
-  <ul>
-    <li>
-      For a private certificate authority (CA), supply its public certificates in PEM format (text
-      files containing certificate blocks). A source or destination trusts them in addition to the
-      public roots: Mozilla's and the worker host's own.
-    </li>
-    <li>
-      To trust only your own authorities, turn off <strong>trust public roots</strong> under Advanced.
-      A receiver always admits by its identity's authorities alone.
-    </li>
-    <li>
-      For client authentication, supply the client certificate chain and a secret reference for its
-      private key. Provide the certificate and key together.
-    </li>
-    <li>
-      An identity can contain trust authorities, a client certificate, or both. With no identity
-      selected, the connector trusts the public roots and presents no client certificate.
-    </li>
-  </ul>
   <p>
-    Review and deploy the identity with the connector that uses it. Check certificate names and
-    secret availability from each worker. You configure leader/browser certificates separately in <a
-      href="/docs/certificates">Certificates &amp; TLS</a
-    >.
+    If the file is missing, or is not the one that encrypted the stored secrets, the leader cannot
+    open them. Issues shows the secrets encryption key as failed, and no secret can be stored or
+    changed. Restore the original file and restart the leader. If it is lost for good, choose
+    <strong>Regenerate key</strong>: Issues then lists each secret and setting to enter again, and
+    each clears once you store a new value for it.
   </p>
-
   <h2 id="kafka">Kafka security</h2>
   <p>
     The same security controls apply to <a href="/docs/sources/kafka">Kafka sources</a> and
@@ -109,9 +90,9 @@
       available in every worker process that uses the connection.
     </li>
     <li>
-      Select a connection identity for private trust authorities or a client certificate. An
-      identity requires a TLS protocol, and you must not duplicate its TLS settings in the extra
-      properties.
+      For a private CA or a client certificate, fill in the
+      <a href="/docs/certificates#connectors">TLS settings</a>. They need a TLS protocol, and the
+      extra properties must not repeat them.
     </li>
   </ol>
   <p>

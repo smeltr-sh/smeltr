@@ -17,10 +17,9 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::format::bytes_text::BytesForm;
 use crate::io::IoError;
 use crate::io::http::percent_encode;
-use crate::plan::topology::{HeldSecrets, Identity, SchemaRegistry};
+use crate::plan::topology::{HeldSecrets, SchemaRegistry, Tls};
 
 /// The most one answer may hold. A schema is a few kilobytes; this bounds what a broken server can make a worker hold.
 const MAX_ANSWER: u64 = 16 * 1024 * 1024;
@@ -89,26 +88,22 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// A client of `config`, connecting under `identity`. A password this worker does not hold is an error here,
+    /// A client of `config`, connecting under `tls`. A password this worker does not hold is an error here,
     /// never a call made without it.
-    pub fn new(
-        config: &SchemaRegistry,
-        identity: Option<&Identity>,
-        secrets: &HeldSecrets,
-    ) -> Result<Registry, IoError> {
+    pub fn new(config: &SchemaRegistry, tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<Registry, IoError> {
         let authorization = match &config.basic {
-            Some((user, password)) => {
-                let password = crate::io::http::credential("the schema registry", "password", password, secrets)?;
-                Some(format!(
-                    "Basic {}",
-                    BytesForm::Base64.text(format!("{user}:{password}").as_bytes())
-                ))
-            }
+            Some((user, password)) => Some(crate::io::http::basic(
+                "the schema registry",
+                "password",
+                user,
+                password,
+                secrets,
+            )?),
             None => None,
         };
         Ok(Registry {
             url: config.url.trim_end_matches('/').to_string(),
-            agent: crate::io::http::agent_config(identity, secrets)?.new_agent(),
+            agent: crate::io::http::agent_config(tls, secrets)?.new_agent(),
             authorization,
         })
     }

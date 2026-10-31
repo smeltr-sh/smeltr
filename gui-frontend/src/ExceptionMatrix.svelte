@@ -10,9 +10,11 @@
   A category folds its kinds away. It starts open where this layer answers one of its kinds.
 -->
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   import { untrack } from 'svelte';
   import Help from './Help.svelte';
   import Locked from './Locked.svelte';
+  import RemovableChip from './RemovableChip.svelte';
   import {
     ANSWERS,
     KINDS,
@@ -108,11 +110,11 @@
       <span class="mx-name"
         >{#if level === 'category'}{@const isOpen = open.includes(row)}<button
             type="button"
-            class="fold"
+            class="icon"
             aria-expanded={isOpen}
             aria-label={row}
             onclick={() => (open = isOpen ? open.filter((c) => c !== row) : [...open, row])}
-            >{isOpen ? '▾' : '▸'}</button
+            ><ChevronIcon open={isOpen} /></button
           >{/if}{row}{#if level === 'kind'}<Help label={row}>{KIND_HELP[row]}</Help>{/if}</span
       >
       <!-- The answers are read-only where the page is not the person's to change (`access.ts`); the folds are not. -->
@@ -149,16 +151,13 @@
         <div class="deliver">
           <span class="dim">to</span>
           {#each own.deliver as t (t)}
-            <span class="chip"
-              >{t}<button
-                type="button"
-                aria-label="Remove {t}"
-                onclick={() =>
-                  deliverTo(
-                    row,
-                    own.deliver.filter((x) => x !== t),
-                  )}>×</button
-              ></span
+            <RemovableChip
+              removeLabel="Remove {t}"
+              onremove={() =>
+                deliverTo(
+                  row,
+                  own.deliver.filter((x) => x !== t),
+                )}><span class="mono">{t}</span></RemovableChip
             >
           {/each}
           {#if left.length > 0}
@@ -228,15 +227,6 @@
     font-family: var(--mono);
     font-size: var(--text-label);
   }
-  .fold {
-    border: 0;
-    background: none;
-    padding: 0;
-    width: 1rem;
-    height: auto;
-    color: var(--dim);
-    cursor: pointer;
-  }
   /* Under the category's name, past its caret. */
   .kind .mx-name {
     padding-left: 2rem;
@@ -256,7 +246,6 @@
     border-bottom: 1px solid var(--border);
     font-size: var(--text-note);
   }
-  .chip,
   .plus {
     font-family: var(--mono);
     font-size: var(--text-micro);
@@ -267,15 +256,9 @@
     padding: 0.1rem 0.4rem;
     height: auto;
   }
-  .chip button {
-    border: 0;
-    background: none;
-    color: var(--dim);
-    padding: 0 0 0 0.35rem;
-    font-size: inherit;
-  }
-  .dim {
-    color: var(--dim);
+  .mono {
+    font-family: var(--mono);
+    font-size: var(--text-micro);
   }
   /* A speck where the column is open, a hollow ring where the row inherits, a filled dot where it is set here, half
      of one where only some kinds take it, and a dash where it is not possible. */

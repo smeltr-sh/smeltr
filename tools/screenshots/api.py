@@ -81,35 +81,36 @@ class Client:
         return s
 
     def change_password(self, username, new):
-        return self.call("POST", "/api/auth/password", {"username": username, "newPassword": new})
+        return self.call("PUT", "/api/auth/password", {"username": username, "newPassword": new})
 
-    # -- config, on a branch and in a scope ------------------------------------------------------------
+    # -- config, on a branch and in an area -------------------------------------------------------------
 
     def cfg(self, method, path, branch, scope, body=None):
-        res = self.call(method, path, body, {"branch": branch, "scope": scope})
+        """`path` within area `scope`, on `branch`."""
+        res = self.call(method, f"/api/areas/{scope}{path}", body, {"branch": branch})
         if isinstance(res, dict) and res.get("ok") is False:
             errors = json.dumps(res.get("errors") or res.get("error"))[:1500]
             raise ApiError(f"{method} {path} [{branch}/{scope}] refused: {errors}")
         return res
 
     def put(self, what, items, branch, scope):
-        return self.cfg("PUT", f"/api/{what}", branch, scope, items)
+        return self.cfg("PUT", f"/{what}", branch, scope, items)
 
     def put_pipeline(self, p, branch, scope):
-        return self.cfg("PUT", f"/api/pipelines/{urllib.parse.quote(p['id'])}", branch, scope, p)
+        return self.cfg("PUT", f"/pipelines/{urllib.parse.quote(p['id'])}", branch, scope, p)
 
     def put_sample(self, s, branch, scope):
-        return self.cfg("PUT", "/api/samples", branch, scope, s)
+        return self.cfg("PUT", f"/samples/{urllib.parse.quote(s['id'])}", branch, scope, s)
 
     def preview(self, branch, scope, pipeline, sample, at_micros):
         # The config the editor sends (`buildFileConfig` in pipeline.ts): this scope's pipelines and tables, and
         # nothing routed, so a route naming another scope's destination cannot fail the preview.
-        full = self.cfg("GET", "/api/config", branch, scope)["config"]
+        full = self.cfg("GET", "", branch, scope)["config"]
         config = {"version": 1, "destinations": [], "lookupTables": full["lookupTables"],
                   "pipelines": full["pipelines"]}
         body = {"config": json.dumps(config), "pipeline": pipeline, "sample": sample,
                 "show_internal": False, "at_micros": at_micros}
-        return self.call("POST", "/api/preview", body, {"branch": branch, "scope": scope})
+        return self.call("POST", f"/api/areas/{scope}/preview/pipeline", body, {"branch": branch})
 
     def lock_test(self, branch, scope, name, pipeline, sample, records, at_micros):
         pv = self.preview(branch, scope, pipeline, sample, at_micros)
@@ -117,15 +118,15 @@ class Client:
             raise ApiError(f"preview of {pipeline} failed: {pv['errors']}")
         test = {"id": name, "name": name, "pipeline": pipeline, "sample": sample, "lockedAt": at_micros,
                 "rowsIn": records, "expected": [r["json"] for r in pv["rows"]]}
-        return self.cfg("PUT", "/api/tests", branch, scope, test)
+        return self.cfg("PUT", f"/tests/{urllib.parse.quote(name)}", branch, scope, test)
 
     # -- changes ------------------------------------------------------------------------------------
 
     def open_change(self, branch, title, description=""):
-        return self.ok(self.call("POST", "/api/changes", {"branch": branch, "title": title, "description": description}))
+        return self.ok(self.call("POST", f"/api/branches/{urllib.parse.quote(branch)}/open", {"title": title, "description": description}))
 
     def deploy(self, branch):
-        return self.ok(self.call("POST", f"/api/changes/{urllib.parse.quote(branch)}/deploy", {}))
+        return self.ok(self.call("POST", f"/api/branches/{urllib.parse.quote(branch)}/deploy", {}))
 
     def create_group(self, branch, gid, name, hue):
         return self.ok(self.call("POST", "/api/worker-groups", {"id": gid, "name": name, "hue": hue}, {"branch": branch}))

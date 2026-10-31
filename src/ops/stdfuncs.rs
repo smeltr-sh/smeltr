@@ -19,7 +19,9 @@ use crate::core::bits;
 use crate::core::column::{Column, DataType, StrBuilder, VarType};
 use crate::core::ctx::{CompiledPattern, Ctx};
 use crate::ops::helpers::{Operand, side};
-use crate::ops::{OpKernel, arith, arrayops, convert, datetime, hashops, logic, netops, strops, useragent, webops};
+use crate::ops::{
+    OpKernel, arith, arrayops, convert, datetime, hashops, logic, netops, rebuildops, strops, useragent, webops,
+};
 
 /// What a parameter accepts. `null` fits every pattern; `Variant` fits none. An `I64` fits where an `F64` does, and
 /// `plan::resolve` widens it.
@@ -472,6 +474,8 @@ stdfuncs! {
     Sha1        "sha1"        = some(hashops::sha1);           [Data] => (Str);
     Sha256      "sha256"      = some(hashops::sha256);         [Data] => (Str);
     Sha512      "sha512"      = some(hashops::sha512);         [Data] => (Str);
+    CsvRebuild  "csvRebuild"  = some(rebuildops::csv_rebuild); [Str, Array, Str, Str, Str, Bool, Bool] => (Str);
+    KvRebuild   "kvRebuild"   = some(rebuildops::kv_rebuild);  [Str, Array, Str, Str, Str, Bool, Bool] => (Str);
     UrlDecode   "urlDecode"   = some(webops::url_decode);      [Str] => (Str);
     HtmlStrip   "htmlStrip"   = some(webops::html_strip);      [Str] => (Str);
     ParseUrl    "parseUrl"    = some(webops::parse_url);       [Str] => (object webops::URL_PARTS);

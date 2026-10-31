@@ -6,6 +6,6 @@
     "hash": "#/status",
     "themes": ["light", "dark"],
     "delay": 2500,
-    "steps": [{ "delay": 2500 }, { "text": "Expand all" }, { "delay": 2000 }]
+    "steps": [{ "delay": 2500 }, { "delay": 2000 }]
   }
 ]

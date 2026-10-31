@@ -5,6 +5,7 @@
     { id: 'install', title: 'Install the binary' },
     { id: 'first-start', title: 'Standalone: first local start' },
     { id: 'service', title: 'Run as a systemd service' },
+    { id: 'windows-service', title: 'Run as a Windows service' },
   ];
 </script>
 
@@ -15,13 +16,12 @@
 >
   <h1>Install the binary</h1>
   <p>
-    <a href="/get#download">Download</a> the Linux archive, or the Windows zip, and the release's
-    <code>SHA256SUMS</code>.
+    <a href="/get#download">Download</a> the Linux archive or the Windows zip.
   </p>
   <h2 id="verify">Verify the executable</h2>
   <p>
-    Compare the archive's SHA-256 checksum with its line in <code>SHA256SUMS</code>, and stop if it
-    differs:
+    Compare the archive's SHA-256 checksum with the one shown beside it on the release page, and
+    stop if it differs:
   </p>
   <pre><code>sha256sum smeltr-linux.tar.gz</code></pre>
   <p>
@@ -49,15 +49,17 @@ sudo install -d -o smeltr -g smeltr -m 0700 /var/lib/smeltr /etc/smeltr/secrets<
     Git client. The executable includes the browser UI.
   </p>
   <p>
-    The <strong>sealing key</strong> encrypts secrets the leader stores. On a fresh installation,
-    leave <code>/etc/smeltr/secrets/sealing.key</code> absent so Smeltr creates it. Back it up separately
-    from the leader data and keep the matching copies for recovery.
+    The <strong>secrets encryption key</strong> encrypts secrets the leader stores. On a fresh
+    installation, leave <code>/etc/smeltr/secrets/sealing.key</code> absent so Smeltr creates it.
+    Back it up and keep the matching copies for recovery;
+    <a href="/docs/secrets#encryption-key">Encryption key</a>
+    says where to keep that backup.
   </p>
 
   <h2 id="first-start">Standalone: first local start</h2>
   <p>
     Save this complete configuration as <code>smeltr.toml</code> in your current directory. It runs the
-    leader and one worker in the same process, with the browser interface restricted to this machine.
+    leader and one worker as one service, with the browser interface restricted to this machine.
   </p>
   <pre><code
       >[leader]
@@ -154,5 +156,65 @@ sudo journalctl -u smeltr-leader -b</code
     For another service manager, set the executable, absolute configuration path, working directory,
     service account and restart policy explicitly. Preserve the data, key and configuration across
     replacing the executable. Do not start a second leader against the same data.
+  </p>
+  <p>To uninstall, stop and remove the service, then delete its executable:</p>
+  <pre><code
+      >sudo systemctl disable --now smeltr-leader
+sudo rm /etc/systemd/system/smeltr-leader.service
+sudo systemctl daemon-reload
+sudo rm -r /opt/smeltr</code
+    ></pre>
+  <p>
+    These commands leave <code>/var/lib/smeltr</code>, <code>/etc/smeltr</code> and the
+    <code>smeltr</code> account in place. <code>/var/lib/smeltr</code> and <code>/etc/smeltr</code> hold
+    the data, the configuration and the secrets encryption key. Back them up before you delete them, or
+    keep them to install again.
+  </p>
+
+  <h2 id="windows-service">Run as a Windows service</h2>
+  <p>
+    Install <a href="https://git-scm.com/downloads/win">Git for Windows</a>, which the leader uses
+    to serve configuration. If you installed it since Windows last started, restart Windows first:
+    the service finds Git only on the path Windows started with.
+  </p>
+  <p>
+    Save the configuration from <a href="#first-start">Standalone: first local start</a> as
+    <code>smeltr.toml</code>, without its <code>[leader.storage]</code> and
+    <code>[leader.secrets]</code> sections. As a service, Smeltr keeps its data, its secrets
+    encryption key and its log in <code>C:\ProgramData\Smeltr</code>.
+  </p>
+  <p>
+    In PowerShell as Administrator, from the folder that holds the zip and <code>smeltr.toml</code>:
+  </p>
+  <pre><code
+      >New-Item -ItemType Directory -Force 'C:\Program Files\Smeltr', 'C:\ProgramData\Smeltr' | Out-Null
+icacls 'C:\ProgramData\Smeltr' /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F'
+Expand-Archive -Force smeltr-windows.zip 'C:\Program Files\Smeltr'
+Copy-Item smeltr.toml 'C:\ProgramData\Smeltr\smeltr.toml'
+New-Service -Name Smeltr -BinaryPathName '"C:\Program Files\Smeltr\smeltr.exe"' -StartupType Automatic
+sc.exe config Smeltr obj= 'NT SERVICE\Smeltr'
+sc.exe failure Smeltr reset= 86400 actions= restart/5000/restart/30000//0
+icacls 'C:\ProgramData\Smeltr' /grant 'NT SERVICE\Smeltr:(OI)(CI)M'
+Start-Service Smeltr</code
+    ></pre>
+  <p>
+    Only SYSTEM, Administrators and the service can open <code>C:\ProgramData\Smeltr</code>. On
+    first start, read the one-time administrator credentials in
+    <code>C:\ProgramData\Smeltr\smeltr.log</code> and complete the
+    <a href="/docs/first-login">first login</a>.
+  </p>
+  <p>
+    To replace the executable, run <code>Stop-Service Smeltr</code>, the
+    <code>Expand-Archive</code> line again, then <code>Start-Service Smeltr</code>.
+  </p>
+  <p>To uninstall, stop and remove the service, then delete its executable:</p>
+  <pre><code
+      >Stop-Service Smeltr
+sc.exe delete Smeltr
+Remove-Item -Recurse 'C:\Program Files\Smeltr'</code
+    ></pre>
+  <p>
+    These commands leave <code>C:\ProgramData\Smeltr</code> in place. It holds the data, the configuration,
+    the secrets encryption key and the log. Back it up before you delete it, or keep it to install again.
   </p>
 </GuideLayout>

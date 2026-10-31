@@ -11,7 +11,7 @@
 //! so the format and field are checked where the destination is loaded. Any other change to the JSON may be refused,
 //! and never panics.
 //!
-//! Live, draws without an identity, SASL, a fault or a break are pointed at the broker at `KAFKA_TEST_BROKERS`, and
+//! Live, draws without TLS, SASL, a fault or a break are pointed at the broker at `KAFKA_TEST_BROKERS`, and
 //! deliver to topics each seed makes and reads back.
 
 use std::borrow::Cow;
@@ -32,9 +32,9 @@ use serde_json::{Map, Value, json};
 use smeltr::config_file::load_str;
 use smeltr::io::{Destination, Dispatched, IoError, OutgoingRecord, OwnedRecord, Rejection};
 use smeltr::plan::config::Payload;
-use smeltr::plan::topology::{DestinationKind, HeldSecrets, KafkaDestinationConfig, KafkaService, SecretRef};
+use smeltr::plan::topology::{Acks, DestinationKind, HeldSecrets, KafkaDestinationConfig, KafkaService, SecretRef};
 
-use crate::harness::destination::{self, Broken, Pki, Reached, unknown_key_taken};
+use crate::harness::destination::{self, Broken, ClientTls, Pki, Reached, set_tls, unknown_key_taken};
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::live;
 
@@ -73,11 +73,14 @@ const OPTIONS: &[&str] = &[
     "compression.snappy",
     "compression.lz4",
     "compression.zstd",
+    "acks.all",
+    "acks.one",
+    "acks.none",
     "stallAfterSecs",
     "bufferBytes",
     "bufferBytes.text",
-    "identity.authorities",
-    "identity.certificate",
+    "tls.trustedAuthorities",
+    "tls.certificate",
     "properties",
     "properties.plaintext",
     "properties.sasl",
@@ -91,14 +94,16 @@ const OPTIONS: &[&str] = &[
     "row.tooLarge",
     "batches.several",
     "fault.produceRetried",
+    "fault.produceFailed",
+    "fault.produceRefused",
     "fault.brokersDown",
     "broken.brokers",
     "broken.defaultTopic",
     "broken.field.json",
     "broken.field.blank",
-    "broken.identity",
-    "broken.identity.material",
-    "broken.identity.plaintext",
+    "broken.certificate",
+    "broken.tls.material",
+    "broken.tls.plaintext",
     "broken.properties.reserved",
     "broken.properties.credential",
     "broken.properties.pem",
@@ -129,19 +134,10 @@ enum Target<'a> {
     Live(&'a str),
 }
 
-/// What the identity a destination names holds.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Identity {
-    /// An authority to verify the brokers against.
-    Trusts,
-    /// That, and a certificate to present.
-    Presents,
-}
-
 /// One drawn destination.
 struct Draw {
     destination: Map<String, Value>,
-    identity: Option<Identity>,
+    tls: Option<ClientTls>,
     /// Whether the producer reaches brokers that answer it, in plain text: the mock, or the live broker.
     reaches: bool,
     /// The leader-stored credentials it names, with their values.
@@ -214,6 +210,13 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
         cov.reach(format!("compression.{compression}"));
         d.insert("compression".into(), json!(compression));
     }
+    let acks = *rng.pick(&["", "none", "one", "all"]);
+    if acks.is_empty() {
+        cov.reach("acks.all");
+    } else {
+        cov.reach(format!("acks.{acks}"));
+        d.insert("acks".into(), json!(acks));
+    }
     if rng.chance(2) {
         cov.reach("stallAfterSecs");
         d.insert("stallAfterSecs".into(), json!(rng.pick(&[1, 5, 30, 120])));
@@ -243,18 +246,19 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
             properties.insert(k.into(), json!(v));
         }
     }
-    let mut identity = None;
+    let mut tls = None;
     if matches!(target, Target::Offline(_)) {
         if rng.chance(4) {
             // Over TLS, which the mock does not speak.
-            identity = Some(if rng.chance(2) {
-                cov.reach("identity.authorities");
-                Identity::Trusts
+            let own = if rng.chance(2) {
+                cov.reach("tls.trustedAuthorities");
+                ClientTls::Trusts
             } else {
-                cov.reach("identity.certificate");
-                Identity::Presents
-            });
-            d.insert("identity".into(), json!("client"));
+                cov.reach("tls.certificate");
+                ClientTls::Presents
+            };
+            tls = Some(own);
+            set_tls(&mut d, own);
             let protocol = *rng.pick(&["SSL", "ssl", "SASL_SSL"]);
             properties.insert("security.protocol".into(), json!(protocol));
             // Always with a mechanism: without one librdkafka takes GSSAPI, which builds here only with a keytab.
@@ -304,7 +308,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
 
     let mut draw = Draw {
         destination: d,
-        identity,
+        tls,
         reaches,
         stored,
         unheld,
@@ -331,9 +335,9 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
         "defaultTopic",
         "field.json",
         "field.blank",
-        "identity",
-        "identity.material",
-        "identity.plaintext",
+        "certificate",
+        "tls.material",
+        "tls.plaintext",
         "properties.reserved",
         "properties.credential",
         "properties.pem",
@@ -372,14 +376,14 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             d.insert("field".into(), json!(rng.pick(&["", "  "])));
             "field"
         }
-        "identity" => {
-            d.insert("identity".into(), json!("nobody"));
-            draw.identity = None;
-            "identity"
+        "certificate" => {
+            d.insert("certificate".into(), json!(" "));
+            draw.tls = None;
+            "certificate"
         }
-        "identity.material" => {
-            draw.identity = Some(Identity::Trusts);
-            d.insert("identity".into(), json!("client"));
+        "tls.material" => {
+            draw.tls = Some(ClientTls::Trusts);
+            set_tls(d, ClientTls::Trusts);
             let p = object(d, "properties");
             p.insert("security.protocol".into(), json!("SSL"));
             p.insert(
@@ -389,9 +393,9 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             );
             "properties"
         }
-        "identity.plaintext" => {
-            draw.identity = Some(Identity::Presents);
-            d.insert("identity".into(), json!("client"));
+        "tls.plaintext" => {
+            draw.tls = Some(ClientTls::Presents);
+            set_tls(d, ClientTls::Presents);
             let p = object(d, "properties");
             if rng.chance(2) {
                 p.remove("security.protocol");
@@ -407,9 +411,9 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             let (k, v) = *rng.pick(&[
                 ("bootstrap.servers", "elsewhere:9092"),
                 ("compression.type", "gzip"),
-                ("linger.ms", "5"),
                 ("enable.idempotence", "false"),
-                ("message.max.bytes", "2000000"),
+                ("acks", "1"),
+                ("request.required.acks", "0"),
             ]);
             object(d, "properties").insert(k.into(), json!(v));
             "properties"
@@ -485,7 +489,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
     }
 }
 
-/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the identity it names.
+/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the authority it trusts.
 fn bundle(draw: &Draw, pki: &Pki) -> Value {
     let mut b = json!({
         "version": 1,
@@ -494,27 +498,22 @@ fn bundle(draw: &Draw, pki: &Pki) -> Value {
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["kafka"]}]}],
     });
-    match draw.identity {
-        None => {}
-        Some(Identity::Trusts) => b["identities"] = json!([{"id": "client", "authorities": pki.authority.pem}]),
-        Some(Identity::Presents) => {
-            b["identities"] = json!([{
-                "id": "client",
-                "authorities": pki.authority.pem,
-                "certificate": pki.client.certificate,
-                "key": {"secret": "client-key", "version": 1},
-            }])
-        }
+    if let Some(authorities) = b["destinations"][0].get_mut("trustedAuthorities") {
+        *authorities = json!(pki.authority.pem);
     }
     b
 }
 
 /// The secrets the worker holds for `draw`: every credential the leader stores.
 fn secrets_held(draw: &Draw, pki: &Pki) -> HeldSecrets {
-    let mut stored = vec![("client-key".to_string(), 1, pki.client.key.clone())];
-    stored.extend(draw.stored.iter().cloned());
     let mut secrets = HeldSecrets::default();
-    secrets.set_stored(stored);
+    secrets.set_stored(draw.stored.iter().cloned());
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "client".to_string(),
+        version: 1,
+        value: pki.client.key.clone(),
+        chain: Some(pki.client.certificate.clone()),
+    }]);
     secrets
 }
 
@@ -584,6 +583,8 @@ fn check_loaded(draw: &Draw, c: &KafkaDestinationConfig) -> Result<(), String> {
         compression,
         format!("{:?}", c.compression).to_lowercase(),
     );
+    let acks = s("acks").unwrap_or_else(|| "all".into());
+    expect("acks", acks, format!("{:?}", c.acks).to_lowercase());
     let stall = d.get("stallAfterSecs").map_or(30, |v| v.as_u64().unwrap());
     expect("stallAfterSecs", stall.to_string(), c.stall_after.as_secs().to_string());
     let buffer = d.get("bufferBytes").map_or(64 * MIB, |v| match v {
@@ -591,11 +592,11 @@ fn check_loaded(draw: &Draw, c: &KafkaDestinationConfig) -> Result<(), String> {
         v => v.as_u64().unwrap() as usize,
     });
     expect("bufferBytes", buffer.to_string(), c.buffer_bytes.to_string());
-    let identity = c.identity.as_ref().map(|i| match i.certificate {
-        Some(_) => Identity::Presents,
-        None => Identity::Trusts,
+    let tls = c.tls.as_ref().map(|t| match t.certificate {
+        Some(_) => ClientTls::Presents,
+        None => ClientTls::Trusts,
     });
-    expect("identity", format!("{:?}", draw.identity), format!("{identity:?}"));
+    expect("tls", format!("{:?}", draw.tls), format!("{tls:?}"));
     let literal: Vec<(String, String)> = (d.get("properties").and_then(Value::as_object).into_iter().flatten())
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
         .collect();
@@ -719,32 +720,58 @@ fn deliver(d: &mut dyn Destination, batches: &[Vec<Sent>]) -> Result<(Vec<Vec<Re
     Ok((refused, pending))
 }
 
-/// Hands every batch to `d`, flushes, and waits for each to complete. Answers each batch's refused rows.
-fn write(d: &mut dyn Destination, batches: &[Vec<Sent>], deadline: Duration) -> Result<Vec<Vec<Rejection>>, String> {
-    let (mut refused, mut pending) = deliver(d, batches).map_err(|e| format!("not delivered: {e:?}"))?;
+/// Hands every batch to `d`, flushes, and waits for each to complete, sending again the rows a completion names
+/// undelivered, as egress does. Answers each batch's refused rows, by its own positions, and how many rows went again.
+fn write(
+    d: &mut dyn Destination,
+    batches: &[Vec<Sent>],
+    deadline: Duration,
+) -> Result<(Vec<Vec<Rejection>>, usize), String> {
+    let (mut refused, pending) = deliver(d, batches).map_err(|e| format!("not delivered: {e:?}"))?;
+    // Each batch in flight: the batch it carries rows of, and which, in its own order.
+    let mut pending: BTreeMap<u64, (usize, Vec<usize>)> = (pending.into_iter())
+        .map(|b| (b, (b as usize, (0..batches[b as usize].len()).collect())))
+        .collect();
+    let mut next = batches.len() as u64;
+    let mut sent_again = 0;
     let until = Instant::now() + deadline;
-    // A flush that times out leaves its rows in flight, as the next tick's flush finds them; one that fails a row
-    // has dropped the batches, and they never complete.
-    loop {
+    // A flush that times out leaves its rows in flight, as the next tick's flush finds them.
+    let flush = |d: &mut dyn Destination| loop {
         match d.flush() {
-            Ok(()) => break,
-            Err(e) if e.message.contains("failed to deliver") || Instant::now() > until => {
-                return Err(format!("not flushed: {e:?}"));
-            }
+            Ok(()) => return Ok(()),
+            Err(e) if Instant::now() > until => return Err(format!("not flushed: {e:?}")),
             Err(_) => {}
         }
-    }
+    };
+    flush(d)?;
     while !pending.is_empty() {
         for done in d.poll_completions().map_err(|e| format!("not landed: {e:?}"))? {
-            refused[done.batch as usize].extend(done.rejections);
-            pending.retain(|b| *b != done.batch);
+            let Some((batch, rows)) = pending.remove(&done.batch) else {
+                return Err(format!("batch {} completed, and none was in flight", done.batch));
+            };
+            refused[batch].extend(done.rejections.into_iter().map(|r| Rejection { doc: rows[r.doc], ..r }));
+            let Some(u) = done.undelivered else { continue };
+            let again: Vec<usize> = u.rows.iter().map(|&i| rows[i]).collect();
+            let owned: Vec<OwnedRecord> = again.iter().map(|&i| batches[batch][i].row.clone()).collect();
+            sent_again += again.len();
+            let (dispatched, now) = (d.deliver(next, Cow::Owned(owned)))
+                .map_err(|e| format!("rows {again:?} of batch {batch} not sent again: {e:?}"))?;
+            refused[batch].extend(now.into_iter().map(|r| Rejection { doc: again[r.doc], ..r }));
+            if dispatched == Dispatched::InFlight {
+                pending.insert(next, (batch, again));
+            }
+            next += 1;
+            flush(d)?;
         }
         if Instant::now() > until {
-            return Err(format!("batches {pending:?} never completed"));
+            return Err(format!(
+                "batches {:?} never completed",
+                pending.keys().collect::<Vec<_>>()
+            ));
         }
         std::thread::sleep(Duration::from_millis(2));
     }
-    Ok(refused)
+    Ok((refused, sent_again))
 }
 
 /// One message read back: its topic, key and value.
@@ -813,8 +840,10 @@ fn read_back(brokers: &str, topics: &[&str], marker: &str) -> Result<Vec<Read>, 
     Ok(seen)
 }
 
-/// Checks that the topics hold each row `sent` took, once, with its key, on its topic, and nothing else.
-fn check_held(sent: &[Vec<Sent>], read: &[Read]) -> Result<(), String> {
+/// Checks that the topics hold each row `sent` took, once, with its key, on its topic, and nothing else. A `lossy`
+/// delivery may hold a row no times: a producer that waits for no acknowledgement never learns a broker refused it. A
+/// `retried` one may hold a row more than once: without idempotence a retry can repeat what the broker already wrote.
+fn check_held(sent: &[Vec<Sent>], read: &[Read], lossy: bool, retried: bool) -> Result<(), String> {
     let mut want: BTreeMap<&[u8], (&str, Option<&[u8]>)> = BTreeMap::new();
     for s in sent.iter().flatten() {
         if let Some(topic) = &s.topic {
@@ -837,6 +866,8 @@ fn check_held(sent: &[Vec<Sent>], read: &[Read]) -> Result<(), String> {
     for v in want.keys() {
         match counts.get(v) {
             Some(1) => {}
+            None if lossy => {}
+            Some(_) if retried => {}
             n => {
                 return Err(format!(
                     "a row of {} bytes is on its topic {} times",
@@ -851,9 +882,9 @@ fn check_held(sent: &[Vec<Sent>], read: &[Read]) -> Result<(), String> {
 
 // -- the offline fuzzer -------------------------------------------------------------------------------------------
 
-/// Seeds checked at once. A seed that delivers builds a producer, whose `measure_link` asks the mock for its request
-/// ceiling and waits out `LINK_TIMEOUT` for an answer the mock never gives, so seeds one after another would take
-/// minutes.
+/// Seeds checked at once. A seed that delivers builds a producer, whose `message_ceiling` asks the mock for its message
+/// ceiling and waits out `MESSAGE_CEILING_TIMEOUT` for an answer the mock never gives, so seeds one after another
+/// would take minutes.
 const WORKERS: usize = 32;
 
 #[test]
@@ -951,8 +982,8 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
         if !reached.reached("properties.sasl") && !rng.chance(6) {
             reached.forget(&[
                 "brokers.elsewhere",
-                "identity.authorities",
-                "identity.certificate",
+                "tls.trustedAuthorities",
+                "tls.certificate",
                 "properties.sasl",
             ]);
             return Ok(());
@@ -960,8 +991,8 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
         build().map_err(|e| format!("does not build: {e:?}\n{json}"))?;
         reached.keep_only(&[
             "brokers.elsewhere",
-            "identity.authorities",
-            "identity.certificate",
+            "tls.trustedAuthorities",
+            "tls.certificate",
             "properties.sasl",
         ]);
         return Ok(());
@@ -1006,21 +1037,61 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
             &vec![RDKafkaRespErr::RD_KAFKA_RESP_ERR_NOT_LEADER_FOR_PARTITION; n],
         );
     }
+    // One produce request the broker fails past any retry: its rows come back with their batch, to send again where
+    // they may land, refused where they never will.
+    let failed = (taken > 0 && !retried && rng.chance(5)).then(|| rng.chance(2));
+    if let Some(refusing) = failed {
+        let error = match refusing {
+            true => RDKafkaRespErr::RD_KAFKA_RESP_ERR_MSG_SIZE_TOO_LARGE,
+            false => RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION,
+        };
+        mock.request_errors(RDKafkaApiKey::Produce, &[error]);
+    }
     let fail = |e: String| format!("{e}\n{json}");
-    let refused = write(d.as_mut(), &sent, Duration::from_secs(30)).map_err(fail)?;
+    let (refused, sent_again) = write(d.as_mut(), &sent, Duration::from_secs(30)).map_err(fail)?;
     drop(d);
-    destination::check_refused(&sent, &refused, |s| s.topic.is_none()).map_err(fail)?;
+    // A row the failed request refused is held nowhere.
+    let mut held = sent;
+    if failed == Some(true) {
+        for (batch, refusals) in refused.iter().enumerate() {
+            for r in refusals {
+                let row = &mut held[batch][r.doc];
+                if row.topic.is_none() {
+                    continue;
+                }
+                if !r.reason.contains("TooLarge") {
+                    return Err(fail(format!("row {} of batch {batch} refused for {}", r.doc, r.reason)));
+                }
+                row.topic = None;
+            }
+        }
+    }
+    destination::check_refused(&held, &refused, |s| s.topic.is_none()).map_err(fail)?;
+    if failed == Some(false) && sent_again == 0 && c.acks != Acks::None {
+        return Err(fail("a produce request failed, and no row was sent again".to_string()));
+    }
     let read = read_back(&bootstrap, &[DEFAULT_TOPIC, OTHER_TOPIC], &marker).map_err(fail)?;
-    check_held(&sent, &read).map_err(fail)?;
+    check_held(
+        &held,
+        &read,
+        (retried || failed.is_some()) && c.acks == Acks::None,
+        retried,
+    )
+    .map_err(fail)?;
     if retried {
         reached.reach("fault.produceRetried");
+    }
+    match failed {
+        Some(true) => reached.reach("fault.produceRefused"),
+        Some(false) => reached.reach("fault.produceFailed"),
+        None => {}
     }
     Ok(())
 }
 
 // -- the live fuzzer ----------------------------------------------------------------------------------------------
 
-/// The options a live draw reaches: no identity, SASL or worker-local credential, since the broker takes plain text
+/// The options a live draw reaches: no TLS, SASL or worker-local credential, since the broker takes plain text
 /// and none of them; no fault; and no break.
 fn live_options() -> Vec<&'static str> {
     OPTIONS
@@ -1028,7 +1099,7 @@ fn live_options() -> Vec<&'static str> {
         .copied()
         .filter(|o| {
             !o.starts_with("brokers.")
-                && !o.starts_with("identity.")
+                && !o.starts_with("tls.")
                 && !o.starts_with("fault.")
                 && !o.starts_with("broken.")
                 && ![
@@ -1122,11 +1193,11 @@ fn live_seed(seed: u64, brokers: &str, reached: &mut Reached, pki: &Pki) -> Resu
             .map_err(|e| format!("does not build: {e:?}"))?;
         let marker = format!("{run}:");
         let sent = batches(&mut rng, reached, &c, &marker, &other_topic);
-        let refused = write(d.as_mut(), &sent, Duration::from_secs(60))?;
+        let (refused, _) = write(d.as_mut(), &sent, Duration::from_secs(60))?;
         drop(d);
         destination::check_refused(&sent, &refused, |s| s.topic.is_none())?;
         let read = read_back(brokers, &[&default_topic, &other_topic], &marker)?;
-        check_held(&sent, &read)
+        check_held(&sent, &read, c.acks == Acks::None, false)
     })();
     checked.map_err(|e| format!("{e}\n{json}"))
 }

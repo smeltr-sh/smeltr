@@ -23,7 +23,7 @@ use smeltr::leader::store::Actor;
 use smeltr::leader::{AppState, blocking, git, tree};
 use smeltr::startup_config::leader_data_dir;
 
-use smeltr::leader::envelope::{Empty, Envelope};
+use smeltr::leader::envelope::{Empty, Envelope, Refusal};
 
 use crate::config_api::{self, Save, UNNAMED_BRANCH, Writing, blocking_save};
 
@@ -167,30 +167,31 @@ pub async fn list_worker_groups(
     axum::extract::State(state): axum::extract::State<AppState>,
     Extension(access): Extension<Access>,
     Query(q): Query<WorkerGroupQuery>,
-) -> Json<Envelope<WorkerGroups>> {
+) -> Envelope<WorkerGroups> {
     let branch = q.name().to_string();
     let store = state.store.clone();
     let listed = blocking(move || {
-        let repo = repo_at(&leader_data_dir())?;
-        let deployed = git::deployed(&repo).ok_or("nothing has been deployed")?;
-        let branch_commit = resolve_branch_commit(&repo, &branch)?;
-        let groups = list_branch_groups_at(&repo, &deployed, &branch_commit, store.as_ref())?;
+        let repo = repo_at(&leader_data_dir()).map_err(Refusal::internal)?;
+        let deployed = git::deployed(&repo).ok_or_else(|| Refusal::conflict("nothing has been deployed"))?;
+        let branch_commit = resolve_branch_commit(&repo, &branch).map_err(Refusal::internal)?;
+        let groups =
+            list_branch_groups_at(&repo, &deployed, &branch_commit, store.as_ref()).map_err(Refusal::internal)?;
         // Best-effort: `shared`'s hue is a courtesy on top of the listing, and a store hiccup here should not
         // fail a request the groups half of which already succeeded.
         let shared_hue = store
             .group_hues()
             .ok()
             .and_then(|m| m.get(config_file::SHARED_DIR).copied());
-        Ok::<_, String>((groups, branch_commit, shared_hue))
+        Ok::<_, Refusal>((groups, branch_commit, shared_hue))
     })
     .await;
     match listed {
-        Ok((groups, commit, shared_hue)) => Json(Envelope::ok(WorkerGroups {
+        Ok((groups, commit, shared_hue)) => Envelope::ok(WorkerGroups {
             groups: held(groups, &access),
             shared_hue,
             commit: Some(commit),
-        })),
-        Err(e) => Json(Envelope::failed_one(e)),
+        }),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -271,9 +272,9 @@ fn new_manifest(name: Option<String>) -> FileConfig {
         routes: vec![],
         lookup_tables: vec![],
         grok_patterns: vec![],
-        identities: vec![],
         on_exception: None,
         name,
+        schemas: vec![],
     }
 }
 
@@ -354,7 +355,7 @@ fn create_group_in(
         .unwrap_or_default();
 
     if !config_file::is_safe_group_name(&req.name) {
-        return Envelope::failed_one(config_file::unsafe_group_name(&req.name));
+        return Envelope::refused(Refusal::invalid(config_file::unsafe_group_name(&req.name)));
     }
 
     let writing = match Writing::open_in(data_dir, branch, base, &req.id) {
@@ -363,8 +364,8 @@ fn create_group_in(
     };
     match group_held(&writing, &req.id) {
         Ok(false) => {}
-        Ok(true) => return Envelope::failed_one(format!("worker group {:?} already exists", req.id)),
-        Err(e) => return Envelope::failed_one(e),
+        Ok(true) => return Envelope::refused(Refusal::conflict(format!("worker group {:?} already exists", req.id))),
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
     }
 
     let hue = req.hue.unwrap_or_else(|| next_hue(&taken));
@@ -409,7 +410,7 @@ fn update_group_in(
     author: &Actor,
 ) -> Envelope<Save> {
     if !config_file::is_safe_group_name(&req.name) {
-        return Envelope::failed_one(config_file::unsafe_group_name(&req.name));
+        return Envelope::refused(Refusal::invalid(config_file::unsafe_group_name(&req.name)));
     }
 
     let writing = match Writing::open_in(data_dir, branch, base, id) {
@@ -420,11 +421,13 @@ fn update_group_in(
         Ok(Some(bytes)) => match serde_json::from_slice::<FileConfig>(&bytes) {
             Ok(file) => file,
             Err(e) => {
-                return Envelope::failed_one(format!("worker group {id:?} has an unreadable manifest: {e}"));
+                return Envelope::refused(Refusal::internal(format!(
+                    "worker group {id:?} has an unreadable manifest: {e}"
+                )));
             }
         },
         Ok(None) if matches!(group_held(&writing, id), Ok(true)) => new_manifest(None),
-        _ => return Envelope::failed_one(format!("there is no worker group {id:?} to edit")),
+        _ => return Envelope::refused(Refusal::not_found(format!("there is no worker group {id:?} to edit"))),
     };
 
     let amended = FileConfig {
@@ -453,7 +456,7 @@ fn delete_group_in(data_dir: &Path, branch: &str, base: Option<&str>, id: &str, 
     // group, so `id` is checked against the narrower rule before anything opens, the same rule a group's own
     // subtree path is built from.
     if let Err(e) = config_file::group_subtree(id) {
-        return Envelope::failed_one(e);
+        return Envelope::refused(Refusal::invalid(e));
     }
     let writing = match Writing::open_in(data_dir, branch, base, id) {
         Ok(w) => w,
@@ -461,8 +464,10 @@ fn delete_group_in(data_dir: &Path, branch: &str, base: Option<&str>, id: &str, 
     };
     match group_held(&writing, id) {
         Ok(true) => {}
-        Ok(false) => return Envelope::failed_one(format!("there is no worker group {id:?} to delete")),
-        Err(e) => return Envelope::failed_one(e),
+        Ok(false) => {
+            return Envelope::refused(Refusal::not_found(format!("there is no worker group {id:?} to delete")));
+        }
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
     }
 
     match writing.remove_scope(&format!("delete worker group {id}"), author) {
@@ -476,7 +481,7 @@ pub async fn delete_worker_group(
     axum::extract::Path(id): axum::extract::Path<String>,
     Query(q): Query<WorkerGroupQuery>,
     headers: HeaderMap,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), config_api::base_commit(&headers));
     blocking_save(move || delete_group_in(&leader_data_dir(), &branch, base.as_deref(), &id, &actor)).await
 }
@@ -495,10 +500,10 @@ pub async fn set_group_hue(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(req): Json<SetGroupHueRequest>,
-) -> Json<Envelope> {
+) -> Envelope {
     let store = state.store.clone();
     let set = blocking(move || store.set_group_hue(&id, req.hue)).await;
-    Json(set.map(|()| Empty).into())
+    set.map(|()| Empty).into()
 }
 
 pub async fn update_worker_group(
@@ -507,7 +512,7 @@ pub async fn update_worker_group(
     Query(q): Query<WorkerGroupQuery>,
     headers: HeaderMap,
     Json(req): Json<UpdateWorkerGroupRequest>,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), config_api::base_commit(&headers));
     blocking_save(move || update_group_in(&leader_data_dir(), &branch, base.as_deref(), &id, req, &actor)).await
 }
@@ -518,7 +523,7 @@ pub async fn create_worker_group(
     Query(q): Query<WorkerGroupQuery>,
     headers: HeaderMap,
     Json(req): Json<CreateWorkerGroupRequest>,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), config_api::base_commit(&headers));
     let store = state.store.clone();
     blocking_save(move || {
@@ -790,12 +795,12 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
             on_exception: Some(config_file::OnExceptionDto {
                 categories: [("math".to_string(), config_file::AnswerDto::Drop)].into(),
                 ..Default::default()
             }),
             name: Some("West".to_string()),
+            schemas: vec![],
         };
         let edit = git::FileEdit {
             path: "groups/west/system.json".to_string(),
@@ -848,9 +853,9 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
             on_exception: None,
             name: Some(name.to_string()),
+            schemas: vec![],
         };
         let edit = git::FileEdit {
             path: format!("groups/{id}/system.json"),
@@ -874,7 +879,7 @@ mod tests {
         let data = temp_dir("create-lists-pending");
         let store = test_store("create-lists-pending");
         let response = create_group_in(&data, "work", None, request("west", "West"), &store, &Actor::system());
-        assert!(response.ok, "{:?}", response.errors);
+        assert!(response.succeeded(), "{:?}", response.errors);
 
         let groups = list_groups_in(&data, "work", &store).unwrap();
         assert_eq!(groups.len(), 1);
@@ -888,7 +893,7 @@ mod tests {
         let data = temp_dir("create-twice");
         let store = test_store("create-twice");
         let first = create_group_in(&data, "work", None, request("west", "West"), &store, &Actor::system());
-        assert!(first.ok);
+        assert!(first.succeeded());
 
         let second = create_group_in(
             &data,
@@ -898,7 +903,7 @@ mod tests {
             &store,
             &Actor::system(),
         );
-        assert!(!second.ok);
+        assert!(!second.succeeded());
         assert!(
             format!("{:?}", second.errors[0]).contains("west"),
             "{:?}",
@@ -912,7 +917,7 @@ mod tests {
         let store = test_store("create-unsafe-id");
         for id in ["../../ESCAPED", "a/b", ".hidden"] {
             let response = create_group_in(&data, "work", None, request(id, "Bad"), &store, &Actor::system());
-            assert!(!response.ok, "group id {id:?} must be refused");
+            assert!(!response.succeeded(), "group id {id:?} must be refused");
         }
     }
 
@@ -925,12 +930,12 @@ mod tests {
 
         for blank in ["", "   "] {
             let response = create_group_in(&data, "work", None, request("west", blank), &store, &Actor::system());
-            assert!(!response.ok, "name {blank:?} must be refused");
+            assert!(!response.succeeded(), "name {blank:?} must be refused");
         }
 
-        assert!(create_group_in(&data, "work", None, request("west", "West"), &store, &Actor::system()).ok);
+        assert!(create_group_in(&data, "work", None, request("west", "West"), &store, &Actor::system()).succeeded());
         assert!(
-            !update_group_in(&data, "work", None, "west", update("  "), &Actor::system()).ok,
+            !update_group_in(&data, "work", None, "west", update("  "), &Actor::system()).succeeded(),
             "a rename to blank is refused"
         );
 
@@ -970,7 +975,7 @@ mod tests {
             &Actor::system(),
         );
         assert!(
-            !renamed.ok,
+            !renamed.succeeded(),
             "the id is taken -- renaming edits the manifest instead of recreating it"
         );
 
@@ -988,9 +993,9 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
             on_exception: None,
             name: Some("East, Renamed".to_string()),
+            schemas: vec![],
         };
         let edit = git::FileEdit {
             path: "groups/east/system.json".to_string(),
@@ -1023,10 +1028,10 @@ mod tests {
     fn deleting_a_group_created_on_the_branch_removes_it_from_the_branchs_listing() {
         let data = temp_dir("delete-undeployed");
         let store = test_store("delete-undeployed");
-        assert!(create_group_in(&data, "work", None, request("west", "West"), &store, &Actor::system()).ok);
+        assert!(create_group_in(&data, "work", None, request("west", "West"), &store, &Actor::system()).succeeded());
 
         let deleted = delete_group_in(&data, "work", None, "west", &Actor::system());
-        assert!(deleted.ok, "{:?}", deleted.errors);
+        assert!(deleted.succeeded(), "{:?}", deleted.errors);
 
         assert!(list_groups_in(&data, "work", &store).unwrap().is_empty());
     }
@@ -1035,7 +1040,7 @@ mod tests {
     fn deleting_a_group_removes_every_file_its_subtree_holds() {
         let data = temp_dir("delete-full-subtree");
         let store = test_store("delete-full-subtree");
-        assert!(create_group_in(&data, "work", None, request("west", "West"), &store, &Actor::system()).ok);
+        assert!(create_group_in(&data, "work", None, request("west", "West"), &store, &Actor::system()).succeeded());
 
         // A pipeline, next to the manifest `create_group_in` wrote. The part of a group's bundle a delete must
         // reach without being told each path by name.
@@ -1057,7 +1062,7 @@ mod tests {
         .unwrap();
 
         let deleted = delete_group_in(&data, "work", None, "west", &Actor::system());
-        assert!(deleted.ok, "{:?}", deleted.errors);
+        assert!(deleted.succeeded(), "{:?}", deleted.errors);
 
         let head = git::branch_tip(&repo, "work").unwrap();
         assert!(
@@ -1070,7 +1075,7 @@ mod tests {
     fn deleting_a_group_that_does_not_exist_is_refused() {
         let data = temp_dir("delete-missing");
         let deleted = delete_group_in(&data, "work", None, "nowhere", &Actor::system());
-        assert!(!deleted.ok);
+        assert!(!deleted.succeeded());
     }
 
     /// `Writing::open_in` accepts `shared` as a scope -- it is a real subtree writes target -- so a delete has to
@@ -1080,7 +1085,7 @@ mod tests {
     fn deleting_the_shared_scope_is_refused() {
         let data = temp_dir("delete-shared");
         let deleted = delete_group_in(&data, "work", None, config_file::SHARED_DIR, &Actor::system());
-        assert!(!deleted.ok);
+        assert!(!deleted.succeeded());
     }
 
     /// `delete_group_in` and the branch-scoped listing together: a real delete of a deployed
@@ -1092,7 +1097,7 @@ mod tests {
         deploy_to_main(&data, "east", "East");
 
         let deleted = delete_group_in(&data, "work", None, "east", &Actor::system());
-        assert!(deleted.ok, "{:?}", deleted.errors);
+        assert!(deleted.succeeded(), "{:?}", deleted.errors);
 
         assert!(list_groups_in(&data, "work", &store).unwrap().is_empty());
     }
@@ -1149,10 +1154,13 @@ mod tests {
             .collect();
         assert_eq!(ids, ["east"]);
         let again = create_group_in(&data, branch, None, request("east", "East"), &store, &Actor::system());
-        assert!(!again.ok, "an id whose directory holds a file was created again");
+        assert!(
+            !again.succeeded(),
+            "an id whose directory holds a file was created again"
+        );
 
         let deleted = delete_group_in(&data, branch, None, "east", &Actor::system());
-        assert!(deleted.ok, "{:?}", deleted.errors);
+        assert!(deleted.succeeded(), "{:?}", deleted.errors);
         assert!(list_groups_in(&data, branch, &store).unwrap().is_empty());
     }
 
@@ -1167,7 +1175,7 @@ mod tests {
             name: "Eastern".to_string(),
         };
         let renamed = update_group_in(&data, branch, None, "east", rename, &Actor::system());
-        assert!(renamed.ok, "{:?}", renamed.errors);
+        assert!(renamed.succeeded(), "{:?}", renamed.errors);
         let names: Vec<String> = list_groups_in(&data, branch, &store)
             .unwrap()
             .into_iter()
@@ -1184,7 +1192,7 @@ mod tests {
         let data = temp_dir("stale-branch");
         let store = test_store("stale-branch");
         deploy_to_main(&data, "west", "West");
-        assert!(create_group_in(&data, "work", None, request("north", "North"), &store, &Actor::system()).ok);
+        assert!(create_group_in(&data, "work", None, request("north", "North"), &store, &Actor::system()).succeeded());
 
         // `main` moves again, after `work` already forked from it.
         deploy_to_main(&data, "south", "South");
@@ -1216,7 +1224,7 @@ mod tests {
     fn resolve_branch_commit_reads_the_branchs_own_tip_once_it_exists() {
         let data = temp_dir("resolve-commit-own-tip");
         let store = test_store("resolve-commit-own-tip");
-        assert!(create_group_in(&data, "work", None, request("west", "West"), &store, &Actor::system()).ok);
+        assert!(create_group_in(&data, "work", None, request("west", "West"), &store, &Actor::system()).succeeded());
         let repo = repo_at(&data).unwrap();
         let tip = git::branch_tip(&repo, "work").unwrap();
         assert_eq!(resolve_branch_commit(&repo, "work").unwrap(), tip);

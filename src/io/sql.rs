@@ -84,7 +84,7 @@ impl fmt::Display for Refused {
             Refused::Unterminated(what) => write!(f, "a {what} is never closed"),
             Refused::Ordered => write!(
                 f,
-                "leave the ORDER BY out: smeltr orders by the position you choose, and SQL Server refuses an ordered query inside another"
+                "remove its ORDER BY; smeltr adds its own, on the column you choose under how rows are found"
             ),
             Refused::Limited(word) => {
                 write!(
@@ -115,6 +115,17 @@ impl std::error::Error for Refused {}
 impl Query {
     /// Checks `text` as a query `dialect` can run as a source.
     pub fn parse(text: &str, dialect: Dialect) -> Result<Query, Refused> {
+        Query::checked(text, dialect, false)
+    }
+
+    /// Checks `text` as Run reads a source that declares no fields yet: as [`Query::parse`] does, except that the
+    /// query may keep an `ORDER BY` of its own. Run reads no position, so that order only orders the rows it shows,
+    /// and its author reaches the choice of position that replaces it. A save still refuses it.
+    pub fn parse_for_run(text: &str, dialect: Dialect) -> Result<Query, Refused> {
+        Query::checked(text, dialect, true)
+    }
+
+    fn checked(text: &str, dialect: Dialect, own_order: bool) -> Result<Query, Refused> {
         let segments = segments(text, dialect)?;
         let tokens = tokens(text, &segments);
         let Some(first) = tokens.first() else {
@@ -136,7 +147,7 @@ impl Query {
                 end = *at;
             }
         }
-        refuse_own_order_or_limit(text, &tokens, dialect)?;
+        refuse_own_order_or_limit(text, &tokens, dialect, own_order)?;
         refuse_placeholders(text, &segments, dialect)?;
         let references = references(text, &segments, end)?;
         Ok(Query {
@@ -568,7 +579,7 @@ fn is(text: &str, range: &Range<usize>, word: &str) -> bool {
 /// The query's own order or limit stands outside every parenthesis; inside one, it belongs to a window, an aggregate
 /// or a subquery. Each limit word counts only where it can be one, so a column named `offset` or `top` is a column.
 /// Parentheses must pair, else smeltr's clauses would land inside a query of the user's.
-fn refuse_own_order_or_limit(text: &str, tokens: &[Token], dialect: Dialect) -> Result<(), Refused> {
+fn refuse_own_order_or_limit(text: &str, tokens: &[Token], dialect: Dialect, own_order: bool) -> Result<(), Refused> {
     let word = |n: usize| match tokens.get(n) {
         Some(Token::Word(range)) => Some(range),
         _ => None,
@@ -584,7 +595,7 @@ fn refuse_own_order_or_limit(text: &str, tokens: &[Token], dialect: Dialect) -> 
             Token::Mark(_, ')') if depth == 0 => return Err(Refused::Unbalanced),
             Token::Mark(_, ')') => depth -= 1,
             Token::Word(_) if depth == 0 => {
-                if is_word(n, "ORDER") && is_word(n + 1, "BY") {
+                if !own_order && is_word(n, "ORDER") && is_word(n + 1, "BY") {
                     return Err(Refused::Ordered);
                 }
                 // SQL Server has no LIMIT, so there `limit` is a name.
@@ -1122,6 +1133,17 @@ mod tests {
         assert_eq!(
             Query::parse("SELECT 1 /*! AS a FROM t */", Dialect::MySql),
             Err(Refused::ExecutableComment)
+        );
+    }
+
+    #[test]
+    fn run_reads_a_query_with_its_own_order_and_refuses_the_rest() {
+        let query = "SELECT id FROM t ORDER BY id";
+        assert_eq!(Query::parse(query, Dialect::Postgres), Err(Refused::Ordered));
+        assert!(Query::parse_for_run(query, Dialect::Postgres).is_ok());
+        assert_eq!(
+            Query::parse_for_run("SELECT id FROM t ORDER BY id LIMIT 5", Dialect::Postgres),
+            Err(Refused::Limited("LIMIT".into()))
         );
     }
 

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
-use smeltr::plan::topology::{HeldSecrets, Identity, Receiver, ReceiverConfig, SecretRef, SourceKind};
+use smeltr::plan::topology::{HeldSecrets, Receiver, ReceiverConfig, SecretRef, SourceKind};
 
 use crate::certs::{self, Authority, Issued};
 use crate::harness::fuzz::Rng;
@@ -18,9 +18,9 @@ use crate::harness::fuzz::Rng;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tls {
     None,
-    /// Under an identity: TLS, any sender.
+    /// Under a certificate: TLS, any sender.
     Served,
-    /// Under an identity with authorities: a sender's certificate must chain to them.
+    /// Under a certificate with authorities: a sender's certificate must chain to them.
     Vouched,
 }
 
@@ -169,7 +169,7 @@ pub fn random_limit(rng: &mut Rng, doublings: usize) -> usize {
 
 // -- the receiver -------------------------------------------------------------------------------------------------
 
-/// `receiver` opened on `listen`, under `tls` with `pki`'s identity, holding `tokens` for the senders named
+/// `receiver` opened on `listen`, under `tls` with `pki`'s certificate, holding `tokens` for the senders named
 /// `{sender}0`, `{sender}1` and on, and taking requests up to `max_request_bytes`.
 pub fn build(
     receiver: Receiver,
@@ -181,22 +181,22 @@ pub fn build(
     pki: &Pki,
 ) -> Box<dyn Source> {
     let mut secrets = HeldSecrets::default();
-    let mut stored: Vec<_> = (tokens.iter().enumerate())
+    let stored: Vec<_> = (tokens.iter().enumerate())
         .map(|(i, token)| (format!("token{i}"), 1, token.clone()))
         .collect();
-    stored.push(("receiver-key".into(), 1, pki.server.key.clone()));
     secrets.set_stored(stored);
-    let identity = (tls != Tls::None).then(|| {
-        Arc::new(Identity {
-            id: "receiver".into(),
-            certificate: Some(pki.server.certificate.clone()),
-            key: Some(SecretRef::LeaderStored {
-                name: "receiver-key".into(),
-                version: 1,
-            }),
-            authorities: (tls == Tls::Vouched).then(|| pki.authority.pem.clone()),
-            trust_public: true,
-        })
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "receiver".into(),
+        version: 1,
+        value: pki.server.key.clone(),
+        chain: Some(pki.server.certificate.clone()),
+    }]);
+    let tls = (tls != Tls::None).then(|| smeltr::plan::topology::Tls {
+        of: "source \"receiver\"".into(),
+        certificate: Some("receiver".into()),
+        authorities: (tls == Tls::Vouched).then(|| pki.authority.pem.clone()),
+        trust_public: false,
+        side: smeltr::io::trust::Side::Server,
     });
     let config = ReceiverConfig {
         receiver,
@@ -210,7 +210,7 @@ pub fn build(
                 (format!("{sender}{i}"), reference)
             })
             .collect(),
-        identity,
+        tls,
         max_request_bytes,
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());

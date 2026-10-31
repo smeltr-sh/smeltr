@@ -14,7 +14,9 @@ import {
   scopeOf,
   stepLine,
   testsCovering,
+  undoTarget,
   uploadedName,
+  type ObjectChange,
 } from './objectChanges';
 
 const parse = {
@@ -23,6 +25,7 @@ const parse = {
   filter: null,
   disabled: false,
   input: '_raw',
+  into: '$',
   kind: { type: 'json' },
   declared: [],
 };
@@ -160,6 +163,22 @@ describe('objectChanges', () => {
     ]);
   });
 
+  it("names a route's pipeline at each end, from shared/ for a group's route", () => {
+    const route = (pipeline: string) => ({ id: 'r', source: 's', condition: null, pipeline });
+    const shared = config({ pipelines: [{ id: 'a', name: 'Alpha', steps: [] }] });
+    const before = config({ routes: [route('a')] });
+    const after = config({
+      pipelines: [{ id: 'b', name: 'Beta', steps: [] }],
+      routes: [route('b')],
+    });
+    const [change] = objectChanges([
+      { scope: 'north', before, after, shared: { before: shared, after: config({}) } },
+    ]);
+    expect(change.fields).toEqual([
+      { key: 'pipeline', kind: 'changed', before: 'Alpha', after: 'Beta' },
+    ]);
+  });
+
   it('finds a route that only moved, since routes are tried in order', () => {
     const route = (id: string) => ({ id, source: 's', condition: null, pipeline: 'p' });
     const before = config({ routes: [route('r1'), route('r2'), route('r3')] });
@@ -180,7 +199,7 @@ describe('objectChanges', () => {
     ]);
     expect(changes.map((c) => [c.section, c.noun, c.status, c.label])).toEqual([
       ['manifest', 'worker group', 'added', 'North'],
-      ['routes', 'route', 'added', 'r'],
+      ['routes', 'route', 'added', 's → p'],
     ]);
     expect(changes[0].fields.map((f) => [f.key, f.after])).toEqual([
       ['name', 'North'],
@@ -260,7 +279,7 @@ describe('sample and test cards', () => {
       },
     ]);
     expect(changes.map((c) => [c.section, c.noun, c.status, c.label])).toEqual([
-      ['routes', 'route', 'added', 'r'],
+      ['routes', 'route', 'added', 's → p'],
       ['samples', 'sample', 'changed', 'Orders EU'],
     ]);
     const [, card] = changes;
@@ -450,6 +469,18 @@ describe('files that do not read', () => {
     expect(changes.map((c) => c.noun)).toEqual(['file']);
   });
 
+  it('finds a schema by the file the leader names it by', () => {
+    const changes = objectChanges([
+      {
+        scope: 'shared',
+        before: config({ schemas: [{ id: 'ECS 9', title: 'ECS', fields: [] }] }),
+        after: config({}),
+        unreadable: { before: new Map(), after: new Map([['schemas/ecs-9.json', 'bad']]) },
+      },
+    ]);
+    expect(changes.map((c) => c.noun)).toEqual(['file']);
+  });
+
   it('gives a group whose manifest broke only the file card', () => {
     const changes = objectChanges([
       {
@@ -505,9 +536,9 @@ describe('canonicalJson', () => {
 describe('testsCovering', () => {
   it('matches by the summary, falling back to the result', () => {
     const results: TestResult[] = [
-      { id: 't1', name: 't1', scope: 'net', pipeline: 'p' },
-      { id: 't2', name: 't2', scope: 'net' },
-      { id: 't3', name: 't3', scope: 'other', pipeline: 'p' },
+      { id: 't1', name: 't1', area: 'net', pipeline: 'p' },
+      { id: 't2', name: 't2', area: 'net' },
+      { id: 't3', name: 't3', area: 'other', pipeline: 'p' },
     ];
     const summaries = new Map<string, TestSummary>([
       [
@@ -515,7 +546,7 @@ describe('testsCovering', () => {
         {
           id: 't2',
           name: 't2',
-          scope: 'net',
+          area: 'net',
           sample: 's',
           rowsIn: 1,
           rowsOut: 1,
@@ -561,5 +592,29 @@ describe('a source deploying moves', () => {
 
   it('is not one that names the start it already had', () => {
     expect(moves(undefined, { type: 'earliest' })).toBeUndefined();
+  });
+});
+
+describe('undoTarget', () => {
+  const card = (section: ObjectChange['section'], id: string): ObjectChange => ({
+    scope: 'shared',
+    section,
+    noun: 'file',
+    id,
+    label: id,
+    status: 'changed',
+    fields: [],
+  });
+  it('puts back an object by its section and id', () => {
+    expect(undoTarget(card('routes', 'r1'))).toEqual({ section: 'routes', id: 'r1' });
+  });
+  it('puts back a sample, a test, a lookup file or a file that does not read by its path', () => {
+    expect(undoTarget(card('samples', 's'))).toEqual({ path: 'samples/s.json' });
+    expect(undoTarget(card('tests', 't'))).toEqual({ path: 'tests/t.json' });
+    expect(undoTarget(card('lookups', 'lookups/geo.csv'))).toEqual({ path: 'lookups/geo.csv' });
+    expect(undoTarget(card('unreadable', 'routes.json'))).toEqual({ path: 'routes.json' });
+  });
+  it("leaves a group's own card read only", () => {
+    expect(undoTarget(card('manifest', 'west'))).toBeNull();
   });
 });

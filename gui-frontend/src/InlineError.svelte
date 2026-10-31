@@ -9,19 +9,22 @@
   let {
     message = '',
     inline = false,
+    callout = false,
     children,
   }: {
     /** Nothing is drawn while it is empty. */
     message?: string;
     /** A `<span>` in a line of text, rather than a paragraph of its own. */
     inline?: boolean;
+    /** A bar of its own, drawn as a warning bar is (app.css, `.callout`), for an error that is the page's news. */
+    callout?: boolean;
     /** In place of `message`, for an error that holds more than text. */
     children?: Snippet;
   } = $props();
 </script>
 
 {#if children || message}
-  <svelte:element this={inline ? 'span' : 'p'} class="error" role="alert">
+  <svelte:element this={inline ? 'span' : 'p'} class="error" class:callout role="alert">
     {#if children}{@render children()}{:else}{message}{/if}
   </svelte:element>
 {/if}

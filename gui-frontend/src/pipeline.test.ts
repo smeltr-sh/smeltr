@@ -7,10 +7,13 @@ import {
   proposedTypeSpec,
   newStep,
   parseInputFor,
+  flatSteps,
   orderedStepErrors,
   parsePipelineDtoJson,
+  stepSummary,
   stepToDto,
   stepsFromDto,
+  stepsRun,
   truncateSteps,
   type Step,
   type FieldSpec,
@@ -33,6 +36,7 @@ function parser(overrides: Partial<Extract<Step, { type: 'parser' }>> = {}): Ste
     filter: '',
     disabled: false,
     input: '_raw',
+    into: '$',
     kind: { type: 'json' },
     declared: [],
     ...overrides,
@@ -106,6 +110,26 @@ describe('truncateSteps', () => {
       untouchedIf,
       ifStep('second', 'b', [], []),
     ]);
+  });
+});
+
+describe('flatSteps', () => {
+  it('lists an if before its branches, then before else', () => {
+    const [a, t, e, z] = [ev('a'), ev('t'), ev('e'), ev('z')];
+    const branch = ifStep('check', 'cond', [t], [e]);
+    expect(flatSteps([a, branch, z])).toEqual([a, branch, t, e, z]);
+  });
+});
+
+describe('stepsRun', () => {
+  it('holds the steps truncateSteps keeps, as the caller holds them', () => {
+    const [a, t, e, z] = [ev('a'), ev('t'), ev('e'), ev('z')];
+    const branch = ifStep('check', 'cond', [t], [e]);
+    const steps = [a, branch, z];
+    expect(stepsRun(steps, e, true)).toEqual(new Set([a, branch, e]));
+    expect(stepsRun(steps, t, false)).toEqual(new Set([a, branch]));
+    expect(stepsRun(steps, branch, true)).toEqual(new Set([a, branch, t, e]));
+    expect(stepsRun(steps, ev('gone'), true)).toBeNull();
   });
 });
 
@@ -324,6 +348,25 @@ describe('parser', () => {
     expect(omitted.type === 'parser' && omitted.declared).toEqual([]);
   });
 
+  it('carries rebuild on a csv or key-value step, and leaves it out when off', () => {
+    for (const kind of [
+      { type: 'csv', delimiter: ',', rebuild: true },
+      { type: 'keyValue', pairSep: ' ', kvSep: '=', quote: '"', rebuild: true },
+    ] as const) {
+      const step = parser({
+        kind: { ...kind },
+        declared: [{ name: 'unwanted', ty: { kind: 'skip' } }],
+      });
+      const dto = stepToDto(step) as { kind: { rebuild?: boolean } };
+      expect(dto.kind.rebuild).toBe(true);
+      const back = roundTrip(step);
+      expect(back.type === 'parser' && back.kind).toEqual(kind);
+
+      const off = parser({ kind: { ...kind, rebuild: false }, declared: [] });
+      expect((stepToDto(off) as { kind: object }).kind).not.toHaveProperty('rebuild');
+    }
+  });
+
   it("carries a csv step's columns as its declared list, a skip column included", () => {
     const step = parser({
       kind: { type: 'csv', delimiter: ',' },
@@ -442,6 +485,7 @@ describe('array-of-objects declared types', () => {
           type: 'parser',
           id: 'p1',
           input: '_raw',
+          into: '$',
           kind: { type: 'json' },
           declared: [{ name: 'sites', type: nested }],
         },
@@ -479,6 +523,7 @@ function pipelineDeclaring(type: unknown): string {
         type: 'parser',
         id: 'p1',
         input: '_raw',
+        into: '$',
         kind: { type: 'json' },
         declared: [{ name: 'sites', type }],
       },
@@ -712,5 +757,24 @@ describe('STEP_SUMMARIES', () => {
   it("says what the website's step reference says", () => {
     const website = Object.fromEntries(stepReference.steps.kinds.map((k) => [k.type, k.summary]));
     expect(STEP_SUMMARIES).toEqual(website);
+  });
+});
+
+describe('a parser writes into the object it names', () => {
+  it('sends its object, `$` where it writes into the record', () => {
+    expect(stepToDto(parser({ into: 'app' }))).toMatchObject({ into: 'app' });
+    expect(stepToDto(parser())).toMatchObject({ into: '$' });
+    expect(stepToDto(parser({ into: ' app ' }))).toMatchObject({ into: 'app' });
+    expect(stepsFromDto([stepToDto(parser({ into: 'app' }))])).toEqual([parser({ into: 'app' })]);
+    expect(stepsFromDto([stepToDto(parser())])).toEqual([parser()]);
+    const { into: _, ...before } = stepToDto(parser()) as Record<string, unknown>;
+    expect(stepsFromDto([before])).toEqual([parser()]);
+  });
+
+  it('names its object in its summary, and not the record', () => {
+    expect(stepSummary(parser({ into: 'app' }))).toBe('_raw as JSON into app');
+    expect(stepSummary(parser({ into: '$' }))).toBe('_raw as JSON');
+    expect(stepSummary(parser({ into: '' }))).toBe('_raw as JSON');
+    expect(stepSummary(parser())).toBe('_raw as JSON');
   });
 });

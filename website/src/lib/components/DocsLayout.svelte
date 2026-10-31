@@ -60,6 +60,7 @@
       links: [
         { href: '/docs/operations', title: 'Operate the fleet' },
         { href: '/docs/upgrade', title: 'Upgrade' },
+        { href: '/docs/release-extras', title: 'Release extras' },
         { href: '/docs/logs-metrics', title: 'Logs & metrics' },
         { href: '/docs/delivery', title: 'Delivery' },
         { href: '/docs/backup-recovery', title: 'Backup & recovery' },
@@ -79,6 +80,7 @@
           ],
         },
         { href: '/docs/capture-sample', title: 'Capture a sample' },
+        { href: '/docs/schemas', title: 'Schemas' },
         {
           title: 'Routing',
           links: [
@@ -184,6 +186,9 @@
         )
           active = id;
       }
+      // A last section too short to scroll its heading that far up is the one in view once the page ends.
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 1)
+        active = sections.at(-1)?.id ?? active;
     }
     function schedule() {
       if (!frame) frame = requestAnimationFrame(update);

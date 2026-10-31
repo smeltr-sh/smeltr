@@ -7,10 +7,11 @@
   import KafkaSecurity from './KafkaSecurity.svelte';
   import { brokersWarning, SECTION_PROPS } from './kafka';
   import SecretRefInput from './SecretRefInput.svelte';
-  import ObjectStoreAccess, { accessModified } from './ObjectStoreAccess.svelte';
+  import ConnectorAccess, { accessModified } from './ConnectorAccess.svelte';
   import Advanced from './Advanced.svelte';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import UrlField from './UrlField.svelte';
   import KafkaPropsEditor from './KafkaPropsEditor.svelte';
   import PropsEditor from './PropsEditor.svelte';
@@ -23,10 +24,11 @@
     headerValueRefusal,
     setBatched,
     setSingle,
-    identityRefusal,
+    tlsRefusal,
+    tlsSet,
     type HttpBatched,
   } from './http';
-  import IdentityPicker from './IdentityPicker.svelte';
+  import TlsFields from './TlsFields.svelte';
   import IcebergFields from './IcebergFields.svelte';
   import DeltaFields from './DeltaFields.svelte';
   import SchemaRegistryFields from './SchemaRegistryFields.svelte';
@@ -34,20 +36,22 @@
     LIMITS,
     OBJECT_PREFIX,
     type DestinationDto,
-    type IdentityDto,
     type SecretDto,
     type DocIdPolicy,
     type Compression,
     type SchemaRegistry,
     type HttpCompression,
+    type Acks,
+    type KafkaFacts,
     COMPRESSIONS,
+    ACKS,
     STORAGE_CLASSES,
     SFTP_MIN_STALL_AFTER,
+    BUFFER_HELP,
   } from './api';
   import { numberOrUnset } from './page';
   import BytesInput from './BytesInput.svelte';
-  import LinkEstimate from './LinkEstimate.svelte';
-  import { byteCount, exactBytes, type ByteCount } from './bytes';
+  import { byteCount, exactBytes } from './bytes';
   import {
     httpModified,
     isCloud,
@@ -60,22 +64,15 @@
 
   let {
     destination,
-    identities,
     secrets,
-    mechanisms,
+    kafka,
   }: {
     destination: DestinationDto;
-    /** Every identity the destination may name. */
-    identities: IdentityDto[];
     /** The secret catalog, so a credential can be pointed at one the leader holds. */
     secrets: SecretDto[];
-    /** The SASL mechanisms this leader's build can select. */
-    mechanisms: string[];
+    /** What this leader's build can do with a Kafka client. */
+    kafka: KafkaFacts;
   } = $props();
-
-  /** The buffer a Kafka card is showing, default filled in: what the derived block splits. */
-  const kafkaBuffer = (d: { bufferBytes?: ByteCount }) =>
-    byteCount(d.bufferBytes, LIMITS.bufferBytes.default);
 
   /** Properties set by hand: the security section's own are its business,
    * and Advanced's marker speaks only for what Advanced hides. */
@@ -94,6 +91,7 @@
     return (
       hasProps(d) ||
       (d.compression ?? 'none') !== 'none' ||
+      (d.acks ?? 'all') !== 'all' ||
       (d.stallAfterSecs ?? LIMITS.stallAfterSecs.default) !== LIMITS.stallAfterSecs.default ||
       byteCount(d.bufferBytes, LIMITS.bufferBytes.default) !== LIMITS.bufferBytes.default
     );
@@ -141,19 +139,12 @@
   /** A Kafka or Event Hubs destination's: Avro registers its schema in a schema registry. */
   const AVRO_STREAM_FORMATS = [...STREAM_FORMATS, 'avro'] as const;
   const OBJECT_FORMATS = ['ndjson', 'json', 'parquet', 'avro', 'csv', 'text', 'bytes'] as const;
-  /** A format's option, where its name alone does not say what each record becomes. */
-  const STREAM_LABELS = { avro: 'avro — one Avro message per record' };
-  const OBJECT_LABELS = { avro: 'avro — one Avro file' };
 
   /** An empty text box unsets the field rather than naming `""`. */
   function optional(value: string): string | undefined {
     return value.trim() === '' ? undefined : value;
   }
 </script>
-
-{#snippet inOrder()}
-  A Prometheus destination sends one request at a time, so each series lands in order.
-{/snippet}
 
 {#snippet zoneHelp()}
   A worker in one of these zones sends here instead of to <code>url</code>. Any other worker sends
@@ -163,37 +154,25 @@
 {#snippet fields(destination: DestinationDto)}
   {#if destination.type === 'kafka'}
     <Field
+      required
       field="brokers"
       label="brokers"
       warning={brokersWarning(destination.brokers, destination) ?? null}
     >
       <input type="text" bind:value={destination.brokers} placeholder="host:9092,host2:9092" />
     </Field>
-    <Field field="defaultTopic" label="default topic">
+    <Field required field="defaultTopic" label="default topic">
       <input type="text" bind:value={destination.defaultTopic} />
     </Field>
-    {@render formatFields(
-      destination,
-      AVRO_STREAM_FORMATS,
-      'json',
-      streamFormatHelp,
-      STREAM_LABELS,
-    )}
-    <IdentityPicker
-      value={destination.identity}
-      {identities}
-      farEnd="destination"
-      onchange={(v) => {
-        if (destination.type === 'kafka') destination.identity = v;
-      }}
-    />
+    {@render formatFields(destination, AVRO_STREAM_FORMATS, 'json', streamFormatHelp)}
+    <TlsFields value={destination} farEnd="destination" />
     <div class="section">
       <div class="section-head">security</div>
       <KafkaSecurity
         value={destination}
         {secrets}
-        {mechanisms}
-        hasIdentity={destination.identity !== undefined}
+        mechanisms={kafka.mechanisms}
+        hasTls={tlsSet(destination)}
       />
     </div>
     <Advanced label="Delivery and client properties" modified={kafkaModified(destination)}>
@@ -202,7 +181,6 @@
           Compresses each batch sent to the brokers, saving broker bandwidth for some CPU on the
           worker.
         {/snippet}
-        {#snippet note()}Off by default.{/snippet}
         <select
           value={destination.compression ?? 'none'}
           onchange={(e) => {
@@ -215,11 +193,30 @@
           {/each}
         </select>
       </Field>
-      <Field field="stallAfterSecs" label="stall after (seconds)">
+      <Field optional field="acks" label="acks">
+        {#snippet help()}
+          How many replicas must hold a batch before it counts as delivered. Choose all unless you
+          accept losing records: with none or one, a broker that fails can lose records Smeltr
+          already counted as delivered.
+        {/snippet}
+        <select
+          value={destination.acks ?? 'all'}
+          onchange={(e) => {
+            if (destination.type !== 'kafka') return;
+            const v = e.currentTarget.value as Acks;
+            if (v === 'all') delete destination.acks;
+            else destination.acks = v;
+          }}
+        >
+          {#each ACKS as acks (acks)}
+            <option value={acks}>{acks}</option>
+          {/each}
+        </select>
+      </Field>
+      <Field optional field="stallAfterSecs" label="stall after (seconds)">
         {#snippet help()}
           How long one batch may take to deliver before this destination counts as stalled.
         {/snippet}
-        {#snippet note()}Default {LIMITS.stallAfterSecs.default}.{/snippet}
         <input
           type="number"
           min={LIMITS.stallAfterSecs.min}
@@ -231,42 +228,36 @@
           }}
         />
       </Field>
-      <Field field="bufferBytes" label="buffer">
+      <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
-          The most one worker holds for this destination, accepted but not yet acknowledged by the
-          brokers. Over a slow link it caps throughput.
+          {BUFFER_HELP}
         {/snippet}
-        {#snippet note()}<LinkEstimate bufferBytes={kafkaBuffer(destination)} /> Default
-          {exactBytes(LIMITS.bufferBytes.default)}.{/snippet}
         <BytesInput
           value={destination.bufferBytes}
           fallback={LIMITS.bufferBytes.default}
+          auto
           onchange={(n) => {
             if (destination.type === 'kafka') destination.bufferBytes = n;
           }}
         />
       </Field>
-      <KafkaPropsEditor
-        value={destination}
-        {secrets}
-        hasIdentity={destination.identity !== undefined}
-      />
+      <KafkaPropsEditor value={destination} {secrets} {kafka} hasTls={tlsSet(destination)} />
     </Advanced>
   {:else if destination.type === 'eventHubs'}
-    <Field field="namespace" label="namespace">
+    <Field required field="namespace" label="namespace">
       {#snippet help()}
         The Event Hubs namespace: its name in Azure's public cloud, or its host name in another
         cloud.
       {/snippet}
       <input type="text" bind:value={destination.namespace} placeholder="namespace" />
     </Field>
-    <Field field="defaultEventHub" label="default event hub">
+    <Field required field="defaultEventHub" label="default event hub">
       {#snippet help()}
         The event hub a record goes to unless its pipeline sets <code>__destination.topic</code>.
       {/snippet}
       <input type="text" bind:value={destination.defaultEventHub} />
     </Field>
-    <ObjectStoreAccess
+    <ConnectorAccess
       store="eventHubs"
       value={destination}
       show="credential"
@@ -275,20 +266,13 @@
         connectionString: "Where the namespace's connection string lives, with the Send right.",
       }}
     />
-    {@render formatFields(
-      destination,
-      AVRO_STREAM_FORMATS,
-      'json',
-      streamFormatHelp,
-      STREAM_LABELS,
-    )}
+    {@render formatFields(destination, AVRO_STREAM_FORMATS, 'json', streamFormatHelp)}
     <Advanced label="Delivery" modified={eventHubsModified(destination)}>
-      <ObjectStoreAccess store="eventHubs" value={destination} show="advanced" />
+      <ConnectorAccess store="eventHubs" value={destination} show="advanced" />
       <Field field="compression" label="compression">
         {#snippet help()}
           Compresses each batch sent to Event Hubs, when the namespace takes gzip.
         {/snippet}
-        {#snippet note()}Off by default.{/snippet}
         <select
           value={destination.compression ?? 'none'}
           onchange={(e) => {
@@ -300,11 +284,10 @@
           <option value="gzip">gzip</option>
         </select>
       </Field>
-      <Field field="stallAfterSecs" label="stall after (seconds)">
+      <Field optional field="stallAfterSecs" label="stall after (seconds)">
         {#snippet help()}
           How long one batch may take to deliver before this destination counts as stalled.
         {/snippet}
-        {#snippet note()}Default {LIMITS.stallAfterSecs.default}.{/snippet}
         <input
           type="number"
           min={LIMITS.stallAfterSecs.min}
@@ -316,16 +299,14 @@
           }}
         />
       </Field>
-      <Field field="bufferBytes" label="buffer">
+      <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
-          The most one worker holds for this destination, accepted but not yet acknowledged by Event
-          Hubs. Over a slow link it caps throughput.
+          {BUFFER_HELP}
         {/snippet}
-        {#snippet note()}<LinkEstimate bufferBytes={kafkaBuffer(destination)} /> Default
-          {exactBytes(LIMITS.bufferBytes.default)}.{/snippet}
         <BytesInput
           value={destination.bufferBytes}
           fallback={LIMITS.bufferBytes.default}
+          auto
           onchange={(n) => {
             if (destination.type === 'eventHubs') destination.bufferBytes = n;
           }}
@@ -335,81 +316,56 @@
   {:else if destination.type === 'logAnalytics'}
     {@const l = destination}
     <UrlField
+      required
       field="endpoint"
       label="endpoint"
       bind:value={l.endpoint}
       sends
-      error={identityRefusal(l.endpoint, l.identity) ?? null}
+      error={tlsRefusal(l.endpoint, l) ?? null}
       placeholder={'https://{name}.{region}.ingest.monitor.azure.com'}
     >
       {#snippet help()}
         The rule's logs ingestion endpoint, or the data collection endpoint linked to it.
       {/snippet}
     </UrlField>
-    <Field field="ruleId" label="rule id">
+    <Field required field="ruleId" label="rule id">
       {#snippet help()}
         The rule's immutable id, from its JSON view in the Azure portal.
       {/snippet}
       <input type="text" bind:value={l.ruleId} placeholder="dcr-0123456789abcdef0123456789abcdef" />
     </Field>
-    <Field field="stream" label="stream">
+    <Field required field="stream" label="stream">
       {#snippet help()}
         The rule's stream the rows go to, such as <code>Custom-Events_CL</code>.
       {/snippet}
       <input type="text" bind:value={l.stream} placeholder="Custom-Events_CL" />
     </Field>
-    <ObjectStoreAccess store="logAnalytics" value={l} show="credential" {secrets} />
+    <ConnectorAccess store="logAnalytics" value={l} show="credential" {secrets} />
     <Advanced label="Advanced" modified={logAnalyticsModified(l)}>
-      <IdentityPicker
-        value={l.identity}
-        {identities}
-        farEnd="destination"
-        onchange={(v) => (l.identity = v)}
-      />
-      <ObjectStoreAccess store="logAnalytics" value={l} show="advanced" />
+      <TlsFields value={l} farEnd="destination" />
+      <ConnectorAccess store="logAnalytics" value={l} show="advanced" />
       <RequestDelivery value={l} sizeDefault={LIMITS.logAnalyticsRequestBytes.default}>
         {#snippet sizeHelp()}
-          A request is sent as soon as it reaches this size. Keep it under the largest body the
-          service accepts, or it refuses the request.
-        {/snippet}
-        {#snippet sizeNote()}Default and at most {exactBytes(
+          A request is sent as soon as it reaches this size. The service refuses a request over {exactBytes(
             LIMITS.logAnalyticsRequestBytes.default,
-          )}.{/snippet}
+          )}.
+        {/snippet}
       </RequestDelivery>
     </Advanced>
   {:else if destination.type === 'elasticsearch'}
     <UrlField
+      required
       field="url"
       label="url"
       bind:value={destination.url}
       sends={sendsCredential(destination)}
       placeholder="https://es.internal:9200"
     />
-    <Field field="defaultIndex" label="default index">
+    <Field required field="defaultIndex" label="default index">
       <input type="text" bind:value={destination.defaultIndex} />
     </Field>
-    <IdentityPicker
-      value={destination.identity}
-      {identities}
-      farEnd="destination"
-      onchange={(v) => {
-        if (destination.type === 'elasticsearch') destination.identity = v;
-      }}
-    />
-    <Field field="auth" label="auth">
-      {#snippet help()}
-        The secret holding the whole Authorization header value, <code>ApiKey &lt;base64&gt;</code>
-        or <code>Basic &lt;base64&gt;</code>.
-      {/snippet}
-      <SecretRefInput
-        value={destination.auth}
-        {secrets}
-        label="auth"
-        onchange={(v) => {
-          if (destination.type === 'elasticsearch') destination.auth = v;
-        }}
-      />
-    </Field>
+    <TlsFields value={destination} farEnd="destination" />
+    <ConnectorAccess store="elasticsearch" value={destination} show="credential" {secrets} />
     <Field field="docId" label="duplicate documents">
       {#snippet help()}
         After a crash a document can be sent twice. Under <code>auto</code> that is a second copy;
@@ -429,21 +385,23 @@
       </select>
     </Field>
     {#if (destination.docId ?? 'auto') !== 'auto'}
-      <Field field="idField" label="id field">
-        {#snippet help()}
-          The row field that already holds each document's stable id. Leave it empty and the
-          pipeline must set <code>__destination.id</code>.
-        {/snippet}
-        <input
-          type="text"
-          value={destination.idField ?? ''}
-          oninput={(e) => {
-            if (destination.type === 'elasticsearch')
-              destination.idField = optional(e.currentTarget.value);
-          }}
-          placeholder="event.id"
-        />
-      </Field>
+      <Nested>
+        <Field optional field="idField" label="id field">
+          {#snippet help()}
+            The row field that already holds each document's stable id. Leave it empty and the
+            pipeline must set <code>__destination.id</code>.
+          {/snippet}
+          <input
+            type="text"
+            value={destination.idField ?? ''}
+            oninput={(e) => {
+              if (destination.type === 'elasticsearch')
+                destination.idField = optional(e.currentTarget.value);
+            }}
+            placeholder="event.id"
+          />
+        </Field>
+      </Nested>
     {/if}
     <Advanced label="Advanced" modified={elasticModified(destination)}>
       <RequestDelivery
@@ -455,14 +413,14 @@
       >
         {#snippet sizeHelp()}
           A bulk request is sent as soon as it reaches this size. Keep it under the largest request
-          the cluster takes.
-        {/snippet}
-        {#snippet sizeNote()}<a
+          the cluster takes:
+          <a
             class="link"
             href="https://www.elastic.co/guide/en/elasticsearch/reference/current/modules-network.html#http-settings"
             target="_blank"
             rel="noreferrer">Elastic's HTTP settings</a
-          >{/snippet}
+          >.
+        {/snippet}
       </RequestDelivery>
       <ZoneUrls
         value={destination}
@@ -470,7 +428,7 @@
         placeholder="https://es-a.internal:9200"
         help={zoneHelp}
       />
-      <Field field="sniff" label="sniff nodes" note="Default off.">
+      <Field field="sniff" label="sniff nodes">
         {#snippet help()}
           Learns the cluster's nodes from <code>url</code> and spreads requests across them,
           preferring this worker's zone. Every node must be reachable from the workers, and the
@@ -492,9 +450,9 @@
         />
       </Field>
       {#if destination.sniff}
-        <Field field="zoneAttribute" label="zone attribute" note="Default zone.">
+        <Field optional field="zoneAttribute" label="zone attribute">
           {#snippet help()}
-            Optional: The node attribute that names a node's zone, set on each node as
+            The node attribute that names a node's zone, set on each node as
             <code>node.attr.&lt;name&gt;</code>.
           {/snippet}
           <input
@@ -511,6 +469,7 @@
     </Advanced>
   {:else if destination.type === 'splunkHec'}
     <UrlField
+      required
       field="url"
       label="url"
       bind:value={destination.url}
@@ -521,7 +480,7 @@
         The collector's base address, without <code>/services/collector</code>.
       {/snippet}
     </UrlField>
-    <Field field="token" label="token">
+    <Field required field="token" label="token">
       {#snippet help()}
         The secret holding the HEC token.
       {/snippet}
@@ -572,6 +531,7 @@
         {/if}
       {/snippet}
       <Field
+        optional
         field={key}
         label={key}
         help={(destination.endpoint ?? 'event') === 'event' ? keyHelp : undefined}
@@ -605,14 +565,7 @@
         <option value="receipt">received &mdash; may lose events</option>
       </select>
     </Field>
-    <IdentityPicker
-      value={destination.identity}
-      {identities}
-      farEnd="destination"
-      onchange={(v) => {
-        if (destination.type === 'splunkHec') destination.identity = v;
-      }}
-    />
+    <TlsFields value={destination} farEnd="destination" />
     <Advanced label="Advanced" modified={splunkModified(destination)}>
       <RequestDelivery
         value={destination}
@@ -621,14 +574,14 @@
       >
         {#snippet sizeHelp()}
           A request is sent as soon as it reaches this size. Keep it under the largest request the
-          collector takes.
-        {/snippet}
-        {#snippet sizeNote()}<a
+          collector takes:
+          <a
             class="link"
             href="https://docs.splunk.com/Documentation/Splunk/latest/Data/UsetheHTTPEventCollector"
             target="_blank"
             rel="noreferrer">Splunk's HTTP Event Collector</a
-          >{/snippet}
+          >.
+        {/snippet}
       </RequestDelivery>
       <ZoneUrls
         value={destination}
@@ -640,11 +593,12 @@
   {:else if destination.type === 'http' || destination.type === 'prometheus'}
     {@const h = destination}
     <UrlField
+      required
       field="url"
       label="url"
       bind:value={h.url}
       sends={sendsCredential(h)}
-      error={identityRefusal(h.url, h.identity) ?? null}
+      error={tlsRefusal(h.url, h) ?? null}
       placeholder={h.type === 'prometheus'
         ? 'https://prometheus.internal/api/v1/write'
         : 'https://collector.internal/ingest'}
@@ -700,15 +654,16 @@
         </Field>
         {#if h.format === 'text' || h.format === 'bytes'}
           {@const fieldDefault = h.format === 'text' ? '_raw' : '__source.bytes'}
-          <Field field="field" label={`${h.format} field`}>
-            {#snippet note()}Default <code>{fieldDefault}</code>.{/snippet}
-            <input
-              type="text"
-              value={h.field ?? ''}
-              oninput={(e) => (h.field = optional(e.currentTarget.value))}
-              placeholder={fieldDefault}
-            />
-          </Field>
+          <Nested>
+            <Field optional field="field" label={`${h.format} field`}>
+              <input
+                type="text"
+                value={h.field ?? ''}
+                oninput={(e) => (h.field = optional(e.currentTarget.value))}
+                placeholder={fieldDefault}
+              />
+            </Field>
+          </Nested>
         {/if}
       {/if}
     {/if}
@@ -736,19 +691,13 @@
       {/snippet}
     </PropsEditor>
     <Advanced label="Advanced" modified={httpModified(h)}>
-      <IdentityPicker
-        value={h.identity}
-        {identities}
-        farEnd="destination"
-        onchange={(v) => (h.identity = v)}
-      />
+      <TlsFields value={h} farEnd="destination" />
       {#if h.type === 'http'}
         <Field field="compression" label="compression">
           {#snippet help()}
             Each request body is sent gzipped, with <code>Content-Encoding: gzip</code>; the service
             must accept it.
           {/snippet}
-          {#snippet note()}Off by default.{/snippet}
           <select
             value={h.compression ?? 'none'}
             onchange={(e) => {
@@ -764,15 +713,13 @@
       {/if}
       <RequestDelivery
         value={h}
-        sizeDefault={LIMITS.maxRequestBytes.default}
+        sizeDefault={(h.type === 'http' ? LIMITS.httpRequestBytes : LIMITS.maxRequestBytes).default}
         concurrent={h.type === 'http'}
-        bufferHelp={h.type === 'prometheus' ? inOrder : undefined}
       >
         {#snippet sizeHelp()}
           A request is sent as soon as it reaches this size. Keep it under the largest body the
           service accepts, or it refuses the request.
         {/snippet}
-        {#snippet sizeNote()}Default {exactBytes(LIMITS.maxRequestBytes.default)}.{/snippet}
       </RequestDelivery>
       {#if h.type === 'http'}
         <ZoneUrls
@@ -784,21 +731,21 @@
       {/if}
     </Advanced>
   {:else if destination.type === 'iceberg'}
-    <IcebergFields value={destination} {secrets} {identities} />
+    <IcebergFields value={destination} {secrets} />
   {:else if destination.type === 'delta'}
-    <DeltaFields value={destination} {secrets} {identities} />
+    <DeltaFields value={destination} {secrets} />
   {:else if isObjectStore(destination)}
     {@const o = destination}
     {#if o.type === 'azureBlob'}
-      <Field field="account" label="account">
+      <Field required field="account" label="account">
         <input type="text" bind:value={o.account} />
       </Field>
-      <Field field="container" label="container">
+      <Field required field="container" label="container">
         <input type="text" bind:value={o.container} />
       </Field>
     {:else if o.type === 'sftp'}
-      <ObjectStoreAccess store={o.type} value={o} show="credential" {secrets} />
-      <Field field="directory" label="directory">
+      <ConnectorAccess store={o.type} value={o} show="credential" {secrets} />
+      <Field optional field="directory" label="directory">
         {#snippet help()}
           The directory it writes into: absolute, or under the user's home directory. Empty is the
           home directory. It must exist; the folders a prefix names under it are made as needed.
@@ -813,20 +760,19 @@
         />
       </Field>
     {:else}
-      <Field field="bucket" label="bucket">
+      <Field required field="bucket" label="bucket">
         <input type="text" bind:value={o.bucket} />
       </Field>
     {/if}
     {#if o.type !== 'sftp'}
-      <ObjectStoreAccess store={o.type} value={o} show="credential" {secrets} />
+      <ConnectorAccess store={o.type} value={o} show="credential" {secrets} />
     {/if}
-    <Field field="prefix" label="prefix">
+    <Field optional field="prefix" label="prefix">
       {#snippet help()}
         What every {o.type === 'sftp' ? 'file path' : 'object key'} starts with.
         <code>%Y %m %d %H %M</code>
         are the write time, UTC. A row's <code>__destination.prefix</code> picks its own.
       {/snippet}
-      {#snippet note()}Default <code>{OBJECT_PREFIX}</code>.{/snippet}
       <input
         type="text"
         value={prefixOf(o)}
@@ -837,46 +783,41 @@
         }}
       />
     </Field>
-    {@render formatFields(o, OBJECT_FORMATS, 'ndjson', objectFormatHelp, OBJECT_LABELS)}
+    {@render formatFields(o, OBJECT_FORMATS, 'ndjson', objectFormatHelp)}
     {#if o.format === 'bytes'}
-      <Field field="newlines" label="newlines">
-        {#snippet help()}
-          <code>escape</code>: <code>\</code>, newline and carriage return are written
-          <code>\\</code>, <code>\n</code> and <code>\r</code>, which an SQS/S3 source with framing
-          <code>escapedLines</code> reverses. <code>refuse</code>: a row holding a line break is
-          refused.
-        {/snippet}
-        {#snippet note()}Default <code>escape</code>.{/snippet}
-        <select
-          value={o.newlines ?? 'escape'}
-          onchange={(e) => {
-            const v = e.currentTarget.value;
-            if (v === 'refuse') o.newlines = v;
-            else delete o.newlines;
-          }}
-        >
-          <option value="escape">escape</option>
-          <option value="refuse">refuse</option>
-        </select>
-      </Field>
+      <Nested>
+        <Field field="newlines" label="newlines">
+          {#snippet help()}
+            <code>escape</code>: <code>\</code>, newline and carriage return are written
+            <code>\\</code>, <code>\n</code> and <code>\r</code>, which an SQS/S3 source with
+            framing
+            <code>escapedLines</code> reverses. <code>refuse</code>: a row holding a line break is
+            refused.
+          {/snippet}
+          <select
+            value={o.newlines ?? 'escape'}
+            onchange={(e) => {
+              const v = e.currentTarget.value;
+              if (v === 'refuse') o.newlines = v;
+              else delete o.newlines;
+            }}
+          >
+            <option value="escape">escape</option>
+            <option value="refuse">refuse</option>
+          </select>
+        </Field>
+      </Nested>
     {/if}
     {#if isCloud(o)}
-      <IdentityPicker
-        value={o.identity}
-        {identities}
-        farEnd="destination"
-        onchange={(v) => {
-          if (isCloud(o)) o.identity = v;
-        }}
-      />
+      <TlsFields value={o} farEnd="destination" />
     {/if}
     <Advanced
       label={o.type === 'sftp' ? 'Delivery' : 'Endpoint and delivery'}
       modified={objectModified(o)}
     >
-      <ObjectStoreAccess store={o.type} value={o} show="advanced" />
+      <ConnectorAccess store={o.type} value={o} show="advanced" />
       {#if o.type === 's3'}
-        <Field field="kmsKeyId" label="KMS key id">
+        <Field optional field="kmsKeyId" label="KMS key id">
           {#snippet help()}
             The KMS key each object is encrypted under. Left empty, the bucket's default encryption.
           {/snippet}
@@ -893,7 +834,6 @@
           How each object is compressed; the key's extension says which. Parquet and Avro compress
           inside the file.
         {/snippet}
-        {#snippet note()}Default gzip.{/snippet}
         <select
           value={o.compression ?? 'gzip'}
           onchange={(e) => {
@@ -928,11 +868,10 @@
           </select>
         </Field>
       {/if}
-      <Field field="inFlight" label="parts uploading at once">
+      <Field optional field="inFlight" label="parts uploading at once">
         {#snippet help()}
           How many parts of one file upload at once.
         {/snippet}
-        {#snippet note()}Default {LIMITS.inFlight.default}.{/snippet}
         <input
           type="number"
           min={LIMITS.inFlight.min}
@@ -941,38 +880,34 @@
           oninput={(e) => (o.inFlight = numberOrUnset(e.currentTarget))}
         />
       </Field>
-      <Field field="maxObjectBytes" label="largest file">
+      <Field optional field="maxObjectBytes" label="largest file">
         {#snippet help()}
           The largest file this destination puts in the bucket, compressed. Set it to what the tools
           that read the bucket handle best.
         {/snippet}
-        {#snippet note()}Default {exactBytes(LIMITS.maxObjectBytes.default)}.{/snippet}
         <BytesInput
           value={o.maxObjectBytes}
           fallback={LIMITS.maxObjectBytes.default}
           onchange={(n) => (o.maxObjectBytes = n)}
         />
       </Field>
-      <Field field="bufferBytes" label="memory">
+      <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
-          Memory this destination may use on each worker for records not yet in the bucket. Files
-          are finished early when it fills, so files reach the largest size only when it holds that
-          many records before compression.
+          {BUFFER_HELP}
         {/snippet}
-        {#snippet note()}Default {exactBytes(LIMITS.objectBufferBytes.default)}.{/snippet}
         <BytesInput
           value={o.bufferBytes}
           fallback={LIMITS.objectBufferBytes.default}
+          auto
           onchange={(n) => (o.bufferBytes = n)}
         />
       </Field>
-      <Field field="stallAfterSecs" label="stall after (seconds)">
+      <Field optional field="stallAfterSecs" label="stall after (seconds)">
         {#snippet help()}
           How long one store call, or one finishing of the files, may take before it counts as a
           stall. {#if o.type === 'sftp'}At least {SFTP_MIN_STALL_AFTER} on SFTP, so a sign-in finishes
             within it.{/if}
         {/snippet}
-        {#snippet note()}Default {LIMITS.stallAfterSecs.default}.{/snippet}
         <input
           type="number"
           min={o.type === 'sftp' ? SFTP_MIN_STALL_AFTER : LIMITS.stallAfterSecs.min}
@@ -981,21 +916,19 @@
           oninput={(e) => (o.stallAfterSecs = numberOrUnset(e.currentTarget))}
         />
       </Field>
-      <Field field="fileIntervalSecs" label="file interval (seconds)">
+      <Field
+        optional
+        field="fileIntervalSecs"
+        label="file interval (seconds)"
+        warning={(o.fileIntervalSecs ?? LIMITS.fileIntervalSecs.default) >
+        LIMITS.fileIntervalSecs.default
+          ? `Sources feeding this destination are held open for up to ${o.fileIntervalSecs} seconds.`
+          : null}
+      >
         {#snippet help()}
           The longest records wait before they land in the bucket. A longer wait makes larger files.
           Records are acknowledged only once they land, so every source feeding this destination is
           held open for up to this long, and after a crash reads up to this long of records again.
-        {/snippet}
-        {#snippet note()}
-          {@const interval = o.fileIntervalSecs ?? LIMITS.fileIntervalSecs.default}
-          {#if interval > LIMITS.fileIntervalSecs.default}
-            <span class="warn"
-              >Sources feeding this destination are held open for up to {interval} seconds.</span
-            >
-          {:else}
-            Default {LIMITS.fileIntervalSecs.default}.
-          {/if}
         {/snippet}
         <input
           type="number"
@@ -1014,7 +947,6 @@
   formats: readonly string[],
   fallback: string,
   help: Snippet<[readonly string[]]>,
-  labels: Record<string, string> = {},
 )}
   {#snippet formatHelp()}{@render help(formats)}{/snippet}
   <Field field="format" label="format" help={formatHelp}>
@@ -1034,23 +966,26 @@
         if (v === 'avro' && d.compression === 'lz4') delete d.compression;
       }}
     >
-      {#each formats as f (f)}<option value={f}>{labels[f] ?? f}</option>{/each}
+      {#each formats as f (f)}<option value={f}>{f}</option>{/each}
     </select>
   </Field>
   {#if d.format === 'avro' && d.schemaRegistry}
-    <SchemaRegistryFields registry={d.schemaRegistry} {secrets} />
+    <Nested>
+      <SchemaRegistryFields registry={d.schemaRegistry} {secrets} />
+    </Nested>
   {/if}
   {#if d.format === 'text' || d.format === 'bytes'}
     {@const fieldDefault = d.format === 'text' ? '_raw' : '__source.bytes'}
-    <Field field="field" label={`${d.format} field`}>
-      {#snippet note()}Default <code>{fieldDefault}</code>.{/snippet}
-      <input
-        type="text"
-        value={d.field ?? ''}
-        oninput={(e) => (d.field = optional(e.currentTarget.value))}
-        placeholder={fieldDefault}
-      />
-    </Field>
+    <Nested>
+      <Field optional field="field" label={`${d.format} field`}>
+        <input
+          type="text"
+          value={d.field ?? ''}
+          oninput={(e) => (d.field = optional(e.currentTarget.value))}
+          placeholder={fieldDefault}
+        />
+      </Field>
+    </Nested>
   {/if}
 {/snippet}
 
@@ -1089,10 +1024,6 @@
 {@render fields(destination)}
 
 <style>
-  .warn {
-    color: var(--warn);
-  }
-
   /* A group of fields that answer one question. */
   .section {
     border-top: 1px solid var(--border);

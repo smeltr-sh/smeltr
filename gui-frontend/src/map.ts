@@ -781,7 +781,7 @@ const UNSUPPORTED_FIELDS: Record<string, string> = {
 export type UnsupportedField = { field: string; note: string };
 
 /** Every callee a pipeline's `Call` steps name, mapped back to its direct callers
- * (`config_file::Links`, served by `/api/pipeline-callers`) -- a call is never drawn, so
+ * (`config_file::Links`, served by `/api/areas/:area/pipeline-callers`) -- a call is never drawn, so
  * `calls:` has nowhere else to read from. */
 export type CallersIndex = Record<string, string[]>;
 
@@ -817,7 +817,7 @@ function matchSupported(token: SearchToken, nodes: MapNode[], callers: CallersIn
         .map((n) => nodeKey(n.group, n.kind, n.authorId)),
     );
   }
-  // The last member of KNOWN_FIELDS. `callers` comes from `/api/pipeline-callers`, which
+  // The last member of KNOWN_FIELDS. `callers` comes from `/api/areas/:area/pipeline-callers`, which
   // answers for one editor scope rather than the whole fleet (`config_file::Links` reads a
   // single bundle) -- so a callee id here is not group-qualified, and a match is every pipeline
   // node of that author id in any group, not one group's alone.
@@ -953,7 +953,9 @@ export type KnownIds = {
   pipelines: { id: string; name: string }[];
   sources: string[];
   destinations: string[];
-  routes: string[];
+  /** A route is matched by its name (`routeName`), or by its id where a message names it so; its name is what the
+   * link says. */
+  routes: { id: string; name: string }[];
 };
 
 /** `config_file::bundle::load_lenient` names an unreadable pipeline file `pipelines/<id>.json`
@@ -975,9 +977,9 @@ function destinationLink(id: string): ProblemLink {
   return { label: `destination ${id}`, hash: `#/build/destinations/${encodeURIComponent(id)}` };
 }
 // A route has no editor of its own -- `RoutesPage` edits the whole list at once -- so every
-// route id links to the same place, the editor that fixes it.
-function routeLink(id: string): ProblemLink {
-  return { label: `route ${id}`, hash: '#/build/routes' };
+// route links to the same place, the editor that fixes it.
+function routeLink(name: string): ProblemLink {
+  return { label: `route ${name}`, hash: '#/build/routes' };
 }
 
 /** How `config_file::load` names a pipeline whose steps fail to compile: `pipeline "<name>"`,
@@ -1011,7 +1013,9 @@ export function linkForError(message: string, known: KnownIds): ProblemLink | nu
     ...known.pipelines.map((p) => ({ id: p.id, link: (id: string) => pipelineLink(id, p.name) })),
     ...known.sources.map((id) => ({ id, link: sourceLink })),
     ...known.destinations.map((id) => ({ id, link: destinationLink })),
-    ...known.routes.map((id) => ({ id, link: routeLink })),
+    ...known.routes.flatMap((r) =>
+      [r.name, r.id].map((id) => ({ id, link: () => routeLink(r.name) })),
+    ),
   ];
   const hit = candidates
     .filter((c) => c.id.length > 0 && message.includes(c.id))

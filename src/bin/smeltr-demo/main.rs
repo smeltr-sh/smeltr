@@ -3,10 +3,10 @@
 //! The demo runs the real GUI in a visitor's browser over a leader the page itself plays: it holds the visitor's
 //! bundle, samples and fleet. What only the engine can answer comes here -- a preview, a route preview, a save's
 //! validation, a grok pattern's captures, a line breaker's verdict, which records a capture filter keeps, a scope's
-//! tests and what they make of it, a branch's map, and what a captured sample reads as. Each request carries the
-//! bundle and the sample it is about, so nothing is stored and one visitor never sees another. Every answer comes from
-//! the functions the leader's own routes call (`smeltr::leader::preview`, `smeltr::leader::map`,
-//! `smeltr::leader::onboard`).
+//! tests and what they make of it, a branch's map, what a captured sample reads as, the schema catalog and what
+//! breaks a schema in a group. Each request carries the bundle and the sample it is about, so nothing is stored and
+//! one visitor never sees another. Every answer comes from the functions the leader's own routes call
+//! (`smeltr::leader::preview`, `smeltr::leader::map`, `smeltr::leader::onboard`, `smeltr::leader::schema_catalog`).
 //!
 //! It is public and unauthenticated, so it reads nothing a request names but the lookup tables under
 //! `SMELTR_DEMO_BUNDLE`'s `lookups/`, takes a bounded body, bounded samples and bounded routes, and runs as many
@@ -21,11 +21,13 @@ use axum::Router;
 use axum::extract::{DefaultBodyLimit, Json, State};
 use axum::routing::{get, post};
 use smeltr::config_file::{self, BundleAt, DeclaredAt, FileConfig, RawBundle, SampleDto, TestDto, TestSummary};
-use smeltr::leader::envelope::{ApiError, Empty, Envelope};
+use smeltr::leader::envelope::{ApiError, Empty, Envelope, Refusal};
 use smeltr::leader::preview::{
-    GrokCaptures, GrokCapturesRequest, LineBreakerRequest, Preview, PreviewRequest, RoutePreview, TestResult,
-    captures_of, line_breaker_verdict, run_preview, run_route_preview, run_test,
+    AfterDotRequest, CaptureFilterRequest, FormatRequest, Formatted, GrokCaptures, GrokCapturesRequest,
+    LineBreakerRequest, Preview, PreviewRequest, RoutePreview, TestResult, captures_of, format_code,
+    line_breaker_verdict, run_preview, run_route_preview, run_test,
 };
+use smeltr::leader::schema_catalog as catalog;
 use tokio::sync::Semaphore;
 
 /// `work`, holding `_core` until it ends.
@@ -49,16 +51,23 @@ const MAX_ROUTES: usize = 200;
 fn refuse_oversized<'a>(
     bundles: impl IntoIterator<Item = &'a FileConfig>,
     samples: impl IntoIterator<Item = &'a SampleDto>,
-) -> Result<(), String> {
+) -> Result<(), Refusal> {
+    let too_large = |message: String| Refusal::new(axum::http::StatusCode::PAYLOAD_TOO_LARGE, message);
     let routes: usize = bundles.into_iter().map(|b| b.routes.len()).sum();
     if routes > MAX_ROUTES {
-        return Err(format!(
+        return Err(too_large(format!(
             "the demo runs at most {MAX_ROUTES} routes and this request has {routes}"
-        ));
+        )));
     }
     samples
         .into_iter()
         .try_for_each(|s| config_file::refuse_sample_size(s.records.len()))
+        .map_err(too_large)
+}
+
+/// What [`Service::run`] answers when the run did not finish.
+fn unavailable<T: Default>(message: String) -> Envelope<T> {
+    Envelope::refused(Refusal::unavailable(message))
 }
 
 #[derive(Clone)]
@@ -163,39 +172,45 @@ struct PreviewBody {
     at_micros: Option<i64>,
     #[serde(default)]
     filter: Option<String>,
+    #[serde(default)]
+    attribution: bool,
+    after_dot: Option<AfterDotRequest>,
+    #[serde(default)]
+    capture_filter: Option<CaptureFilterRequest>,
 }
 
-async fn preview(State(service): State<Service>, Json(body): Json<PreviewBody>) -> Json<Envelope<Preview>> {
+async fn preview(State(service): State<Service>, Json(body): Json<PreviewBody>) -> Envelope<Preview> {
     let failed = |e: String| Preview::failed("load", vec![ApiError::new(e)], vec![]);
     if let Err(e) = refuse_oversized(body.bundle.files(), body.sample.iter()) {
-        return Json(failed(e));
+        return Envelope::refused(e);
     }
     let s = service.clone();
-    Json(
-        service
-            .run(failed, move || {
-                let (file, pipeline) = match body.bundle.previewed(body.pipeline) {
-                    Ok(previewed) => previewed,
-                    Err(e) => return failed(e),
-                };
-                let declared_at = s.declared_at(&file);
-                let config = match serde_json::to_string(&file) {
-                    Ok(config) => config,
-                    Err(e) => return failed(e.to_string()),
-                };
-                let (columns, records) = body.sample.map(|s| (s.columns, s.records)).unwrap_or_default();
-                let req = PreviewRequest {
-                    config,
-                    pipeline,
-                    sample: None,
-                    show_internal: body.show_internal,
-                    at_micros: body.at_micros,
-                    filter: body.filter,
-                };
-                run_preview(req, declared_at, &columns, records)
-            })
-            .await,
-    )
+    service
+        .run(unavailable, move || {
+            let (file, pipeline) = match body.bundle.previewed(body.pipeline) {
+                Ok(previewed) => previewed,
+                Err(e) => return failed(e),
+            };
+            let declared_at = s.declared_at(&file);
+            let config = match serde_json::to_string(&file) {
+                Ok(config) => config,
+                Err(e) => return Envelope::refused(Refusal::internal(e.to_string())),
+            };
+            let (columns, records) = body.sample.map(|s| (s.columns, s.records)).unwrap_or_default();
+            let req = PreviewRequest {
+                config,
+                pipeline,
+                sample: None,
+                show_internal: body.show_internal,
+                at_micros: body.at_micros,
+                filter: body.filter,
+                attribution: body.attribution,
+                after_dot: body.after_dot,
+                capture_filter: body.capture_filter,
+            };
+            run_preview(req, declared_at, &columns, records)
+        })
+        .await
 }
 
 #[derive(serde::Deserialize)]
@@ -208,66 +223,60 @@ struct RoutePreviewBody {
     at_micros: Option<i64>,
 }
 
-async fn route_preview(
-    State(service): State<Service>,
-    Json(body): Json<RoutePreviewBody>,
-) -> Json<Envelope<RoutePreview>> {
+async fn route_preview(State(service): State<Service>, Json(body): Json<RoutePreviewBody>) -> Envelope<RoutePreview> {
     if let Err(e) = refuse_oversized(body.bundle.files(), [&body.sample]) {
-        return Json(Envelope::failed_one(e));
+        return Envelope::refused(e);
     }
     let s = service.clone();
-    Json(
-        service
-            .run(Envelope::failed_one, move || {
-                let (file, _) = match body.bundle.merged() {
-                    Ok(merged) => merged,
-                    Err(e) => return Envelope::failed_one(e),
-                };
-                let declared_at = s.declared_at(&file);
-                match serde_json::to_string(&file) {
-                    Ok(config) => run_route_preview(&config, body.sample, declared_at, body.at_micros),
-                    Err(e) => Envelope::failed_one(e.to_string()),
-                }
-            })
-            .await,
-    )
+    service
+        .run(unavailable, move || {
+            let (file, _) = match body.bundle.merged() {
+                Ok(merged) => merged,
+                Err(e) => return Envelope::refused(Refusal::invalid(e)),
+            };
+            let declared_at = s.declared_at(&file);
+            match serde_json::to_string(&file) {
+                Ok(config) => run_route_preview(&config, body.sample, declared_at, body.at_micros),
+                Err(e) => Envelope::refused(Refusal::internal(e.to_string())),
+            }
+        })
+        .await
 }
 
 /// What a save of this bundle would refuse it for, each error where the editor puts it. `ok` when a save would take
 /// it.
-async fn validate(State(service): State<Service>, Json(bundle): Json<Bundle>) -> Json<Envelope> {
+async fn validate(State(service): State<Service>, Json(bundle): Json<Bundle>) -> Envelope {
     if let Err(e) = refuse_oversized(bundle.files(), []) {
-        return Json(Envelope::failed_one(e));
+        return Envelope::refused(e);
     }
     let s = service.clone();
-    Json(
-        service
-            .run(Envelope::failed_one, move || {
-                let (file, _) = match bundle.merged() {
-                    Ok(merged) => merged,
-                    Err(e) => return Envelope::failed_one(e),
-                };
-                let declared_at = s.declared_at(&file);
-                let errors = config_file::validation_errors_at(file, &declared_at);
-                Envelope::with(Empty, errors.iter().map(ApiError::from_validation).collect())
-            })
-            .await,
-    )
+    service
+        .run(unavailable, move || {
+            let (file, _) = match bundle.merged() {
+                Ok(merged) => merged,
+                Err(e) => return Envelope::refused(Refusal::invalid(e)),
+            };
+            let declared_at = s.declared_at(&file);
+            let errors = config_file::validation_errors_at(file, &declared_at);
+            let status = match errors.is_empty() {
+                true => axum::http::StatusCode::OK,
+                false => axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            };
+            Envelope::with(Empty, status, errors.iter().map(ApiError::from_validation).collect())
+        })
+        .await
 }
 
-async fn grok_captures(
-    State(service): State<Service>,
-    Json(req): Json<GrokCapturesRequest>,
-) -> Json<Envelope<GrokCaptures>> {
-    Json(service.run(Envelope::failed_one, move || captures_of(req)).await)
+async fn grok_captures(State(service): State<Service>, Json(req): Json<GrokCapturesRequest>) -> Envelope<GrokCaptures> {
+    service.run(unavailable, move || captures_of(req)).await
 }
 
-async fn line_breaker(State(service): State<Service>, Json(req): Json<LineBreakerRequest>) -> Json<Envelope> {
-    Json(
-        service
-            .run(Envelope::failed_one, move || line_breaker_verdict(req))
-            .await,
-    )
+async fn line_breaker(State(service): State<Service>, Json(req): Json<LineBreakerRequest>) -> Envelope {
+    service.run(unavailable, move || line_breaker_verdict(req)).await
+}
+
+async fn format(State(service): State<Service>, Json(req): Json<FormatRequest>) -> Envelope<Formatted> {
+    service.run(unavailable, move || format_code(req)).await
 }
 
 #[derive(serde::Deserialize)]
@@ -294,44 +303,42 @@ struct Tests {
 
 /// A scope's tests as the leader lists them, and what each named in `run` makes of the bundle, as the leader runs
 /// them (`smeltr::leader::preview::run_test`).
-async fn tests(State(service): State<Service>, Json(body): Json<TestsBody>) -> Json<Envelope<Tests>> {
+async fn tests(State(service): State<Service>, Json(body): Json<TestsBody>) -> Envelope<Tests> {
     if let Err(e) = refuse_oversized(body.bundle.files(), &body.samples) {
-        return Json(Envelope::failed_one(e));
+        return Envelope::refused(e);
     }
     let s = service.clone();
-    Json(
-        service
-            .run(Envelope::failed_one, move || {
-                let scope = body
-                    .bundle
-                    .group_id
-                    .clone()
-                    .unwrap_or_else(|| config_file::SHARED_DIR.to_string());
-                let (file, _) = match body.bundle.merged() {
-                    Ok(merged) => merged,
-                    Err(e) => return Envelope::failed_one(e),
-                };
-                let declared_at = s.declared_at(&file);
-                let config = match serde_json::to_string(&file) {
-                    Ok(config) => config,
-                    Err(e) => return Envelope::failed_one(e.to_string()),
-                };
-                let results = body
-                    .run
-                    .iter()
-                    .filter_map(|id| body.tests.iter().find(|t| &t.id == id))
-                    .map(|test| {
-                        let sample = body.samples.iter().find(|s| s.id == test.sample).cloned();
-                        run_test(test, &scope, &config, Ok(sample), &declared_at)
-                    })
-                    .collect();
-                Envelope::ok(Tests {
-                    tests: body.tests.iter().map(TestDto::summary).collect(),
-                    results,
+    service
+        .run(unavailable, move || {
+            let scope = body
+                .bundle
+                .group_id
+                .clone()
+                .unwrap_or_else(|| config_file::SHARED_DIR.to_string());
+            let (file, _) = match body.bundle.merged() {
+                Ok(merged) => merged,
+                Err(e) => return Envelope::refused(Refusal::invalid(e)),
+            };
+            let declared_at = s.declared_at(&file);
+            let config = match serde_json::to_string(&file) {
+                Ok(config) => config,
+                Err(e) => return Envelope::refused(Refusal::internal(e.to_string())),
+            };
+            let results = body
+                .run
+                .iter()
+                .filter_map(|id| body.tests.iter().find(|t| &t.id == id))
+                .map(|test| {
+                    let sample = body.samples.iter().find(|s| s.id == test.sample).cloned();
+                    run_test(test, &scope, &config, Ok(sample), &declared_at)
                 })
+                .collect();
+            Envelope::ok(Tests {
+                tests: body.tests.iter().map(TestDto::summary).collect(),
+                results,
             })
-            .await,
-    )
+        })
+        .await
 }
 
 /// A whole branch: `shared/` and every worker group's own bundle.
@@ -350,35 +357,34 @@ struct FleetGroup {
 
 /// The fleet's map of a branch, as the leader's `/api/map` draws it. The demo's fleet raises no warnings and keeps no
 /// series; its measurements are the page's.
-async fn map(State(service): State<Service>, Json(fleet): Json<Fleet>) -> Json<Envelope<smeltr::leader::map::Map>> {
+async fn map(State(service): State<Service>, Json(fleet): Json<Fleet>) -> Envelope<smeltr::leader::map::Map> {
     let bundles = std::iter::once(&fleet.shared).chain(fleet.groups.iter().map(|g| &g.config));
     if let Err(e) = refuse_oversized(bundles, []) {
-        return Json(Envelope::failed_one(e));
+        return Envelope::refused(e);
     }
     let at = BundleAt::Dir(service.bundle.clone());
     let raw = |file: FileConfig| RawBundle {
         file,
         unreadable: Vec::new(),
     };
-    Json(
-        service
-            .run(Envelope::failed_one, move || {
-                let groups = fleet
-                    .groups
-                    .into_iter()
-                    .map(|g| smeltr::leader::map::GroupBundle {
-                        id: g.id,
-                        raw: raw(g.config),
-                        at: at.clone(),
-                    })
-                    .collect();
-                Envelope::ok(smeltr::leader::map::build(raw(fleet.shared), &at, groups, &[], None))
-            })
-            .await,
-    )
+    service
+        .run(unavailable, move || {
+            let groups = fleet
+                .groups
+                .into_iter()
+                .map(|g| smeltr::leader::map::GroupBundle {
+                    id: g.id,
+                    raw: raw(g.config),
+                    at: at.clone(),
+                })
+                .collect();
+            Envelope::ok(smeltr::leader::map::build(raw(fleet.shared), &at, groups, &[], None))
+        })
+        .await
 }
 
-/// One object of a branch: the leader's `/api/connections` question, over the groups that run it.
+/// One object of a branch: the leader's `/api/areas/:area/:section/:id/connections` question, over the groups that
+/// run it.
 #[derive(serde::Deserialize)]
 struct ConnectionsBody {
     #[serde(flatten)]
@@ -387,42 +393,40 @@ struct ConnectionsBody {
     id: String,
 }
 
-/// What a change to one object reaches, as the leader's `/api/connections` answers it.
+/// What a change to one object reaches, as the leader's `/api/areas/:area/:section/:id/connections` answers it.
 async fn connections(
     State(service): State<Service>,
     Json(body): Json<ConnectionsBody>,
-) -> Json<Envelope<smeltr::leader::connections::ObjectConnections>> {
+) -> Envelope<smeltr::leader::connections::ObjectConnections> {
     let bundles = std::iter::once(&body.fleet.shared).chain(body.fleet.groups.iter().map(|g| &g.config));
     if let Err(e) = refuse_oversized(bundles, []) {
-        return Json(Envelope::failed_one(e));
+        return Envelope::refused(e);
     }
     let at = BundleAt::Dir(service.bundle.clone());
     let raw = |file: FileConfig| RawBundle {
         file,
         unreadable: Vec::new(),
     };
-    Json(
-        service
-            .run(Envelope::failed_one, move || {
-                let groups: Vec<_> = body
-                    .fleet
-                    .groups
-                    .into_iter()
-                    .map(|g| smeltr::leader::map::GroupBundle {
-                        id: g.id,
-                        raw: raw(g.config),
-                        at: at.clone(),
-                    })
-                    .collect();
-                let object = config_file::Object::new(body.kind, &body.id);
-                Envelope::ok(smeltr::leader::connections::of(
-                    &raw(body.fleet.shared),
-                    &groups,
-                    &object,
-                ))
-            })
-            .await,
-    )
+    service
+        .run(unavailable, move || {
+            let groups: Vec<_> = body
+                .fleet
+                .groups
+                .into_iter()
+                .map(|g| smeltr::leader::map::GroupBundle {
+                    id: g.id,
+                    raw: raw(g.config),
+                    at: at.clone(),
+                })
+                .collect();
+            let object = config_file::Object::new(body.kind, &body.id);
+            Envelope::ok(smeltr::leader::connections::of(
+                &raw(body.fleet.shared),
+                &groups,
+                &object,
+            ))
+        })
+        .await
 }
 
 #[derive(serde::Deserialize)]
@@ -446,39 +450,37 @@ struct Kept {
 
 /// Which records a capture at a source keeps, by the filter a worker would compile for it
 /// (`worker::capture::Filter`).
-async fn capture_filter(State(service): State<Service>, Json(body): Json<CaptureFilterBody>) -> Json<Envelope<Kept>> {
+async fn capture_filter(State(service): State<Service>, Json(body): Json<CaptureFilterBody>) -> Envelope<Kept> {
     if let Err(e) = refuse_oversized(body.bundle.files(), [&body.sample]) {
-        return Json(Envelope::failed_one(e));
+        return Envelope::refused(e);
     }
-    Json(
-        service
-            .run(Envelope::failed_one, move || {
-                let (file, _) = match body.bundle.merged() {
-                    Ok(merged) => merged,
-                    Err(e) => return Envelope::failed_one(e),
+    service
+        .run(unavailable, move || {
+            let (file, _) = match body.bundle.merged() {
+                Ok(merged) => merged,
+                Err(e) => return Envelope::refused(Refusal::invalid(e)),
+            };
+            let Some(source) = file.sources.iter().find(|s| s.id == body.source) else {
+                let message = format!("this bundle declares no source {:?}", body.source);
+                return Envelope::refused(Refusal::invalid(message));
+            };
+            let meta = source.kind.meta();
+            let filter =
+                match smeltr::worker::capture::Filter::compile(body.filter.as_deref(), meta.clone(), &source.id) {
+                    Ok(filter) => filter,
+                    Err(e) => return Envelope::refused(Refusal::invalid(e)),
                 };
-                let Some(source) = file.sources.iter().find(|s| s.id == body.source) else {
-                    return Envelope::failed_one(format!("this bundle declares no source {:?}", body.source));
-                };
-                let meta = source.kind.meta();
-                let filter =
-                    match smeltr::worker::capture::Filter::compile(body.filter.as_deref(), meta.clone(), &source.id) {
-                        Ok(filter) => filter,
-                        Err(e) => return Envelope::failed_one(e),
-                    };
-                let read = match smeltr::leader::preview::read_sample(&meta, &body.sample.columns, &body.sample.records)
-                {
-                    Ok(read) => read,
-                    Err(e) => return Envelope::failed_one(e),
-                };
-                let texts: Vec<&str> = read.texts.iter().map(String::as_str).collect();
-                let kept = filter.keeps(&read.records, &texts);
-                Envelope::ok(Kept {
-                    kept: kept.iter().enumerate().filter(|(_, k)| **k).map(|(i, _)| i).collect(),
-                })
+            let read = match smeltr::leader::preview::read_sample(&meta, &body.sample.columns, &body.sample.records) {
+                Ok(read) => read,
+                Err(e) => return Envelope::refused(Refusal::invalid(e)),
+            };
+            let texts: Vec<&str> = read.texts.iter().map(String::as_str).collect();
+            let kept = filter.keeps(&read.records, &texts);
+            Envelope::ok(Kept {
+                kept: kept.iter().enumerate().filter(|(_, k)| **k).map(|(i, _)| i).collect(),
             })
-            .await,
-    )
+        })
+        .await
 }
 
 #[derive(serde::Deserialize)]
@@ -489,16 +491,12 @@ struct OnboardBody {
     filed: Option<Vec<serde_json::Value>>,
 }
 
-/// What a captured sample reads as, answered as the leader's `/api/onboard/propose` answers it. A sample past what one
+/// What a captured sample reads as, answered as the leader's `/api/preview/onboard` answers it. A sample past what one
 /// may hold is refused with 413.
 async fn onboard_propose(State(service): State<Service>, Json(body): Json<OnboardBody>) -> axum::response::Response {
     use axum::response::IntoResponse;
     if let Err(e) = config_file::refuse_sample_size(body.records.len()) {
-        return (
-            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-            Json(Envelope::<Empty>::failed_one(e)),
-        )
-            .into_response();
+        return Envelope::<Empty>::refused(Refusal::new(axum::http::StatusCode::PAYLOAD_TOO_LARGE, e)).into_response();
     }
     let proposed = service
         .run(Err, move || {
@@ -507,12 +505,91 @@ async fn onboard_propose(State(service): State<Service>, Json(body): Json<Onboar
         .await;
     match proposed {
         Ok(proposal) => Json(proposal).into_response(),
-        Err(e) => (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(Envelope::<Empty>::failed_one(e)),
-        )
-            .into_response(),
+        Err(e) => Envelope::<Empty>::refused(Refusal::unavailable(e)).into_response(),
     }
+}
+
+async fn schemas_read(
+    State(service): State<Service>,
+    Json(req): Json<catalog::ReadRequest>,
+) -> Envelope<catalog::ReadSchema> {
+    service
+        .run(unavailable, move || {
+            catalog::read(&req).map_err(Refusal::invalid).into()
+        })
+        .await
+}
+
+async fn schemas_standards(State(service): State<Service>) -> Envelope<catalog::Standards> {
+    service.run(unavailable, || Envelope::ok(catalog::standards())).await
+}
+
+async fn schemas_export(
+    State(service): State<Service>,
+    Json(req): Json<catalog::ExportRequest>,
+) -> Envelope<catalog::ExportedSchema> {
+    service
+        .run(unavailable, move || {
+            catalog::export(&req).map_err(Refusal::invalid).into()
+        })
+        .await
+}
+
+#[derive(Default, serde::Serialize)]
+struct SchemaFindings {
+    findings: Vec<SchemaFindingOut>,
+}
+
+/// One finding, as the leader's `/api/branches/:name/schema-findings` writes it but for its group, which the demo's
+/// leader adds.
+#[derive(serde::Serialize)]
+struct SchemaFindingOut {
+    pipeline: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step: Option<String>,
+    message: String,
+}
+
+#[derive(serde::Deserialize)]
+struct FindingsBody {
+    #[serde(flatten)]
+    bundle: Bundle,
+    /// The bundle as main had it where the branch left it, whose findings are not the branch's.
+    #[serde(default)]
+    base: Option<Bundle>,
+}
+
+/// What breaks a schema in a group's bundle, beyond what already broke in `base`.
+async fn schema_findings(State(service): State<Service>, Json(body): Json<FindingsBody>) -> Envelope<SchemaFindings> {
+    let FindingsBody { bundle, base } = body;
+    if let Err(e) = refuse_oversized(bundle.files().chain(base.iter().flat_map(Bundle::files)), []) {
+        return Envelope::refused(e);
+    }
+    let s = service.clone();
+    service
+        .run(unavailable, move || {
+            let base = base.and_then(|b| b.merged().ok()).map(|(file, _)| {
+                let declared_at = s.declared_at(&file);
+                (file, declared_at)
+            });
+            let found = bundle.merged().and_then(|(file, _)| {
+                let declared_at = s.declared_at(&file);
+                catalog::findings(file, &declared_at, base)
+            });
+            found
+                .map(|found| SchemaFindings {
+                    findings: (found.into_iter())
+                        .map(|f| SchemaFindingOut {
+                            pipeline: f.pipeline,
+                            step: f.step,
+                            message: f.message,
+                        })
+                        .collect(),
+                })
+                .map_err(Refusal::invalid)
+                .into()
+        })
+        .await
 }
 
 fn app(service: Service) -> Router {
@@ -523,11 +600,16 @@ fn app(service: Service) -> Router {
         .route("/validate", post(validate))
         .route("/grok-captures", post(grok_captures))
         .route("/line-breaker", post(line_breaker))
+        .route("/format", post(format))
         .route("/capture-filter", post(capture_filter))
         .route("/map", post(map))
         .route("/connections", post(connections))
         .route("/tests", post(tests))
         .route("/onboard/propose", post(onboard_propose))
+        .route("/schemas/read", post(schemas_read))
+        .route("/schemas/export", post(schemas_export))
+        .route("/schemas/standards", post(schemas_standards))
+        .route("/schema-findings", post(schema_findings))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
         .with_state(service)
 }
@@ -595,8 +677,8 @@ mod tests {
 
     async fn previewed(service: &Service, mut body: serde_json::Value) -> serde_json::Value {
         body["sample"] = sample(serde_json::json!([{"_raw": "ann"}]));
-        let Json(answer) = preview(State(service.clone()), Json(serde_json::from_value(body).unwrap())).await;
-        serde_json::to_value(answer).unwrap()
+        let answer = preview(State(service.clone()), Json(serde_json::from_value(body).unwrap())).await;
+        answer.to_json()
     }
 
     #[tokio::test]
@@ -620,12 +702,12 @@ mod tests {
     async fn validation_reports_what_a_save_would_refuse() {
         let service = service("validate");
         let good = serde_json::from_value(looking_up("lookups/users.csv")).unwrap();
-        let Json(answer) = validate(State(service.clone()), Json(good)).await;
-        assert!(answer.ok, "{:?}", answer.errors);
+        let answer = validate(State(service.clone()), Json(good)).await;
+        assert!(answer.succeeded(), "{:?}", answer.errors);
 
         let bad = serde_json::from_value(looking_up("lookups/missing.csv")).unwrap();
-        let Json(answer) = validate(State(service), Json(bad)).await;
-        assert!(!answer.ok);
+        let answer = validate(State(service), Json(bad)).await;
+        assert!(!answer.succeeded());
     }
 
     #[tokio::test]
@@ -681,8 +763,8 @@ mod tests {
             "filter": "_raw != \"allow tcp\"",
             "sample": sample(serde_json::json!([{"_raw": "allow tcp"}, {"_raw": "deny udp"}, {"_raw": "deny tcp"}])),
         });
-        let Json(answer) = capture_filter(State(service("filter")), Json(serde_json::from_value(body).unwrap())).await;
-        assert!(answer.ok, "{:?}", answer.errors);
+        let answer = capture_filter(State(service("filter")), Json(serde_json::from_value(body).unwrap())).await;
+        assert!(answer.succeeded(), "{:?}", answer.errors);
         assert_eq!(answer.body.kept, vec![1, 2]);
     }
 
@@ -720,8 +802,8 @@ mod tests {
             "groups": [{"id": "network", "config": {"version": 1, "sources": [
                 {"id": "firewalls", "type": "syslogReceiver", "port": 5514}]}}],
         });
-        let Json(answer) = map(State(service("map")), Json(serde_json::from_value(body).unwrap())).await;
-        let answer = serde_json::to_value(answer).unwrap();
+        let answer = map(State(service("map")), Json(serde_json::from_value(body).unwrap())).await;
+        let answer = answer.to_json();
         assert_eq!(answer["ok"], true, "{answer}");
         assert!(answer.to_string().contains("firewalls"), "{answer}");
     }
@@ -739,12 +821,12 @@ mod tests {
             "kind": "pipeline",
             "id": "normalize",
         });
-        let Json(answer) = connections(
+        let answer = connections(
             State(service("connections")),
             Json(serde_json::from_value(body).unwrap()),
         )
         .await;
-        assert!(answer.ok, "{:?}", answer.errors);
+        assert!(answer.succeeded(), "{:?}", answer.errors);
         assert_eq!(answer.body.groups, vec!["edge", "core"]);
         assert_eq!(answer.body.drawn_in, vec!["edge"]);
     }
@@ -775,8 +857,8 @@ mod tests {
                 "samples": [sample(serde_json::json!([{"_raw": "ann"}]))], "run": ["t"]});
             let service = service.clone();
             async move {
-                let Json(answer) = tests(State(service), Json(serde_json::from_value(request).unwrap())).await;
-                serde_json::to_value(answer).unwrap()
+                let answer = tests(State(service), Json(serde_json::from_value(request).unwrap())).await;
+                answer.to_json()
             }
         };
 

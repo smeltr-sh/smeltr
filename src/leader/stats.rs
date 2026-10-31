@@ -23,7 +23,7 @@ use crate::core::id::SourceId;
 use crate::heartbeat::{MetricSampleDto, MetricValueDto};
 use crate::plan::config::{FunctionKind, Step};
 
-use super::envelope::{ApiError, Envelope};
+use super::envelope::{Envelope, Refusal};
 use super::map::NodeKind;
 use super::registry::ThreadHealth;
 use super::series::{RegistryStore, Tier};
@@ -294,7 +294,7 @@ pub struct Stats {
 
 impl Stats {
     /// No counts, and why -- the object could not be read, or is a kind this cannot answer for yet.
-    pub fn failed(group: &str, kind: NodeKind, id: &str, error: impl Into<ApiError>) -> Envelope<Stats> {
+    pub fn failed(group: &str, kind: NodeKind, id: &str, refusal: impl Into<Refusal>) -> Envelope<Stats> {
         // Not `ok`, and still names what was asked about, so the focus view can say whose counts are missing.
         let empty = Stats {
             group: group.to_string(),
@@ -308,11 +308,8 @@ impl Stats {
             destination: None,
             warnings: Vec::new(),
         };
-        Envelope {
-            ok: false,
-            errors: vec![error.into()],
-            body: empty,
-        }
+        let Refusal { status, errors } = refusal.into();
+        Envelope::with(empty, status, errors)
     }
 }
 
@@ -356,7 +353,7 @@ pub fn build(
     match kind {
         NodeKind::Source => {
             let Some(source) = system.topology.sources.iter().find(|s| s.name == id) else {
-                return Stats::failed(group, kind, id, undeclared(group, "source", id));
+                return Stats::failed(group, kind, id, Refusal::not_found(undeclared(group, "source", id)));
             };
             let at = [("source", id)];
             let polled = totals(ROWS_IN_METRIC);
@@ -393,13 +390,18 @@ pub fn build(
         }
         NodeKind::Pipeline => {
             let Some(index) = system.pipeline_ids.iter().position(|p| p == id) else {
-                return Stats::failed(group, kind, id, undeclared(group, "pipeline", id));
+                return Stats::failed(group, kind, id, Refusal::not_found(undeclared(group, "pipeline", id)));
             };
             answer.pipeline = Some(pipeline_stats(system, index, group, &totals, &shape));
         }
         NodeKind::Destination => {
             if !system.topology.destinations.iter().any(|d| d.name == id) {
-                return Stats::failed(group, kind, id, undeclared(group, "destination", id));
+                return Stats::failed(
+                    group,
+                    kind,
+                    id,
+                    Refusal::not_found(undeclared(group, "destination", id)),
+                );
             }
             answer.destination = Some(destination_stats(group, id, &totals, &live, &shape));
         }
@@ -488,7 +490,7 @@ fn pipeline_stats(
 }
 
 /// The steps of the pipeline at `index` that actually run, in order. A comment emits nothing and a disabled step is
-/// skipped at compile (`plan::plan`), but both take a `FunctionId` and a place in `step_ids`, so listing that
+/// skipped at compile (`plan::compile`), but both take a `FunctionId` and a place in `step_ids`, so listing that
 /// directly would show a reader steps that cost nothing because they do not exist at runtime.
 fn running_steps(system: &LoadedSystem, index: usize) -> Vec<String> {
     fn walk(steps: &[Step], step_ids: &[String], out: &mut Vec<String>) {
@@ -994,7 +996,7 @@ mod tests {
         let store = seeded();
         let answer = built(&with_dlq(), Some(&store));
 
-        assert!(answer.ok, "{:?}", answer.errors);
+        assert!(answer.succeeded(), "{:?}", answer.errors);
         let source = answer.body.source.expect("a source answers with source stats");
         assert_eq!(source.polled, 1000.0);
         assert_eq!(source.unmatched, 164.0);
@@ -1021,7 +1023,7 @@ mod tests {
     #[test]
     fn no_series_store_answers_with_zeroes_rather_than_failing() {
         let answer = built(&with_dlq(), None);
-        assert!(answer.ok, "{:?}", answer.errors);
+        assert!(answer.succeeded(), "{:?}", answer.errors);
         let source = answer.body.source.unwrap();
         assert_eq!(source.polled, 0.0);
         assert_eq!(source.routes.len(), 2);
@@ -1226,7 +1228,7 @@ mod tests {
         let store = seeded();
         let answer = built_for(NodeKind::Pipeline, "normalize", Some(&store));
 
-        assert!(answer.ok, "{:?}", answer.errors);
+        assert!(answer.succeeded(), "{:?}", answer.errors);
         let p = answer.body.pipeline.expect("a pipeline answers with pipeline stats");
         assert_eq!(p.rows_in, 700.0, "route-bbb is the only route to it");
         assert_eq!(p.rows_out, 700.0 - 40.0);
@@ -1264,7 +1266,7 @@ mod tests {
         let store = seeded();
         let answer = built_for(NodeKind::Destination, "es-prod", Some(&store));
 
-        assert!(answer.ok, "{:?}", answer.errors);
+        assert!(answer.succeeded(), "{:?}", answer.errors);
         let d = answer
             .body
             .destination
@@ -1307,7 +1309,7 @@ mod tests {
     #[test]
     fn a_pipeline_the_group_does_not_declare_refuses() {
         let answer = built_for(NodeKind::Pipeline, "ghost", None);
-        assert!(!answer.ok);
+        assert!(!answer.succeeded());
         assert!(answer.errors[0].message.contains("ghost"), "{:?}", answer.errors);
     }
 
@@ -1323,7 +1325,7 @@ mod tests {
             None,
             quiet(),
         );
-        assert!(!answer.ok);
+        assert!(!answer.succeeded());
         assert!(answer.errors[0].message.contains("ghost"), "{:?}", answer.errors);
     }
 
