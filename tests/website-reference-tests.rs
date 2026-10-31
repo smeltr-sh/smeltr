@@ -2123,78 +2123,62 @@ struct SizingPart {
     part: String,
     #[serde(default)]
     kinds: Vec<String>,
-    bytes: String,
+    least: String,
+    #[serde(default)]
+    most: Option<String>,
     each: String,
     what: String,
 }
 
-/// The worker sizing table gives each part of a deployment the ceiling `worker::memory` counts for it, and names every
-/// connector kind that holds memory of its own, so a kind added to the engine is a kind missing here. A connector's
-/// default is read from the connector reference, which is itself checked against the engine.
+/// The worker sizing table gives each part of a deployment the least and the most `worker::memory` sizes it to, and
+/// names every connector kind that holds memory of its own, so a kind added to the engine is a kind missing here. A
+/// bound written in words, such as one batch, states no size and is not compared.
 #[test]
 fn the_worker_sizing_table_matches_the_engine() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("website/src/lib/worker-sizing.json");
     let table: WorkerSizing = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let reference = connector_reference();
-    let size = |text: &str| smeltr::config_file::bytes::parse(text).unwrap_or_else(|e| panic!("{e}"));
-    let setting = |kinds: &[ConnectorKind], shared: &[SettingRow], ty: &str, name: &str| -> usize {
-        let kind = kinds
-            .iter()
-            .find(|k| k.ty == ty)
-            .unwrap_or_else(|| panic!("no kind {ty}"));
-        let row = kind
-            .settings
-            .iter()
-            .chain(shared.iter().filter(|_| kind.shared))
-            .find(|s| s.name == name)
-            .unwrap_or_else(|| panic!("{ty} has no {name}"));
-        match (&row.default, &row.absent) {
-            (Some(serde_json::Value::String(d)), _) => size(d),
-            (_, Some(a)) => size(a),
-            _ => panic!("{ty}'s {name} states no size"),
-        }
-    };
     let sources = &reference.sources;
     let destinations = &reference.destinations;
-    let object_buffer = setting(&destinations.kinds, &destinations.shared, "s3", "bufferBytes");
-    let in_flight = destinations
-        .kinds
-        .iter()
-        .find(|k| k.ty == "s3")
-        .and_then(|k| {
-            k.settings
-                .iter()
-                .chain(&destinations.shared)
-                .find(|s| s.name == "inFlight")
-        })
-        .and_then(|s| s.default.as_ref()?.as_u64())
-        .expect("s3 states its inFlight") as usize;
-    let engine: std::collections::BTreeMap<&str, usize> = [
-        ("transform", smeltr::startup_config::memory_budget_bytes()),
-        ("lanes", smeltr::worker::TICK_MAX_BYTES),
-        ("kafka", setting(&sources.kinds, &sources.shared, "kafka", "fetchBytes")),
-        ("receiver", 2 * smeltr::io::receiver::INBOX_BYTES),
-        ("objectRecord", smeltr::io::object_source::MAX_RECORD_BYTES as usize),
-        ("apiAnswer", smeltr::io::api::MAX_ANSWER_BYTES as usize),
-        ("sqlResult", smeltr::io::sql_source::MAX_RESULT_BYTES),
+    // The size a bound opens with: "128 MiB per transform thread" is 128 MiB.
+    let size = |text: &str| -> Option<usize> {
+        let mut words = text.split_whitespace();
+        smeltr::config_file::bytes::parse(&format!("{} {}", words.next()?, words.next()?)).ok()
+    };
+    use smeltr::config_file::FetchBytes;
+    use smeltr::worker as m;
+    let engine: std::collections::BTreeMap<&str, (Option<usize>, Option<usize>)> = [
+        ("processes", (Some(2 * m::BASELINE_BYTES), None)),
         (
-            "buffer",
-            setting(&destinations.kinds, &destinations.shared, "kafka", "bufferBytes"),
+            "transform",
+            (Some(m::LEAST_COLUMNAR_BYTES), Some(m::COLUMNAR_BYTES_PER_THREAD)),
+        ),
+        ("lanes", (Some(m::LEAST_BATCH_BYTES), Some(m::TICK_MAX_BYTES))),
+        ("kafka", (Some(FetchBytes::MIN), Some(FetchBytes::MAX))),
+        ("receiver", (None, Some(smeltr::io::receiver::INBOX_BYTES))),
+        (
+            "objectRecord",
+            (Some(smeltr::io::object_source::MAX_RECORD_BYTES as usize), None),
         ),
         (
-            "objectBuffer",
-            object_buffer
-                + (smeltr::io::files::MAX_OPEN_FILES * smeltr::io::files::open_file_bytes(in_flight))
-                    .min(object_buffer),
+            "apiAnswer",
+            (Some(2 * smeltr::io::api::MAX_ANSWER_BYTES as usize), None),
         ),
+        ("sqlResult", (Some(smeltr::io::sql_source::MAX_RESULT_BYTES), None)),
+        ("buffer", (None, None)),
+        ("senders", (Some(m::SENDER_BYTES), None)),
+        ("objectBuffer", (None, None)),
     ]
     .into_iter()
     .collect();
-    let documented: std::collections::BTreeMap<&str, usize> =
-        table.parts.iter().map(|p| (p.id.as_str(), size(&p.bytes))).collect();
+    let documented: std::collections::BTreeMap<&str, (Option<usize>, Option<usize>)> = table
+        .parts
+        .iter()
+        .map(|p| (p.id.as_str(), (size(&p.least), p.most.as_deref().and_then(size))))
+        .collect();
     assert_eq!(
         documented, engine,
-        "the worker sizing table differs from the engine's ceilings"
+        "the worker sizing table differs from the engine's bounds"
     );
 
     for p in &table.parts {
