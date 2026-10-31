@@ -502,7 +502,7 @@
 
   <Dialog open={naming} title="new role" oncancel={() => (naming = false)} onsubmit={() => named()}>
     <Field required label="Role" error={nameTaken ? 'There is a role by this name already.' : null}>
-      {#snippet help()}What the role is called. You can add the groups that give it next.{/snippet}
+      {#snippet help()}What the role is called. You can add the SSO groups that give it next.{/snippet}
       <input bind:value={newRole} autocomplete="off" required />
     </Field>
     {#snippet actions()}
@@ -525,7 +525,7 @@
         <thead>
           <tr>
             <th>Role</th>
-            <th>Groups</th>
+            <th>SSO groups</th>
             <th>Access</th>
             <th></th>
           </tr>
@@ -576,7 +576,7 @@
               <tr class="fold">
                 <td colspan="4">
                   <form class="panel" onsubmit={(e) => saveRole(e, role.name)}>
-                    <Field label="Groups">
+                    <Field label="SSO groups">
                       {#snippet help()}
                         One to a line, exactly as your provider names it. An SSO account in any of
                         them holds this role.

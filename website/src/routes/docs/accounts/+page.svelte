@@ -221,15 +221,15 @@
     <li>Open Admin → Accounts → Roles and select <strong>+ Add role</strong>.</li>
     <li>Enter a name for the role.</li>
     <li>
-      Under Groups, enter each group that gives it, one to a line, exactly as the provider names it.
-      Leave it empty for a role you give only to local or key accounts.
+      Under SSO groups, enter each group that gives it, one to a line, exactly as the provider names
+      it. Leave it empty for a role you give only to local or key accounts.
     </li>
     <li>Choose a level for each area and select <strong>Save</strong>.</li>
   </ol>
   <p>
     To let a provider group administer Smeltr, open the <strong>administrator</strong> role and add the
-    group under Groups. A group that an account holds but no role lists shows beside the account's roles
-    on the Accounts page. Select it to start a role for that group.
+    group under SSO groups. A group that an account holds but no role lists shows beside the account's
+    roles on the Accounts page. Select it to start a role for that group.
   </p>
   <p>
     A change to a role applies on each holder's next request. <strong>Remove role</strong> takes the role
