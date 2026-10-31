@@ -1728,7 +1728,7 @@ impl DestinationKind {
     /// Whether this destination may hold a variant as Parquet's variant, and so reads its bytes (`parquet::Schema`).
     pub fn holds_native_variants(&self) -> bool {
         match self {
-            DestinationKind::Iceberg(_) => true,
+            DestinationKind::Iceberg(_) | DestinationKind::Delta(_) => true,
             DestinationKind::Objects(o) => o.format == ObjectFormat::Parquet { native_variants: true },
             _ => false,
         }

@@ -5,7 +5,7 @@
 -->
 <script lang="ts" module>
   import type { CatalogType } from './TypeCatalog.svelte';
-  import type { CsvColumns, CsvPreview, OcsfLevel, SchemaReadFormat } from './api';
+  import type { CsvColumns, CsvPreview, OcsfClass, OcsfLevel, SchemaReadFormat } from './api';
   import { FIELD_TYPES } from './api';
 
   export type SchemaStart = 'ecs' | 'ocsf' | 'csv' | 'jsonSchema' | 'import' | 'empty';
@@ -27,15 +27,20 @@
     type: SchemaStart;
     /** The file, as text, for a start that reads one; JSON Schema may be pasted. */
     text: string;
+    /** For ECS and OCSF, read the release the leader carries rather than `text`. Until the leader says which it
+     * carries, a file is uploaded, and an upload turns this off. */
+    builtIn: boolean;
     /** The importer, by pipeline id, for `import`. */
     pipeline: string;
     /** The uploaded file, for `import`, cut into records on the leader. */
     file: string;
     /** Where a record of the file ends, for `import`; absent, each line is one. */
     lineBreaker: string | undefined;
-    /** The OCSF file's classes, and the one read. */
-    classes: string[];
+    /** The uploaded OCSF file's classes, and the one read, by name. */
+    classes: OcsfClass[];
     class: string;
+    /** The id the dialog last suggested, which follows the class until the id is typed over. */
+    suggested: string;
     /** How many keys deep an OCSF class is read. */
     depth: number;
     /** Which OCSF requirement levels are read. */
@@ -76,7 +81,7 @@
       type: 'ecs',
       label: 'ECS',
       category: 'From a standard',
-      help: "The Elastic Common Schema, from the fields.csv or ecs_flat.yml in ECS's generated/ folder.",
+      help: "The Elastic Common Schema: the release built in, or the fields.csv or ecs_flat.yml under ECS's generated/ folder.",
       // Three layers.
       glyph: { d: 'M32 8 L56 20 L32 32 L8 20 Z M8 32 L32 44 L56 32 M8 44 L32 56 L56 44' },
     },
@@ -84,7 +89,7 @@
       type: 'ocsf',
       label: 'OCSF',
       category: 'From a standard',
-      help: "One class of the Open Cybersecurity Schema Framework, from ocsf-schema-compiler's output.",
+      help: "One class of the Open Cybersecurity Schema Framework: from the release built in, or from ocsf-schema-compiler's output.",
       // A shield.
       glyph: { d: 'M32 6 L52 14 V30 C52 44 42 54 32 58 C22 54 12 44 12 30 V14 Z' },
     },
@@ -127,7 +132,8 @@
   import Field from './Field.svelte';
   import { suggestId } from './ids';
   import LineBreakerField from './LineBreakerField.svelte';
-  import { readSchema } from './api';
+  import { getSchemaStandards, readSchema, type SchemaStandards } from './api';
+  import Segmented from './Segmented.svelte';
   import { count } from './time';
   import Help from './Help.svelte';
 
@@ -148,16 +154,79 @@
     oncancel: () => void;
   } = $props();
 
+  /** The releases the leader carries; null until it says, and where it cannot, so a file is uploaded. Asked as the
+   * page opens rather than the dialog, so it is here by the time a tile is chosen. */
+  let standards = $state<SchemaStandards | null>(null);
+  $effect(() => {
+    getSchemaStandards().then(
+      (s) => (standards = s),
+      () => {},
+    );
+  });
+
+  /** Whether `d` reads the release the leader carries. */
+  function fromRelease(d: SchemaDraft): boolean {
+    return d.builtIn && standards !== null;
+  }
+
+  /** The OCSF classes `d` may be read from. */
+  function classesOf(d: SchemaDraft): OcsfClass[] {
+    return fromRelease(d) ? standards!.ocsf.classes : d.classes;
+  }
+
+  /** `classes` by category, each by caption; a class in no category comes last, under Other. */
+  function byCategory(classes: OcsfClass[]): [string, OcsfClass[]][] {
+    const groups = new Map<string, OcsfClass[]>();
+    for (const c of [...classes].sort((a, b) => a.caption.localeCompare(b.caption))) {
+      const key = c.category || 'Other';
+      groups.set(key, [...(groups.get(key) ?? []), c]);
+    }
+    return [...groups].sort(([a], [b]) =>
+      a === 'Other' ? 1 : b === 'Other' ? -1 : a.localeCompare(b),
+    );
+  }
+
+  /** The class a draft starts on, where `classes` holds it. */
+  function firstClass(classes: OcsfClass[]): string {
+    return classes.some((c) => c.name === 'authentication')
+      ? 'authentication'
+      : (classes[0]?.name ?? '');
+  }
+
+  /** The class `d` reads: the one chosen, or, where the releases arrived after the tile was chosen, the first. */
+  function classOf(d: SchemaDraft): string {
+    return d.class || firstClass(classesOf(d));
+  }
+
+  /** `d` reads `name`, and its id follows, unless it was typed over. */
+  function setClass(d: SchemaDraft, name: string) {
+    d.class = name;
+    if (d.type !== 'ocsf' || !name || d.id !== d.suggested) return;
+    d.id = d.suggested = suggestId(name, unavailable);
+  }
+
+  /** `d` reads the release, or an upload; its class stays where the other offers it. */
+  function setBuiltIn(d: SchemaDraft, on: boolean) {
+    d.builtIn = on;
+    const classes = classesOf(d);
+    if (d.type === 'ocsf' && !classes.some((c) => c.name === d.class))
+      setClass(d, firstClass(classes));
+  }
+
   function blank(type: SchemaStart, taken: string[]): SchemaDraft {
+    const first = type === 'ocsf' ? firstClass(standards?.ocsf.classes ?? []) : '';
+    const id = suggestId(type === 'ecs' ? 'ecs' : first || 'schema', taken);
     return {
-      id: suggestId(type === 'ecs' ? 'ecs' : 'schema', taken),
+      id,
+      suggested: id,
       type,
       text: '',
+      builtIn: true,
       pipeline: '',
       file: '',
       lineBreaker: undefined,
       classes: [],
-      class: '',
+      class: first,
       depth: 2,
       levels: ['required', 'recommended'],
       preview: null,
@@ -221,6 +290,7 @@
     const file = input.files?.[0];
     if (!file) return;
     draft.text = await file.text();
+    draft.builtIn = false;
     if (draft.type === 'csv') {
       draft.types = {};
       await previewCsv(draft);
@@ -228,11 +298,19 @@
     if (draft.type === 'ocsf') {
       // The classes to pick from. A file that is not JSON lists none, and the leader says why on Add.
       try {
-        draft.classes = Object.keys(JSON.parse(draft.text).classes ?? {}).sort();
+        const listed: Record<string, { caption?: string; category_name?: string }> =
+          JSON.parse(draft.text).classes ?? {};
+        draft.classes = Object.entries(listed).map(([name, c]) => ({
+          name,
+          caption: c.caption || name,
+          category: c.category_name ?? '',
+        }));
       } catch {
         draft.classes = [];
       }
-      draft.class = draft.classes.includes(draft.class) ? draft.class : (draft.classes[0] ?? '');
+      if (!draft.classes.some((c) => c.name === draft.class)) {
+        setClass(draft, firstClass(draft.classes));
+      }
     }
   }
 
@@ -251,10 +329,16 @@
       case 'csv':
         return d.preview !== null && d.columns.field != null && d.columns.type != null;
       case 'ecs':
+        return fromRelease(d) || d.text.trim() !== '';
       case 'jsonSchema':
         return d.text.trim() !== '';
       case 'ocsf':
-        return d.text !== '' && d.class !== '' && d.levels.length > 0 && d.depth >= 1;
+        return (
+          (fromRelease(d) || d.text !== '') &&
+          classOf(d) !== '' &&
+          d.levels.length > 0 &&
+          d.depth >= 1
+        );
       case 'import':
         return d.pipeline !== '' && d.file !== '';
       default:
@@ -262,6 +346,11 @@
     }
   }
 </script>
+
+{#snippet link(href: string)}
+  <a {href} target="_blank" rel="noreferrer">{href.replace(/^https:\/\//, '').replace(/\/$/, '')}</a
+  >
+{/snippet}
 
 <NewObject
   {open}
@@ -271,10 +360,48 @@
   {blank}
   typeLabel={(t) => LABELS[t]}
   {ready}
-  {onadd}
+  onadd={(d) => {
+    if (d.type === 'ocsf') d.class = classOf(d);
+    return onadd(d);
+  }}
   {oncancel}
 >
   {#snippet fields(draft)}
+    {#if (draft.type === 'ecs' || draft.type === 'ocsf') && standards}
+      {@const release = draft.type === 'ecs' ? standards.ecs : standards.ocsf}
+      {@const name = draft.type === 'ecs' ? 'ECS' : 'OCSF'}
+      <div class="source">
+        <Segmented
+          label="Read from"
+          options={[
+            { value: 'built-in', label: `${name} ${release.version}, built in` },
+            { value: 'upload', label: 'Upload a file' },
+          ]}
+          bind:value={
+            () => (draft.builtIn ? 'built-in' : 'upload'),
+            (v) => setBuiltIn(draft, v === 'built-in')
+          }
+        />
+      </div>
+      {#if draft.builtIn}
+        <p class="note">
+          As published at {@render link(release.source)}{draft.type === 'ocsf'
+            ? ', compiled by ocsf-schema-compiler'
+            : ''}.
+        </p>
+      {:else if draft.type === 'ecs'}
+        <p class="note">
+          The fields.csv or ecs_flat.yml under the generated/ folder of {@render link(
+            'https://github.com/elastic/ecs',
+          )}, at the release you use.
+        </p>
+      {:else}
+        <p class="note">
+          The output of {@render link('https://pypi.org/project/ocsf-schema-compiler/')} run over
+          {@render link('https://github.com/ocsf/ocsf-schema')}, at the release you use.
+        </p>
+      {/if}
+    {/if}
     {#if draft.type === 'import'}
       <Field
         required
@@ -292,7 +419,7 @@
         <input type="file" onchange={(e) => uploadFile(draft, e.currentTarget)} />
       </Field>
       <LineBreakerField value={draft.lineBreaker} onchange={(p) => (draft.lineBreaker = p)} />
-    {:else if draft.type === 'ecs' || draft.type === 'csv'}
+    {:else if (draft.type === 'ecs' && !fromRelease(draft)) || draft.type === 'csv'}
       <Field required label="File">
         <input
           type="file"
@@ -386,18 +513,28 @@
         </fieldset>
       {/if}
     {:else if draft.type === 'ocsf'}
-      <Field required label="File">
-        <input
-          type="file"
-          accept=".json,application/json"
-          onchange={(e) => upload(draft, e.currentTarget)}
-        />
-      </Field>
-      {#if draft.text !== ''}
+      {#if !fromRelease(draft)}
+        <Field required label="File">
+          <input
+            type="file"
+            accept=".json,application/json"
+            onchange={(e) => upload(draft, e.currentTarget)}
+          />
+        </Field>
+      {/if}
+      {#if fromRelease(draft) || draft.text !== ''}
+        {@const classes = classesOf(draft)}
         <Field required label="Class">
-          <select bind:value={draft.class}>
-            {#if draft.classes.length === 0}<option value="">No classes in the file</option>{/if}
-            {#each draft.classes as c (c)}<option value={c}>{c}</option>{/each}
+          <select bind:value={() => classOf(draft), (v) => setClass(draft, v)}>
+            {#if classes.length === 0}<option value="">No classes in the file</option>
+            {:else if !classes.some((c) => c.name === classOf(draft))}<option value=""
+                >Choose a class…</option
+              >{/if}
+            {#each byCategory(classes) as [category, members] (category)}
+              <optgroup label={category}>
+                {#each members as c (c.name)}<option value={c.name}>{c.caption}</option>{/each}
+              </optgroup>
+            {/each}
           </select>
         </Field>
         <Field
@@ -534,6 +671,10 @@
 
   .note {
     margin: 0;
+  }
+
+  .source {
+    display: flex;
   }
 
   .levels {

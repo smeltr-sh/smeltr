@@ -146,7 +146,7 @@ pub(super) fn receiver_reserve(kind: &SourceKind) -> Option<usize> {
 
 /// What one sender of an HTTP-like destination holds whatever it sends: its thread, its connection, and what the
 /// allocator keeps of the requests it sent. Measured under load at about 6 MiB.
-pub(super) const SENDER_BYTES: usize = 6 * 1024 * 1024;
+pub const SENDER_BYTES: usize = 6 * 1024 * 1024;
 
 /// What the senders of a destination hold: one per request it may have outstanding. 0 for a destination with none.
 pub(super) fn senders_bytes(kind: &DestinationKind) -> usize {
@@ -213,14 +213,14 @@ pub(super) fn destination_parts(destination: &DestinationConfig) -> Vec<Part> {
 }
 
 /// What a worker process holds whatever it runs: its code, its allocator's slack and its threads' stacks.
-pub(super) const BASELINE_BYTES: usize = 150 * 1024 * 1024;
+pub const BASELINE_BYTES: usize = 150 * 1024 * 1024;
 
 /// The least columnar budget a worker sized to its memory gives its transform threads, however little is left.
-const LEAST_COLUMNAR_BYTES: usize = 64 * 1024 * 1024;
+pub const LEAST_COLUMNAR_BYTES: usize = 64 * 1024 * 1024;
 
 /// The most columnar budget a worker sized to its memory gives each transform thread. Past it a thread's batches no
 /// longer wait on the budget, so more memory serves the queues.
-const COLUMNAR_BYTES_PER_THREAD: usize = 128 * 1024 * 1024;
+pub const COLUMNAR_BYTES_PER_THREAD: usize = 128 * 1024 * 1024;
 
 /// What [`fit`] gives a deployment to run under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,7 +237,7 @@ pub(super) struct Fit {
 }
 
 /// The least a batch may be cut to when memory is short: below it the work per batch outweighs the batch.
-const LEAST_BATCH_BYTES: usize = 512 * 1024;
+pub const LEAST_BATCH_BYTES: usize = 512 * 1024;
 
 /// Sizes `topology` to `memory`, the bytes its worker may use, and gives what to run it under.
 ///

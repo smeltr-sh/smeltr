@@ -30,7 +30,7 @@ use super::identity::{self, Identity, Sequences};
 use super::log::{
     Action, DomainMetadata, Format, Log, Metadata, Protocol, Snapshot, Txn, commit_name, line, now_ms, uuid,
 };
-use super::schema::{self, Mapping, StructField, StructType, Type};
+use super::schema::{self, Mapping, StructField, StructType, Type, Variants};
 use super::unity::UnityCatalog;
 use crate::core::column::DataType;
 use crate::io::files::{
@@ -46,7 +46,7 @@ use crate::ops::civil::MICROS_PER_DAY;
 use crate::plan::topology::{DeltaDestinationConfig, HeldSecrets, Records, UnityCatalogTable};
 
 /// The writer features of a table this writer can write. A table needing any other is refused.
-const WRITER_FEATURES: [&str; 17] = [
+const WRITER_FEATURES: [&str; 18] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -72,6 +72,8 @@ const WRITER_FEATURES: [&str; 17] = [
     // Its tables map their columns and give arrays' elements ids of their own, which our files carry; the rest of what
     // it asks, our files already are.
     "icebergCompatV2",
+    // Its variant columns are written unshredded, in Parquet's variant encoding (`io::parquet_variant`).
+    "variantType",
 ];
 
 /// The domain that holds a row-tracking table's highest row id.
@@ -427,7 +429,8 @@ impl DeltaCommitter {
             let identities = identity::columns(&current)?;
             let generated = generated(&identities, &arrow, &snapshot.metadata.partition_columns)?;
             let mapping = mapping(&snapshot.metadata)?;
-            let evolution = schema::table_schema(record, Some(&current), mapping, widens(&snapshot))?;
+            let evolution =
+                schema::table_schema(record, Some(&current), mapping, widens(&snapshot), variants(&snapshot))?;
             if evolution.mapping != mapping && snapshot.metadata.property("delta.columnMapping.maxColumnId").is_none() {
                 // An id above the schema's may still be in the files of a column another writer dropped.
                 return Err(
@@ -522,7 +525,13 @@ impl DeltaCommitter {
         if identity::columns(&schema)? != self.identities {
             return Err("another writer changed the table's identity columns".to_string());
         }
-        let evolution = schema::table_schema(&self.record, Some(&schema), mapping(metadata)?, None)?;
+        let evolution = schema::table_schema(
+            &self.record,
+            Some(&schema),
+            mapping(metadata)?,
+            None,
+            variants(&self.snapshot),
+        )?;
         if evolution.changed {
             return Err("another writer dropped a column the record writes".to_string());
         }
@@ -624,7 +633,7 @@ fn generated(
 /// Commit 0 of a table of `record`, partitioned by `partition_by`: a plain table, which every Delta reader opens. Its
 /// files name their columns as the record does.
 fn create(record: &DataType, partition_by: &[String]) -> Result<String, String> {
-    let evolution = schema::table_schema(record, None, Mapping::None, None)?;
+    let evolution = schema::table_schema(record, None, Mapping::None, None, Variants::Json)?;
     for name in partition_by {
         written_partition_column(&evolution.schema, name)?;
     }
@@ -917,6 +926,14 @@ fn wall_clock(micros: i64, digits: u32, separator: char) -> String {
         secs % 60,
         width = digits as usize
     )
+}
+
+/// How the table holds a new column of a variant: natively where it has the `variantType` feature.
+fn variants(snapshot: &Snapshot) -> Variants {
+    match (snapshot.protocol.writer_features.iter().flatten()).any(|f| f == "variantType") {
+        true => Variants::Native,
+        false => Variants::Json,
+    }
 }
 
 /// The table's partition columns when it lets a writer widen its columns, as `schema::table_schema` takes them.
@@ -1365,7 +1382,7 @@ mod tests {
     }
 
     fn new_schema(record: &DataType) -> StructType {
-        schema::table_schema(record, None, Mapping::name(0), None)
+        schema::table_schema(record, None, Mapping::name(0), None, Variants::Json)
             .unwrap()
             .schema
     }
@@ -1844,7 +1861,7 @@ mod tests {
     #[test]
     fn a_table_that_maps_its_columns_by_name_or_id_has_them_written_under_their_physical_names_and_ids() {
         let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
-        let mapped = schema::table_schema(&record, None, Mapping::name(0), None)
+        let mapped = schema::table_schema(&record, None, Mapping::name(0), None, Variants::Json)
             .unwrap()
             .schema;
         for mode in ["name", "id"] {
@@ -1875,7 +1892,7 @@ mod tests {
     #[test]
     fn a_mapped_table_without_its_highest_id_takes_a_record_that_adds_no_column() {
         let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
-        let mapped = schema::table_schema(&record, None, Mapping::name(0), None)
+        let mapped = schema::table_schema(&record, None, Mapping::name(0), None, Variants::Json)
             .unwrap()
             .schema;
         let table = table_with(&record, &["host"], |a| {
@@ -1917,7 +1934,9 @@ mod tests {
         let xs = DataType::Array(Box::new(DataType::I64));
         let record = st(&[("host", DataType::Str), ("xs", xs.clone())]);
         let iceberg = Mapping::iceberg(0);
-        let mapped = schema::table_schema(&record, None, iceberg, None).unwrap().schema;
+        let mapped = schema::table_schema(&record, None, iceberg, None, Variants::Json)
+            .unwrap()
+            .schema;
         let table = |schema: &StructType, configuration: Value| {
             let schema = schema.to_json();
             table_with(&record, &[], move |a| {

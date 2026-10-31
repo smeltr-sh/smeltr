@@ -102,8 +102,8 @@
           <code>deletionVectors</code>, <code>vacuumProtocolCheck</code>,
           <code>timestampNtz</code>, <code>clustering</code>, <code>rowTracking</code>,
           <code>typeWidening</code>, <code>identityColumns</code>,
-          <code>inCommitTimestamp</code>, <code>materializePartitionColumns</code> and
-          <code>icebergCompatV2</code>;
+          <code>inCommitTimestamp</code>, <code>materializePartitionColumns</code>,
+          <code>icebergCompatV2</code> and <code>variantType</code>;
         </li>
         <li>its files are Parquet;</li>
         <li>it maps columns by name or by id, or not at all;</li>
@@ -253,7 +253,9 @@
         <tr><th scope="row"><code>f64</code></th><td><code>double</code></td></tr>
         <tr><th scope="row"><code>str</code></th><td><code>string</code></td></tr>
         <tr
-          ><th scope="row"><code>variant</code></th><td><code>string</code>, the value as JSON</td
+          ><th scope="row"><code>variant</code></th><td
+            >JSON <code>string</code>, or native <code>variant</code> in a table with the
+            <code>variantType</code> feature</td
           ></tr
         >
         <tr><th scope="row"><code>datetime</code></th><td><code>timestamp</code>, in UTC</td></tr>

@@ -26,6 +26,8 @@ pub mod capture;
 pub mod child;
 pub mod held;
 mod memory;
+// What the sizing guide states of how a deployment is sized (`website/src/lib/worker-sizing.json`).
+pub use memory::{BASELINE_BYTES, COLUMNAR_BYTES_PER_THREAD, LEAST_BATCH_BYTES, LEAST_COLUMNAR_BYTES, SENDER_BYTES};
 pub mod metrics_endpoint;
 
 use crate::config_file::{self, LoadedSystem};
@@ -791,8 +793,9 @@ fn merge_packs(repo_dir: &Path) -> Result<(), String> {
     let chunks = output::entry::iter_from_counts(counts, odb, Box::new(gix::progress::Discard), Default::default())
         .map_err(|e| failed(&e))?;
     // In memory: a clone holds configuration and the pointers to lookup files, never their bytes.
+    // In order: the threads finish chunks in any order, and a delta names its base by its place in the pack.
     let mut bytes = output::bytes::FromEntriesIter::new(
-        chunks.map(|chunk| chunk.map(|(_, entries)| entries)),
+        gix::parallel::InOrderIter::from(chunks),
         Vec::new(),
         entries,
         gix_pack::data::Version::V2,

@@ -1,7 +1,8 @@
 <!--
   One schema's fields, as its table: each field's path, the type it must hold, and what it means. A field a row must
   hold is starred. A search narrows it to the fields whose path or description holds the words. The Elasticsearch
-  view shows the type each field maps to there, and chooses it where the schema is the group's own.
+  view shows the type each field maps to there, and chooses it where the schema is the group's own. A long table
+  shows its first fields until Show all.
 -->
 <script lang="ts">
   import type { SchemaDto, SchemaFieldDto } from './api';
@@ -95,7 +96,7 @@
   /** Whether any field gives an example, so the column is there only where it says something. */
   let examples = $derived(of.fields.some((f) => f.example));
 
-  let shown = $derived.by(() => {
+  let found = $derived.by(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return of.fields;
     return of.fields.filter(
@@ -103,6 +104,28 @@
         f.field.toLowerCase().includes(needle) ||
         (f.description ?? '').toLowerCase().includes(needle),
     );
+  });
+
+  /** Rows a table shows before Show all: a standard's thousands take the browser seconds to lay out. */
+  const SHOWN = 100;
+  /** Stays on while the search changes, until the schema is closed. */
+  let showAll = $state(false);
+  let shown = $derived(showAll ? found : found.slice(0, SHOWN));
+
+  /** The widest of `texts`, in characters. */
+  function widest(texts: (string | undefined)[]): number {
+    return texts.reduce((w, t) => Math.max(w, t?.length ?? 0), 0);
+  }
+  // The columns are as wide as the widest of all the fields, not of the rows on screen, so they hold still while
+  // the browser lays out only what is in view. Field, type and example are monospace, so a character is a `ch`.
+  let columns = $derived.by(() => {
+    const field = `min(calc(${widest(of.fields.map((f) => f.field)) + 1}ch + 1rem), 45%)`;
+    const type = `calc(${Math.max(4, widest(of.fields.map((f) => f.type)))}ch + 1rem)`;
+    if (view === 'elasticsearch') return `${field} ${type} minmax(0, 1fr)`;
+    const example = examples
+      ? ` min(calc(${widest(of.fields.map((f) => f.example))}ch + 1rem), 18rem)`
+      : '';
+    return `${field} ${type} minmax(0, 1fr)${example}`;
   });
 </script>
 
@@ -114,7 +137,7 @@
     <span class="dim" aria-hidden="true">Fields shown as</span>
     <Segmented label="Fields shown as" options={[...VIEWS]} bind:value={view} />
   </div>
-  <table class="fields" class:mapped={view === 'elasticsearch'}>
+  <table class="fields" class:mapped={view === 'elasticsearch'} style:--columns={columns}>
     <thead>
       <tr>
         <th>Field</th>
@@ -179,8 +202,17 @@
       {/each}
     </tbody>
   </table>
-  {#if shown.length < of.fields.length}
-    <p class="dim">{count(shown.length, 'field')} of {of.fields.length} hold “{q.trim()}”.</p>
+  {#if shown.length < found.length}
+    <div class="more">
+      <span class="dim"
+        >{SHOWN} of {found.length < of.fields.length
+          ? `the ${found.length} fields that hold “${q.trim()}”`
+          : `${found.length} fields`} shown</span
+      >
+      <button type="button" class="compact" onclick={() => (showAll = true)}>Show all</button>
+    </div>
+  {:else if found.length < of.fields.length}
+    <p class="dim">{count(found.length, 'field')} of {of.fields.length} hold “{q.trim()}”.</p>
   {/if}
 {/if}
 
@@ -198,23 +230,58 @@
   }
 
   /* A row of dropdowns reads level with its text. */
-  .mapped td {
-    vertical-align: middle;
+  .mapped tr {
+    align-items: center;
   }
 
   .mapping .dim {
     margin-left: 0.4rem;
   }
 
+  /* Each row a grid of the same columns, not a table's layout, so a row off screen can be left unlaid: a table lays
+     out every row to size its columns. The columns come from `columns`, measured in the monospace each row is set in
+     so that a `ch` is one of the fields' characters. */
   .fields {
+    display: block;
     width: 100%;
-    border-collapse: collapse;
+  }
+
+  .fields thead,
+  .fields tbody {
+    display: block;
+  }
+
+  .fields tr {
+    display: grid;
+    grid-template-columns: var(--columns);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: var(--text-note);
+  }
+
+  .fields :is(th, td):not(.mono) {
+    font-family: var(--font-body);
+  }
+
+  .fields tbody tr {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 1.6rem;
+  }
+
+  .more {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+  }
+
+  .more .dim {
+    font-size: var(--text-note);
   }
 
   th,
   td {
     padding: 0.25rem 0.5rem;
-    border-bottom: 1px solid var(--border);
     text-align: left;
     vertical-align: top;
     font-size: var(--text-note);
@@ -229,6 +296,8 @@
   }
 
   .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 

@@ -2432,7 +2432,7 @@ mod tests {
 
     #[test]
     fn a_file_written_under_physical_names_carries_them_at_every_depth() {
-        use crate::io::delta::schema::{Mapping, physical, table_schema};
+        use crate::io::delta::schema::{Mapping, Variants, physical, table_schema};
         use arrow_array::cast::AsArray;
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
         let record = st(
@@ -2443,7 +2443,9 @@ mod tests {
             false,
         );
         let schema = Schema::new(&record).unwrap();
-        let table = table_schema(&record, None, Mapping::name(0), None).unwrap().schema;
+        let table = table_schema(&record, None, Mapping::name(0), None, Variants::Json)
+            .unwrap()
+            .schema;
         let written = physical(schema.arrow(), &table);
         let labelled = schema.clone().with_written(written.clone());
 

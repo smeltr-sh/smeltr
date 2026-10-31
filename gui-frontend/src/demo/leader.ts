@@ -600,6 +600,7 @@ export class DemoLeader {
         };
       }
       if (path === '/api/branches') return this.branches();
+      if (path === '/api/preview/schema-standards') return this.ask('/schemas/standards', {});
       if (within === '/tests' && branch) return this.tests(branch, scope, []);
       if (change?.[2] === 'tests') {
         const of = this.branch(decodeURIComponent(change[1]));
