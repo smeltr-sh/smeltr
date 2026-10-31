@@ -49,14 +49,16 @@
     Untick a field to remove it. <strong>Find a field</strong> narrows the list, and
     <strong>Remove all</strong> and <strong>Keep all</strong> act on the fields it shows. A field a
     JSON or key-value parser read without declaring it is not in the list: to remove it, type its
-    name and choose <strong>Remove &lt;name&gt;</strong> under the search box. A name that is not a field
-    at that point is an error.
+    name and choose <strong>Remove &lt;name&gt;</strong> under the search box. A name that is not a
+    field at that point is an error, except on a
+    <a href="#how-it-works">record a JSON or key-value parser read</a>, which can hold other keys.
   </p>
 
   <h2 id="how-it-works">How it works</h2>
   <p>
-    With no filter, later steps cannot read a removed field, and a step that does fails to compile.
-    A later step can write the name again.
+    With no filter, a later step that reads a removed field fails to compile. The exception is a
+    record a JSON or key-value parser read: it can hold keys the parser did not declare, so reading
+    the removed name compiles and gives null. A later step can write the name again.
   </p>
 
   <h3 id="objects">Objects</h3>
