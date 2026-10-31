@@ -139,19 +139,18 @@ fn with_id(field: &Field, id: i32, ty: &Type, path: &str) -> Result<(Field, Writ
 ///
 /// Err names the field when the default is not a value of its type, or a struct's required field has none.
 pub fn write_default(field: &NestedField, arrow: &Arrow, path: &str) -> Result<ArrayRef, String> {
-    let default = field.other.get("write-default").filter(|d| !d.is_null());
-    let Some(default) = default else {
+    single_value(field.other.get("write-default"), &field.field_type, arrow, path)
+}
+
+/// `value`, the spec's JSON single value of a `ty`, as one row of `arrow`; null where there is none.
+fn single_value(value: Option<&serde_json::Value>, ty: &Type, arrow: &Arrow, path: &str) -> Result<ArrayRef, String> {
+    let Some(value) = value.filter(|v| !v.is_null()) else {
         return Ok(new_null_array(arrow, 1));
     };
-    let bad = || {
-        format!(
-            "the table's column {path} has the write default {default}, which is not of type {}",
-            field.field_type
-        )
-    };
-    let value: ArrayRef = match (&field.field_type, arrow) {
+    let bad = || format!("the table's column {path} has the write default {value}, which is not of type {ty}");
+    let array: ArrayRef = match (ty, arrow) {
         (Type::Struct(s), Arrow::Struct(fields)) => {
-            if default.as_object().is_none_or(|o| !o.is_empty()) {
+            if value.as_object().is_none_or(|o| !o.is_empty()) {
                 return Err(bad());
             }
             let children = (s.fields.iter().zip(fields))
@@ -169,16 +168,8 @@ pub fn write_default(field: &NestedField, arrow: &Arrow, path: &str) -> Result<A
             Arc::new(StructArray::new(fields.clone(), children, None))
         }
         (Type::List(l), Arrow::List(element)) => {
-            let items = default.as_array().ok_or_else(bad)?;
-            let item = NestedField {
-                id: l.element_id,
-                name: "element".into(),
-                required: l.element_required,
-                field_type: (*l.element).clone(),
-                doc: None,
-                other: Default::default(),
-            };
-            let values = items_array(items, &item, element.data_type(), path)?;
+            let items = value.as_array().ok_or_else(bad)?;
+            let values = single_values(items, &l.element, element.data_type(), path)?;
             let offsets = OffsetBuffer::from_lengths([items.len()]);
             Arc::new(ListArray::new(element.clone(), offsets, values, None))
         }
@@ -188,16 +179,8 @@ pub fn write_default(field: &NestedField, arrow: &Arrow, path: &str) -> Result<A
             };
             let part = |name: &str, at: usize| -> Result<ArrayRef, String> {
                 let ty: Type = serde_json::from_value(map[name].clone()).map_err(|_| bad())?;
-                let item = NestedField {
-                    id: map[format!("{name}-id")].as_i64().ok_or_else(bad)? as i32,
-                    name: name.into(),
-                    required: false,
-                    field_type: ty,
-                    doc: None,
-                    other: Default::default(),
-                };
-                let items = default[format!("{name}s")].as_array().ok_or_else(bad)?;
-                items_array(items, &item, parts[at].data_type(), path)
+                let items = value[format!("{name}s")].as_array().ok_or_else(bad)?;
+                single_values(items, &ty, parts[at].data_type(), path)
             };
             let (keys, values) = (part("key", 0)?, part("value", 1)?);
             if keys.len() != values.len() || keys.null_count() > 0 {
@@ -207,20 +190,16 @@ pub fn write_default(field: &NestedField, arrow: &Arrow, path: &str) -> Result<A
             let entries_array = StructArray::new(parts.clone(), vec![keys, values], None);
             Arc::new(MapArray::new(entries.clone(), offsets, entries_array, None, *sorted))
         }
-        (Type::Primitive(p), arrow) => primitive_default(p, default, arrow).ok_or_else(bad)?,
+        (Type::Primitive(p), arrow) => primitive_default(p, value, arrow).ok_or_else(bad)?,
         _ => return Err(bad()),
     };
-    Ok(value)
+    Ok(array)
 }
 
-/// `items`, a list's or a map's single values, each one of `item`, as one array of `arrow`.
-fn items_array(items: &[serde_json::Value], item: &NestedField, arrow: &Arrow, path: &str) -> Result<ArrayRef, String> {
+/// `items`, a list's or a map's single values, each a `ty`, as one array of `arrow`.
+fn single_values(items: &[serde_json::Value], ty: &Type, arrow: &Arrow, path: &str) -> Result<ArrayRef, String> {
     let arrays = (items.iter())
-        .map(|value| {
-            let mut field = item.clone();
-            field.other.insert("write-default".into(), value.clone());
-            write_default(&field, arrow, path)
-        })
+        .map(|item| single_value(Some(item), ty, arrow, path))
         .collect::<Result<Vec<_>, String>>()?;
     let refs: Vec<&dyn Array> = arrays.iter().map(|a| a.as_ref()).collect();
     Ok(match refs.is_empty() {
@@ -306,7 +285,11 @@ fn column(name: &str, ty: &Type, nullable: bool, id: i32, path: &str) -> Result<
     let data_type = match ty {
         Type::Primitive(p) => primitive_arrow(p)
             .ok_or_else(|| format!("the table's column {path} is a {p}, a type this writer cannot write"))?,
-        Type::Struct(s) => Arrow::Struct(labelled(&Fields::empty(), &s.fields, path)?.0),
+        Type::Struct(s) => Arrow::Struct(
+            (s.fields.iter())
+                .map(|t| column(&t.name, &t.field_type, true, t.id, &at(path, &t.name)))
+                .collect::<Result<Fields, String>>()?,
+        ),
         Type::List(l) => Arrow::List(Arc::new(column(
             "element",
             &l.element,
