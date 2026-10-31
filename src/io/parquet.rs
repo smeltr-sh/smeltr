@@ -204,7 +204,7 @@ impl Schema {
             panic!("a written schema is the record's own, renamed, with metadata added or a leaf narrowed");
         };
         Schema {
-            narrowed: fields != *self.arrow.fields(),
+            narrowed: narrows_a_leaf(&Arrow::Struct(self.arrow.fields().clone()), &Arrow::Struct(fields)),
             written: Some(written),
             ..self
         }
@@ -226,6 +226,17 @@ impl Schema {
             annotations: annotations.into(),
             ..self
         }
+    }
+
+    /// This schema, its chunks cut without their variants' own bytes, for a route on which no destination holds a
+    /// variant as Parquet's variant.
+    pub fn without_variant_bytes(self) -> Schema {
+        Schema { variants: None, ..self }
+    }
+
+    /// Whether its chunks carry their variants' own bytes.
+    pub fn cuts_variant_bytes(&self) -> bool {
+        self.variants.is_some()
     }
 
     /// This schema, its files written with `computed` after the record's columns.
@@ -414,15 +425,36 @@ fn narrowed(node: &Node, written: &Arrow) -> Option<Arrow> {
             Some(Arrow::List(Arc::new(field.as_ref().clone().with_data_type(t))))
         }
         (Kind::Struct(_) | Kind::List(..), _) => None,
-        (Kind::Variant, w @ Arrow::Struct(fields)) if variant_group(fields) => Some(w.clone()),
+        (Kind::Variant, w @ Arrow::Struct(fields)) if is_variant_group(fields) => Some(w.clone()),
         (_, w) if *w == node.arrow => Some(node.arrow.clone()),
         (_, w) if narrows(&node.ty, w) => Some(w.clone()),
         _ => None,
     }
 }
 
-/// Whether `fields` are Parquet's variant group, which a table holds a variant in: its metadata and its value.
-fn variant_group(fields: &Fields) -> bool {
+/// Whether `written`, which `narrowed` made of `ours`, holds a leaf narrower than ours, which a row may not fit. A
+/// variant held as Parquet's variant group always fits.
+fn narrows_a_leaf(ours: &Arrow, written: &Arrow) -> bool {
+    match (ours, written) {
+        (Arrow::Utf8, Arrow::Struct(fields)) if is_variant_group(fields) => false,
+        (Arrow::Struct(o), Arrow::Struct(w)) => {
+            (o.iter().zip(w)).any(|(o, w)| narrows_a_leaf(o.data_type(), w.data_type()))
+        }
+        (Arrow::List(o), Arrow::List(w)) => narrows_a_leaf(o.data_type(), w.data_type()),
+        (o, w) => o != w,
+    }
+}
+
+/// Parquet's variant group, unshredded, which a table holds a variant in: its metadata and its value.
+pub fn variant_group() -> Arrow {
+    Arrow::Struct(Fields::from(vec![
+        Field::new("metadata", Arrow::Binary, false),
+        Field::new("value", Arrow::Binary, false),
+    ]))
+}
+
+/// Whether `fields` are Parquet's variant group's (`variant_group`).
+fn is_variant_group(fields: &Fields) -> bool {
     let names: Vec<(&str, &Arrow)> = fields.iter().map(|f| (f.name().as_str(), f.data_type())).collect();
     names == [("metadata", &Arrow::Binary), ("value", &Arrow::Binary)]
 }

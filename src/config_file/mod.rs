@@ -156,6 +156,10 @@ impl LoadedSystem {
         errors.extend(self.check_bytes_fields(&compiled));
         let (records, refused) = self.parquet_records(&compiled);
         compiled.records = records;
+        compiled.native_variants = (self.topology.destinations.iter())
+            .filter(|d| d.kind.holds_native_variants())
+            .map(|d| d.id)
+            .collect();
         compiled.payloads = self
             .topology
             .destinations

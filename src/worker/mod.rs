@@ -5559,6 +5559,7 @@ mod tests {
             },
             dlq_of: std::collections::HashMap::from([(1, vec![2])]),
             records: std::collections::HashMap::new(),
+            native_variants: Default::default(),
             payloads: std::collections::HashMap::new(),
             id_fields: Vec::new(),
         };
