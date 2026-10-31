@@ -767,13 +767,22 @@ mod tests {
         assert_eq!(new.fields[1], field(2, "v", variant()));
 
         // A table upgraded to version 3 keeps its text column, and a column added after takes the type.
-        let grown = st(&[("a", DataType::I64), ("v", DataType::Variant), ("w", DataType::Variant)], false);
+        let grown = st(
+            &[("a", DataType::I64), ("v", DataType::Variant), ("w", DataType::Variant)],
+            false,
+        );
         let e = table_schema(&grown, Some(&old), 2, 3).unwrap();
-        assert_eq!(e.schema.fields[1..], [field(2, "v", prim(Primitive::String)), field(3, "w", variant())]);
+        assert_eq!(
+            e.schema.fields[1..],
+            [field(2, "v", prim(Primitive::String)), field(3, "w", variant())]
+        );
         assert!(!table_schema(&grown, Some(&e.schema), 3, 3).unwrap().changed);
 
         let text = st(&[("a", DataType::I64), ("v", DataType::Str)], false);
-        assert!(table_schema(&text, Some(&new), 2, 3).is_err(), "a variant column holds no text");
+        assert!(
+            table_schema(&text, Some(&new), 2, 3).is_err(),
+            "a variant column holds no text"
+        );
     }
 
     /// A column the table holds narrower than the record types it takes the record's values, each converted as it is
