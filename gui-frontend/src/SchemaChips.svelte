@@ -39,7 +39,7 @@
 {/each}
 {#if !readOnly && offered.length === 0}
   <!-- Nothing left to choose: a schema is made on the Schemas page. -->
-  <a class="add" href="#/build/schemas">+ add schema</a>
+  <a class="add" href="#/build/schemas">Add a schema on the Schemas page</a>
 {:else if !readOnly}
   <select aria-label={adding} bind:value={picking} onchange={() => add(picking)}>
     <option value="">+ add schema</option>
