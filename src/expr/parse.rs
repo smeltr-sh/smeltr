@@ -270,7 +270,7 @@ pub fn move_stmts(from: &str, to: &str, n: usize, span: Span) -> [Stmt; 3] {
         },
         Stmt::Delete {
             names: vec![from.to_string()],
-            clears: true,
+            moved: true,
             span,
         },
         Stmt::Assign {
@@ -771,7 +771,7 @@ impl<'s> Parser<'s> {
                     .collect::<Result<_, _>>()?;
                 out.push(Stmt::Delete {
                     names,
-                    clears: false,
+                    moved: false,
                     span,
                 });
             }
@@ -2756,6 +2756,13 @@ mod tests {
     #[test]
     fn a_bare_identifier_chain_stays_one_name_through_the_parser() {
         assert_eq!(p("x.length()"), "x.length()");
+    }
+
+    #[test]
+    fn a_method_call_on_the_record_keeps_the_record_as_its_receiver() {
+        assert_eq!(p("$.keys()"), "$.keys()");
+        assert_eq!(p("$.a.keys()"), "a.keys()");
+        assert_eq!(p("$.keys"), "keys");
     }
 
     #[test]

@@ -29,7 +29,7 @@ use arrow_array::{
     StructArray, TimestampMicrosecondArray, new_null_array,
 };
 use arrow_buffer::{NullBuffer, OffsetBuffer};
-use arrow_schema::DataType as Arrow;
+use arrow_schema::{DataType as Arrow, Fields};
 use object_store::path::Path;
 use object_store::{ObjectStore, PutMode, PutPayload};
 
@@ -102,6 +102,9 @@ const COVERED: &[&str] = &[
     "writer generatedColumns",
     "writer clustering",
     "writer typeWidening",
+    "writer inCommitTimestamp",
+    "writer materializePartitionColumns",
+    "writer icebergCompatV2",
     "reader columnMapping",
     "reader deletionVectors",
     "reader v2Checkpoint",
@@ -109,7 +112,17 @@ const COVERED: &[&str] = &[
     "reader typeWidening",
     "mapping none",
     "mapping name",
+    "mapping id",
+    "field ids checked",
+    "element ids checked",
+    "ids unique",
+    "iceberg enabled",
+    "iceberg unmapped",
+    "iceberg deletion vectors",
+    "iceberg missing nested id",
+    "iceberg type change refused",
     "mapping name without maxColumnId",
+    "mapping without maxColumnId written",
     "mapping unsupported",
     "check constraint",
     "checkpointInterval",
@@ -150,6 +163,9 @@ const COVERED: &[&str] = &[
     "unhonoured delta.invariants",
     "unhonoured nested identity",
     "other identity change",
+    "in-commit timestamps enabled",
+    "in-commit timestamp ahead",
+    "in-commit timestamps checked",
     "orc",
     "fault Lost",
     "fault Dropped",
@@ -336,7 +352,7 @@ fn partitioning_refused(record: &DataType, by: &[String]) -> bool {
 }
 
 /// The writer features of tables made here: the ones the writer supports, and some it does not.
-const FEATURES: [&str; 15] = [
+const FEATURES: [&str; 18] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -352,6 +368,9 @@ const FEATURES: [&str; 15] = [
     "generatedColumns",
     "clustering",
     "typeWidening",
+    "inCommitTimestamp",
+    "materializePartitionColumns",
+    "icebergCompatV2",
 ];
 
 const READER_FEATURES: [&str; 5] = [
@@ -389,8 +408,9 @@ fn protocol(rng: &mut Rng) -> (Value, bool) {
     (p, refused)
 }
 
-/// Random table properties, and whether the writer must refuse them.
-fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool {
+/// Random table properties, and whether the writer must refuse them. An `iceberg` table is IcebergCompatV2, and
+/// mostly maps its columns as one must.
+fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType, iceberg: bool) -> bool {
     let mut refused = false;
     let set = |metadata: &mut Value, key: &str, value: &str| {
         metadata["configuration"][key] = json!(value);
@@ -398,32 +418,61 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool
             reach(property);
         }
     };
-    match rng.below(8) {
+    let draw = if iceberg && !rng.chance(8) { 1 } else { rng.below(8) };
+    match draw {
         0 => {
             set(metadata, "delta.columnMapping.mode", "none");
             reach("mapping none");
         }
         1 | 2 => {
-            let mapped = schema::table_schema(record, None, Mapping::Name { max_column_id: 0 }, None).unwrap();
-            let Mapping::Name { max_column_id } = mapped.mapping else {
+            let mapped = schema::table_schema(
+                record,
+                None,
+                Mapping::Name {
+                    max_column_id: 0,
+                    iceberg,
+                },
+                None,
+            )
+            .unwrap();
+            let Mapping::Name { max_column_id, .. } = mapped.mapping else {
                 unreachable!("a mapped schema counts its ids")
             };
             metadata["schemaString"] = json!(mapped.schema.to_json());
-            set(metadata, "delta.columnMapping.mode", "name");
+            let mode = *rng.pick(&["name", "id"]);
+            reach(format!("mapping {mode}"));
+            set(metadata, "delta.columnMapping.mode", mode);
             if rng.chance(6) {
                 reach("mapping name without maxColumnId");
-                refused = true;
             } else {
-                reach("mapping name");
                 set(metadata, "delta.columnMapping.maxColumnId", &max_column_id.to_string());
+            }
+            if iceberg && rng.chance(4) {
+                let stripped = metadata["schemaString"]
+                    .as_str()
+                    .unwrap()
+                    .replace("delta.columnMapping.nested.ids", "x");
+                if stripped != metadata["schemaString"] {
+                    reach("iceberg missing nested id");
+                    refused = true;
+                }
+                metadata["schemaString"] = json!(stripped);
             }
         }
         3 => {
-            set(metadata, "delta.columnMapping.mode", rng.pick(&["id", "Name", "other"]));
+            set(metadata, "delta.columnMapping.mode", rng.pick(&["ID", "Name", "other"]));
             reach("mapping unsupported");
             refused = true;
         }
         _ => {}
+    }
+    if iceberg {
+        set(metadata, "delta.enableIcebergCompatV2", "true");
+        reach("iceberg enabled");
+        if !matches!(draw, 1..=3) {
+            reach("iceberg unmapped");
+            refused = true;
+        }
     }
     if rng.chance(8) {
         set(metadata, "delta.constraints.positive", "n > 0");
@@ -759,6 +808,117 @@ fn identity_values(start: i64, step: i64, mark: Option<i64>, n: usize) -> Option
         .collect()
 }
 
+/// Each column the table gives an id is written with it as its field id, at any depth.
+fn field_ids(table: &[schema::StructField], written: &Fields) -> Result<(), String> {
+    for column in table {
+        let Some(field) = written.iter().find(|f| f.name() == column.physical_name()) else {
+            continue;
+        };
+        if let Some(id) = column.column_id() {
+            reach("field ids checked");
+            let carried = field.metadata().get(::parquet::arrow::PARQUET_FIELD_ID_META_KEY);
+            if carried != Some(&id.to_string()) {
+                return Err(format!(
+                    "{} is written with field id {carried:?}, not {id}",
+                    column.name
+                ));
+            }
+        }
+        let element = |t: &Arrow| match t {
+            Arrow::List(f) | Arrow::LargeList(f) => Some(f.data_type().clone()),
+            _ => None,
+        };
+        match (&column.data_type, field.data_type()) {
+            (schema::Type::Struct(s), Arrow::Struct(f)) => field_ids(&s.fields, f)?,
+            (schema::Type::Array { element: e, .. }, t) => {
+                if let (schema::Type::Struct(s), Some(Arrow::Struct(f))) = (&**e, element(t)) {
+                    field_ids(&s.fields, &f)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Each array's element is written with the id the table gives it under `delta.columnMapping.nested.ids` as its field
+/// id, and with none where it gives none.
+fn element_ids(table: &[schema::StructField], written: &Fields) -> Result<(), String> {
+    fn walk(t: &schema::Type, arrow: &Arrow, ids: Option<&Value>, key: &str, name: &str) -> Result<(), String> {
+        match (t, arrow) {
+            (schema::Type::Struct(s), Arrow::Struct(f)) => element_ids(&s.fields, f),
+            (schema::Type::Array { element, .. }, Arrow::List(e)) => {
+                let key = format!("{key}.element");
+                let given = ids
+                    .and_then(|ids| ids.get(&key))
+                    .and_then(Value::as_i64)
+                    .map(|id| id.to_string());
+                if given.is_some() {
+                    reach("element ids checked");
+                }
+                let carried = e.metadata().get(::parquet::arrow::PARQUET_FIELD_ID_META_KEY).cloned();
+                if carried != given {
+                    return Err(format!(
+                        "{name}'s {key} is written with field id {carried:?}, not {given:?}"
+                    ));
+                }
+                walk(element, e.data_type(), ids, &key, name)
+            }
+            _ => Ok(()),
+        }
+    }
+    for column in table {
+        let Some(field) = written.iter().find(|f| f.name() == column.physical_name()) else {
+            continue;
+        };
+        let ids = column.metadata.get("delta.columnMapping.nested.ids");
+        walk(
+            &column.data_type,
+            field.data_type(),
+            ids,
+            column.physical_name(),
+            &column.name,
+        )?;
+    }
+    Ok(())
+}
+
+/// No two of the table's columns, nor of its arrays' elements, share an id.
+fn unique_ids(schema: &StructType) -> Result<(), String> {
+    let ids = ids(schema);
+    let distinct: BTreeSet<i64> = ids.iter().copied().collect();
+    if distinct.len() != ids.len() {
+        return Err(format!("the table's ids {ids:?} repeat"));
+    }
+    if ids.len() > 1 {
+        reach("ids unique");
+    }
+    Ok(())
+}
+
+/// Every id `schema` gives, its columns' and its arrays' elements'.
+fn ids(schema: &StructType) -> Vec<i64> {
+    let json: Value = serde_json::from_str(&schema.to_json()).unwrap();
+    fn collect(v: &Value, out: &mut Vec<i64>) {
+        match v {
+            Value::Object(m) => {
+                if let Some(id) = m.get("delta.columnMapping.id").and_then(Value::as_i64) {
+                    out.push(id);
+                }
+                if let Some(ids) = m.get("delta.columnMapping.nested.ids").and_then(Value::as_object) {
+                    out.extend(ids.values().filter_map(Value::as_i64));
+                }
+                m.values().for_each(|v| collect(v, out));
+            }
+            Value::Array(a) => a.iter().for_each(|v| collect(v, out)),
+            _ => {}
+        }
+    }
+    let mut ids = Vec::new();
+    collect(&json, &mut ids);
+    ids
+}
+
 fn kept_narrow(committer: &DeltaCommitter) -> Result<(), String> {
     for column in &committer.schema.fields {
         let schema::Type::Primitive(p) = &column.data_type else {
@@ -1060,14 +1220,22 @@ impl Run {
         reach("existing table");
         let mut actions: Vec<Value> = body.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         let mut refused = false;
+        let mut iceberg = false;
         for action in &mut actions {
             if let Some(p) = action.get_mut("protocol") {
-                let (random, refuses) = protocol(rng);
+                let (mut random, refuses) = protocol(rng);
+                // Often enough that the seeds reach an Iceberg table that holds arrays.
+                if let Some(features) = random["writerFeatures"].as_array_mut() {
+                    if !features.contains(&json!("icebergCompatV2")) && rng.chance(2) {
+                        features.push(json!("icebergCompatV2"));
+                    }
+                    iceberg = features.contains(&json!("icebergCompatV2")) && !rng.chance(4);
+                }
                 *p = random;
                 refused |= refuses;
             }
             if let Some(m) = action.get_mut("metaData") {
-                refused |= configuration(rng, m, &earlier);
+                refused |= configuration(rng, m, &earlier, iceberg);
             }
         }
         // A table of writer features knows type widening and identity columns more often than the protocol draw alone
@@ -1080,6 +1248,9 @@ impl Run {
                 }
                 if !features.contains(&json!("identityColumns")) && self.rng.chance(2) {
                     features.push(json!("identityColumns"));
+                }
+                if !features.contains(&json!("inCommitTimestamp")) && self.rng.chance(3) {
+                    features.push(json!("inCommitTimestamp"));
                 }
             }
         }
@@ -1096,7 +1267,7 @@ impl Run {
         if (writer == 6 || features.contains(&json!("identityColumns"))) && self.rng.chance(2) {
             refused |= identity_column(&mut self.rng, metadata, &self.record);
         }
-        if self.rng.chance(12) {
+        if self.rng.chance(8) {
             refused |= unhonoured(&mut self.rng, metadata);
         }
         // A table that knows type widening is narrowed more often: the writer must widen it if it enables widening,
@@ -1113,6 +1284,19 @@ impl Run {
         }
         if knows || !self.rng.chance(3) {
             narrow(&mut self.rng, metadata, &earlier);
+        }
+        if iceberg {
+            // Iceberg changes no date to a time.
+            let schema = metadata["schemaString"].as_str().unwrap_or_default();
+            if schema.contains(r#""fromType":"date""#) {
+                reach("iceberg type change refused");
+                refused = true;
+            }
+            if features.contains(&json!("deletionVectors")) && self.rng.chance(3) {
+                metadata["configuration"]["delta.enableDeletionVectors"] = json!("true");
+                reach("iceberg deletion vectors");
+                refused = true;
+            }
         }
         if features.contains(&json!("rowTracking")) {
             match self.rng.below(3) {
@@ -1139,6 +1323,24 @@ impl Run {
         }
         if features.contains(&json!("rowTracking")) && self.rng.chance(2) {
             actions.push(row_tracking(self.rng.below(1000) as i64));
+        }
+        if features.contains(&json!("inCommitTimestamp")) && self.rng.chance(2) {
+            reach("in-commit timestamps enabled");
+            // An earlier writer's clock may run ahead of this writer's.
+            let ahead = if self.rng.chance(3) {
+                reach("in-commit timestamp ahead");
+                1_000_000_000
+            } else {
+                0
+            };
+            for action in &mut actions {
+                if let Some(m) = action.get_mut("metaData") {
+                    m["configuration"]["delta.enableInCommitTimestamps"] = json!("true");
+                }
+                if let Some(info) = action.get_mut("commitInfo") {
+                    info["inCommitTimestamp"] = json!(now_ms() + ahead);
+                }
+            }
         }
         self.put(0, &actions);
         // Another writer's commit could make a table the writer must refuse one it may write.
@@ -1177,12 +1379,25 @@ impl Run {
         // A restart writes the batches again in files of their own.
         self.pending = None;
         let before = self.latest();
+        let no_max = self.load().is_ok_and(|s| {
+            matches!(s.metadata.property("delta.columnMapping.mode"), Some("name" | "id"))
+                && s.metadata.property("delta.columnMapping.maxColumnId").is_none()
+        });
         let by: Vec<&str> = self.partition_by.iter().map(String::as_str).collect();
         let opened = self.table.open(&self.record, &by);
         self.harvest()?;
         match opened {
+            Ok(_) if no_max && self.latest() != before => {
+                Err("the writer gave a new column an id in a table without maxColumnId".to_string())
+            }
             Ok(committer) => {
+                if no_max {
+                    reach("mapping without maxColumnId written");
+                }
                 kept_narrow(&committer)?;
+                field_ids(&committer.schema.fields, committer.written.fields())?;
+                element_ids(&committer.schema.fields, committer.written.fields())?;
+                unique_ids(&committer.schema)?;
                 self.committer = Some(committer);
                 Ok(true)
             }
@@ -1440,6 +1655,11 @@ impl Run {
         let mut schema = StructType::parse(&metadata.schema_string)?;
         let rng = &mut self.rng;
         let mut lines = vec![json!({"commitInfo": {"operation": "WRITE", "engineInfo": OTHER}})];
+        if snapshot.in_commit_timestamps() {
+            let now = now_ms();
+            lines[0]["commitInfo"]["inCommitTimestamp"] =
+                json!(snapshot.in_commit_timestamp.map_or(now, |t| now.max(t + 1)));
+        }
         // A column another writer may widen: one not partitioning a table that knows type widening.
         let knows = (snapshot.protocol.writer_features.iter().flatten()).any(|f| f == "typeWidening");
         let widenable = schema.fields.iter().position(|f| {
@@ -1524,8 +1744,9 @@ impl Run {
                     nullable: true,
                     metadata: Map::new(),
                 };
-                if let Ok(Mapping::Name { max_column_id }) = mapping(&metadata) {
-                    let id = max_column_id + 1;
+                if let Ok(Mapping::Name { max_column_id, .. }) = mapping(&metadata) {
+                    // A table without maxColumnId has its highest id in its schema, as this other writer drops none.
+                    let id = max_column_id.max(ids(&schema).into_iter().max().unwrap_or(0)) + 1;
                     field.metadata.insert("delta.columnMapping.id".into(), json!(id));
                     field
                         .metadata
@@ -1825,7 +2046,8 @@ impl Run {
                         },
                     };
                     let partition = (metadata["partitionColumns"].as_array()).is_some_and(|p| p.contains(name));
-                    if !widens || partition || !widens_to(from, to) {
+                    let iceberg = metadata["configuration"]["delta.enableIcebergCompatV2"] == "true";
+                    if !widens || partition || !widens_to(from, to) || (iceberg && from == "date") {
                         return Err(format!("commit {version} changes {name} from {from} to {to}"));
                     }
                     let mut change = json!({"fromType": from, "toType": to});
@@ -1849,6 +2071,38 @@ impl Run {
                     metadata = m.clone();
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Each commit to a table that keeps in-commit timestamps opens with a `commitInfo` whose timestamp is later than
+    /// the commit's before it.
+    fn check_in_commit_timestamps(&self) -> Result<(), String> {
+        let (mut enabled, mut last) = (false, None);
+        for (version, bytes) in &self.history {
+            let actions: Vec<Value> = (std::str::from_utf8(bytes).unwrap().lines())
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            if let Some(m) = actions.iter().find_map(|a| a.get("metaData")) {
+                enabled = m["configuration"]["delta.enableInCommitTimestamps"] == "true";
+            }
+            let timestamp = actions
+                .first()
+                .and_then(|a| a["commitInfo"]["inCommitTimestamp"].as_i64());
+            if enabled {
+                let Some(t) = timestamp else {
+                    return Err(format!("commit {version} opens with no inCommitTimestamp: {actions:?}"));
+                };
+                if last.is_some_and(|l| t <= l) {
+                    return Err(format!(
+                        "commit {version}'s inCommitTimestamp {t} is not after {last:?}"
+                    ));
+                }
+                if actions[0]["commitInfo"]["engineInfo"] == "smeltr" {
+                    reach("in-commit timestamps checked");
+                }
+            }
+            last = timestamp;
         }
         Ok(())
     }
@@ -1973,6 +2227,7 @@ impl Run {
         self.check_row_ids()?;
         self.check_type_changes()?;
         self.check_identity()?;
+        self.check_in_commit_timestamps()?;
         let replayed = self.replay(latest)?;
         let loaded = Replay {
             protocol: Some(serde_json::to_value(&snapshot.protocol).unwrap()),

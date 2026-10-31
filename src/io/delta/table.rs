@@ -46,7 +46,7 @@ use crate::ops::civil::MICROS_PER_DAY;
 use crate::plan::topology::{DeltaDestinationConfig, HeldSecrets, Records, UnityCatalogTable};
 
 /// The writer features of a table this writer can write. A table needing any other is refused.
-const WRITER_FEATURES: [&str; 14] = [
+const WRITER_FEATURES: [&str; 17] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -65,6 +65,13 @@ const WRITER_FEATURES: [&str; 14] = [
     "typeWidening",
     // Each identity column the record does not write is generated, from values reserved ahead in the log.
     "identityColumns",
+    // Each commit's timestamp follows the one before it, which the snapshot keeps.
+    "inCommitTimestamp",
+    // Our files hold every column the record writes, partition columns too, each its file's partition value.
+    "materializePartitionColumns",
+    // Its tables map their columns and give arrays' elements ids of their own, which our files carry; the rest of what
+    // it asks, our files already are.
+    "icebergCompatV2",
 ];
 
 /// The domain that holds a row-tracking table's highest row id.
@@ -121,7 +128,8 @@ pub fn destination(
     let file_schema = parquet::Schema::new(record).map_err(refused)?;
     let file_schema = file_schema
         .with_written(committer.written.clone())
-        .with_computed(committer.sequences.computed(&committer.schema));
+        .with_computed(committer.sequences.computed(&committer.schema))
+        .with_partition_columns(committer.partition_columns());
     let format = ParquetFormat::new(vec![file_schema], config.compression.into());
     // The protocol names no codec and no row group's size; a table names its files' size.
     let file_bytes = (committer.snapshot.metadata.property("delta.targetFileSize"))
@@ -304,13 +312,9 @@ impl Committer for DeltaCommitter {
         let now = now_ms();
         let version = self.snapshot.version + 1;
         let mut high_water_mark = high_water_mark(&self.snapshot).map_err(CommitError::Transient)?;
-        let mut commit_info = json!({
-            "timestamp": now,
-            "operation": "WRITE",
-            "operationParameters": {"mode": "Append"},
-            "isBlindAppend": true,
-            "engineInfo": "smeltr",
-        });
+        let mut commit_info = self.snapshot.commit_info(now, "WRITE");
+        commit_info["operationParameters"] = json!({"mode": "Append"});
+        commit_info["isBlindAppend"] = json!(true);
         if self.snapshot.metadata.flag("delta.enableRowTracking") == Some(true) {
             commit_info["tags"] = json!({"delta.rowTracking.preserved": "true"});
         }
@@ -387,6 +391,13 @@ impl Committer for DeltaCommitter {
 }
 
 impl DeltaCommitter {
+    /// Each partition column the files hold, by its physical name, with its place among the record's columns.
+    fn partition_columns(&self) -> Vec<(String, usize)> {
+        (self.partitions.iter())
+            .filter_map(|p| Some((p.physical.clone(), self.written.index_of(&p.physical).ok()?)))
+            .collect()
+    }
+
     /// The committer of the table whose log is `log`, created from `record` and partitioned by `partition_by` when
     /// missing, the record's new columns added. Err when the table cannot be written.
     fn open(log: Log, root: Root, partition_by: &[String], record: &DataType) -> Result<DeltaCommitter, String> {
@@ -415,8 +426,16 @@ impl DeltaCommitter {
             // Before the record's columns are committed: a table this writer refuses keeps its log as it was.
             let identities = identity::columns(&current)?;
             let generated = generated(&identities, &arrow, &snapshot.metadata.partition_columns)?;
-            let evolution =
-                schema::table_schema(record, Some(&current), mapping(&snapshot.metadata)?, widens(&snapshot))?;
+            let mapping = mapping(&snapshot.metadata)?;
+            let evolution = schema::table_schema(record, Some(&current), mapping, widens(&snapshot))?;
+            if evolution.mapping != mapping && snapshot.metadata.property("delta.columnMapping.maxColumnId").is_none() {
+                // An id above the schema's may still be in the files of a column another writer dropped.
+                return Err(
+                    "the table maps columns and has no delta.columnMapping.maxColumnId, so the record's new columns \
+                     can take no id"
+                        .to_string(),
+                );
+            }
             if let Some(why) = schema::refused_column(&evolution.schema) {
                 return Err(why);
             }
@@ -432,7 +451,7 @@ impl DeltaCommitter {
             tries += 1;
             let mut metadata = snapshot.metadata.clone();
             metadata.schema_string = evolution.schema.to_json();
-            if let Mapping::Name { max_column_id } = evolution.mapping {
+            if let Mapping::Name { max_column_id, .. } = evolution.mapping {
                 (metadata.configuration).insert("delta.columnMapping.maxColumnId".into(), max_column_id.to_string());
             }
             let version = snapshot.version + 1;
@@ -442,18 +461,13 @@ impl DeltaCommitter {
             } else {
                 "ADD COLUMNS"
             };
-            let body = [
-                line(
-                    "commitInfo",
-                    &json!({"timestamp": now_ms(), "operation": operation, "engineInfo": "smeltr"}),
-                ),
-                line("metaData", &metadata),
-            ]
-            .join("\n");
+            let info = line("commitInfo", &snapshot.commit_info(now_ms(), operation));
+            let committed = Action::parse(&info)?;
+            let body = [info, line("metaData", &metadata)].join("\n");
             // Taken or lost, the log is read again, and the columns are added or widened if they still need it.
             match log.create(&commit_name(version), body.into_bytes()) {
                 Ok(true) => {
-                    snapshot.committed(vec![Action::Metadata(Box::new(metadata))]);
+                    snapshot.committed(vec![committed, Action::Metadata(Box::new(metadata))]);
                     checkpoint_due = checkpoint::due(&snapshot.metadata, version);
                 }
                 taken_or_lost => {
@@ -701,19 +715,46 @@ fn fits(snapshot: &Snapshot) -> Result<(), String> {
             ));
         }
     }
-    mapping(metadata).map(|_| ())
+    let mapping = mapping(metadata)?;
+    if iceberg_compat_v2(metadata) {
+        if mapping == Mapping::None {
+            return Err("the table is IcebergCompatV2 and maps no columns, which IcebergCompatV2 requires".to_string());
+        }
+        if features.iter().any(|f| f == "deletionVectors") && metadata.flag("delta.enableDeletionVectors") == Some(true)
+        {
+            return Err(
+                "the table is IcebergCompatV2 and enables deletion vectors, which IcebergCompatV2 forbids".to_string(),
+            );
+        }
+        if let Some(why) = schema::not_iceberg(&StructType::parse(&metadata.schema_string)?) {
+            return Err(why);
+        }
+    }
+    Ok(())
 }
 
-/// The table's column mapping. Err for mapping by id, which this writer does not write.
+/// Whether the table is IcebergCompatV2, which an Iceberg reader can read once its metadata is converted.
+fn iceberg_compat_v2(metadata: &Metadata) -> bool {
+    metadata.flag("delta.enableIcebergCompatV2") == Some(true)
+}
+
+/// The table's column mapping. Err for a mode this writer does not write.
 fn mapping(metadata: &Metadata) -> Result<Mapping, String> {
     match metadata.property("delta.columnMapping.mode").unwrap_or("none") {
         "none" => Ok(Mapping::None),
-        "name" => {
-            let max_column_id = metadata
-                .property("delta.columnMapping.maxColumnId")
-                .and_then(|v| v.parse().ok())
-                .ok_or("the table maps columns by name and has no delta.columnMapping.maxColumnId")?;
-            Ok(Mapping::Name { max_column_id })
+        // A writer writes both alike: physical names, and each column's id as its field id. Only readers differ.
+        "name" | "id" => {
+            // Without its highest id, a table is written only as long as no new column needs one; see `open`.
+            let max_column_id = (metadata.property("delta.columnMapping.maxColumnId"))
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0);
+            let iceberg = iceberg_compat_v2(metadata);
+            // Another writer may count the ids of arrays' elements apart from its columns'.
+            let max_column_id = match iceberg {
+                true => max_column_id.max(schema::max_nested_id(&StructType::parse(&metadata.schema_string)?)),
+                false => max_column_id,
+            };
+            Ok(Mapping::Name { max_column_id, iceberg })
         }
         other => Err(format!("the table maps columns by {other}, which this writer does not")),
     }
@@ -1043,7 +1084,7 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
-    use ::parquet::arrow::ArrowWriter;
+    use ::parquet::arrow::{ArrowWriter, PARQUET_FIELD_ID_META_KEY};
     use arrow_array::builder::{ListBuilder, StringBuilder};
     use arrow_array::{
         ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray, StructArray, TimestampMicrosecondArray,
@@ -1324,7 +1365,7 @@ mod tests {
     }
 
     fn new_schema(record: &DataType) -> StructType {
-        schema::table_schema(record, None, Mapping::Name { max_column_id: 0 }, None)
+        schema::table_schema(record, None, Mapping::name(0), None)
             .unwrap()
             .schema
     }
@@ -1446,8 +1487,8 @@ mod tests {
         .unwrap();
         let why = table_with(&record, &[], configured("delta.constraints.positive", "a > 0")).refused(&record, &[]);
         assert!(why.contains("check constraint delta.constraints.positive"), "{why}");
-        let why = table_with(&record, &[], configured("delta.columnMapping.mode", "id")).refused(&record, &[]);
-        assert!(why.contains("maps columns by id"), "{why}");
+        let why = table_with(&record, &[], configured("delta.columnMapping.mode", "Name")).refused(&record, &[]);
+        assert!(why.contains("maps columns by Name"), "{why}");
         let why =
             table_with(&record, &[], configured("delta.checkpoint.writeStatsAsStruct", "true")).refused(&record, &[]);
         assert!(why.contains("writeStatsAsStruct to true"), "{why}");
@@ -1801,9 +1842,40 @@ mod tests {
     }
 
     #[test]
-    fn a_table_that_maps_its_columns_by_name_has_them_written_under_their_physical_names() {
+    fn a_table_that_maps_its_columns_by_name_or_id_has_them_written_under_their_physical_names_and_ids() {
         let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
-        let mapped = schema::table_schema(&record, None, Mapping::Name { max_column_id: 0 }, None)
+        let mapped = schema::table_schema(&record, None, Mapping::name(0), None)
+            .unwrap()
+            .schema;
+        for mode in ["name", "id"] {
+            let table = table_with(&record, &["host"], |a| {
+                if let Some(p) = a.get_mut("protocol") {
+                    *p = json!({"minReaderVersion": 2, "minWriterVersion": 5});
+                }
+                if let Some(m) = a.get_mut("metaData") {
+                    m["schemaString"] = json!(mapped.to_json());
+                    m["configuration"] =
+                        json!({"delta.columnMapping.mode": mode, "delta.columnMapping.maxColumnId": "2"});
+                }
+            });
+
+            let committer = table.open(&record, &["host"]).unwrap();
+
+            let names: Vec<&String> = committer.written.fields().iter().map(|f| f.name()).collect();
+            assert_eq!(names, [&physical(&mapped, "host"), &physical(&mapped, "n")]);
+            assert!(names[0].starts_with("col-"), "{names:?}");
+            let ids: Vec<Option<&str>> = (committer.written.fields().iter())
+                .map(|f| f.metadata().get(PARQUET_FIELD_ID_META_KEY).map(String::as_str))
+                .collect();
+            assert_eq!(ids, [Some("1"), Some("2")], "{mode}");
+            assert_eq!(committer.partitions[0].physical, physical(&mapped, "host"));
+        }
+    }
+
+    #[test]
+    fn a_mapped_table_without_its_highest_id_takes_a_record_that_adds_no_column() {
+        let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
+        let mapped = schema::table_schema(&record, None, Mapping::name(0), None)
             .unwrap()
             .schema;
         let table = table_with(&record, &["host"], |a| {
@@ -1812,17 +1884,82 @@ mod tests {
             }
             if let Some(m) = a.get_mut("metaData") {
                 m["schemaString"] = json!(mapped.to_json());
-                m["configuration"] =
-                    json!({"delta.columnMapping.mode": "name", "delta.columnMapping.maxColumnId": "2"});
+                m["configuration"] = json!({"delta.columnMapping.mode": "name"});
             }
         });
 
         let committer = table.open(&record, &["host"]).unwrap();
+        let ids: Vec<Option<&str>> = (committer.written.fields().iter())
+            .map(|f| f.metadata().get(PARQUET_FIELD_ID_META_KEY).map(String::as_str))
+            .collect();
+        assert_eq!(ids, [Some("1"), Some("2")]);
+        let grown = st(&[("host", DataType::Str), ("n", DataType::I64), ("msg", DataType::Str)]);
+        let why = table.refused(&grown, &["host"]);
+        assert!(why.contains("has no delta.columnMapping.maxColumnId"), "{why}");
+    }
 
-        let names: Vec<&String> = committer.written.fields().iter().map(|f| f.name()).collect();
-        assert_eq!(names, [&physical(&mapped, "host"), &physical(&mapped, "n")]);
-        assert!(names[0].starts_with("col-"), "{names:?}");
-        assert_eq!(committer.partitions[0].physical, physical(&mapped, "host"));
+    #[test]
+    fn a_table_that_materializes_its_partition_columns_has_them_in_its_files() {
+        let record = st(&[("n", DataType::I64), ("host", DataType::Str)]);
+        let table = table_with(&record, &["host"], |a| {
+            if let Some(p) = a.get_mut("protocol") {
+                *p = json!({"minReaderVersion": 1, "minWriterVersion": 7,
+                            "writerFeatures": ["materializePartitionColumns"]});
+            }
+        });
+        let committer = table.open(&record, &["host"]).unwrap();
+        assert_eq!(committer.partition_columns(), [("host".to_string(), 1)]);
+        assert_eq!(committer.written.field(1).name(), "host");
+    }
+
+    #[test]
+    fn an_iceberg_table_has_its_arrays_elements_written_with_their_ids_and_an_invalid_one_is_refused() {
+        let xs = DataType::Array(Box::new(DataType::I64));
+        let record = st(&[("host", DataType::Str), ("xs", xs.clone())]);
+        let iceberg = Mapping::iceberg(0);
+        let mapped = schema::table_schema(&record, None, iceberg, None).unwrap().schema;
+        let table = |schema: &StructType, configuration: Value| {
+            let schema = schema.to_json();
+            table_with(&record, &[], move |a| {
+                if let Some(p) = a.get_mut("protocol") {
+                    *p = json!({"minReaderVersion": 3, "minWriterVersion": 7, "readerFeatures": ["columnMapping"],
+                                "writerFeatures": ["columnMapping", "icebergCompatV2", "deletionVectors"]});
+                }
+                if let Some(m) = a.get_mut("metaData") {
+                    m["schemaString"] = json!(schema);
+                    m["configuration"] = configuration.clone();
+                }
+            })
+        };
+        // A writer that counts its arrays' elements apart from its columns records 2, its columns' highest id.
+        let v2 = json!({"delta.columnMapping.mode": "name", "delta.columnMapping.maxColumnId": "2",
+                        "delta.enableIcebergCompatV2": "true"});
+        let element_id = |committer: &DeltaCommitter, i: usize| match committer.written.field(i).data_type() {
+            Arrow::List(element) => element.metadata().get(PARQUET_FIELD_ID_META_KEY).cloned(),
+            other => panic!("{other} is no list"),
+        };
+
+        let grown = st(&[("host", DataType::Str), ("xs", xs.clone()), ("ys", xs)]);
+        let written = table(&mapped, v2.clone());
+        let committer = written.open(&grown, &[]).unwrap();
+        assert_eq!(element_id(&committer, 1), Some("3".to_string()));
+        assert_eq!(element_id(&committer, 2), Some("5".to_string()));
+        let actions = written.commit(1).unwrap();
+        let metadata = action(&actions, "metaData");
+        assert_eq!(metadata["configuration"]["delta.columnMapping.maxColumnId"], "5");
+
+        let mut unmapped = v2.clone();
+        unmapped["delta.columnMapping.mode"] = json!("none");
+        let why = table(&mapped, unmapped).refused(&record, &[]);
+        assert!(why.contains("IcebergCompatV2 and maps no columns"), "{why}");
+        let mut deleting = v2.clone();
+        deleting["delta.enableDeletionVectors"] = json!("true");
+        let why = table(&mapped, deleting).refused(&record, &[]);
+        assert!(why.contains("enables deletion vectors"), "{why}");
+        let mut bare = mapped.clone();
+        bare.fields[1].metadata.remove("delta.columnMapping.nested.ids");
+        let why = table(&bare, v2).refused(&record, &[]);
+        assert!(why.contains("its column xs gives"), "{why}");
     }
 
     #[test]
@@ -2028,6 +2165,49 @@ mod tests {
         assert_eq!(written, ["00000000000000000002.checkpoint.parquet"]);
         assert!(table.commit(3).is_some());
         assert!(table.names().contains(&"_last_checkpoint".to_string()));
+    }
+
+    #[test]
+    fn each_commit_to_a_table_that_keeps_in_commit_timestamps_comes_after_the_last() {
+        let table = Table::new();
+        let record = st(&[("a", DataType::Str)]);
+        let first = table.open(&record, &[]).unwrap();
+        assert_eq!(
+            action(&table.commit(0).unwrap(), "commitInfo").get("inCommitTimestamp"),
+            None
+        );
+        // Another writer enables the feature at a time ahead of this writer's clock.
+        let ahead = now_ms() + 1_000_000_000;
+        let mut meta = first.snapshot.metadata.clone();
+        (meta.configuration).insert("delta.enableInCommitTimestamps".into(), "true".into());
+        (meta.configuration).insert("delta.checkpointInterval".into(), "3".into());
+        table.put(
+            1,
+            &[
+                json!({"commitInfo": {"inCommitTimestamp": ahead}}),
+                json!({"protocol": {"minReaderVersion": 1, "minWriterVersion": 7,
+                                    "writerFeatures": ["inCommitTimestamp"]}}),
+                json!({"metaData": meta}),
+            ],
+        );
+        let first_action = |version: i64| {
+            let actions = table.commit(version).unwrap();
+            assert!(actions[0].get("commitInfo").is_some(), "{actions:?}");
+            actions[0]["commitInfo"]["inCommitTimestamp"].clone()
+        };
+
+        let wider = st(&[("a", DataType::Str), ("b", DataType::I64)]);
+        let mut committer = table.open(&wider, &[]).unwrap();
+        assert_eq!(first_action(2), json!(ahead + 1));
+        committer.commit(&[file(&committer, &[], &[], None)]).unwrap();
+        assert_eq!(first_action(3), json!(ahead + 2));
+
+        // Read from a checkpoint at its last version, the table still knows that commit's timestamp.
+        committer.checkpoint().unwrap();
+        let mut again = table.open(&wider, &[]).unwrap();
+        assert_eq!(again.snapshot.version, 3);
+        again.commit(&[file(&again, &[], &[], None)]).unwrap();
+        assert_eq!(first_action(4), json!(ahead + 3));
     }
 
     pub(super) fn str_col(pool: &mut BufferPool, vals: &[Option<&str>]) -> Column {

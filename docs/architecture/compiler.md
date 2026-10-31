@@ -25,9 +25,9 @@ way, and every compile error names the step the author wrote.
 ```text
   parser   app.a.b: i64;  …one per declared field the name does not hold at that type;  Object.assign(app, json(_raw))
            into $:  a.b: i64;  …;  Object.assign($, json(_raw))
+           rebuild: …;  Object.assign($, csv(_raw, …));  _raw = csvRebuild(_raw, …)
   lookup   Object.assign($, lookup("geo", key))
   rename   move(a.b, a.d)
-  remove   delete(a, b.c)              under a filter, null on the rows it takes, as a Rename's move clears
   drop     if (cond) drop()            a blank condition lowers to nothing
   unroll   unroll(field, keep)
   eval     target = expr

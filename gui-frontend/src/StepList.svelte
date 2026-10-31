@@ -69,7 +69,6 @@
     parser: 'Fields',
     eval: 'Fields',
     rename: 'Fields',
-    remove: 'Fields',
     lookup: 'Fields',
     code: 'Fields',
     drop: 'Records',

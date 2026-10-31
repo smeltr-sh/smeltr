@@ -61,6 +61,8 @@ pub struct Schema {
     narrowed: bool,
     /// Columns the destination computes, written after the record's own.
     computed: Vec<Arc<dyn Computed>>,
+    /// The record's columns that hold a partition's values, each by the partition field's name and its index.
+    partition_columns: Vec<(String, usize)>,
 }
 
 /// A column a destination computes for each row it writes, after the record's own, such as a table's identity.
@@ -152,6 +154,7 @@ impl Schema {
             written: None,
             narrowed: false,
             computed: Vec::new(),
+            partition_columns: Vec::new(),
         })
     }
 
@@ -172,6 +175,15 @@ impl Schema {
     /// This schema, its files written with `computed` after the record's columns.
     pub fn with_computed(self, computed: Vec<Arc<dyn Computed>>) -> Schema {
         Schema { computed, ..self }
+    }
+
+    /// This schema, its record's columns `columns` holding the partition's values, each named by its partition field.
+    /// A file of a partition whose value is empty, which a Hive-style table reads as null, holds that column null.
+    pub fn with_partition_columns(self, columns: Vec<(String, usize)>) -> Schema {
+        Schema {
+            partition_columns: columns,
+            ..self
+        }
     }
 
     /// Admits `columns`' row to every computed column: Err is why one can give it no value.
@@ -521,6 +533,8 @@ pub struct FileWriter {
     /// Columns computed for each batch, and the file's schema with them, when there are any.
     computed: Vec<Arc<dyn Computed>>,
     file: Arc<ArrowSchema>,
+    /// The record's columns this file holds null: those of a partition value that is empty.
+    nulled: Vec<usize>,
 }
 
 /// What the Parquet writer writes into, shared with the `FileWriter` that drains it.
@@ -617,6 +631,18 @@ impl FileWriter {
         }
     }
 
+    /// A file of the partition whose values are `values`, by field name.
+    pub fn of_partition(schema: &Schema, options: &WriteOptions, values: &[(String, String)]) -> FileWriter {
+        let empty = |name: &String| values.iter().any(|(n, v)| n == name && v.is_empty());
+        FileWriter {
+            nulled: (schema.partition_columns.iter())
+                .filter(|(name, _)| empty(name))
+                .map(|(_, at)| *at)
+                .collect(),
+            ..FileWriter::open(schema, options)
+        }
+    }
+
     fn on(schema: Arc<ArrowSchema>, options: &WriteOptions) -> FileWriter {
         let props = options.properties();
         let sink = Sink::default();
@@ -629,6 +655,7 @@ impl FileWriter {
             written: None,
             computed: Vec::new(),
             file: schema,
+            nulled: Vec::new(),
         }
     }
 
@@ -655,6 +682,13 @@ impl FileWriter {
         let computed: Vec<ArrayRef> = self.computed.iter().map(|c| c.fill(&batch)).collect();
         if let Some(written) = &self.written {
             batch = relabel(&batch, written);
+        }
+        if !self.nulled.is_empty() {
+            let mut columns = batch.columns().to_vec();
+            for &at in &self.nulled {
+                columns[at] = new_null_array(columns[at].data_type(), batch.num_rows());
+            }
+            batch = RecordBatch::try_new(batch.schema(), columns).expect("null columns of their fields' types");
         }
         if !computed.is_empty() {
             let mut columns = batch.columns().to_vec();
@@ -1331,6 +1365,38 @@ mod tests {
     }
 
     #[test]
+    fn a_file_of_a_partition_whose_value_is_empty_holds_its_column_null() {
+        use arrow_array::cast::AsArray;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        let schema = raw_schema().with_partition_columns(vec![("p".into(), 0)]);
+        let own = rows(&schema, &["", ""]);
+        let read = |values: &[(String, String)]| {
+            let mut w = FileWriter::of_partition(&schema, &Compression::None.into(), values);
+            w.write(&own);
+            let (file, _) = w.finish();
+            let reader = ParquetRecordBatchReaderBuilder::try_new(tokio_util::bytes::Bytes::from(file))
+                .unwrap()
+                .build()
+                .unwrap();
+            (reader.map(Result::unwrap))
+                .flat_map(|b| {
+                    b.column(0)
+                        .as_string::<i32>()
+                        .iter()
+                        .map(|v| v.map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(read(&[("p".into(), String::new())]), [None, None]);
+        assert_eq!(
+            read(&[("q".into(), String::new())]),
+            [Some(String::new()), Some(String::new())]
+        );
+        assert_eq!(read(&[]), [Some(String::new()), Some(String::new())]);
+    }
+
+    #[test]
     fn a_file_written_with_field_ids_carries_them() {
         use parquet::file::reader::{FileReader, SerializedFileReader};
         let schema = raw_schema();
@@ -1436,9 +1502,7 @@ mod tests {
             false,
         );
         let schema = Schema::new(&record).unwrap();
-        let table = table_schema(&record, None, Mapping::Name { max_column_id: 0 }, None)
-            .unwrap()
-            .schema;
+        let table = table_schema(&record, None, Mapping::name(0), None).unwrap().schema;
         let written = physical(schema.arrow(), &table);
         let labelled = schema.clone().with_written(written.clone());
 

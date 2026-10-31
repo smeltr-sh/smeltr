@@ -2865,6 +2865,44 @@
           ]
         }
       ]
+    },
+    {
+      "id": "rebuild",
+      "title": "Rebuilding a record's text",
+      "blurb": "Each reads its text as its format's parser does and writes it back without the parts you skip, every other character as it was written. Text that does not read whole comes back as it was.",
+      "functions": [
+        {
+          "name": "csvRebuild",
+          "signature": "text.csvRebuild(headers, delimiter, quote, escape, squeeze)",
+          "summary": "The CSV record `text` with each column whose header is `null` left empty, so every column after it keeps its place. The other arguments are `csv()`'s options: `escape` is `\"\"` where a quote is doubled, and under `squeeze` a run of delimiters is one.",
+          "examples": [
+            {
+              "expr": "\"200,secret,web01\".csvRebuild([\"status\", null, \"host\"], \",\", \"\\\"\", \"\", false)",
+              "result": "\"200,,web01\""
+            },
+            {
+              "expr": "\"a,\\\"b,c\\\",d\".csvRebuild([\"a\", null, \"d\"], \",\", \"\\\"\", \"\", false)",
+              "result": "\"a,,d\"",
+              "note": "a quoted column goes with its quotes"
+            }
+          ]
+        },
+        {
+          "name": "kvRebuild",
+          "signature": "text.kvRebuild(skip, pairSep, kvSep, quote, escapes, nextKey)",
+          "summary": "`text` without the pairs whose key `skip` names. The other arguments are `kv()`'s options: `quote` is `\"\"` where no value is quoted.",
+          "examples": [
+            {
+              "expr": "\"a=1 b=2 c=3\".kvRebuild([\"b\"], \" \", \"=\", \"\\\"\", false, true)",
+              "result": "\"a=1 c=3\""
+            },
+            {
+              "expr": "\"app=\\\"Microsoft Teams\\\" tz=\\\"+0000\\\"\".kvRebuild([\"tz\"], \" \", \"=\", \"\\\"\", false, true)",
+              "result": "\"app=\\\"Microsoft Teams\\\"\""
+            }
+          ]
+        }
+      ]
     }
   ],
   "exceptions": [

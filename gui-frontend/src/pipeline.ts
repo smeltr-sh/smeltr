@@ -42,14 +42,15 @@ export type TypeKey =
 /** The named types in the order a picker lists them, the common ones first. */
 const PICKED_NAMED: NamedType[] = ['str', 'i64', 'f64', 'bool', 'variant'];
 
-/** A declared field's picker, one group per run between separators. `skip` is CSV's alone. */
-export function declaredTypeGroups(csv: boolean): TypeKey[][] {
+/** A declared field's picker, one group per run between separators. `skip` is a CSV column's or a key-value key's
+ * alone: a parser that skips. */
+export function declaredTypeGroups(skips: boolean): TypeKey[][] {
   const groups: TypeKey[][] = [
     [...PICKED_NAMED, 'datetime'],
     PICKED_NAMED.map((t) => `array of ${t}` as const),
     ['object', 'array of objects'],
   ];
-  return csv ? [...groups, ['skip']] : groups;
+  return skips ? [...groups, ['skip']] : groups;
 }
 
 /** An object's own field takes a named type only. */
@@ -135,12 +136,21 @@ export interface FieldSpec {
 /** `quote` is a single character, or `''` for none. `nextKey` is whether an
  * unquoted value runs to the separator before the next key; absent means on.
  * `splitDots` is whether a key the parser reads is split at its dots into a
- * path; absent means the format's own default (`SPLIT_DOTS_DEFAULT`). */
+ * path; absent means the format's own default (`SPLIT_DOTS_DEFAULT`).
+ * `rebuild` is whether the parse writes the field it reads back without what it
+ * skips; absent means off. */
 export type ParserKind = { splitDots?: boolean } & (
   | { type: 'json' }
   /** The columns are the step's own `declared` list, in order. */
-  | { type: 'csv'; delimiter: string }
-  | { type: 'keyValue'; pairSep: string; kvSep: string; quote: string; nextKey?: boolean }
+  | { type: 'csv'; delimiter: string; rebuild?: boolean }
+  | {
+      type: 'keyValue';
+      pairSep: string;
+      kvSep: string;
+      quote: string;
+      nextKey?: boolean;
+      rebuild?: boolean;
+    }
   | { type: 'grok'; patterns: string[]; customPatterns: { name: string; pattern: string }[] }
 );
 
@@ -226,7 +236,6 @@ export type Step =
   | (FunctionCommon & { type: 'code'; body: string })
   | (FunctionCommon & { type: 'drop'; condition: string })
   | (FunctionCommon & { type: 'rename'; pairs: { from: string; to: string }[] })
-  | (FunctionCommon & { type: 'remove'; fields: string[] })
   | (FunctionCommon & {
       type: 'parser';
       input: string;
@@ -258,7 +267,6 @@ export const STEP_TYPES = [
   'code',
   'drop',
   'rename',
-  'remove',
   'lookup',
   'unroll',
   'call',
@@ -311,8 +319,6 @@ export function newStep(type: StepType, parseInput = '_raw'): Step {
         disabled: false,
         pairs: [{ from: '', to: '' }],
       };
-    case 'remove':
-      return { type, id: nextId('remove'), filter: '', disabled: false, fields: [] };
     case 'parser':
       return {
         type,
@@ -365,12 +371,13 @@ function dataTypeDto(ty: DataTypeSpec): unknown {
 
 /** `quote` is `Option<u8>` on the wire and the loader requires exactly one
  * character when present, so an empty quote is omitted, not sent as `""`.
- * `nextKey` and `splitDots` are omitted at their defaults. */
+ * `nextKey`, `splitDots` and `rebuild` are omitted at their defaults. */
 function parserKindDto(kind: ParserKind): unknown {
   const { splitDots, ...base } = kind;
   const out: Record<string, unknown> = { ...base };
   if (base.type === 'keyValue' && base.quote === '') delete out.quote;
   if (base.type === 'keyValue' && base.nextKey !== false) delete out.nextKey;
+  if ((base.type === 'csv' || base.type === 'keyValue') && !base.rebuild) delete out.rebuild;
   if (splitDots !== undefined && splitDots !== SPLIT_DOTS_DEFAULT[kind.type]) {
     out.splitDots = splitDots;
   }
@@ -410,8 +417,6 @@ export function stepToDto(step: Step): unknown {
       return { type: 'drop', ...functionFields(step), condition: step.condition };
     case 'rename':
       return { type: 'rename', ...functionFields(step), pairs: step.pairs };
-    case 'remove':
-      return { type: 'remove', ...functionFields(step), fields: step.fields };
     case 'parser':
       return {
         type: 'parser',
@@ -646,10 +651,6 @@ export function stepSummary(step: Step): string {
       return step.pairs.length
         ? step.pairs.map((p) => `${p.from || '…'} → ${p.to || '…'}`).join(', ')
         : '(no pairs)';
-    case 'remove':
-      return step.fields.length
-        ? `${step.fields.length} ${step.fields.length === 1 ? 'field' : 'fields'}: ${step.fields.join(', ')}`
-        : '(no fields)';
     case 'parser':
       return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
     case 'lookup':
@@ -806,7 +807,11 @@ function dtoToParserFormat(o: Record<string, unknown>, where: string): ParserKin
   const t = o.type;
   if (t === 'json') return { type: 'json' };
   if (t === 'csv') {
-    return { type: 'csv', delimiter: str(o, 'delimiter', where) };
+    return {
+      type: 'csv',
+      delimiter: str(o, 'delimiter', where),
+      ...(o.rebuild === true && { rebuild: true }),
+    };
   }
   if (t === 'keyValue') {
     return {
@@ -815,6 +820,7 @@ function dtoToParserFormat(o: Record<string, unknown>, where: string): ParserKin
       kvSep: str(o, 'kvSep', where),
       quote: optStr(o, 'quote'),
       ...(o.nextKey === false && { nextKey: false }),
+      ...(o.rebuild === true && { rebuild: true }),
     };
   }
   if (t === 'grok') {
@@ -879,18 +885,6 @@ function dtoToStep(dto: unknown, where: string): Step {
         pairs: arr(o, 'pairs', where).map((p) => {
           const po = rec(p, `${where}.pairs`);
           return { from: str(po, 'from', where), to: str(po, 'to', where) };
-        }),
-      };
-    }
-    case 'remove': {
-      const id = str(o, 'id', where);
-      return {
-        type: 'remove',
-        ...common(id),
-        fields: arr(o, 'fields', where).map((f) => {
-          if (typeof f !== 'string')
-            throw new PipelineJsonError(`${where}: expected each of "fields" to be a string`);
-          return f;
         }),
       };
     }
@@ -1061,7 +1055,6 @@ export const STEP_LABELS: Record<StepType, string> = {
   code: 'Code',
   drop: 'Drop',
   rename: 'Rename',
-  remove: 'Remove',
   lookup: 'Lookup',
   unroll: 'Unroll',
   call: 'Call',
@@ -1076,7 +1069,6 @@ export const STEP_SUMMARIES: Record<StepType, string> = {
   code: 'Runs a program on each record.',
   drop: 'Removes each record where a condition is true.',
   rename: 'Moves fields to new names.',
-  remove: 'Takes fields out of each record.',
   lookup: 'Adds fields from the rows of a lookup table that match a value.',
   unroll: 'Turns each item of an array field into its own record.',
   call: "Runs another pipeline's steps in place.",

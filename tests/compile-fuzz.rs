@@ -1,6 +1,6 @@
 //! Generated pipelines against the compiler. Each seed writes a program of steps over a parsed record -- code, eval,
-//! drop, rename, remove, unroll, each parser, lookup, a step's filter and an `if` step -- typed as it is written so
-//! most compile, and holds four properties that need no expected output:
+//! drop, rename, unroll, each parser, lookup, a step's filter and an `if` step -- typed as it is written so most
+//! compile, and holds four properties that need no expected output:
 //!
 //! 1. Compiling it gives a plan or compile errors, and never panics.
 //! 2. Each record comes out of a batch of all of them as it comes out alone.
@@ -338,6 +338,11 @@ struct Parse {
     into_bound: bool,
     /// Each field it writes, with whether this parse is its first write, which declares it.
     declared: Vec<(usize, bool)>,
+    /// A CSV parse's last column, or a key-value parse's last pair, `sk`, which it skips: the text holds it at the top
+    /// level.
+    skip: bool,
+    /// Whether the parse rebuilds its input without what it skips.
+    rebuild: bool,
 }
 
 impl Parse {
@@ -406,8 +411,6 @@ enum Form {
     Drop,
     /// Each statement a `Move`.
     Rename,
-    /// One `Delete`.
-    Remove,
     /// One `Unroll`.
     Unroll,
     /// One `Parse`.
@@ -972,7 +975,7 @@ impl Gen {
         match self.rng.below(if depth >= 2 { 6 } else { 10 }) {
             0 | 1 if top => {
                 // A variant field is what a typed write converts: there is one in most programs.
-                let ty = match self.rng.chance(4) {
+                let ty = match self.rng.chance(2) {
                     true => DataType::Variant,
                     false => self.ty(),
                 };
@@ -1466,7 +1469,6 @@ impl Gen {
                 return vec![(Form::Code, self.block(0, n))];
             }
             5 => self.eval(true).map(|s| vec![(Form::Eval, s)]),
-            6 if self.rng.chance(2) => self.write_as(9, 0).map(|d| vec![(Form::Remove, vec![d])]),
             6 => self
                 .write_as(10, 0)
                 .map(|m| vec![(Form::Rename, vec![m])])
@@ -1603,9 +1605,10 @@ impl Gen {
             return None;
         }
         let mut out = Vec::new();
+        let skip = matches!(kind, Parser::Csv | Parser::Kv) && self.rng.chance(2);
         let input = match top {
             true => {
-                let text = self.text(kind, into.as_deref(), &declared);
+                let text = self.text(kind, into.as_deref(), &declared, skip);
                 let id = self.field(format!("f{}", self.bindings.len()), DataType::Str);
                 out.push((Form::Eval, vec![S::Assign(id, text)]));
                 id
@@ -1619,13 +1622,16 @@ impl Gen {
             into,
             into_bound,
             declared,
+            skip,
+            rebuild: matches!(kind, Parser::Csv | Parser::Kv) && self.rng.chance(2),
         };
         out.push((Form::Parser, vec![S::Parse(parse)]));
         Some(out)
     }
 
-    /// A line of `kind` holding a value of each of `declared`, the keys their names.
-    fn text(&mut self, kind: Parser, into: Option<&str>, declared: &[(usize, bool)]) -> E {
+    /// A line of `kind` holding a value of each of `declared`, the keys their names, and after them the column or pair
+    /// a parse skips where `skip` says.
+    fn text(&mut self, kind: Parser, into: Option<&str>, declared: &[(usize, bool)], skip: bool) -> E {
         let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
         let mut parts = Vec::new();
         let mut before = match kind {
@@ -1659,6 +1665,11 @@ impl Gen {
         }
         if kind == Parser::Json {
             before.push('}');
+        }
+        match (skip, kind) {
+            (true, Parser::Csv) => before.push_str(",\"s,k\""),
+            (true, Parser::Kv) => before.push_str(" sk=\"s k\""),
+            _ => {}
         }
         E::Template(parts, leak(before))
     }
@@ -1908,15 +1919,20 @@ impl Writer<'_> {
                     .collect();
                 let dots = format!("splitDots: {}", p.split_dots);
                 let input = self.name(p.input);
+                let mut headers: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+                if p.skip {
+                    headers.push("null".into());
+                }
+                let headers = headers.join(", ");
                 let call = match p.kind {
                     Parser::Json | Parser::Cef => format!("{}({input}, {{{dots}}})", p.kind.name()),
                     Parser::Kv => format!(
-                        "kv({input}, {{pairSep: \" \", kvSep: \"=\", quote: \"\\\"\", escapes: false, nextKey: true, {dots}}})"
+                        "kv({input}, {{pairSep: \" \", kvSep: \"=\", quote: \"\\\"\", escapes: false, nextKey: true, {}{dots}}})",
+                        if p.skip { "skip: [\"sk\"], " } else { "" }
                     ),
                     Parser::Csv => format!(
-                        "csv({input}, [{}], {{delimiter: \",\", quote: \"\\\"\", escape: null, squeeze: false, trim: false, \
-                         {dots}}})",
-                        names.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ")
+                        "csv({input}, [{headers}], {{delimiter: \",\", quote: \"\\\"\", escape: null, squeeze: false, trim: false, \
+                         {dots}}})"
                     ),
                     Parser::Grok => format!("grok({input}, [\"{}\"], {{{dots}}})", grok_pattern(&names)),
                 };
@@ -1924,6 +1940,16 @@ impl Writer<'_> {
                     "Object.assign({}, {call}); ",
                     p.into.as_deref().unwrap_or("$")
                 ));
+                // What `plan::lower` writes after a parse that rebuilds its input and skips something.
+                match (p.rebuild && p.skip, p.kind) {
+                    (true, Parser::Csv) => out.push_str(&format!(
+                        "{input} = csvRebuild({input}, [{headers}], \",\", \"\\\"\", \"\", false); "
+                    )),
+                    (true, Parser::Kv) => out.push_str(&format!(
+                        "{input} = kvRebuild({input}, [\"sk\"], \" \", \"=\", \"\\\"\", false, true); "
+                    )),
+                    _ => {}
+                }
                 if p.kind.dynamic() {
                     self.declare(p.declared.iter().copied(), out);
                 }
@@ -2008,9 +2034,6 @@ impl Writer<'_> {
                     })
                     .collect(),
             }),
-            (Form::Remove, [S::Delete(ids)]) => func(FunctionKind::Remove {
-                fields: ids.iter().map(|&id| self.name(id)).collect(),
-            }),
             (Form::Unroll, [S::Unroll(f, keep)]) => func(FunctionKind::Unroll {
                 field: self.name(*f),
                 keep_parent_fields: *keep,
@@ -2027,11 +2050,18 @@ impl Writer<'_> {
                     Parser::Cef => ParserKind::Cef { split_dots },
                     Parser::Kv => ParserKind::KeyValue(KvConfig {
                         split_dots,
+                        skip: p.skip.then(|| "sk".to_string()).into_iter().collect(),
+                        rebuild: p.rebuild,
                         ..KvConfig::default()
                     }),
                     Parser::Csv => ParserKind::Csv(CsvConfig {
-                        headers: names.iter().map(|n| Some(n.clone())).collect(),
+                        headers: names
+                            .iter()
+                            .map(|n| Some(n.clone()))
+                            .chain(p.skip.then_some(None))
+                            .collect(),
                         split_dots,
+                        rebuild: p.rebuild,
                         ..CsvConfig::default()
                     }),
                     Parser::Grok => ParserKind::Grok(GrokConfig {
@@ -2297,6 +2327,8 @@ const CONSTRUCTS: &[&str] = &[
     "parse into",
     "parse into an object",
     "parse into a record key",
+    "parse skip",
+    "parse rebuild",
 ];
 
 /// What `p` writes, by the names `expected` gives.
@@ -2313,6 +2345,14 @@ fn covers(p: &Program) -> BTreeSet<String> {
     }
     for step in &p.steps {
         each(step, &mut |n| {
+            if let Node::S(S::Parse(p)) = n {
+                if p.skip {
+                    out.insert("parse skip".into());
+                }
+                if p.skip && p.rebuild {
+                    out.insert("parse rebuild".into());
+                }
+            }
             let name: String = match n {
                 Node::S(S::Assign(_, E::Lit(l))) if l == "null" => "null write".into(),
                 Node::S(S::Let(id, _)) if fields.contains(p.bindings[*id].name.as_str()) => "shadow".into(),
@@ -2423,7 +2463,6 @@ const STEPS: &[&str] = &[
     "eval step",
     "drop step",
     "rename step",
-    "remove step",
     "unroll step",
     "parser step",
     "lookup step",
@@ -2438,7 +2477,6 @@ fn form_covers(form: &Form, out: &mut BTreeSet<String>) {
         Form::Eval => "eval step",
         Form::Drop => "drop step",
         Form::Rename => "rename step",
-        Form::Remove => "remove step",
         Form::Unroll => "unroll step",
         Form::Parser => "parser step",
         Form::Lookup => "lookup step",

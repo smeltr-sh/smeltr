@@ -2786,6 +2786,16 @@ fn keys_are_the_fields_holding_a_value_then_the_unclaimed_keys() {
     );
 }
 
+/// `$` is the record, so `$.keys()` is `keys($)`.
+#[test]
+fn a_method_call_on_the_record_takes_the_record() {
+    let plan = ok(vec![
+        code(0, &json("a: i64; b: i64;")),
+        code(1, "k = $.keys().join(\",\");"),
+    ]);
+    assert_eq!(cols(&run(&plan, &[r#"{"a": 1, "b": 2}"#]), &["k"]), rows![["_raw,a,b"]]);
+}
+
 /// `entries(o)` pairs each key `keys` gives with its value, as `{key, value}`.
 #[test]
 fn entries_pairs_each_key_with_its_value() {

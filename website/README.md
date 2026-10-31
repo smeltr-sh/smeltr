@@ -242,9 +242,8 @@ Its staging README identifies the data as synthetic. `EditorScreenshot.svelte` s
 the complete image on How it works. Original screenshot pixels are unchanged. Both views follow
 the site’s selected theme, load lazily, and link to their full-size originals.
 
-`/siem-costs` runs ten PAN-OS traffic logs through a Parser, Drop, Remove and Code step whose
-destination writes text. `siem-pipeline-{light,dark}.png` and `siem-step-*-{light,dark}.png`
-are shots of that pipeline in the demo GUI. `SiemSteps.svelte` folds open each step's
+`/siem-costs` runs ten PAN-OS traffic logs through a Parser that rebuilds the line and a Drop
+step, and its destination writes text. `siem-step-*-{light,dark}.png` are its steps' cards in the demo GUI. `SiemSteps.svelte` folds open each step's
 settings, and `SiemCutExample.svelte` lists every record and its bytes from
 `src/lib/siem-cut-example.json`, the preview service's answer for that run.
 `/one-schema` shows sources mapped to one schema from `src/lib/one-schema-example.json`.

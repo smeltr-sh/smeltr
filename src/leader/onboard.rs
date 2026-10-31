@@ -288,6 +288,7 @@ pub fn propose(records: &[RecordObject], filed: Option<&[serde_json::Value]>) ->
                 quote: c.quote.map(|q| (q as char).to_string()),
                 next_key: None,
                 split_dots: None,
+                rebuild: false,
             };
             (vec![parser(kind, Vec::new())], Some("keyValue"))
         }
@@ -334,6 +335,7 @@ pub fn propose(records: &[RecordObject], filed: Option<&[serde_json::Value]>) ->
             let kind = ParserKindDto::Csv {
                 delimiter: (*delimiter as char).to_string(),
                 split_dots: None,
+                rebuild: false,
             };
             let mut steps = Vec::new();
             if header.is_some() {

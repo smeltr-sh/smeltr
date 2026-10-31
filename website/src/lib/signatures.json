@@ -63,6 +63,12 @@
       "result": "f64"
     }
   ],
+  "csvRebuild": [
+    {
+      "params": "(str, array of scalars, str, str, str, bool)",
+      "result": "str"
+    }
+  ],
   "day": [
     {
       "params": "(datetime)",
@@ -212,6 +218,12 @@
   "join": [
     {
       "params": "(array of scalars, str)",
+      "result": "str"
+    }
+  ],
+  "kvRebuild": [
+    {
+      "params": "(str, array of scalars, str, str, str, bool, bool)",
       "result": "str"
     }
   ],

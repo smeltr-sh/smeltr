@@ -225,9 +225,6 @@ pub enum FunctionKind {
     /// Compile-time rebinding; emits no instruction.
     Rename { pairs: Vec<(String, String)> },
 
-    /// Each of `fields` leaves the record; under a filter it is null on the rows selected. Compile-time, as Rename.
-    Remove { fields: Vec<String> },
-
     /// Structured parse of a field. Its slots are exactly `declared`, each pinned to its type; a dynamic parser
     /// (`ParserKind::is_dynamic`) lays every other key into the unclaimed fields as it arrived.
     Parser {
@@ -341,6 +338,8 @@ pub struct CsvConfig {
     pub squeeze: bool,
     /// Spaces around each unquoted field are dropped.
     pub trim: bool,
+    /// The parse also rebuilds its input as the record it read, each skipped column left empty (`csvRebuild`).
+    pub rebuild: bool,
 }
 
 impl Default for CsvConfig {
@@ -355,6 +354,7 @@ impl Default for CsvConfig {
             escape: None,
             squeeze: false,
             trim: false,
+            rebuild: false,
         }
     }
 }
@@ -370,6 +370,10 @@ pub struct KvConfig {
     /// An unquoted value runs to the `pair_sep` before the next key, not to the first `pair_sep`.
     pub next_key: bool,
     pub split_dots: bool,
+    /// Keys the parse reads past: none makes a field, declared or unclaimed.
+    pub skip: Vec<String>,
+    /// The parse also rebuilds its input as the record it read, each skipped pair left out (`kvRebuild`).
+    pub rebuild: bool,
 }
 
 impl Default for KvConfig {
@@ -381,6 +385,8 @@ impl Default for KvConfig {
             escapes: false,
             next_key: true,
             split_dots: split_dots_default("kv"),
+            skip: Vec::new(),
+            rebuild: false,
         }
     }
 }

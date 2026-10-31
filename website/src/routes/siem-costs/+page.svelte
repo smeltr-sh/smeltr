@@ -1,5 +1,4 @@
 <script lang="ts">
-  import ProductScreenshot from '#lib/components/ProductScreenshot.svelte';
   import SiemSteps from '#lib/components/SiemSteps.svelte';
   import SiemCutExample from '#lib/components/SiemCutExample.svelte';
   import WorkflowDiagram from '#lib/components/WorkflowDiagram.svelte';
@@ -27,19 +26,12 @@
   <section aria-labelledby="drop-heading">
     <h2 id="drop-heading">Drop the noise before it is indexed.</h2>
     <p>
-      Ten PAN-OS traffic logs, run through four steps. A Parser names the line's 68 columns. A Drop
-      step drops allowed DNS lookups, for a team that already keeps them in its DNS servers' own
-      logs. A Remove step removes 48 fields, and a Code step joins the rest back into a PAN-OS line,
-      with the removed fields' columns left empty. The destination sends each line as text. Sizes
-      are measured from this run; your cut depends on what you drop.
+      Ten PAN-OS traffic logs, run through two steps. A Parser names the line's 68 columns, skips
+      the 48 columns it does not need, and rebuilds the line with their columns left empty, so a
+      SIEM still reads every column in its place. A Drop step drops allowed DNS lookups, for a team
+      that already keeps them in its DNS servers' own logs. The destination sends each line as text.
+      Sizes are measured from this run; your cut depends on what you drop.
     </p>
-    <ProductScreenshot
-      source="siem-pipeline"
-      height={2000}
-      crop={{ x: 470, y: 640, width: 2400, height: 1240 }}
-      alt="The pipeline editor with Parser, Drop, Remove and Code steps, previewing ten PAN-OS logs; one is dropped, and the first record's _raw is the shortened line."
-      caption="The pipeline in the editor, previewing the ten logs as you build it. The destination sends only the _raw line."
-    />
     <SiemSteps />
     <SiemCutExample />
   </section>

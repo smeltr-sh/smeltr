@@ -126,6 +126,12 @@
     the output leaves out a null field.
   </p>
   <p>
+    With <strong>rebuild the line</strong> on, under Advanced, each column of type <code>skip</code> is
+    left empty in the field the step reads, so every column after it keeps its place. Every other character
+    stays as it was written, quotes included. A SIEM that reads the vendor's format by position still
+    reads the shorter line.
+  </p>
+  <p>
     Double quotes can enclose delimiters, and two quotes inside a quoted field represent one literal
     quote. An unclosed quote raises an <code>Unparsable</code> exception.
   </p>
@@ -179,6 +185,12 @@
   <StepExample example={examples.keyValue} />
   <p>With <code>quote</code> set, a quoted value can contain spaces:</p>
   <StepExample example={examples.keyValueQuoted} />
+
+  <p>
+    A key declared with type <code>skip</code> makes no field. With
+    <strong>rebuild the line</strong> on, the step writes the field it reads back with each skipped pair
+    left out, and every other pair as it was written.
+  </p>
 
   <h3 id="grok-matching">Regex/Grok patterns</h3>
   <p>

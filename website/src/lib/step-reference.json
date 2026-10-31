@@ -218,21 +218,6 @@
         ]
       },
       {
-        "type": "remove",
-        "name": "Remove",
-        "summary": "Takes fields out of each record.",
-        "shared": true,
-        "settings": [
-          {
-            "name": "fields",
-            "type": "list of fields",
-            "required": true,
-            "examples": [["payload"], ["user_agent", "path"]],
-            "what": "Each field leaves the record, for the steps after it and every destination. With a filter, each is null on the records the filter selects, and the field stays."
-          }
-        ]
-      },
-      {
         "type": "lookup",
         "name": "Lookup",
         "summary": "Adds fields from the rows of a lookup table that match a value.",
@@ -459,6 +444,13 @@
             "required": true,
             "examples": [",", ";", "|"],
             "what": "The one ASCII character between values. Defaults to `,`."
+          },
+          {
+            "name": "rebuild",
+            "type": "bool",
+            "absent": "`false`",
+            "examples": [true],
+            "what": "Whether the step rebuilds the field it reads, each column of type `skip` left empty, so every column after it keeps its place. With no column skipped, the field is unchanged."
           }
         ]
       },
@@ -494,6 +486,13 @@
             "absent": "`true`",
             "examples": [false],
             "what": "Whether an unquoted value runs to the `pairSep` before the next key: in `level=info debug x=1`, `level` is `info debug`. Off, `debug` is a bare key, `debug=true`."
+          },
+          {
+            "name": "rebuild",
+            "type": "bool",
+            "absent": "`false`",
+            "examples": [true],
+            "what": "Whether the step rebuilds the field it reads, each field of type `skip` left out. A skipped key makes no field. With no field skipped, the field is unchanged."
           }
         ]
       },

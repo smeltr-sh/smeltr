@@ -22,6 +22,7 @@ document's systems.
 | A key is a key; `splitDots` (Language) | built |
 | Compile warnings and formatting (Compiler) | built (`Plan::warnings`, `expr::pretty`, `POST /api/preview/format`). Warnings show in the pipeline editor only; a review or a deploy does not list them |
 | CSV column table, `skip` (Config plane) | built |
+| Key-value `skip`; a CSV or key-value Parser rebuilding the field it reads, `csvRebuild`, `kvRebuild` (Config plane, Language, Compiler) | built |
 | Grok: `.` matches a newline (Runtime stages) | built |
 | Lookup: CSV, inline, MMDB; exact, CIDR, regex (Runtime stages) | built; files live in the leader's lookup store as Git LFS pointers |
 | Data dictionary: a pipeline's record as an Elasticsearch mapping (Compiler, Runtime stages) | built. Each field maps by its own type. A mapping is per pipeline; an index fed by several is merged by hand |

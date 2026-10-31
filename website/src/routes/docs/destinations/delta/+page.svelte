@@ -101,13 +101,18 @@
           <code>columnMapping</code>, <code>v2Checkpoint</code>, <code>domainMetadata</code>,
           <code>deletionVectors</code>, <code>vacuumProtocolCheck</code>,
           <code>timestampNtz</code>, <code>clustering</code>, <code>rowTracking</code>,
-          <code>typeWidening</code> and <code>identityColumns</code>;
+          <code>typeWidening</code>, <code>identityColumns</code>,
+          <code>inCommitTimestamp</code>, <code>materializePartitionColumns</code> and
+          <code>icebergCompatV2</code>;
         </li>
         <li>its files are Parquet;</li>
-        <li>
-          it maps columns by name, with <code>delta.columnMapping.maxColumnId</code> set, or not at all;
-        </li>
+        <li>it maps columns by name or by id, or not at all;</li>
         <li>it sets no check constraint;</li>
+        <li>
+          if it sets <code>delta.enableIcebergCompatV2</code> to <code>true</code>, it maps columns,
+          does not enable deletion vectors, gives every array's element an id in
+          <code>delta.columnMapping.nested.ids</code>, and records only type changes Iceberg allows;
+        </li>
         <li>
           no column is generated, has a default or carries an invariant, and every column is
           nullable, as is every array's element, except an
@@ -268,6 +273,11 @@
     struct whose names differ only in case. A partition column is a top-level column of a primitive
     type other than <code>bytes</code>.
   </p>
+  <p>
+    In a table that sets <code>delta.enableIcebergCompatV2</code> to <code>true</code>, each new
+    array's element also takes an id in <code>delta.columnMapping.nested.ids</code>, and the files
+    carry it, as an Iceberg reader of the table needs.
+  </p>
 
   <h3 id="identity-columns">Identity columns</h3>
   <p>
@@ -291,7 +301,10 @@
   <pre><code>{layout}</code></pre>
   <p>
     A null or empty partition value is written as <code>__HIVE_DEFAULT_PARTITION__</code> in the
-    path. A row whose partition values would make a file's key longer than 1024 bytes is
+    path. Each file also holds the partition columns, which a table that names
+    <code>materializePartitionColumns</code> requires. Where a partition value is empty, the file
+    holds null for that column. A row whose partition values would make a file's key longer than
+    1024 bytes is
     <a href="/docs/delivery#refused">refused</a>.
   </p>
   <p>
@@ -300,7 +313,10 @@
     <code>bufferBytes</code>. A batch is acknowledged once the commit holding its records lands.
     Other writers may write the same table. A failed write is tried again until
     <code>stallAfterSecs</code>, and then the batches are written again. When storage's answer to a
-    commit is lost past that point, its rows may be in the table twice.
+    commit is lost past that point, its rows may be in the table twice. Where the table sets
+    <code>delta.enableInCommitTimestamps</code> to <code>true</code>, each commit records the time
+    it was made, or, when the commit before it is dated at that time or later, one millisecond after
+    that commit, so the table's history stays in order when clocks differ.
   </p>
   <p>
     Every <code>delta.checkpointInterval</code> commits, 10 when the table does not set it, the
@@ -352,8 +368,36 @@
       The table's protocol asks for more than this writer does. Write to a table whose protocol
       <a href="#before-you-start">Before you start</a> lists.
     </dd>
-    <dt><strong>the table maps columns by id, which this writer does not</strong></dt>
-    <dd>Write to a table that maps columns by name, or not at all.</dd>
+    <dt><strong>the table maps columns by …, which this writer does not</strong></dt>
+    <dd>Write to a table that maps columns by name or by id, or not at all.</dd>
+    <dt>
+      <strong
+        >the table maps columns and has no <code>delta.columnMapping.maxColumnId</code>, so the
+        record's new columns can take no id</strong
+      >
+    </dt>
+    <dd>
+      The writer that mapped the table's columns did not record the highest column id it gave. The
+      destination writes such a table only while the record adds no column. Drop the new field in
+      the pipeline, or write another table.
+    </dd>
+    <dt>
+      <strong>the table is IcebergCompatV2 and maps no columns …</strong> or
+      <strong>… enables deletion vectors …</strong>
+    </dt>
+    <dd>
+      IcebergCompatV2 needs the table to map its columns and to have no deletion vectors; this table
+      does not meet that, so an Iceberg reader could not read what the destination adds. Write to
+      another table.
+    </dd>
+    <dt>
+      <strong>the table is IcebergCompatV2, and its column … gives … no id …</strong> or
+      <strong>… changed type in a way Iceberg does not allow …</strong>
+    </dt>
+    <dd>
+      Another writer left an array's element without its id, or changed a column's type in a way
+      Iceberg does not allow. Write to another table.
+    </dd>
     <dt><strong>the table has the check constraint …</strong></dt>
     <dd>
       The destination does not check constraints. Drop the constraint, or write another table.

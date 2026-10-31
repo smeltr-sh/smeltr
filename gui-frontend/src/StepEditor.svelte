@@ -35,7 +35,6 @@
   import CrossButton from './CrossButton.svelte';
   import { glideTo } from './glide';
   import FieldRow from './FieldRow.svelte';
-  import RemoveFields from './RemoveFields.svelte';
   import TypePicker from './TypePicker.svelte';
   import DatetimeFormat from './DatetimeFormat.svelte';
   import {
@@ -411,6 +410,8 @@
     }
     if (splitsDots(kind) !== SPLIT_DOTS_DEFAULT[kind.type])
       values.push({ label: 'split keys at dots', value: splitsDots(kind) ? 'on' : 'off' });
+    if ((kind.type === 'csv' || kind.type === 'keyValue') && kind.rebuild)
+      values.push({ label: 'rebuild the line', value: 'on' });
     return values;
   }
 
@@ -842,8 +843,6 @@
                 wrap
               />
             </Field>
-          {:else if step.type === 'remove'}
-            <RemoveFields bind:fields={step.fields} ask={askAt?.({ step: step.id })} {readOnly} />
           {:else if step.type === 'rename'}
             <div class="rows">
               <div class="rows-label"><span class="field-name">pairs</span></div>
@@ -903,9 +902,11 @@
                         : t === 'keyValue'
                           ? { type: 'keyValue', pairSep: ' ', kvSep: '=', quote: '"' }
                           : { type: 'grok', patterns: [], customPatterns: [] };
-                  // A `skip` describes a column, and only CSV has columns. Left behind it would be sent on the next
-                  // save and refused by the loader, with the row it came from no longer on screen to correct.
-                  if (t !== 'csv') ps.declared = ps.declared.filter((f) => f.ty.kind !== 'skip');
+                  // A `skip` describes a CSV column or a key-value key. Left behind on any other format it would be
+                  // sent on the next save and refused by the loader, with the row it came from no longer on screen to
+                  // correct.
+                  if (t !== 'csv' && t !== 'keyValue')
+                    ps.declared = ps.declared.filter((f) => f.ty.kind !== 'skip');
                 }}
               >
                 {#each Object.entries(PARSER_FORMAT_NAMES) as [type, name] (type)}
@@ -980,7 +981,8 @@
                   {:else if !isGrok}
                     <Help label="declared fields">
                       Declare a field to read it by name in a later step. Keys you do not declare
-                      still pass through to the output.
+                      still pass through to the output.{#if parserKind.type === 'keyValue'}
+                        A key declared with type skip makes no field.{/if}
                     </Help>
                   {/if}</span
                 >
@@ -1077,7 +1079,7 @@
                   {/snippet}
                   <FieldRow
                     bind:ty={ps.declared[i].ty}
-                    groups={declaredTypeGroups(isCsv)}
+                    groups={declaredTypeGroups(isCsv || parserKind.type === 'keyValue')}
                     number={isCsv ? i + 1 : undefined}
                     disabled={readOnly}
                     label={field.name || (isCsv ? 'column' : 'field')}
@@ -1280,6 +1282,42 @@
                   </Help>
                 </span>
               </label>
+              {#if parserKind.type === 'csv' || parserKind.type === 'keyValue'}
+                {@const rebuilding = parserKind}
+                {@const skipped = ps.declared.filter((f) => f.ty.kind === 'skip').length}
+                <label class="inline">
+                  <Toggle
+                    disabled={readOnly}
+                    bind:checked={
+                      () => rebuilding.rebuild === true,
+                      (on) => {
+                        if (on) rebuilding.rebuild = true;
+                        else delete rebuilding.rebuild;
+                      }
+                    }
+                    ariaLabel="rebuild the line"
+                  />
+                  <span class="field-name">
+                    rebuild the line
+                    <Help label="rebuild the line">
+                      {#if isCsv}
+                        Rebuilds the field it reads from the columns above, in their order, with
+                        each skipped column left empty, so every column after it keeps its place.
+                        With no column skipped, the line is unchanged.
+                      {:else}
+                        Rebuilds the field it reads from the fields above, in their order, with each
+                        skipped field left out. With no field skipped, the line is unchanged.
+                      {/if}
+                    </Help>
+                  </span>
+                  {#if rebuilding.rebuild}
+                    <span class="note"
+                      >{skipped} of {ps.declared.length}
+                      {isCsv ? 'columns left empty' : 'fields left out'}</span
+                    >
+                  {/if}
+                </label>
+              {/if}
             </Advanced>
           {:else if step.type === 'lookup'}
             {@const columns = knownColumns(step.table)}

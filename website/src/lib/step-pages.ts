@@ -11,7 +11,6 @@ export const stepPages = [
   { href: '/docs/steps/if', title: 'If' },
   { href: '/docs/steps/lookup', title: 'Lookup' },
   { href: '/docs/steps/parser', title: 'Parser' },
-  { href: '/docs/steps/remove', title: 'Remove' },
   { href: '/docs/steps/rename', title: 'Rename' },
   { href: '/docs/steps/unroll', title: 'Unroll' },
 ];

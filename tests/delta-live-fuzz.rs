@@ -9,7 +9,8 @@
 //! - every added file in the bucket, and every data file in the bucket added;
 //! - each checkpoint what replaying the commits up to it gives;
 //! - where the table has an identity column, a value of it in every row, on its grid, within the mark the row's
-//!   commit leaves, and in no other row.
+//!   commit leaves, and in no other row;
+//! - where the table keeps in-commit timestamps, each commit opening with one later than the commit's before it.
 //!
 //! Point it at `S3_TEST_ENDPOINT`. Under `SMELTR_LIVE_TESTS=required` a missing one fails rather than skips.
 
@@ -19,7 +20,7 @@ use crate::live;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int32Type, Int64Type};
@@ -285,6 +286,8 @@ struct Case {
     checkpoint_interval: Option<u32>,
     /// The start and step of the identity column `seq` another writer adds before any row is written.
     identity: Option<(i64, i64)>,
+    /// Whether another writer enables in-commit timestamps before any row is written.
+    in_commit_timestamps: bool,
     writers: Vec<Vec<Batch>>,
     /// Each row's partition values by its id, in `partition_by`'s order.
     rows: BTreeMap<i64, Vec<Option<String>>>,
@@ -307,7 +310,7 @@ impl Case {
             .collect();
         format!(
             "fields [{}], partitionBy {:?}, unity {}, {:?}, maxObjectBytes {}, bufferBytes {}, fileInterval {:?}, \
-             checkpointInterval {:?}, identity {:?}, batches {writers:?}",
+             checkpointInterval {:?}, identity {:?}, inCommitTimestamps {}, batches {writers:?}",
             fields.join("; "),
             self.partition_by,
             self.unity,
@@ -316,7 +319,8 @@ impl Case {
             self.buffer_bytes,
             self.file_interval,
             self.checkpoint_interval,
-            self.identity
+            self.identity,
+            self.in_commit_timestamps
         )
     }
 }
@@ -462,6 +466,12 @@ fn case(seed: u64, rng: &mut Rng, coverage: &mut Coverage) -> Case {
         Some(_) => "identity one writer",
         None => "no identity column",
     });
+    let in_commit_timestamps = rng.chance(2);
+    coverage.reach(if in_commit_timestamps {
+        "in-commit timestamps"
+    } else {
+        "no in-commit timestamps"
+    });
     Case {
         fields,
         partition_by,
@@ -472,6 +482,7 @@ fn case(seed: u64, rng: &mut Rng, coverage: &mut Coverage) -> Case {
         file_interval,
         checkpoint_interval,
         identity,
+        in_commit_timestamps,
         writers,
         rows,
     }
@@ -527,6 +538,8 @@ fn live_generated_tables_hold_every_row_once_in_a_consistent_log() {
             "identity one writer",
             "identity two writers",
             "no identity column",
+            "in-commit timestamps",
+            "no in-commit timestamps",
             "writers 1",
             "writers 2",
             "then Nothing",
@@ -657,20 +670,21 @@ fn run(s3: &str, seed: u64, case: &Case) -> Seen {
         })
         .collect();
     // Setting the interval needs the table: the first writer makes it, and finds the change on its first commit.
-    // An identity column is there before any writer opens the table, as it is for a table another engine made.
-    // Otherwise the writers race to make it.
-    let mut first = match (case.identity, case.checkpoint_interval) {
-        (Some(identity), interval) => {
+    // An identity column and in-commit timestamps are there before any writer opens the table, as they are for a
+    // table another engine made. Otherwise the writers race to make it.
+    let before = case.identity.is_some() || case.in_commit_timestamps;
+    let mut first = match (before, case.checkpoint_interval) {
+        (true, interval) => {
             drop(build());
-            amend(s3, &root, interval, Some(identity));
+            amend(s3, &root, interval, case.identity, case.in_commit_timestamps);
             None
         }
-        (None, Some(interval)) => {
+        (false, Some(interval)) => {
             let d = build();
-            amend(s3, &root, Some(interval), None);
+            amend(s3, &root, Some(interval), None, false);
             Some(d)
         }
-        (None, None) => None,
+        (false, None) => None,
     };
     std::thread::scope(|scope| {
         for batches in writers {
@@ -686,9 +700,9 @@ fn run(s3: &str, seed: u64, case: &Case) -> Seen {
     verify(s3, &root, case)
 }
 
-/// Sets the table's `delta.checkpointInterval` in commit 1, and adds the identity column `seq` of `identity`'s start
-/// and step, as another writer would.
-fn amend(s3: &str, root: &str, interval: Option<u32>, identity: Option<(i64, i64)>) {
+/// Sets the table's `delta.checkpointInterval` in commit 1, adds the identity column `seq` of `identity`'s start and
+/// step, and enables in-commit timestamps where `timestamps` says, as another writer would.
+fn amend(s3: &str, root: &str, interval: Option<u32>, identity: Option<(i64, i64)>, timestamps: bool) {
     let created = commit(s3, root, 0).expect("commit 0");
     let mut metadata = created
         .iter()
@@ -700,6 +714,13 @@ fn amend(s3: &str, root: &str, interval: Option<u32>, identity: Option<(i64, i64
     if let Some(interval) = interval {
         metadata["configuration"]["delta.checkpointInterval"] = json!(interval.to_string());
     }
+    let mut features = Vec::new();
+    if timestamps {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+        actions[0]["commitInfo"]["inCommitTimestamp"] = json!(now);
+        metadata["configuration"]["delta.enableInCommitTimestamps"] = json!("true");
+        features.push("inCommitTimestamp");
+    }
     if let Some((start, step)) = identity {
         let mut schema: Value = serde_json::from_str(metadata["schemaString"].as_str().unwrap()).unwrap();
         schema["fields"]
@@ -709,8 +730,10 @@ fn amend(s3: &str, root: &str, interval: Option<u32>, identity: Option<(i64, i64
             "metadata": {"delta.identity.start": start, "delta.identity.step": step,
                          "delta.identity.allowExplicitInsert": false}}));
         metadata["schemaString"] = json!(schema.to_string());
-        actions.push(json!({"protocol": {"minReaderVersion": 1, "minWriterVersion": 7,
-                                         "writerFeatures": ["identityColumns"]}}));
+        features.push("identityColumns");
+    }
+    if !features.is_empty() {
+        actions.push(json!({"protocol": {"minReaderVersion": 1, "minWriterVersion": 7, "writerFeatures": features}}));
     }
     actions.push(json!({"metaData": metadata}));
     let body = actions.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
@@ -794,9 +817,19 @@ fn verify(s3: &str, root: &str, case: &Case) -> Seen {
     let mut adds: BTreeMap<String, (i64, Value)> = BTreeMap::new();
     // `seq`'s high-water mark as each version leaves it.
     let mut marks: BTreeMap<i64, Option<i64>> = BTreeMap::new();
+    let mut timestamp = None;
     for &version in &versions {
         let actions = commit(s3, root, version).unwrap_or_else(|e| panic!("version {version} unreadable: {e}"));
         assert!(!actions.is_empty(), "version {version} is empty");
+        if case.in_commit_timestamps && version > 0 {
+            let t = actions[0]["commitInfo"]["inCommitTimestamp"].as_i64();
+            let t = t.unwrap_or_else(|| panic!("version {version} opens with no inCommitTimestamp: {actions:?}"));
+            assert!(
+                timestamp < Some(t),
+                "version {version}'s inCommitTimestamp {t} is not after {timestamp:?}"
+            );
+            timestamp = Some(t);
+        }
         for action in actions {
             if let Some(p) = action.get("protocol") {
                 state.protocol = (
