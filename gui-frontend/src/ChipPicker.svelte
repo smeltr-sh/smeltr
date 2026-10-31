@@ -108,6 +108,7 @@
     <div
       class="picker"
       class:compact
+      class:scope={kind === 'scope'}
       popover="manual"
       bind:this={picker}
       {@attach float(() => chip?.getBoundingClientRect(), { edge: align })}
@@ -222,6 +223,8 @@
     box-shadow: 0 6px 18px oklch(0% 0 0 / 0.18);
   }
 
+  /* A row's actions, and the worker groups, are short names: the panel fits them. */
+  .picker.scope,
   .picker.compact {
     min-width: 9rem;
   }

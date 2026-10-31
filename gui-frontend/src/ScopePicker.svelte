@@ -12,6 +12,7 @@
   import { reported } from './errors.svelte';
   import ChipPicker from './ChipPicker.svelte';
   import LevelMark from './LevelMark.svelte';
+  import WorkerGroupIcon from './WorkerGroupIcon.svelte';
   import {
     SCOPE_EVENT,
     SHARED_SCOPE,
@@ -35,6 +36,8 @@
   // Somebody who is not an administrator is offered only the areas they hold, each with the level
   // they hold it at, so the chip says what this page lets them do.
   const administrator = isAdministrator();
+  // The face shortens it to the glyph and "Workers"; hover and a screen reader get it whole.
+  const named = $derived(`Worker group ${scope}`);
   const offered = $derived(administrator ? groups : groups.filter((g) => levelIn(g.id) !== null));
 
   // A scope set from a page -- a review's file link -- moves the chip and the rail with it.
@@ -85,9 +88,16 @@
   }
 </script>
 
-<ChipPicker bind:open={picking} kind="scope" align="left" title={scope} onopen={load}>
+<ChipPicker
+  bind:open={picking}
+  kind="scope"
+  align="left"
+  title={named}
+  ariaLabel={administrator ? named : `${named}, ${levelIn(scope) ?? 'no access'}`}
+  onopen={load}
+>
   {#snippet face()}
-    <span class="dim">Group</span>
+    <WorkerGroupIcon /><span class="dim">Workers</span>
     <span class="scope-name">{scope}</span>{#if !administrator}{@const level =
         levelIn(scope)}{#if level}<LevelMark {level} named={false} />{:else}<span>no access</span
         >{/if}{/if}

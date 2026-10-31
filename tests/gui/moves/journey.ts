@@ -2065,10 +2065,10 @@ async function switchScope(page: Page, from: string, to: string) {
   // list can close again before its option is clicked. The reload the click starts is waited for below, not here.
   await expect(async () => {
     if (!(await option.isVisible()))
-      await page.getByRole('button', { name: `Group ${from}`, exact: true }).click();
+      await page.getByRole('button', { name: `Worker group ${from}`, exact: true }).click();
     await option.click({ timeout: 2_000, noWaitAfter: true });
   }).toPass({ timeout: 15_000 });
-  await expect(page.getByRole('button', { name: `Group ${to}`, exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: `Worker group ${to}`, exact: true })).toBeVisible();
 }
 
 const capture: Move = {

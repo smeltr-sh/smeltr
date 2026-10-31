@@ -298,7 +298,7 @@ test("a field's requirement is chosen on the Schemas page, and shared/'s schemas
     type: '{...}',
   });
 
-  await admin.getByRole('button', { name: 'Group shared', exact: true }).click();
+  await admin.getByRole('button', { name: 'Worker group shared', exact: true }).click();
   await admin.getByRole('button', { name: /^default/ }).click();
   await admin.getByRole('button', { name: '▸ login' }).click();
   await expect(admin.getByRole('combobox', { name: /^Requirement of / })).toHaveCount(0);
@@ -341,7 +341,7 @@ test("a field's own Elasticsearch settings show beside its type, and shared/'s s
   ).toBeAttached();
   await admin.screenshot({ path: 'results/schemas-elasticsearch-settings.png' });
 
-  await admin.getByRole('button', { name: 'Group shared', exact: true }).click();
+  await admin.getByRole('button', { name: 'Worker group shared', exact: true }).click();
   await admin.getByRole('button', { name: /^default/ }).click();
   await admin.getByRole('button', { name: '▸ login' }).click();
   await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
