@@ -178,7 +178,10 @@
     <code>partitionBy</code> as its partition spec. A table that exists keeps its columns and its
     spec: a field it lacks, at any depth, is added as an optional column before any file is written,
     and a column the record lacks takes its write default in the rows written, or null where it has
-    none. A field that can hold no value,
+    none. A column the record lacks may be of a type format version 3 adds: a nanosecond timestamp,
+    a geometry, a geography or a variant, held in Parquet as the Iceberg spec says. An
+    <code>unknown</code> column is always null and is in no data file. A field that can hold no
+    value,
     <code>null</code> or a list or closed struct of nothing else, has no column. Each field is
     written as the Iceberg type of its
     <a href="/docs/code-reference#types">record type</a>:

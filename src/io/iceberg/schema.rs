@@ -16,12 +16,13 @@ use std::sync::Arc;
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, FixedSizeBinaryArray, Float32Array,
     Float64Array, Int32Array, Int64Array, ListArray, MapArray, StringArray, StructArray, Time64MicrosecondArray,
-    TimestampMicrosecondArray, new_empty_array, new_null_array,
+    TimestampMicrosecondArray, TimestampNanosecondArray, new_empty_array, new_null_array,
 };
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::extension::Uuid;
 use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+use parquet::basic::LogicalType;
 
 use super::metadata::{ListType, NestedField, Primitive, Schema, StructTag, StructType, Type};
 use super::transform::{parse_date, parse_timestamp};
@@ -86,8 +87,8 @@ pub fn table_schema(record: &DataType, current: Option<&Schema>, last_column_id:
 
 /// `arrow` with every field, at any depth and a list's element too, carrying its id in `schema` under
 /// `PARQUET:field_id`, so a Parquet file written with it carries the table's field ids, and each struct ending with
-/// the columns of `schema` it lacks, which its rows write null: a data file holds every column. Fields are matched by
-/// name; one `schema` does not name keeps no id.
+/// the columns of `schema` it lacks, which its rows write null: a data file holds every column but an `unknown` one,
+/// which is always null. Fields are matched by name; one `schema` does not name keeps no id.
 ///
 /// With it, what each of those columns takes in every row: its write default.
 ///
@@ -109,13 +110,23 @@ fn labelled(fields: &Fields, table: &[NestedField], path: &str) -> Result<(Field
         .collect::<Result<Vec<_>, String>>()?
         .into_iter()
         .unzip();
-    for t in table.iter().filter(|t| !fields.iter().any(|f| f.name() == &t.name)) {
+    for t in (table.iter()).filter(|t| stored(t) && !fields.iter().any(|f| f.name() == &t.name)) {
         let path = at(path, &t.name);
         let field = column(&t.name, &t.field_type, true, t.id, &path)?;
         defaults.push(WriteDefault::Value(write_default(t, field.data_type(), &path)?));
         labelled.push(field);
     }
     Ok((labelled.into(), defaults))
+}
+
+/// Whether a data file holds `field`'s column: an `unknown` one, always null, it does not, nor a struct of nothing
+/// else, which Parquet has no empty group for.
+fn stored(field: &NestedField) -> bool {
+    match &field.field_type {
+        Type::Primitive(Primitive::Other(name)) => name != "unknown",
+        Type::Struct(s) => s.fields.iter().any(stored),
+        _ => true,
+    }
 }
 
 fn with_id(field: &Field, id: i32, ty: &Type, path: &str) -> Result<(Field, WriteDefault), String> {
@@ -226,6 +237,11 @@ fn primitive_default(p: &Primitive, default: &serde_json::Value, arrow: &Arrow) 
         Primitive::String => Arc::new(StringArray::from(vec![text?])),
         Primitive::Binary => Arc::new(BinaryArray::from_vec(vec![&unhex(text?)?])),
         Primitive::Other(name) => match (name.as_str(), arrow) {
+            ("timestamp_ns", _) => Arc::new(TimestampNanosecondArray::from(vec![parse_timestamp_ns(text?)?])),
+            ("timestamptz_ns", _) => {
+                let nanos = parse_timestamp_ns(text?.strip_suffix("+00:00")?)?;
+                Arc::new(TimestampNanosecondArray::from(vec![nanos]).with_data_type(arrow.clone()))
+            }
             ("time", _) => {
                 let micros = parse_timestamp(&format!("1970-01-01T{}", text?))?;
                 Arc::new(Time64MicrosecondArray::from(vec![micros]))
@@ -247,6 +263,14 @@ fn primitive_default(p: &Primitive, default: &serde_json::Value, arrow: &Arrow) 
             _ => return None,
         },
     })
+}
+
+/// Nanoseconds of `2026-10-10T13:05:09.000123456`; the fraction may have up to nine digits, or be left out.
+fn parse_timestamp_ns(s: &str) -> Option<i64> {
+    let (seconds, fraction) = s.split_once('.').unwrap_or((s, ""));
+    (fraction.len() <= 9 && fraction.bytes().all(|b| b.is_ascii_digit())).then_some(())?;
+    let nanos: i64 = format!("{fraction:0<9}").parse().ok()?;
+    parse_timestamp(seconds)?.checked_mul(1000)?.checked_add(nanos)
 }
 
 /// The bytes of `s`, two hex digits for each.
@@ -286,7 +310,7 @@ fn column(name: &str, ty: &Type, nullable: bool, id: i32, path: &str) -> Result<
         Type::Primitive(p) => primitive_arrow(p)
             .ok_or_else(|| format!("the table's column {path} is a {p}, a type this writer cannot write"))?,
         Type::Struct(s) => Arrow::Struct(
-            (s.fields.iter())
+            (s.fields.iter().filter(|t| stored(t)))
                 .map(|t| column(&t.name, &t.field_type, true, t.id, &at(path, &t.name)))
                 .collect::<Result<Fields, String>>()?,
         ),
@@ -317,9 +341,69 @@ fn column(name: &str, ty: &Type, nullable: bool, id: i32, path: &str) -> Result<
     Ok(with_metadata(field, id))
 }
 
+/// The Parquet logical type of each column of `schema`, at any depth, that its Arrow type does not carry: a geometry's,
+/// a geography's or a variant's, by field id (`parquet::Schema::with_annotations`).
+pub fn parquet_annotations(schema: &Schema) -> Vec<(i32, LogicalType)> {
+    let mut out = Vec::new();
+    annotations(&schema.fields, &mut out);
+    out
+}
+
+fn annotations(fields: &[NestedField], out: &mut Vec<(i32, LogicalType)>) {
+    for field in fields {
+        annotate(field.id, &field.field_type, out);
+    }
+}
+
+fn annotate(id: i32, ty: &Type, out: &mut Vec<(i32, LogicalType)>) {
+    match ty {
+        Type::Primitive(Primitive::Other(name)) if name == "variant" => out.push((id, LogicalType::variant(Some(1)))),
+        Type::Primitive(Primitive::Other(name)) => out.extend(geo(name).map(|logical| (id, logical))),
+        Type::Primitive(_) => {}
+        Type::Struct(s) => annotations(&s.fields, out),
+        Type::List(l) => annotate(l.element_id, &l.element, out),
+        Type::Map(map) => {
+            for part in ["key", "value"] {
+                let ty = serde_json::from_value::<Type>(map[part].clone());
+                if let (Ok(ty), Some(id)) = (ty, map[format!("{part}-id")].as_i64()) {
+                    annotate(id as i32, &ty, out);
+                }
+            }
+        }
+    }
+}
+
+/// The Parquet logical type of a `geometry(C)` or `geography(C, A)`, either parameter left out where it is the
+/// spec's default.
+fn geo(name: &str) -> Option<LogicalType> {
+    use parquet::basic::EdgeInterpolationAlgorithm as A;
+    let (kind, params) = match name.split_once('(') {
+        Some((kind, params)) => (kind, params.strip_suffix(')')?),
+        None => (name, ""),
+    };
+    let mut params = params.split(',').map(str::trim).filter(|p| !p.is_empty());
+    let crs = params.next().map(str::to_string);
+    match kind {
+        "geometry" => params.next().is_none().then(|| LogicalType::geometry(crs)),
+        "geography" => {
+            let algorithm = match params.next() {
+                None => None,
+                Some("spherical") => Some(A::SPHERICAL),
+                Some("vincenty") => Some(A::VINCENTY),
+                Some("thomas") => Some(A::THOMAS),
+                Some("andoyer") => Some(A::ANDOYER),
+                Some("karney") => Some(A::KARNEY),
+                Some(_) => return None,
+            };
+            params.next().is_none().then(|| LogicalType::geography(crs, algorithm))
+        }
+        _ => None,
+    }
+}
+
 /// The Arrow type of a column of `p`, as the spec has Parquet hold it.
 pub(super) fn primitive_arrow(p: &Primitive) -> Option<Arrow> {
-    use arrow_schema::TimeUnit::Microsecond;
+    use arrow_schema::TimeUnit::{Microsecond, Nanosecond};
     Some(match p {
         Primitive::Boolean => Arrow::Boolean,
         Primitive::Int => Arrow::Int32,
@@ -334,6 +418,15 @@ pub(super) fn primitive_arrow(p: &Primitive) -> Option<Arrow> {
         Primitive::Other(name) => match name.as_str() {
             "time" => Arrow::Time64(Microsecond),
             "uuid" => Arrow::FixedSizeBinary(16),
+            "timestamp_ns" => Arrow::Timestamp(Nanosecond, None),
+            "timestamptz_ns" => Arrow::Timestamp(Nanosecond, Some("UTC".into())),
+            // Parquet's VARIANT group, unshredded; its fields carry no ids.
+            "variant" => Arrow::Struct(Fields::from(vec![
+                Field::new("metadata", Arrow::Binary, false),
+                Field::new("value", Arrow::Binary, false),
+            ])),
+            // Well-known binary, which `annotations` marks GEOMETRY or GEOGRAPHY.
+            name if geo(name).is_some() => Arrow::Binary,
             name => {
                 if let Some(n) = name.strip_prefix("fixed[").and_then(|n| n.strip_suffix(']')) {
                     Arrow::FixedSizeBinary(n.parse().ok()?)
@@ -736,12 +829,11 @@ mod tests {
         let Type::Struct(http) = &mut table.fields[1].field_type else {
             panic!("http is a struct")
         };
-        http.fields
-            .push(field(12, "v", prim(Primitive::Other("timestamp_ns".into()))));
+        http.fields.push(field(12, "v", prim(Primitive::Other("file".into()))));
         let parquet = crate::io::parquet::Schema::new(&record()).unwrap();
         assert_eq!(
             with_field_ids(parquet.arrow(), &table).unwrap_err(),
-            "the table's column http.v is a timestamp_ns, a type this writer cannot write"
+            "the table's column http.v is a file, a type this writer cannot write"
         );
     }
 
