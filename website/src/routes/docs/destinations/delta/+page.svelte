@@ -99,8 +99,9 @@
           writer feature it names is one of <code>appendOnly</code>, <code>invariants</code>,
           <code>checkConstraints</code>, <code>changeDataFeed</code>,
           <code>columnMapping</code>, <code>v2Checkpoint</code>, <code>domainMetadata</code>,
-          <code>deletionVectors</code>, <code>vacuumProtocolCheck</code> and
-          <code>timestampNtz</code>;
+          <code>deletionVectors</code>, <code>vacuumProtocolCheck</code>,
+          <code>timestampNtz</code>, <code>clustering</code>, <code>rowTracking</code>,
+          <code>typeWidening</code> and <code>identityColumns</code>;
         </li>
         <li>its files are Parquet;</li>
         <li>
@@ -108,8 +109,9 @@
         </li>
         <li>it sets no check constraint;</li>
         <li>
-          no column is generated, an identity, has a default or carries an invariant, and every
-          column is nullable, as is every array's element;
+          no column is generated, has a default or carries an invariant, and every column is
+          nullable, as is every array's element, except an
+          <a href="#identity-columns">identity column</a> the record does not write;
         </li>
         <li>it has a column a data file can hold, one that is not <code>void</code> alone;</li>
         <li>
@@ -267,6 +269,19 @@
     type other than <code>bytes</code>.
   </p>
 
+  <h3 id="identity-columns">Identity columns</h3>
+  <p>
+    The destination generates the values of each top-level identity column the record does not
+    write. Each row takes the next value in the column's sequence, which starts at
+    <code>delta.identity.start</code>, moves by <code>delta.identity.step</code> and lies past
+    <code>delta.identity.highWaterMark</code>. No value is given twice, by this writer or another.
+    It reserves values a block at a time, in commits that raise the high-water mark, so the mark can
+    stand past the largest value in the table. A row that would take a value past a
+    <code>long</code>'s range is <a href="/docs/delivery#refused">refused</a>. The record may write
+    an identity column only if the column sets <code>delta.identity.allowExplicitInsert</code>; its
+    values are then written as they are.
+  </p>
+
   <h2 id="how-it-works">How it works</h2>
   <p>
     When it starts, the destination reads the table, or creates it, and adds the record's new
@@ -345,8 +360,30 @@
     </dd>
     <dt><strong>the table's column … carries …, which this writer cannot honour</strong></dt>
     <dd>
-      The column is generated, an identity, has a default or carries an invariant, which the
-      destination does not compute or check. Write to a table without such a column.
+      The column is generated, has a default, carries an invariant, or is an identity column inside
+      a struct, which the destination does not compute or check. Write to a table without such a
+      column.
+    </dd>
+    <dt>
+      <strong
+        >the record writes …, an identity column the table generates and lets no writer set</strong
+      >
+    </dt>
+    <dd>
+      Drop the field in the pipeline, so the destination generates the column's values, or set
+      <code>delta.identity.allowExplicitInsert</code> on the column.
+    </dd>
+    <dt><strong>the table is partitioned by its identity column …</strong></dt>
+    <dd>
+      A partition value is the record's, and the destination generates this column's values. Write
+      to a table partitioned by other columns.
+    </dd>
+    <dt>
+      <strong>the identity column … has no value left in a long's range</strong>
+    </dt>
+    <dd>
+      The column's sequence has reached the end of a <code>long</code>'s range, and the row is
+      refused. Give the table a new identity column.
     </dd>
     <dt><strong>the table is partitioned by …, a … column …</strong></dt>
     <dd>

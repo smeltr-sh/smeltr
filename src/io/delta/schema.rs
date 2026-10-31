@@ -412,7 +412,8 @@ fn widens(from: &Type, to: &Type) -> bool {
 }
 
 /// The first column, at any depth, whose metadata asks of a writer what this one does not do: compute a generated
-/// value, an identity or a default, or check an invariant. The message names the column and what it carries.
+/// value or a default, check an invariant, or generate an identity below the top level. The message names the column
+/// and what it carries.
 pub fn refused_column(schema: &StructType) -> Option<String> {
     if all_void(&schema.fields) {
         return Some("every column of the table is void, which no data file can hold".to_string());
@@ -439,13 +440,14 @@ fn all_void(fields: &[StructField]) -> bool {
 }
 
 fn refused_in(fields: &[StructField], path: &str) -> Option<String> {
+    let nested = !path.is_empty();
     fields.iter().find_map(|f| {
         let path = at(path, &f.name);
         let key = f.metadata.keys().find(|k| {
             matches!(
                 k.as_str(),
                 "delta.generationExpression" | "CURRENT_DEFAULT" | "delta.invariants"
-            ) || k.starts_with("delta.identity.")
+            ) || (nested && k.starts_with("delta.identity."))
         });
         match key {
             Some(key) => Some(format!(
@@ -577,10 +579,14 @@ impl Ids {
         path: &str,
     ) -> Result<Vec<StructField>, String> {
         let mut fields = Vec::with_capacity(table.len().max(columns.len()));
+        let top = path.is_empty();
         for field in table {
             let path = at(path, &field.name);
-            // Every column is written nullable, and a column the record does not write is null in its rows.
-            if !field.nullable {
+            // Every column is written nullable, and a column the record does not write is null in its rows, but for an
+            // identity column, whose values the writer generates.
+            let written = columns.iter().any(|(name, _)| *name == field.name);
+            let generated = top && !written && field.metadata.keys().any(|k| k.starts_with("delta.identity."));
+            if !field.nullable && !generated {
                 return Err(format!(
                     "the table's column {path} is not nullable, and the record may leave it null"
                 ));

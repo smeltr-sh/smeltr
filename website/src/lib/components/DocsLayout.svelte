@@ -80,6 +80,7 @@
           ],
         },
         { href: '/docs/capture-sample', title: 'Capture a sample' },
+        { href: '/docs/schemas', title: 'Schemas' },
         {
           title: 'Routing',
           links: [

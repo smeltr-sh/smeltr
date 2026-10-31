@@ -41,7 +41,7 @@ document's systems.
 | Object stores: S3, GCS, Azure Blob (Runtime stages, Config plane) | built (`io::files`, `io::objects`). A batch sent again after a failure may leave a duplicate object |
 | SFTP (`sftp`) (Runtime stages, Config plane, Security) | built, on the object store destinations. A write cut off may leave its hidden temporary file |
 | Destination formats: JSON, Parquet, Avro, text, bytes (Runtime stages, Config plane) | built (`Payload`, `io::avro`) |
-| Tables: Iceberg through a REST catalog, Delta path tables and Unity Catalog external tables (Runtime stages, Config plane, Secrets boundary) | built (`io::iceberg`, `io::delta`). Not built: Iceberg format version 3 (row lineage) and encrypted tables; Delta tables Unity Catalog manages; a live test against a Databricks workspace; aborting stale multipart uploads under a table |
+| Tables: Iceberg through a REST catalog, Delta path tables and Unity Catalog external tables (Runtime stages, Config plane, Secrets boundary) | built (`io::iceberg`, `io::delta`). Not built: Iceberg format version 3 (row lineage) and encrypted tables; Delta tables Unity Catalog manages; Delta generated columns, column defaults, invariants and check constraints, whose tables are refused; a live test against a Databricks workspace; aborting stale multipart uploads under a table |
 
 ### Sources
 

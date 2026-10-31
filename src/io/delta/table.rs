@@ -26,6 +26,7 @@ use object_store::Attributes;
 use serde_json::{Map, Value, json};
 
 use super::checkpoint;
+use super::identity::{self, Identity, Sequences};
 use super::log::{
     Action, DomainMetadata, Format, Log, Metadata, Protocol, Snapshot, Txn, commit_name, line, now_ms, uuid,
 };
@@ -45,7 +46,7 @@ use crate::ops::civil::MICROS_PER_DAY;
 use crate::plan::topology::{DeltaDestinationConfig, HeldSecrets, Records, UnityCatalogTable};
 
 /// The writer features of a table this writer can write. A table needing any other is refused.
-const WRITER_FEATURES: [&str; 13] = [
+const WRITER_FEATURES: [&str; 14] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -62,6 +63,8 @@ const WRITER_FEATURES: [&str; 13] = [
     "rowTracking",
     // Columns are widened only at open, and only where the table enables it; earlier type changes are kept.
     "typeWidening",
+    // Each identity column the record does not write is generated, from values reserved ahead in the log.
+    "identityColumns",
 ];
 
 /// The domain that holds a row-tracking table's highest row id.
@@ -116,10 +119,10 @@ pub fn destination(
         unpartitioned_key_bytes,
     };
     let file_schema = parquet::Schema::new(record).map_err(refused)?;
-    let format = ParquetFormat::new(
-        vec![file_schema.with_written(committer.written.clone())],
-        config.compression.into(),
-    );
+    let file_schema = file_schema
+        .with_written(committer.written.clone())
+        .with_computed(committer.sequences.computed(&committer.schema));
+    let format = ParquetFormat::new(vec![file_schema], config.compression.into());
     // The protocol names no codec and no row group's size; a table names its files' size.
     let file_bytes = (committer.snapshot.metadata.property("delta.targetFileSize"))
         .and_then(size_bytes)
@@ -242,6 +245,9 @@ struct DeltaCommitter {
     snapshot: Snapshot,
     /// The table's id when the destination started: one of another id at the location replaced it.
     table_id: String,
+    /// The table's identity columns when the destination started, and the ones of them its files generate.
+    identities: Vec<Identity>,
+    sequences: Arc<Sequences>,
     /// The route's record, and the schema the Parquet writer writes it with.
     record: DataType,
     arrow: Arc<ArrowSchema>,
@@ -308,6 +314,11 @@ impl Committer for DeltaCommitter {
         if self.snapshot.metadata.flag("delta.enableRowTracking") == Some(true) {
             commit_info["tags"] = json!({"delta.rowTracking.preserved": "true"});
         }
+        // Values are reserved ahead: those the files hold were reserved in an earlier commit.
+        let raised = self
+            .sequences
+            .raised(&self.snapshot.metadata)
+            .map_err(CommitError::Transient)?;
         let mut lines = vec![
             line("commitInfo", &commit_info),
             line(
@@ -319,6 +330,9 @@ impl Committer for DeltaCommitter {
                 },
             ),
         ];
+        if let Some(raised) = &raised {
+            lines.push(line("metaData", &raised.metadata));
+        }
         for file in files {
             let mut add = self.add(file, now).map_err(CommitError::Transient)?;
             if let Some(high) = &mut high_water_mark {
@@ -344,6 +358,9 @@ impl Committer for DeltaCommitter {
         match self.log.create(&commit_name(version), lines.join("\n").into_bytes()) {
             Ok(true) => {
                 self.snapshot.committed(actions);
+                if let Some(raised) = raised {
+                    self.sequences.reserved(raised);
+                }
                 self.lost.clear();
                 self.checkpoint_due = checkpoint::due(&self.snapshot.metadata, version);
                 Ok(())
@@ -392,13 +409,19 @@ impl DeltaCommitter {
             .ok_or_else(|| format!("the table could not be created: {}", failed.clone().unwrap_or_default()))?;
         let mut checkpoint_due = false;
         let mut tries = 0;
-        let schema = loop {
+        let (schema, identities, generated) = loop {
             fits(&snapshot)?;
             let current = StructType::parse(&snapshot.metadata.schema_string)?;
+            // Before the record's columns are committed: a table this writer refuses keeps its log as it was.
+            let identities = identity::columns(&current)?;
+            let generated = generated(&identities, &arrow, &snapshot.metadata.partition_columns)?;
             let evolution =
                 schema::table_schema(record, Some(&current), mapping(&snapshot.metadata)?, widens(&snapshot))?;
+            if let Some(why) = schema::refused_column(&evolution.schema) {
+                return Err(why);
+            }
             if !evolution.changed {
-                break current;
+                break (current, identities, generated);
             }
             if tries > MAX_CONFLICT_RETRIES {
                 return Err(format!(
@@ -439,14 +462,14 @@ impl DeltaCommitter {
                 }
             }
         };
-        if let Some(why) = schema::refused_column(&schema) {
-            return Err(why);
-        }
         let partitions = partition_columns(&snapshot.metadata, &schema)?;
         let written = schema::physical(&arrow, &schema);
+        let sequences = Arc::new(Sequences::new(generated, log.clone()));
         Ok(DeltaCommitter {
             log,
             root,
+            identities,
+            sequences,
             table_id: snapshot.metadata.id.clone(),
             snapshot,
             record: record.clone(),
@@ -481,6 +504,9 @@ impl DeltaCommitter {
         let schema = StructType::parse(&metadata.schema_string)?;
         if let Some(why) = schema::refused_column(&schema) {
             return Err(why);
+        }
+        if identity::columns(&schema)? != self.identities {
+            return Err("another writer changed the table's identity columns".to_string());
         }
         let evolution = schema::table_schema(&self.record, Some(&schema), mapping(metadata)?, None)?;
         if evolution.changed {
@@ -551,6 +577,34 @@ impl DeltaCommitter {
         }
         Ok(add)
     }
+}
+
+/// The identity columns of `identities` whose values this writer generates: the ones the record, of `arrow`, does not
+/// write. Err when the record writes one the table lets no writer set, or one it generates partitions the table.
+fn generated(
+    identities: &[Identity],
+    arrow: &ArrowSchema,
+    partition_columns: &[String],
+) -> Result<Vec<Identity>, String> {
+    let mut generated = Vec::new();
+    for column in identities {
+        if arrow.field_with_name(&column.name).is_ok() {
+            if !column.explicit {
+                return Err(format!(
+                    "the record writes {}, an identity column the table generates and lets no writer set",
+                    column.name
+                ));
+            }
+        } else if partition_columns.contains(&column.name) {
+            return Err(format!(
+                "the table is partitioned by its identity column {}, which this writer generates",
+                column.name
+            ));
+        } else {
+            generated.push(column.clone());
+        }
+    }
+    Ok(generated)
 }
 
 /// Commit 0 of a table of `record`, partitioned by `partition_by`: a plain table, which every Delta reader opens. Its
@@ -1377,10 +1431,10 @@ mod tests {
         assert!(why.contains("needs writer version 8"), "{why}");
         let why = table_with(&record, &[], |a| {
             protocol("minWriterVersion", json!(7))(a);
-            protocol("writerFeatures", json!(["v2Checkpoint", "identityColumns"]))(a);
+            protocol("writerFeatures", json!(["v2Checkpoint", "generatedColumns"]))(a);
         })
         .refused(&record, &[]);
-        assert!(why.contains("writer feature identityColumns"), "{why}");
+        assert!(why.contains("writer feature generatedColumns"), "{why}");
         // A V2 table is written classic checkpoints, which the protocol always allows.
         table_with(&record, &[], |a| {
             protocol("minReaderVersion", json!(3))(a);
@@ -1533,6 +1587,217 @@ mod tests {
         assert_eq!(adds(&actions)[0].get("baseRowId"), None);
         assert!(!actions.iter().any(|a| a.get("domainMetadata").is_some()));
         assert_eq!(action(&actions, "commitInfo").get("tags"), None);
+    }
+
+    /// A table of `record`'s columns and the identity column `id`, of `metadata` and nullable as `nullable` says,
+    /// partitioned by `partition_by`.
+    fn identity_table(record: &DataType, partition_by: &[&str], nullable: bool, metadata: Value) -> Table {
+        let table = Table::new();
+        let mut actions: Vec<Value> = (create(record, &[]).unwrap().lines())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        for action in &mut actions {
+            if let Some(p) = action.get_mut("protocol") {
+                *p = json!({"minReaderVersion": 1, "minWriterVersion": 7, "writerFeatures": ["identityColumns"]});
+            }
+            if let Some(m) = action.get_mut("metaData") {
+                let mut schema: Value = serde_json::from_str(m["schemaString"].as_str().unwrap()).unwrap();
+                let fields = schema["fields"].as_array_mut().unwrap();
+                fields.retain(|f| f["name"] != "id");
+                fields.push(json!({"name": "id", "type": "long", "nullable": nullable, "metadata": metadata}));
+                m["schemaString"] = json!(schema.to_string());
+                m["partitionColumns"] = json!(partition_by);
+            }
+        }
+        table.put(0, &actions);
+        table
+    }
+
+    /// `rows` rows of `host`, as the file schema `schema` takes them.
+    fn host_rows(schema: &parquet::Schema, rows: usize) -> Vec<Columns> {
+        let mut pool = BufferPool::new();
+        let hosts: Vec<Option<&str>> = (0..rows).map(|_| Some("h")).collect();
+        let host = str_col(&mut pool, &hosts);
+        let view = RecordView::from_named([("host", &host)]);
+        let at: Vec<u32> = (0..rows as u32).collect();
+        let chunk = Arc::new(Chunk::cut(schema, &[(&view, &at)], 0, &mut pool));
+        host.reclaim(&mut pool);
+        (0..rows as u32)
+            .map(|row| Columns {
+                chunk: chunk.clone(),
+                row,
+            })
+            .collect()
+    }
+
+    fn identity_field(table: &Table, version: i64) -> StructField {
+        let metadata = action(&table.commit(version).unwrap(), "metaData").clone();
+        let schema = StructType::parse(metadata["schemaString"].as_str().unwrap()).unwrap();
+        schema.fields.into_iter().find(|f| f.name == "id").unwrap()
+    }
+
+    #[test]
+    fn an_identity_column_the_record_does_not_write_takes_values_reserved_ahead_beyond_its_mark() {
+        use arrow_array::cast::AsArray;
+        use arrow_array::types::Int64Type;
+        let record = st(&[("host", DataType::Str)]);
+        let metadata = json!({"delta.identity.start": 1, "delta.identity.step": 2, "delta.identity.highWaterMark": 9});
+        // Not nullable: every row takes a value.
+        let table = identity_table(&record, &[], false, metadata);
+        let mut committer = table.open(&record, &[]).unwrap();
+        let schema = parquet::Schema::new(&record)
+            .unwrap()
+            .with_written(committer.written.clone())
+            .with_computed(committer.sequences.computed(&committer.schema));
+        let rows = host_rows(&schema, 3);
+        assert!(table.commit(1).is_none(), "nothing is reserved before a row needs it");
+        for row in &rows {
+            schema.admit(row).unwrap();
+        }
+
+        // The first row reserved a block in a commit of its own.
+        let reserved = table.commit(1).unwrap();
+        assert_eq!(action(&reserved, "commitInfo")["operation"], "CHANGE COLUMN");
+        let mark = 9 + identity::BLOCK as i64 * 2;
+        assert_eq!(
+            identity_field(&table, 1).metadata["delta.identity.highWaterMark"],
+            json!(mark)
+        );
+
+        let mut writer = parquet::FileWriter::open(
+            &schema,
+            &parquet::WriteOptions::from(crate::plan::topology::Compression::None),
+        );
+        writer.write(&rows);
+        let (bytes, footer) = writer.finish();
+        let read = ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(Bytes::from(bytes))
+            .unwrap()
+            .build()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let ids = read.column_by_name("id").unwrap().as_primitive::<Int64Type>();
+        assert_eq!(ids.values(), &[11, 13, 15]);
+
+        // The data commit reads the reservation first. Plenty is left, so it reserves no more, and its stats count the
+        // column.
+        let mut data = file(&committer, &[], &[], Some(Arc::new(footer)));
+        data.record_count = 3;
+        let files = [data];
+        assert!(matches!(committer.commit(&files), Err(CommitError::Conflict)));
+        committer.commit(&files).unwrap();
+        let actions = table.commit(2).unwrap();
+        assert!(!actions.iter().any(|a| a.get("metaData").is_some()));
+        let stats: Value = serde_json::from_str(adds(&actions)[0]["stats"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            (&stats["minValues"]["id"], &stats["maxValues"]["id"]),
+            (&json!(11), &json!(15))
+        );
+
+        // Once fewer than half a block is left, a data commit reserves a block more.
+        let claims = identity::BLOCK as usize / 2 + 1;
+        for _ in 0..claims {
+            schema.admit(&rows[0]).unwrap();
+        }
+        committer.commit(&[file(&committer, &[], &[], None)]).unwrap();
+        assert_eq!(
+            identity_field(&table, 3).metadata["delta.identity.highWaterMark"],
+            json!(mark + identity::BLOCK as i64 * 2)
+        );
+    }
+
+    #[test]
+    fn a_row_past_the_last_identity_value_a_long_holds_is_refused() {
+        let record = st(&[("host", DataType::Str)]);
+        let metadata = json!({"delta.identity.start": 1, "delta.identity.step": 1,
+                              "delta.identity.highWaterMark": i64::MAX - 2});
+        let table = identity_table(&record, &[], true, metadata);
+        let committer = table.open(&record, &[]).unwrap();
+        let schema = parquet::Schema::new(&record)
+            .unwrap()
+            .with_computed(committer.sequences.computed(&committer.schema));
+        let rows = host_rows(&schema, 3);
+        schema.admit(&rows[0]).unwrap();
+        schema.admit(&rows[1]).unwrap();
+        let refused = schema.admit(&rows[2]).unwrap_err();
+        assert!(refused.contains("identity column id has no value left"), "{refused}");
+        assert_eq!(
+            identity_field(&table, 1).metadata["delta.identity.highWaterMark"],
+            json!(i64::MAX)
+        );
+        assert!(table.commit(2).is_none());
+    }
+
+    #[test]
+    fn a_record_writes_an_identity_column_only_where_the_table_allows_it() {
+        let record = st(&[("host", DataType::Str), ("id", DataType::I64)]);
+        let fixed = json!({"delta.identity.start": 1, "delta.identity.step": 1});
+        let why = identity_table(&record, &[], true, fixed).refused(&record, &[]);
+        assert!(why.contains("the record writes id, an identity column"), "{why}");
+
+        let explicit = json!({"delta.identity.start": 1, "delta.identity.step": 1,
+                              "delta.identity.allowExplicitInsert": true});
+        let table = identity_table(&record, &[], true, explicit);
+        let mut committer = table.open(&record, &[]).unwrap();
+        assert!(committer.sequences.computed(&committer.schema).is_empty());
+        committer.commit(&[file(&committer, &[], &[], None)]).unwrap();
+        assert!(!table.commit(1).unwrap().iter().any(|a| a.get("metaData").is_some()));
+    }
+
+    #[test]
+    fn a_column_this_writer_cannot_fill_is_refused_before_anything_is_committed() {
+        let record = st(&[("host", DataType::Str)]);
+        // The record adds a column, which an open that took the table would commit first.
+        let wider = st(&[("host", DataType::Str), ("n", DataType::I64)]);
+        let refused = |partition_by: &[&str], identity: Value| {
+            let table = identity_table(&record, partition_by, true, identity);
+            let why = table.refused(&wider, &[]);
+            assert!(table.commit(1).is_none(), "{why}");
+            why
+        };
+        let why = refused(&["id"], json!({"delta.identity.start": 1, "delta.identity.step": 1}));
+        assert!(why.contains("partitioned by its identity column id"), "{why}");
+        let why = refused(&[], json!({"delta.identity.start": 1, "delta.identity.step": 0}));
+        assert!(why.contains("steps by 0"), "{why}");
+        let why = refused(&[], json!({"delta.identity.step": 1}));
+        assert!(why.contains("has no delta.identity.start"), "{why}");
+        // Nor is a column whose values this writer does not compute.
+        let why = refused(&[], json!({"delta.generationExpression": "1"}));
+        assert!(why.contains("carries delta.generationExpression"), "{why}");
+
+        let writes = st(&[("host", DataType::Str), ("id", DataType::I64), ("n", DataType::I64)]);
+        let table = identity_table(
+            &record,
+            &[],
+            true,
+            json!({"delta.identity.start": 1, "delta.identity.step": 1}),
+        );
+        let why = table.refused(&writes, &[]);
+        assert!(why.contains("the record writes id"), "{why}");
+        assert!(table.commit(1).is_none());
+    }
+
+    #[test]
+    fn an_identity_column_another_writer_changes_holds_commits_back() {
+        let record = st(&[("host", DataType::Str)]);
+        let identity = json!({"delta.identity.start": 1, "delta.identity.step": 1});
+        let table = identity_table(&record, &[], true, identity);
+        let mut committer = table.open(&record, &[]).unwrap();
+        let mut meta = action(&table.commit(0).unwrap(), "metaData").clone();
+        let schema = meta["schemaString"]
+            .as_str()
+            .unwrap()
+            .replace("\"delta.identity.step\":1", "\"delta.identity.step\":3");
+        meta["schemaString"] = json!(schema);
+        table.put(1, &[json!({"metaData": meta})]);
+        let files = [file(&committer, &[], &[], None)];
+        assert!(matches!(committer.commit(&files), Err(CommitError::Conflict)));
+        let refused = committer.commit(&files);
+        assert!(
+            matches!(&refused, Err(CommitError::Transient(why)) if why.contains("changed the table's identity columns")),
+            "{refused:?}"
+        );
     }
 
     #[test]
