@@ -600,6 +600,7 @@ export class DemoLeader {
         };
       }
       if (path === '/api/branches') return this.branches();
+      if (path === '/api/preview/schema-standards') return this.ask('/schemas/standards', {});
       if (within === '/tests' && branch) return this.tests(branch, scope, []);
       if (change?.[2] === 'tests') {
         const of = this.branch(decodeURIComponent(change[1]));
@@ -722,8 +723,6 @@ export class DemoLeader {
       if (path === '/api/auth/session/activity') return ok();
     }
 
-    if (method === 'GET' && path === '/api/preview/schema-standards')
-      return this.ask('/schemas/standards', {});
     if (method === 'GET') return this.nearest(url);
     // `results` too: a test run's caller reads it whether or not the run was refused.
     return { status: 403, body: { ok: false, errors: [bareError(DEMO_REFUSAL)], results: [] } };
