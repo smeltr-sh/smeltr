@@ -42,7 +42,6 @@ use crate::core::variant::{self, Value};
 use crate::format::json;
 use crate::format::record::RecordView;
 use crate::format::tag::{self, Tag};
-use crate::io::parquet_variant::tests::read as read_variant;
 use crate::fuzz::{self, Coverage, Rng};
 use crate::io::iceberg::manifest::Status;
 use crate::io::iceberg::metadata::{
@@ -50,6 +49,7 @@ use crate::io::iceberg::metadata::{
 };
 use crate::io::iceberg::transform::apply;
 use crate::io::parquet::{Chunk, Columns};
+use crate::io::parquet_variant::tests::read as read_variant;
 use crate::io::{BatchCompletion, Destination, Dispatched, OwnedRecord};
 use crate::plan::topology::{Compression, SecretRef};
 

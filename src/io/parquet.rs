@@ -889,9 +889,8 @@ impl FileWriter {
         let computed: Vec<ArrayRef> = self.computed.iter().map(|c| c.fill(&batch)).collect();
         if let Some(written) = &self.written {
             let variants: Option<Vec<&RecordBatch>> = chunks.iter().map(|c| c.variants.as_ref()).collect();
-            let variants = variants.map(|v| {
-                arrow_select::interleave::interleave_record_batch(&v, &at).expect("chunks of one schema")
-            });
+            let variants = variants
+                .map(|v| arrow_select::interleave::interleave_record_batch(&v, &at).expect("chunks of one schema"));
             batch = relabel(&batch, variants.as_ref(), written, &self.defaults);
         }
         if !self.nulled.is_empty() {
@@ -1055,7 +1054,13 @@ struct Cut<'r> {
 
 impl Cut<'_> {
     /// The view's rows as `root`, a struct whose columns `arrow` holds.
-    fn batch(&mut self, view: &RecordView<'_>, root: &Node, arrow: &Arc<ArrowSchema>, pool: &mut BufferPool) -> RecordBatch {
+    fn batch(
+        &mut self,
+        view: &RecordView<'_>,
+        root: &Node,
+        arrow: &Arc<ArrowSchema>,
+        pool: &mut BufferPool,
+    ) -> RecordBatch {
         let Kind::Struct(s) = &root.kind else {
             unreachable!("Schema::new takes only a struct")
         };
@@ -1336,7 +1341,10 @@ fn variant_bytes(node: &Node) -> Option<Node> {
             if fields.is_empty() {
                 return None;
             }
-            let arrow: Fields = fields.iter().map(|(name, n)| Field::new(name, n.arrow.clone(), true)).collect();
+            let arrow: Fields = fields
+                .iter()
+                .map(|(name, n)| Field::new(name, n.arrow.clone(), true))
+                .collect();
             let s = Struct {
                 fields,
                 open: false,
@@ -2033,7 +2041,15 @@ mod tests {
                     ("t", Tag::DateTime(5)),
                     ("b", Tag::Bytes(Cow::Borrowed(&[1, 2]))),
                     ("d", Tag::Duration(7)),
-                    ("a", Tag::Array(vec![Some(Tag::I64(1)), Some(Tag::F64(2.5)), Some(Tag::Bool(true)), None])),
+                    (
+                        "a",
+                        Tag::Array(vec![
+                            Some(Tag::I64(1)),
+                            Some(Tag::F64(2.5)),
+                            Some(Tag::Bool(true)),
+                            None,
+                        ]),
+                    ),
                 ])),
                 None,
             ],
@@ -2057,7 +2073,13 @@ mod tests {
         // A text column where the record holds a variant.
         let w = decoded(&[Some(Tag::Str("s".into())), None], &DataType::Str, &mut pool);
         let l = decoded(
-            &[Some(Tag::Array(vec![Some(Tag::Str("x".into())), Some(obj(vec![("q", Tag::I64(1))]))])), None],
+            &[
+                Some(Tag::Array(vec![
+                    Some(Tag::Str("x".into())),
+                    Some(obj(vec![("q", Tag::I64(1))])),
+                ])),
+                None,
+            ],
             &DataType::Array(Box::new(DataType::Variant)),
             &mut pool,
         );
@@ -2099,7 +2121,10 @@ mod tests {
                 text(batch.column(0).as_struct(), row).as_deref(),
                 Some("{a:[1,2.5,true,null],b:bin:[1, 2],d:7,t:ts:5}")
             );
-            assert_eq!(text(batch.column(1).as_struct(), row).as_deref(), Some("{k:\"hi\",z:1}"));
+            assert_eq!(
+                text(batch.column(1).as_struct(), row).as_deref(),
+                Some("{k:\"hi\",z:1}")
+            );
             let s = batch.column(2).as_struct();
             assert_eq!(text(s.column(0).as_struct(), row).as_deref(), Some("\"s\""));
             let items = list.value(row);
