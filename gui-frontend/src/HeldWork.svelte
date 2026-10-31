@@ -45,7 +45,8 @@
   <ChipPicker bind:open kind="scope" align="left" title="unsaved work">
     {#snippet face()}
       <span class="dot"></span>
-      <span>unsaved: {named}</span>
+      <span class="dim">Unsaved</span>
+      <span>{named}</span>
       <span class="caret" aria-hidden="true">&#9662;</span>
     {/snippet}
 

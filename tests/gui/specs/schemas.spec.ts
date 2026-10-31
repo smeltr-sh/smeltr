@@ -163,7 +163,7 @@ test('the Elasticsearch view chooses the type a field maps to, saved with the sc
   await admin.screenshot({ path: 'results/schemas-elasticsearch.png' });
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   const saved = await api.get(`${SHARED}${ON}`);
   /** `src_endpoint.ip` of `login`, as the leader keeps it. */
   type Kept = { schemas: { id: string; fields: { field: string; elasticsearch?: object }[] }[] };
@@ -175,7 +175,7 @@ test('the Elasticsearch view chooses the type a field maps to, saved with the sc
     .getByRole('combobox', { name: 'Elasticsearch type of src_endpoint.ip' })
     .selectOption('keyword');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   const cleared = await api.get(`${SHARED}${ON}`);
   expect(kept(cleared.config)).toEqual({ field: 'src_endpoint.ip', type: 'str' });
 });
@@ -196,7 +196,7 @@ test('an integer indexed as a date counts milliseconds or seconds, as its choice
   /** `time` of `login`, as the leader keeps it after a save. */
   const saved = async () => {
     await admin.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+    await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
     const { config } = await api.get(`${SHARED}${ON}`);
     return config.schemas
       .find((s: { id: string }) => s.id === 'login')
@@ -249,7 +249,7 @@ test('an integer indexed as a date counts milliseconds or seconds, as its choice
   await name.selectOption({ label: 'date', exact: true });
   const user = async () => {
     await admin.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+    await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
     const { config } = await api.get(`${SHARED}${ON}`);
     return config.schemas
       .find((s: { id: string }) => s.id === 'login')
@@ -341,7 +341,7 @@ test("a field's own Elasticsearch settings show beside its type, and shared/'s s
   ).toBeAttached();
   await admin.screenshot({ path: 'results/schemas-elasticsearch-settings.png' });
 
-  await admin.getByRole('button', { name: 'shared', exact: true }).click();
+  await admin.getByRole('button', { name: 'Group shared', exact: true }).click();
   await admin.getByRole('button', { name: /^default/ }).click();
   await admin.getByRole('button', { name: '▸ login' }).click();
   await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
@@ -376,7 +376,7 @@ test("a JSON Schema added on the Schemas page is saved as the bundle's own", asy
   await expect(admin.getByRole('cell', { name: /^id\*$/ })).toBeVisible();
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   const saved = await api.get(`${SHARED}${ON}`);
   expect(saved.config.schemas).toEqual([
     {
@@ -408,7 +408,7 @@ test("a pipeline's Produces is saved with it, and the editor says what its rows 
   await admin.screenshot({ path: 'results/schemas-produces.png' });
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   const saved = await api.get(`${SHARED}/pipelines/logins${ON}`);
   expect(saved.pipeline.produces).toEqual(['login']);
 });
@@ -426,7 +426,7 @@ test("a destination's accepts is saved with it", async ({ admin, leader, api }) 
   await expect(dialog).toBeHidden();
   await admin.getByRole('combobox', { name: 'Add a schema it accepts' }).selectOption('audit');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`${SHARED}${ON}`);
   expect(saved.config.destinations[0].accepts).toEqual(['audit']);
@@ -501,7 +501,7 @@ test('a schema is imported by a pipeline of the bundle run over an uploaded file
   await admin.screenshot({ path: 'results/schemas-imported.png' });
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   const saved = await api.get(`${SHARED}${ON}`);
   const fields = saved.config.schemas[0].fields;
   expect(saved.config.schemas[0].id).toBe('ecs');
@@ -631,7 +631,7 @@ test('ECS and an OCSF class come in from the releases the leader carries', async
 /** Saves the page, and answers `id`'s fields as the leader keeps them. */
 async function saved(admin: Page, api: Api, id: string) {
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   const config = (await api.get(`${SHARED}${ON}`)).config;
   type Kept = {
     field: string;

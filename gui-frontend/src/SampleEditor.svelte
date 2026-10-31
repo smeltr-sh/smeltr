@@ -12,6 +12,7 @@
   import Field from './Field.svelte';
   import CrossButton from './CrossButton.svelte';
   import Clamped from './Clamped.svelte';
+  import ShowAll, { SHOWN } from './ShowAll.svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import FindBox, { type FindFilter } from './FindBox.svelte';
   import InlineError from './InlineError.svelte';
@@ -45,9 +46,6 @@
     oncancel: () => void;
     onsaved: () => void;
   } = $props();
-
-  // Past this many, the rows a search leaves are shown on asking: a sample holds up to a thousand.
-  const SHOWN = 100;
 
   /** A draft record, keyed so a row keeps its tick and its place while others are removed. */
   type Row = { key: number; record: SampleRecordDto; changed: boolean };
@@ -316,10 +314,11 @@
         </table>
       </div>
       {#if found.length > shown.length}
-        <div class="actions">
-          <span class="count">{shown.length} of {found.length} shown</span>
-          <button type="button" class="compact" onclick={() => (showAll = true)}>Show all</button>
-        </div>
+        <ShowAll
+          shown={shown.length}
+          of={String(found.length)}
+          onshowall={() => (showAll = true)}
+        />
       {/if}
     </Field>
 

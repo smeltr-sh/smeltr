@@ -356,7 +356,7 @@ async function signInLocally(page: Page, world: World, username: string, passwor
 
 // A save can take seconds on a busy machine, and the flag stays until it answers.
 const unsaved = (page: Page) => () =>
-  expect(page.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 30_000 });
+  expect(page.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 30_000 });
 
 const firstStart: Move = {
   name: 'first-start',
@@ -633,7 +633,7 @@ const refusedSource: Move = {
     await expect(form.getByRole('button', { name: 'Add', exact: true })).toBeDisabled();
     await page.keyboard.press('Escape');
     await expect(form).toBeHidden();
-    await expect(page.getByText('Unsaved', { exact: true })).toBeHidden();
+    await expect(page.getByText('Unsaved', { exact: true })).toHaveCount(0);
     if (before) expect(await configOn(await j.truth(), world.branch!)).toEqual(before);
     return `a source with ${id ? `the id ${id}` : 'no id'} is refused`;
   },
@@ -906,7 +906,7 @@ const refusedRoute: Move = {
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     // The leader says why, and the edit stays to be put right or discarded.
     await expect(page.getByRole('alert').filter({ hasText: '`_raw` is a variant' })).toBeVisible();
-    await expect(page.getByText('Unsaved', { exact: true })).toBeVisible();
+    await expect(page.getByText('Unsaved', { exact: true }).first()).toBeVisible();
     await page.getByRole('button', { name: 'Discard' }).click();
     await unsaved(page)();
     expect(await configOn(await j.truth(), world.branch!)).toEqual(before);
@@ -2065,10 +2065,10 @@ async function switchScope(page: Page, from: string, to: string) {
   // list can close again before its option is clicked. The reload the click starts is waited for below, not here.
   await expect(async () => {
     if (!(await option.isVisible()))
-      await page.getByRole('button', { name: from, exact: true }).click();
+      await page.getByRole('button', { name: `Group ${from}`, exact: true }).click();
     await option.click({ timeout: 2_000, noWaitAfter: true });
   }).toPass({ timeout: 15_000 });
-  await expect(page.getByRole('button', { name: to, exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: `Group ${to}`, exact: true })).toBeVisible();
 }
 
 const capture: Move = {

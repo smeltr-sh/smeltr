@@ -9,6 +9,7 @@
   import type { Requirement, SchemaDto, SchemaFieldDto } from './api';
   import Help from './Help.svelte';
   import Segmented from './Segmented.svelte';
+  import ShowAll, { SHOWN } from './ShowAll.svelte';
   import { elasticsearchTypes, REQUIREMENTS } from './schemas';
   import { count } from './time';
 
@@ -110,8 +111,6 @@
     );
   });
 
-  /** Rows a table shows before Show all: a standard's thousands take the browser seconds to lay out. */
-  const SHOWN = 100;
   /** Stays on while the search changes, until the schema is closed. */
   let showAll = $state(false);
   let shown = $derived(showAll ? found : found.slice(0, SHOWN));
@@ -165,7 +164,7 @@
     <tbody>
       {#each shown as f (f.field)}
         <tr>
-          <td class="name">
+          <td class="name" title={f.field}>
             <span class="mono">{f.field}</span>{#if f.requirement === 'required'}<span
                 class="required"
                 title="required">*</span
@@ -231,12 +230,13 @@
   </table>
   {#if shown.length < found.length}
     <div class="more">
-      <span class="dim"
-        >{SHOWN} of {found.length < of.fields.length
+      <ShowAll
+        shown={SHOWN}
+        of={found.length < of.fields.length
           ? `the ${found.length} fields that hold “${q.trim()}”`
-          : `${found.length} fields`} shown</span
-      >
-      <button type="button" class="compact" onclick={() => (showAll = true)}>Show all</button>
+          : `${found.length} fields`}
+        onshowall={() => (showAll = true)}
+      />
     </div>
   {:else if found.length < of.fields.length}
     <p class="dim">{count(found.length, 'field')} of {of.fields.length} hold “{q.trim()}”.</p>
@@ -301,14 +301,7 @@
   }
 
   .more {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
     margin-top: 0.4rem;
-  }
-
-  .more .dim {
-    font-size: var(--text-note);
   }
 
   th,

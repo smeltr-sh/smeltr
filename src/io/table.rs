@@ -2,7 +2,9 @@
 //! statistics from its Parquet footer. Each format names its own types and writes these values its own way.
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Date32Type, Float32Type, Float64Type, Int32Type, Int64Type, TimestampMicrosecondType};
+use arrow_array::types::{
+    Date32Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, TimestampMicrosecondType,
+};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::{DataType as Arrow, TimeUnit};
 use parquet::basic::{LogicalType, TimeUnit as ParquetTimeUnit};
@@ -12,7 +14,7 @@ use std::cmp::Ordering;
 use std::fmt;
 
 use crate::core::column::DataType;
-use crate::ops::civil::civil_from_days;
+use crate::ops::civil::{MICROS_PER_DAY, civil_from_days, valid_date_days};
 use crate::plan::topology::Records;
 
 /// A row group's size where a table sets none: Iceberg's default, and Spark's for Delta.
@@ -128,6 +130,68 @@ pub fn column_at(batch: &arrow_array::RecordBatch, names: &[String], at: usize) 
     Ok(Some(column))
 }
 
+/// `valid_date_days` for parts read as signed numbers; None for a negative or oversized one.
+pub fn date_days(y: i64, m: i64, d: i64) -> Option<i64> {
+    valid_date_days(y, u32::try_from(m).ok()?, u32::try_from(d).ok()?)
+}
+
+/// `want` numbers joined by `-`, the first of which may carry a sign.
+pub fn signed_parts(s: &str, want: usize) -> Option<Vec<i64>> {
+    let (negative, body) = match s.as_bytes().first()? {
+        b'-' => (true, &s[1..]),
+        b'+' => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let mut parts = body
+        .split('-')
+        .map(|p| (!p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())).then(|| p.parse().ok())?)
+        .collect::<Option<Vec<i64>>>()?;
+    if parts.len() != want {
+        return None;
+    }
+    if negative {
+        parts[0] = -parts[0];
+    }
+    Some(parts)
+}
+
+/// Days since 1970-01-01 of `2026-10-10`, its year signed.
+pub fn parse_date(s: &str) -> Option<i64> {
+    let [y, m, d] = signed_parts(s, 3)?[..] else {
+        return None;
+    };
+    date_days(y, m, d)
+}
+
+/// Microseconds of `2026-10-10T13:05:09.000123`; the fraction may have up to six digits, or be left out.
+pub fn parse_timestamp(s: &str) -> Option<i64> {
+    let (date, time) = s.split_once('T')?;
+    let (hms, fraction) = time.split_once('.').unwrap_or((time, ""));
+    let [h, m, sec] = hms
+        .split(':')
+        .map(|p| (p.len() == 2).then(|| p.parse::<i64>().ok())?)
+        .collect::<Option<Vec<_>>>()?[..]
+    else {
+        return None;
+    };
+    if h > 23 || m > 59 || sec > 59 || fraction.len() > 6 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let micros = format!("{fraction:0<6}").parse::<i64>().ok()?;
+    let day = parse_date(date)?;
+    day.checked_mul(MICROS_PER_DAY)?
+        .checked_add(((h * 60 + m) * 60 + sec) * 1_000_000 + micros)
+}
+
+/// The bytes of `s`, two hex digits for each.
+pub fn unhex(s: &str) -> Option<Vec<u8>> {
+    (s.len().is_multiple_of(2) && s.is_ascii()).then_some(())?;
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
 /// Row `at` of `column` as a value of the table's `kind`; None when null.
 pub fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Result<Option<Literal>, String> {
     // A field that never holds a value is a null column, which keeps no null buffer.
@@ -138,6 +202,9 @@ pub fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Resu
         (Kind::Boolean, Arrow::Boolean) => Literal::Boolean(column.as_boolean().value(at)),
         (Kind::Long, Arrow::Int64) => Literal::Long(column.as_primitive::<Int64Type>().value(at)),
         (Kind::Int, Arrow::Int32) => Literal::Int(column.as_primitive::<Int32Type>().value(at)),
+        // A column's default is of the table's type.
+        (Kind::Byte, Arrow::Int8) => Literal::Int(column.as_primitive::<Int8Type>().value(at).into()),
+        (Kind::Short, Arrow::Int16) => Literal::Int(column.as_primitive::<Int16Type>().value(at).into()),
         // A row's column is the record's, wider than a table may hold it (`parquet::narrows`).
         (Kind::Byte | Kind::Short | Kind::Int, Arrow::Int64) | (Kind::Float, Arrow::Float64) => {
             let to = kind.narrowed().expect("a narrower kind");
