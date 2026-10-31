@@ -161,9 +161,9 @@ clean-main:
     powershell -NoProfile -Command "$changes = @(git status --porcelain); if ($LASTEXITCODE -ne 0) { exit 1 }; $branch = git branch --show-current; if ($LASTEXITCODE -ne 0 -or $branch -ne 'main' -or $changes.Count -gt 0) { [Console]::Error.WriteLine('a release builds from main with nothing uncommitted'); exit 1 }"
 
 # The check before every push; nothing else runs one. `tools/check-scope` picks the checks the files changed since
-# origin/nightly can break, down to the Rust tests of the modules they touch, and runs them side by side. It can miss a
+# origin/main can break, down to the Rust tests of the modules they touch, and runs them side by side. It can miss a
 # test: `check-all` runs everything, before a merge to main.
-[doc("The check before every push, scoped to what changed since origin/nightly.")]
+[doc("The check before every push, scoped to what changed since origin/main.")]
 check:
     cargo run -q -p check-scope
 
