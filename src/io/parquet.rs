@@ -59,10 +59,25 @@ pub struct Schema {
     written: Option<Arc<ArrowSchema>>,
     /// Whether `written` holds a leaf narrower than `arrow`, so a row's values are checked against it.
     narrowed: bool,
+    /// What each of `written`'s root fields takes where the record does not write it; null for one beyond.
+    defaults: Arc<[WriteDefault]>,
     /// Columns the destination computes, written after the record's own.
     computed: Vec<Arc<dyn Computed>>,
     /// The record's columns that hold a partition's values, each by the partition field's name and its index.
     partition_columns: Vec<(String, usize)>,
+}
+
+/// What a field of a written schema takes in each row where the record does not write it.
+#[derive(Clone, Debug)]
+pub enum WriteDefault {
+    /// A field the record does not write: one row of the field's type, which every row takes.
+    Value(ArrayRef),
+    /// A struct the record writes: its fields', in the written schema's order.
+    Struct(Vec<WriteDefault>),
+    /// A list the record writes: its element's.
+    List(Box<WriteDefault>),
+    /// A leaf the record writes.
+    Written,
 }
 
 /// A column a destination computes for each row it writes, after the record's own, such as a table's identity.
@@ -153,6 +168,7 @@ impl Schema {
             arrow,
             written: None,
             narrowed: false,
+            defaults: Arc::new([]),
             computed: Vec::new(),
             partition_columns: Vec::new(),
         })
@@ -169,6 +185,15 @@ impl Schema {
         Schema {
             narrowed: fields != *self.arrow.fields(),
             written: Some(written),
+            ..self
+        }
+    }
+
+    /// This schema, a field its record does not write taking `defaults`, one for each of the written schema's root
+    /// fields, rather than null.
+    pub fn with_defaults(self, defaults: Vec<WriteDefault>) -> Schema {
+        Schema {
+            defaults: defaults.into(),
             ..self
         }
     }
@@ -362,14 +387,15 @@ fn narrowed(node: &Node, written: &Arrow) -> Option<Arrow> {
     }
 }
 
-/// `batch` under `schema`, which `narrowed` matches to its own. No value is copied.
-fn relabel(batch: &RecordBatch, schema: &Arc<ArrowSchema>) -> RecordBatch {
-    let columns = relabelled_fields(batch.columns(), schema.fields(), batch.num_rows());
+/// `batch` under `schema`, which `narrowed` matches to its own, a field it lacks taking its `defaults`. No value of
+/// the batch's is copied.
+fn relabel(batch: &RecordBatch, schema: &Arc<ArrowSchema>, defaults: &[WriteDefault]) -> RecordBatch {
+    let columns = relabelled_fields(batch.columns(), schema.fields(), batch.num_rows(), defaults);
     RecordBatch::try_new(schema.clone(), columns)
         .expect("a written schema the rows' own but for names, metadata and narrowed leaves")
 }
 
-fn relabelled(array: &ArrayRef, to: &Arrow) -> ArrayRef {
+fn relabelled(array: &ArrayRef, to: &Arrow, default: Option<&WriteDefault>) -> ArrayRef {
     use arrow_array::cast::AsArray;
     if array.data_type() == to {
         return array.clone();
@@ -379,14 +405,22 @@ fn relabelled(array: &ArrayRef, to: &Arrow) -> ArrayRef {
             let parent = array
                 .as_struct_opt()
                 .expect("a written schema the rows' own but for names, metadata and narrowed leaves");
-            let children = relabelled_fields(parent.columns(), fields, parent.len());
+            let defaults = match default {
+                Some(WriteDefault::Struct(defaults)) => &defaults[..],
+                _ => &[],
+            };
+            let children = relabelled_fields(parent.columns(), fields, parent.len(), defaults);
             Arc::new(StructArray::new(fields.clone(), children, parent.nulls().cloned()))
         }
         Arrow::List(field) => {
             let list = array
                 .as_list_opt::<i32>()
                 .expect("a written schema the rows' own but for names, metadata and narrowed leaves");
-            let values = relabelled(list.values(), field.data_type());
+            let element = match default {
+                Some(WriteDefault::List(element)) => Some(&**element),
+                _ => None,
+            };
+            let values = relabelled(list.values(), field.data_type(), element);
             Arc::new(ListArray::new(
                 field.clone(),
                 list.offsets().clone(),
@@ -399,12 +433,16 @@ fn relabelled(array: &ArrayRef, to: &Arrow) -> ArrayRef {
     }
 }
 
-/// `columns` as `fields`, and a null column of `rows` for each field after theirs.
-fn relabelled_fields(columns: &[ArrayRef], fields: &Fields, rows: usize) -> Vec<ArrayRef> {
+/// `columns` as `fields`, and for each field after theirs a column of `rows` of its default, or null.
+fn relabelled_fields(columns: &[ArrayRef], fields: &Fields, rows: usize, defaults: &[WriteDefault]) -> Vec<ArrayRef> {
     (fields.iter().enumerate())
-        .map(|(i, field)| match columns.get(i) {
-            Some(column) => relabelled(column, field.data_type()),
-            None => new_null_array(field.data_type(), rows),
+        .map(|(i, field)| match (columns.get(i), defaults.get(i)) {
+            (Some(column), default) => relabelled(column, field.data_type(), default),
+            (None, Some(WriteDefault::Value(value))) if value.is_valid(0) => {
+                let first = arrow_array::UInt32Array::from(vec![0; rows]);
+                arrow_select::take::take(value, &first, None).expect("a default's one row")
+            }
+            (None, _) => new_null_array(field.data_type(), rows),
         })
         .collect()
 }
@@ -535,6 +573,7 @@ pub struct FileWriter {
     rows: u64,
     /// The schema each batch is relabelled with before it is written, when the file's differs from its rows'.
     written: Option<Arc<ArrowSchema>>,
+    defaults: Arc<[WriteDefault]>,
     /// Columns computed for each batch, and the file's schema with them, when there are any.
     computed: Vec<Arc<dyn Computed>>,
     file: Arc<ArrowSchema>,
@@ -631,6 +670,7 @@ impl FileWriter {
         };
         FileWriter {
             written: schema.written.clone(),
+            defaults: schema.defaults.clone(),
             computed: schema.computed.clone(),
             ..FileWriter::on(file, options)
         }
@@ -658,6 +698,7 @@ impl FileWriter {
             sink,
             rows: 0,
             written: None,
+            defaults: Arc::new([]),
             computed: Vec::new(),
             file: schema,
             nulled: Vec::new(),
@@ -686,7 +727,7 @@ impl FileWriter {
         let mut batch = arrow_select::interleave::interleave_record_batch(&batches, &at).expect("chunks of one schema");
         let computed: Vec<ArrayRef> = self.computed.iter().map(|c| c.fill(&batch)).collect();
         if let Some(written) = &self.written {
-            batch = relabel(&batch, written);
+            batch = relabel(&batch, written, &self.defaults);
         }
         if !self.nulled.is_empty() {
             let mut columns = batch.columns().to_vec();
@@ -1355,7 +1396,7 @@ mod tests {
             None,
             "a null list holds nothing"
         );
-        let written = relabelled(&lists.slice(0, 1), &to);
+        let written = relabelled(&lists.slice(0, 1), &to, None);
         let items = written.as_list::<i32>().value(0);
         let items = items.as_primitive::<Int32Type>();
         assert_eq!(items.iter().collect::<Vec<_>>(), vec![Some(1), None, Some(2)]);
@@ -1440,7 +1481,7 @@ mod tests {
         let table = table_schema(&record, None, 0).unwrap().schema;
         let labelled = schema
             .clone()
-            .with_written(with_field_ids(schema.arrow(), &table).unwrap());
+            .with_written(with_field_ids(schema.arrow(), &table).unwrap().0);
 
         let Arrow::Struct(o) = schema.arrow().field(0).data_type().clone() else {
             panic!("o is a struct")
@@ -1540,7 +1581,7 @@ mod tests {
         ]);
         let labelled = schema
             .clone()
-            .with_written(with_field_ids(schema.arrow(), &table).unwrap());
+            .with_written(with_field_ids(schema.arrow(), &table).unwrap().0);
 
         let Arrow::Struct(fields) = schema.arrow().field(0).data_type().clone() else {
             panic!("o is a struct")
@@ -1596,6 +1637,188 @@ mod tests {
         for (column, name) in batch.columns().iter().zip(names).skip(1) {
             assert_eq!(column.null_count(), 2, "{name}");
         }
+    }
+
+    #[test]
+    fn a_table_column_the_record_lacks_takes_its_write_default_at_every_depth() {
+        use crate::io::iceberg::metadata::{ListType, NestedField, Primitive, StructType, Type};
+        use crate::io::iceberg::schema::{table_schema, with_field_ids};
+        use arrow_array::cast::AsArray;
+        use arrow_array::types::{
+            Date32Type, Decimal128Type, Int32Type, Int64Type, Time64MicrosecondType, TimestampMicrosecondType,
+        };
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use serde_json::json;
+
+        let record = st(&[("o", st(&[("a", DataType::I64)], false))], false);
+        let schema = Schema::new(&record).unwrap();
+        let mut table = table_schema(&record, None, 0).unwrap().schema;
+        let field = |id: i32, name: &str, field_type: Type, default: serde_json::Value| NestedField {
+            id,
+            name: name.into(),
+            required: false,
+            field_type,
+            doc: None,
+            other: [("write-default".to_string(), default)].into(),
+        };
+        let other = |name: &str| Type::Primitive(Primitive::Other(name.into()));
+        let Type::Struct(o) = &mut table.fields[0].field_type else {
+            panic!("o is a struct")
+        };
+        o.fields
+            .push(field(3, "b", Type::Primitive(Primitive::String), json!("dflt")));
+        let mut required = field(16, "r", Type::Primitive(Primitive::Long), json!(7));
+        required.required = true;
+        table.fields.extend([
+            field(4, "d", other("decimal(10, 2)"), json!("-14.2")),
+            field(5, "u", other("uuid"), json!("f79c3e09-677c-4bbd-a479-3f349cb785e7")),
+            field(6, "f", other("fixed[2]"), json!("0a0B")),
+            field(7, "t", other("time"), json!("22:31:08.000123")),
+            field(
+                8,
+                "l",
+                Type::List(ListType {
+                    element_id: 9,
+                    element_required: false,
+                    element: Box::new(Type::Primitive(Primitive::Int)),
+                }),
+                json!([1, 2]),
+            ),
+            field(
+                10,
+                "m",
+                Type::Map(json!({"type": "map", "key-id": 11, "key": "string", "value-id": 12,
+                    "value": "long", "value-required": false})),
+                json!({"keys": ["k"], "values": [5]}),
+            ),
+            field(
+                13,
+                "s",
+                Type::Struct(StructType {
+                    fields: vec![field(
+                        14,
+                        "x",
+                        Type::Primitive(Primitive::Timestamptz),
+                        json!("1970-01-01T00:00:01+00:00"),
+                    )],
+                }),
+                json!({}),
+            ),
+            field(15, "n", Type::Primitive(Primitive::Date), json!("1970-01-03")),
+            required,
+            field(17, "z", Type::Primitive(Primitive::Boolean), serde_json::Value::Null),
+        ]);
+        let (written, defaults) = with_field_ids(schema.arrow(), &table).unwrap();
+        let labelled = schema.clone().with_written(written).with_defaults(defaults);
+
+        let Arrow::Struct(fields) = schema.arrow().field(0).data_type().clone() else {
+            panic!("o is a struct")
+        };
+        // The second row's o is null, and so is the o.b it holds.
+        let o: ArrayRef = Arc::new(StructArray::new(
+            fields,
+            vec![Arc::new(Int64Array::from(vec![Some(1), None]))],
+            Some(NullBuffer::from(vec![true, false])),
+        ));
+        let batch = RecordBatch::try_new(schema.arrow().clone(), vec![o]).unwrap();
+        let chunk = Arc::new(Chunk::new(batch, Vec::new()));
+        let rows: Vec<Columns> = (0..2)
+            .map(|row| Columns {
+                chunk: chunk.clone(),
+                row,
+            })
+            .collect();
+        let mut w = FileWriter::open(&labelled, &Compression::None.into());
+        w.write(&rows);
+        let (file, _) = w.finish();
+
+        let read: Vec<RecordBatch> = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(file))
+            .unwrap()
+            .build()
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let batch = &read[0];
+        let column = |name: &str| batch.column_by_name(name).unwrap().clone();
+        let o = column("o");
+        let b = o.as_struct().column(1).as_string::<i32>();
+        assert_eq!((b.value(0), o.is_null(1)), ("dflt", true));
+        for row in 0..2 {
+            assert_eq!(column("d").as_primitive::<Decimal128Type>().value(row), -1420);
+            assert_eq!(
+                column("u").as_fixed_size_binary().value(row),
+                [
+                    0xf7, 0x9c, 0x3e, 0x09, 0x67, 0x7c, 0x4b, 0xbd, 0xa4, 0x79, 0x3f, 0x34, 0x9c, 0xb7, 0x85, 0xe7
+                ]
+            );
+            assert_eq!(column("f").as_fixed_size_binary().value(row), [10, 11]);
+            assert_eq!(
+                column("t").as_primitive::<Time64MicrosecondType>().value(row),
+                ((22 * 60 + 31) * 60 + 8) * 1_000_000 + 123
+            );
+            let l = column("l");
+            assert_eq!(
+                l.as_list::<i32>().value(row).as_primitive::<Int32Type>().values(),
+                &[1, 2]
+            );
+            let m = column("m");
+            let entries = m.as_map().value(row);
+            assert_eq!(entries.column(0).as_string::<i32>().value(0), "k");
+            assert_eq!(entries.column(1).as_primitive::<Int64Type>().value(0), 5);
+            let x = column("s").as_struct().column(0).clone();
+            assert_eq!(x.as_primitive::<TimestampMicrosecondType>().value(row), 1_000_000);
+            assert_eq!(column("n").as_primitive::<Date32Type>().value(row), 2);
+            assert_eq!(column("r").as_primitive::<Int64Type>().value(row), 7);
+        }
+        assert_eq!(column("z").null_count(), 2);
+    }
+
+    #[test]
+    fn a_write_default_that_is_no_value_of_its_column_is_refused() {
+        use crate::io::iceberg::metadata::{NestedField, Primitive, StructType, Type};
+        use crate::io::iceberg::schema::{table_schema, with_field_ids};
+        use serde_json::json;
+
+        let record = st(&[("a", DataType::I64)], false);
+        let schema = Schema::new(&record).unwrap();
+        let field = |name: &str, field_type: Type, default: serde_json::Value| NestedField {
+            id: 9,
+            name: name.into(),
+            required: false,
+            field_type,
+            doc: None,
+            other: [("write-default".to_string(), default)].into(),
+        };
+        let other = |name: &str| Type::Primitive(Primitive::Other(name.into()));
+        let refused = |column: NestedField| {
+            let mut table = table_schema(&record, None, 0).unwrap().schema;
+            table.fields.push(column);
+            with_field_ids(schema.arrow(), &table).unwrap_err()
+        };
+        assert_eq!(
+            refused(field("i", Type::Primitive(Primitive::Int), json!(3_000_000_000_i64))),
+            "the table's column i has the write default 3000000000, which is no int"
+        );
+        for (ty, default) in [
+            (other("decimal(3, 1)"), json!("100.0")),
+            (other("decimal(3, 1)"), json!("1.25")),
+            (other("uuid"), json!("f79c3e09677c4bbda4793f349cb785e7")),
+            (other("fixed[2]"), json!("0a")),
+            (Type::Primitive(Primitive::Timestamptz), json!("1970-01-01T00:00:00")),
+            (Type::Primitive(Primitive::Date), json!(2)),
+        ] {
+            assert!(
+                refused(field("v", ty, default.clone())).contains("which is no"),
+                "{default}"
+            );
+        }
+        let mut x = field("x", Type::Primitive(Primitive::Long), serde_json::Value::Null);
+        x.required = true;
+        let s = field("s", Type::Struct(StructType { fields: vec![x] }), json!({}));
+        assert_eq!(
+            refused(s),
+            "the table's column s.x is required, and has no write default for a row that lacks it"
+        );
     }
 
     #[test]

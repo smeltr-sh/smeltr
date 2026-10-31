@@ -2,7 +2,7 @@
 //! statistics from its Parquet footer. Each format names its own types and writes these values its own way.
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Date32Type, Float64Type, Int32Type, Int64Type, TimestampMicrosecondType};
+use arrow_array::types::{Date32Type, Float32Type, Float64Type, Int32Type, Int64Type, TimestampMicrosecondType};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::{DataType as Arrow, TimeUnit};
 use parquet::basic::{LogicalType, TimeUnit as ParquetTimeUnit};
@@ -155,9 +155,10 @@ pub fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Resu
             // Every day an i64 of microseconds reaches is an i32.
             Literal::Date(us.div_euclid(crate::ops::civil::MICROS_PER_DAY) as i32)
         }
+        (Kind::Float, Arrow::Float32) => Literal::Double(column.as_primitive::<Float32Type>().value(at) as f64),
         (Kind::Double, Arrow::Float64) => Literal::Double(column.as_primitive::<Float64Type>().value(at)),
         (Kind::Date, Arrow::Date32) => Literal::Date(column.as_primitive::<Date32Type>().value(at)),
-        (Kind::Timestamp | Kind::Timestamptz, Arrow::Timestamp(TimeUnit::Microsecond, Some(_))) => {
+        (Kind::Timestamp | Kind::Timestamptz, Arrow::Timestamp(TimeUnit::Microsecond, _)) => {
             Literal::Micros(column.as_primitive::<TimestampMicrosecondType>().value(at))
         }
         (Kind::String, Arrow::Utf8) => Literal::String(column.as_string::<i32>().value(at).to_string()),

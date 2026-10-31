@@ -12,7 +12,8 @@
 //! - each data file's row count and partition values are its rows', and it lies under the table's location;
 //! - the table's schema holds every column of the record, the earlier table's ids kept;
 //! - every data file holds every column the earlier table has and the record lacks, as another engine may have added
-//!   it, at any depth and of any type, all null;
+//!   it, at any depth and of any type, all null, or where a version 3 table gives it a write default, holding that in
+//!   every leaf;
 //! - a column the earlier table holds narrower, as another engine may have made it, reads back as that type, and a
 //!   row with a value it cannot hold is refused; a table partitioned by such a column takes its rows' partitions in
 //!   that type;
@@ -49,7 +50,7 @@ use crate::io::{BatchCompletion, Destination, Dispatched, OwnedRecord};
 use crate::plan::topology::{Compression, SecretRef};
 
 /// The seeds a run takes.
-const SEEDS: std::ops::Range<u64> = 1..161;
+const SEEDS: std::ops::Range<u64> = 1..201;
 
 /// What a run must reach over its seeds.
 const COVERED: &[&str] = &[
@@ -109,6 +110,8 @@ const COVERED: &[&str] = &[
     "lacked map",
     "lacked struct",
     "lacked nested",
+    "lacked default",
+    "lacked required default",
     "sign-in none",
     "sign-in bearer",
     "sign-in client credentials",
@@ -169,8 +172,25 @@ fn lacked_type(kind: &str, next: &mut impl FnMut() -> i32) -> Type {
     }
 }
 
-/// Err when the data file `bytes` lacks a column of `lacked`, by id, or holds a value in one.
-fn holds_lacked(bytes: &[u8], lacked: &[i32]) -> Result<(), String> {
+/// The spec's JSON single value of a column of `kind` (`LACKED`); for a struct, `{}`, whose fields take their own.
+fn lacked_default(kind: &str) -> serde_json::Value {
+    use serde_json::json;
+    match kind {
+        "str" => json!("d"),
+        "decimal" => json!("-1.5"),
+        "uuid" => json!("f79c3e09-677c-4bbd-a479-3f349cb785e7"),
+        "fixed" => json!("0a0b0c"),
+        "time" => json!("01:02:03.000004"),
+        "list" => json!([1, 2]),
+        "map" => json!({"keys": ["k"], "values": [3]}),
+        "struct" => json!({}),
+        other => unreachable!("{other} is no lacked type"),
+    }
+}
+
+/// Err when the data file `bytes` lacks a column of `lacked`, by id, or holds in one other than its write default:
+/// null where it has none (`false`), and a value in every leaf where it has one (`true`).
+fn holds_lacked(bytes: &[u8], lacked: &[(i32, bool)]) -> Result<(), String> {
     use ::parquet::file::metadata::ParquetMetaDataReader;
     use ::parquet::schema::types::Type as Node;
     let metadata = ParquetMetaDataReader::new()
@@ -188,7 +208,7 @@ fn holds_lacked(bytes: &[u8], lacked: &[i32]) -> Result<(), String> {
     }
     let mut held = Vec::new();
     ids(descr.root_schema(), &mut held);
-    if let Some(id) = lacked.iter().find(|id| !held.contains(id)) {
+    if let Some((id, _)) = lacked.iter().find(|(id, _)| !held.contains(id)) {
         return Err(format!("it lacks the column of id {id}"));
     }
     for group in metadata.row_groups() {
@@ -197,17 +217,28 @@ fn holds_lacked(bytes: &[u8], lacked: &[i32]) -> Result<(), String> {
             let path = leaf.path().parts();
             // The leaf is of a lacked column when it or a group above it carries a lacked id.
             let mut node = descr.root_schema();
-            let mut of_lacked = false;
+            let mut of_lacked = None;
             for part in path {
                 let Some(child) = node.get_fields().iter().find(|f| f.name() == part) else {
                     break;
                 };
                 node = child;
-                of_lacked |= node.get_basic_info().has_id() && lacked.contains(&node.get_basic_info().id());
+                let info = node.get_basic_info();
+                let at = lacked.iter().find(|(id, _)| info.has_id() && *id == info.id());
+                of_lacked = of_lacked.or(at.map(|(_, defaulted)| *defaulted));
             }
             let nulls = column.statistics().and_then(|s| s.null_count_opt());
-            if of_lacked && nulls != Some(column.num_values() as u64) {
-                return Err(format!("{} holds a value", column.column_path()));
+            match of_lacked {
+                Some(false) if nulls != Some(column.num_values() as u64) => {
+                    return Err(format!("{} holds a value", column.column_path()));
+                }
+                Some(true) if nulls != Some(0) => {
+                    return Err(format!(
+                        "{} holds a null, and its column has a write default",
+                        column.column_path()
+                    ));
+                }
+                _ => {}
             }
         }
     }
@@ -731,7 +762,7 @@ fn check_table(
     store: &Arc<InMemory>,
     runtime: &Arc<tokio::runtime::Runtime>,
     leaves: &[(String, &str)],
-    lacked: &[i32],
+    lacked: &[(i32, bool)],
     taken: &BTreeMap<i64, BTreeMap<String, Val>>,
     reached: &mut Vec<String>,
 ) -> Result<(), String> {
@@ -975,8 +1006,9 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
     let mut evolution_refused = None;
     // The leaves the earlier table holds narrower, and as what.
     let mut narrow: BTreeMap<String, &'static str> = BTreeMap::new();
-    // The ids of the columns the earlier table has and the record lacks.
-    let mut lacked: Vec<i32> = Vec::new();
+    // The ids of the columns the earlier table has and the record lacks, and whether each has a write default.
+    let mut lacked: Vec<(i32, bool)> = Vec::new();
+    let mut version_3 = false;
     let existing = rng.chance(3);
     if existing {
         reached.push("existing table".into());
@@ -1003,6 +1035,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
             let table = fake.table.as_mut().ok_or("the earlier table was not made")?;
             table.format_version = 3;
             table.next_row_id = Some(rng.below(1000) as i64);
+            version_3 = true;
             reached.push("format version 3".into());
         }
         // As another engine made it: some of its columns narrower than the record types them.
@@ -1099,16 +1132,30 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
                 .ok_or("the earlier table has no current schema")?;
             let kind = *rng.pick(LACKED);
             let id = next();
-            let field_type = lacked_type(kind, &mut next);
+            let mut field_type = lacked_type(kind, &mut next);
+            // A version 3 table's column may have a write default, which a struct's fields have too.
+            let defaulted = version_3 && rng.chance(2);
+            let mut other = serde_json::Map::new();
+            if defaulted {
+                other.insert("write-default".into(), lacked_default(kind));
+                if let Type::Struct(s) = &mut field_type {
+                    s.fields[0].other.insert("write-default".into(), serde_json::json!(0.5));
+                }
+                reached.push("lacked default".into());
+            }
+            let required = defaulted && rng.chance(2);
+            if required {
+                reached.push("lacked required default".into());
+            }
             schema.fields.push(NestedField {
                 id,
                 name: format!("lacked_{kind}"),
-                required: false,
+                required,
                 field_type,
                 doc: None,
-                other: Default::default(),
+                other: other.into_iter().collect(),
             });
-            lacked.push(id);
+            lacked.push((id, defaulted));
             reached.push(format!("lacked {kind}"));
             if let Some(Type::Struct(ctx)) = (schema.fields.iter_mut())
                 .find(|f| f.name == "ctx")
@@ -1124,7 +1171,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
                     doc: None,
                     other: Default::default(),
                 });
-                lacked.push(id);
+                lacked.push((id, false));
                 reached.push("lacked nested".into());
             }
             table.last_column_id = last;
