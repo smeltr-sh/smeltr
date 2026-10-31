@@ -1359,17 +1359,9 @@ mod tests {
     }
 
     fn new_schema(record: &DataType) -> StructType {
-        schema::table_schema(
-            record,
-            None,
-            Mapping::Name {
-                max_column_id: 0,
-                iceberg: false,
-            },
-            None,
-        )
-        .unwrap()
-        .schema
+        schema::table_schema(record, None, Mapping::name(0), None)
+            .unwrap()
+            .schema
     }
 
     #[test]
@@ -1846,17 +1838,9 @@ mod tests {
     #[test]
     fn a_table_that_maps_its_columns_by_name_or_id_has_them_written_under_their_physical_names_and_ids() {
         let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
-        let mapped = schema::table_schema(
-            &record,
-            None,
-            Mapping::Name {
-                max_column_id: 0,
-                iceberg: false,
-            },
-            None,
-        )
-        .unwrap()
-        .schema;
+        let mapped = schema::table_schema(&record, None, Mapping::name(0), None)
+            .unwrap()
+            .schema;
         for mode in ["name", "id"] {
             let table = table_with(&record, &["host"], |a| {
                 if let Some(p) = a.get_mut("protocol") {
@@ -1900,10 +1884,7 @@ mod tests {
     fn an_iceberg_table_has_its_arrays_elements_written_with_their_ids_and_an_invalid_one_is_refused() {
         let xs = DataType::Array(Box::new(DataType::I64));
         let record = st(&[("host", DataType::Str), ("xs", xs.clone())]);
-        let iceberg = Mapping::Name {
-            max_column_id: 0,
-            iceberg: true,
-        };
+        let iceberg = Mapping::iceberg(0);
         let mapped = schema::table_schema(&record, None, iceberg, None).unwrap().schema;
         let table = |schema: &StructType, configuration: Value| {
             let schema = schema.to_json();

@@ -222,6 +222,23 @@ pub enum Mapping {
     },
 }
 
+#[cfg(test)]
+impl Mapping {
+    pub fn name(max_column_id: i64) -> Mapping {
+        Mapping::Name {
+            max_column_id,
+            iceberg: false,
+        }
+    }
+
+    pub fn iceberg(max_column_id: i64) -> Mapping {
+        Mapping::Name {
+            max_column_id,
+            iceberg: true,
+        }
+    }
+}
+
 /// The table's schema for a record, and whether it differs from the table's current one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Evolution {
@@ -236,7 +253,7 @@ pub struct Evolution {
 }
 
 /// The schema a table must have for `record` to be written to it. With no `current` schema the table is new, and the
-/// caller passes `Mapping::None`, or `Mapping::Name { max_column_id: 0, iceberg: false }` to map it. Under `Name` each new column,
+/// caller passes `Mapping::None`, or `Mapping::name(0)` to map it. Under `Name` each new column,
 /// nested ones too, takes the next id above `max_column_id` and a fresh physical name; under `None` it takes no
 /// metadata. When the table lets its columns widen, `widen` names its partition columns, and every other column it
 /// holds narrower than the record types is widened to the record's type where the protocol allows, the change
@@ -971,24 +988,9 @@ mod tests {
 
     #[test]
     fn a_new_table_takes_the_record_with_ids_a_level_at_a_time() {
-        let e = table_schema(
-            &record(),
-            None,
-            Mapping::Name {
-                max_column_id: 0,
-                iceberg: false,
-            },
-            None,
-        )
-        .unwrap();
+        let e = table_schema(&record(), None, Mapping::name(0), None).unwrap();
         assert!(e.changed);
-        assert_eq!(
-            e.mapping,
-            Mapping::Name {
-                max_column_id: 9,
-                iceberg: false
-            }
-        );
+        assert_eq!(e.mapping, Mapping::name(9));
         let mut got = Vec::new();
         ids(&e.schema.fields, "", &mut got);
         let want: Vec<(String, Option<i64>)> = [
@@ -1053,16 +1055,7 @@ mod tests {
 
     #[test]
     fn the_same_record_changes_nothing() {
-        let first = table_schema(
-            &record(),
-            None,
-            Mapping::Name {
-                max_column_id: 0,
-                iceberg: false,
-            },
-            None,
-        )
-        .unwrap();
+        let first = table_schema(&record(), None, Mapping::name(0), None).unwrap();
         let again = table_schema(&record(), Some(&first.schema), first.mapping, None).unwrap();
         assert!(!again.changed);
         assert_eq!(again.mapping, first.mapping);
@@ -1094,17 +1087,7 @@ mod tests {
 
     #[test]
     fn a_new_nested_field_is_added_with_a_new_id_and_a_column_not_written_is_kept() {
-        let mut table = table_schema(
-            &record(),
-            None,
-            Mapping::Name {
-                max_column_id: 0,
-                iceberg: false,
-            },
-            None,
-        )
-        .unwrap()
-        .schema;
+        let mut table = table_schema(&record(), None, Mapping::name(0), None).unwrap().schema;
         table.fields.push(StructField {
             metadata: json!({COLUMN_ID: 20, PHYSICAL_NAME: "col-gone"})
                 .as_object()
@@ -1112,24 +1095,9 @@ mod tests {
                 .clone(),
             ..plain("gone", prim("integer"))
         });
-        let e = table_schema(
-            &grown(),
-            Some(&table),
-            Mapping::Name {
-                max_column_id: 20,
-                iceberg: false,
-            },
-            None,
-        )
-        .unwrap();
+        let e = table_schema(&grown(), Some(&table), Mapping::name(20), None).unwrap();
         assert!(e.changed);
-        assert_eq!(
-            e.mapping,
-            Mapping::Name {
-                max_column_id: 23,
-                iceberg: false
-            }
-        );
+        assert_eq!(e.mapping, Mapping::name(23));
         let http = inner(&field(&e.schema, "http").data_type);
         let peer = field(http, "peer");
         assert_eq!(peer.column_id(), Some(21));
@@ -1356,35 +1324,16 @@ mod tests {
             ],
             false,
         );
-        let schema = table_schema(
-            &empty,
-            None,
-            Mapping::Name {
-                max_column_id: 0,
-                iceberg: false,
-            },
-            None,
-        )
-        .unwrap()
-        .schema;
+        let schema = table_schema(&empty, None, Mapping::name(0), None).unwrap().schema;
         let names: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["a"]);
     }
 
     #[test]
     fn an_iceberg_table_gives_each_arrays_element_an_id_and_its_files_carry_it() {
-        let iceberg = Mapping::Name {
-            max_column_id: 0,
-            iceberg: true,
-        };
+        let iceberg = Mapping::iceberg(0);
         let e = table_schema(&record(), None, iceberg, None).unwrap();
-        assert_eq!(
-            e.mapping,
-            Mapping::Name {
-                max_column_id: 11,
-                iceberg: true
-            }
-        );
+        assert_eq!(e.mapping, Mapping::iceberg(11));
         let http = field(&e.schema, "http");
         assert!(
             !http.metadata.contains_key(NESTED_IDS),
@@ -1457,19 +1406,13 @@ mod tests {
         let table = StructType {
             fields: vec![plain("i", prim("integer")), plain("d", prim("date"))],
         };
-        let iceberg = Mapping::Name {
-            max_column_id: 0,
-            iceberg: true,
-        };
+        let iceberg = Mapping::iceberg(0);
         let int = st(&[("i", DataType::I64)], false);
         let widened = table_schema(&int, Some(&table), iceberg, Some(&[])).unwrap();
         assert_eq!(field(&widened.schema, "i").data_type, prim("long"));
         assert_eq!(not_iceberg(&widened.schema), None);
         let date = st(&[("d", DataType::DateTime)], false);
-        let mapped = Mapping::Name {
-            max_column_id: 0,
-            iceberg: false,
-        };
+        let mapped = Mapping::name(0);
         let ntz = table_schema(&date, Some(&table), mapped, Some(&[])).unwrap();
         assert_eq!(field(&ntz.schema, "d").data_type, prim("timestamp_ntz"));
         let why = not_iceberg(&ntz.schema).unwrap();
@@ -1498,17 +1441,7 @@ mod tests {
     fn the_arrow_schema_names_each_field_physically_with_its_id() {
         let record = record();
         let parquet = crate::io::parquet::Schema::new(&record).unwrap();
-        let table = table_schema(
-            &record,
-            None,
-            Mapping::Name {
-                max_column_id: 0,
-                iceberg: false,
-            },
-            None,
-        )
-        .unwrap()
-        .schema;
+        let table = table_schema(&record, None, Mapping::name(0), None).unwrap().schema;
         let arrow = physical(parquet.arrow(), &table);
         let id = |f: &Field| {
             f.metadata()
@@ -1558,17 +1491,7 @@ mod tests {
 
     #[test]
     fn a_partition_column_is_a_top_level_primitive() {
-        let mut schema = table_schema(
-            &record(),
-            None,
-            Mapping::Name {
-                max_column_id: 0,
-                iceberg: false,
-            },
-            None,
-        )
-        .unwrap()
-        .schema;
+        let mut schema = table_schema(&record(), None, Mapping::name(0), None).unwrap().schema;
         schema.fields.push(plain("day", prim("date")));
         schema.fields.push(plain("d", prim("decimal(10,2)")));
         schema.fields.push(plain("i", prim("short")));
