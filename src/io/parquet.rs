@@ -1739,6 +1739,12 @@ mod tests {
             field(8, "gone", "unknown"),
             NestedField {
                 field_type: Type::Struct(StructType {
+                    fields: vec![field(13, "gone", "unknown")],
+                }),
+                ..field(12, "empty", "")
+            },
+            NestedField {
+                field_type: Type::Struct(StructType {
                     fields: vec![field(10, "gone", "unknown"), field(11, "v", "variant")],
                 }),
                 ..field(9, "s", "")
