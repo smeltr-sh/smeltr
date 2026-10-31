@@ -46,7 +46,7 @@ use crate::ops::civil::MICROS_PER_DAY;
 use crate::plan::topology::{DeltaDestinationConfig, HeldSecrets, Records, UnityCatalogTable};
 
 /// The writer features of a table this writer can write. A table needing any other is refused.
-const WRITER_FEATURES: [&str; 15] = [
+const WRITER_FEATURES: [&str; 16] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -67,6 +67,8 @@ const WRITER_FEATURES: [&str; 15] = [
     "identityColumns",
     // Each commit's timestamp follows the one before it, which the snapshot keeps.
     "inCommitTimestamp",
+    // Our files hold every column the record writes, partition columns too, each its file's partition value.
+    "materializePartitionColumns",
 ];
 
 /// The domain that holds a row-tracking table's highest row id.
@@ -123,7 +125,8 @@ pub fn destination(
     let file_schema = parquet::Schema::new(record).map_err(refused)?;
     let file_schema = file_schema
         .with_written(committer.written.clone())
-        .with_computed(committer.sequences.computed(&committer.schema));
+        .with_computed(committer.sequences.computed(&committer.schema))
+        .with_partition_columns(committer.partition_columns());
     let format = ParquetFormat::new(vec![file_schema], config.compression.into());
     // The protocol names no codec and no row group's size; a table names its files' size.
     let file_bytes = (committer.snapshot.metadata.property("delta.targetFileSize"))
@@ -385,6 +388,13 @@ impl Committer for DeltaCommitter {
 }
 
 impl DeltaCommitter {
+    /// Each partition column the files hold, by its physical name, with its place among the record's columns.
+    fn partition_columns(&self) -> Vec<(String, usize)> {
+        (self.partitions.iter())
+            .filter_map(|p| Some((p.physical.clone(), self.written.index_of(&p.physical).ok()?)))
+            .collect()
+    }
+
     /// The committer of the table whose log is `log`, created from `record` and partitioned by `partition_by` when
     /// missing, the record's new columns added. Err when the table cannot be written.
     fn open(log: Log, root: Root, partition_by: &[String], record: &DataType) -> Result<DeltaCommitter, String> {
@@ -1855,6 +1865,20 @@ mod tests {
         let actions = table.commit(1).unwrap();
         let metadata = action(&actions, "metaData");
         assert_eq!(metadata["configuration"]["delta.columnMapping.maxColumnId"], "3");
+    }
+
+    #[test]
+    fn a_table_that_materializes_its_partition_columns_has_them_in_its_files() {
+        let record = st(&[("n", DataType::I64), ("host", DataType::Str)]);
+        let table = table_with(&record, &["host"], |a| {
+            if let Some(p) = a.get_mut("protocol") {
+                *p = json!({"minReaderVersion": 1, "minWriterVersion": 7,
+                            "writerFeatures": ["materializePartitionColumns"]});
+            }
+        });
+        let committer = table.open(&record, &["host"]).unwrap();
+        assert_eq!(committer.partition_columns(), [("host".to_string(), 1)]);
+        assert_eq!(committer.written.field(1).name(), "host");
     }
 
     #[test]

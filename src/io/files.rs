@@ -290,9 +290,10 @@ impl FileFormat for ParquetFormat {
 
     fn open(&self, partition: &Partition) -> Box<dyn FileEncoder> {
         // `admit` let through only parts this format has a schema for.
-        Box::new(ParquetEncoder(FileWriter::open(
+        Box::new(ParquetEncoder(FileWriter::of_partition(
             &self.schemas[partition.part],
             &self.options,
+            &partition.values,
         )))
     }
 }

@@ -103,6 +103,7 @@ const COVERED: &[&str] = &[
     "writer clustering",
     "writer typeWidening",
     "writer inCommitTimestamp",
+    "writer materializePartitionColumns",
     "reader columnMapping",
     "reader deletionVectors",
     "reader v2Checkpoint",
@@ -342,7 +343,7 @@ fn partitioning_refused(record: &DataType, by: &[String]) -> bool {
 }
 
 /// The writer features of tables made here: the ones the writer supports, and some it does not.
-const FEATURES: [&str; 16] = [
+const FEATURES: [&str; 17] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -359,6 +360,7 @@ const FEATURES: [&str; 16] = [
     "clustering",
     "typeWidening",
     "inCommitTimestamp",
+    "materializePartitionColumns",
 ];
 
 const READER_FEATURES: [&str; 5] = [
