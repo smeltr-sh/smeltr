@@ -236,6 +236,7 @@ export type Step =
   | (FunctionCommon & { type: 'code'; body: string })
   | (FunctionCommon & { type: 'drop'; condition: string })
   | (FunctionCommon & { type: 'rename'; pairs: { from: string; to: string }[] })
+  | (FunctionCommon & { type: 'remove'; fields: string[] })
   | (FunctionCommon & {
       type: 'parser';
       input: string;
@@ -267,6 +268,7 @@ export const STEP_TYPES = [
   'code',
   'drop',
   'rename',
+  'remove',
   'lookup',
   'unroll',
   'call',
@@ -319,6 +321,8 @@ export function newStep(type: StepType, parseInput = '_raw'): Step {
         disabled: false,
         pairs: [{ from: '', to: '' }],
       };
+    case 'remove':
+      return { type, id: nextId('remove'), filter: '', disabled: false, fields: [] };
     case 'parser':
       return {
         type,
@@ -417,6 +421,8 @@ export function stepToDto(step: Step): unknown {
       return { type: 'drop', ...functionFields(step), condition: step.condition };
     case 'rename':
       return { type: 'rename', ...functionFields(step), pairs: step.pairs };
+    case 'remove':
+      return { type: 'remove', ...functionFields(step), fields: step.fields };
     case 'parser':
       return {
         type: 'parser',
@@ -651,6 +657,10 @@ export function stepSummary(step: Step): string {
       return step.pairs.length
         ? step.pairs.map((p) => `${p.from || '…'} → ${p.to || '…'}`).join(', ')
         : '(no pairs)';
+    case 'remove':
+      return step.fields.length
+        ? `${step.fields.length} ${step.fields.length === 1 ? 'name' : 'names'}: ${step.fields.join(', ')}`
+        : '(no names)';
     case 'parser':
       return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
     case 'lookup':
@@ -888,6 +898,18 @@ function dtoToStep(dto: unknown, where: string): Step {
         }),
       };
     }
+    case 'remove': {
+      const id = str(o, 'id', where);
+      return {
+        type: 'remove',
+        ...common(id),
+        fields: arr(o, 'fields', where).map((f) => {
+          if (typeof f !== 'string')
+            throw new PipelineJsonError(`${where}: expected each of "fields" to be a string`);
+          return f;
+        }),
+      };
+    }
     case 'parser': {
       const id = str(o, 'id', where);
       return {
@@ -1055,6 +1077,7 @@ export const STEP_LABELS: Record<StepType, string> = {
   code: 'Code',
   drop: 'Drop',
   rename: 'Rename',
+  remove: 'Remove',
   lookup: 'Lookup',
   unroll: 'Unroll',
   call: 'Call',
@@ -1069,6 +1092,7 @@ export const STEP_SUMMARIES: Record<StepType, string> = {
   code: 'Runs a program on each record.',
   drop: 'Removes each record where a condition is true.',
   rename: 'Moves fields to new names.',
+  remove: 'Takes fields out of each record.',
   lookup: 'Adds fields from the rows of a lookup table that match a value.',
   unroll: 'Turns each item of an array field into its own record.',
   call: "Runs another pipeline's steps in place.",

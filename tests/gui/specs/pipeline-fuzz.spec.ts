@@ -46,7 +46,10 @@ for (const seed of seeds(PIPELINE_SEEDS)) {
       await api.put(`/api/areas/shared/pipelines/${id}${ON}`, {
         id,
         name: id,
-        steps: [{ type: 'eval', id: `${id}-set`, assignments: [{ target: id, expr: '1' }] }],
+        // An object, so a Remove step after the call lists a tree.
+        steps: [
+          { type: 'eval', id: `${id}-set`, assignments: [{ target: `${id}.at`, expr: '1' }] },
+        ],
       });
     await api.put(`/api/areas/shared/samples/${encodeURIComponent(SAMPLE)}${ON}`, {
       id: SAMPLE,

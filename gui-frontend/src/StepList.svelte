@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AskAt } from './api';
+  import type { AskAt, DictionaryOut } from './api';
   import StepEditor, { saveExpanded } from './StepEditor.svelte';
   import {
     newStep,
@@ -35,6 +35,7 @@
     onPropose = () => {},
     proposal = null,
     askAt,
+    recordBefore,
   }: {
     steps: Step[];
     errorsByStep?: Map<Step, PreviewError[]>;
@@ -62,6 +63,8 @@
     proposal?: OpenProposal | null;
     /** Asks the engine what may follow a dot in an expression at `at` (`afterDot`). */
     askAt?: AskAt;
+    /** The record before a step, as the preview's data dictionary lists it (`fetchPreview` up to the step). */
+    recordBefore?: (step: Step) => Promise<DictionaryOut | null>;
   } = $props();
 
   /** Each step type's group in the catalog: what it acts on. */
@@ -69,6 +72,7 @@
     parser: 'Fields',
     eval: 'Fields',
     rename: 'Fields',
+    remove: 'Fields',
     lookup: 'Fields',
     code: 'Fields',
     drop: 'Records',
@@ -125,6 +129,7 @@
         {onPropose}
         {proposal}
         {askAt}
+        {recordBefore}
       />
     </div>
   {/each}

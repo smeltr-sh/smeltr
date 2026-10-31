@@ -1,6 +1,6 @@
 //! Generated pipelines against the compiler. Each seed writes a program of steps over a parsed record -- code, eval,
-//! drop, rename, unroll, each parser, lookup, a step's filter and an `if` step -- typed as it is written so most
-//! compile, and holds four properties that need no expected output:
+//! drop, rename, remove, unroll, each parser, lookup, a step's filter and an `if` step -- typed as it is written so
+//! most compile, and holds four properties that need no expected output:
 //!
 //! 1. Compiling it gives a plan or compile errors, and never panics.
 //! 2. Each record comes out of a batch of all of them as it comes out alone.
@@ -411,6 +411,8 @@ enum Form {
     Drop,
     /// Each statement a `Move`.
     Rename,
+    /// One `Delete`.
+    Remove,
     /// One `Unroll`.
     Unroll,
     /// One `Parse`.
@@ -1469,6 +1471,7 @@ impl Gen {
                 return vec![(Form::Code, self.block(0, n))];
             }
             5 => self.eval(true).map(|s| vec![(Form::Eval, s)]),
+            6 if self.rng.chance(2) => self.write_as(9, 0).map(|d| vec![(Form::Remove, vec![d])]),
             6 => self
                 .write_as(10, 0)
                 .map(|m| vec![(Form::Rename, vec![m])])
@@ -2034,6 +2037,9 @@ impl Writer<'_> {
                     })
                     .collect(),
             }),
+            (Form::Remove, [S::Delete(ids)]) => func(FunctionKind::Remove {
+                fields: ids.iter().map(|&id| self.name(id)).collect(),
+            }),
             (Form::Unroll, [S::Unroll(f, keep)]) => func(FunctionKind::Unroll {
                 field: self.name(*f),
                 keep_parent_fields: *keep,
@@ -2463,6 +2469,7 @@ const STEPS: &[&str] = &[
     "eval step",
     "drop step",
     "rename step",
+    "remove step",
     "unroll step",
     "parser step",
     "lookup step",
@@ -2477,6 +2484,7 @@ fn form_covers(form: &Form, out: &mut BTreeSet<String>) {
         Form::Eval => "eval step",
         Form::Drop => "drop step",
         Form::Rename => "rename step",
+        Form::Remove => "remove step",
         Form::Unroll => "unroll step",
         Form::Parser => "parser step",
         Form::Lookup => "lookup step",

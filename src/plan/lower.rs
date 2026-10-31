@@ -55,6 +55,11 @@ pub fn names(kind: &FunctionKind) -> Result<FunctionKind, String> {
                 (*from, *to) = (name(from)?, name(to)?);
             }
         }
+        FunctionKind::Remove { fields } => {
+            for field in fields {
+                *field = name(field)?;
+            }
+        }
         FunctionKind::Parser {
             input,
             into,
@@ -92,6 +97,27 @@ pub fn rename(pairs: &[(String, String)]) -> Vec<Stmt> {
         .enumerate()
         .flat_map(|(n, (from, to))| move_stmts(from, to, n + 1, Span::default()))
         .collect()
+}
+
+/// `delete(fields)`, clearing them on the rows a filter selects as a Rename does. A blank name removes nothing. A name
+/// listed twice, or under an object also listed, goes with the first or the object: deleting it again would find no
+/// field.
+pub fn remove(fields: &[String]) -> Vec<Stmt> {
+    let listed: std::collections::HashSet<&str> = fields.iter().map(String::as_str).collect();
+    let mut seen = std::collections::HashSet::new();
+    let names: Vec<String> = (fields.iter())
+        .filter(|f| !f.trim().is_empty() && seen.insert(f.as_str()))
+        .filter(|f| !crate::plan::tree::ancestors(f).any(|a| listed.contains(a)))
+        .cloned()
+        .collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    vec![Stmt::Delete {
+        names,
+        clears: true,
+        span: Span::default(),
+    }]
 }
 
 /// `if (cond) drop()`. A blank condition drops nothing.

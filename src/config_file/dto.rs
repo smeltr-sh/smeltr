@@ -3215,6 +3215,14 @@ pub enum StepDto {
         disabled: bool,
         pairs: Vec<RenamePairDto>,
     },
+    Remove {
+        id: String,
+        #[serde(default)]
+        filter: Option<String>,
+        #[serde(default)]
+        disabled: bool,
+        fields: Vec<String>,
+    },
     Parser {
         id: String,
         #[serde(default)]

@@ -218,6 +218,21 @@
         ]
       },
       {
+        "type": "remove",
+        "name": "Remove",
+        "summary": "Takes fields out of each record.",
+        "shared": true,
+        "settings": [
+          {
+            "name": "fields",
+            "type": "list of fields",
+            "required": true,
+            "examples": [["payload"], ["user_agent", "path"]],
+            "what": "Each field leaves the record, for the steps after it and every destination. With a filter, each is null on the records the filter selects, and the field stays."
+          }
+        ]
+      },
+      {
         "type": "lookup",
         "name": "Lookup",
         "summary": "Adds fields from the rows of a lookup table that match a value.",

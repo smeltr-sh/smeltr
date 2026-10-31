@@ -298,11 +298,12 @@ pub enum Stmt {
         function: Function,
     },
     Return(Expr),
-    /// `delete(a, b.c)`: each name leaves the tree, as a declaration binds it. `moved` marks `move`'s own delete,
-    /// which clears a bound name on the rows an `if` selects where a written `delete` is refused.
+    /// `delete(a, b.c)`: each name leaves the tree, as a declaration binds it. `clears` marks a delete a step makes,
+    /// `move`'s or a Remove's, which clears a bound name on the rows an `if` selects where a written `delete` is
+    /// refused.
     Delete {
         names: Vec<String>,
-        moved: bool,
+        clears: bool,
         span: Span,
     },
     /// `drop()`: the rows it runs on are dead.

@@ -5894,6 +5894,7 @@ fn step_id(step: &StepDto) -> &str {
         | StepDto::Code { id, .. }
         | StepDto::Drop { id, .. }
         | StepDto::Rename { id, .. }
+        | StepDto::Remove { id, .. }
         | StepDto::Parser { id, .. }
         | StepDto::Lookup { id, .. }
         | StepDto::Unroll { id, .. }
@@ -5976,6 +5977,17 @@ fn to_step(
             let pairs = pairs.iter().map(|p| (p.from.clone(), p.to.clone())).collect();
             (id, filter.clone(), *disabled, FunctionKind::Rename { pairs })
         }
+        StepDto::Remove {
+            id,
+            filter,
+            disabled,
+            fields,
+        } => (
+            id,
+            filter.clone(),
+            *disabled,
+            FunctionKind::Remove { fields: fields.clone() },
+        ),
         StepDto::Parser {
             id,
             filter,

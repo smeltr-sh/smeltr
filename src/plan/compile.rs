@@ -3157,9 +3157,9 @@ impl Compiler<'_> {
 
     /// `delete(name)`: the reverse of a declaration (Language). At the top level the name leaves the tree,
     /// and its key leaves the unclaimed fields of the object it is in. Inside an `if` or a loop a bound name is a
-    /// compile error, as its declaration would be there, unless `moved`: `move` clears it on the rows selected; a
-    /// key an open object may hold is taken out on the rows selected.
-    fn delete(&mut self, name: &str, moved: bool, here: Here) {
+    /// compile error, as its declaration would be there, unless `clears`: a step's delete, `move`'s or a Remove's,
+    /// clears it on the rows selected; a key an open object may hold is taken out on the rows selected.
+    fn delete(&mut self, name: &str, clears: bool, here: Here) {
         let Here { guard, id } = here;
         if name == tree::ROOT {
             return self.err(
@@ -3176,7 +3176,7 @@ impl Compiler<'_> {
             return self.err(Some(id), format!("`{name}` is not a field"));
         }
         if guard.is_some() || self.in_loop() {
-            if bound && self.bound_outside(name) && !moved {
+            if bound && self.bound_outside(name) && !clears {
                 return self.err(
                     Some(id),
                     format!(
@@ -3853,9 +3853,9 @@ impl Compiler<'_> {
                         self.keyed_write(target, index, value, here);
                     }
                 }
-                Stmt::Delete { names, moved, .. } => {
+                Stmt::Delete { names, clears, .. } => {
                     for name in names {
-                        self.delete(name, *moved, here);
+                        self.delete(name, *clears, here);
                     }
                 }
                 Stmt::Drop(span) => {
@@ -4472,6 +4472,7 @@ impl Compiler<'_> {
                 lower::Lowered::from(lower::drop(cond))
             }
             FunctionKind::Rename { pairs } => lower::Lowered::from(lower::rename(pairs)),
+            FunctionKind::Remove { fields } => lower::Lowered::from(lower::remove(fields)),
             FunctionKind::Parser {
                 input,
                 into,
@@ -4768,6 +4769,43 @@ mod tests {
         // Any other filter leaves the rows it skips as they were.
         let (filtered, _) = compiled(Some("_raw != \"\""));
         assert!(filtered.iter().any(|(n, _)| n == "when"), "{filtered:?}");
+    }
+
+    /// A Remove step takes its fields out of the record, as `delete` does; under a filter it clears them on the rows
+    /// selected and the record keeps them.
+    #[test]
+    fn a_remove_step_takes_its_fields_out_of_the_record() {
+        let compiled = |fields: &[&str], filter: Option<&str>| {
+            let mut p = code_pipeline("Object.assign($, json(_raw)); x = when; y = 1; o = {a: 1, b: 2}");
+            let mut remove = FunctionConfig::new(
+                1,
+                FunctionKind::Remove {
+                    fields: fields.iter().map(|f| f.to_string()).collect(),
+                },
+            );
+            remove.filter = filter.map(Into::into);
+            p.body.push(Step::Function(remove));
+            p.step_ids.push("remove-1".into());
+            compile(&p, &SourceMeta::NONE).map(|plan| {
+                let record = crate::plan::dictionary::record_type(&plan, "t");
+                crate::plan::dictionary::fields(&record)
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .collect::<Vec<_>>()
+            })
+        };
+        let names = compiled(&["when", "y"], None).unwrap();
+        assert!(names.contains(&"x".to_string()), "{names:?}");
+        assert!(!names.iter().any(|n| n == "when" || n == "y"), "{names:?}");
+        let filtered = compiled(&["when", "y"], Some("_raw != \"\"")).unwrap();
+        assert!(
+            filtered.iter().any(|n| n == "when") && filtered.iter().any(|n| n == "y"),
+            "{filtered:?}"
+        );
+        assert_eq!(compiled(&["", " "], None).unwrap(), compiled(&[], None).unwrap());
+        // A name twice, or under an object also named, goes with the first or the object.
+        assert_eq!(compiled(&["y", "y"], None).unwrap(), compiled(&["y"], None).unwrap());
+        assert_eq!(compiled(&["o", "o.a"], None).unwrap(), compiled(&["o"], None).unwrap());
     }
 
     fn warnings(body: &str) -> Vec<String> {
