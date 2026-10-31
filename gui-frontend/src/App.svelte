@@ -23,7 +23,7 @@
   import CrossIcon from './CrossIcon.svelte';
   import { store, stored } from './stored';
   import ErrorBar from './ErrorBar.svelte';
-  import { isAdministrator, settleScope } from './access';
+  import { heldAreas, isAdministrator, levelIn, settleScope } from './access';
   import { pages, preload } from './pages.svelte';
   import Brand from './Brand.svelte';
   import {
@@ -461,6 +461,16 @@
                 .filter(Boolean)
                 .join(' · ')}
             </div>
+            {#if !administrator}
+              <div class="held">
+                {#each heldAreas() as area (area)}
+                  {@const level = levelIn(area)}
+                  {#if level}<span class="mono">{area}</span><span class="dim"
+                      ><LevelMark {level} /></span
+                    >{/if}
+                {/each}
+              </div>
+            {/if}
           </div>
           <!-- An OIDC account holds no password here; its provider owns it. -->
           {#if who.authSource !== 'oidc'}
@@ -819,6 +829,15 @@
 
   .who {
     padding: 0.4rem 0.6rem 0.55rem;
+  }
+
+  /* Each group the person holds and their level there, in two columns so the glyphs line up. */
+  .held {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.25rem 0.8rem;
+    align-items: baseline;
+    margin-top: 0.45rem;
   }
 
   .pick-seam {

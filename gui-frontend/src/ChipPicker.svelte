@@ -257,7 +257,7 @@
     color: var(--error);
   }
 
-  .picker :global(.pick .mono) {
+  .picker :global(.mono) {
     font-family: var(--mono);
   }
 
