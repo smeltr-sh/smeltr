@@ -46,7 +46,7 @@ use crate::ops::civil::MICROS_PER_DAY;
 use crate::plan::topology::{DeltaDestinationConfig, HeldSecrets, Records, UnityCatalogTable};
 
 /// The writer features of a table this writer can write. A table needing any other is refused.
-const WRITER_FEATURES: [&str; 16] = [
+const WRITER_FEATURES: [&str; 17] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -69,6 +69,9 @@ const WRITER_FEATURES: [&str; 16] = [
     "inCommitTimestamp",
     // Our files hold every column the record writes, partition columns too, each its file's partition value.
     "materializePartitionColumns",
+    // Its tables map their columns and give arrays' elements ids of their own, which our files carry; the rest of what
+    // it asks, our files already are.
+    "icebergCompatV2",
 ];
 
 /// The domain that holds a row-tracking table's highest row id.
@@ -440,7 +443,7 @@ impl DeltaCommitter {
             tries += 1;
             let mut metadata = snapshot.metadata.clone();
             metadata.schema_string = evolution.schema.to_json();
-            if let Mapping::Name { max_column_id } = evolution.mapping {
+            if let Mapping::Name { max_column_id, .. } = evolution.mapping {
                 (metadata.configuration).insert("delta.columnMapping.maxColumnId".into(), max_column_id.to_string());
             }
             let version = snapshot.version + 1;
@@ -704,7 +707,27 @@ fn fits(snapshot: &Snapshot) -> Result<(), String> {
             ));
         }
     }
-    mapping(metadata).map(|_| ())
+    let mapping = mapping(metadata)?;
+    if iceberg_compat_v2(metadata) {
+        if mapping == Mapping::None {
+            return Err("the table is IcebergCompatV2 and maps no columns, which IcebergCompatV2 requires".to_string());
+        }
+        if features.iter().any(|f| f == "deletionVectors") && metadata.flag("delta.enableDeletionVectors") == Some(true)
+        {
+            return Err(
+                "the table is IcebergCompatV2 and enables deletion vectors, which IcebergCompatV2 forbids".to_string(),
+            );
+        }
+        if let Some(why) = schema::not_iceberg(&StructType::parse(&metadata.schema_string)?) {
+            return Err(why);
+        }
+    }
+    Ok(())
+}
+
+/// Whether the table is IcebergCompatV2, which an Iceberg reader can read once its metadata is converted.
+fn iceberg_compat_v2(metadata: &Metadata) -> bool {
+    metadata.flag("delta.enableIcebergCompatV2") == Some(true)
 }
 
 /// The table's column mapping. Err for a mode this writer does not write, or a mapped table without maxColumnId.
@@ -715,11 +738,17 @@ fn mapping(metadata: &Metadata) -> Result<Mapping, String> {
         mode @ ("name" | "id") => {
             let max_column_id = metadata
                 .property("delta.columnMapping.maxColumnId")
-                .and_then(|v| v.parse().ok())
+                .and_then(|v| v.parse::<i64>().ok())
                 .ok_or_else(|| {
                     format!("the table maps columns by {mode} and has no delta.columnMapping.maxColumnId")
                 })?;
-            Ok(Mapping::Name { max_column_id })
+            let iceberg = iceberg_compat_v2(metadata);
+            // Another writer may count the ids of arrays' elements apart from its columns'.
+            let max_column_id = match iceberg {
+                true => max_column_id.max(schema::max_nested_id(&StructType::parse(&metadata.schema_string)?)),
+                false => max_column_id,
+            };
+            Ok(Mapping::Name { max_column_id, iceberg })
         }
         other => Err(format!("the table maps columns by {other}, which this writer does not")),
     }
@@ -1330,7 +1359,7 @@ mod tests {
     }
 
     fn new_schema(record: &DataType) -> StructType {
-        schema::table_schema(record, None, Mapping::Name { max_column_id: 0 }, None)
+        schema::table_schema(record, None, Mapping::name(0), None)
             .unwrap()
             .schema
     }
@@ -1809,7 +1838,7 @@ mod tests {
     #[test]
     fn a_table_that_maps_its_columns_by_name_or_id_has_them_written_under_their_physical_names_and_ids() {
         let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
-        let mapped = schema::table_schema(&record, None, Mapping::Name { max_column_id: 0 }, None)
+        let mapped = schema::table_schema(&record, None, Mapping::name(0), None)
             .unwrap()
             .schema;
         for mode in ["name", "id"] {
@@ -1849,6 +1878,56 @@ mod tests {
         let committer = table.open(&record, &["host"]).unwrap();
         assert_eq!(committer.partition_columns(), [("host".to_string(), 1)]);
         assert_eq!(committer.written.field(1).name(), "host");
+    }
+
+    #[test]
+    fn an_iceberg_table_has_its_arrays_elements_written_with_their_ids_and_an_invalid_one_is_refused() {
+        let xs = DataType::Array(Box::new(DataType::I64));
+        let record = st(&[("host", DataType::Str), ("xs", xs.clone())]);
+        let iceberg = Mapping::iceberg(0);
+        let mapped = schema::table_schema(&record, None, iceberg, None).unwrap().schema;
+        let table = |schema: &StructType, configuration: Value| {
+            let schema = schema.to_json();
+            table_with(&record, &[], move |a| {
+                if let Some(p) = a.get_mut("protocol") {
+                    *p = json!({"minReaderVersion": 3, "minWriterVersion": 7, "readerFeatures": ["columnMapping"],
+                                "writerFeatures": ["columnMapping", "icebergCompatV2", "deletionVectors"]});
+                }
+                if let Some(m) = a.get_mut("metaData") {
+                    m["schemaString"] = json!(schema);
+                    m["configuration"] = configuration.clone();
+                }
+            })
+        };
+        // A writer that counts its arrays' elements apart from its columns records 2, its columns' highest id.
+        let v2 = json!({"delta.columnMapping.mode": "name", "delta.columnMapping.maxColumnId": "2",
+                        "delta.enableIcebergCompatV2": "true"});
+        let element_id = |committer: &DeltaCommitter, i: usize| match committer.written.field(i).data_type() {
+            Arrow::List(element) => element.metadata().get(PARQUET_FIELD_ID_META_KEY).cloned(),
+            other => panic!("{other} is no list"),
+        };
+
+        let grown = st(&[("host", DataType::Str), ("xs", xs.clone()), ("ys", xs)]);
+        let written = table(&mapped, v2.clone());
+        let committer = written.open(&grown, &[]).unwrap();
+        assert_eq!(element_id(&committer, 1), Some("3".to_string()));
+        assert_eq!(element_id(&committer, 2), Some("5".to_string()));
+        let actions = written.commit(1).unwrap();
+        let metadata = action(&actions, "metaData");
+        assert_eq!(metadata["configuration"]["delta.columnMapping.maxColumnId"], "5");
+
+        let mut unmapped = v2.clone();
+        unmapped["delta.columnMapping.mode"] = json!("none");
+        let why = table(&mapped, unmapped).refused(&record, &[]);
+        assert!(why.contains("IcebergCompatV2 and maps no columns"), "{why}");
+        let mut deleting = v2.clone();
+        deleting["delta.enableDeletionVectors"] = json!("true");
+        let why = table(&mapped, deleting).refused(&record, &[]);
+        assert!(why.contains("enables deletion vectors"), "{why}");
+        let mut bare = mapped.clone();
+        bare.fields[1].metadata.remove("delta.columnMapping.nested.ids");
+        let why = table(&bare, v2).refused(&record, &[]);
+        assert!(why.contains("its column xs gives"), "{why}");
     }
 
     #[test]
