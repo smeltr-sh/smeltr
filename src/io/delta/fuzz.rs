@@ -104,6 +104,7 @@ const COVERED: &[&str] = &[
     "writer typeWidening",
     "writer inCommitTimestamp",
     "writer materializePartitionColumns",
+    "writer icebergCompatV2",
     "reader columnMapping",
     "reader deletionVectors",
     "reader v2Checkpoint",
@@ -113,6 +114,13 @@ const COVERED: &[&str] = &[
     "mapping name",
     "mapping id",
     "field ids checked",
+    "element ids checked",
+    "ids unique",
+    "iceberg enabled",
+    "iceberg unmapped",
+    "iceberg deletion vectors",
+    "iceberg missing nested id",
+    "iceberg type change refused",
     "mapping name without maxColumnId",
     "mapping without maxColumnId written",
     "mapping unsupported",
@@ -344,7 +352,7 @@ fn partitioning_refused(record: &DataType, by: &[String]) -> bool {
 }
 
 /// The writer features of tables made here: the ones the writer supports, and some it does not.
-const FEATURES: [&str; 17] = [
+const FEATURES: [&str; 18] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -362,6 +370,7 @@ const FEATURES: [&str; 17] = [
     "typeWidening",
     "inCommitTimestamp",
     "materializePartitionColumns",
+    "icebergCompatV2",
 ];
 
 const READER_FEATURES: [&str; 5] = [
@@ -399,8 +408,9 @@ fn protocol(rng: &mut Rng) -> (Value, bool) {
     (p, refused)
 }
 
-/// Random table properties, and whether the writer must refuse them.
-fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool {
+/// Random table properties, and whether the writer must refuse them. An `iceberg` table is IcebergCompatV2, and
+/// mostly maps its columns as one must.
+fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType, iceberg: bool) -> bool {
     let mut refused = false;
     let set = |metadata: &mut Value, key: &str, value: &str| {
         metadata["configuration"][key] = json!(value);
@@ -408,14 +418,24 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool
             reach(property);
         }
     };
-    match rng.below(8) {
+    let draw = if iceberg && !rng.chance(8) { 1 } else { rng.below(8) };
+    match draw {
         0 => {
             set(metadata, "delta.columnMapping.mode", "none");
             reach("mapping none");
         }
         1 | 2 => {
-            let mapped = schema::table_schema(record, None, Mapping::Name { max_column_id: 0 }, None).unwrap();
-            let Mapping::Name { max_column_id } = mapped.mapping else {
+            let mapped = schema::table_schema(
+                record,
+                None,
+                Mapping::Name {
+                    max_column_id: 0,
+                    iceberg,
+                },
+                None,
+            )
+            .unwrap();
+            let Mapping::Name { max_column_id, .. } = mapped.mapping else {
                 unreachable!("a mapped schema counts its ids")
             };
             metadata["schemaString"] = json!(mapped.schema.to_json());
@@ -427,6 +447,17 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool
             } else {
                 set(metadata, "delta.columnMapping.maxColumnId", &max_column_id.to_string());
             }
+            if iceberg && rng.chance(4) {
+                let stripped = metadata["schemaString"]
+                    .as_str()
+                    .unwrap()
+                    .replace("delta.columnMapping.nested.ids", "x");
+                if stripped != metadata["schemaString"] {
+                    reach("iceberg missing nested id");
+                    refused = true;
+                }
+                metadata["schemaString"] = json!(stripped);
+            }
         }
         3 => {
             set(metadata, "delta.columnMapping.mode", rng.pick(&["ID", "Name", "other"]));
@@ -434,6 +465,14 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool
             refused = true;
         }
         _ => {}
+    }
+    if iceberg {
+        set(metadata, "delta.enableIcebergCompatV2", "true");
+        reach("iceberg enabled");
+        if !matches!(draw, 1..=3) {
+            reach("iceberg unmapped");
+            refused = true;
+        }
     }
     if rng.chance(8) {
         set(metadata, "delta.constraints.positive", "n > 0");
@@ -802,6 +841,84 @@ fn field_ids(table: &[schema::StructField], written: &Fields) -> Result<(), Stri
     Ok(())
 }
 
+/// Each array's element is written with the id the table gives it under `delta.columnMapping.nested.ids` as its field
+/// id, and with none where it gives none.
+fn element_ids(table: &[schema::StructField], written: &Fields) -> Result<(), String> {
+    fn walk(t: &schema::Type, arrow: &Arrow, ids: Option<&Value>, key: &str, name: &str) -> Result<(), String> {
+        match (t, arrow) {
+            (schema::Type::Struct(s), Arrow::Struct(f)) => element_ids(&s.fields, f),
+            (schema::Type::Array { element, .. }, Arrow::List(e)) => {
+                let key = format!("{key}.element");
+                let given = ids
+                    .and_then(|ids| ids.get(&key))
+                    .and_then(Value::as_i64)
+                    .map(|id| id.to_string());
+                if given.is_some() {
+                    reach("element ids checked");
+                }
+                let carried = e.metadata().get(::parquet::arrow::PARQUET_FIELD_ID_META_KEY).cloned();
+                if carried != given {
+                    return Err(format!(
+                        "{name}'s {key} is written with field id {carried:?}, not {given:?}"
+                    ));
+                }
+                walk(element, e.data_type(), ids, &key, name)
+            }
+            _ => Ok(()),
+        }
+    }
+    for column in table {
+        let Some(field) = written.iter().find(|f| f.name() == column.physical_name()) else {
+            continue;
+        };
+        let ids = column.metadata.get("delta.columnMapping.nested.ids");
+        walk(
+            &column.data_type,
+            field.data_type(),
+            ids,
+            column.physical_name(),
+            &column.name,
+        )?;
+    }
+    Ok(())
+}
+
+/// No two of the table's columns, nor of its arrays' elements, share an id.
+fn unique_ids(schema: &StructType) -> Result<(), String> {
+    let ids = ids(schema);
+    let distinct: BTreeSet<i64> = ids.iter().copied().collect();
+    if distinct.len() != ids.len() {
+        return Err(format!("the table's ids {ids:?} repeat"));
+    }
+    if ids.len() > 1 {
+        reach("ids unique");
+    }
+    Ok(())
+}
+
+/// Every id `schema` gives, its columns' and its arrays' elements'.
+fn ids(schema: &StructType) -> Vec<i64> {
+    let json: Value = serde_json::from_str(&schema.to_json()).unwrap();
+    fn collect(v: &Value, out: &mut Vec<i64>) {
+        match v {
+            Value::Object(m) => {
+                if let Some(id) = m.get("delta.columnMapping.id").and_then(Value::as_i64) {
+                    out.push(id);
+                }
+                if let Some(ids) = m.get("delta.columnMapping.nested.ids").and_then(Value::as_object) {
+                    out.extend(ids.values().filter_map(Value::as_i64));
+                }
+                m.values().for_each(|v| collect(v, out));
+            }
+            Value::Array(a) => a.iter().for_each(|v| collect(v, out)),
+            _ => {}
+        }
+    }
+    let mut ids = Vec::new();
+    collect(&json, &mut ids);
+    ids
+}
+
 fn kept_narrow(committer: &DeltaCommitter) -> Result<(), String> {
     for column in &committer.schema.fields {
         let schema::Type::Primitive(p) = &column.data_type else {
@@ -1103,14 +1220,22 @@ impl Run {
         reach("existing table");
         let mut actions: Vec<Value> = body.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         let mut refused = false;
+        let mut iceberg = false;
         for action in &mut actions {
             if let Some(p) = action.get_mut("protocol") {
-                let (random, refuses) = protocol(rng);
+                let (mut random, refuses) = protocol(rng);
+                // Often enough that the seeds reach an Iceberg table that holds arrays.
+                if let Some(features) = random["writerFeatures"].as_array_mut() {
+                    if !features.contains(&json!("icebergCompatV2")) && rng.chance(2) {
+                        features.push(json!("icebergCompatV2"));
+                    }
+                    iceberg = features.contains(&json!("icebergCompatV2")) && !rng.chance(4);
+                }
                 *p = random;
                 refused |= refuses;
             }
             if let Some(m) = action.get_mut("metaData") {
-                refused |= configuration(rng, m, &earlier);
+                refused |= configuration(rng, m, &earlier, iceberg);
             }
         }
         // A table of writer features knows type widening and identity columns more often than the protocol draw alone
@@ -1159,6 +1284,19 @@ impl Run {
         }
         if knows || !self.rng.chance(3) {
             narrow(&mut self.rng, metadata, &earlier);
+        }
+        if iceberg {
+            // Iceberg changes no date to a time.
+            let schema = metadata["schemaString"].as_str().unwrap_or_default();
+            if schema.contains(r#""fromType":"date""#) {
+                reach("iceberg type change refused");
+                refused = true;
+            }
+            if features.contains(&json!("deletionVectors")) && self.rng.chance(3) {
+                metadata["configuration"]["delta.enableDeletionVectors"] = json!("true");
+                reach("iceberg deletion vectors");
+                refused = true;
+            }
         }
         if features.contains(&json!("rowTracking")) {
             match self.rng.below(3) {
@@ -1258,6 +1396,8 @@ impl Run {
                 }
                 kept_narrow(&committer)?;
                 field_ids(&committer.schema.fields, committer.written.fields())?;
+                element_ids(&committer.schema.fields, committer.written.fields())?;
+                unique_ids(&committer.schema)?;
                 self.committer = Some(committer);
                 Ok(true)
             }
@@ -1604,8 +1744,9 @@ impl Run {
                     nullable: true,
                     metadata: Map::new(),
                 };
-                if let Ok(Mapping::Name { max_column_id }) = mapping(&metadata) {
-                    let id = max_column_id + 1;
+                if let Ok(Mapping::Name { max_column_id, .. }) = mapping(&metadata) {
+                    // A table without maxColumnId has its highest id in its schema, as this other writer drops none.
+                    let id = max_column_id.max(ids(&schema).into_iter().max().unwrap_or(0)) + 1;
                     field.metadata.insert("delta.columnMapping.id".into(), json!(id));
                     field
                         .metadata
@@ -1905,7 +2046,8 @@ impl Run {
                         },
                     };
                     let partition = (metadata["partitionColumns"].as_array()).is_some_and(|p| p.contains(name));
-                    if !widens || partition || !widens_to(from, to) {
+                    let iceberg = metadata["configuration"]["delta.enableIcebergCompatV2"] == "true";
+                    if !widens || partition || !widens_to(from, to) || (iceberg && from == "date") {
                         return Err(format!("commit {version} changes {name} from {from} to {to}"));
                     }
                     let mut change = json!({"fromType": from, "toType": to});
