@@ -4818,6 +4818,11 @@ export function revokeAccountSessions(id: string): Promise<{ ended: number } | A
   });
 }
 
+/** Delete a disabled account for good. Its username and provider identity are free afterwards. */
+export function deleteAccount(id: string): Promise<object | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 // -- roles --------------------------------------------------------------------
 //
 // A role is what holding it gives, and the provider groups that give it (`roles_api.rs`).

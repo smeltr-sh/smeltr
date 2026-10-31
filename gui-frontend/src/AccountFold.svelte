@@ -1,9 +1,9 @@
 <!--
   What Admin -> Accounts opens under an account's row: what an administrator
-  does to it, which is what its kind of account has. Every account is renamed
-  and disabled alike; a local or key account's access is given here, a local
-  account's password is reset here, and a key account's keys are made and
-  revoked here. A new password or key goes up to the page with `onpassword`
+  does to it, which is what its kind of account has. Every account is renamed,
+  disabled and, once disabled, deleted alike; a local or key account's access
+  is given here, a local account's password is reset here, and a key account's
+  keys are made and revoked here. A new password or key goes up to the page with `onpassword`
   or `onkey`, which shows it once, until it is dismissed.
 -->
 <script lang="ts">
@@ -15,6 +15,7 @@
   import {
     changeAccount,
     createKey,
+    deleteAccount,
     refused,
     resetAccountPassword,
     revokeAccountSessions,
@@ -160,6 +161,28 @@
     );
   }
 
+  /** What deleting takes with it, and what a later account under the same sign-in starts with. */
+  const GONE: Record<AccountDto['authSource'], string> = {
+    local:
+      'Its password and roles go with it, and its username is free. A new account with that username starts fresh.',
+    oidc: 'If the person signs in through the provider again, they get a new account that starts fresh.',
+    key: 'Its keys and roles go with it.',
+  };
+
+  async function remove() {
+    if (busy) return;
+    const ok = await ask({
+      title: 'delete account',
+      body: `Delete ${account.displayName} for good. This cannot be undone. ${GONE[account.authSource]}`,
+      action: 'Delete account',
+      danger: true,
+    });
+    if (!ok) return;
+    form = null;
+    if ((await act(() => deleteAccount(account.id))) === null) return;
+    await onchanged('account deleted');
+  }
+
   async function makeKey(event: SubmitEvent) {
     event.preventDefault();
     if (!daysValid) return;
@@ -218,6 +241,8 @@
     <button type="button" disabled={busy} onclick={() => setEnabled(false)}>Disable account</button>
   {:else}
     <button type="button" disabled={busy} onclick={() => setEnabled(true)}>Enable account</button>
+    <!-- Only a disabled account is deleted, so deleting is a second, deliberate step. -->
+    <button type="button" disabled={busy} onclick={remove}>Delete account</button>
   {/if}
 </div>
 

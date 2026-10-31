@@ -86,6 +86,10 @@ const OPTIONS: &[&str] = &[
     "reset-password",
     "reset-password-not-local-refused",
     "revoke-sessions",
+    "delete",
+    "delete-enabled-refused",
+    "username-reused",
+    "identity-reused",
     "key-never-expires",
     "key-expires",
     "key-zero-days-refused",
@@ -179,6 +183,9 @@ struct Model {
     /// Each role's groups as they stand, by its place in [`ROLES`].
     groups: [Vec<String>; 3],
     made: usize,
+    /// The usernames and provider subjects deleted accounts gave up, free for a new account.
+    released_usernames: Vec<String>,
+    released_subjects: Vec<String>,
 }
 
 impl Model {
@@ -187,6 +194,8 @@ impl Model {
             accounts: Vec::new(),
             groups: ROLES.map(|(_, groups, _)| groups.iter().map(|g| g.to_string()).collect()),
             made: 0,
+            released_usernames: Vec::new(),
+            released_subjects: Vec::new(),
         }
     }
 
@@ -297,7 +306,10 @@ fn routes(auth: Auth) -> Router {
             "/api/accounts",
             get(accounts_api::list_accounts).post(accounts_api::create_account),
         )
-        .route("/api/accounts/:id", patch(accounts_api::patch_account))
+        .route(
+            "/api/accounts/:id",
+            patch(accounts_api::patch_account).delete(accounts_api::delete_account),
+        )
         .route("/api/accounts/:id/reset-password", post(accounts_api::reset_password))
         .route("/api/accounts/:id/revoke-sessions", post(accounts_api::revoke_sessions))
         .route("/api/accounts/:id/keys", post(key_accounts_api::create_key))
@@ -467,8 +479,15 @@ fn audited(leader: &Leader, actor: &str, action: &str, target: &str) -> Result<(
 
 async fn create_local(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Coverage) -> Result<(), String> {
     let (by, credential) = actor(leader, model, rng, cov);
-    let username = format!("person{}", model.made);
-    model.made += 1;
+    let reused = !model.released_usernames.is_empty();
+    let username = if reused {
+        model
+            .released_usernames
+            .remove(rng.below(model.released_usernames.len()))
+    } else {
+        model.made += 1;
+        format!("person{}", model.made)
+    };
     let display_name = rng.pick(&NAMES).to_string();
     let roles = some_roles(rng);
     let body = json!({
@@ -486,6 +505,9 @@ async fn create_local(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &m
     }
     expect("a new local account", status, 201, &answer)?;
     cov.reach("create-local");
+    if reused {
+        cov.reach("username-reused");
+    }
     let id = answer["userId"].as_str().ok_or("no userId")?.to_string();
     audited(leader, &by, "account-create", &id)?;
     model.accounts.push(Account {
@@ -548,7 +570,10 @@ async fn create_key_account(
 /// The provider signs someone in: a new identity makes its account, and a known one says its groups again.
 fn oidc_sign_in(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Coverage) -> Result<(), String> {
     let signed_in: Vec<String> = model.accounts.iter().filter_map(|a| a.subject.clone()).collect();
-    let subject = if !signed_in.is_empty() && rng.chance(2) {
+    let subject = if !model.released_subjects.is_empty() && rng.chance(3) {
+        cov.reach("identity-reused");
+        model.released_subjects.remove(rng.below(model.released_subjects.len()))
+    } else if !signed_in.is_empty() && rng.chance(2) {
         rng.pick(&signed_in).clone()
     } else {
         model.made += 1;
@@ -742,6 +767,37 @@ async fn sign_out(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut C
         audited(leader, &by, "revoke-sessions", &id)?;
     }
     model.end_sessions(&id);
+    Ok(())
+}
+
+/// Any account deleted: refused while it is enabled, and gone for good once disabled, its username or provider
+/// identity free for a new account.
+async fn delete_account(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Coverage) -> Result<(), String> {
+    let (by, credential) = actor(leader, model, rng, cov);
+    // Mostly a disabled one, since only one of those goes.
+    let disabled: Vec<usize> = (0..model.accounts.len())
+        .filter(|&i| !model.accounts[i].enabled)
+        .collect();
+    let i = if !disabled.is_empty() && rng.chance(4) {
+        rng.below(model.accounts.len())
+    } else if !disabled.is_empty() {
+        *rng.pick(&disabled)
+    } else {
+        rng.below(model.accounts.len())
+    };
+    let id = model.accounts[i].id.clone();
+    let target = format!("/api/accounts/{id}");
+    let (status, answer) = leader.send(false, &credential, "DELETE", &target, None).await;
+    if model.accounts[i].enabled {
+        cov.reach("delete-enabled-refused");
+        return expect("an enabled account deleted", status, 409, &answer);
+    }
+    expect("a disabled account deleted", status, 200, &answer)?;
+    cov.reach("delete");
+    audited(leader, &by, "delete", &id)?;
+    let gone = model.accounts.remove(i);
+    model.released_usernames.extend(gone.username);
+    model.released_subjects.extend(gone.subject);
     Ok(())
 }
 
@@ -1143,6 +1199,7 @@ async fn journey(seed: u64, cov: &mut Coverage) -> Result<(), String> {
             2 => ("oidc-sign-in", oidc_sign_in(&leader, &mut model, &mut rng, cov)),
             3 | 4 => ("change", change(&leader, &mut model, &mut rng, cov).await),
             5 if rng.chance(2) => ("sign-out", sign_out(&leader, &mut model, &mut rng, cov).await),
+            5 => ("delete", delete_account(&leader, &mut model, &mut rng, cov).await),
             6 => ("key", key(&leader, &mut model, &mut rng, cov).await),
             7 => (
                 "agent-permissions",

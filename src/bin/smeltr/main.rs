@@ -2135,7 +2135,10 @@ async fn run_leader() {
                 "/api/accounts",
                 get(accounts_api::list_accounts).post(accounts_api::create_account),
             )
-            .route("/api/accounts/:id", patch(accounts_api::patch_account))
+            .route(
+                "/api/accounts/:id",
+                patch(accounts_api::patch_account).delete(accounts_api::delete_account),
+            )
             .route("/api/accounts/:id/reset-password", post(accounts_api::reset_password))
             .route("/api/accounts/:id/revoke-sessions", post(accounts_api::revoke_sessions))
             .route("/api/accounts/:id/keys", post(key_accounts_api::create_key))

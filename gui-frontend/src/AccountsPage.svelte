@@ -106,6 +106,15 @@
     })),
   );
 
+  let standing = $state<'enabled' | 'disabled' | null>(null);
+  const standings = $derived(
+    (['enabled', 'disabled'] as const).map((key) => ({
+      key,
+      label: key === 'enabled' ? 'Enabled' : 'Disabled',
+      count: accounts.filter((a) => a.enabled === (key === 'enabled')).length,
+    })),
+  );
+
   /** Whether `account` is one the search names: by display name, username or provider login. */
   function matches(account: AccountDto, text: string): boolean {
     const needle = text.trim().toLowerCase();
@@ -116,7 +125,12 @@
   }
 
   const shownAccounts = $derived(
-    accounts.filter((a) => (kind === null || a.authSource === kind) && matches(a, query)),
+    accounts.filter(
+      (a) =>
+        (kind === null || a.authSource === kind) &&
+        (standing === null || a.enabled === (standing === 'enabled')) &&
+        matches(a, query),
+    ),
   );
 
   const accountSort = new TableSort<'account' | 'state' | 'signIn' | 'roles'>();
@@ -626,11 +640,19 @@
       <p>Reading the roster…</p>
     {:else}
       <div class="tools">
+        <span class="dim">Sign-in</span>
         <Chips
           label="Filter accounts by sign-in"
           allCount={accounts.length}
           items={kinds}
           bind:value={kind}
+        />
+        <span class="dim">State</span>
+        <Chips
+          label="Filter accounts by state"
+          allCount={accounts.length}
+          items={standings}
+          bind:value={standing}
         />
         <label class="search"
           ><span aria-hidden="true">⌕</span><input
