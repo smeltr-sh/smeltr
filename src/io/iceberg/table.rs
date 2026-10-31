@@ -239,8 +239,9 @@ fn open(
     // A version 1 table upgrades in place, no file rewritten.
     if table.format_version == 1 {
         return Err(refused(format!(
-            "it is of format version 1, and only version {FORMAT_VERSION} is written; upgrade it in place with \
-             ALTER TABLE {} SET TBLPROPERTIES ('format-version'='{FORMAT_VERSION}')",
+            "it is of format version 1, and only version {FORMAT_VERSION} is written; upgrade it in place in Spark \
+             with ALTER TABLE {}.{} SET TBLPROPERTIES ('format-version'='{FORMAT_VERSION}')",
+            config.namespace.join("."),
             config.table
         )));
     }
@@ -1556,7 +1557,7 @@ mod tests {
         };
         assert!(
             e.message
-                .contains("ALTER TABLE t SET TBLPROPERTIES ('format-version'='2')"),
+                .contains("in Spark with ALTER TABLE ns.t SET TBLPROPERTIES ('format-version'='2')"),
             "{e}"
         );
 

@@ -294,7 +294,13 @@
       send the records to a table of their own.
     </dd>
     <dt><strong>it is of format version …, and only version 2 is written</strong></dt>
-    <dd>Write to a table of format version 2.</dd>
+    <dd>
+      Upgrade a version 1 table in place in Spark with
+      <code
+        >ALTER TABLE &lt;namespace&gt;.&lt;table&gt; SET TBLPROPERTIES ('format-version'='2')</code
+      >, which rewrites no data file. A table of a later version is not written: write to a table of
+      format version 2.
+    </dd>
     <dt><strong>it is encrypted, and an encrypted table is not written</strong></dt>
     <dd>Write to a table that is not encrypted.</dd>
     <dt>
