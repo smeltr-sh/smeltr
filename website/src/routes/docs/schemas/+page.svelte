@@ -23,8 +23,8 @@
 >
   <h1>Schemas</h1>
   <p class="lede">
-    A schema is a contract for the records a pipeline writes. It catches a missing or mistyped field
-    before it reaches a dashboard.
+    A schema is a contract for the records a pipeline writes. It tells you about a missing or
+    mistyped field before it reaches a dashboard.
   </p>
 
   <h2 id="how">How schemas work</h2>
@@ -38,8 +38,8 @@
   <h2 id="why">What schemas get you</h2>
   <ul>
     <li>
-      <strong>Dashboards and detections keep working.</strong> They are built on field names. A schema
-      tells you when a pipeline stops writing one.
+      <strong>You know before a dashboard breaks.</strong> Dashboards and detections are built on field
+      names. A schema tells you when a pipeline stops writing one.
     </li>
     <li>
       <strong>You see it while you edit.</strong> A sample run marks a missing field before the change
@@ -148,7 +148,7 @@
     source="schema-produces"
     height={1800}
     crop={{ x: 460, y: 418, width: 2384, height: 1066 }}
-    alt="The logins pipeline produces login. A sample run shows one schema finding, and activity_id as a missing column required by Login."
+    alt="The logins pipeline produces Login. A sample run shows one schema finding, and activity_id as a missing column required by Login."
     caption="The pipeline produces Login. Its rows lack activity_id, which Login requires."
   />
   <p>
@@ -161,7 +161,7 @@
     height={1800}
     crop={{ x: 510, y: 1267, width: 1300, height: 368 }}
     alt="An Elasticsearch destination that accepts the login schema."
-    caption="This destination accepts only records that fit Login."
+    caption="This destination accepts Login. A route whose pipeline does not produce it is a finding."
   />
 
   <h2 id="findings">Read the findings</h2>
