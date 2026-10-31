@@ -69,6 +69,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_field_elastic_security_names_is_an_ecs_field() {
+        let ecs = crate::schema::ecs::read(ECS).unwrap();
+        for line in ELASTIC_SECURITY.lines().skip(1) {
+            let (_, name) = line.split_once(' ').unwrap();
+            assert!(ecs.iter().any(|f| f.field == name), "`{name}` is not in ECS {}", ecs_version());
+        }
+    }
+
+    #[test]
     fn each_release_reads() {
         assert!(ecs_version().split('.').count() == 3, "{}", ecs_version());
         let ecs = crate::schema::ecs::read(ECS).unwrap();

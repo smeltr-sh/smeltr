@@ -84,7 +84,6 @@ recommended network.direction
 recommended network.packets
 recommended network.protocol
 recommended network.transport
-recommended pe.original_file_name
 recommended process.args
 recommended process.executable
 recommended process.hash.md5
@@ -93,8 +92,9 @@ recommended process.hash.sha256
 recommended process.name
 recommended process.parent.executable
 recommended process.parent.name
+recommended process.parent.pid
+recommended process.pe.original_file_name
 recommended process.pid
-recommended process.ppid
 recommended process.title
 recommended process.working_directory
 recommended rule.reference
