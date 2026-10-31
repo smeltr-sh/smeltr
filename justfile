@@ -18,9 +18,43 @@ set shell := ["cmd.exe", "/c"]
 default:
     @just --list
 
+# Each tool a recipe calls is checked before it runs, so a missing one stops the recipe with how to install it rather
+# than with the error of whatever called it. cmd.exe's `echo` takes none of `& < > | ( )`, so a hint holds none.
+[private]
+[unix]
+need tool how:
+    @command -v {{tool}} >/dev/null || { echo "{{tool}} is not installed. {{how}}" >&2; exit 1; }
+
+[private]
+[windows]
+need tool how:
+    @where {{tool}} >nul 2>nul || (echo {{tool}} is not installed. {{how}} 1>&2 & exit /b 1)
+
+# What every Rust build needs: aws-lc-fips-sys builds its FIPS module with CMake and Go, and a C compiler; on Windows
+# with Ninja too. CMake finds MSVC by itself.
+[private]
+[unix]
+need-rust: (need "cargo" "Install Rust from https://rustup.rs") (need "cmake" "Install CMake with your package manager.") (need "go" "Install Go from https://go.dev/dl") (need "cc" "Install gcc or clang with your package manager.") (need "c++" "Install g++ or clang with your package manager.")
+
+[private]
+[windows]
+need-rust: (need "cargo" "Install Rust from https://rustup.rs") (need "cmake" "Run: winget install Kitware.CMake") (need "go" "Run: winget install GoLang.Go") (need "ninja" "Run: winget install Ninja-build.Ninja")
+
+[private]
+need-node: (need "node" node_hint) (need "npm" node_hint)
+    @node -e "if (+process.versions.node.split('.')[0] < 22) { console.error('Node ' + process.versions.node + ' is too old. ' + process.argv[1]); process.exit(1) }" "{{node_hint}}"
+
+node_hint := if os_family() == "windows" { "Install Node 22 or later: winget install OpenJS.NodeJS.LTS" } else { "Install Node 22 or later from https://nodejs.org" }
+
+[private]
+need-nextest: (need "cargo-nextest" "Run: cargo install cargo-nextest --locked")
+
+[private]
+need-docker: (need "docker" "Install Docker from https://docs.docker.com/get-docker")
+
 # Frontend, then an optimized binary embedding it. Quick to rebuild; `dist` builds what you ship.
 [group("dev")]
-build: gui
+build: need-rust gui
     cargo build --release --bin smeltr
 
 # What the GUI tests and screenshots run: the frontend, the demo site and unoptimized binaries embedding them. They
@@ -28,7 +62,7 @@ build: gui
 # of the time `build` takes.
 [doc("Frontend and demo, then unoptimized binaries embedding them: what the GUI tests run.")]
 [group("dev")]
-build-dev: gui fips-dll
+build-dev: need-rust gui fips-dll
     npm --prefix gui-frontend run build:demo
     cargo build --bin smeltr --bin smeltr-demo
 
@@ -37,18 +71,18 @@ build-dev: gui fips-dll
 # build the tests make.
 [private]
 [windows]
-fips-dll:
+fips-dll: need-rust
     cargo build -p aws-lc-fips-sys
     powershell -NoProfile -ExecutionPolicy Bypass -File tools/fips-dll.ps1 "{{ env('CARGO_TARGET_DIR', 'target') }}/debug"
 
 [private]
 [unix]
-fips-dll:
+fips-dll: need-rust
 
 # The website demo: the GUI over the leader its page plays, in
 # gui-frontend/dist-demo, and the preview service it asks.
 [group("dev")]
-demo: gui
+demo: need-rust gui
     npm --prefix gui-frontend run build:demo
     cargo build --release --bin smeltr-demo
 
@@ -58,11 +92,11 @@ gui: deps-gui
     node gui-frontend/build-if-stale.mjs
 
 [private]
-deps-gui:
+deps-gui: need-node
     npm --prefix gui-frontend install
 
 [private]
-deps-website:
+deps-website: need-node
     npm --prefix website install
 
 # The version a binary carries, as `build.rs` stamps it: read out of the binary, so an archive's name
@@ -81,7 +115,7 @@ version := '[0-9]{4}\.[0-9]+\.[0-9]+\+[A-Za-z0-9-]+\.[0-9a-f]{12}(-dirty-[0-9a-f
 #
 # The export writes over ./handoff without clearing it, and the tarball takes all of it, so the folder goes first.
 [private]
-handoff:
+handoff: need-docker
     rm -rf handoff
     docker build --target export --output type=local,dest=handoff .
     v=$(grep -aoE '{{version}}' handoff/smeltr | head -1) \
@@ -99,7 +133,7 @@ handoff:
 # `.github/workflows/release.yml`.
 [doc("Release archives and the image, from a committed branch, and SHA256SUMS.")]
 [unix]
-dist: committed handoff
+dist: need-docker committed handoff
     v=$(grep -aoE '{{version}}' handoff/smeltr | head -1) \
       && r=$(git tag --points-at HEAD --list 'v[0-9]*') \
       && { test "$(echo "$r" | wc -w)" -le 1 || { echo "more than one v* tag on this commit: $r" >&2; exit 1; }; } \
@@ -113,13 +147,13 @@ dist: committed handoff
 # The RHEL 9 STIG, scanned against an image: `stig/report.html` and the rule-by-rule `stig/results.txt`. A
 # report, not a gate. `dist` tags the image it builds `smeltr:latest`.
 [unix]
-stig image="smeltr:latest":
+stig image="smeltr:latest": need-docker
     docker build --build-arg IMAGE={{image}} --output type=local,dest=stig - < tools/stig.Dockerfile
 
 # Known vulnerabilities in an image's OS packages and in the binary's crates, which `cargo auditable` records in it:
 # `cves/report.txt`, and `cves/report.json` for tools. A report, not a gate.
 [unix]
-cves image="smeltr:latest":
+cves image="smeltr:latest": need-docker
     mkdir -p cves && docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/cves:/out" \
       aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
       image --scanners vuln --format json --output /out/report.json {{image}}
@@ -130,14 +164,14 @@ cves image="smeltr:latest":
 # An image's packages and the binary's crates as a CycloneDX SBOM: `sbom/sbom.cdx.json`. The release attests it on
 # the pushed image.
 [unix]
-sbom image="smeltr:latest":
+sbom image="smeltr:latest": need-docker
     mkdir -p sbom && docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/sbom:/out" \
       aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
       image --format cyclonedx --output /out/sbom.cdx.json {{image}}
 
 [doc("Release archives from a committed branch, and SHA256SUMS.")]
 [windows]
-dist: gui
+dist: need-rust gui
     powershell -NoProfile -ExecutionPolicy Bypass -File tools/dist.ps1 "{{version}}"
 
 [private]
@@ -164,7 +198,7 @@ clean-main:
 # origin/main can break, down to the Rust tests of the modules they touch, and runs them side by side. It can miss a
 # test: `check-all` runs everything, before a merge to main.
 [doc("The check before every push, scoped to what changed since origin/main.")]
-check:
+check: need-rust need-nextest
     cargo run -q -p check-scope
 
 # Kerberos is not in it, since it needs a KDC: after a change to `Cargo.toml`, `Cargo.lock` or the Kerberos tests,
@@ -187,23 +221,23 @@ check-all: check-rust clippy check-frontend website deny
 
 # What a change to documents alone can break.
 [private]
-check-docs:
+check-docs: need-rust need-nextest
     cargo nextest run -p citations
 
 [private]
-fmt-check:
+fmt-check: need-rust
     cargo fmt --all --check
 
 # The Rust tests but the fuzzers that `filter`, a nextest filter, picks: `check` names them. A change to a fuzzer
 # alone picks none, and passes.
 [private]
 [env("SMELTR_NO_GUI", "1")]
-check-tests filter: stable fips-dll
+check-tests filter: need-nextest stable fips-dll
     cargo nextest run --workspace -j {{test_threads}} --no-tests=pass -E "not test(/fuzz/) & ({{filter}})"
 
 # One crate under `tools/`.
 [private]
-check-package package: stable
+check-package package: need-nextest stable
     cargo nextest run -p {{package}}
 
 # A release: its fixtures recorded and committed, and that commit tagged `v<release>`. Nothing leaves
@@ -220,7 +254,7 @@ cut-release release: (record-release if release =~ '^[0-9]+\.[0-9]+\.[0-9]+$' { 
 # Run from the commit being released, once. Every later build must start on
 # what this one leaves and still read what it sends (`src/releases.rs`).
 [private]
-record-release $SMELTR_RECORD_RELEASE: clean-main
+record-release $SMELTR_RECORD_RELEASE: need-rust need-nextest clean-main
     cargo nextest run --lib --run-ignored only -E "test(=releases::record_release)"
 
 # The checks build with the newest stable, so they see its new lints.
@@ -231,7 +265,7 @@ record-release $SMELTR_RECORD_RELEASE: clean-main
 # Bring stable Rust up to date.
 # `check` runs it once before the checks it starts, which set `SMELTR_STABLE_UPDATED` so none runs it again.
 [private]
-stable:
+stable: need-rust
     -{{ if env("SMELTR_STABLE_UPDATED", "") == "" { "rustup update stable --no-self-update" } else { "rustup --version" } }}
 
 # nextest runs each test in a process of its own. It runs no doctests; the
@@ -262,7 +296,7 @@ clippy: stable
 # the GUI, and `check-frontend` builds it, so the binary embeds none.
 [private]
 [env("SMELTR_NO_GUI", "1")]
-check-rust: stable fips-dll
+check-rust: need-nextest stable fips-dll
     cargo fmt --all --check
     cargo nextest run --workspace -j {{test_threads}} -E "not test(/fuzz/)"
     -cargo test --test integration language_tests:: -- --ignored
@@ -271,7 +305,7 @@ check-rust: stable fips-dll
 # seeds each and take a minute or more, so `check` leaves them here.
 [doc("Every offline fuzzer.")]
 [env("SMELTR_NO_GUI", "1")]
-check-fuzz: fips-dll && fuzz-gui fuzz-journey fuzz-pipeline
+check-fuzz: need-nextest fips-dll && fuzz-gui fuzz-journey fuzz-pipeline
     cargo nextest run --workspace -j {{test_threads}} -E "test(/fuzz/)"
 
 # The GUI fuzzer, `tests/gui/specs/gui-fuzz.spec.ts`, over more seeds than
@@ -311,7 +345,7 @@ fuzz-pipeline: build-dev
 
 # prettier, svelte-check/tsc, the production build and the frontend tests.
 [private]
-check-frontend:
+check-frontend: need-node
     npm --prefix gui-frontend ci
     npm --prefix gui-frontend run format:check
     npm --prefix gui-frontend run check
@@ -323,7 +357,7 @@ check-frontend:
 
 # Advisories, licenses, bans and sources, against `deny.toml`.
 [private]
-deny: stable
+deny: (need "cargo-deny" "Run: cargo install cargo-deny --locked") stable
     cargo deny check
 
 # uap-core's current user-agent rules, which `parseUserAgent` compiles in. POSIX shell.
@@ -345,7 +379,7 @@ schemas-latest:
 # The reference page's type lines, written from the engine's function table.
 [private]
 [env("SMELTR_WRITE_SIGNATURES", "1")]
-signatures:
+signatures: need-rust
     cargo test --test integration website_reference_tests::the_signatures_file_matches_the_engine
 
 # The build prerenders every route, so a broken internal link fails here.
@@ -353,7 +387,7 @@ signatures:
 
 # The public site: prettier, svelte-check and the prerendering build.
 [private]
-website:
+website: need-node
     npm --prefix website ci
     npm --prefix website run format:check
     npm --prefix website run check
@@ -361,7 +395,7 @@ website:
     node website/scripts/docs-markdown.js --check
 
 # The docs as Markdown the leader's AI agent reads, written from the website's build. Run it after a change to the docs.
-docs-markdown:
+docs-markdown: need-node
     npm --prefix website run build
     node website/scripts/docs-markdown.js --leader
 
@@ -374,7 +408,7 @@ docs-markdown:
 
 # Start Kafka, Elasticsearch, Splunk, the S3, GCS, Azure and Event Hubs emulators, an Iceberg catalog, SFTP and PostgreSQL for the live tests.
 [private]
-live-up:
+live-up: need-docker
     # What the universal forwarder reads, made before compose mounts it.
     mkdir -p target/s2s-forwarder
     docker compose -f tests/live/compose.live.yaml up -d --wait
@@ -600,7 +634,7 @@ down:
 
 # Reformat in place.
 [group("dev")]
-fmt: deps-gui deps-website
+fmt: need-rust deps-gui deps-website
     cargo fmt --all
     npm --prefix gui-frontend run format
     npm --prefix website run format
@@ -659,5 +693,5 @@ demo-fixtures: build
 # regeneration.
 # Regenerate THIRD-PARTY-NOTICES.md.
 [group("dev")]
-notices:
+notices: need-rust (need "cargo-about" "Run: cargo install cargo-about --locked")
     cargo about generate -c tools/notices/about.toml tools/notices/about.hbs -o THIRD-PARTY-NOTICES.md
