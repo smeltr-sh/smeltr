@@ -76,7 +76,7 @@ pub fn read(req: &ReadRequest) -> Result<ReadSchema, String> {
         }
         ReadFormat::Ecs if req.built_in => crate::schema::ecs::read(standard::ECS)?,
         ReadFormat::Ecs => crate::schema::ecs::read(&req.text)?,
-        ReadFormat::Ocsf if req.built_in => crate::schema::ocsf::read(&standard::OCSF, &req.class, &req.cut)?,
+        ReadFormat::Ocsf if req.built_in => crate::schema::ocsf::read(&standard::ocsf(), &req.class, &req.cut)?,
         ReadFormat::Ocsf => crate::schema::ocsf::read(&json()?, &req.class, &req.cut)?,
         _ if req.built_in => return Err("only ECS and OCSF are built in".to_string()),
         ReadFormat::Csv if req.preview => {
@@ -111,13 +111,16 @@ pub fn standards() -> Standards {
     Standards {
         ecs: Release {
             version: standard::ecs_version().to_string(),
-            source: format!("https://github.com/elastic/ecs/tree/v{}/generated", standard::ecs_version()),
+            source: format!(
+                "https://github.com/elastic/ecs/tree/v{}/generated",
+                standard::ecs_version()
+            ),
             classes: Vec::new(),
         },
         ocsf: Release {
             version: standard::ocsf_version().to_string(),
             source: format!("https://github.com/ocsf/ocsf-schema/tree/{}", standard::ocsf_version()),
-            classes: standard::ocsf_classes(),
+            classes: standard::ocsf_classes().to_vec(),
         },
     }
 }
