@@ -2138,6 +2138,8 @@ fn the_worker_sizing_table_matches_the_engine() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("website/src/lib/worker-sizing.json");
     let table: WorkerSizing = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let reference = connector_reference();
+    let sources = &reference.sources;
+    let destinations = &reference.destinations;
     // The size a bound opens with: "128 MiB per transform thread" is 128 MiB.
     let size = |text: &str| -> Option<usize> {
         let mut words = text.split_whitespace();
@@ -2147,12 +2149,21 @@ fn the_worker_sizing_table_matches_the_engine() {
     use smeltr::worker as m;
     let engine: std::collections::BTreeMap<&str, (Option<usize>, Option<usize>)> = [
         ("processes", (Some(2 * m::BASELINE_BYTES), None)),
-        ("transform", (Some(m::LEAST_COLUMNAR_BYTES), Some(m::COLUMNAR_BYTES_PER_THREAD))),
+        (
+            "transform",
+            (Some(m::LEAST_COLUMNAR_BYTES), Some(m::COLUMNAR_BYTES_PER_THREAD)),
+        ),
         ("lanes", (Some(m::LEAST_BATCH_BYTES), Some(m::TICK_MAX_BYTES))),
         ("kafka", (Some(FetchBytes::MIN), Some(FetchBytes::MAX))),
         ("receiver", (None, Some(smeltr::io::receiver::INBOX_BYTES))),
-        ("objectRecord", (Some(smeltr::io::object_source::MAX_RECORD_BYTES as usize), None)),
-        ("apiAnswer", (Some(2 * smeltr::io::api::MAX_ANSWER_BYTES as usize), None)),
+        (
+            "objectRecord",
+            (Some(smeltr::io::object_source::MAX_RECORD_BYTES as usize), None),
+        ),
+        (
+            "apiAnswer",
+            (Some(2 * smeltr::io::api::MAX_ANSWER_BYTES as usize), None),
+        ),
         ("sqlResult", (Some(smeltr::io::sql_source::MAX_RESULT_BYTES), None)),
         ("buffer", (None, None)),
         ("senders", (Some(m::SENDER_BYTES), None)),
