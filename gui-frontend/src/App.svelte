@@ -41,6 +41,7 @@
   import Confirm from './Confirm.svelte';
   import { confirmContextSwitch } from './unsavedGuard';
   import ChipPicker from './ChipPicker.svelte';
+  import LevelMark from './LevelMark.svelte';
   import BranchBar from './BranchBar.svelte';
   import DemoBar from './DemoBar.svelte';
   import Locked from './Locked.svelte';
@@ -394,6 +395,7 @@
           onopen={loadBranches}
         >
           {#snippet face()}
+            <span class="dim">Branch</span>
             {branch}{#if branch === 'main'}<span class="branch-note"> &middot; read-only</span>{/if}
           {/snippet}
           <button
@@ -445,10 +447,9 @@
           kind="identity"
           ariaLabel="signed in as {who.displayName}"
         >
-          {#snippet face()}<PersonIcon /><span class="who-face">{who.displayName}</span><span
-              class="caret"
-              aria-hidden="true">&#9662;</span
-            >{/snippet}
+          {#snippet face()}<PersonIcon /><span class="who-face">{who.displayName}</span
+            >{#if administrator}<span class="dim"><LevelMark level="administrator" /></span
+              >{/if}<span class="caret" aria-hidden="true">&#9662;</span>{/snippet}
 
           <div class="who">
             <div class="who-name">{who.displayName}</div>
