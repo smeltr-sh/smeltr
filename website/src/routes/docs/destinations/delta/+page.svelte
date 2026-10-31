@@ -359,6 +359,15 @@
     </dd>
     <dt><strong>the table maps columns by …, which this writer does not</strong></dt>
     <dd>Write to a table that maps columns by name or by id, or not at all.</dd>
+    <dt>
+      <strong
+        >the table maps columns by … and has no <code>delta.columnMapping.maxColumnId</code></strong
+      >
+    </dt>
+    <dd>
+      The writer that mapped the table's columns did not record the highest column id it gave, so
+      the destination cannot give a new column an id of its own. Write to another table.
+    </dd>
     <dt><strong>the table has the check constraint …</strong></dt>
     <dd>
       The destination does not check constraints. Drop the constraint, or write another table.
