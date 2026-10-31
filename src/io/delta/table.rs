@@ -722,13 +722,9 @@ fn mapping(metadata: &Metadata) -> Result<Mapping, String> {
         // A writer writes both alike: physical names, and each column's id as its field id. Only readers differ.
         "name" | "id" => {
             // Without its highest id, a table is written only as long as no new column needs one; see `open`.
-            let max_column_id = match metadata
-                .property("delta.columnMapping.maxColumnId")
+            let max_column_id = (metadata.property("delta.columnMapping.maxColumnId"))
                 .and_then(|v| v.parse().ok())
-            {
-                Some(max) => max,
-                None => schema::max_column_id(&StructType::parse(&metadata.schema_string)?.fields),
-            };
+                .unwrap_or(0);
             Ok(Mapping::Name { max_column_id })
         }
         other => Err(format!("the table maps columns by {other}, which this writer does not")),
