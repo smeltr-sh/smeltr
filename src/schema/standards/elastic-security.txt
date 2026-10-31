@@ -1,4 +1,4 @@
-# Elastic Security's ECS field reference, written by `just schemas-refresh`.
+# The ECS fields Elastic Security requires and uses, kept by hand against its ECS field reference.
 required @timestamp
 required ecs.version
 required event.kind
