@@ -3829,11 +3829,11 @@
         "values": [
           {
             "value": "json",
-            "what": "Writes its JSON text as a `string`."
+            "what": "JSON `string`."
           },
           {
             "value": "native",
-            "what": "Writes Parquet's own `variant` type. Each value keeps its type, except a duration, which is its count of microseconds."
+            "what": "Native `variant`."
           }
         ]
       },

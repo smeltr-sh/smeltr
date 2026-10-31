@@ -813,9 +813,8 @@
       <Nested>
         <Field field="variant" label="variant">
           {#snippet help()}
-            <code>json</code>: a variant is written as its JSON text, a <code>string</code>.
-            <code>native</code>: a variant is written as Parquet's own <code>variant</code>. Each
-            value keeps its type, except a duration, which is its count of microseconds.
+            <code>json</code>: JSON <code>string</code>. <code>native</code>: native
+            <code>variant</code>.
           {/snippet}
           <select
             value={o.variant ?? 'json'}
