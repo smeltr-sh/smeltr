@@ -357,11 +357,12 @@
 
 {#snippet ecsRequirementsHelp()}
   ECS requires @timestamp and ecs.version, and recommends its core fields. Elastic Security requires five fields:
-  @timestamp, ecs.version, event.kind, event.category and event.type. It recommends the other fields its <a
+  @timestamp, ecs.version, event.kind, event.category and event.type. It recommends the other fields it uses
+  to display data and run its prebuilt detection rules, such as host.name, process.name and source.ip. Its <a
     href="https://www.elastic.co/guide/en/security/current/siem-field-reference.html"
     target="_blank"
     rel="noreferrer">field reference</a
-  > lists.
+  > lists them.
 {/snippet}
 
 {#snippet link(href: string)}
