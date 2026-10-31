@@ -301,8 +301,10 @@
     A top-level column the record does not write takes its default in every row, partition columns
     too. The default must be a literal of the column's type, such as <code>42</code>,
     <code>'n/a'</code>, <code>DATE '2024-01-01'</code> or
-    <code>TIMESTAMP '2024-01-01 00:00:00Z'</code>. A <code>timestamp</code> default must name its zone.
-    Any other default refuses the table.
+    <code>TIMESTAMP '2024-01-01 00:00:00Z'</code>. A <code>timestamp</code> default names its zone;
+    a
+    <code>timestamp_ntz</code> default does not. A default that is not such a literal, or is on a column
+    below the top level, refuses the table.
   </p>
 
   <h2 id="how-it-works">How it works</h2>
@@ -417,9 +419,9 @@
     </dd>
     <dt><strong>the table's column … carries …, which this writer cannot honour</strong></dt>
     <dd>
-      The column is generated, has a default that is not a literal, carries an invariant, or is an
-      identity column inside a struct, which the destination does not compute or check. Write to a
-      table without such a column.
+      The column is generated, carries an invariant, or is an identity column or a column with a
+      default inside a struct, or its default is not a literal, which the destination does not
+      compute or check. Write to a table without such a column.
     </dd>
     <dt>
       <strong
