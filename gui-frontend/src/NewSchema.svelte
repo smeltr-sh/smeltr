@@ -95,7 +95,7 @@
       type: 'csv',
       label: 'CSV of fields',
       category: 'From a file',
-      help: "A CSV file with a header row and a row per field. You choose which column holds each field's name, which holds its type, and optionally which hold requirement, description, example and elasticsearch.",
+      help: "A CSV file with a header row and a row per field. You choose the columns for each field's name and type. Columns for its requirement (required, recommended or optional), description, example value and Elasticsearch type are optional.",
       // A grid.
       glyph: { d: 'M10 14 H54 V50 H10 Z M10 26 H54 M10 38 H54 M26 14 V50 M40 14 V50' },
     },
