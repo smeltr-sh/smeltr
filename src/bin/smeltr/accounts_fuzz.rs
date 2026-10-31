@@ -80,6 +80,8 @@ const OPTIONS: &[&str] = &[
     "role-name-is-no-group",
     "administrator-areas-refused",
     "administrator-delete-refused",
+    "role-deleted",
+    "role-deleted-again-refused",
     "disable",
     "disable-last-administrator-refused",
     "enable",
@@ -182,6 +184,8 @@ struct Model {
     accounts: Vec<Account>,
     /// Each role's groups as they stand, by its place in [`ROLES`].
     groups: [Vec<String>; 3],
+    /// Whether each role of [`ROLES`] stands: one deleted is made again by the next change to it.
+    stands: [bool; 3],
     made: usize,
     /// The usernames and provider subjects deleted accounts gave up, free for a new account.
     released_usernames: Vec<String>,
@@ -193,6 +197,7 @@ impl Model {
         Model {
             accounts: Vec::new(),
             groups: ROLES.map(|(_, groups, _)| groups.iter().map(|g| g.to_string()).collect()),
+            stands: [true; 3],
             made: 0,
             released_usernames: Vec::new(),
             released_subjects: Vec::new(),
@@ -447,8 +452,13 @@ fn some_roles(rng: &mut Rng) -> Vec<String> {
     GIVEN.iter().filter(|_| rng.chance(3)).map(|r| r.to_string()).collect()
 }
 
-fn known(roles: &[String]) -> bool {
-    roles.iter().all(|r| ROLES.iter().any(|(name, ..)| name == r))
+fn known(model: &Model, roles: &[String]) -> bool {
+    roles.iter().all(|r| {
+        ROLES
+            .iter()
+            .zip(model.stands)
+            .any(|((name, ..), stands)| stands && name == r)
+    })
 }
 
 /// Sorted and each once, as the leader keeps given roles.
@@ -499,7 +509,7 @@ async fn create_local(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &m
     let (status, answer) = leader
         .send(false, &credential, "POST", "/api/accounts", Some(&body))
         .await;
-    if !known(&roles) {
+    if !known(model, &roles) {
         cov.reach("create-unknown-role-refused");
         return expect("a local account given a role there is not", status, 422, &answer);
     }
@@ -543,7 +553,7 @@ async fn create_key_account(
     let (status, answer) = leader
         .send(false, &credential, "POST", "/api/accounts", Some(&body))
         .await;
-    if !known(&roles) {
+    if !known(model, &roles) {
         cov.reach("create-unknown-role-refused");
         return expect("a key account given a role there is not", status, 422, &answer);
     }
@@ -662,7 +672,7 @@ async fn change(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Cov
             let roles = some_roles(rng);
             let body = json!({ "roles": roles });
             let (status, answer) = leader.send(false, &credential, "PATCH", &target, Some(&body)).await;
-            if !known(&roles) {
+            if !known(model, &roles) {
                 cov.reach("roles-unknown-refused");
                 return expect("roles that are not all roles", status, 422, &answer);
             }
@@ -1052,6 +1062,23 @@ async fn role(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Cover
         cov.reach("administrator-delete-refused");
         return expect("the administrator role deleted", status, 409, &answer);
     }
+    if name != ADMINISTRATOR && rng.chance(4) {
+        let (status, answer) = leader.send(false, &credential, "DELETE", &target, None).await;
+        if !model.stands[r] {
+            cov.reach("role-deleted-again-refused");
+            return expect("a role deleted that is gone", status, 404, &answer);
+        }
+        expect("a role deleted", status, 200, &answer)?;
+        cov.reach("role-deleted");
+        audited(leader, &by, "role-delete", name)?;
+        // Off every account it was given to, and its groups with it.
+        model.stands[r] = false;
+        model.groups[r].clear();
+        for account in &mut model.accounts {
+            account.roles.retain(|given| given != name);
+        }
+        return Ok(());
+    }
     let groups: Vec<String> = GROUPS.iter().filter(|_| rng.chance(3)).map(|g| g.to_string()).collect();
     let mut areas: BTreeMap<&str, &str> = gives.iter().map(|(a, l)| (*a, l.as_str())).collect();
     let asks_area = name == ADMINISTRATOR && rng.chance(3);
@@ -1068,6 +1095,7 @@ async fn role(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Cover
     cov.reach("role-groups-changed");
     audited(leader, &by, "role-put", name)?;
     model.groups[r] = groups;
+    model.stands[r] = true;
     Ok(())
 }
 

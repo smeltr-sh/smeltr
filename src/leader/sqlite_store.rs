@@ -407,6 +407,14 @@ pub(crate) const STEPS: &[&str] = &[
          display_name TEXT NOT NULL,
          deleted_at   INTEGER NOT NULL
      );",
+    // 16 -- a deleted role is taken off every account that was given it (`Store::delete_role`), so a role made later
+    // under its name starts with nobody. Breaking: an older build leaves the name on its accounts, where a new role of
+    // that name would give them its access.
+    "-- The names left by roles deleted before this step.
+     UPDATE account_roles SET roles = (
+         SELECT COALESCE(json_group_array(value), '[]') FROM json_each(account_roles.roles)
+          WHERE value IN (SELECT name FROM roles)
+     );",
 ];
 
 fn conversation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRecord> {
@@ -2323,6 +2331,15 @@ impl Store for SqliteStore {
         if tx.execute("DELETE FROM roles WHERE name = ?1", (name,))? == 0 {
             return Ok(false);
         }
+        // Off every account in the same transaction: a name left behind would give a later role of that name to
+        // whoever still listed it.
+        tx.execute(
+            "UPDATE account_roles SET roles = (
+                 SELECT COALESCE(json_group_array(value), '[]') FROM json_each(account_roles.roles) WHERE value <> ?1
+             )
+             WHERE EXISTS (SELECT 1 FROM json_each(account_roles.roles) WHERE value = ?1)",
+            (name,),
+        )?;
         insert_event(&tx, event)?;
         tx.commit()?;
         Ok(true)
@@ -4689,6 +4706,58 @@ mod tests {
             2,
             "deleting nothing recorded an event"
         );
+    }
+
+    /// A role made again under a deleted one's name gives nothing to the accounts the old one was given to.
+    #[test]
+    fn a_deleted_role_is_taken_off_every_account() {
+        let s = store();
+        s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
+        s.put_role(
+            &role("r", &[], &[("payments", Level::Editor)]),
+            &role_event("role-put", "r"),
+        )
+        .unwrap();
+        s.put_role(&role("q", &[], &[]), &role_event("role-put", "q")).unwrap();
+        s.create_local_user(
+            new_user("u_2", "bob"),
+            &["r".to_string(), "q".to_string()],
+            &role_event("account-create", "u_2"),
+        )
+        .unwrap()
+        .unwrap();
+        s.delete_role("r", &role_event("role-delete", "r")).unwrap();
+        assert_eq!(s.given_roles("u_2").unwrap(), vec!["q".to_string()]);
+        assert_eq!(s.given_roles("u_1").unwrap(), vec![ADMINISTRATOR.to_string()]);
+        s.put_role(
+            &role("r", &[], &[("payments", Level::Editor)]),
+            &role_event("role-put", "r"),
+        )
+        .unwrap();
+        assert_eq!(s.given_roles("u_2").unwrap(), vec!["q".to_string()]);
+    }
+
+    /// The names left by roles deleted before step 16 go with it.
+    #[test]
+    fn the_role_cleanup_step_takes_the_names_of_deleted_roles_off_accounts() {
+        assert!(!super::super::steps::is_additive(STEPS[15]));
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        super::super::steps::upgrade_sqlite(&mut conn, "leader.db", &STEPS[..15]).unwrap();
+        conn.execute_batch(
+            "INSERT INTO roles (name) VALUES ('kept');
+             INSERT INTO users (id, auth_source, display_name, enabled, generation, created_at, updated_at)
+                 VALUES ('u_2', 'local', 'Bob', 1, 1, 0, 0);
+             INSERT INTO account_roles (user_id, auth_source, roles) VALUES ('u_2', 'local', '[\"gone\",\"kept\",\"administrator\"]');",
+        )
+        .unwrap();
+        super::super::steps::upgrade_sqlite(&mut conn, "leader.db", STEPS).unwrap();
+        let roles: String = conn
+            .query_row("SELECT roles FROM account_roles WHERE user_id = 'u_2'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(roles, r#"["kept","administrator"]"#);
     }
 
     #[test]
