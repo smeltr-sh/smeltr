@@ -520,6 +520,10 @@ async fn schemas_read(
         .await
 }
 
+async fn schemas_standards(State(service): State<Service>) -> Envelope<catalog::Standards> {
+    service.run(unavailable, || Envelope::ok(catalog::standards())).await
+}
+
 async fn schemas_export(
     State(service): State<Service>,
     Json(req): Json<catalog::ExportRequest>,
@@ -604,6 +608,7 @@ fn app(service: Service) -> Router {
         .route("/onboard/propose", post(onboard_propose))
         .route("/schemas/read", post(schemas_read))
         .route("/schemas/export", post(schemas_export))
+        .route("/schemas/standards", post(schemas_standards))
         .route("/schema-findings", post(schema_findings))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
         .with_state(service)

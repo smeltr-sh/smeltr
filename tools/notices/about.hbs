@@ -242,14 +242,21 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Bundled data
 
-Rules and lists the built-in functions read, compiled into the binary.
+Rules and lists the built-in functions read, and the standards a schema is read from, compiled into the binary.
 
 | data | read by | license |
 | --- | --- | --- |
 | uap-core `regexes.yaml` (`src/ops/useragent/regexes.yaml`) | `parseUserAgent` | Apache-2.0 |
 | Public Suffix List, through the `psl` crate | `registeredDomain` | MPL-2.0 |
+| Elastic Common Schema `fields.csv` (`src/schema/standards/ecs-fields.csv`) | Add schema, ECS built in | Apache-2.0 |
+| Open Cybersecurity Schema Framework, compiled (`src/schema/standards/ocsf.json`) | Add schema, OCSF built in | Apache-2.0 |
 
 > Copyright 2009 Google Inc. (uap-core, https://github.com/ua-parser/uap-core)
+
+> Elastic Common Schema. Copyright 2018-2021 Elasticsearch B.V. (https://github.com/elastic/ecs)
+
+> Open Cybersecurity Schema Framework. Copyright © OCSF a Series of LF Projects, LLC. This project includes the ICD
+> Schema developed by Symantec, a division of Broadcom. (https://github.com/ocsf/ocsf-schema)
 
 The Apache-2.0 text is reproduced with the crates below. The Public Suffix
 List is available in source form at https://publicsuffix.org/list/; its

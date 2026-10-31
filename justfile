@@ -331,6 +331,17 @@ deny: stable
 uap-refresh:
     curl -fsSL https://raw.githubusercontent.com/ua-parser/uap-core/master/regexes.yaml -o src/ops/useragent/regexes.yaml
 
+# The ECS and OCSF releases the Add schema dialog offers built in (`schema::standard`), as
+# `just schemas-refresh 9.5.0 1.9.0`: ECS's fields.csv at that tag, and OCSF compiled and cut.
+[private]
+schemas-refresh ecs ocsf:
+    tools/schema-standards/refresh {{ecs}} {{ocsf}}
+
+# Fails where ECS or OCSF has a release newer than the one built in. Run weekly.
+[private]
+schemas-latest:
+    tools/schema-standards/latest
+
 # The reference page's type lines, written from the engine's function table.
 [private]
 [env("SMELTR_WRITE_SIGNATURES", "1")]
