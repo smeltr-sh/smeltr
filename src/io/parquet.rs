@@ -1797,7 +1797,7 @@ mod tests {
         };
         assert_eq!(
             refused(field("i", Type::Primitive(Primitive::Int), json!(3_000_000_000_i64))),
-            "the table's column i has the write default 3000000000, which is no int"
+            "the table's column i has the write default 3000000000, which is not of type int"
         );
         for (ty, default) in [
             (other("decimal(3, 1)"), json!("100.0")),
@@ -1808,7 +1808,7 @@ mod tests {
             (Type::Primitive(Primitive::Date), json!(2)),
         ] {
             assert!(
-                refused(field("v", ty, default.clone())).contains("which is no"),
+                refused(field("v", ty, default.clone())).contains("which is not of type"),
                 "{default}"
             );
         }

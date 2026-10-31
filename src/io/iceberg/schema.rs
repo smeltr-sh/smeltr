@@ -145,7 +145,7 @@ pub fn write_default(field: &NestedField, arrow: &Arrow, path: &str) -> Result<A
     };
     let bad = || {
         format!(
-            "the table's column {path} has the write default {default}, which is no {}",
+            "the table's column {path} has the write default {default}, which is not of type {}",
             field.field_type
         )
     };

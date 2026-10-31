@@ -294,11 +294,12 @@
     </dd>
     <dt><strong>the table's column … is required …</strong></dt>
     <dd>
-      Every column the destination writes is optional. Make the column optional in the table, give
-      it a write default where the record does not write it, on a table of format version 3, or send
-      the records to a table of their own.
+      Every column the destination writes is optional. Make the column optional in the table, or
+      send the records to a table of their own. On a table of format version 3, you can instead give
+      the column a write default, which the destination writes where the record does not write the
+      column.
     </dd>
-    <dt><strong>the table's column … has the write default …, which is no …</strong></dt>
+    <dt><strong>the table's column … has the write default …, which is not of type …</strong></dt>
     <dd>
       The column's write default is not a value of its type as the Iceberg spec writes one. Set a
       default of the column's type in the table.
