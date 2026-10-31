@@ -2430,9 +2430,43 @@ fn a_skip_column_holds_its_position_without_producing_a_field() {
     );
 }
 
-/// `"skip"` names a column to leave out, so it means nothing on a parser without columns, nor nested inside a struct.
+/// A step that rebuilds its input writes it back without what it skips: a CSV column left empty, a key-value pair left
+/// out. A skipped key makes no field.
 #[test]
-fn skip_is_only_a_csv_column_type() {
+fn a_rebuilding_step_writes_its_input_back_without_what_it_skips() {
+    let json = r#"{
+      "version": 1,
+      "pipelines": [
+        { "id": "c", "name": "c", "steps": [
+          { "id": "fields", "type": "parser", "input": "_raw",
+            "kind": { "type": "csv", "delimiter": ",", "rebuild": true },
+            "declared": [
+              { "name": "host", "type": "str" },
+              { "name": "unwanted", "type": "skip" },
+              { "name": "zone", "type": "str" }
+            ] } ] },
+        { "id": "k", "name": "k", "steps": [
+          { "id": "pairs", "type": "parser", "input": "_raw",
+            "kind": { "type": "keyValue", "pairSep": " ", "kvSep": "=", "rebuild": true },
+            "declared": [
+              { "name": "host", "type": "str" },
+              { "name": "unwanted", "type": "skip" }
+            ] } ] }
+      ]
+    }"#;
+    let system = load_str(json).unwrap_or_else(|e| panic!("load failed: {e}"));
+    let rows = run_pipeline(&system.pipelines[0], &["web01,secret,dmz"]);
+    assert_eq!(rows[0]["_raw"], "web01,,dmz", "{}", rows[0]);
+    let rows = run_pipeline(&system.pipelines[1], &["host=web01 unwanted=secret zone=dmz"]);
+    assert_eq!(rows[0]["_raw"], "host=web01 zone=dmz", "{}", rows[0]);
+    assert!(rows[0].get("unwanted").is_none(), "{}", rows[0]);
+    assert_eq!(rows[0]["zone"], "dmz", "{}", rows[0]);
+}
+
+/// `"skip"` names a column or a key to leave out, so it means nothing on a parser without either, nor nested inside a
+/// struct.
+#[test]
+fn skip_is_only_a_csv_or_key_value_type() {
     let on_grok = r#"{
       "version": 1,
       "pipelines": [{ "id": "p", "name": "p", "steps": [

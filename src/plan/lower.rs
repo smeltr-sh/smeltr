@@ -130,6 +130,10 @@ pub fn parser(
                 ("escapes", boolean(c.escapes)),
                 ("nextKey", boolean(c.next_key)),
             ]);
+            let options = match c.skip.is_empty() {
+                true => options,
+                false => with_entry(options, "skip", strings(&c.skip)),
+            };
             call("kv", vec![text, options])
         }
         ParserKind::Csv(c) => {
@@ -157,7 +161,49 @@ pub fn parser(
     let typed = fields
         .iter()
         .map(|d| (d.name.as_str(), d.ty.clone(), d.time_source.as_ref()));
-    declare_around(into, typed, parse, kind.is_dynamic(), held)
+    let mut lowered = declare_around(into, typed, parse, kind.is_dynamic(), held);
+    lowered.body.extend(rebuild(input, kind));
+    lowered
+}
+
+/// `input = csvRebuild(input, …)` or `kvRebuild`, where the parser rebuilds its input and skips something; with
+/// nothing skipped the text it would write is the text it read.
+fn rebuild(input: &str, kind: &ParserKind) -> Option<Stmt> {
+    let text = field(input);
+    let value = match kind {
+        ParserKind::Csv(c) if c.rebuild && c.headers.iter().any(Option::is_none) => {
+            let headers = c.headers.iter().map(|h| h.as_deref().map_or(null(), string)).collect();
+            let escape = c.escape.map_or(string(""), byte);
+            let args = vec![
+                text,
+                array(headers),
+                byte(c.delimiter),
+                byte(c.quote),
+                escape,
+                boolean(c.squeeze),
+            ];
+            call("csvRebuild", args)
+        }
+        ParserKind::KeyValue(c) if c.rebuild && !c.skip.is_empty() => {
+            let quote = c.quote.map_or(string(""), byte);
+            let args = vec![
+                text,
+                strings(&c.skip),
+                byte(c.pair_sep),
+                byte(c.kv_sep),
+                quote,
+                boolean(c.escapes),
+                boolean(c.next_key),
+            ];
+            call("kvRebuild", args)
+        }
+        _ => return None,
+    };
+    Some(Stmt::Assign {
+        target: input.to_string(),
+        value,
+        typed: false,
+    })
 }
 
 /// `Object.assign($, lookup(table, input, {…}))`, after a declaration of each output.
@@ -388,6 +434,14 @@ fn array(items: Vec<Expr>) -> Expr {
 
 fn strings(items: &[String]) -> Expr {
     array(items.iter().map(|s| string(s)).collect())
+}
+
+/// The object literal `options` with `value` at `key` after its entries.
+fn with_entry(mut options: Expr, key: &str, value: Expr) -> Expr {
+    if let ExprKind::Object(entries) = &mut options.kind {
+        entries.push((Some(key.to_string()), value));
+    }
+    options
 }
 
 fn object(entries: Vec<(&str, Expr)>) -> Expr {

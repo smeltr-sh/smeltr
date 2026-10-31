@@ -647,8 +647,8 @@ pub(crate) fn to_data_type(dto: &DataTypeDto) -> Result<DataType, String> {
                 "\"{s}\" is not a type a parser can produce -- declaring it is always a column of nulls"
             )),
             "skip" => Err(
-                "\"skip\" marks a CSV column to leave out of the record, so it is only a type there -- and never on a \
-                 field nested inside an array or struct"
+                "\"skip\" marks a CSV column or a key-value key to leave out of the record, so it is only a type \
+                 there -- and never on a field nested inside an array or struct"
                     .to_string(),
             ),
             other => Err(format!(
@@ -752,7 +752,7 @@ fn to_csv_columns(columns: &[FieldDto]) -> Result<(Vec<Option<String>>, Vec<Decl
     let mut headers = Vec::with_capacity(columns.len());
     let mut kept = Vec::new();
     for c in columns {
-        if matches!(&c.ty, DataTypeDto::Scalar(s) if s == "skip") {
+        if is_skip(&c.ty) {
             headers.push(None);
             continue;
         }
@@ -760,6 +760,11 @@ fn to_csv_columns(columns: &[FieldDto]) -> Result<(Vec<Option<String>>, Vec<Decl
         kept.extend(to_declared_fields(std::slice::from_ref(c))?);
     }
     Ok((headers, kept))
+}
+
+/// Whether a parser's declared field is typed `"skip"`: a CSV column or a key-value key that makes no field.
+fn is_skip(ty: &DataTypeDto) -> bool {
+    matches!(ty, DataTypeDto::Scalar(s) if s == "skip")
 }
 
 /// The TLS `of` speaks, or `None` for a connector that says nothing about it. A receiver trusts no public root:
@@ -5549,12 +5554,17 @@ fn to_parser_kind(dto: &ParserKindDto, declared: &[FieldDto]) -> Result<(ParserK
         ParserKindDto::Json { split_dots } => ParserKind::Json {
             split_dots: split_dots.unwrap_or(split_dots_default("json")),
         },
-        ParserKindDto::Csv { delimiter, split_dots } => {
+        ParserKindDto::Csv {
+            delimiter,
+            split_dots,
+            rebuild,
+        } => {
             let (headers, kept) = to_csv_columns(declared)?;
             let config = CsvConfig {
                 split_dots: split_dots.unwrap_or(split_dots_default("csv")),
                 delimiter: to_byte(delimiter, "csv delimiter")?,
                 headers,
+                rebuild: *rebuild,
                 ..CsvConfig::default()
             };
             return Ok((ParserKind::Csv(config), kept));
@@ -5565,14 +5575,22 @@ fn to_parser_kind(dto: &ParserKindDto, declared: &[FieldDto]) -> Result<(ParserK
             quote,
             next_key,
             split_dots,
-        } => ParserKind::KeyValue(KvConfig {
-            split_dots: split_dots.unwrap_or(split_dots_default("kv")),
-            next_key: next_key.unwrap_or(KvConfig::default().next_key),
-            pair_sep: to_byte(pair_sep, "keyValue pairSep")?,
-            kv_sep: to_byte(kv_sep, "keyValue kvSep")?,
-            quote: quote.as_deref().map(|q| to_byte(q, "keyValue quote")).transpose()?,
-            ..KvConfig::default()
-        }),
+            rebuild,
+        } => {
+            let (skip, kept): (Vec<&FieldDto>, Vec<&FieldDto>) = declared.iter().partition(|f| is_skip(&f.ty));
+            let config = KvConfig {
+                split_dots: split_dots.unwrap_or(split_dots_default("kv")),
+                next_key: next_key.unwrap_or(KvConfig::default().next_key),
+                pair_sep: to_byte(pair_sep, "keyValue pairSep")?,
+                kv_sep: to_byte(kv_sep, "keyValue kvSep")?,
+                quote: quote.as_deref().map(|q| to_byte(q, "keyValue quote")).transpose()?,
+                skip: skip.into_iter().map(|f| f.name.clone()).collect(),
+                rebuild: *rebuild,
+                ..KvConfig::default()
+            };
+            let kept: Vec<FieldDto> = kept.into_iter().cloned().collect();
+            return Ok((ParserKind::KeyValue(config), to_declared_fields(&kept)?));
+        }
         ParserKindDto::Grok {
             patterns,
             custom_patterns,

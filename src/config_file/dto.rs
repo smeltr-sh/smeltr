@@ -3304,6 +3304,9 @@ pub enum ParserKindDto {
         /// Whether a key is split at its dots into a path; absent is the parser's default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         split_dots: Option<bool>,
+        /// Whether the parse rebuilds its input, each skipped column left empty.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        rebuild: bool,
     },
     #[serde(rename_all = "camelCase")]
     KeyValue {
@@ -3317,6 +3320,9 @@ pub enum ParserKindDto {
         /// Whether a key is split at its dots into a path; absent is the parser's default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         split_dots: Option<bool>,
+        /// Whether the parse rebuilds its input, each skipped pair left out.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        rebuild: bool,
     },
     #[serde(rename_all = "camelCase")]
     Grok {

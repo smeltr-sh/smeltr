@@ -64,6 +64,38 @@ pub fn split_pairs<'d>(line: &'d [u8], c: &KvConfig, pairs: &mut Vec<Pair<'d>>) 
     true
 }
 
+/// `line` without the pairs whose key `drop` names, each kept pair as it was written, quotes and escapes and all.
+/// A pair runs from its key to the next pair's key, so a dropped pair takes the separators after it. `None` where
+/// `line` does not split whole, which leaves nothing safe to cut.
+pub fn drop_pairs(line: &[u8], c: &KvConfig, drop: impl Fn(&str) -> bool) -> Option<Vec<u8>> {
+    let mut pairs = Vec::new();
+    if !split_pairs(line, c, &mut pairs) {
+        return None;
+    }
+    // A key is always a slice of `line`, never unescaped, so where it starts is where its pair starts.
+    let starts: Vec<usize> = pairs
+        .iter()
+        .map(|p| p.key.as_ptr() as usize - line.as_ptr() as usize)
+        .collect();
+    let mut out = Vec::with_capacity(line.len());
+    let mut kept = 0;
+    let mut dropped_last = false;
+    for (n, pair) in pairs.iter().enumerate() {
+        let end = starts.get(n + 1).copied().unwrap_or(line.len());
+        dropped_last = drop(pair.key);
+        if dropped_last {
+            out.extend_from_slice(&line[kept..starts[n]]);
+            kept = end;
+        }
+    }
+    out.extend_from_slice(&line[kept..]);
+    // The last pair dropped leaves the separator that ran up to it.
+    if dropped_last {
+        out.truncate(out.iter().rposition(|&b| b != c.pair_sep).map_or(0, |p| p + 1));
+    }
+    Some(out)
+}
+
 /// One piece of a record read by [`next_key_pieces`].
 pub(crate) enum Piece<'d> {
     /// A word before the first key, or after a quoted value, with no `kv_sep` of its own.

@@ -348,6 +348,25 @@ describe('parser', () => {
     expect(omitted.type === 'parser' && omitted.declared).toEqual([]);
   });
 
+  it('carries rebuild on a csv or key-value step, and leaves it out when off', () => {
+    for (const kind of [
+      { type: 'csv', delimiter: ',', rebuild: true },
+      { type: 'keyValue', pairSep: ' ', kvSep: '=', quote: '"', rebuild: true },
+    ] as const) {
+      const step = parser({
+        kind: { ...kind },
+        declared: [{ name: 'unwanted', ty: { kind: 'skip' } }],
+      });
+      const dto = stepToDto(step) as { kind: { rebuild?: boolean } };
+      expect(dto.kind.rebuild).toBe(true);
+      const back = roundTrip(step);
+      expect(back.type === 'parser' && back.kind).toEqual(kind);
+
+      const off = parser({ kind: { ...kind, rebuild: false }, declared: [] });
+      expect((stepToDto(off) as { kind: object }).kind).not.toHaveProperty('rebuild');
+    }
+  });
+
   it("carries a csv step's columns as its declared list, a skip column included", () => {
     const step = parser({
       kind: { type: 'csv', delimiter: ',' },

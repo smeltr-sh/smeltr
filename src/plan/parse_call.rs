@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! json(text, {splitDots: true, formats: {ts: "%d/%m/%Y"}})
-//! kv(text, {pairSep: " ", kvSep: "=", quote: "\""})
+//! kv(text, {pairSep: " ", kvSep: "=", quote: "\"", skip: ["devid"]})
 //! csv(text, ["a", "b"], {delimiter: ","})
 //! grok(text, ["%{INT:status}"], {patterns: {NAME: "regex"}})
 //! lookup("geo", key, {match: "cidr", column: "net", first: true, fields: {city: "city_name", country: ["country", "?"]}})
@@ -38,6 +38,7 @@ pub const OPTIONS: [(&str, &[&str]); 6] = [
             "quote",
             "escapes",
             "nextKey",
+            "skip",
             "splitDots",
             "formats",
         ],
@@ -210,7 +211,7 @@ impl<'e> ParseCall<'e> {
             let shape = match name {
                 "json" => "json(text, {splitDots, formats})",
                 "cef" => "cef(text, {splitDots, formats})",
-                "kv" => "kv(text, {pairSep, kvSep, quote, escapes, nextKey, splitDots, formats})",
+                "kv" => "kv(text, {pairSep, kvSep, quote, escapes, nextKey, skip, splitDots, formats})",
                 "csv" => "csv(text, [headers], {delimiter, quote, escape, squeeze, trim, splitDots, formats})",
                 _ => "grok(text, [patterns], {patterns, splitDots, formats})",
             };
@@ -250,6 +251,11 @@ impl<'e> ParseCall<'e> {
                     quote: maybe_byte("quote", d.quote)?,
                     escapes: flag("escapes", d.escapes)?,
                     next_key: flag("nextKey", d.next_key)?,
+                    skip: match options.get("skip") {
+                        None => Vec::new(),
+                        Some(e) => strings(name, "skipped keys", e)?,
+                    },
+                    rebuild: false,
                 };
                 (ParserKind::KeyValue(config), None)
             }
@@ -283,6 +289,7 @@ impl<'e> ParseCall<'e> {
                     escape: maybe_byte("escape", d.escape)?.filter(|&e| e != quote),
                     squeeze: flag("squeeze", d.squeeze)?,
                     trim: flag("trim", d.trim)?,
+                    rebuild: false,
                 };
                 (ParserKind::Csv(config), None)
             }

@@ -547,3 +547,82 @@ fn a_csv_step_keeps_its_dialect_options() {
     assert_eq!(parsed(&rows[0]), parsed(br#"{"_raw":"'x\\'y'   z","a":"x'y","b":"z"}"#));
     b.reclaim(&mut env.pool);
 }
+
+/// A step that rebuilds its input leaves each skipped column empty and keeps every other byte, quotes and all, so
+/// each column after a skipped one keeps its place.
+#[test]
+fn a_rebuilding_step_leaves_each_skipped_column_empty() {
+    let config = CsvConfig {
+        headers: vec![Some("status".into()), None, Some("host".into()), None],
+        rebuild: true,
+        ..CsvConfig::default()
+    };
+    let declared = ["status", "host"].map(|n| DeclaredField {
+        name: n.into(),
+        ty: DataType::Str,
+        time_source: None,
+    });
+    let step = FunctionKind::Parser {
+        input: "_raw".into(),
+        into: "$".into(),
+        kind: ParserKind::Csv(config),
+        declared: declared.into(),
+    };
+    let plan = compile_ok(vec![func(0, step)]);
+    let mut env = Env::new();
+    let mut b = Batch::new(&plan.slot_layout, 2, 0);
+    seed_raw(&mut env, &mut b, &[r#"200,"a,b","web 01",x"#, "500,,db,"]);
+
+    let rows = env.run(&plan, &mut b);
+    assert_eq!(
+        parsed(&rows[0]),
+        parsed(br#"{"_raw":"200,,\"web 01\",","status":"200","host":"web 01"}"#)
+    );
+    assert_eq!(
+        parsed(&rows[1]),
+        parsed(br#"{"_raw":"500,,db,","status":"500","host":"db"}"#)
+    );
+    b.reclaim(&mut env.pool);
+}
+
+/// With nothing skipped there is nothing to leave out, and the line is the line it read.
+#[test]
+fn a_rebuilding_step_that_skips_nothing_keeps_the_line() {
+    let config = CsvConfig {
+        headers: vec![Some("a".into())],
+        rebuild: true,
+        ..CsvConfig::default()
+    };
+    let step = FunctionKind::Parser {
+        input: "_raw".into(),
+        into: "$".into(),
+        kind: ParserKind::Csv(config),
+        declared: Vec::new(),
+    };
+    let plan = compile_ok(vec![func(0, step)]);
+    let mut env = Env::new();
+    let mut b = Batch::new(&plan.slot_layout, 1, 0);
+    seed_raw(&mut env, &mut b, &[r#" "x" ,y"#]);
+
+    let rows = env.run(&plan, &mut b);
+    assert_eq!(parsed(&rows[0]), parsed(br#"{"_raw":" \"x\" ,y","a":" \"x\" "}"#));
+    b.reclaim(&mut env.pool);
+}
+
+/// `csvRebuild` is a function code may call: a squeezed run of delimiters is one, so the column it blanks is the
+/// one `csv()` reads, and a line that does not split whole comes back as it was.
+#[test]
+fn csv_rebuild_blanks_what_csv_skips() {
+    let plan = compile_ok(vec![code(
+        0,
+        r#"_raw = csvRebuild(_raw, ["a", null, "c"], " ", "\"", "", true);"#,
+    )]);
+    let mut env = Env::new();
+    let mut b = Batch::new(&plan.slot_layout, 2, 0);
+    seed_raw(&mut env, &mut b, &["1   2  3", r#"1 "2 3"#]);
+
+    let rows = env.run(&plan, &mut b);
+    assert_eq!(parsed(&rows[0]), parsed(br#"{"_raw":"1     3"}"#));
+    assert_eq!(parsed(&rows[1]), parsed(br#"{"_raw":"1 \"2 3"}"#));
+    b.reclaim(&mut env.pool);
+}
