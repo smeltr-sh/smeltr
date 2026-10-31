@@ -302,9 +302,9 @@
     Other writers may write the same table. A failed write is tried again until
     <code>stallAfterSecs</code>, and then the batches are written again. When storage's answer to a
     commit is lost past that point, its rows may be in the table twice. Where the table sets
-    <code>delta.enableInCommitTimestamps</code>, each commit records the time it was made, or a
-    millisecond after the commit before it when that is later, so the table's history stays in order
-    when clocks differ.
+    <code>delta.enableInCommitTimestamps</code> to <code>true</code>, each commit records the time
+    it was made, or, when the commit before it is dated at that time or later, one millisecond after
+    that commit, so the table's history stays in order when clocks differ.
   </p>
   <p>
     Every <code>delta.checkpointInterval</code> commits, 10 when the table does not set it, the
