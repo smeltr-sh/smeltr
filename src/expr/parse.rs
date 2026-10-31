@@ -2759,6 +2759,13 @@ mod tests {
     }
 
     #[test]
+    fn a_method_call_on_the_record_keeps_the_record_as_its_receiver() {
+        assert_eq!(p("$.keys()"), "$.keys()");
+        assert_eq!(p("$.a.keys()"), "a.keys()");
+        assert_eq!(p("$.keys"), "keys");
+    }
+
+    #[test]
     fn method_name_must_follow_the_dot() {
         assert!(parse_expr(r#""hi".()"#).is_err());
     }
