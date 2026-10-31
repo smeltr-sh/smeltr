@@ -287,7 +287,7 @@ and parser references. `/reference` redirects there with its query and section b
 intact and is excluded from search. Keep future references under `/docs`; reserve
 `/docs/api-reference` for an API guide when it is ready.
 
-`FilteringExample.svelte` shows the first-pipeline tutorial three illustrative inputs and their expected outputs
+`FilteringExample.svelte` gives the first-pipeline tutorial its three illustrative inputs and their expected outputs
 from `src/lib/filtering-example.json`.
 The tutorial gives JSON Parser, Drop, and Eval settings plus a deliberate failing-test
 check. The JSON serializer omits null object fields; this is why clearing `debug`
