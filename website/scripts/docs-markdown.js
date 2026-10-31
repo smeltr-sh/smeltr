@@ -137,7 +137,8 @@ function pages() {
   return html
     .map(({ path, file }) => {
       const doc = new Window().document;
-      doc.write(readFileSync(new URL(file, BUILD), 'utf8'));
+      // A Windows checkout may hold the docs with CRLF, and the page with it; the Markdown has LF.
+      doc.write(readFileSync(new URL(file, BUILD), 'utf8').replaceAll('\r\n', '\n'));
       const body = doc.querySelector('[data-pagefind-body]');
       if (!body) return null;
       // A diagram drawn twice, once per layout, is said once.
@@ -221,7 +222,7 @@ if (process.argv.includes('--leader') || process.argv.includes('--check')) {
   };
   const json = `[\n${all.map(page).join(',\n')}\n]\n`;
   if (process.argv.includes('--check')) {
-    if (readFileSync(LEADER, 'utf8') !== json) {
+    if (readFileSync(LEADER, 'utf8').replaceAll('\r\n', '\n') !== json) {
       console.error(
         'src/leader/docs.json is not what this build of the docs makes: run `just docs-markdown`.',
       );
