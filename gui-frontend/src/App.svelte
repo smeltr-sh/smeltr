@@ -463,6 +463,7 @@
             </div>
             {#if !administrator}
               <div class="held">
+                <span class="dim held-head">Groups</span>
                 {#each heldAreas() as area (area)}
                   {@const level = levelIn(area)}
                   {#if level}<span class="mono">{area}</span><span class="dim"
@@ -838,6 +839,10 @@
     gap: 0.25rem 0.8rem;
     align-items: baseline;
     margin-top: 0.45rem;
+  }
+
+  .held-head {
+    grid-column: 1 / -1;
   }
 
   .pick-seam {
