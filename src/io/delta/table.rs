@@ -46,7 +46,7 @@ use crate::ops::civil::MICROS_PER_DAY;
 use crate::plan::topology::{DeltaDestinationConfig, HeldSecrets, Records, UnityCatalogTable};
 
 /// The writer features of a table this writer can write. A table needing any other is refused.
-const WRITER_FEATURES: [&str; 14] = [
+const WRITER_FEATURES: [&str; 15] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -65,6 +65,8 @@ const WRITER_FEATURES: [&str; 14] = [
     "typeWidening",
     // Each identity column the record does not write is generated, from values reserved ahead in the log.
     "identityColumns",
+    // Each commit's timestamp follows the one before it, which the snapshot keeps.
+    "inCommitTimestamp",
 ];
 
 /// The domain that holds a row-tracking table's highest row id.
@@ -304,13 +306,9 @@ impl Committer for DeltaCommitter {
         let now = now_ms();
         let version = self.snapshot.version + 1;
         let mut high_water_mark = high_water_mark(&self.snapshot).map_err(CommitError::Transient)?;
-        let mut commit_info = json!({
-            "timestamp": now,
-            "operation": "WRITE",
-            "operationParameters": {"mode": "Append"},
-            "isBlindAppend": true,
-            "engineInfo": "smeltr",
-        });
+        let mut commit_info = self.snapshot.commit_info(now, "WRITE");
+        commit_info["operationParameters"] = json!({"mode": "Append"});
+        commit_info["isBlindAppend"] = json!(true);
         if self.snapshot.metadata.flag("delta.enableRowTracking") == Some(true) {
             commit_info["tags"] = json!({"delta.rowTracking.preserved": "true"});
         }
@@ -442,18 +440,13 @@ impl DeltaCommitter {
             } else {
                 "ADD COLUMNS"
             };
-            let body = [
-                line(
-                    "commitInfo",
-                    &json!({"timestamp": now_ms(), "operation": operation, "engineInfo": "smeltr"}),
-                ),
-                line("metaData", &metadata),
-            ]
-            .join("\n");
+            let info = line("commitInfo", &snapshot.commit_info(now_ms(), operation));
+            let committed = Action::parse(&info)?;
+            let body = [info, line("metaData", &metadata)].join("\n");
             // Taken or lost, the log is read again, and the columns are added or widened if they still need it.
             match log.create(&commit_name(version), body.into_bytes()) {
                 Ok(true) => {
-                    snapshot.committed(vec![Action::Metadata(Box::new(metadata))]);
+                    snapshot.committed(vec![committed, Action::Metadata(Box::new(metadata))]);
                     checkpoint_due = checkpoint::due(&snapshot.metadata, version);
                 }
                 taken_or_lost => {
@@ -2028,6 +2021,49 @@ mod tests {
         assert_eq!(written, ["00000000000000000002.checkpoint.parquet"]);
         assert!(table.commit(3).is_some());
         assert!(table.names().contains(&"_last_checkpoint".to_string()));
+    }
+
+    #[test]
+    fn each_commit_to_a_table_that_keeps_in_commit_timestamps_comes_after_the_last() {
+        let table = Table::new();
+        let record = st(&[("a", DataType::Str)]);
+        let first = table.open(&record, &[]).unwrap();
+        assert_eq!(
+            action(&table.commit(0).unwrap(), "commitInfo").get("inCommitTimestamp"),
+            None
+        );
+        // Another writer enables the feature at a time ahead of this writer's clock.
+        let ahead = now_ms() + 1_000_000_000;
+        let mut meta = first.snapshot.metadata.clone();
+        (meta.configuration).insert("delta.enableInCommitTimestamps".into(), "true".into());
+        (meta.configuration).insert("delta.checkpointInterval".into(), "3".into());
+        table.put(
+            1,
+            &[
+                json!({"commitInfo": {"inCommitTimestamp": ahead}}),
+                json!({"protocol": {"minReaderVersion": 1, "minWriterVersion": 7,
+                                    "writerFeatures": ["inCommitTimestamp"]}}),
+                json!({"metaData": meta}),
+            ],
+        );
+        let first_action = |version: i64| {
+            let actions = table.commit(version).unwrap();
+            assert!(actions[0].get("commitInfo").is_some(), "{actions:?}");
+            actions[0]["commitInfo"]["inCommitTimestamp"].clone()
+        };
+
+        let wider = st(&[("a", DataType::Str), ("b", DataType::I64)]);
+        let mut committer = table.open(&wider, &[]).unwrap();
+        assert_eq!(first_action(2), json!(ahead + 1));
+        committer.commit(&[file(&committer, &[], &[], None)]).unwrap();
+        assert_eq!(first_action(3), json!(ahead + 2));
+
+        // Read from a checkpoint at its last version, the table still knows that commit's timestamp.
+        committer.checkpoint().unwrap();
+        let mut again = table.open(&wider, &[]).unwrap();
+        assert_eq!(again.snapshot.version, 3);
+        again.commit(&[file(&again, &[], &[], None)]).unwrap();
+        assert_eq!(first_action(4), json!(ahead + 3));
     }
 
     pub(super) fn str_col(pool: &mut BufferPool, vals: &[Option<&str>]) -> Column {
