@@ -1,5 +1,6 @@
 <script lang="ts">
   import GuideLayout from '#lib/components/GuideLayout.svelte';
+  import ProductScreenshot from '#lib/components/ProductScreenshot.svelte';
   import ConnectorIndex from '#lib/components/ConnectorIndex.svelte';
   import SettingsTable from '#lib/components/SettingsTable.svelte';
   import { stepPages } from '#lib/step-pages.ts';
@@ -71,10 +72,16 @@
 
   <h2 id="verify">Verify</h2>
   <p>
-    Once the preview is right, choose <strong>Lock this as a test</strong>. After each save,
-    Resources → Samples shows whether every test still gives its locked output. See
-    <a href="/build#test-heading">Save the result as a test</a>.
+    Once the preview is right, choose <strong>Lock this as a test</strong>. A regression test checks
+    that later edits still produce that result, including which records the pipeline drops. After
+    each save, Resources → Samples shows whether every test still gives its locked output.
   </p>
+  <ProductScreenshot
+    source="build-tests"
+    height={1800}
+    alt="Samples page with two passing firewall pipeline tests. One expects ten records in and nine out; the other expects ten in and ten out."
+    caption="A passing test can include dropped records: the first test expects 10 inputs and 9 outputs."
+  />
 
   <h2 id="troubleshooting">Troubleshooting</h2>
   <dl>

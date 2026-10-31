@@ -1,0 +1,29 @@
+{
+  "recordsIn": 10,
+  "bytesIn": 5776,
+  "recordsOut": 9,
+  "bytesOut": 2419,
+  "rows": [
+    {
+      "raw": "<14>Sep 27 14:20:05 pa-fra-01.acme.example 1,2026/09/27 14:20:05,013201007721,TRAFFIC,end,2562,2026/09/27 14:20:05,10.30.12.49,67.43.156.14,198.51.100.17,67.43.156.14,allow-outbound-web,acme\\rkowalski,,ms-office365-base,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:05,785687,1,56980,443,30321,443,0x400053,tcp,allow,9733,602,9131,10,2026/09/27 14:18:25,100,business-and-economy,,1135113757513894,0x8000000000000000,10.0.0.0-10.255.255.255,Bhutan,,2,8,tcp-rst-from-client,0,0,0,0,,pa-fra-01,from-policy,,,0,,0,,N/A,0,0,0,0,0f3ebdd3-102b-938b-8743-feb6d4ea65d0,0,0",
+      "rawBytes": 591,
+      "output": "<14>Sep 27 14:20:05 pa-fra-01.acme.example 1,2026/09/27 14:20:05,013201007721,TRAFFIC,end,,,10.30.12.49,67.43.156.14,,,allow-outbound-web,acme\\rkowalski,,ms-office365-base,,trust,untrust,,,,,,,56980,443,,,,tcp,allow,,602,9131,,,,,,,,,,,,,tcp-rst-from-client,,,,,,pa-fra-01,,,,,,,,,,,,,,,",
+      "outputBytes": 287,
+      "reason": "Kept, with 20 of its 68 columns. The rest are left empty."
+    },
+    {
+      "raw": "<14>Sep 27 14:20:06 pa-nyc-01.acme.example 1,2026/09/27 14:20:06,013201001234,TRAFFIC,end,2562,2026/09/27 14:20:06,10.10.24.19,81.2.69.142,198.51.100.29,81.2.69.142,allow-infrastructure,acme\\tjohansson,,dns-base,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:06,916327,1,54883,53,37680,53,0x400053,udp,allow,4186,101,4085,5,2026/09/27 14:19:42,24,computer-and-internet-info,,1784923900156909,0x8000000000000000,10.0.0.0-10.255.255.255,United Kingdom,,2,3,aged-out,0,0,0,0,,pa-nyc-01,from-policy,,,0,,0,,N/A,0,0,0,0,f6cdb2f8-03e0-d681-5524-54f14fab6f3e,0,0",
+      "rawBytes": 582,
+      "output": null,
+      "outputBytes": 0,
+      "reason": "Dropped. An allowed DNS lookup."
+    },
+    {
+      "raw": "<14>Sep 27 14:20:50 pa-fra-01.acme.example 1,2026/09/27 14:20:50,013201007721,TRAFFIC,deny,2562,2026/09/27 14:20:50,10.30.21.10,175.16.199.24,198.51.100.6,175.16.199.24,block-high-risk-apps,acme\\eromero,,bittorrent,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:50,773469,1,42021,6881,23718,6881,0x400053,tcp,deny,0,0,0,1,2026/09/27 14:20:50,0,computer-and-internet-info,,7877732993364939,0x8000000000000000,10.0.0.0-10.255.255.255,China,,1,0,policy-deny,0,0,0,0,,pa-fra-01,from-policy,,,0,,0,,N/A,0,0,0,0,9fec7658-652c-7f84-0c46-7c017d864a72,0,0",
+      "rawBytes": 573,
+      "output": "<14>Sep 27 14:20:50 pa-fra-01.acme.example 1,2026/09/27 14:20:50,013201007721,TRAFFIC,deny,,,10.30.21.10,175.16.199.24,,,block-high-risk-apps,acme\\eromero,,bittorrent,,trust,untrust,,,,,,,42021,6881,,,,tcp,deny,,0,0,,,,,,,,,,,,,policy-deny,,,,,,pa-fra-01,,,,,,,,,,,,,,,",
+      "outputBytes": 269,
+      "reason": "Kept. A denied connection, with the same 20 columns."
+    }
+  ]
+}
