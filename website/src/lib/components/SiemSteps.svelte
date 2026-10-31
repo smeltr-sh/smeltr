@@ -3,7 +3,7 @@
   const steps = [
     { id: 'parser', label: 'Parser', what: 'names the 68 columns', height: 5884 },
     { id: 'drop', label: 'Drop', what: 'drops allowed DNS lookups', height: 224 },
-    { id: 'remove', label: 'Remove', what: 'removes 48 fields', height: 1150 },
+    { id: 'remove', label: 'Remove', what: 'removes 48 fields', height: 876 },
     { id: 'code', label: 'Code', what: 'joins the rest back into a PAN-OS line', height: 546 },
   ];
 </script>
