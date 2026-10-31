@@ -154,7 +154,7 @@
     <tbody>
       {#each shown as f (f.field)}
         <tr>
-          <td class="name">
+          <td class="name" title={f.field}>
             <span class="mono">{f.field}</span>{#if f.required}<span
                 class="required"
                 title="required">*</span
