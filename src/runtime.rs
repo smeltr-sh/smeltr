@@ -3897,6 +3897,8 @@ mod tests {
         let delta = r#"{ "id": "out", "type": "delta", "location": "s3://lake/t" }"#;
         assert_eq!(columnar(delta), [true]);
         assert_eq!(columnar(objects), [false]);
+        let native = r#"{ "id": "out", "type": "s3", "bucket": "b", "format": "parquet", "variant": "native" }"#;
+        assert_eq!(columnar(native), [true]);
     }
 
     /// `now()` puts the clock into a pipeline's output, so two runs agree only if both are given the same instant.

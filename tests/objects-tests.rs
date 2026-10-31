@@ -298,12 +298,12 @@ fn every_line_format_and_codec_names_types_and_reads_back() {
 /// An object takes the configured storage class; with none, it names none and takes the bucket's default.
 #[test]
 fn an_object_takes_its_storage_class() {
-    for format in [ObjectFormat::Ndjson, ObjectFormat::Parquet] {
+    for format in [ObjectFormat::Ndjson, ObjectFormat::Parquet { native_variants: false }] {
         for class in [None, Some("GLACIER")] {
             let mut c = config(format.clone(), Compression::None);
             c.storage_class = class.map(str::to_string);
             let mut f = match format {
-                ObjectFormat::Parquet => {
+                ObjectFormat::Parquet { .. } => {
                     let plan = parsing("n: i64;");
                     let chunk = harness::cut(&plan, &[r#"{"n":1}"#]);
                     let mut f = writing(&c, &harness::record(&plan));
@@ -546,7 +546,10 @@ fn a_parquet_object_holds_the_records_columns() {
     let plan = parsing("n: i64; msg: str;");
     let chunk = harness::cut(&plan, &[r#"{"n":1,"msg":"a"}"#, r#"{"n":2,"smeltr":5}"#, r#"{"n":3}"#]);
     let record = harness::record(&plan);
-    let mut f = writing(&config(ObjectFormat::Parquet, Compression::Gzip), &record);
+    let mut f = writing(
+        &config(ObjectFormat::Parquet { native_variants: false }, Compression::Gzip),
+        &record,
+    );
     let refused = f.hand_over(0, (0..3).map(|at| cut_row(&chunk, at, None)).collect());
     assert_eq!(refused.len(), 1, "{refused:?}");
     assert_eq!(f.finish(), [0]);
@@ -579,6 +582,124 @@ fn a_parquet_object_holds_the_records_columns() {
             r#"{_raw: "{"n":3}", msg: null, n: 3, smeltr: null, rest: null}"#
         ]
     );
+}
+
+/// With native variants, a Parquet object holds each of the record's variants as Parquet's variant, annotated so, in
+/// a struct and in a list too, each value of its own type; other columns are as they are without.
+#[test]
+fn a_parquet_object_holds_native_variants_where_the_destination_asks() {
+    use arrow_array::{Array, BinaryArray, ListArray, StructArray};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use parquet::basic::LogicalType;
+    use parquet::file::reader::FileReader;
+    let plan = parsing("v: variant; o: {w: variant}; l: array<variant>; n: i64;");
+    let chunk = harness::cut(
+        &plan,
+        &[
+            r#"{"v":{"x":1,"a":[true,null,"s"]},"o":{"w":2.5},"l":["t",3],"n":1}"#,
+            r#"{"v":"plain","n":2}"#,
+        ],
+    );
+    let record = harness::record(&plan);
+    let mut f = writing(
+        &config(ObjectFormat::Parquet { native_variants: true }, Compression::None),
+        &record,
+    );
+    assert!(
+        f.hand_over(0, (0..2).map(|at| cut_row(&chunk, at, None)).collect())
+            .is_empty()
+    );
+    assert_eq!(f.finish(), [0]);
+    let objects = f.objects();
+    assert_eq!(objects.len(), 1);
+    let body = &objects[0].1;
+
+    let file = read_parquet(body);
+    let root = file.metadata().file_metadata().schema_descr().root_schema_ptr();
+    let group = |path: &[&str]| {
+        let mut at = root.clone();
+        for name in path {
+            at = at.get_fields().iter().find(|f| f.name() == *name).unwrap().clone();
+        }
+        at.get_basic_info().logical_type_ref().cloned()
+    };
+    let variant = Some(LogicalType::variant(Some(1)));
+    assert_eq!(group(&["v"]), variant);
+    assert_eq!(group(&["o", "w"]), variant);
+    assert_eq!(group(&["l", "list", "item"]), variant);
+    assert_eq!(group(&["l"]), Some(LogicalType::List));
+    assert_eq!(group(&["o"]), None);
+
+    let path = std::env::temp_dir().join(format!("smeltr-objects-native-{}.parquet", std::process::id()));
+    std::fs::write(&path, body).unwrap();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&path).unwrap())
+        .unwrap()
+        .build()
+        .unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let batches: Vec<_> = reader.map(Result::unwrap).collect();
+    assert_eq!(batches.len(), 1);
+    let batch = &batches[0];
+    let texts = |group: &StructArray| -> Vec<String> {
+        let part = |name| {
+            group
+                .column_by_name(name)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .unwrap()
+                .clone()
+        };
+        let (metadata, value) = (part("metadata"), part("value"));
+        (0..group.len())
+            .map(|i| match group.is_null(i) {
+                true => "-".to_string(),
+                false => variant_text(&parquet_variant::Variant::try_new(metadata.value(i), value.value(i)).unwrap()),
+            })
+            .collect()
+    };
+    let column = |name| batch.column_by_name(name).unwrap().clone();
+    let v = column("v");
+    assert_eq!(
+        texts(v.as_any().downcast_ref().unwrap()),
+        [r#"{a:[true,null,"s"],x:1}"#, r#""plain""#]
+    );
+    let o = column("o");
+    let o: &StructArray = o.as_any().downcast_ref().unwrap();
+    assert_eq!(
+        texts(o.column_by_name("w").unwrap().as_any().downcast_ref().unwrap()),
+        ["2.5", "-"]
+    );
+    let l = column("l");
+    let l: &ListArray = l.as_any().downcast_ref().unwrap();
+    assert_eq!(texts(l.values().as_any().downcast_ref().unwrap()), [r#""t""#, "3"]);
+    assert_eq!(batch.column_by_name("n").unwrap().len(), 2);
+}
+
+/// A variant as JSON-like text, an object's fields in the order the encoding lists them.
+fn variant_text(v: &parquet_variant::Variant<'_, '_>) -> String {
+    use parquet_variant::Variant;
+    match v {
+        Variant::Null => "null".into(),
+        Variant::BooleanTrue => "true".into(),
+        Variant::BooleanFalse => "false".into(),
+        Variant::Int64(n) => n.to_string(),
+        Variant::Double(f) => format!("{f:?}"),
+        Variant::String(s) => format!("{s:?}"),
+        Variant::ShortString(s) => format!("{:?}", s.as_str()),
+        Variant::List(items) => format!(
+            "[{}]",
+            items.iter().map(|i| variant_text(&i)).collect::<Vec<_>>().join(",")
+        ),
+        Variant::Object(fields) => {
+            let fields: Vec<String> = fields
+                .iter()
+                .map(|(k, v)| format!("{k}:{}", variant_text(&v)))
+                .collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        other => panic!("a type this test never writes: {other:?}"),
+    }
 }
 
 /// A CSV object holds a header of the record's leaves, then a line per row: a struct's fields under its path, a
@@ -645,7 +766,10 @@ fn parquet_rows(body: &[u8]) -> Vec<String> {
 fn each_routes_rows_make_objects_of_their_own() {
     let (int, float) = (parsing("n: i64;"), parsing("n: f64;"));
     let records = Records::from([(Some(0), harness::record(&int)), (Some(1), harness::record(&float))]);
-    let mut f = parquet(&config(ObjectFormat::Parquet, Compression::None), &records);
+    let mut f = parquet(
+        &config(ObjectFormat::Parquet { native_variants: false }, Compression::None),
+        &records,
+    );
     let (ints, floats) = (
         harness::cut(&int, &[r#"{"n":1}"#]),
         harness::cut(&float, &[r#"{"n":1.5}"#]),
@@ -674,7 +798,7 @@ fn batches_within_the_interval_share_one_parquet_object() {
     let plan = parsing("n: i64;");
     let chunk = harness::cut(&plan, &[r#"{"n":1}"#, r#"{"n":2}"#, r#"{"n":3}"#]);
     let mut f = writing(
-        &config(ObjectFormat::Parquet, Compression::None),
+        &config(ObjectFormat::Parquet { native_variants: false }, Compression::None),
         &harness::record(&plan),
     );
     assert!(f.hand_over(1, vec![cut_row(&chunk, 0, None)]).is_empty());
@@ -711,7 +835,7 @@ fn batches_within_the_interval_share_one_parquet_object() {
 fn a_parquet_object_is_finished_at_its_interval() {
     let plan = parsing("n: i64;");
     let chunk = harness::cut(&plan, &[r#"{"n":1}"#]);
-    let mut c = config(ObjectFormat::Parquet, Compression::None);
+    let mut c = config(ObjectFormat::Parquet { native_variants: false }, Compression::None);
     c.file_interval = Duration::from_millis(200);
     let mut f = writing(&c, &harness::record(&plan));
     assert!(f.hand_over(4, vec![cut_row(&chunk, 0, None)]).is_empty());
@@ -738,7 +862,7 @@ fn parquet_rows_land_under_their_own_prefix() {
         &[r#"{"n":1}"#, r#"{"n":2}"#, r#"{"n":3}"#, r#"{"n":4}"#, r#"{"n":5}"#],
     );
     let mut f = writing(
-        &config(ObjectFormat::Parquet, Compression::None),
+        &config(ObjectFormat::Parquet { native_variants: false }, Compression::None),
         &harness::record(&plan),
     );
     let placed = |at: u32, prefix: Option<&str>| OwnedRecord {

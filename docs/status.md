@@ -41,7 +41,7 @@ document's systems.
 | Prometheus remote_write 1.0 and 2.0 (`prometheus`) (Runtime stages, Config plane, Secrets boundary) | built (`io::remote_write`). Not built: sharding by series; SigV4 or OAuth sign-in |
 | Object stores: S3, GCS, Azure Blob (Runtime stages, Config plane) | built (`io::files`, `io::objects`). A batch sent again after a failure may leave a duplicate object |
 | SFTP (`sftp`) (Runtime stages, Config plane, Security) | built, on the object store destinations. A write cut off may leave its hidden temporary file |
-| Destination formats: JSON, Parquet, Avro, text, bytes (Runtime stages, Config plane) | built (`Payload`, `io::avro`) |
+| Destination formats: JSON, Parquet, Avro, text, bytes (Runtime stages, Config plane) | built (`Payload`, `io::avro`). A Parquet object holds a variant as its JSON text, or with `variant` `native` as Parquet's variant |
 | Tables: Iceberg through a REST catalog, Delta path tables and Unity Catalog external tables (Runtime stages, Config plane, Secrets boundary) | built (`io::iceberg`, `io::delta`). Iceberg format version 3 tables are written with row lineage, write defaults and the types version 3 adds, and a new column of a `variant` is Iceberg's variant, as it is Delta's in a table with the `variantType` feature. Not built: transforms of several columns, and encrypted tables, whose tables are refused; Delta tables Unity Catalog manages; Delta generated columns, column defaults, invariants and check constraints, whose tables are refused; a live test against a Databricks workspace; aborting stale multipart uploads under a table |
 
 ### Sources

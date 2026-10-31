@@ -73,6 +73,8 @@ pub struct Schema {
     partition_columns: Vec<(String, usize)>,
     /// The record's variants as their own bytes, and their Arrow schema, when it has any (`variant_bytes`).
     variants: Option<(Arc<Node>, Arc<ArrowSchema>)>,
+    /// Whether the record's own variants are written as Parquet's variant, annotated so (`with_native_variants`).
+    native_variants: bool,
 }
 
 /// What a field of a written schema takes in each row where the record does not write it.
@@ -192,6 +194,7 @@ impl Schema {
             computed: Vec::new(),
             partition_columns: Vec::new(),
             variants,
+            native_variants: false,
         })
     }
 
@@ -225,6 +228,19 @@ impl Schema {
         Schema {
             annotations: annotations.into(),
             ..self
+        }
+    }
+
+    /// This schema, its files holding each of the record's variants as Parquet's variant, each value of its own type
+    /// (`parquet_variant`), rather than JSON text. For a file with no table to name its types: it has no written
+    /// schema of its own.
+    pub fn with_native_variants(self) -> Schema {
+        let Arrow::Struct(fields) = native(&self.root) else {
+            unreachable!("Schema::new takes only a struct")
+        };
+        Schema {
+            native_variants: true,
+            ..self.with_written(Arc::new(ArrowSchema::new(fields)))
         }
     }
 
@@ -429,6 +445,24 @@ fn narrowed(node: &Node, written: &Arrow) -> Option<Arrow> {
         (_, w) if *w == node.arrow => Some(node.arrow.clone()),
         (_, w) if narrows(&node.ty, w) => Some(w.clone()),
         _ => None,
+    }
+}
+
+/// `node`'s type with each variant Parquet's variant group (`variant_group`).
+fn native(node: &Node) -> Arrow {
+    match &node.kind {
+        Kind::Variant => variant_group(),
+        Kind::List(element, field) => Arrow::List(Arc::new(field.as_ref().clone().with_data_type(native(element)))),
+        Kind::Struct(s) => Arrow::Struct(
+            (s.arrow.iter().enumerate())
+                .map(|(i, f)| match s.fields.get(i) {
+                    Some((_, child)) => f.as_ref().clone().with_data_type(native(child)),
+                    // `rest`
+                    None => f.as_ref().clone(),
+                })
+                .collect(),
+        ),
+        _ => node.arrow.clone(),
     }
 }
 
@@ -717,20 +751,30 @@ pub struct FileWriter {
     nulled: Vec<usize>,
 }
 
-/// `node` with each node whose field id `annotations` names taking its logical type.
-fn annotate(node: &TypePtr, annotations: &[(i32, LogicalType)]) -> TypePtr {
+/// `node` with each node whose field id `annotations` names taking its logical type, and with `variants` each variant
+/// group (`variant_group`) annotated as Parquet's variant. `variants` is for a file of the record's own schema
+/// (`Schema::with_native_variants`), where only a variant group holds required fields named `metadata` and `value`: a
+/// record's fields are all nullable. A table's schema may hold such a struct of its own, so a table names its
+/// variants in `annotations`.
+fn annotate(node: &TypePtr, annotations: &[(i32, LogicalType)], variants: bool) -> TypePtr {
     let info = node.get_basic_info();
     let named = (info.has_id())
-        .then(|| annotations.iter().find(|(id, _)| *id == info.id()))
+        .then(|| {
+            annotations
+                .iter()
+                .find(|(id, _)| *id == info.id())
+                .map(|(_, l)| l.clone())
+        })
         .flatten();
-    let (logical, converted) = match named {
-        Some((_, logical)) => (Some(logical.clone()), parquet::basic::ConvertedType::NONE),
-        None => (info.logical_type_ref().cloned(), info.converted_type()),
-    };
+    let (logical, converted) =
+        match named.or_else(|| (variants && is_variant_type(node)).then(|| LogicalType::variant(Some(1)))) {
+            Some(logical) => (Some(logical), parquet::basic::ConvertedType::NONE),
+            None => (info.logical_type_ref().cloned(), info.converted_type()),
+        };
     let id = info.has_id().then(|| info.id());
     let built = match node.as_ref() {
         ParquetType::GroupType { fields, .. } => {
-            let fields = fields.iter().map(|f| annotate(f, annotations)).collect();
+            let fields = fields.iter().map(|f| annotate(f, annotations, variants)).collect();
             let builder = ParquetType::group_type_builder(info.name())
                 .with_fields(fields)
                 .with_logical_type(logical)
@@ -758,6 +802,19 @@ fn annotate(node: &TypePtr, annotations: &[(i32, LogicalType)]) -> TypePtr {
             .build(),
     };
     Arc::new(built.expect("the converter's own node, its logical type one Parquet allows there"))
+}
+
+/// Whether `node` is the converter's node of a variant group: required binary `metadata` and `value`.
+fn is_variant_type(node: &TypePtr) -> bool {
+    use parquet::basic::{Repetition, Type as Physical};
+    let required_binary = |f: &TypePtr, name: &str| {
+        f.name() == name
+            && f.is_primitive()
+            && f.get_physical_type() == Physical::BYTE_ARRAY
+            && f.get_basic_info().repetition() == Repetition::REQUIRED
+    };
+    !node.is_primitive()
+        && matches!(node.get_fields(), [m, v] if required_binary(m, "metadata") && required_binary(v, "value"))
 }
 
 /// What the Parquet writer writes into, shared with the `FileWriter` that drains it.
@@ -851,7 +908,7 @@ impl FileWriter {
             written: schema.written.clone(),
             defaults: schema.defaults.clone(),
             computed: schema.computed.clone(),
-            ..FileWriter::annotated(file, options, &schema.annotations)
+            ..FileWriter::annotated(file, options, &schema.annotations, schema.native_variants)
         }
     }
 
@@ -868,18 +925,25 @@ impl FileWriter {
     }
 
     fn on(schema: Arc<ArrowSchema>, options: &WriteOptions) -> FileWriter {
-        FileWriter::annotated(schema, options, &[])
+        FileWriter::annotated(schema, options, &[], false)
     }
 
-    fn annotated(schema: Arc<ArrowSchema>, options: &WriteOptions, annotations: &[(i32, LogicalType)]) -> FileWriter {
+    /// A writer of `schema`, each column whose field id `annotations` names taking its logical type, and with
+    /// `variants` each variant group annotated as Parquet's variant (`annotate`).
+    fn annotated(
+        schema: Arc<ArrowSchema>,
+        options: &WriteOptions,
+        annotations: &[(i32, LogicalType)],
+        variants: bool,
+    ) -> FileWriter {
         let props = options.properties();
         let sink = Sink::default();
         let mut writer_options = ArrowWriterOptions::new();
-        if !annotations.is_empty() {
+        if !annotations.is_empty() || variants {
             let converted = (ArrowSchemaConverter::new().with_coerce_types(props.coerce_types()))
                 .convert(&schema)
                 .expect("a writable schema");
-            let root = annotate(&converted.root_schema_ptr(), annotations);
+            let root = annotate(&converted.root_schema_ptr(), annotations, variants);
             writer_options = writer_options.with_parquet_schema(SchemaDescriptor::new(root));
         }
         // Writing to memory fails only on a schema Parquet cannot hold, and `Schema::new` refuses those.

@@ -2553,6 +2553,9 @@ pub struct ObjectSettingsDto {
     /// What `"bytes"` does with a row that holds a line break. Absent is `"escape"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub newlines: Option<NewlinesDto>,
+    /// How `"parquet"` writes a variant. Absent is `"json"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<VariantDto>,
     /// Absent is gzip.
     #[serde(default = "CompressionDto::gzip", skip_serializing_if = "CompressionDto::is_gzip")]
     pub compression: CompressionDto,
@@ -2739,6 +2742,14 @@ impl ObjectFormatDto {
 pub enum NewlinesDto {
     Escape,
     Refuse,
+}
+
+/// How a Parquet object holds a variant: `json`, a string of its JSON text, or `native`, Parquet's variant type.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum VariantDto {
+    Json,
+    Native,
 }
 
 /// The largest file an object destination puts in its bucket, compressed.

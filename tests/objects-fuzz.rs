@@ -89,6 +89,8 @@ const OPTIONS: &[&str] = &[
     "field.bytes",
     "newlines.escape",
     "newlines.refuse",
+    "variant.json",
+    "variant.native",
     "compression.none",
     "compression.gzip",
     "compression.snappy",
@@ -110,6 +112,7 @@ const OPTIONS: &[&str] = &[
     "broken.prefix",
     "broken.field",
     "broken.newlines",
+    "broken.variant",
     "broken.compression",
     "broken.maxObjectBytes",
     "broken.bufferBytes",
@@ -235,6 +238,11 @@ fn draw_objects(rng: &mut Rng, cov: &mut Reached, store: Store, d: &mut Map<Stri
                 d.insert("newlines".into(), json!(newlines));
             }
         }
+        "parquet" if rng.chance(2) => {
+            let variant = *rng.pick(&["json", "native"]);
+            cov.reach(format!("variant.{variant}"));
+            d.insert("variant".into(), json!(variant));
+        }
         _ => {}
     }
     // Avro has no lz4 codec: drawn there, it is a break.
@@ -293,6 +301,9 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
     if format != "bytes" {
         breaks.push("newlines");
     }
+    if format != "parquet" {
+        breaks.push("variant");
+    }
     if format == "avro" {
         breaks.push("compression");
     }
@@ -320,6 +331,10 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
         "newlines" => {
             set("newlines", json!("refuse"));
             Some("newlines")
+        }
+        "variant" => {
+            set("variant", json!(rng.pick(&["json", "native"])));
+            Some("variant")
         }
         "compression" => {
             set("compression", json!("lz4"));
@@ -435,7 +450,9 @@ fn check_loaded(draw: &Draw, c: &ObjectsDestinationConfig, named: &[SecretRef]) 
     let format = match text(d, "format").as_deref().unwrap_or("ndjson") {
         "ndjson" => ObjectFormat::Ndjson,
         "json" => ObjectFormat::Json,
-        "parquet" => ObjectFormat::Parquet,
+        "parquet" => ObjectFormat::Parquet {
+            native_variants: text(d, "variant").as_deref() == Some("native"),
+        },
         "avro" => ObjectFormat::Avro,
         "csv" => ObjectFormat::Csv,
         "text" => ObjectFormat::Text {
@@ -624,7 +641,7 @@ fn rows_for(
                         };
                         (bytes, Payload::Bytes { field: field.clone() }, line)
                     }
-                    ObjectFormat::Parquet | ObjectFormat::Avro | ObjectFormat::Csv => unreachable!(),
+                    ObjectFormat::Parquet { .. } | ObjectFormat::Avro | ObjectFormat::Csv => unreachable!(),
                 };
                 Sent {
                     row: OwnedRecord {
@@ -710,7 +727,7 @@ fn extension(c: &ObjectsDestinationConfig) -> String {
         ObjectFormat::Ndjson => "ndjson",
         ObjectFormat::Json => "json",
         ObjectFormat::Csv => "csv",
-        ObjectFormat::Parquet => return ".parquet".to_string(),
+        ObjectFormat::Parquet { .. } => return ".parquet".to_string(),
         ObjectFormat::Avro => return ".avro".to_string(),
         ObjectFormat::Text { .. } => "txt",
         ObjectFormat::Bytes { .. } => "raw",
@@ -731,7 +748,7 @@ fn lines_of(c: &ObjectsDestinationConfig, body: &[u8]) -> Result<Vec<Vec<u8>>, S
     if c.format == ObjectFormat::Avro {
         return avro_rows(body);
     }
-    if c.format == ObjectFormat::Parquet {
+    if matches!(c.format, ObjectFormat::Parquet { .. }) {
         use parquet::file::reader::FileReader;
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

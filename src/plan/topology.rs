@@ -1596,7 +1596,7 @@ impl DestinationKind {
             DestinationKind::Objects(c) => match &c.format {
                 ObjectFormat::Ndjson
                 | ObjectFormat::Json
-                | ObjectFormat::Parquet
+                | ObjectFormat::Parquet { .. }
                 | ObjectFormat::Avro
                 | ObjectFormat::Csv => Payload::Record,
                 ObjectFormat::Text { field } => Payload::Text { field: field.clone() },
@@ -1727,7 +1727,11 @@ impl DestinationKind {
 
     /// Whether this destination may hold a variant as Parquet's variant, and so reads its bytes (`parquet::Schema`).
     pub fn holds_native_variants(&self) -> bool {
-        matches!(self, DestinationKind::Iceberg(_) | DestinationKind::Delta(_))
+        match self {
+            DestinationKind::Iceberg(_) | DestinationKind::Delta(_) => true,
+            DestinationKind::Objects(o) => o.format == ObjectFormat::Parquet { native_variants: true },
+            _ => false,
+        }
     }
 
     /// Which field of the row this destination reads the document identity from, if it does. `None` means it relies on
@@ -2668,8 +2672,9 @@ pub enum ObjectFormat {
     Json,
     /// One field's text per line.
     Text { field: std::sync::Arc<str> },
-    /// One Parquet file, its columns the record of the route whose rows it holds (`CompiledTopology::records`).
-    Parquet,
+    /// One Parquet file, its columns the record of the route whose rows it holds (`CompiledTopology::records`). With
+    /// `native_variants`, a variant is Parquet's variant rather than JSON text (`parquet::Schema::with_native_variants`).
+    Parquet { native_variants: bool },
     /// One Avro container file, its schema the record of the route whose rows it holds, as `Parquet`'s is.
     Avro,
     /// One CSV file, a column per leaf of the record of the route whose rows it holds, as `Parquet`'s is (`io::csv`).
@@ -2686,7 +2691,7 @@ impl ObjectFormat {
     /// line formats, which write each row as egress made it.
     pub fn column_format(&self) -> Option<&'static str> {
         match self {
-            ObjectFormat::Parquet => Some("Parquet"),
+            ObjectFormat::Parquet { .. } => Some("Parquet"),
             ObjectFormat::Avro => Some("Avro"),
             ObjectFormat::Csv => Some("CSV"),
             ObjectFormat::Ndjson | ObjectFormat::Json | ObjectFormat::Text { .. } | ObjectFormat::Bytes { .. } => None,

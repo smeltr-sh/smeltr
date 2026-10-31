@@ -226,7 +226,7 @@ fn live_a_parquet_object_lands() {
     let record = harness::record(&plan);
     let mut d = writing(
         ObjectsDestinationConfig {
-            format: ObjectFormat::Parquet,
+            format: ObjectFormat::Parquet { native_variants: false },
             ..config(&endpoint, &bucket)
         },
         Some(&record),
@@ -1390,7 +1390,7 @@ fn live_an_sftp_parquet_file_lands_whole() {
     let record = harness::record(&plan);
     let mut d = writing(
         ObjectsDestinationConfig {
-            format: ObjectFormat::Parquet,
+            format: ObjectFormat::Parquet { native_variants: false },
             ..on(Cloud::Sftp(store.clone()))
         },
         Some(&record),
