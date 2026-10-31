@@ -293,9 +293,9 @@
   <pre><code>{layout}</code></pre>
   <p>
     A null or empty partition value is written as <code>__HIVE_DEFAULT_PARTITION__</code> in the
-    path. Each file holds the partition columns too, as a table that names
-    <code>materializePartitionColumns</code> requires, and where the partition value is empty, the
-    file holds that column null. A row whose partition values would make a file's key longer than
+    path. Each file also holds the partition columns, which a table that names
+    <code>materializePartitionColumns</code> requires. Where a partition value is empty, the file
+    holds null for that column. A row whose partition values would make a file's key longer than
     1024 bytes is
     <a href="/docs/delivery#refused">refused</a>.
   </p>
