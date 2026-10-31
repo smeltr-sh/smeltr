@@ -50,7 +50,7 @@
     depth: number;
     /** Which OCSF requirement levels are read. */
     levels: Requirement[];
-    /** Whose requirements an ECS schema's fields take: ECS's own, or Elastic Security's added to them. */
+    /** Whose requirements an ECS schema's fields take: ECS's own, or Elastic Security's in their place. */
     requirements: EcsRequirements;
     /** A CSV as the leader read it before its columns were chosen, or why it could not. */
     preview: CsvPreview | null;

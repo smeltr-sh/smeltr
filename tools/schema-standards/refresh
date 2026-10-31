@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Replaces the ECS and OCSF releases smeltr carries (`schema::standard`): ECS's generated/csv/fields.csv at tag
-# v<ecs>, and OCSF at tag <ocsf> compiled by ocsf-schema-compiler, which needs Python 3.14 (run here through uv),
-# and cut to what `schema::ocsf` reads, so the binary carries a third of it.
+# v<ecs>, and OCSF at tag <ocsf> compiled by ocsf-schema-compiler, which needs Python 3.14 (run here through uv), and
+# cut to what `schema::ocsf` reads, so the binary carries a third of it.
 set -euo pipefail
 ecs=$1
 ocsf=$2

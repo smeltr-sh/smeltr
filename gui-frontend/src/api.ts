@@ -5456,7 +5456,7 @@ export interface CsvTypeValue {
  * or a CSV of fields under a header row. */
 export type SchemaReadFormat = 'json-schema' | 'ecs' | 'ocsf' | 'csv';
 
-/** Whose requirements an ECS schema's fields take: ECS's own, or Elastic Security's added to them. */
+/** Whose requirements an ECS schema's fields take: ECS's own, or Elastic Security's in their place. */
 export type EcsRequirements = 'ecs' | 'elastic-security';
 
 /** A release of a standard the leader carries. */

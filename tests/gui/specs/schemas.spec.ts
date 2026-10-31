@@ -628,7 +628,6 @@ test('ECS and an OCSF class come in from the releases the leader carries', async
   expect(field('process.pid')?.type).toBe('i64');
 });
 
-/** Saves the page, and answers `id`'s fields as the leader keeps them. */
 test("ECS read with Elastic Security's requirements asks for the fields Elastic Security uses", async ({
   admin,
   leader,
@@ -644,10 +643,11 @@ test("ECS read with Elastic Security's requirements asks for the fields Elastic 
   expect(field('host.name')?.requirement, 'used by Elastic Security').toBe('recommended');
   expect(
     field('agent.name')?.requirement,
-    "core in ECS, but Elastic Security's only",
+    'core in ECS, unnamed by Elastic Security',
   ).toBeUndefined();
 });
 
+/** Saves the page, and answers `id`'s fields as the leader keeps them. */
 async function saved(admin: Page, api: Api, id: string) {
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
