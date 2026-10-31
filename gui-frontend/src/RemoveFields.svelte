@@ -1,6 +1,6 @@
 <!--
-  A Remove step's fields: a chip for each it removes, and every field the record holds where the step starts, ticked
-  while it is kept. Remove all and Keep all act on what the search shows, as the Fields menu's Select all does. A name
+  A Remove step's fields: a chip for each it removes, and the fields declared before the step, each ticked while it
+  is kept. Remove all and Keep all act on what the search shows, as the Fields menu's Select all does. A name
   that matches no field can still be removed, from a link under the search box.
 -->
 <script lang="ts">
