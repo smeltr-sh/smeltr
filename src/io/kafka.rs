@@ -2735,13 +2735,14 @@ mod tests {
             "construction alone must not read as a connectivity failure"
         );
 
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // A resolver may take seconds to give up on the name: 11s on Windows behind a VPN.
+        let deadline = Instant::now() + Duration::from_secs(30);
         let mut reason = None;
         while reason.is_none() && Instant::now() < deadline {
             source.poll_batch(10, 1_000_000, Duration::from_millis(500)).unwrap();
             reason = source.connection_error();
         }
-        let reason = reason.expect("polling an unresolvable broker for 10s never reported a connection error");
+        let reason = reason.expect("polling an unresolvable broker for 30s never reported a connection error");
         // That it came through the global-error channel is the property, not which global error won the race.
         // librdkafka emits several as a broker goes unreachable and `error()` keeps the most recent, so the first
         // one a 500ms poll sees is a matter of timing: Linux reports `Global error: Resolve (Local: Host resolution

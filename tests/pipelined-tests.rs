@@ -250,12 +250,28 @@ fn a_sender_is_spawned_when_every_one_is_busy_and_kept() {
     assert_eq!(pool.spawned(), 5, "an idle sender takes the next batch");
 }
 
+/// A sender that answers at once and counts what it has sent.
+struct Counted(Arc<AtomicUsize>);
+impl Sender for Counted {
+    type Job = ();
+    fn send_one(&mut self, job: ()) -> Delivered {
+        let answer = Instant0.send_one(job);
+        self.0.fetch_add(1, Ordering::SeqCst);
+        answer
+    }
+}
+
 /// A sender whose answer has arrived is free, collected or not: no sender is spawned past it.
 #[test]
 fn a_sender_that_has_answered_is_not_counted_busy() {
-    let mut pool = Pool::new((0..8).map(|_| Instant0).collect(), 1);
+    let sent = Arc::new(AtomicUsize::new(0));
+    let mut pool = Pool::new((0..8).map(|_| Counted(sent.clone())).collect(), 1);
     for b in 0..4u64 {
         pool.submit(b, vec![()]).unwrap();
+        // Counted as the sender returns: the pause covers only its handing the answer over, not its being scheduled.
+        while sent.load(Ordering::SeqCst) <= b as usize {
+            std::thread::yield_now();
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(pool.spawned(), 1);
