@@ -209,6 +209,8 @@ prost = { version = "0.14", default-features = false, features = ["derive", "std
 # The tests' own Avro reader and writer take every codec smeltr's containers do, so they check smeltr's snappy and
 # zstandard as they check its deflate. Their crates are already in the graph.
 apache-avro = { version = "0.22", default-features = false, features = ["snappy", "zstandard"] }
+# The tests' own reader of Parquet's variant encoding, by other hands than `io::parquet_variant`'s writer.
+parquet-variant = "60"
 
 # Last: a target table runs to the next header, and anything under it
 # would be declared for one target alone.
