@@ -225,6 +225,9 @@ pub enum FunctionKind {
     /// Compile-time rebinding; emits no instruction.
     Rename { pairs: Vec<(String, String)> },
 
+    /// Each of `fields` leaves the record; under a filter it is null on the rows selected. Compile-time, as Rename.
+    Remove { fields: Vec<String> },
+
     /// Structured parse of a field. Its slots are exactly `declared`, each pinned to its type; a dynamic parser
     /// (`ParserKind::is_dynamic`) lays every other key into the unclaimed fields as it arrived.
     Parser {

@@ -22,14 +22,17 @@ export type StepModel =
   | { type: 'comment'; id: string; text: string }
   | { type: 'eval'; id: string; target: string; expr: string; disabled: boolean }
   | { type: 'drop'; id: string; condition: string; disabled: boolean }
+  // Under a filter of its own, so a step after it still reads what it removes.
+  | { type: 'remove'; id: string; filter: string; fields: string[]; disabled: boolean }
   | { type: 'call'; id: string; pipeline: string; disabled: boolean }
   | { type: 'if'; id: string; condition: string; then: StepModel[]; else: StepModel[] };
 export type StepType = StepModel['type'];
-export const TYPES: readonly StepType[] = ['comment', 'eval', 'drop', 'call', 'if'];
+export const TYPES: readonly StepType[] = ['comment', 'eval', 'drop', 'remove', 'call', 'if'];
 const LABELS: Record<StepType, string> = {
   comment: 'Comment',
   eval: 'Eval',
   drop: 'Drop',
+  remove: 'Remove',
   call: 'Call',
   if: 'If',
 };
@@ -157,6 +160,9 @@ async function fill(j: Journey, card: Locator, step: StepModel) {
       step.condition = condition(j.rng);
       await card.getByPlaceholder('e.g. status == 500').fill(step.condition);
       break;
+    case 'remove':
+      // Its fields are `pickFields`'s.
+      return;
     case 'if':
       step.condition = condition(j.rng);
       await card
@@ -169,6 +175,49 @@ async function fill(j: Journey, card: Locator, step: StepModel) {
   }
   // Done typing, as a person is, which closes what the field suggests.
   await j.page.keyboard.press('Escape');
+}
+
+/** Removes or keeps fields of a Remove step as an author does: a tick, or Remove all or Keep all over a search. The
+ * list is what the engine says the record holds where the step starts, read from the screen; the model keeps the
+ * fields in its order. It removes only what the source gives: an Eval's field can move after the step, or go, and a
+ * Remove of a name nothing holds does not compile. */
+async function pickFields(j: Journey, card: Locator, step: StepModel & { type: 'remove' }) {
+  const list = card.getByRole('group', { name: 'Fields' });
+  await expect(list.locator('label', { hasText: '_raw' })).toBeVisible();
+  const listed = (await list.locator('label .name').allTextContents()).map((t) => t.trim());
+  const given = listed.filter((f) => !/^f\d+$/.test(f));
+  const order = (names: Set<string>) => listed.filter((f) => names.has(f));
+  const find = card.getByRole('searchbox', { name: 'Find a field' });
+  switch (j.rng.below(3)) {
+    case 0: {
+      const f = j.rng.pick([...given, ...step.fields]);
+      await list
+        .locator('label', { has: j.page.locator('.name', { hasText: new RegExp(`^${f}$`) }) })
+        .click();
+      const now = new Set(step.fields);
+      if (now.has(f)) now.delete(f);
+      else now.add(f);
+      step.fields = order(now);
+      break;
+    }
+    default: {
+      const remove = j.rng.chance(2);
+      // Remove all is drawn over a search that finds only what the source gives.
+      const q = remove || j.rng.chance(2) ? j.rng.pick(given) : '';
+      await find.fill(q);
+      const matches = listed.filter((f) => f.toLowerCase().includes(q.toLowerCase()));
+      await card
+        .getByRole('button', { name: new RegExp(`^${remove ? 'Remove' : 'Keep'} all`) })
+        .click();
+      const now = new Set(step.fields);
+      for (const f of matches) {
+        if (remove) now.add(f);
+        else now.delete(f);
+      }
+      step.fields = order(now);
+      await find.fill('');
+    }
+  }
 }
 
 const add: Move = {
@@ -199,6 +248,11 @@ const add: Move = {
         break;
       case 'drop':
         step = { type, id, condition: 'false', disabled: false };
+        break;
+      case 'remove':
+        step = { type, id, filter: condition(rng), fields: [], disabled: false };
+        await card.getByPlaceholder('true').fill(step.filter);
+        await page.keyboard.press('Escape');
         break;
       case 'call':
         step = { type, id, pipeline: rng.pick(free), disabled: false };
@@ -264,16 +318,33 @@ const disable: Move = {
 
 const edit: Move = {
   name: 'edit',
-  weight: (m) => (placed(m.editing).some(({ step }) => step.type !== 'call') ? 3 : 0),
+  weight: (m) =>
+    placed(m.editing).some(({ step }) => step.type !== 'call' && step.type !== 'remove') ? 3 : 0,
   run: async (j) => {
     const { page, rng, model } = j;
     const { list, at, step } = rng.pick(
-      placed(model.editing).filter(({ step }) => step.type !== 'call'),
+      placed(model.editing).filter(({ step }) => step.type !== 'call' && step.type !== 'remove'),
     );
     const card = cardOn(page, list, at);
     await openCard(j, card, step);
     await fill(j, card, step);
     return `edit ${step.type} ${step.id}, ${describe(list, at)}`;
+  },
+};
+
+const fields: Move = {
+  name: 'remove-fields',
+  weight: (m) => (placed(m.editing).some(({ step }) => step.type === 'remove') ? 3 : 0),
+  run: async (j) => {
+    const { page, rng, model } = j;
+    const { list, at, step } = rng.pick(
+      placed(model.editing).filter(({ step }) => step.type === 'remove'),
+    );
+    if (step.type !== 'remove') throw new Error('drawn from the Remove steps');
+    const card = cardOn(page, list, at);
+    await openCard(j, card, step);
+    await pickFields(j, card, step);
+    return `remove ${step.fields.join(', ') || 'nothing'} in ${step.id}, ${describe(list, at)}`;
   },
 };
 
@@ -401,6 +472,7 @@ export const MOVES: readonly Move[] = [
   mover('move-down', 'Move down', 1),
   disable,
   edit,
+  fields,
   fold,
   save,
   discard,
@@ -428,6 +500,8 @@ export async function savedSteps(api: Api): Promise<StepModel[]> {
     id: string;
     text?: string;
     condition?: string;
+    filter?: string;
+    fields?: string[];
     pipeline?: string;
     disabled?: boolean;
     assignments?: { target: string; expr: string }[];
@@ -448,6 +522,14 @@ export async function savedSteps(api: Api): Promise<StepModel[]> {
         };
       case 'drop':
         return { type: 'drop', id: d.id, condition: d.condition!, disabled: d.disabled! };
+      case 'remove':
+        return {
+          type: 'remove',
+          id: d.id,
+          filter: d.filter!,
+          fields: d.fields!,
+          disabled: d.disabled!,
+        };
       case 'call':
         return { type: 'call', id: d.id, pipeline: d.pipeline!, disabled: d.disabled! };
       case 'if':
@@ -492,6 +574,12 @@ export function expected(model: Model, steps = model.editing): Shown[] {
       comment: () => ('text' in s && s.text) || '(empty comment)',
       eval: () => ('target' in s ? `${s.target || '…'} = ${s.expr || '…'}` : ''),
       drop: () => ('condition' in s ? `drop where ${s.condition || '…'}` : ''),
+      remove: () =>
+        'fields' in s
+          ? s.fields.length
+            ? `${s.fields.length} ${s.fields.length === 1 ? 'field' : 'fields'}: ${s.fields.join(', ')}`
+            : '(no fields)'
+          : '',
       call: () => ('pipeline' in s ? s.pipeline : ''),
     }[s.type]();
     return {

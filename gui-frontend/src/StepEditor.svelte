@@ -35,6 +35,7 @@
   import CrossButton from './CrossButton.svelte';
   import { glideTo } from './glide';
   import FieldRow from './FieldRow.svelte';
+  import RemoveFields from './RemoveFields.svelte';
   import TypePicker from './TypePicker.svelte';
   import DatetimeFormat from './DatetimeFormat.svelte';
   import {
@@ -841,6 +842,8 @@
                 wrap
               />
             </Field>
+          {:else if step.type === 'remove'}
+            <RemoveFields bind:fields={step.fields} ask={askAt?.({ step: step.id })} {readOnly} />
           {:else if step.type === 'rename'}
             <div class="rows">
               <div class="rows-label"><span class="field-name">pairs</span></div>

@@ -270,7 +270,7 @@ pub fn move_stmts(from: &str, to: &str, n: usize, span: Span) -> [Stmt; 3] {
         },
         Stmt::Delete {
             names: vec![from.to_string()],
-            moved: true,
+            clears: true,
             span,
         },
         Stmt::Assign {
@@ -771,7 +771,7 @@ impl<'s> Parser<'s> {
                     .collect::<Result<_, _>>()?;
                 out.push(Stmt::Delete {
                     names,
-                    moved: false,
+                    clears: false,
                     span,
                 });
             }
