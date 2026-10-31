@@ -5,7 +5,14 @@
 -->
 <script lang="ts" module>
   import type { CatalogType } from './TypeCatalog.svelte';
-  import type { CsvColumns, CsvPreview, OcsfClass, Requirement, SchemaReadFormat } from './api';
+  import type {
+    CsvColumns,
+    CsvPreview,
+    EcsRequirements,
+    OcsfClass,
+    Requirement,
+    SchemaReadFormat,
+  } from './api';
   import { FIELD_TYPES } from './api';
   import { REQUIREMENTS } from './schemas';
 
@@ -43,6 +50,8 @@
     depth: number;
     /** Which OCSF requirement levels are read. */
     levels: Requirement[];
+    /** Whose requirements an ECS schema's fields take: ECS's own, or Elastic Security's added to them. */
+    requirements: EcsRequirements;
     /** A CSV as the leader read it before its columns were chosen, or why it could not. */
     preview: CsvPreview | null;
     previewError: string;
@@ -227,6 +236,7 @@
       class: first,
       depth: 2,
       levels: ['required', 'recommended'],
+      requirements: 'ecs',
       preview: null,
       previewError: '',
       columns: {},
@@ -345,6 +355,15 @@
   }
 </script>
 
+{#snippet ecsRequirementsHelp()}
+  ECS requires @timestamp and ecs.version and recommends its core fields. Elastic Security requires those two and
+  event.kind, event.category and event.type, and recommends the other fields its <a
+    href="https://www.elastic.co/guide/en/security/current/siem-field-reference.html"
+    target="_blank"
+    rel="noreferrer">field reference</a
+  > lists.
+{/snippet}
+
 {#snippet link(href: string)}
   <a {href} target="_blank" rel="noreferrer">{href.replace(/^https:\/\//, '').replace(/\/$/, '')}</a
   >
@@ -399,6 +418,14 @@
           {@render link('https://github.com/ocsf/ocsf-schema')}, at the release you use.
         </p>
       {/if}
+    {/if}
+    {#if draft.type === 'ecs'}
+      <Field label="Requirements" help={ecsRequirementsHelp}>
+        <select bind:value={draft.requirements}>
+          <option value="ecs">ECS</option>
+          <option value="elastic-security">Elastic Security</option>
+        </select>
+      </Field>
     {/if}
     {#if draft.type === 'import'}
       <Field

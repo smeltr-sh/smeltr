@@ -5456,6 +5456,9 @@ export interface CsvTypeValue {
  * or a CSV of fields under a header row. */
 export type SchemaReadFormat = 'json-schema' | 'ecs' | 'ocsf' | 'csv';
 
+/** Whose requirements an ECS schema's fields take: ECS's own, or Elastic Security's added to them. */
+export type EcsRequirements = 'ecs' | 'elastic-security';
+
 /** A release of a standard the leader carries. */
 export interface StandardRelease {
   version: string;
@@ -5488,6 +5491,8 @@ export function readSchema(req: {
   text: string;
   /** Read the release of ECS or OCSF the leader carries rather than `text`. */
   builtIn?: boolean;
+  /** Whose requirements an ECS schema's fields take. */
+  requirements?: EcsRequirements;
   /** The OCSF class to read. */
   class?: string;
   /** How much of the OCSF class: how many keys deep, and which requirement levels. */

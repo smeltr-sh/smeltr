@@ -129,6 +129,7 @@
         ...(draft.type === 'ocsf'
           ? { class: draft.class, cut: { depth: draft.depth, levels: draft.levels } }
           : {}),
+        ...(draft.type === 'ecs' ? { requirements: draft.requirements } : {}),
         ...(draft.type === 'csv' ? { columns: draft.columns, types: draft.types } : {}),
       });
       if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
