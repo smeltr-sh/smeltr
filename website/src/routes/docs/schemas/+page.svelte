@@ -53,8 +53,8 @@
       a route that sends it others.
     </li>
     <li>
-      <strong>Elasticsearch gets the right types.</strong> The exported mapping sets each field's
-      type, such as <code>ip</code> for an address, so Elasticsearch does not guess.
+      <strong>If you send to Elasticsearch, it gets the right types.</strong> The exported mapping
+      sets each field's type, such as <code>ip</code> for an address, so Elasticsearch does not guess.
     </li>
   </ul>
 
