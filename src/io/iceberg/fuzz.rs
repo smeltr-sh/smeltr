@@ -11,6 +11,8 @@
 //! - every unfit row is refused in its batch, and none is written;
 //! - each data file's row count and partition values are its rows', and it lies under the table's location;
 //! - the table's schema holds every column of the record, the earlier table's ids kept;
+//! - every data file holds every column the earlier table has and the record lacks, as another engine may have added
+//!   it, at any depth and of any type, all null;
 //! - a column the earlier table holds narrower, as another engine may have made it, reads back as that type, and a
 //!   row with a value it cannot hold is refused; a table partitioned by such a column takes its rows' partitions in
 //!   that type;
@@ -36,7 +38,9 @@ use crate::core::column::{Column, StrBuilder, VarType};
 use crate::format::record::RecordView;
 use crate::fuzz::{self, Coverage, Rng};
 use crate::io::iceberg::manifest::Status;
-use crate::io::iceberg::metadata::{Literal, NestedField, PartitionField, PartitionSpec, Primitive, Transform, Type};
+use crate::io::iceberg::metadata::{
+    ListType, Literal, NestedField, PartitionField, PartitionSpec, Primitive, StructType, Transform, Type,
+};
 use crate::io::iceberg::transform::apply;
 use crate::io::parquet::{Chunk, Columns};
 use crate::io::{BatchCompletion, Destination, Dispatched, OwnedRecord};
@@ -92,6 +96,15 @@ const COVERED: &[&str] = &[
     "table target file size",
     "table bloom filter",
     "evolution refused",
+    "lacked str",
+    "lacked decimal",
+    "lacked uuid",
+    "lacked fixed",
+    "lacked time",
+    "lacked list",
+    "lacked map",
+    "lacked struct",
+    "lacked nested",
     "sign-in none",
     "sign-in bearer",
     "sign-in client credentials",
@@ -118,6 +131,83 @@ const COVERED: &[&str] = &[
     "fault Dropped",
     "fault Refused",
 ];
+
+/// The types of a column the earlier table has and the record lacks.
+const LACKED: &[&str] = &["str", "decimal", "uuid", "fixed", "time", "list", "map", "struct"];
+
+/// A column of `kind` (`LACKED`), its children's ids drawn from `next`.
+fn lacked_type(kind: &str, next: &mut impl FnMut() -> i32) -> Type {
+    let other = |name: &str| Type::Primitive(Primitive::Other(name.into()));
+    match kind {
+        "str" => Type::Primitive(Primitive::String),
+        "decimal" => other("decimal(9, 2)"),
+        "uuid" => other("uuid"),
+        "fixed" => other("fixed[3]"),
+        "time" => other("time"),
+        "list" => Type::List(ListType {
+            element_id: next(),
+            element_required: false,
+            element: Box::new(Type::Primitive(Primitive::Long)),
+        }),
+        "map" => Type::Map(serde_json::json!({"type": "map", "key-id": next(), "key": "string",
+            "value-id": next(), "value": "int", "value-required": false})),
+        "struct" => Type::Struct(StructType {
+            fields: vec![NestedField {
+                id: next(),
+                name: "a".into(),
+                required: false,
+                field_type: Type::Primitive(Primitive::Double),
+                doc: None,
+            }],
+        }),
+        other => unreachable!("{other} is no lacked type"),
+    }
+}
+
+/// Err when the data file `bytes` lacks a column of `lacked`, by id, or holds a value in one.
+fn holds_lacked(bytes: &[u8], lacked: &[i32]) -> Result<(), String> {
+    use ::parquet::file::metadata::ParquetMetaDataReader;
+    use ::parquet::schema::types::Type as Node;
+    let metadata = ParquetMetaDataReader::new()
+        .parse_and_finish(&tokio_util::bytes::Bytes::copy_from_slice(bytes))
+        .map_err(|e| format!("its footer does not read: {e}"))?;
+    let descr = metadata.file_metadata().schema_descr();
+    fn ids(node: &Node, out: &mut Vec<i32>) {
+        let info = node.get_basic_info();
+        if info.has_id() {
+            out.push(info.id());
+        }
+        if node.is_group() {
+            node.get_fields().iter().for_each(|f| ids(f, out));
+        }
+    }
+    let mut held = Vec::new();
+    ids(descr.root_schema(), &mut held);
+    if let Some(id) = lacked.iter().find(|id| !held.contains(id)) {
+        return Err(format!("it lacks the column of id {id}"));
+    }
+    for group in metadata.row_groups() {
+        for (i, column) in group.columns().iter().enumerate() {
+            let leaf = descr.column(i);
+            let path = leaf.path().parts();
+            // The leaf is of a lacked column when it or a group above it carries a lacked id.
+            let mut node = descr.root_schema();
+            let mut of_lacked = false;
+            for part in path {
+                let Some(child) = node.get_fields().iter().find(|f| f.name() == part) else {
+                    break;
+                };
+                node = child;
+                of_lacked |= node.get_basic_info().has_id() && lacked.contains(&node.get_basic_info().id());
+            }
+            let nulls = column.statistics().and_then(|s| s.null_count_opt());
+            if of_lacked && nulls != Some(column.num_values() as u64) {
+                return Err(format!("{} holds a value", column.column_path()));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// A column a record may write: its name and type. `ctx` is a struct of `region` and `zone`.
 const COLUMNS: &[(&str, &str)] = &[
@@ -636,6 +726,7 @@ fn check_table(
     store: &Arc<InMemory>,
     runtime: &Arc<tokio::runtime::Runtime>,
     leaves: &[(String, &str)],
+    lacked: &[i32],
     taken: &BTreeMap<i64, BTreeMap<String, Val>>,
     reached: &mut Vec<String>,
 ) -> Result<(), String> {
@@ -684,6 +775,7 @@ fn check_table(
                 }
                 let bytes = get(&entry.file_path)?;
                 written_as_asked(&bytes, &table.properties).map_err(|e| format!("{}: {e}", entry.file_path))?;
+                holds_lacked(&bytes, lacked).map_err(|e| format!("{}: {e}", entry.file_path))?;
                 let rows = file_rows(bytes, leaves)?;
                 if rows.len() as i64 != entry.record_count {
                     return Err(format!(
@@ -853,6 +945,8 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
     let mut evolution_refused = None;
     // The leaves the earlier table holds narrower, and as what.
     let mut narrow: BTreeMap<String, &'static str> = BTreeMap::new();
+    // The ids of the columns the earlier table has and the record lacks.
+    let mut lacked: Vec<i32> = Vec::new();
     let existing = rng.chance(3);
     if existing {
         reached.push("existing table".into());
@@ -950,6 +1044,49 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
                 table.last_partition_id = 1000;
                 reached.push(format!("partition narrowed {to}"));
             }
+        }
+        // As another engine evolved it: a column the record does not write, and one in a struct it does.
+        if rng.chance(2) {
+            let mut fake = fake.lock().unwrap();
+            let table = fake.table.as_mut().ok_or("the earlier table was not made")?;
+            let current = table.current_schema_id;
+            let mut last = table.last_column_id;
+            let mut next = || {
+                last += 1;
+                last
+            };
+            let schema = (table.schemas.iter_mut())
+                .find(|s| s.schema_id == current)
+                .ok_or("the earlier table has no current schema")?;
+            let kind = *rng.pick(LACKED);
+            let id = next();
+            let field_type = lacked_type(kind, &mut next);
+            schema.fields.push(NestedField {
+                id,
+                name: format!("lacked_{kind}"),
+                required: false,
+                field_type,
+                doc: None,
+            });
+            lacked.push(id);
+            reached.push(format!("lacked {kind}"));
+            if let Some(Type::Struct(ctx)) = (schema.fields.iter_mut())
+                .find(|f| f.name == "ctx")
+                .map(|f| &mut f.field_type)
+                && rng.chance(2)
+            {
+                let id = next();
+                ctx.fields.push(NestedField {
+                    id,
+                    name: "lacked".into(),
+                    required: false,
+                    field_type: Type::Primitive(Primitive::String),
+                    doc: None,
+                });
+                lacked.push(id);
+                reached.push("lacked nested".into());
+            }
+            table.last_column_id = last;
         }
         // As another engine set it: how the table's files are written.
         if rng.chance(2) {
@@ -1137,7 +1274,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
     let read: Vec<(String, &str)> = (leaves.iter())
         .map(|(leaf, kind)| (leaf.clone(), narrow.get(leaf).copied().unwrap_or(kind)))
         .collect();
-    check_table(&fake, &store, &runtime, &read, &taken, reached)?;
+    check_table(&fake, &store, &runtime, &read, &lacked, &taken, reached)?;
     let fake = fake.lock().unwrap();
     if let Some(wrong) = fake.signed.iter().find(|s| *s != signed_as) {
         return Err(format!(

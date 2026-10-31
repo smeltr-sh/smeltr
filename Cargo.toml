@@ -191,7 +191,7 @@ md-5 = "0.11.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
 tracing-log = "0.2.0"
-parquet = { version = "60", default-features = false, features = ["arrow", "zstd", "lz4", "snap", "flate2-rust_backend"] }
+parquet = { version = "60", default-features = false, features = ["arrow", "arrow_canonical_extension_types", "zstd", "lz4", "snap", "flate2-rust_backend"] }
 arrow-array = "60"
 arrow-schema = "60"
 arrow-buffer = "60"
