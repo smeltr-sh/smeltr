@@ -45,6 +45,7 @@ pub mod okta;
 pub mod otlp;
 pub mod pacer;
 pub mod parquet;
+pub mod parquet_variant;
 pub mod pipelined;
 pub mod postgres;
 pub mod prometheus;

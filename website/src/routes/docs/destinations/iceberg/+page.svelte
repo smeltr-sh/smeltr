@@ -200,7 +200,8 @@
         <tr><th scope="row"><code>f64</code></th><td><code>double</code></td></tr>
         <tr><th scope="row"><code>str</code></th><td><code>string</code></td></tr>
         <tr
-          ><th scope="row"><code>variant</code></th><td><code>string</code>, the value as JSON</td
+          ><th scope="row"><code>variant</code></th><td
+            >JSON <code>string</code> or native <code>variant</code></td
           ></tr
         >
         <tr><th scope="row"><code>datetime</code></th><td><code>timestamptz</code></td></tr>

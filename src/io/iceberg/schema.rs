@@ -24,10 +24,10 @@ use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use parquet::basic::LogicalType;
 
-use super::metadata::{ListType, NestedField, Primitive, Schema, StructTag, StructType, Type};
+use super::metadata::{ListType, NestedField, Primitive, Schema, StructTag, StructType, Type, VARIANT_VERSION};
 use super::transform::{parse_date, parse_timestamp};
 use crate::core::column::DataType;
-use crate::io::parquet::{WriteDefault, at, columns, narrows};
+use crate::io::parquet::{WriteDefault, at, columns, narrows, variant_group};
 use crate::io::table::Kind;
 
 /// The table's schema for a record, and whether it differs from the table's current one.
@@ -40,12 +40,18 @@ pub struct Evolution {
     pub changed: bool,
 }
 
-/// The schema a table must have for `record` to be written to it. With no `current` schema the table is new and ids
-/// start at 1; otherwise new columns take ids above `last_column_id`, the table's own.
+/// The schema a table of format `version` must have for `record` to be written to it. With no `current` schema the
+/// table is new and ids start at 1; otherwise new columns take ids above `last_column_id`, the table's own. A variant
+/// is a new `variant` column where the version has the type, else a `string` holding its JSON text.
 ///
 /// Err names the field when the record is no struct, a column holds a type other than the record's, or a required
 /// column is one the record does not write.
-pub fn table_schema(record: &DataType, current: Option<&Schema>, last_column_id: i32) -> Result<Evolution, String> {
+pub fn table_schema(
+    record: &DataType,
+    current: Option<&Schema>,
+    last_column_id: i32,
+    version: u8,
+) -> Result<Evolution, String> {
     let DataType::Struct(fields, open) = record else {
         return Err(format!(
             "the record is of type {record}, and a table's schema is a struct"
@@ -54,7 +60,7 @@ pub fn table_schema(record: &DataType, current: Option<&Schema>, last_column_id:
     let columns = columns(fields, *open);
     match current {
         None => {
-            let mut ids = Ids { last: 0 };
+            let mut ids = Ids { last: 0, version };
             let fields = ids.fresh_fields(&columns);
             Ok(Evolution {
                 schema: Schema {
@@ -68,7 +74,10 @@ pub fn table_schema(record: &DataType, current: Option<&Schema>, last_column_id:
             })
         }
         Some(current) => {
-            let mut ids = Ids { last: last_column_id };
+            let mut ids = Ids {
+                last: last_column_id,
+                version,
+            };
             let fields = ids.evolve_fields(&current.fields, &columns, "")?;
             let changed = ids.last != last_column_id;
             Ok(Evolution {
@@ -138,6 +147,10 @@ fn with_id(field: &Field, id: i32, ty: &Type, path: &str) -> Result<(Field, Writ
         (Arrow::List(element), Type::List(l)) => {
             let (element, default) = with_id(element, l.element_id, &l.element, &format!("{path}[]"))?;
             (Arrow::List(Arc::new(element)), WriteDefault::List(Box::new(default)))
+        }
+        // A variant, which the record writes as JSON text (`parquet::Schema::with_written`).
+        (Arrow::Utf8, Type::Primitive(p @ Primitive::Other(name))) if name == "variant" => {
+            (primitive_arrow(p).expect("a variant's group"), WriteDefault::Written)
         }
         (other, Type::Primitive(p)) => (narrow(p).unwrap_or_else(|| other.clone()), WriteDefault::Written),
         (other, _) => (other.clone(), WriteDefault::Written),
@@ -421,10 +434,7 @@ pub(super) fn primitive_arrow(p: &Primitive) -> Option<Arrow> {
             "timestamp_ns" => Arrow::Timestamp(Nanosecond, None),
             "timestamptz_ns" => Arrow::Timestamp(Nanosecond, Some("UTC".into())),
             // Parquet's VARIANT group, unshredded; its fields carry no ids.
-            "variant" => Arrow::Struct(Fields::from(vec![
-                Field::new("metadata", Arrow::Binary, false),
-                Field::new("value", Arrow::Binary, false),
-            ])),
+            "variant" => variant_group(),
             // Well-known binary, which `annotations` marks GEOMETRY or GEOGRAPHY.
             name if geo(name).is_some() => Arrow::Binary,
             name => {
@@ -458,9 +468,10 @@ fn primitive(t: &DataType) -> Primitive {
     }
 }
 
-/// Assigns column ids, each one above the last.
+/// Assigns column ids, each one above the last, to a table of format `version`.
 struct Ids {
     last: i32,
+    version: u8,
 }
 
 impl Ids {
@@ -500,6 +511,7 @@ impl Ids {
             DataType::Struct(fields, open) => Type::Struct(StructType {
                 fields: self.fresh_fields(&columns(fields, *open)),
             }),
+            DataType::Variant if self.version >= VARIANT_VERSION => Type::Primitive(Primitive::Other("variant".into())),
             t => Type::Primitive(primitive(t)),
         }
     }
@@ -565,6 +577,7 @@ impl Ids {
                 element: Box::new(self.evolve_type(&l.element, element, &format!("{path}[]"))?),
                 ..l.clone()
             })),
+            (Type::Primitive(Primitive::Other(name)), DataType::Variant) if name == "variant" => Ok(table.clone()),
             (Type::Primitive(p), t)
                 if !matches!(t, DataType::Array(_) | DataType::Struct(..))
                     && (*p == primitive(t) || narrow(p).is_some_and(|to| narrows(t, &to))) =>
@@ -649,7 +662,7 @@ mod tests {
 
     #[test]
     fn a_new_table_takes_the_record_with_ids_a_level_at_a_time() {
-        let e = table_schema(&record(), None, 0).unwrap();
+        let e = table_schema(&record(), None, 0, 2).unwrap();
         assert!(e.changed);
         assert_eq!(e.schema.schema_id, 0);
         assert_eq!(e.last_column_id, 11);
@@ -684,8 +697,8 @@ mod tests {
 
     #[test]
     fn the_same_record_changes_nothing() {
-        let first = table_schema(&record(), None, 0).unwrap();
-        let again = table_schema(&record(), Some(&first.schema), first.last_column_id).unwrap();
+        let first = table_schema(&record(), None, 0, 2).unwrap();
+        let again = table_schema(&record(), Some(&first.schema), first.last_column_id, 2).unwrap();
         assert!(!again.changed);
         assert_eq!(again.last_column_id, first.last_column_id);
         assert_eq!(again.schema, first.schema);
@@ -693,7 +706,7 @@ mod tests {
 
     #[test]
     fn a_new_nested_field_is_added_with_a_new_id_and_a_column_not_written_is_kept() {
-        let mut table = table_schema(&record(), None, 0).unwrap().schema;
+        let mut table = table_schema(&record(), None, 0, 2).unwrap().schema;
         table.schema_id = 3;
         table.fields.push(field(20, "gone", prim(Primitive::Int)));
         let grown = st(
@@ -716,7 +729,7 @@ mod tests {
             ],
             false,
         );
-        let e = table_schema(&grown, Some(&table), 20).unwrap();
+        let e = table_schema(&grown, Some(&table), 20, 2).unwrap();
         assert!(e.changed);
         assert_eq!(e.schema.schema_id, 4);
         assert_eq!(e.last_column_id, 23);
@@ -739,6 +752,34 @@ mod tests {
             ])
         );
         assert_eq!(e.schema.fields[5], field(20, "gone", prim(Primitive::Int)));
+    }
+
+    #[test]
+    fn a_variant_is_a_new_variant_column_where_the_format_has_the_type_and_text_before() {
+        let variant = || prim(Primitive::Other("variant".into()));
+        let record = st(&[("a", DataType::I64), ("v", DataType::Variant)], false);
+        let old = table_schema(&record, None, 0, 2).unwrap().schema;
+        assert_eq!(old.fields[1], field(2, "v", prim(Primitive::String)));
+        let new = table_schema(&record, None, 0, 3).unwrap().schema;
+        assert_eq!(new.fields[1], field(2, "v", variant()));
+
+        // A table upgraded to version 3 keeps its text column, and a column added after takes the type.
+        let grown = st(
+            &[("a", DataType::I64), ("v", DataType::Variant), ("w", DataType::Variant)],
+            false,
+        );
+        let e = table_schema(&grown, Some(&old), 2, 3).unwrap();
+        assert_eq!(
+            e.schema.fields[1..],
+            [field(2, "v", prim(Primitive::String)), field(3, "w", variant())]
+        );
+        assert!(!table_schema(&grown, Some(&e.schema), 3, 3).unwrap().changed);
+
+        let text = st(&[("a", DataType::I64), ("v", DataType::Str)], false);
+        assert!(
+            table_schema(&text, Some(&new), 2, 3).is_err(),
+            "a variant column holds no text"
+        );
     }
 
     /// A column the table holds narrower than the record types it takes the record's values, each converted as it is
@@ -765,7 +806,7 @@ mod tests {
             ],
             false,
         );
-        let evolved = table_schema(&narrow, Some(&table), 4).unwrap();
+        let evolved = table_schema(&narrow, Some(&table), 4, 2).unwrap();
         assert_eq!(
             (evolved.schema.fields.clone(), evolved.changed),
             (table.fields.clone(), false)
@@ -784,7 +825,7 @@ mod tests {
             ]
         );
         assert!(
-            table_schema(&st(&[("i", DataType::Duration)], false), Some(&table), 4)
+            table_schema(&st(&[("i", DataType::Duration)], false), Some(&table), 4, 2)
                 .unwrap_err()
                 .starts_with("i is int in the table")
         );
@@ -792,7 +833,7 @@ mod tests {
 
     #[test]
     fn a_type_the_table_holds_otherwise_is_refused() {
-        let table = table_schema(&record(), None, 0).unwrap().schema;
+        let table = table_schema(&record(), None, 0, 2).unwrap().schema;
         let changed = st(
             &[
                 ("http", st(&[("status", DataType::Str)], false)),
@@ -801,7 +842,7 @@ mod tests {
             false,
         );
         assert_eq!(
-            table_schema(&changed, Some(&table), 11).unwrap_err(),
+            table_schema(&changed, Some(&table), 11, 2).unwrap_err(),
             "http.status is long in the table, and the record writes str there as string; rename the field in the \
              pipeline or the column in the table"
         );
@@ -811,13 +852,13 @@ mod tests {
             .push(field(12, "n", prim(Primitive::Other("decimal(10, 2)".into()))));
         let wide = st(&[("n", DataType::I64)], false);
         assert!(
-            table_schema(&wide, Some(&other), 12)
+            table_schema(&wide, Some(&other), 12, 2)
                 .unwrap_err()
                 .starts_with("n is decimal(10, 2) in the table")
         );
         let flat = st(&[("http", DataType::Str)], false);
         assert!(
-            table_schema(&flat, Some(&table), 11)
+            table_schema(&flat, Some(&table), 11, 2)
                 .unwrap_err()
                 .starts_with("http is struct in the table")
         );
@@ -825,7 +866,7 @@ mod tests {
 
     #[test]
     fn a_column_the_record_lacks_of_a_type_no_file_here_holds_is_refused() {
-        let mut table = table_schema(&record(), None, 0).unwrap().schema;
+        let mut table = table_schema(&record(), None, 0, 2).unwrap().schema;
         let Type::Struct(http) = &mut table.fields[1].field_type else {
             panic!("http is a struct")
         };
@@ -839,7 +880,7 @@ mod tests {
 
     #[test]
     fn a_column_with_a_write_default_keeps_it_and_one_required_the_record_does_not_write_is_written() {
-        let mut table = table_schema(&record(), None, 0).unwrap().schema;
+        let mut table = table_schema(&record(), None, 0, 2).unwrap().schema;
         let Type::Struct(http) = &mut table.fields[1].field_type else {
             panic!("http is a struct")
         };
@@ -849,7 +890,7 @@ mod tests {
         http.fields[0]
             .other
             .insert("initial-default".into(), serde_json::json!(0));
-        let evolved = table_schema(&record(), Some(&table), 11).unwrap().schema;
+        let evolved = table_schema(&record(), Some(&table), 11, 2).unwrap().schema;
         let Type::Struct(http) = &evolved.fields[1].field_type else {
             panic!("http is a struct")
         };
@@ -865,30 +906,30 @@ mod tests {
         };
         http.fields[0].required = true;
         let without = st(&[("http", st(&[("hdrs", arr(DataType::Str))], false))], false);
-        let evolved = table_schema(&without, Some(&table), 11).unwrap().schema;
+        let evolved = table_schema(&without, Some(&table), 11, 2).unwrap().schema;
         assert_eq!(evolved.fields, table.fields);
     }
 
     #[test]
     fn a_required_column_the_record_does_not_write_is_refused() {
-        let mut table = table_schema(&record(), None, 0).unwrap().schema;
+        let mut table = table_schema(&record(), None, 0, 2).unwrap().schema;
         let Type::Struct(http) = &mut table.fields[1].field_type else {
             panic!("http is a struct")
         };
         http.fields[0].required = true;
         let without = st(&[("http", st(&[("hdrs", arr(DataType::Str))], false))], false);
         assert_eq!(
-            table_schema(&without, Some(&table), 11).unwrap_err(),
+            table_schema(&without, Some(&table), 11, 2).unwrap_err(),
             "the table's column http.status is required, and the record does not write it"
         );
     }
 
     #[test]
     fn a_required_column_the_record_writes_is_refused() {
-        let mut table = table_schema(&record(), None, 0).unwrap().schema;
+        let mut table = table_schema(&record(), None, 0, 2).unwrap().schema;
         table.fields[0].required = true;
         assert_eq!(
-            table_schema(&record(), Some(&table), 11).unwrap_err(),
+            table_schema(&record(), Some(&table), 11, 2).unwrap_err(),
             "the table's column ts is required, and the record may leave it null"
         );
     }
@@ -904,14 +945,14 @@ mod tests {
             ],
             false,
         );
-        let schema = table_schema(&empty, None, 0).unwrap().schema;
+        let schema = table_schema(&empty, None, 0, 2).unwrap().schema;
         let names: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["a"]);
     }
 
     #[test]
     fn a_map_column_the_record_does_not_write_is_kept() {
-        let mut table = table_schema(&st(&[("a", DataType::I64)], false), None, 0)
+        let mut table = table_schema(&st(&[("a", DataType::I64)], false), None, 0, 2)
             .unwrap()
             .schema;
         let map = Type::Map(
@@ -919,7 +960,7 @@ mod tests {
             "value": "string", "value-required": false}),
         );
         table.fields.push(field(2, "m", map.clone()));
-        let e = table_schema(&st(&[("a", DataType::I64)], false), Some(&table), 4).unwrap();
+        let e = table_schema(&st(&[("a", DataType::I64)], false), Some(&table), 4, 2).unwrap();
         assert!(!e.changed);
         assert_eq!(e.schema.fields[1].field_type, map);
     }
@@ -928,7 +969,7 @@ mod tests {
     fn the_arrow_schema_carries_each_fields_id() {
         let record = record();
         let parquet = crate::io::parquet::Schema::new(&record).unwrap();
-        let table = table_schema(&record, None, 0).unwrap().schema;
+        let table = table_schema(&record, None, 0, 2).unwrap().schema;
         let labelled = with_field_ids(parquet.arrow(), &table).unwrap().0;
         assert!(labelled.contains(parquet.arrow()));
         let id = |f: &Field| {

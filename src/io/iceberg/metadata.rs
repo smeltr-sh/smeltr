@@ -16,6 +16,9 @@ pub const FORMAT_VERSION: u8 = 2;
 /// The first format version that tracks row lineage.
 pub const ROW_LINEAGE_VERSION: u8 = 3;
 
+/// The first format version with a variant type.
+pub const VARIANT_VERSION: u8 = 3;
+
 /// `current-snapshot-id` of a table with no snapshot, in tables written before the key became optional.
 pub const NO_SNAPSHOT: i64 = -1;
 

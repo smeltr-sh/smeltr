@@ -2844,6 +2844,23 @@ impl Columnar {
                 schemas.entry(route).or_insert(schema);
             }
         }
+        // A chunk carries its variants' own bytes only for a route on which a destination may read them.
+        let native: HashSet<Option<u32>> = (topology.records.iter())
+            .filter(|(dest, _)| topology.native_variants.contains(dest))
+            .flat_map(|(_, records)| records.keys().copied())
+            .collect();
+        let schemas = (schemas.into_iter())
+            .map(|(route, s)| {
+                (
+                    route,
+                    if native.contains(&route) {
+                        s
+                    } else {
+                        s.without_variant_bytes()
+                    },
+                )
+            })
+            .collect();
         Columnar {
             dests: topology.records.keys().copied().collect(),
             schemas,
@@ -3849,6 +3866,35 @@ mod tests {
                 exception("Unparsable", "a value, which  could not parse in status"),
             ]
         );
+    }
+
+    /// A chunk carries its variants' own bytes only on a route that reaches a destination that may hold a variant as
+    /// Parquet's variant.
+    #[test]
+    fn only_a_route_to_a_native_variant_destination_cuts_variant_bytes() {
+        let columnar = |destination: &str| {
+            let json = format!(
+                r#"{{
+                  "version": 1,
+                  "sources": [{{ "id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g" }}],
+                  "destinations": [{destination}],
+                  "pipelines": [{{ "id": "p", "name": "p", "steps": [
+                    {{ "id": "c", "type": "code", "body": "v: variant; n: i64; Object.assign($, json(_raw));" }}
+                  ] }}],
+                  "routes": [{{ "id": "r", "source": "s", "pipeline": "p", "deliver": [{{ "to": ["out"] }}] }}]
+                }}"#
+            );
+            let system = config_file::load_str(&json).unwrap_or_else(|e| panic!("load: {e}"));
+            let compiled = system.compile_topology().unwrap_or_else(|e| panic!("compile: {e:?}"));
+            let columnar = Columnar::of(&compiled);
+            let schemas: Vec<bool> = columnar.schemas.values().map(|s| s.cuts_variant_bytes()).collect();
+            schemas
+        };
+        let iceberg = r#"{ "id": "out", "type": "iceberg", "catalog": "https://catalog.example/api",
+                           "namespace": "logs", "table": "t" }"#;
+        let objects = r#"{ "id": "out", "type": "s3", "bucket": "b", "format": "parquet" }"#;
+        assert_eq!(columnar(iceberg), [true]);
+        assert_eq!(columnar(objects), [false]);
     }
 
     /// `now()` puts the clock into a pipeline's output, so two runs agree only if both are given the same instant.

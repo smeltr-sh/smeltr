@@ -8,7 +8,8 @@
 //! What a type is written as, where the engine and Parquet differ:
 //! - `datetime` is `Timestamp(µs, UTC)`; `duration` is `Int64` microseconds.
 //! - `bytes` is `Binary`, the bytes as they are.
-//! - A variant is `Utf8` holding the value's JSON text, so a string variant keeps its quotes.
+//! - A variant is `Utf8` holding the value's JSON text, so a string variant keeps its quotes. A chunk keeps each
+//!   variant's own bytes beside it too, for a table that holds a variant as Parquet's variant (`parquet_variant`).
 //! - An open struct has one more `Utf8` child, `rest`: a JSON object of the keys its fields do not name, null when
 //!   there are none.
 //! - A float JSON cannot hold is null, as the JSON writer leaves it out.
@@ -70,6 +71,8 @@ pub struct Schema {
     computed: Vec<Arc<dyn Computed>>,
     /// The record's columns that hold a partition's values, each by the partition field's name and its index.
     partition_columns: Vec<(String, usize)>,
+    /// The record's variants as their own bytes, and their Arrow schema, when it has any (`variant_bytes`).
+    variants: Option<(Arc<Node>, Arc<ArrowSchema>)>,
 }
 
 /// What a field of a written schema takes in each row where the record does not write it.
@@ -112,6 +115,8 @@ enum Kind {
     Text,
     Binary,
     Variant,
+    /// A variant as its own bytes (`core::variant`), in the tree of a record's variants (`variant_bytes`).
+    VariantBytes,
     List(Box<Node>, Arc<Field>),
     Struct(Struct),
 }
@@ -141,6 +146,8 @@ impl Struct {
 #[derive(Debug, PartialEq)]
 pub struct Chunk {
     batch: RecordBatch,
+    /// The record's variants as their own bytes, beside `batch`'s JSON text, for a table that holds them as a variant.
+    variants: Option<RecordBatch>,
     /// Why each row that does not fit the record is refused, by its place in the chunk, ascending.
     unfit: Vec<(u32, String)>,
     /// Each row's own bytes of the chunk, for an object's size.
@@ -168,6 +175,13 @@ impl Schema {
             unreachable!("checked above")
         };
         let arrow = Arc::new(ArrowSchema::new(s.arrow.clone()));
+        let variants = variant_bytes(&root).map(|v| {
+            let Arrow::Struct(fields) = &v.arrow else {
+                unreachable!("the root is a struct")
+            };
+            let schema = Arc::new(ArrowSchema::new(fields.clone()));
+            (Arc::new(v), schema)
+        });
         Ok(Schema {
             root: Arc::new(root),
             arrow,
@@ -177,6 +191,7 @@ impl Schema {
             annotations: Arc::new([]),
             computed: Vec::new(),
             partition_columns: Vec::new(),
+            variants,
         })
     }
 
@@ -189,7 +204,7 @@ impl Schema {
             panic!("a written schema is the record's own, renamed, with metadata added or a leaf narrowed");
         };
         Schema {
-            narrowed: fields != *self.arrow.fields(),
+            narrowed: narrows_a_leaf(&Arrow::Struct(self.arrow.fields().clone()), &Arrow::Struct(fields)),
             written: Some(written),
             ..self
         }
@@ -211,6 +226,17 @@ impl Schema {
             annotations: annotations.into(),
             ..self
         }
+    }
+
+    /// This schema, its chunks cut without their variants' own bytes, for a route on which no destination holds a
+    /// variant as Parquet's variant.
+    pub fn without_variant_bytes(self) -> Schema {
+        Schema { variants: None, ..self }
+    }
+
+    /// Whether its chunks carry their variants' own bytes.
+    pub fn cuts_variant_bytes(&self) -> bool {
+        self.variants.is_some()
     }
 
     /// This schema, its files written with `computed` after the record's columns.
@@ -259,13 +285,6 @@ impl Schema {
     pub fn record(&self) -> &DataType {
         &self.root.ty
     }
-
-    fn root(&self) -> &Struct {
-        let Kind::Struct(s) = &self.root.kind else {
-            unreachable!("Schema::new takes only a struct")
-        };
-        s
-    }
 }
 
 impl Chunk {
@@ -273,6 +292,7 @@ impl Chunk {
     /// order: a row's place in the chunk is its place in that sequence. A time read with no year takes it from `now`.
     pub fn cut(schema: &Schema, parts: &[(&RecordView<'_>, &[u32])], now: i64, pool: &mut BufferPool) -> Chunk {
         let mut batches = Vec::with_capacity(parts.len());
+        let mut variants = Vec::new();
         let mut unfit = Vec::new();
         let mut at = 0;
         for (view, rows) in parts.iter().filter(|(_, rows)| !rows.is_empty()) {
@@ -281,33 +301,36 @@ impl Chunk {
                 now,
                 unfit: Vec::new(),
             };
-            let inherited = vec![None; rows.len()];
-            let children = cut.object(&view.root, view, &inherited, schema.root(), "", pool);
-            let batch = RecordBatch::try_new_with_options(
-                schema.arrow.clone(),
-                children,
-                &arrow_array::RecordBatchOptions::new().with_row_count(Some(rows.len())),
-            )
-            .expect("the columns are cut to the schema they are checked against");
+            batches.push(cut.batch(view, &schema.root, &schema.arrow, pool));
             unfit.extend(cut.unfit.into_iter().map(|(i, said)| (at + i, said)));
             at += rows.len() as u32;
-            batches.push(batch);
+            if let Some((root, arrow)) = &schema.variants {
+                // A row is refused by what the JSON cut said of it.
+                let mut cut = Cut {
+                    rows,
+                    now,
+                    unfit: Vec::new(),
+                };
+                variants.push(cut.batch(view, root, arrow, pool));
+            }
         }
-        let batch = match batches.len() {
+        let concat = |schema: &Arc<ArrowSchema>, mut batches: Vec<RecordBatch>| match batches.len() {
             1 => batches.pop().expect("one"),
-            _ => arrow_select::concat::concat_batches(&schema.arrow, &batches).expect("batches of one schema"),
+            _ => arrow_select::concat::concat_batches(schema, &batches).expect("batches of one schema"),
         };
-        Chunk::new(batch, unfit)
+        let variants = (schema.variants.as_ref()).map(|(_, arrow)| concat(arrow, variants));
+        Chunk::new(concat(&schema.arrow, batches), variants, unfit)
     }
 
-    fn new(batch: RecordBatch, unfit: Vec<(u32, String)>) -> Chunk {
+    fn new(batch: RecordBatch, variants: Option<RecordBatch>, unfit: Vec<(u32, String)>) -> Chunk {
         let mut sizes = vec![0; batch.num_rows()];
         for column in batch.columns() {
             add_sizes(column, &mut sizes);
         }
-        let bytes = batch.get_array_memory_size();
+        let bytes = batch.get_array_memory_size() + variants.as_ref().map_or(0, |v| v.get_array_memory_size());
         Chunk {
             batch,
+            variants,
             unfit,
             sizes,
             bytes,
@@ -318,7 +341,7 @@ impl Chunk {
     pub fn raw<'t>(schema: &Schema, texts: impl IntoIterator<Item = &'t str>) -> Chunk {
         let text: StringArray = texts.into_iter().map(Some).collect();
         let batch = RecordBatch::try_new(schema.arrow.clone(), vec![Arc::new(text)]).expect("the `{_raw: str}` record");
-        Chunk::new(batch, Vec::new())
+        Chunk::new(batch, None, Vec::new())
     }
 
     /// The chunk's columns, for a reader of one row's values.
@@ -346,8 +369,10 @@ impl Chunk {
 impl Columns {
     /// This row in a chunk of its own, so that holding it holds none of its batch's other rows.
     pub fn alone(&self) -> Columns {
-        let batch = arrow_select::interleave::interleave_record_batch(&[&self.chunk.batch], &[(0, self.row as usize)])
-            .expect("a row of its own chunk");
+        let one = |batch: &RecordBatch| {
+            arrow_select::interleave::interleave_record_batch(&[batch], &[(0, self.row as usize)])
+                .expect("a row of its own chunk")
+        };
         let unfit = self
             .chunk
             .unfit(self.row)
@@ -355,7 +380,11 @@ impl Columns {
             .into_iter()
             .collect();
         Columns {
-            chunk: Arc::new(Chunk::new(batch, unfit)),
+            chunk: Arc::new(Chunk::new(
+                one(&self.chunk.batch),
+                self.chunk.variants.as_ref().map(one),
+                unfit,
+            )),
             row: 0,
         }
     }
@@ -396,26 +425,87 @@ fn narrowed(node: &Node, written: &Arrow) -> Option<Arrow> {
             Some(Arrow::List(Arc::new(field.as_ref().clone().with_data_type(t))))
         }
         (Kind::Struct(_) | Kind::List(..), _) => None,
+        (Kind::Variant, w @ Arrow::Struct(fields)) if is_variant_group(fields) => Some(w.clone()),
         (_, w) if *w == node.arrow => Some(node.arrow.clone()),
         (_, w) if narrows(&node.ty, w) => Some(w.clone()),
         _ => None,
     }
 }
 
-/// `batch` under `schema`, which `narrowed` matches to its own, a field it lacks taking its `defaults`. No value of
-/// the batch's is copied.
-fn relabel(batch: &RecordBatch, schema: &Arc<ArrowSchema>, defaults: &[WriteDefault]) -> RecordBatch {
-    let columns = relabelled_fields(batch.columns(), schema.fields(), batch.num_rows(), defaults);
+/// Whether `written`, which `narrowed` made of `ours`, holds a leaf narrower than ours, which a row may not fit. A
+/// variant held as Parquet's variant group always fits.
+fn narrows_a_leaf(ours: &Arrow, written: &Arrow) -> bool {
+    match (ours, written) {
+        (Arrow::Utf8, Arrow::Struct(fields)) if is_variant_group(fields) => false,
+        (Arrow::Struct(o), Arrow::Struct(w)) => {
+            (o.iter().zip(w)).any(|(o, w)| narrows_a_leaf(o.data_type(), w.data_type()))
+        }
+        (Arrow::List(o), Arrow::List(w)) => narrows_a_leaf(o.data_type(), w.data_type()),
+        (o, w) => o != w,
+    }
+}
+
+/// Parquet's variant group, unshredded, which a table holds a variant in: its metadata and its value.
+pub fn variant_group() -> Arrow {
+    Arrow::Struct(Fields::from(vec![
+        Field::new("metadata", Arrow::Binary, false),
+        Field::new("value", Arrow::Binary, false),
+    ]))
+}
+
+/// Whether `fields` are Parquet's variant group's (`variant_group`).
+fn is_variant_group(fields: &Fields) -> bool {
+    let names: Vec<(&str, &Arrow)> = fields.iter().map(|f| (f.name().as_str(), f.data_type())).collect();
+    names == [("metadata", &Arrow::Binary), ("value", &Arrow::Binary)]
+}
+
+/// `batch` under `schema`, which `narrowed` matches to its own, a field it lacks taking its `defaults`, and a variant
+/// it holds as Parquet's variant taking its bytes from `variants`, the chunks' own. No other value of the batch's is
+/// copied.
+fn relabel(
+    batch: &RecordBatch,
+    variants: Option<&RecordBatch>,
+    schema: &Arc<ArrowSchema>,
+    defaults: &[WriteDefault],
+) -> RecordBatch {
+    let variants = variants.map(|v| Arc::new(StructArray::from(v.clone())) as ArrayRef);
+    let own = Own {
+        columns: batch.columns(),
+        names: batch.schema_ref().fields(),
+        variants: variants.as_ref(),
+    };
+    let columns = relabelled_fields(own, schema.fields(), batch.num_rows(), defaults);
     RecordBatch::try_new(schema.clone(), columns)
         .expect("a written schema the rows' own but for names, metadata and narrowed leaves")
 }
 
-fn relabelled(array: &ArrayRef, to: &Arrow, default: Option<&WriteDefault>) -> ArrayRef {
+/// A struct's columns being relabelled, and the struct of its variants' bytes, when it holds any.
+#[derive(Clone, Copy)]
+struct Own<'a> {
+    columns: &'a [ArrayRef],
+    names: &'a Fields,
+    variants: Option<&'a ArrayRef>,
+}
+
+impl<'a> Own<'a> {
+    /// The bytes of the variants under column `i`.
+    fn variants(&self, i: usize) -> Option<&'a ArrayRef> {
+        use arrow_array::cast::AsArray;
+        self.variants?.as_struct().column_by_name(self.names[i].name())
+    }
+}
+
+fn relabelled(array: &ArrayRef, variants: Option<&ArrayRef>, to: &Arrow, default: Option<&WriteDefault>) -> ArrayRef {
     use arrow_array::cast::AsArray;
     if array.data_type() == to {
         return array.clone();
     }
     match to {
+        // A variant, which the record writes as JSON text.
+        Arrow::Struct(fields) if *array.data_type() == Arrow::Utf8 => {
+            let variants = variants.expect("a chunk of a record with a variant keeps its bytes");
+            parquet_variant(variants.as_binary::<i32>(), fields)
+        }
         Arrow::Struct(fields) => {
             let parent = array
                 .as_struct_opt()
@@ -424,7 +514,12 @@ fn relabelled(array: &ArrayRef, to: &Arrow, default: Option<&WriteDefault>) -> A
                 Some(WriteDefault::Struct(defaults)) => &defaults[..],
                 _ => &[],
             };
-            let children = relabelled_fields(parent.columns(), fields, parent.len(), defaults);
+            let own = Own {
+                columns: parent.columns(),
+                names: parent.fields(),
+                variants,
+            };
+            let children = relabelled_fields(own, fields, parent.len(), defaults);
             Arc::new(StructArray::new(fields.clone(), children, parent.nulls().cloned()))
         }
         Arrow::List(field) => {
@@ -435,7 +530,8 @@ fn relabelled(array: &ArrayRef, to: &Arrow, default: Option<&WriteDefault>) -> A
                 Some(WriteDefault::List(element)) => Some(&**element),
                 _ => None,
             };
-            let values = relabelled(list.values(), field.data_type(), element);
+            let variants = variants.map(|v| v.as_list::<i32>().values());
+            let values = relabelled(list.values(), variants, field.data_type(), element);
             Arc::new(ListArray::new(
                 field.clone(),
                 list.offsets().clone(),
@@ -449,10 +545,10 @@ fn relabelled(array: &ArrayRef, to: &Arrow, default: Option<&WriteDefault>) -> A
 }
 
 /// `columns` as `fields`, and for each field after theirs a column of `rows` of its default, or null.
-fn relabelled_fields(columns: &[ArrayRef], fields: &Fields, rows: usize, defaults: &[WriteDefault]) -> Vec<ArrayRef> {
+fn relabelled_fields(own: Own<'_>, fields: &Fields, rows: usize, defaults: &[WriteDefault]) -> Vec<ArrayRef> {
     (fields.iter().enumerate())
-        .map(|(i, field)| match (columns.get(i), defaults.get(i)) {
-            (Some(column), default) => relabelled(column, field.data_type(), default),
+        .map(|(i, field)| match (own.columns.get(i), defaults.get(i)) {
+            (Some(column), default) => relabelled(column, own.variants(i), field.data_type(), default),
             (None, Some(WriteDefault::Value(value))) if value.is_valid(0) => {
                 let first = arrow_array::UInt32Array::from(vec![0; rows]);
                 arrow_select::take::take(value, &first, None).expect("a default's one row")
@@ -460,6 +556,31 @@ fn relabelled_fields(columns: &[ArrayRef], fields: &Fields, rows: usize, default
             (None, _) => new_null_array(field.data_type(), rows),
         })
         .collect()
+}
+
+/// `variants`, each its own bytes, as Parquet's variant group of `fields`: null where a variant is null.
+fn parquet_variant(variants: &BinaryArray, fields: &Fields) -> ArrayRef {
+    let mut metadata = arrow_array::builder::BinaryBuilder::new();
+    let mut value = arrow_array::builder::BinaryBuilder::new();
+    let mut valid = Vec::with_capacity(variants.len());
+    for v in variants {
+        match v.filter(|v| !matches!(variant::read(v), Value::Null)) {
+            Some(v) => {
+                let (m, b) = crate::io::parquet_variant::encode(v);
+                metadata.append_value(m);
+                value.append_value(b);
+                valid.push(true);
+            }
+            // Under a null, which no reader reads.
+            None => {
+                metadata.append_value([]);
+                value.append_value([]);
+                valid.push(false);
+            }
+        }
+    }
+    let children: Vec<ArrayRef> = vec![Arc::new(metadata.finish()), Arc::new(value.finish())];
+    Arc::new(StructArray::new(fields.clone(), children, nulls(valid)))
 }
 
 /// Why value `i` of `array` cannot be written as `to`, `written`'s type for it, naming it by `path`, made only then.
@@ -799,7 +920,10 @@ impl FileWriter {
         let mut batch = arrow_select::interleave::interleave_record_batch(&batches, &at).expect("chunks of one schema");
         let computed: Vec<ArrayRef> = self.computed.iter().map(|c| c.fill(&batch)).collect();
         if let Some(written) = &self.written {
-            batch = relabel(&batch, written, &self.defaults);
+            let variants: Option<Vec<&RecordBatch>> = chunks.iter().map(|c| c.variants.as_ref()).collect();
+            let variants = variants
+                .map(|v| arrow_select::interleave::interleave_record_batch(&v, &at).expect("chunks of one schema"));
+            batch = relabel(&batch, variants.as_ref(), written, &self.defaults);
         }
         if !self.nulled.is_empty() {
             let mut columns = batch.columns().to_vec();
@@ -961,6 +1085,27 @@ struct Cut<'r> {
 }
 
 impl Cut<'_> {
+    /// The view's rows as `root`, a struct whose columns `arrow` holds.
+    fn batch(
+        &mut self,
+        view: &RecordView<'_>,
+        root: &Node,
+        arrow: &Arc<ArrowSchema>,
+        pool: &mut BufferPool,
+    ) -> RecordBatch {
+        let Kind::Struct(s) = &root.kind else {
+            unreachable!("Schema::new takes only a struct")
+        };
+        let inherited = vec![None; self.rows.len()];
+        let children = self.object(&view.root, view, &inherited, s, "", pool);
+        RecordBatch::try_new_with_options(
+            arrow.clone(),
+            children,
+            &arrow_array::RecordBatchOptions::new().with_row_count(Some(self.rows.len())),
+        )
+        .expect("the columns are cut to the schema they are checked against")
+    }
+
     fn refuse(&mut self, at: usize, said: String) {
         if let Err(i) = self.unfit.binary_search_by_key(&(at as u32), |(r, _)| *r) {
             self.unfit.insert(i, (at as u32, said));
@@ -994,6 +1139,18 @@ impl Cut<'_> {
                 (Some(record::Field::Object(child)), Kind::Struct(cs)) => {
                     let columns = self.object(child, view, &below(), cs, &path, pool);
                     cs.array(columns)
+                }
+                (Some(record::Field::Object(child)), Kind::VariantBytes) => {
+                    let values: BinaryArray = (self.rows.iter().zip(below()))
+                        .map(|(&row, below)| {
+                            object_tag(child, below, row as usize).map(|value| {
+                                let mut b = Vec::new();
+                                tag::encode(&value, &mut b);
+                                b
+                            })
+                        })
+                        .collect();
+                    Arc::new(values)
                 }
                 // An object where the record holds a variant: its JSON text.
                 (Some(record::Field::Object(child)), _) => {
@@ -1093,7 +1250,10 @@ fn direct(col: &Column, node: &Node, rows: &[u32]) -> ArrayRef {
         return new_null_array(&node.arrow, rows.len());
     }
     if let Some(value) = col.constant_value() {
-        return repeated(value, rows.len());
+        return match (&node.kind, value) {
+            (Kind::VariantBytes, Scalar::Variant(v)) => Arc::new(BinaryArray::from(vec![v.as_slice(); rows.len()])),
+            _ => repeated(value, rows.len()),
+        };
     }
     let valid = |r: &u32| col.is_valid(*r as usize);
     match &node.kind {
@@ -1147,6 +1307,14 @@ fn direct(col: &Column, node: &Node, rows: &[u32]) -> ArrayRef {
             let v = col.variant().expect("a variant column");
             json_text(rows, |r, doc| valid(r) && json::write_variant(v.get(*r as usize), doc))
         }
+        Kind::VariantBytes => {
+            let v = col.variant().expect("a variant column");
+            Arc::new(
+                rows.iter()
+                    .map(|r| valid(r).then(|| v.get(*r as usize)))
+                    .collect::<BinaryArray>(),
+            )
+        }
         Kind::List(elem, field) => {
             let l = col.list().expect("a list column");
             let mut items = Vec::new();
@@ -1186,6 +1354,67 @@ fn direct(col: &Column, node: &Node, rows: &[u32]) -> ArrayRef {
             s.array(children)
         }
     }
+}
+
+/// `node`'s variants as their own bytes: its tree down to each variant, which is `Binary`, and nothing else. None
+/// where it holds no variant. An open struct's `rest` is JSON text however it is written, so it is left out too.
+fn variant_bytes(node: &Node) -> Option<Node> {
+    let (kind, arrow) = match &node.kind {
+        Kind::Variant => (Kind::VariantBytes, Arrow::Binary),
+        Kind::List(element, _) => {
+            let element = variant_bytes(element)?;
+            let field = Arc::new(Field::new_list_field(element.arrow.clone(), true));
+            (Kind::List(Box::new(element), field.clone()), Arrow::List(field))
+        }
+        Kind::Struct(s) => {
+            let fields: Vec<(String, Node)> = (s.fields.iter())
+                .filter_map(|(name, child)| Some((name.clone(), variant_bytes(child)?)))
+                .collect();
+            if fields.is_empty() {
+                return None;
+            }
+            let arrow: Fields = fields
+                .iter()
+                .map(|(name, n)| Field::new(name, n.arrow.clone(), true))
+                .collect();
+            let s = Struct {
+                fields,
+                open: false,
+                arrow: arrow.clone(),
+            };
+            (Kind::Struct(s), Arrow::Struct(arrow))
+        }
+        _ => return None,
+    };
+    Some(Node {
+        ty: node.ty.clone(),
+        kind,
+        arrow,
+    })
+}
+
+/// What `o` holds on `row`, as one value: what `json::write_object` writes of it, each value of its own type. None
+/// where that writes nothing.
+fn object_tag<'v>(o: &'v record::Object<'_>, inherited: Option<&'v [u8]>, row: usize) -> Option<tag::Tag<'v>> {
+    use std::borrow::Cow;
+    let own = o.unclaimed_at(row, inherited);
+    let own_object = own.filter(|v| variant::is_object(v));
+    let mut fields: Vec<(Cow<'v, str>, tag::Tag<'v>)> = Vec::new();
+    for (key, field) in &o.fields {
+        let value = match field {
+            record::Field::Leaf(col, _) => tag::row_tag(col, row),
+            record::Field::Object(child) => object_tag(child, o.member(own_object, &key.raw), row),
+        };
+        fields.extend(value.map(|v| (Cow::Borrowed(key.raw.as_str()), v)));
+    }
+    if let Some(Value::Object(entries)) = own_object.map(variant::read) {
+        let unclaimed = entries.filter(|(key, _)| !o.claims(key));
+        fields.extend(unclaimed.filter_map(|(key, v)| Some((Cow::Borrowed(key), tag::decode(v)?))));
+    }
+    if fields.is_empty() {
+        return own.filter(|v| !variant::is_object(v)).and_then(tag::decode);
+    }
+    Some(tag::Tag::Object(fields))
 }
 
 /// One string row per item: the JSON `write` writes for it, null where it writes nothing.
@@ -1468,7 +1697,7 @@ mod tests {
             None,
             "a null list holds nothing"
         );
-        let written = relabelled(&lists.slice(0, 1), &to, None);
+        let written = relabelled(&lists.slice(0, 1), None, &to, None);
         let items = written.as_list::<i32>().value(0);
         let items = items.as_primitive::<Int32Type>();
         assert_eq!(items.iter().collect::<Vec<_>>(), vec![Some(1), None, Some(2)]);
@@ -1550,7 +1779,7 @@ mod tests {
             false,
         );
         let schema = Schema::new(&record).unwrap();
-        let table = table_schema(&record, None, 0).unwrap().schema;
+        let table = table_schema(&record, None, 0, 2).unwrap().schema;
         let labelled = schema
             .clone()
             .with_written(with_field_ids(schema.arrow(), &table).unwrap().0);
@@ -1570,7 +1799,7 @@ mod tests {
         ));
         let batch = RecordBatch::try_new(schema.arrow().clone(), vec![o, l]).unwrap();
         let row = Columns {
-            chunk: Arc::new(Chunk::new(batch, Vec::new())),
+            chunk: Arc::new(Chunk::new(batch, None, Vec::new())),
             row: 0,
         };
         assert!(labelled.matches(&row));
@@ -1607,7 +1836,7 @@ mod tests {
 
         let record = st(&[("o", st(&[("a", DataType::I64)], false))], false);
         let schema = Schema::new(&record).unwrap();
-        let mut table = table_schema(&record, None, 0).unwrap().schema;
+        let mut table = table_schema(&record, None, 0, 2).unwrap().schema;
         let field = |id: i32, name: &str, field_type: Type| NestedField {
             id,
             name: name.into(),
@@ -1664,7 +1893,7 @@ mod tests {
             None,
         ));
         let batch = RecordBatch::try_new(schema.arrow().clone(), vec![o]).unwrap();
-        let chunk = Arc::new(Chunk::new(batch, Vec::new()));
+        let chunk = Arc::new(Chunk::new(batch, None, Vec::new()));
         let rows: Vec<Columns> = (0..2)
             .map(|row| Columns {
                 chunk: chunk.clone(),
@@ -1720,7 +1949,7 @@ mod tests {
 
         let record = st(&[("a", DataType::I64)], false);
         let schema = Schema::new(&record).unwrap();
-        let mut table = table_schema(&record, None, 0).unwrap().schema;
+        let mut table = table_schema(&record, None, 0, 2).unwrap().schema;
         let field = |id: i32, name: &str, ty: &str| NestedField {
             id,
             name: name.into(),
@@ -1755,7 +1984,7 @@ mod tests {
             .with_annotations(parquet_annotations(&table));
 
         let batch = RecordBatch::try_new(schema.arrow().clone(), vec![Arc::new(Int64Array::from(vec![1, 2]))]).unwrap();
-        let chunk = Arc::new(Chunk::new(batch, Vec::new()));
+        let chunk = Arc::new(Chunk::new(batch, None, Vec::new()));
         let rows: Vec<Columns> = (0..2)
             .map(|row| Columns {
                 chunk: chunk.clone(),
@@ -1810,6 +2039,140 @@ mod tests {
     }
 
     #[test]
+    fn a_variant_a_table_holds_as_one_is_written_as_parquets_variant_each_value_of_its_own_type() {
+        use crate::format::tag::{self, Tag};
+        use crate::io::iceberg::schema::{parquet_annotations, table_schema, with_field_ids};
+        use crate::io::parquet_variant::tests::read;
+        use crate::plan::tree::UNCLAIMED;
+        use arrow_array::cast::AsArray;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use std::borrow::Cow;
+
+        let record = st(
+            &[
+                ("v", DataType::Variant),
+                ("o", DataType::Variant),
+                ("s", st(&[("w", DataType::Variant), ("n", DataType::I64)], false)),
+                ("l", DataType::Array(Box::new(DataType::Variant))),
+            ],
+            false,
+        );
+        let schema = Schema::new(&record).unwrap();
+        let table = table_schema(&record, None, 0, 3).unwrap().schema;
+        let (written, defaults) = with_field_ids(schema.arrow(), &table).unwrap();
+        let labelled = (schema.clone().with_written(written).with_defaults(defaults))
+            .with_annotations(parquet_annotations(&table));
+
+        let mut pool = BufferPool::default();
+        let obj = |fields: Vec<(&'static str, Tag<'static>)>| {
+            Tag::Object(fields.into_iter().map(|(k, v)| (Cow::Borrowed(k), v)).collect())
+        };
+        let v = tag::encode_column(
+            &[
+                Some(obj(vec![
+                    ("t", Tag::DateTime(5)),
+                    ("b", Tag::Bytes(Cow::Borrowed(&[1, 2]))),
+                    ("d", Tag::Duration(7)),
+                    (
+                        "a",
+                        Tag::Array(vec![
+                            Some(Tag::I64(1)),
+                            Some(Tag::F64(2.5)),
+                            Some(Tag::Bool(true)),
+                            None,
+                        ]),
+                    ),
+                ])),
+                None,
+            ],
+            &mut pool,
+        );
+        // `o` is an object of the view's, under which the unclaimed fields hold more, or a value that is no object.
+        fn decoded(values: &[Option<Tag<'_>>], ty: &DataType, pool: &mut BufferPool) -> Column {
+            let variant = tag::encode_column(values, pool);
+            let column = tag::decode_column(&variant, ty, 0, pool).0;
+            variant.reclaim(pool);
+            column
+        }
+        let k = decoded(&[Some(Tag::Str("hi".into())), None], &DataType::Str, &mut pool);
+        let unclaimed = tag::encode_column(
+            &[
+                Some(obj(vec![("o", obj(vec![("z", Tag::I64(1))]))])),
+                Some(obj(vec![("o", Tag::I64(5))])),
+            ],
+            &mut pool,
+        );
+        // A text column where the record holds a variant.
+        let w = decoded(&[Some(Tag::Str("s".into())), None], &DataType::Str, &mut pool);
+        let l = decoded(
+            &[
+                Some(Tag::Array(vec![
+                    Some(Tag::Str("x".into())),
+                    Some(obj(vec![("q", Tag::I64(1))])),
+                ])),
+                None,
+            ],
+            &DataType::Array(Box::new(DataType::Variant)),
+            &mut pool,
+        );
+        let view = RecordView::from_named([("v", &v), ("o.k", &k), (UNCLAIMED, &unclaimed), ("s.w", &w), ("l", &l)]);
+        let chunk = Arc::new(Chunk::cut(&schema, &[(&view, &[0, 1])], 0, &mut pool));
+        drop(view);
+        for column in [v, k, unclaimed, w, l] {
+            column.reclaim(&mut pool);
+        }
+        assert_eq!(chunk.unfit(0), None);
+        let rows: Vec<Columns> = (0..2)
+            .map(|row| Columns {
+                chunk: chunk.clone(),
+                row,
+            })
+            .collect();
+        let mut writer = FileWriter::open(&labelled, &Compression::None.into());
+        // Each row alone, as a chunk of its own, and both together, as one.
+        writer.write(&[rows[0].alone(), rows[1].alone()]);
+        writer.write(&rows);
+        let (file, _) = writer.finish();
+
+        let read_back: Vec<RecordBatch> = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(file))
+            .unwrap()
+            .build()
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let batch = arrow_select::concat::concat_batches(&read_back[0].schema(), &read_back).unwrap();
+        let text = |v: &StructArray, i: usize| {
+            v.is_valid(i).then(|| {
+                let (m, b) = (v.column(0).as_binary::<i32>(), v.column(1).as_binary::<i32>());
+                read(m.value(i), b.value(i))
+            })
+        };
+        let list = batch.column(3).as_list::<i32>();
+        for row in [0, 2] {
+            assert_eq!(
+                text(batch.column(0).as_struct(), row).as_deref(),
+                Some("{a:[1,2.5,true,null],b:bin:[1, 2],d:7,t:ts:5}")
+            );
+            assert_eq!(
+                text(batch.column(1).as_struct(), row).as_deref(),
+                Some("{k:\"hi\",z:1}")
+            );
+            let s = batch.column(2).as_struct();
+            assert_eq!(text(s.column(0).as_struct(), row).as_deref(), Some("\"s\""));
+            let items = list.value(row);
+            let items = items.as_struct();
+            assert_eq!(text(items, 0).as_deref(), Some("\"x\""));
+            assert_eq!(text(items, 1).as_deref(), Some("{q:1}"));
+        }
+        for row in [1, 3] {
+            assert_eq!(text(batch.column(0).as_struct(), row), None);
+            assert_eq!(text(batch.column(1).as_struct(), row).as_deref(), Some("5"));
+            assert_eq!(text(batch.column(2).as_struct().column(0).as_struct(), row), None);
+            assert!(list.is_null(row));
+        }
+    }
+
+    #[test]
     fn a_table_column_the_record_lacks_takes_its_write_default_at_every_depth() {
         use crate::io::iceberg::metadata::{ListType, NestedField, Primitive, StructType, Type};
         use crate::io::iceberg::schema::{table_schema, with_field_ids};
@@ -1822,7 +2185,7 @@ mod tests {
 
         let record = st(&[("o", st(&[("a", DataType::I64)], false))], false);
         let schema = Schema::new(&record).unwrap();
-        let mut table = table_schema(&record, None, 0).unwrap().schema;
+        let mut table = table_schema(&record, None, 0, 2).unwrap().schema;
         let field = |id: i32, name: &str, field_type: Type, default: serde_json::Value| NestedField {
             id,
             name: name.into(),
@@ -1891,7 +2254,7 @@ mod tests {
             Some(NullBuffer::from(vec![true, false])),
         ));
         let batch = RecordBatch::try_new(schema.arrow().clone(), vec![o]).unwrap();
-        let chunk = Arc::new(Chunk::new(batch, Vec::new()));
+        let chunk = Arc::new(Chunk::new(batch, None, Vec::new()));
         let rows: Vec<Columns> = (0..2)
             .map(|row| Columns {
                 chunk: chunk.clone(),
@@ -1961,7 +2324,7 @@ mod tests {
         };
         let other = |name: &str| Type::Primitive(Primitive::Other(name.into()));
         let refused = |column: NestedField| {
-            let mut table = table_schema(&record, None, 0).unwrap().schema;
+            let mut table = table_schema(&record, None, 0, 2).unwrap().schema;
             table.fields.push(column);
             with_field_ids(schema.arrow(), &table).unwrap_err()
         };
@@ -2039,7 +2402,7 @@ mod tests {
         ));
         let batch = RecordBatch::try_new(schema.arrow().clone(), vec![o, l]).unwrap();
         let row = Columns {
-            chunk: Arc::new(Chunk::new(batch, Vec::new())),
+            chunk: Arc::new(Chunk::new(batch, None, Vec::new())),
             row: 0,
         };
         assert!(labelled.matches(&row));
