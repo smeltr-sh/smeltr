@@ -1,11 +1,10 @@
 <!--
-  A Remove step's fields: a chip for each it removes, and every field the record holds where the step starts, ticked
-  while it is kept. Remove all and Keep all act on what the search shows, as the Fields menu's Select all does. A name
-  that matches no field can still be removed, from a link under the search box.
+  A Remove step's fields: the fields declared before the step, each ticked while it is kept. Remove all and Keep all
+  act on what the search shows, as the Fields menu's Select all does. A name that matches no field can still be
+  removed, from a link under the search box.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
-  import RemovableChip from './RemovableChip.svelte';
   import type { DotAnswer } from './api';
 
   let {
@@ -65,13 +64,6 @@
   }
 </script>
 
-{#if fields.length}
-  <div class="chips">
-    {#each fields as f (f)}
-      <RemovableChip removeLabel={`keep ${f}`}><span class="mono">{f}</span></RemovableChip>
-    {/each}
-  </div>
-{/if}
 <div class="picker">
   <input type="search" bind:value={query} placeholder="Find a field" aria-label="Find a field" />
   {#if !readOnly}
@@ -113,14 +105,6 @@
 </div>
 
 <style>
-  .chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    max-height: 7.5rem;
-    overflow-y: auto;
-  }
-
   .mono {
     font-family: var(--mono);
   }
@@ -134,7 +118,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
-    margin-top: 0.5rem;
     padding: 0.5rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-card);

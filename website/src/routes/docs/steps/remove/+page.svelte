@@ -34,8 +34,9 @@
 
   <h2 id="example">Example</h2>
   <p>
-    The parser declares the record's fields, so the step's list shows them, beside
-    <code>_raw</code>, the text the parser read.
+    In each example, a parser before this step reads <code>_raw</code> as JSON and declares the
+    record's fields, here <code>user</code>, <code>status</code>, <code>debug</code> and
+    <code>raw_headers</code>. The step's list shows them, and <code>_raw</code> too.
   </p>
   <StepExample example={examples.basic} />
   <p>The step does not name <code>user</code> or <code>status</code>, so they pass through.</p>
@@ -44,14 +45,12 @@
   <p>It also takes the settings <a href="/docs/steps#settings">every step</a> takes.</p>
   <SettingsTable settings={kind(STEPS, 'remove').settings} />
   <p>
-    In the editor, the step lists the fields the pipeline declares where the step starts, ticked
-    while it is kept. Untick a field to remove it. <strong>Find a field</strong> narrows the list,
-    and
-    <strong>Remove all</strong> and <strong>Keep all</strong> act on the fields it shows. To remove
-    a field that matches nothing in the list, type its name and choose
-    <strong>Remove &lt;name&gt;</strong> under the search box. A field a JSON or key-value parser read
-    without declaring it is not in the list, and is removed this way. A name the record cannot hold there
-    is an error at the step.
+    In the editor, the step lists the fields declared before it, each ticked while it is kept.
+    Untick a field to remove it. <strong>Find a field</strong> narrows the list, and
+    <strong>Remove all</strong> and <strong>Keep all</strong> act on the fields it shows. A field a
+    JSON or key-value parser read without declaring it is not in the list: to remove it, type its
+    name and choose <strong>Remove &lt;name&gt;</strong> under the search box. A name that is not a field
+    at that point is an error.
   </p>
 
   <h2 id="how-it-works">How it works</h2>
@@ -61,7 +60,10 @@
   </p>
 
   <h3 id="objects">Objects</h3>
-  <p>A dot names a field inside an object, and removing an object removes every field inside it:</p>
+  <p>
+    A dot names a field inside an object, and removing an object removes every field inside it. The
+    parser declares <code>http.request.method</code> and the two headers:
+  </p>
   <StepExample example={examples.object} />
 
   <h3 id="filter">With a filter</h3>
@@ -70,12 +72,15 @@
     stay for later steps. A record where it is false or null passes the step unchanged. A Remove
     step inside an <a href="/docs/steps/if">If step</a> branch works the same way.
   </p>
-  <p>The parser declares <code>level</code> and <code>trace</code> as <code>str</code>.</p>
+  <p>The parser declares <code>level</code> and <code>trace</code>.</p>
   <StepExample example={examples.filtered} />
   <p>A null field is left out of the JSON shown.</p>
 
   <h3 id="edges">Missing fields</h3>
-  <p>A record without the field passes the step unchanged:</p>
+  <p>
+    The parser declares <code>debug</code> and <code>status</code>. A record without the field
+    passes the step unchanged:
+  </p>
   <StepExample example={examples.missing} />
 
   <h2 id="see-also">See also</h2>
