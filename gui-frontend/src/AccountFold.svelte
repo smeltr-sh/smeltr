@@ -241,8 +241,11 @@
     <button type="button" disabled={busy} onclick={() => setEnabled(false)}>Disable account</button>
   {:else}
     <button type="button" disabled={busy} onclick={() => setEnabled(true)}>Enable account</button>
-    <!-- Only a disabled account is deleted, so deleting is a second, deliberate step. -->
-    <button type="button" disabled={busy} onclick={remove}>Delete account</button>
+    <!-- Only a disabled account is deleted, so deleting is a second, deliberate step. Never admin,
+       the account recovery from the host restores (`accounts::BOOTSTRAP_USERNAME`). -->
+    {#if !(account.authSource === 'local' && account.username === 'admin')}
+      <button type="button" disabled={busy} onclick={remove}>Delete account</button>
+    {/if}
   {/if}
 </div>
 

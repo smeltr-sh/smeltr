@@ -794,7 +794,7 @@ async fn delete_account(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: 
     }
     expect("a disabled account deleted", status, 200, &answer)?;
     cov.reach("delete");
-    audited(leader, &by, "delete", &id)?;
+    audited(leader, &by, "account-delete", &id)?;
     let gone = model.accounts.remove(i);
     model.released_usernames.extend(gone.username);
     model.released_subjects.extend(gone.subject);
