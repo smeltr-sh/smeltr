@@ -386,12 +386,19 @@ pub struct Snapshot {
     pub schema_id: Option<i32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// A branch or tag. A commit that moves one keeps its retention: a catalog replaces the whole ref.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct SnapshotRef {
     pub snapshot_id: i64,
     #[serde(rename = "type")]
     pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_snapshots_to_keep: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_snapshot_age_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_ref_age_ms: Option<i64>,
 }
 
 #[cfg(test)]

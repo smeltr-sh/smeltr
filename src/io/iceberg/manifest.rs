@@ -278,20 +278,25 @@ fn truncate_binary_upper(bytes: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
-/// A manifest of data files, for a table whose current schema is `schema`, partitioned by `spec`.
-pub fn write_manifest(schema: &Schema, spec: &PartitionSpec, entries: &[DataFileEntry]) -> Result<Vec<u8>, String> {
-    let types = partition_types(schema, spec)?;
+/// A manifest of data files, for a table whose current schema is `schema`, partitioned by `spec`, whose fields' values
+/// are of `types`.
+pub fn write_manifest(
+    schema: &Schema,
+    spec: &PartitionSpec,
+    types: &[Primitive],
+    entries: &[DataFileEntry],
+) -> Result<Vec<u8>, String> {
     let names: Vec<String> = spec.fields.iter().map(|f| avro_name(&f.name)).collect();
     let partition_fields = spec
         .fields
         .iter()
         .zip(&names)
-        .zip(&types)
+        .zip(types)
         .map(|((field, name), ty)| Ok(optional(name, field.field_id, avro_primitive(ty)?)))
         .collect::<Result<Vec<_>, String>>()?;
     let records = entries
         .iter()
-        .map(|entry| entry_value(entry, &names, &types))
+        .map(|entry| entry_value(entry, &names, types))
         .collect::<Result<Vec<_>, String>>()?;
     let metadata = [
         ("schema", serde_json::to_string(schema).map_err(|e| e.to_string())?),
@@ -405,7 +410,8 @@ fn compare(a: &Literal, b: &Literal) -> Option<Ordering> {
         (L::Boolean(a), L::Boolean(b)) => Some(a.cmp(b)),
         (L::Int(a), L::Int(b)) | (L::Date(a), L::Date(b)) => Some(a.cmp(b)),
         (L::Long(a), L::Long(b)) | (L::Micros(a), L::Micros(b)) => Some(a.cmp(b)),
-        (L::Double(a), L::Double(b)) => a.partial_cmp(b),
+        // IEEE 754 totalOrder: a bound must not be 0.0 when -0.0 is a value below it.
+        (L::Double(a), L::Double(b)) => Some(a.total_cmp(b)),
         (L::String(a), L::String(b)) => Some(a.cmp(b)),
         (L::Binary(a), L::Binary(b)) => Some(a.cmp(b)),
         _ => None,
@@ -615,28 +621,6 @@ pub fn merge(entries: Vec<DataFileEntry>, snapshot_id: i64) -> Vec<DataFileEntry
                     Some(entry)
                 }
             }
-        })
-        .collect()
-}
-
-/// The type of each partition field's values: its transform's result type over its source column.
-fn partition_types(schema: &Schema, spec: &PartitionSpec) -> Result<Vec<Primitive>, String> {
-    spec.fields
-        .iter()
-        .map(|field| {
-            let source = match schema.field(field.source_id).map(|f| &f.field_type) {
-                Some(Type::Primitive(p)) => p.clone(),
-                Some(other) => return Err(format!("partition field {} is over a {other}", field.name)),
-                None => return Err(format!("partition field {} has no source column", field.name)),
-            };
-            Ok(match &field.transform {
-                Transform::Identity | Transform::Truncate(_) | Transform::Void => source,
-                Transform::Year | Transform::Month | Transform::Hour | Transform::Bucket(_) => Primitive::Int,
-                Transform::Day => Primitive::Date,
-                Transform::Other(name) => {
-                    return Err(format!("partition transform {name} is not one this writer knows"));
-                }
-            })
         })
         .collect()
 }
@@ -1113,6 +1097,11 @@ mod tests {
         .unwrap()
     }
 
+    /// The types of `spec()`'s fields.
+    fn types() -> [Primitive; 2] {
+        [Primitive::Date, Primitive::String]
+    }
+
     /// An Avro container's header metadata, decoded by hand so the test does not trust the code it checks.
     fn header(bytes: &[u8]) -> HashMap<String, Vec<u8>> {
         fn long(bytes: &[u8], at: &mut usize) -> i64 {
@@ -1181,10 +1170,28 @@ mod tests {
     }
 
     #[test]
+    fn a_partition_summary_puts_negative_zero_below_zero() {
+        let entry = |v: f64| DataFileEntry {
+            partition: vec![Some(Literal::Double(v))],
+            ..added_entry()
+        };
+        for values in [[0.0, -0.0, 0.0], [-0.0, 0.0, -0.0]] {
+            let entries = values.map(entry);
+            let summary = summarize_field(&entries, 0, false);
+            assert_eq!(
+                summary.lower_bound,
+                Some((-0.0f64).to_le_bytes().to_vec()),
+                "{values:?}"
+            );
+            assert_eq!(summary.upper_bound, Some(0.0f64.to_le_bytes().to_vec()), "{values:?}");
+        }
+    }
+
+    #[test]
     fn a_manifest_and_its_list_read_back_with_what_they_inherit_at_commit() {
         let (schema, spec) = (table_schema(), spec());
         let entries = vec![added_entry(), existing_entry()];
-        let manifest = write_manifest(&schema, &spec, &entries).unwrap();
+        let manifest = write_manifest(&schema, &spec, &types(), &entries).unwrap();
         let summary = summarize(
             "s3://b/t/metadata/m0.avro".into(),
             manifest.len() as u64,
@@ -1286,7 +1293,7 @@ mod tests {
                 _ => {}
             }
         }
-        let manifest = write_manifest(&table_schema(), &spec(), &[added_entry()]).unwrap();
+        let manifest = write_manifest(&table_schema(), &spec(), &types(), &[added_entry()]).unwrap();
         let summary = summarize(
             "m".into(),
             manifest.len() as u64,
@@ -1541,7 +1548,7 @@ mod tests {
             ],
             ..existing_entry()
         };
-        let manifest = write_manifest(&schema, &spec, std::slice::from_ref(&entry)).unwrap();
+        let manifest = write_manifest(&schema, &spec, &types(), std::slice::from_ref(&entry)).unwrap();
         let listed = summarize(
             "m.avro".into(),
             manifest.len() as u64,
