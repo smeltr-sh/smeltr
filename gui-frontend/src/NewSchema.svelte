@@ -347,6 +347,11 @@
   }
 </script>
 
+{#snippet link(href: string)}
+  <a {href} target="_blank" rel="noreferrer">{href.replace(/^https:\/\//, '').replace(/\/$/, '')}</a
+  >
+{/snippet}
+
 <NewObject
   {open}
   noun="schema"
@@ -361,11 +366,6 @@
   }}
   {oncancel}
 >
-  {#snippet link(href: string)}
-    <a {href} target="_blank" rel="noreferrer"
-      >{href.replace(/^https:\/\//, '').replace(/\/$/, '')}</a
-    >
-  {/snippet}
   {#snippet fields(draft)}
     {#if (draft.type === 'ecs' || draft.type === 'ocsf') && standards}
       {@const release = draft.type === 'ecs' ? standards.ecs : standards.ocsf}
