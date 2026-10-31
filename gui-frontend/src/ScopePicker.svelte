@@ -37,7 +37,7 @@
   // they hold it at, so the chip says what this page lets them do.
   const administrator = isAdministrator();
   // The face shortens it to the glyph and "Workers"; hover and a screen reader get it whole.
-  const named = $derived(`Worker group ${scope}`);
+  const named = $derived(scope === SHARED_SCOPE ? 'Shared configuration' : `Worker group ${scope}`);
   const offered = $derived(administrator ? groups : groups.filter((g) => levelIn(g.id) !== null));
 
   // A scope set from a page -- a review's file link -- moves the chip and the rail with it.
@@ -97,8 +97,9 @@
   onopen={load}
 >
   {#snippet face()}
-    <WorkerGroupIcon /><span class="dim">Workers</span>
-    <span class="scope-name">{scope}</span>{#if !administrator}{@const level =
+    {#if scope === SHARED_SCOPE}<span class="scope-name">Shared configuration</span
+      >{:else}<WorkerGroupIcon /><span class="dim">Workers</span>
+      <span class="scope-name">{scope}</span>{/if}{#if !administrator}{@const level =
         levelIn(scope)}{#if level}<LevelMark {level} named={false} />{:else}<span>no access</span
         >{/if}{/if}
     <span class="scope-dot" aria-hidden="true"></span>
@@ -112,7 +113,7 @@
       class:on={scope === SHARED_SCOPE}
       onclick={() => switchScope(SHARED_SCOPE)}
     >
-      <span class="mono">shared</span>
+      <span>Shared configuration</span>
       <span class="dim"
         >{#if administrator}every group draws on this{:else if level}<LevelMark
             {level}
