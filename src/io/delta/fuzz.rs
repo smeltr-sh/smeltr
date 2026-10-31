@@ -1466,6 +1466,8 @@ struct Run {
     other_identity: BTreeMap<String, Vec<(String, Vec<i64>)>>,
     /// The table's column the record does not write that has a default.
     default: Option<Defaulting>,
+    /// Whether another writer changed that default since the writer last opened.
+    default_changed: bool,
 }
 
 /// Runs seed `seed`. Err names the property it breaks.
@@ -1493,6 +1495,7 @@ fn run(seed: u64) -> Result<(), String> {
         clustering: Vec::new(),
         other_identity: BTreeMap::new(),
         default: None,
+        default_changed: false,
     };
     let must_refuse = run.existing()?;
     run.harvest()?;
@@ -1737,6 +1740,7 @@ impl Run {
                 if let Some(default) = &self.default {
                     default.written(&committer)?;
                 }
+                self.default_changed = false;
                 self.committer = Some(committer);
                 Ok(true)
             }
@@ -1791,8 +1795,14 @@ impl Run {
         if self.rng.chance(3) {
             self.arm();
         }
+        let before = self.latest();
         let committer = self.committer.as_mut().expect("checked above");
         let committed = committer.commit(&files);
+        self.harvest()?;
+        // Files that leave out the default another writer gave a column no longer fit the table.
+        if committed.is_ok() && self.default_changed && self.latest() > before {
+            return Err("a commit landed after another writer changed a column's default".into());
+        }
         reach(match &committed {
             Ok(()) => "commit ok",
             Err(CommitError::Conflict) => "commit conflict",
@@ -1847,11 +1857,7 @@ impl Run {
         for (_, c) in built {
             c.reclaim(&mut pool);
         }
-        let partitioner = DeltaPartitioner {
-            columns: committer.partitions.clone(),
-            defaults: committer.partition_defaults().unwrap(),
-            unpartitioned_key_bytes: committer.root.key(&format!("{}.parquet", "0".repeat(32))).len(),
-        };
+        let partitioner = committer.partitioner().unwrap();
         let mut files = Vec::new();
         for row in 0..rows as u32 {
             let owned = OwnedRecord {
@@ -2036,7 +2042,10 @@ impl Run {
             _ if defaulted.is_some() && rng.chance(8) => {
                 reach("other default change");
                 let field = &mut schema.fields[defaulted.expect("checked above")];
-                let changed = Defaulting::of(rng, &self.default.as_ref().expect("checked above").delta);
+                let was = self.default.as_ref().expect("checked above");
+                let changed = Defaulting::of(rng, &was.delta);
+                // A literal of the same value, `7` for `7S`, changes no row.
+                self.default_changed |= changed.value.to_data() != was.value.to_data();
                 field.metadata.insert("CURRENT_DEFAULT".into(), json!(changed.sql));
                 // A column another writer leaves null where the record writes no value can no longer be not nullable.
                 field.nullable = true;

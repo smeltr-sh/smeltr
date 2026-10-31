@@ -123,19 +123,9 @@ pub fn destination(
         &runtime,
     )?;
     let log = Log::new(store.clone(), runtime.clone(), config.stall_after, &root.key);
-    let unpartitioned_key_bytes = root.key(&format!("{}.parquet", "0".repeat(32))).len();
     let committer = DeltaCommitter::open(log, root, &config.partition_by, record).map_err(refused)?;
-    let partitioner = DeltaPartitioner {
-        columns: committer.partitions.clone(),
-        defaults: committer.partition_defaults().map_err(refused)?,
-        unpartitioned_key_bytes,
-    };
-    let file_schema = parquet::Schema::new(record).map_err(refused)?;
-    let file_schema = file_schema
-        .with_written(committer.written.clone())
-        .with_defaults(committer.defaults())
-        .with_computed(committer.sequences.computed(&committer.schema))
-        .with_partition_columns(committer.partition_columns());
+    let partitioner = committer.partitioner().map_err(refused)?;
+    let file_schema = committer.file_schema().map_err(refused)?;
     let format = ParquetFormat::new(vec![file_schema], config.compression.into());
     // The protocol names no codec and no row group's size; a table names its files' size.
     let file_bytes = (committer.snapshot.metadata.property("delta.targetFileSize"))
@@ -404,6 +394,25 @@ impl DeltaCommitter {
         (self.partitions.iter())
             .filter_map(|p| Some((p.physical.clone(), self.written.index_of(&p.physical).ok()?)))
             .collect()
+    }
+
+    /// The schema the record's files are written with: under the table's physical names, each column the record does
+    /// not write taking its default or its identity values, and the partition columns holding their partition's.
+    fn file_schema(&self) -> Result<parquet::Schema, String> {
+        Ok(parquet::Schema::new(&self.record)?
+            .with_written(self.written.clone())
+            .with_defaults(self.defaults())
+            .with_computed(self.sequences.computed(&self.schema))
+            .with_partition_columns(self.partition_columns()))
+    }
+
+    /// The partitioner of the record's rows, by the table's partition columns.
+    fn partitioner(&self) -> Result<DeltaPartitioner, String> {
+        Ok(DeltaPartitioner {
+            columns: self.partitions.clone(),
+            defaults: self.partition_defaults()?,
+            unpartitioned_key_bytes: self.root.key(&format!("{}.parquet", "0".repeat(32))).len(),
+        })
     }
 
     /// What each of the files' columns takes in a row: the record's value, or its column's default.
@@ -1751,10 +1760,7 @@ mod tests {
         // Not nullable: every row takes a value.
         let table = identity_table(&record, &[], false, metadata);
         let mut committer = table.open(&record, &[]).unwrap();
-        let schema = parquet::Schema::new(&record)
-            .unwrap()
-            .with_written(committer.written.clone())
-            .with_computed(committer.sequences.computed(&committer.schema));
+        let schema = committer.file_schema().unwrap();
         let rows = host_rows(&schema, 3);
         assert!(table.commit(1).is_none(), "nothing is reserved before a row needs it");
         for row in &rows {
@@ -1949,19 +1955,11 @@ mod tests {
             ],
         );
         let mut committer = table.open(&record, &[]).unwrap();
-        let schema = parquet::Schema::new(&record)
-            .unwrap()
-            .with_written(committer.written.clone())
-            .with_defaults(committer.defaults())
-            .with_partition_columns(committer.partition_columns());
+        let schema = committer.file_schema().unwrap();
         let rows = host_rows(&schema, 3);
 
         // The partition column takes its default too.
-        let partitioner = DeltaPartitioner {
-            columns: committer.partitions.clone(),
-            defaults: committer.partition_defaults().unwrap(),
-            unpartitioned_key_bytes: 0,
-        };
+        let partitioner = committer.partitioner().unwrap();
         let owned = OwnedRecord {
             columns: Some(rows[0].clone()),
             ..Default::default()
