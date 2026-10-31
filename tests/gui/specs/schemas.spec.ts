@@ -11,17 +11,23 @@ import { test, expect, goto, type Api, type Leader } from '../fleet';
 const ON = '?branch=work';
 const SHARED = '/api/areas/shared';
 
-/** A sign-in, as a bundle declares it: an id, a time in epoch milliseconds and a user are required. */
+/** A sign-in, as a bundle declares it: an id, a time in epoch milliseconds and a user are required, and where it
+ * came from recommended. */
 const LOGIN = {
   id: 'login',
   title: 'Login',
   fields: [
-    { field: 'activity_id', type: 'i64', required: true },
-    { field: 'time', type: 'i64', required: true, description: 'Milliseconds since the epoch.' },
-    { field: 'user', type: '{...}', required: true },
+    { field: 'activity_id', type: 'i64', requirement: 'required' },
+    {
+      field: 'time',
+      type: 'i64',
+      requirement: 'required',
+      description: 'Milliseconds since the epoch.',
+    },
+    { field: 'user', type: '{...}', requirement: 'required' },
     { field: 'user.name', type: 'str' },
     { field: 'user.manager', type: 'variant' },
-    { field: 'src_endpoint', type: '{...}' },
+    { field: 'src_endpoint', type: '{...}', requirement: 'recommended' },
     { field: 'src_endpoint.ip', type: 'str' },
     { field: 'src_endpoint.port', type: 'i64' },
   ],
@@ -258,6 +264,49 @@ test('an integer indexed as a date counts milliseconds or seconds, as its choice
   ).toBeAttached();
 });
 
+test("a field's requirement is chosen on the Schemas page, and shared/'s schemas only show it", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await declare(api);
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: 'login fields' }).click();
+  await expect(
+    admin.getByText('Choose each field’s requirement here, or edit it with Edit JSON.'),
+  ).toBeVisible();
+  const requirement = (field: string) =>
+    admin.getByRole('combobox', { name: `Requirement of ${field}`, exact: true });
+  await expect(requirement('time')).toHaveValue('required');
+  await expect(requirement('src_endpoint')).toHaveValue('recommended');
+  await expect(admin.getByRole('cell', { name: 'src_endpoint°', exact: true })).toBeVisible();
+  await expect(requirement('user.name')).toHaveValue('optional');
+  await requirement('user.name').selectOption('recommended');
+  await expect(admin.getByRole('cell', { name: 'user.name°', exact: true })).toBeVisible();
+  await requirement('src_endpoint').selectOption('optional');
+  await admin.screenshot({ path: 'results/schemas-requirement.png' });
+
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  const fields: { field: string; requirement?: string }[] = (
+    await api.get(`${SHARED}${ON}`)
+  ).config.schemas.find((s: { id: string }) => s.id === 'login').fields;
+  const kept = (field: string) => fields.find((f) => f.field === field);
+  expect(kept('user.name')?.requirement).toBe('recommended');
+  expect(kept('src_endpoint'), 'an optional field says nothing').toEqual({
+    field: 'src_endpoint',
+    type: '{...}',
+  });
+
+  await admin.getByRole('button', { name: 'shared', exact: true }).click();
+  await admin.getByRole('button', { name: /^default/ }).click();
+  await admin.getByRole('button', { name: '▸ login' }).click();
+  await expect(admin.getByRole('combobox', { name: /^Requirement of / })).toHaveCount(0);
+  await expect(admin.getByRole('link', { name: 'Edit in shared/', exact: true })).toBeVisible();
+  await expect(admin.getByRole('cell', { name: 'recommended', exact: true })).toHaveCount(1);
+  await admin.screenshot({ path: 'results/schemas-requirement-shared.png' });
+});
+
 test("a field's own Elasticsearch settings show beside its type, and shared/'s schemas only show it", async ({
   admin,
   leader,
@@ -334,7 +383,7 @@ test("a JSON Schema added on the Schemas page is saved as the bundle's own", asy
       id: 'orders',
       title: 'Orders',
       fields: [
-        { field: 'id', type: 'i64', required: true },
+        { field: 'id', type: 'i64', requirement: 'required' },
         { field: 'total', type: 'f64' },
       ],
     },
@@ -413,7 +462,7 @@ const ECS_IMPORTER = {
         '  : ecs == "flattened" ? "variant"',
         '  : "str";',
         'if (normalization == "array") { type = "array<" + type + ">"; }',
-        'required = field == "@timestamp";',
+        'requirement = field == "@timestamp" ? "required" : "optional";',
         'if (ecs == "wildcard" || ecs == "text" || ecs == "match_only_text" || ecs == "ip" || ecs == "constant_keyword"',
         '    || ecs == "float" || ecs == "geo_point" || ecs == "nested" || ecs == "flattened") {',
         '  elasticsearch = {type: ecs};',
@@ -460,7 +509,7 @@ test('a schema is imported by a pipeline of the bundle run over an uploaded file
   expect(fields[0]).toEqual({
     field: '@timestamp',
     type: 'datetime',
-    required: true,
+    requirement: 'required',
     description: 'Date/time when the event originated.',
   });
   expect(fields.find((f: { field: string }) => f.field === 'tags').type).toBe('array<str>');
@@ -556,8 +605,9 @@ test('ECS and an OCSF class come in from the releases the leader carries', async
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   let field = await saved(admin, api, 'ecs');
-  expect(field('@timestamp')).toMatchObject({ type: 'datetime', required: true });
+  expect(field('@timestamp')).toMatchObject({ type: 'datetime', requirement: 'required' });
   expect(field('source.ip')?.elasticsearch).toEqual({ type: 'ip' });
+  expect(field('source.ip')?.requirement, 'a core field').toBe('recommended');
 
   // The id follows the class, by its name; the class is listed by its caption, under its category.
   dialog = await addBuiltIn(admin, leader, 'OCSF');
@@ -574,7 +624,7 @@ test('ECS and an OCSF class come in from the releases the leader carries', async
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   field = await saved(admin, api, 'process_activity-1');
-  expect(field('process')).toMatchObject({ type: '{...}', required: true });
+  expect(field('process')).toMatchObject({ type: '{...}', requirement: 'required' });
   expect(field('process.pid')?.type).toBe('i64');
 });
 
@@ -586,7 +636,7 @@ async function saved(admin: Page, api: Api, id: string) {
   type Kept = {
     field: string;
     type: string;
-    required?: boolean;
+    requirement?: string;
     example?: string;
     elasticsearch?: object;
   };
@@ -612,7 +662,7 @@ test('ECS comes in from ecs_flat.yml with its types, settings and examples', asy
   await expect(admin.getByRole('cell', { name: '@timestamp*', exact: true })).toBeVisible();
   await expect(admin.getByRole('cell', { name: 'Albert Einstein', exact: true })).toBeVisible();
   const field = await saved(admin, api, 'ecs');
-  expect(field('ecs.version')?.required).toBe(true);
+  expect(field('ecs.version')?.requirement).toBe('required');
   expect(field('agent.id')).toMatchObject({ type: 'str', example: '8a4f500d' });
   expect(field('agent.id')?.elasticsearch).toBeUndefined();
   expect(field('user.full_name')?.elasticsearch).toEqual({
@@ -637,7 +687,7 @@ test('ECS comes in from fields.csv, with no line breaker to set', async ({
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   const field = await saved(admin, api, 'ecs');
-  expect(field('@timestamp')).toMatchObject({ type: 'datetime', required: true });
+  expect(field('@timestamp')).toMatchObject({ type: 'datetime', requirement: 'required' });
   expect(field('message')?.elasticsearch).toEqual({ type: 'match_only_text' });
   expect(field('gen_ai.input.messages')).toMatchObject({
     type: 'variant',
@@ -667,7 +717,7 @@ test('an OCSF class comes in as deep and with the requirements chosen', async ({
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   const field = await saved(admin, api, 'auth');
-  expect(field('user')).toMatchObject({ type: '{...}', required: true });
+  expect(field('user')).toMatchObject({ type: '{...}', requirement: 'required' });
   expect(field('user.name')).toBeUndefined();
   expect(field('src_endpoint')).toBeUndefined();
 });
@@ -693,7 +743,7 @@ test('a CSV of fields comes in by its header, example and Elasticsearch type amo
   expect(field('client_ip')).toEqual({
     field: 'client_ip',
     type: 'str',
-    required: true,
+    requirement: 'required',
     description: 'Where the request came from.',
     example: '10.0.0.1',
     elasticsearch: { type: 'ip' },
@@ -791,6 +841,11 @@ test('review lists where the rows do not fit a schema, and the dock counts them 
     panel.getByText('Login requires `activity_id`, `time`, `user`; the rows lack them.'),
   ).toBeVisible();
   await expect(panel.getByText(/destination "search" accepts Audit/)).toBeVisible();
+  // A recommended field the rows lack is told after the findings, and not counted with them.
+  await expect(
+    panel.locator('li').last().getByText('Login recommends `src_endpoint`; the rows lack it.'),
+  ).toBeVisible();
+  await expect(admin.getByRole('tab', { name: /^Schemas/ })).toHaveText(/Schemas\s*2$/);
   await expect(admin.getByRole('button', { name: 'Approve & deploy' })).toBeEnabled();
   await admin.screenshot({ path: 'results/schemas-review.png' });
 });
@@ -844,5 +899,10 @@ test('a field the schema requires and the rows lack is a column of its own, with
   await expect(
     admin.getByText('Login requires `activity_id`, `user`; the rows lack them.'),
   ).toBeVisible();
+  // A recommended field the rows lack is told apart from the warning, and is no column.
+  await expect(admin.getByText('Login recommends `src_endpoint`; the rows lack it.')).toBeVisible();
+  await expect(admin.getByText('Recommended by Login:')).toBeVisible();
+  await expect(grid.locator('thead th', { hasText: 'src_endpoint' })).toHaveCount(0);
+  await expect(admin.getByText('1 schema finding')).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-missing.png' });
 });

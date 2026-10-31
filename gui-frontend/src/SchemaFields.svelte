@@ -1,26 +1,30 @@
 <!--
-  One schema's fields, as its table: each field's path, the type it must hold, and what it means. A field a row must
-  hold is starred. A search narrows it to the fields whose path or description holds the words. The Elasticsearch
+  One schema's fields, as its table: each field's path, the type it must hold, its requirement, and what it means. A
+  required field is starred, and a recommended one marked °; the requirement is chosen where the schema is the
+  group's own. A search narrows it to the fields whose path or description holds the words. The Elasticsearch
   view shows the type each field maps to there, and chooses it where the schema is the group's own. A long table
   shows its first fields until Show all.
 -->
 <script lang="ts">
-  import type { SchemaDto, SchemaFieldDto } from './api';
+  import type { Requirement, SchemaDto, SchemaFieldDto } from './api';
   import Help from './Help.svelte';
   import Segmented from './Segmented.svelte';
-  import { elasticsearchTypes } from './schemas';
+  import { elasticsearchTypes, REQUIREMENTS } from './schemas';
   import { count } from './time';
 
   let {
     of,
     q = '',
     onmap,
+    onrequire,
   }: {
     of: Pick<SchemaDto, 'fields'>;
     /** Words a shown field's path or description holds. Blank shows every field. */
     q?: string;
     /** Sets how the field maps in Elasticsearch, or clears it to its type's own. Absent, the view only shows it. */
     onmap?: (field: string, mapping: SchemaFieldDto['elasticsearch']) => void;
+    /** Sets a field's requirement. Absent, the table only shows it. */
+    onrequire?: (field: string, requirement: Requirement) => void;
   } = $props();
 
   const VIEWS = [
@@ -122,10 +126,12 @@
     const field = `min(calc(${widest(of.fields.map((f) => f.field)) + 1}ch + 1rem), 45%)`;
     const type = `calc(${Math.max(4, widest(of.fields.map((f) => f.type)))}ch + 1rem)`;
     if (view === 'elasticsearch') return `${field} ${type} minmax(0, 1fr)`;
+    // As wide as `recommended` in a dropdown, or as its column's head where it is text.
+    const requirement = onrequire ? '11rem' : 'calc(12ch + 1.5rem)';
     const example = examples
       ? ` min(calc(${widest(of.fields.map((f) => f.example))}ch + 1rem), 18rem)`
       : '';
-    return `${field} ${type} minmax(0, 1fr)${example}`;
+    return `${field} ${type} ${requirement} minmax(0, 1fr)${example}`;
   });
 </script>
 
@@ -137,7 +143,12 @@
     <span class="dim" aria-hidden="true">Fields shown as</span>
     <Segmented label="Fields shown as" options={[...VIEWS]} bind:value={view} />
   </div>
-  <table class="fields" class:mapped={view === 'elasticsearch'} style:--columns={columns}>
+  <table
+    class="fields"
+    class:mapped={view === 'elasticsearch'}
+    class:editable={onrequire !== undefined}
+    style:--columns={columns}
+  >
     <thead>
       <tr>
         <th>Field</th>
@@ -147,7 +158,7 @@
               >Each field is indexed as this Elasticsearch type. The first in its list is the type
               its schema type maps to, and a field left on it saves no mapping of its own.</Help
             ></th
-          >{:else}<th>Description</th>
+          >{:else}<th>Requirement</th><th>Description</th>
           {#if examples}<th>Example</th>{/if}{/if}
       </tr>
     </thead>
@@ -155,9 +166,12 @@
       {#each shown as f (f.field)}
         <tr>
           <td class="name">
-            <span class="mono">{f.field}</span>{#if f.required}<span
+            <span class="mono">{f.field}</span>{#if f.requirement === 'required'}<span
                 class="required"
                 title="required">*</span
+              >{:else if f.requirement === 'recommended'}<span
+                class="recommended"
+                title="recommended">°</span
               >{/if}
           </td>
           <td class="mono">{f.type}</td>
@@ -193,6 +207,19 @@
                 >{/if}
             </td>
           {:else}
+            <td class="mono requirement">
+              {#if onrequire}
+                <select
+                  aria-label={`Requirement of ${f.field}`}
+                  value={f.requirement ?? 'optional'}
+                  onchange={(e) => onrequire(f.field, e.currentTarget.value as Requirement)}
+                >
+                  {#each REQUIREMENTS as r (r)}<option value={r}>{r}</option>{/each}
+                </select>
+              {:else}
+                {f.requirement ?? 'optional'}
+              {/if}
+            </td>
             <td class="about">{f.description ?? ''}</td>
             {#if examples}<td class="example mono" title={f.example}
                 ><div>{f.example ?? ''}</div></td
@@ -229,8 +256,13 @@
     white-space: nowrap;
   }
 
+  .requirement select {
+    width: 100%;
+  }
+
   /* A row of dropdowns reads level with its text. */
-  .mapped tr {
+  .mapped tr,
+  .editable tr {
     align-items: center;
   }
 
@@ -322,6 +354,11 @@
   .required {
     margin-left: 0.15rem;
     color: var(--error);
+  }
+
+  .recommended {
+    margin-left: 0.15rem;
+    color: var(--dim);
   }
 
   .dim {

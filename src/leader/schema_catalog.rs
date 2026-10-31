@@ -190,9 +190,10 @@ pub fn records_of(text: &str, line_breaker: Option<&str>) -> Result<Vec<crate::i
         .collect())
 }
 
-/// The schema `id` an importer pipeline produced: each row it wrote has a `field`, a `type`, and may have `required`
-/// and `description`, as a schema's table does. `rows` is the pipeline's output (`preview::RowOut`), in which a row
-/// without those, or with them wrong, or with an exception, is refused by its number.
+/// The schema `id` an importer pipeline produced: each row it wrote has a `field`, a `type`, and may have a
+/// `requirement` (`required`, `recommended` or `optional`) and a `description`, as a schema's table does. `rows` is
+/// the pipeline's output (`preview::RowOut`), in which a row without those, or with them wrong, or with an exception,
+/// is refused by its number.
 pub fn from_rows(id: &str, title: &str, rows: &[crate::leader::preview::RowOut]) -> Result<ReadSchema, String> {
     let mut fields = Vec::new();
     for row in rows {
@@ -213,10 +214,14 @@ pub fn from_rows(id: &str, title: &str, rows: &[crate::leader::preview::RowOut])
         };
         let field = text("field")?.ok_or_else(|| format!("row {}: no `field`", row.row))?;
         let ty = text("type")?.ok_or_else(|| format!("row {}: no `type` for `{field}`", row.row))?;
-        let required = match json.get("required") {
-            None | Some(Value::Null) => false,
-            Some(Value::Bool(b)) => *b,
-            Some(other) => return Err(format!("row {}: `required` is {other}, not a bool", row.row)),
+        let requirement = match text("requirement")? {
+            None => crate::config_file::Requirement::Optional,
+            Some(said) => crate::config_file::Requirement::named(&said).ok_or_else(|| {
+                format!(
+                    "row {}: `requirement` is {said:?}; it must be required, recommended or optional",
+                    row.row
+                )
+            })?,
         };
         let elasticsearch = match json.get("elasticsearch") {
             None | Some(Value::Null) => None,
@@ -226,7 +231,7 @@ pub fn from_rows(id: &str, title: &str, rows: &[crate::leader::preview::RowOut])
         fields.push(crate::config_file::SchemaFieldDto {
             field,
             ty,
-            required,
+            requirement,
             description: text("description")?.unwrap_or_default(),
             example: text("example")?.unwrap_or_default(),
             elasticsearch,
@@ -270,6 +275,7 @@ mod fuzz_read;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_file::Requirement;
     use serde_json::json;
 
     fn json_schema(id: &str, doc: Value) -> ReadRequest {
@@ -391,7 +397,7 @@ mod tests {
         let schema = read(&json_schema("login", doc)).unwrap().schema;
         let rows: Vec<&str> = schema.fields.iter().map(|f| f.field.as_str()).collect();
         assert_eq!(rows, ["time", "user", "user.name"]);
-        assert!(schema.fields[0].required);
+        assert_eq!(schema.fields[0].requirement, Requirement::Required);
         let export = |format| {
             export(&ExportRequest {
                 schema: schema.clone(),
@@ -440,7 +446,7 @@ mod tests {
         let rows = [
             row(
                 0,
-                json!({ "field": "@timestamp", "type": "datetime", "required": true, "description": "When." }),
+                json!({ "field": "@timestamp", "type": "datetime", "requirement": "required", "description": "When." }),
             ),
             row(
                 1,
@@ -450,7 +456,7 @@ mod tests {
         ];
         let schema = from_rows("ecs", "ECS", &rows).unwrap().schema;
         assert_eq!(schema.fields.len(), 2);
-        assert!(schema.fields[0].required);
+        assert_eq!(schema.fields[0].requirement, Requirement::Required);
         assert_eq!(schema.fields[1].ty, "str");
         assert_eq!(
             schema.fields[1].elasticsearch,
@@ -474,6 +480,10 @@ mod tests {
                 json!({ "field": "a", "type": "str", "elasticsearch": { "type": "long" } })
             )])
             .starts_with("`a`: Elasticsearch's `long` cannot hold str")
+        );
+        assert_eq!(
+            refused(&[row(9, json!({ "field": "a", "type": "str", "requirement": "must" }))]),
+            "row 9: `requirement` is \"must\"; it must be required, recommended or optional"
         );
         assert_eq!(refused(&[]), "the importer wrote no rows");
     }
@@ -499,7 +509,7 @@ mod tests {
         let schema = from_rows("web", "Web", &preview.body.rows).unwrap().schema;
         let field = |path: &str| {
             let f = (schema.fields.iter().find(|f| f.field == path)).unwrap_or_else(|| panic!("no `{path}`"));
-            (f.ty.as_str(), f.required)
+            (f.ty.as_str(), f.requirement == Requirement::Required)
         };
         assert_eq!(field("event_time"), ("datetime", true));
         assert_eq!(field("status"), ("i64", false));

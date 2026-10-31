@@ -6,7 +6,7 @@
 <script lang="ts">
   import { setScope, SHARED_SCOPE } from './api';
 
-  let { hash }: { hash: string } = $props();
+  let { hash, label = 'edit in shared/' }: { hash: string; label?: string } = $props();
 </script>
 
-<a href={hash} onclick={() => setScope(SHARED_SCOPE)}>edit in shared/</a>
+<a href={hash} onclick={() => setScope(SHARED_SCOPE)}>{label}</a>

@@ -1588,7 +1588,7 @@ type SchemaFormat = keyof typeof FORMAT_TILES;
 type Drawn = {
   field: string;
   type: string;
-  required?: true;
+  requirement?: 'required' | 'recommended';
   description?: string;
   example?: string;
   elasticsearch?: { type: string };
@@ -1602,8 +1602,9 @@ const addSchema: Move = {
     const { page, leader, rng, world } = j;
     const id = `schema-${world.made++}`;
     const format = rng.pick(Object.keys(FORMAT_TILES) as SchemaFormat[]);
-    // A few fields, some required, read from the format drawn. ECS requires only fields of its own, and an OCSF class
-    // read as by default takes the required and the recommended.
+    // A few fields, some required and some recommended, read from the format drawn. ECS requires only fields of its
+    // own and recommends its core ones, JSON Schema has no word for recommended, and an OCSF class read as by default
+    // takes the required and the recommended.
     const drawn = Array.from({ length: format === 'empty' ? 0 : 1 + rng.below(3) }, (_, i) => {
       const t = rng.pick(FORMAT_TYPES);
       const requirement = i === 0 ? 'required' : rng.pick(['required', 'recommended', 'optional']);
@@ -1619,7 +1620,13 @@ const addSchema: Move = {
     const fields: Drawn[] = taken.map(({ i, t, requirement, example }) => ({
       field: `f${i}`,
       type: t.type,
-      ...(requirement === 'required' && format !== 'ecs' ? { required: true as const } : {}),
+      ...(format === 'ecs'
+        ? requirement !== 'optional'
+          ? { requirement: 'recommended' as const }
+          : {}
+        : requirement === 'required' || (requirement === 'recommended' && format !== 'json-schema')
+          ? { requirement }
+          : {}),
       ...(format === 'csv' || format === 'ecs' || format === 'ocsf'
         ? { description: `Field ${i}.` }
         : {}),
@@ -1643,14 +1650,14 @@ const addSchema: Move = {
       csv:
         (picked
           ? 'Name,Kind,Must,About,Sample,Index\n'
-          : 'Field,Type,Required,Description,Example,Elasticsearch\n') +
+          : 'Field,Type,Requirement,Description,Example,Elasticsearch\n') +
         fields
           .map((f, i) =>
             [
               f.field,
               // As another system spells it, a type the leader knows, or one it is told.
               told[i] ? `kind ${i}` : common[i] ? taken[i].t.common : f.type,
-              f.required ? 'yes' : '',
+              f.requirement === 'required' ? rng.pick(['yes', 'required']) : (f.requirement ?? ''),
               f.description!,
               f.example ?? '',
               f.elasticsearch?.type ?? '',
@@ -1663,7 +1670,17 @@ const addSchema: Move = {
         'ECS_Version,Indexed,Field_Set,Field,Type,Level,Normalization,Example,Description\n' +
         drawn
           .map((d) =>
-            ['9.1.0', 'true', 'base', `f${d.i}`, d.t.ecs, 'core', '', d.example, `Field ${d.i}.`]
+            [
+              '9.1.0',
+              'true',
+              'base',
+              `f${d.i}`,
+              d.t.ecs,
+              d.requirement === 'optional' ? 'extended' : 'core',
+              '',
+              d.example,
+              `Field ${d.i}.`,
+            ]
               .map(cell)
               .join(','),
           )
@@ -1704,7 +1721,7 @@ const addSchema: Move = {
         .setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(file) });
     }
     if (format === 'csv' && picked) {
-      const roles = ['field', 'type', 'required', 'description', 'example', 'elasticsearch'];
+      const roles = ['field', 'type', 'requirement', 'description', 'example', 'elasticsearch'];
       const names = ['Name', 'Kind', 'Must', 'About', 'Sample', 'Index'];
       for (const [i, role] of roles.entries()) {
         await dialog.getByRole('combobox', { name: `Column ${names[i]} holds` }).selectOption(role);

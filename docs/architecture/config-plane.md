@@ -49,8 +49,9 @@ at save whether or not a step names it yet.
 ## Schemas
 
 A schema is what a pipeline's rows should hold: a table of fields, each a
-path from the record's root, the type it must hold, whether a row must hold it,
-and what it means. A path spells its keys with dots, and a type is spelled as
+path from the record's root, the type it must hold, its requirement, and what
+it means. A field is required, recommended or optional: a row must hold a
+required field, should hold a recommended one, and may hold an optional one. A path spells its keys with dots, and a type is spelled as
 a declaration spells one, so a schema, a parser's field table and a
 declaration read the same. A bundle declares its schemas as such tables. A
 schema is also read from a file a standard or a spreadsheet gives, each format
@@ -60,7 +61,10 @@ cut to as many keys deep and to the requirements asked for (`schema::ocsf`),
 and a CSV of fields, one row per field, its columns chosen by their place or
 found by the header's names (`schema::csv`). The leader carries one release of
 ECS and one of OCSF, compiled and cut to what `schema::ocsf` reads, so either
-is read without its file (`schema::standard`); another release is uploaded. A type is read as smeltr spells
+is read without its file (`schema::standard`); another release is uploaded.
+An imported ECS schema's required fields are required and its core fields
+recommended, and an imported OCSF attribute keeps the requirement OCSF gives
+it. A recommended field is exported to JSON Schema as a field a row may lack. A type is read as smeltr spells
 it, or by the name a database, a spreadsheet or a standard gives it, from one
 map every reader shares (`schema::named`); a CSV's type the map does not know
 is read as the type it is told. Each reader gives the same table, checked as a
@@ -74,7 +78,7 @@ Elasticsearch's to check. A pipeline
 names the schemas it produces, and a destination may name the schemas it
 accepts. Both are checked at save to name a schema the group can see. A
 schema is also imported: a pipeline of the bundle run over an uploaded
-file's records writes one row per field, `field`, `type`, `required`,
+file's records writes one row per field, `field`, `type`, `requirement`,
 `description` and `elasticsearch`, and the rows are the schema. A file no
 reader takes comes in that way.
 
@@ -88,15 +92,19 @@ flowchart LR
 ```
 
 A finding never refuses a save or a deploy: it says where the rows do not fit.
+A recommended field the rows lack is no finding. The editor and review tell it
+after the findings, and it is not counted with them.
 Review shows the findings a change adds, not those main already had where the
 branch left it, field by field: a finding that names several fields names only
 those the change adds.
 The record's type is held to the table path by path: a field whose type only
-the row knows keeps any, an object keeps any object type, and a required field
-is missing where the object it sits in is there and does not declare it. A
-field several schemas name is a misfit only where every one of them says so,
-and a field one requires is missing only where every schema the pipeline
-produces requires it. A route delivering to a destination whose accepts names
+the row knows keeps any, an object keeps any object type, and a required or
+recommended field is lacking where the object it sits in is there and does not
+declare it, so a standard's recommended fields inside an object are asked for
+only where a row has that object. A field several schemas name is a misfit
+only where every one of them says so, a field one requires is missing only
+where every schema the pipeline produces requires it, and a field is
+recommended where every one of them requires or recommends it. A route delivering to a destination whose accepts names
 none of what its pipeline produces is a finding of the same kind.
 
 ## Groups and `shared/`

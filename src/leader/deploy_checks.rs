@@ -142,7 +142,9 @@ fn checked(repo: &Path, commit: &str) -> Result<(Vec<NotLoading>, GroupFindings)
             }),
             Ok(system) => {
                 if let Some(compiled) = &system.compiled {
-                    schemas.extend(system.schema_findings(compiled).into_iter().map(|f| (group.clone(), f)));
+                    // A recommended field the rows lack is the author's to hear of, not the deployed commit's warning.
+                    let found = system.schema_findings(compiled).into_iter().filter(|f| f.breaks);
+                    schemas.extend(found.map(|f| (group.clone(), f)));
                 }
             }
         }
@@ -240,7 +242,7 @@ mod tests {
             ("system.json", r#"{"version":1}"#),
             (
                 "schemas/login.json",
-                r#"{"id":"login","title":"Login","fields":[{"field":"user","type":"str","required":true}]}"#,
+                r#"{"id":"login","title":"Login","fields":[{"field":"user","type":"str","requirement":"required"}]}"#,
             ),
             (
                 "sources.json",

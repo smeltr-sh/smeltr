@@ -1,6 +1,13 @@
 // Schemas as the GUI shows them: who uses a schema, a search over their fields, and a schema handed over as a file.
 
-import type { DestinationDto, ExportFormat, PipelineDto, SchemaDto } from './api';
+import type { DestinationDto, ExportFormat, PipelineDto, Requirement, SchemaDto } from './api';
+
+/** A field's requirements, in order: what a schema asks of a row, and OCSF's levels. */
+export const REQUIREMENTS: Requirement[] = ['required', 'recommended', 'optional'];
+
+/** The recommended fields a list names before it counts the rest, as the sentence the leader tells does
+ * (`schema::told`), so a standard's long list stays short. */
+export const RECOMMENDED_NAMED = 5;
 
 /** One object naming a schema: a pipeline producing it, or a destination accepting it. */
 export type User = { kind: 'pipeline' | 'destination'; id: string };

@@ -94,9 +94,9 @@ export function fromLocalInput(text: string): number | undefined {
   return Number.isNaN(millis) ? undefined : millis;
 }
 
-/** `n` of something, pluralized by adding an s. */
-export function count(n: number, what: string): string {
-  return `${n} ${what}${n === 1 ? '' : 's'}`;
+/** `n` of something, pluralized by adding an s unless `plural` says otherwise. */
+export function count(n: number, what: string, plural = `${what}s`): string {
+  return `${n} ${n === 1 ? what : plural}`;
 }
 
 /** A commit, short enough to read and long enough to name one. */

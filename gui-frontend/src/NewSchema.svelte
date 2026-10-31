@@ -5,8 +5,9 @@
 -->
 <script lang="ts" module>
   import type { CatalogType } from './TypeCatalog.svelte';
-  import type { CsvColumns, CsvPreview, OcsfClass, OcsfLevel, SchemaReadFormat } from './api';
+  import type { CsvColumns, CsvPreview, OcsfClass, Requirement, SchemaReadFormat } from './api';
   import { FIELD_TYPES } from './api';
+  import { REQUIREMENTS } from './schemas';
 
   export type SchemaStart = 'ecs' | 'ocsf' | 'csv' | 'jsonSchema' | 'import' | 'empty';
 
@@ -17,9 +18,6 @@
     csv: 'csv',
     jsonSchema: 'json-schema',
   };
-
-  /** OCSF's requirement levels, in order. */
-  export const OCSF_LEVELS: OcsfLevel[] = ['required', 'recommended', 'optional'];
 
   /** A schema being added, before it is one. */
   export type SchemaDraft = {
@@ -44,7 +42,7 @@
     /** How many keys deep an OCSF class is read. */
     depth: number;
     /** Which OCSF requirement levels are read. */
-    levels: OcsfLevel[];
+    levels: Requirement[];
     /** A CSV as the leader read it before its columns were chosen, or why it could not. */
     preview: CsvPreview | null;
     previewError: string;
@@ -58,7 +56,7 @@
   export const CSV_ROLES = [
     'field',
     'type',
-    'required',
+    'requirement',
     'description',
     'example',
     'elasticsearch',
@@ -97,7 +95,7 @@
       type: 'csv',
       label: 'CSV of fields',
       category: 'From a file',
-      help: "A CSV file with a row per field and a header row. You choose which column holds each field's name, which holds its type, and optionally which hold required, description, example and elasticsearch.",
+      help: "A CSV file with a row per field and a header row. You choose which column holds each field's name, which holds its type, and optionally which hold requirement, description, example and elasticsearch. A column headed Requirement or Required is picked for you. A requirement is required, recommended or optional; yes means required, and no or an empty cell optional.",
       // A grid.
       glyph: { d: 'M10 14 H54 V50 H10 Z M10 26 H54 M10 38 H54 M26 14 V50 M40 14 V50' },
     },
@@ -320,8 +318,8 @@
     draft.file = await file.text();
   }
 
-  function level(draft: SchemaDraft, l: OcsfLevel, on: boolean) {
-    draft.levels = OCSF_LEVELS.filter((x) => (x === l ? on : draft.levels.includes(x)));
+  function level(draft: SchemaDraft, l: Requirement, on: boolean) {
+    draft.levels = REQUIREMENTS.filter((x) => (x === l ? on : draft.levels.includes(x)));
   }
 
   function ready(d: SchemaDraft): boolean {
@@ -406,7 +404,7 @@
       <Field
         required
         label="Importer"
-        help="A pipeline that writes one row per field: field, type, required, description."
+        help="A pipeline that writes one row per field: field, type, requirement, description."
       >
         <select bind:value={draft.pipeline}>
           <option value="">Choose a pipeline…</option>
@@ -546,7 +544,7 @@
         </Field>
         <fieldset class="levels">
           <legend>Include fields that are</legend>
-          {#each OCSF_LEVELS as l (l)}
+          {#each REQUIREMENTS as l (l)}
             <label
               ><input
                 type="checkbox"

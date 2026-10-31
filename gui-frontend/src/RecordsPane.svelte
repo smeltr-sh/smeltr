@@ -41,6 +41,7 @@
   import { TableSort } from './sort.svelte';
   import { formatDiffValue } from './diff';
   import InlineError from './InlineError.svelte';
+  import { RECOMMENDED_NAMED } from './schemas';
   import {
     countStates,
     fieldAt,
@@ -239,19 +240,22 @@
     (result?.ok ? result.dictionary : undefined) ?? lastGoodResult?.dictionary,
   );
   let declaredTypes = $derived(new Map(dictionary?.compiled.fields ?? []));
-  /** The fields the schemas the pipeline produces require and its rows lack, by path. */
-  let missing = $derived(
-    new Map(
-      ((result?.ok ? result.missing : undefined) ?? lastGoodResult?.missing ?? []).map((m) => [
-        m.path,
-        m,
-      ]),
-    ),
+  /** The fields the schemas the pipeline produces require or recommend and its rows lack. */
+  let lacking = $derived(
+    (result?.ok ? result.missing : undefined) ?? lastGoodResult?.missing ?? [],
   );
-  /** The missing fields by the schema requiring them. */
-  let missingBySchema = $derived.by(() => {
-    const out = new Map<string, MissingField[]>();
-    for (const m of missing.values()) out.set(m.schema, [...(out.get(m.schema) ?? []), m]);
+  /** The fields the schemas require and the rows lack, by path: each a column, as what the reader must fix. */
+  let missing = $derived(
+    new Map(lacking.filter((m) => m.requirement === 'required').map((m) => [m.path, m])),
+  );
+  /** The fields the rows lack by the schema asking for them, each schema's required and recommended apart. */
+  let lackingBySchema = $derived.by(() => {
+    const out = new Map<string, Record<MissingField['requirement'], MissingField[]>>();
+    for (const m of lacking) {
+      const of = out.get(m.schema) ?? { required: [], recommended: [] };
+      of[m.requirement].push(m);
+      out.set(m.schema, of);
+    }
     return out;
   });
 
@@ -918,18 +922,33 @@
                             touched={touchedOn(row.row)}
                             {onjump}
                           />
-                          {#if missing.size > 0}
-                            {#each missingBySchema as [schema, fields] (schema)}
-                              <div class="missing-fields">
+                          {#each lackingBySchema as [schema, { required, recommended }] (schema)}
+                            <div class="missing-fields">
+                              {#if required.length > 0}
                                 <p class="missing">Required by {schema}:</p>
-                                {#each fields as m (m.path)}
+                                {#each required as m (m.path)}
                                   <span class="mono missing">{m.path}</span>
                                   <span class="mono missing">{m.written_as}</span>
                                   <span class="missing"><i>missing</i></span>
                                 {/each}
-                              </div>
-                            {/each}
-                          {/if}
+                              {/if}
+                              {#if recommended.length > 0}
+                                <p class="lacking" class:after={required.length > 0}>
+                                  Recommended by {schema}:
+                                </p>
+                                {#each recommended.slice(0, RECOMMENDED_NAMED) as m (m.path)}
+                                  <span class="mono lacking">{m.path}</span>
+                                  <span class="mono lacking">{m.written_as}</span>
+                                  <span class="lacking"><i>missing</i></span>
+                                {/each}
+                                {#if recommended.length > RECOMMENDED_NAMED}
+                                  <p class="lacking">
+                                    and {recommended.length - RECOMMENDED_NAMED} more
+                                  </p>
+                                {/if}
+                              {/if}
+                            </div>
+                          {/each}
                         </div>
                       </td>
                     </tr>
@@ -1292,5 +1311,14 @@
   .missing-fields p {
     grid-column: 1 / -1;
     margin: 0 0 0.2rem;
+  }
+
+  /* A field a schema recommends and the rows lack: told, and no warning. */
+  .lacking {
+    color: var(--dim);
+  }
+
+  .missing-fields p.after {
+    margin-top: 0.5rem;
   }
 </style>

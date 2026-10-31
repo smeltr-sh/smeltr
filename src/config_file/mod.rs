@@ -55,8 +55,8 @@ pub use dto::{
     AnswerDto, AssignmentDto, BufferBytes, CompoundTypeDto, CustomPatternDto, DataTypeDto, DeliverRuleDto,
     DestinationDto, DestinationKindDto, FetchBytes, FieldDto, FileConfig, GrokPatternDto, LeaderSecretDto,
     LookupOutputDto, LookupSourceDto, LookupTableDto, MatchKindDto, MultiplicityDto, OnExceptionDto, PUBSUB_ENDPOINT,
-    ParserKindDto, PipelineDto, RenamePairDto, RouteDto, SchemaDto, SchemaFieldDto, SecretRefDto, SourceDto,
-    SourceKindDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto,
+    ParserKindDto, PipelineDto, RenamePairDto, Requirement, RouteDto, SchemaDto, SchemaFieldDto, SecretRefDto,
+    SourceDto, SourceKindDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto,
 };
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
 pub use links::{Connections, Kind, Links, Object};
@@ -95,7 +95,8 @@ pub fn validate_at(file: FileConfig, declared_at: &load::DeclaredAt) -> Result<L
     Ok(system)
 }
 
-/// A pipeline's rows breaking a schema it produces, or a destination it delivers to accepting none it does.
+/// A pipeline's rows breaking a schema it produces, or a destination it delivers to accepting none it does; or, where
+/// it does not break, recommended fields of a schema the rows lack.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaFinding {
     /// The pipeline's id.
@@ -103,6 +104,8 @@ pub struct SchemaFinding {
     /// The step that wrote the field, by its id. `None` for a field no step writes, and for a destination's.
     pub step: Option<String>,
     pub message: String,
+    /// Whether the rows break a schema by it. One that does not is told and not counted.
+    pub breaks: bool,
 }
 
 /// The compiler's inputs, with every string id resolved to an integer id. Not yet compiled: `load_str` stops here so
@@ -303,7 +306,8 @@ impl LoadedSystem {
     }
 
     /// Where a pipeline's rows break the schemas it produces, and where it delivers to a destination that accepts
-    /// none of them, over every route `compiled` runs it on. A finding never refuses the system.
+    /// none of them, over every route `compiled` runs it on; and the recommended fields its rows lack, which break
+    /// nothing. A finding never refuses the system.
     pub fn schema_findings(&self, compiled: &CompiledTopology) -> Vec<SchemaFinding> {
         self.schema_findings_beyond(compiled, &[])
     }
@@ -371,12 +375,13 @@ impl LoadedSystem {
                         crate::plan::config::Step::If { id, .. } => *id,
                     });
                 findings.retain(|f| !known.iter().any(|(p, k)| *p == pipeline && k == f));
-                for (keys, message) in crate::schema::told(produces, &findings) {
-                    let at = keys.and_then(|keys| crate::plan::dictionary::writer(plan, &keys).or(first));
+                for told in crate::schema::told(produces, &findings) {
+                    let at = (told.keys).and_then(|keys| crate::plan::dictionary::writer(plan, &keys).or(first));
                     push(SchemaFinding {
                         pipeline: pipeline.clone(),
                         step: self.step_id_for(Some(route.pipeline), at),
-                        message,
+                        message: told.message,
+                        breaks: told.breaks,
                     });
                 }
             }
@@ -396,6 +401,7 @@ impl LoadedSystem {
                         "destination {name:?} accepts {}, but pipeline {pipeline:?} produces no schema it accepts",
                         titles.join(", ")
                     ),
+                    breaks: true,
                 });
             }
         }
@@ -647,7 +653,9 @@ mod tests {
           "version": 1,
           "sources": [{ "id": "k", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g" }],
           "schemas": [
-            { "id": "stamped", "title": "Stamped", "fields": [{ "field": "@timestamp", "type": "datetime" }] },
+            { "id": "stamped", "title": "Stamped", "fields": [{ "field": "@timestamp", "type": "datetime" },
+                                                               { "field": "message", "type": "str",
+                                                                 "requirement": "recommended" }] },
             { "id": "login", "title": "Login" }
           ],
           "destinations": [{ "id": "out", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t",
@@ -659,7 +667,7 @@ mod tests {
         let system = load_str(json).unwrap();
         let compiled = system.compile_topology().unwrap();
         let found: Vec<_> = (system.schema_findings(&compiled).into_iter())
-            .map(|f| (f.pipeline, f.step, f.message))
+            .map(|f| (f.pipeline, f.step, f.message, f.breaks))
             .collect();
         assert_eq!(
             found,
@@ -667,12 +675,20 @@ mod tests {
                 (
                     "p".to_string(),
                     Some("s".to_string()),
-                    "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
+                    "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string(),
+                    true
                 ),
                 (
                     "p".to_string(),
                     None,
-                    "destination \"out\" accepts Login, but pipeline \"p\" produces no schema it accepts".to_string()
+                    "Stamped recommends `message`; the rows lack it.".to_string(),
+                    false
+                ),
+                (
+                    "p".to_string(),
+                    None,
+                    "destination \"out\" accepts Login, but pipeline \"p\" produces no schema it accepts".to_string(),
+                    true
                 ),
             ]
         );

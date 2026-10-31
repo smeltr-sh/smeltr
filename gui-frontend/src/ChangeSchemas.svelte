@@ -1,6 +1,7 @@
 <!--
   Review's Schemas tab: where the rows of the change's pipelines do not fit the schemas they produce, at the
-  branch's tip, by group and pipeline. Each finding is said, never held against the deploy.
+  branch's tip, by group and pipeline. Each finding is said, never held against the deploy. After a pipeline's
+  findings come the recommended fields its rows lack, which are not findings.
 -->
 <script lang="ts">
   import type { SchemaFindingDto } from './api';
@@ -17,10 +18,13 @@
     pipelineName: (scope: string, id: string) => string;
   } = $props();
 
-  /** The findings by group and pipeline, in the order found. */
+  /** Whether any of them is a finding, and not only recommended fields the rows lack. */
+  let breaking = $derived(findings.some((f) => f.breaks));
+
+  /** The findings by group and pipeline, in the order found, each pipeline's recommended fields after them. */
   let grouped = $derived.by(() => {
     const out = new Map<string, { group: string; pipeline: string; found: SchemaFindingDto[] }>();
-    for (const f of findings) {
+    for (const f of [...findings.filter((f) => f.breaks), ...findings.filter((f) => !f.breaks)]) {
       const key = JSON.stringify([f.group, f.pipeline]);
       const at = out.get(key);
       if (at) at.found.push(f);
@@ -37,9 +41,13 @@
 {:else if findings.length === 0}
   <p class="dim">The rows fit every schema their pipelines produce.</p>
 {:else}
-  <p class="dim">
-    Where a pipeline's rows do not fit a schema it produces. None of these block the deploy.
-  </p>
+  {#if breaking}
+    <p class="dim">
+      Where a pipeline's rows do not fit a schema it produces. None of these block the deploy.
+    </p>
+  {:else}
+    <p class="dim">The rows fit every schema their pipelines produce.</p>
+  {/if}
   {#each grouped as g (JSON.stringify([g.group, g.pipeline]))}
     <section class="pipeline">
       <h3>
@@ -52,7 +60,9 @@
         {#each g.found as f, i (i)}
           <li>
             <span class="step mono">{f.step ?? 'no step'}</span>
-            <span>{f.message}</span>
+            {#if f.breaks}<span>{f.message}</span>{:else}<span class="dim"
+                ><span aria-hidden="true">ⓘ&nbsp;</span>{f.message}</span
+              >{/if}
           </li>
         {/each}
       </ul>

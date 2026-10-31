@@ -9,6 +9,7 @@
 use serde_json::{Map, Value, json};
 
 use super::{Field, Node, Schema};
+use crate::config_file::Requirement;
 use crate::core::column::DataType;
 
 const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
@@ -75,7 +76,10 @@ impl<'d> Reader<'d> {
             self.fields.push(Field {
                 path: path.clone(),
                 ty: typed.ty,
-                required: required.contains(&name.as_str()),
+                requirement: match required.contains(&name.as_str()) {
+                    true => Requirement::Required,
+                    false => Requirement::Optional,
+                },
                 description: text(property, "description"),
                 example: super::example_of(property.get("examples").and_then(|e| e.get(0))),
                 elasticsearch: None,
@@ -224,7 +228,8 @@ impl Node<'_> {
                     };
                     value["examples"] = json!([written.unwrap_or_else(|| json!(f.example))]);
                 }
-                if f.required {
+                // JSON Schema has no word for a recommended field: it is one a value may lack.
+                if f.requirement == Requirement::Required {
                     required.push(key.clone());
                 }
             }
@@ -301,7 +306,14 @@ mod tests {
         let schema = read("acme-login", &login()).unwrap();
         assert_eq!(schema.title, "Acme login");
         let rows: Vec<String> = (to_dto(&schema).fields.iter())
-            .map(|r| format!("{} {}{}", r.field, r.ty, if r.required { " required" } else { "" }))
+            .map(|r| {
+                let required = if r.requirement == Requirement::Required {
+                    " required"
+                } else {
+                    ""
+                };
+                format!("{} {}{required}", r.field, r.ty)
+            })
             .collect();
         assert_eq!(
             rows,

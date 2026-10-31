@@ -1088,14 +1088,18 @@ export interface SchemaDto {
   fields: SchemaFieldDto[];
 }
 
+/** How much a schema asks of a row for one field, inside the object its path names where that object is there. A
+ * row lacking a required field breaks the schema; one lacking a recommended field is told so. */
+export type Requirement = 'required' | 'recommended' | 'optional';
+
 /** One field of a schema: a row of its table. */
 export interface SchemaFieldDto {
   /** Its keys from the record's root, dotted. */
   field: string;
   /** What it must hold, spelled as a declaration spells a type: `str`, `array<i64>`, `{...}` for an object. */
   type: string;
-  /** Whether a row must hold it. */
-  required?: boolean;
+  /** Whether a row must hold it, should, or may. Absent is optional. */
+  requirement?: Requirement;
   description?: string;
   /** A value it may hold, as text. */
   example?: string;
@@ -2033,17 +2037,21 @@ export interface PreviewResult {
   warnings?: ApiError[];
   /** How many of `warnings` are where the rows break the schemas the pipeline produces. */
   schema_findings?: number;
-  /** The fields the schemas the pipeline produces require and its rows lack. */
+  /** What the schemas the pipeline produces recommend and its rows lack, a sentence for each schema. Not among
+   * `warnings`: the rows still keep the schema. */
+  recommended?: string[];
+  /** The fields the schemas the pipeline produces require or recommend and its rows lack. */
   missing?: MissingField[];
 }
 
-/** A field a schema requires that a pipeline's rows lack (`schema::Missing`). */
+/** A field a schema requires or recommends that a pipeline's rows lack (`schema::Missing`). */
 export interface MissingField {
   path: string;
   /** What a pipeline writes to keep it, as a declaration spells a type. */
   written_as: string;
   /** The schema's title. */
   schema: string;
+  requirement: 'required' | 'recommended';
 }
 
 /** What a preview that did not run says went wrong. */
@@ -5419,7 +5427,7 @@ export interface ReadSchema {
 
 /** Which column of a CSV holds what, each by its index from 0. */
 export type CsvColumns = Partial<
-  Record<'field' | 'type' | 'required' | 'description' | 'example' | 'elasticsearch', number>
+  Record<'field' | 'type' | 'requirement' | 'description' | 'example' | 'elasticsearch', number>
 >;
 
 /** A CSV before its columns are chosen: its header, its rows to show, the columns its header names, and each value of
@@ -5447,9 +5455,6 @@ export interface CsvTypeValue {
 /** A file a schema is read from: JSON Schema, ECS's `fields.csv` or `ecs_flat.yml`, `ocsf-schema-compiler`'s output,
  * or a CSV of fields under a header row. */
 export type SchemaReadFormat = 'json-schema' | 'ecs' | 'ocsf' | 'csv';
-
-/** An OCSF requirement level. */
-export type OcsfLevel = 'required' | 'recommended' | 'optional';
 
 /** A release of a standard the leader carries. */
 export interface StandardRelease {
@@ -5486,7 +5491,7 @@ export function readSchema(req: {
   /** The OCSF class to read. */
   class?: string;
   /** How much of the OCSF class: how many keys deep, and which requirement levels. */
-  cut?: { depth: number; levels: OcsfLevel[] };
+  cut?: { depth: number; levels: Requirement[] };
   /** Which column of a CSV holds what; absent, its header says. */
   columns?: CsvColumns;
   /** The type of each value of a CSV's type column the reader does not know. */
@@ -5545,6 +5550,8 @@ export interface SchemaFindingDto {
   /** The step that wrote the field. Absent for a field no step writes, and for a destination's accepts. */
   step?: string;
   message: string;
+  /** False for recommended fields the rows lack, which review shows and does not count. */
+  breaks: boolean;
 }
 
 /** What breaks a schema at `branch`'s tip, in every group its change reaches. */
