@@ -73,6 +73,9 @@
     previewPipeline,
     afterDot,
     type AskAt,
+    type DictionaryOut,
+    type Dictionary,
+    TAG_FIELD,
     errorText,
     type ApiError,
     errorMessage,
@@ -835,6 +838,48 @@
     return { ...res, errors: res.errors.map(held.restore) };
   }
 
+  /** Previews of the record before a step, by the steps ahead of it and the sample: a step's own edits, which leave
+   * those alone, ask nothing. */
+  const recordsBefore = new Map<string, Promise<DictionaryOut | null>>();
+
+  /** The record before `step`, from a preview of the steps ahead of it over the sample, as the step diff runs it. */
+  async function readRecordBefore(step: Step): Promise<DictionaryOut | null> {
+    const before = truncateSteps(steps, step, false);
+    if (!before) return null;
+    const key = `${lastSample}\n${JSON.stringify(unfinished.hold(before).steps)}`;
+    let asked = recordsBefore.get(key);
+    if (!asked) {
+      if (recordsBefore.size > 32) recordsBefore.clear();
+      asked = fetchPreview(before, lastSample).then((res) => {
+        // A failed preview is asked again, once the steps ahead are fixed.
+        if (!res.ok || !res.dictionary) recordsBefore.delete(key);
+        return res.ok ? (res.dictionary ?? null) : null;
+      });
+      recordsBefore.set(key, asked);
+    }
+    const d = await asked;
+    if (!d) return null;
+    // The dictionary holds the field a row's exceptions are tagged in, which the record only gets as it leaves. The
+    // editor previews under no group's answers, so that field is `TAG_FIELD`.
+    const own = (d: Dictionary): Dictionary => ({
+      ...d,
+      fields: d.fields.filter(([path]) => path !== TAG_FIELD && !path.startsWith(`${TAG_FIELD}.`)),
+    });
+    return { compiled: own(d.compiled), sampled: d.sampled && own(d.sampled) };
+  }
+
+  // Bumped as the steps and the sample settle, so a step showing the record before it asks again.
+  let recordsSettled = $state(0);
+  $effect(() => {
+    void [JSON.stringify(steps), lastSample];
+    const timer = setTimeout(() => recordsSettled++, RECOMPUTE_MS);
+    return () => clearTimeout(timer);
+  });
+  let recordBefore = $derived.by(() => {
+    void recordsSettled;
+    return (step: Step) => readRecordBefore(step);
+  });
+
   /** Asks the engine what may follow a dot in a step's expression, over the steps as they are being written and the
    * sample's columns. */
   const askAt: AskAt = (at) => (text, dot) =>
@@ -1406,6 +1451,7 @@
             onPropose={readOnly ? undefined : proposeFields}
             proposal={openProposal}
             {askAt}
+            {recordBefore}
           />
         </div>
 

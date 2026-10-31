@@ -45,12 +45,13 @@
   <p>It also takes the settings <a href="/docs/steps#settings">every step</a> takes.</p>
   <SettingsTable settings={kind(STEPS, 'remove').settings} />
   <p>
-    In the editor, the step lists the fields declared before it, each ticked while it is kept.
-    Untick a field to remove it. <strong>Find a field</strong> narrows the list, and
-    <strong>Remove all</strong> and <strong>Keep all</strong> act on the fields it shows. A field a
-    JSON or key-value parser read without declaring it is not in the list: to remove it, type its
-    name and choose <strong>Remove &lt;name&gt;</strong> under the search box. A name that is not a field
-    at that point is an error.
+    In the editor, the step shows the record before it as a tree, each field and object ticked while
+    it is kept. Untick one to remove it: an object takes every field inside it.
+    <strong>Find a field</strong> narrows the list, and <strong>Remove all</strong> and
+    <strong>Keep all</strong> act on the fields it shows. With a sample, the list also holds the
+    keys its records have that a JSON or key-value parser read without declaring. To remove any
+    other name, type it and choose <strong>Remove &lt;name&gt;</strong> under the search box. A name that
+    is not a field at that point is an error.
   </p>
 
   <h2 id="how-it-works">How it works</h2>

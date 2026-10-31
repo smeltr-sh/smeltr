@@ -17,7 +17,7 @@
 </script>
 
 <script lang="ts">
-  import type { AskAt } from './api';
+  import type { AskAt, DictionaryOut } from './api';
   import InlineError from './InlineError.svelte';
   import StepList from './StepList.svelte';
   import ValidatedField from './ValidatedField.svelte';
@@ -94,6 +94,7 @@
     onPropose = () => {},
     proposal = null,
     askAt,
+    recordBefore,
   }: {
     steps: Step[];
     index: number;
@@ -122,6 +123,8 @@
     proposal?: OpenProposal | null;
     /** Asks the engine what may follow a dot in an expression at `at` (`afterDot`). */
     askAt?: AskAt;
+    /** The record before a step, as the preview's data dictionary lists it (`fetchPreview` up to the step). */
+    recordBefore?: (step: Step) => Promise<DictionaryOut | null>;
   } = $props();
 
   const readOnly = !editable();
@@ -665,6 +668,7 @@
           {onPropose}
           {proposal}
           {askAt}
+          {recordBefore}
         />
       </div>
       <div class="branch">
@@ -686,6 +690,7 @@
           {onPropose}
           {proposal}
           {askAt}
+          {recordBefore}
         />
       </div>
     </div>
@@ -843,7 +848,11 @@
               />
             </Field>
           {:else if step.type === 'remove'}
-            <RemoveFields bind:fields={step.fields} ask={askAt?.({ step: step.id })} {readOnly} />
+            <RemoveFields
+              bind:fields={step.fields}
+              record={recordBefore && (() => recordBefore(step))}
+              {readOnly}
+            />
           {:else if step.type === 'rename'}
             <div class="rows">
               <div class="rows-label"><span class="field-name">pairs</span></div>

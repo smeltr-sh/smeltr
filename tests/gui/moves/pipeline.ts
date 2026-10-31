@@ -577,8 +577,8 @@ export function expected(model: Model, steps = model.editing): Shown[] {
       remove: () =>
         'fields' in s
           ? s.fields.length
-            ? `${s.fields.length} ${s.fields.length === 1 ? 'field' : 'fields'}: ${s.fields.join(', ')}`
-            : '(no fields)'
+            ? `${s.fields.length} ${s.fields.length === 1 ? 'name' : 'names'}: ${s.fields.join(', ')}`
+            : '(no names)'
           : '',
       call: () => ('pipeline' in s ? s.pipeline : ''),
     }[s.type]();

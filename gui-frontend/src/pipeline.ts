@@ -648,8 +648,8 @@ export function stepSummary(step: Step): string {
         : '(no pairs)';
     case 'remove':
       return step.fields.length
-        ? `${step.fields.length} ${step.fields.length === 1 ? 'field' : 'fields'}: ${step.fields.join(', ')}`
-        : '(no fields)';
+        ? `${step.fields.length} ${step.fields.length === 1 ? 'name' : 'names'}: ${step.fields.join(', ')}`
+        : '(no names)';
     case 'parser':
       return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
     case 'lookup':
