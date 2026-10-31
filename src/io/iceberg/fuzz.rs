@@ -38,7 +38,11 @@ use super::tests::{Fake, Fault, serve};
 use super::*;
 use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, StrBuilder, VarType};
+use crate::core::variant::{self, Value};
+use crate::format::json;
 use crate::format::record::RecordView;
+use crate::format::tag::{self, Tag};
+use crate::io::parquet_variant::tests::read as read_variant;
 use crate::fuzz::{self, Coverage, Rng};
 use crate::io::iceberg::manifest::Status;
 use crate::io::iceberg::metadata::{
@@ -50,7 +54,7 @@ use crate::io::{BatchCompletion, Destination, Dispatched, OwnedRecord};
 use crate::plan::topology::{Compression, SecretRef};
 
 /// The seeds a run takes.
-const SEEDS: std::ops::Range<u64> = 1..201;
+const SEEDS: std::ops::Range<u64> = 1..241;
 
 /// What a run must reach over its seeds.
 const COVERED: &[&str] = &[
@@ -62,6 +66,9 @@ const COVERED: &[&str] = &[
     "type str",
     "type bytes",
     "type null",
+    "type variant",
+    "variant written as variant",
+    "variant written as text",
     "type array",
     "type struct",
     "partition identity",
@@ -288,6 +295,7 @@ const COLUMNS: &[(&str, &str)] = &[
     ("blob", "bytes"),
     ("tags", "array"),
     ("nothing", "null"),
+    ("doc", "variant"),
 ];
 
 fn data_type(kind: &str) -> DataType {
@@ -299,6 +307,7 @@ fn data_type(kind: &str) -> DataType {
         "f64" => DataType::F64,
         "duration" => DataType::Duration,
         "bytes" => DataType::Bytes,
+        "variant" => DataType::Variant,
         "array" => DataType::Array(Box::new(DataType::Str)),
         "null" => DataType::Null,
         "struct" => DataType::Struct(
@@ -342,6 +351,8 @@ enum Val {
     Double(u64),
     Micros(i64),
     Str(String),
+    /// Its own bytes (`core::variant`).
+    Variant(Vec<u8>),
 }
 
 impl Val {
@@ -354,6 +365,7 @@ impl Val {
             Val::Double(bits) => Literal::Double(f64::from_bits(*bits)),
             Val::Micros(us) => Literal::Micros(*us),
             Val::Str(s) => Literal::String(s.clone()),
+            Val::Variant(_) => return None,
         })
     }
 }
@@ -418,6 +430,11 @@ fn value(rng: &mut Rng, kind: &str) -> Val {
             _ => Val::Null,
         },
         "bool" => Val::Bool(rng.chance(2)),
+        "variant" => {
+            let mut b = Vec::new();
+            tag::encode(&variant_tag(rng, 2), &mut b);
+            Val::Variant(b)
+        }
         // Either side of 1970, the years ISO 8601 writes in four digits, and an hour that fits no `int` of hours.
         _ => Val::Micros(*rng.pick(&[
             0,
@@ -427,6 +444,56 @@ fn value(rng: &mut Rng, kind: &str) -> Val {
             -62_135_596_800_000_000,
             i64::MAX,
         ])),
+    }
+}
+
+/// A variant of every type, nested no deeper than `depth`.
+fn variant_tag(rng: &mut Rng, depth: usize) -> Tag<'static> {
+    let scalars = 8;
+    match rng.below(scalars + if depth > 0 { 2 } else { 0 }) {
+        0 => Tag::Bool(rng.chance(2)),
+        1 => Tag::I64(*rng.pick(&[0, -1, i64::MIN, i64::MAX, 42])),
+        2 => Tag::F64(*rng.pick(&[0.0, -0.0, 1e308, -5.5, f64::NAN])),
+        3 => Tag::Str(Cow::Owned(odd_string(rng))),
+        4 => Tag::DateTime(*rng.pick(&[0, -1, 1_510_871_468_123_456])),
+        5 => Tag::Duration(*rng.pick(&[0, 90, -1])),
+        6 => Tag::Bytes(Cow::Owned(vec![0, 255, b'"'][..rng.below(4)].to_vec())),
+        7 => Tag::Str(Cow::Borrowed("")),
+        8 => Tag::Array(
+            (0..rng.below(4))
+                .map(|_| (!rng.chance(5)).then(|| variant_tag(rng, depth - 1)))
+                .collect(),
+        ),
+        _ => {
+            let mut keys: Vec<String> = (0..rng.below(4)).map(|_| odd_string(rng)).collect();
+            keys.sort();
+            keys.dedup();
+            Tag::Object(
+                keys.into_iter()
+                    .map(|k| (Cow::Owned(k), variant_tag(rng, depth - 1)))
+                    .collect(),
+            )
+        }
+    }
+}
+
+/// The variant `b` as `parquet_variant`'s reader writes what it reads of it: the type the spec holds each value in.
+fn spec_text(b: &[u8]) -> String {
+    match variant::read(b) {
+        Value::Null => "null".into(),
+        Value::Bool(v) => v.to_string(),
+        Value::I64(v) | Value::Duration(v) => v.to_string(),
+        Value::F64(v) => format!("{v:?}"),
+        Value::Str(s) => format!("{s:?}"),
+        Value::DateTime(v) => format!("ts:{v}"),
+        Value::Bytes(b) => format!("bin:{b:?}"),
+        Value::Array(items) => format!("[{}]", items.map(spec_text).collect::<Vec<_>>().join(",")),
+        Value::Object(entries) => {
+            let mut fields: Vec<(&str, String)> = entries.map(|(k, v)| (k, spec_text(v))).collect();
+            fields.sort();
+            let fields: Vec<String> = fields.into_iter().map(|(k, v)| format!("{k}:{v}")).collect();
+            format!("{{{}}}", fields.join(","))
+        }
     }
 }
 
@@ -476,6 +543,16 @@ fn delivered(record: &DataType, leaves: &[(String, &str)], rows: &[Option<BTreeM
     let mut built: Vec<(String, Column)> = Vec::new();
     for (leaf, kind) in leaves {
         let column = match *kind {
+            "variant" => {
+                let mut b = StrBuilder::new(&mut pool, VarType::Variant, n);
+                for row in 0..n {
+                    match cell(row, leaf) {
+                        Val::Variant(v) => b.push_grow(&mut pool, &v),
+                        _ => b.push_null(),
+                    }
+                }
+                b.finish()
+            }
             "str" => {
                 let values: Vec<Val> = (0..n).map(|r| cell(r, leaf)).collect();
                 let mut b = StrBuilder::new(&mut pool, VarType::Str, n);
@@ -714,6 +791,14 @@ fn read_cell(columns: &StructArray, path: &str, kind: &str, row: usize) -> Resul
     }
     Ok(match kind {
         "str" => Val::Str(array.as_string::<i32>().value(row).to_string()),
+        // As `spec_text`, where the table holds a variant; else its JSON text.
+        "variant" => match array.as_struct_opt() {
+            Some(v) => {
+                let (metadata, value) = (v.column(0).as_binary::<i32>(), v.column(1).as_binary::<i32>());
+                Val::Str(read_variant(metadata.value(row), value.value(row)))
+            }
+            None => Val::Str(array.as_string::<i32>().value(row).to_string()),
+        },
         "i64" | "duration" => Val::Long(array.as_primitive::<Int64Type>().value(row)),
         "f64" => Val::Double(array.as_primitive::<Float64Type>().value(row).to_bits()),
         "datetime" | "timestamp" => Val::Micros(array.as_primitive::<TimestampMicrosecondType>().value(row)),
@@ -868,7 +953,28 @@ fn check_table(
                         return Err(format!("row {id} was never taken, and is in {}", entry.file_path));
                     };
                     for (leaf, _) in leaves {
-                        let want = sent.get(leaf).cloned().unwrap_or(Val::Null);
+                        let mut want = sent.get(leaf).cloned().unwrap_or(Val::Null);
+                        if let Val::Variant(b) = &want {
+                            let path: Vec<&str> = leaf.split('.').collect();
+                            let held = field_at(&schema.fields, &path).map(|f| &f.field_type);
+                            want = match held {
+                                Some(Type::Primitive(Primitive::Other(t))) if t == "variant" => {
+                                    reached.push("variant written as variant".into());
+                                    match variant::read(b) {
+                                        Value::Null => Val::Null,
+                                        _ => Val::Str(spec_text(b)),
+                                    }
+                                }
+                                _ => {
+                                    reached.push("variant written as text".into());
+                                    let mut doc = Vec::new();
+                                    match json::write_variant(b, &mut doc) {
+                                        true => Val::Str(String::from_utf8(doc).unwrap()),
+                                        false => Val::Null,
+                                    }
+                                }
+                            };
+                        }
                         if row.get(leaf) != Some(&want) {
                             return Err(format!("row {id}'s {leaf} reads {:?}, not {want:?}", row.get(leaf)));
                         }
@@ -1045,7 +1151,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
         let mut earlier: Vec<(&str, &str)> = columns.iter().copied().filter(|_| rng.chance(2)).collect();
         if let Some(first) = earlier.first_mut()
             && rng.chance(4)
-            && first.1 != "null"
+            && !matches!(first.1, "null" | "variant")
         {
             first.1 = if first.1 == "str" { "i64" } else { "str" };
             evolution_refused = Some(first.0);
@@ -1147,8 +1253,9 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
                 reached.push(format!("partition narrowed {to}"));
             }
         }
-        // As another engine evolved it: a column the record does not write, and one in a struct it does.
-        if rng.chance(2) {
+        // As another engine evolved it: a column the record does not write, and one in a struct it does. Always at
+        // version 3, which so few seeds reach that a draw can miss one of its types.
+        if version_3 || rng.chance(2) {
             let mut fake = fake.lock().unwrap();
             let table = fake.table.as_mut().ok_or("the earlier table was not made")?;
             let current = table.current_schema_id;

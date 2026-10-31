@@ -341,7 +341,7 @@ fn codec(name: &str) -> Option<Compression> {
 /// first is loaded instead.
 fn create(catalog: &mut Catalog, config: &IcebergDestinationConfig, record: &DataType) -> Result<Loaded, IoError> {
     let refused = |why: String| IoError::transient(format!("creating the iceberg table {}: {why}", config.table));
-    let fresh = table_schema(record, None, 0).map_err(refused)?;
+    let fresh = table_schema(record, None, 0, FORMAT_VERSION).map_err(refused)?;
     let spec = spec_of(&config.partition_by, &fresh.schema).map_err(refused)?;
     let properties = BTreeMap::from([
         ("format-version".to_string(), "2".to_string()),
@@ -404,7 +404,8 @@ fn evolve(
     for _ in 0..=MAX_CONFLICT_RETRIES {
         let table = &loaded.metadata;
         let current = table.schema();
-        let mut evolution = table_schema(record, current, table.last_column_id).map_err(refused)?;
+        let mut evolution =
+            table_schema(record, current, table.last_column_id, table.format_version).map_err(refused)?;
         if !evolution.changed {
             return Ok((loaded, evolution.schema));
         }
