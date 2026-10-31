@@ -92,22 +92,22 @@
           return;
         }
         const touched = runRes.touched ?? [];
-        const summaryByKey = new Map(listRes.tests.map((t) => [scopedKey(t.scope, t.id), t]));
+        const summaryByKey = new Map(listRes.tests.map((t) => [scopedKey(t.area, t.id), t]));
         // A result's own `pipeline` is absent for an end-to-end test; its
         // summary's derived list is what says which touched pipeline(s) it
         // actually covers, so a route-only test still counts toward
         // `untested` rather than sitting outside every pipeline it tests.
         const testedPipelines = new Set(
           runRes.results.flatMap((r) => {
-            const summary = summaryByKey.get(scopedKey(r.scope, r.id));
+            const summary = summaryByKey.get(scopedKey(r.area, r.id));
             const pipelines = summary ? summary.pipelines : r.pipeline ? [r.pipeline] : [];
-            return pipelines.map((p) => scopedKey(r.scope, p));
+            return pipelines.map((p) => scopedKey(r.area, p));
           }),
         );
         const testedRoutes = new Set(
           runRes.results.flatMap((r) => {
-            const routes = summaryByKey.get(scopedKey(r.scope, r.id))?.routes ?? [];
-            return routes.map((route) => scopedKey(r.scope, route));
+            const routes = summaryByKey.get(scopedKey(r.area, r.id))?.routes ?? [];
+            return routes.map((route) => scopedKey(r.area, route));
           }),
         );
         const passing = runRes.results.filter((r) => r.verdict?.passed).length;
@@ -116,8 +116,8 @@
         const untested = touched.reduce(
           (n, si) =>
             n +
-            si.pipelines.filter((r) => !testedPipelines.has(scopedKey(si.scope, r.id))).length +
-            si.routes.filter((r) => !testedRoutes.has(scopedKey(si.scope, r.id))).length,
+            si.pipelines.filter((r) => !testedPipelines.has(scopedKey(si.area, r.id))).length +
+            si.routes.filter((r) => !testedRoutes.has(scopedKey(si.area, r.id))).length,
           0,
         );
         testTallies = { ...testTallies, [b.name]: { passing, failing, errored, untested } };
@@ -411,9 +411,6 @@
   .start input {
     font-family: var(--mono);
     min-width: 16rem;
-  }
-  .dim {
-    color: var(--dim);
   }
   .failed {
     color: var(--error);

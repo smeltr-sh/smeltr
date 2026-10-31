@@ -140,9 +140,6 @@
     color: var(--ink);
     font-size: var(--text-label);
   }
-  .dim {
-    color: var(--dim);
-  }
   .outdated {
     font-size: var(--text-micro);
     border: 1px solid var(--border);

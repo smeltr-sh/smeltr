@@ -15,23 +15,19 @@ describe('conflictLabel', () => {
     expect(conflictLabel(c)).toBe('west · Pipeline Enrich');
   });
 
-  it('names a route by its source, never its id', () => {
+  it('names a schema by its id', () => {
+    const c = conflict('shared/schemas/ecs.json', '{"id":"ecs","title":"ECS","fields":[]}');
+    expect(conflictLabel(c)).toBe('shared · Schema ecs');
+  });
+
+  it('names a route by the name it is given, never its id', () => {
     const c = conflict(
       'shared/routes.json',
       '{"id":"route-x7k2","source":"kafka-1","pipeline":"pipeline-a9f3"}',
       'route-x7k2',
     );
-    expect(conflictLabel(c)).toBe('shared · Route from kafka-1');
-  });
-
-  it('tells routes from one source apart by which rows they take and where they go', () => {
-    const c = conflict(
-      'shared/routes.json',
-      '{"id":"route-x7k2","source":"kafka-1","condition":"level = \'error\'","pipeline":"pipeline-a9f3",' +
-        '"deliver":[{"to":["es"]},{"when":"x","to":["es","dlq"]}]}',
-      'route-x7k2',
-    );
-    expect(conflictLabel(c)).toBe("shared · Route from kafka-1 if level = 'error' to es, dlq");
+    expect(conflictLabel(c, 'kafka-1 \u2192 Enrich')).toBe('shared · Route kafka-1 \u2192 Enrich');
+    expect(conflictLabel(c)).toBe('shared · Route');
   });
 
   it('reads the next side when one does not parse', () => {

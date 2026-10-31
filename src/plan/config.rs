@@ -24,6 +24,13 @@ pub struct PipelineConfig {
     pub grok_patterns: GrokPatterns,
 }
 
+impl PipelineConfig {
+    /// The `FunctionId` of the step the file names `id`: what `step_ids` holds at it.
+    pub fn function_id(&self, id: &str) -> Option<FunctionId> {
+        self.step_ids.iter().position(|s| s == id).map(|i| i as FunctionId)
+    }
+}
+
 /// A bundle's named grok patterns, by name: what any grok in the group's pipelines can name, between its own
 /// `GrokConfig::custom_patterns` and the built-ins. `config_file::load` checked that each expands on its own and
 /// that none takes a built-in's name.
@@ -218,10 +225,15 @@ pub enum FunctionKind {
     /// Compile-time rebinding; emits no instruction.
     Rename { pairs: Vec<(String, String)> },
 
+    /// Each of `fields` leaves the record; under a filter it is null on the rows selected. Compile-time, as Rename.
+    Remove { fields: Vec<String> },
+
     /// Structured parse of a field. Its slots are exactly `declared`, each pinned to its type; a dynamic parser
     /// (`ParserKind::is_dynamic`) lays every other key into the unclaimed fields as it arrived.
     Parser {
         input: String,
+        /// The object the parse writes into, its `declared` names under it; `$`, the record.
+        into: String,
         kind: ParserKind,
         declared: Vec<DeclaredField>,
     },
@@ -329,6 +341,8 @@ pub struct CsvConfig {
     pub squeeze: bool,
     /// Spaces around each unquoted field are dropped.
     pub trim: bool,
+    /// The parse also rebuilds its input as the record it read, each skipped column left empty (`csvRebuild`).
+    pub rebuild: bool,
 }
 
 impl Default for CsvConfig {
@@ -343,6 +357,7 @@ impl Default for CsvConfig {
             escape: None,
             squeeze: false,
             trim: false,
+            rebuild: false,
         }
     }
 }
@@ -358,6 +373,10 @@ pub struct KvConfig {
     /// An unquoted value runs to the `pair_sep` before the next key, not to the first `pair_sep`.
     pub next_key: bool,
     pub split_dots: bool,
+    /// Keys the parse reads past: none makes a field, declared or unclaimed.
+    pub skip: Vec<String>,
+    /// The parse also rebuilds its input as the record it read, each skipped pair left out (`kvRebuild`).
+    pub rebuild: bool,
 }
 
 impl Default for KvConfig {
@@ -369,6 +388,8 @@ impl Default for KvConfig {
             escapes: false,
             next_key: true,
             split_dots: split_dots_default("kv"),
+            skip: Vec::new(),
+            rebuild: false,
         }
     }
 }
@@ -469,7 +490,7 @@ fn commit_pointer(
 ) -> Result<crate::lookup::store::Pointer, crate::lookup::LookupError> {
     let failed = |e: String| crate::lookup::LookupError(format!("couldn't read lookup file `{named}`: {e}"));
     let blob = crate::leader::git::read_blobs(repo, commit, &[path.to_string()])
-        .map_err(|e| failed(e.0))?
+        .map_err(|e| failed(e.message))?
         .pop()
         .flatten()
         .ok_or_else(|| crate::lookup::LookupError(format!("lookup file `{named}` is not in commit {commit}")))?;

@@ -36,6 +36,8 @@ const MOVING_EVERY_MS = 5000;
 /** How long an emulated capture takes to read its pool. */
 const POOL_SPAN_MS = 8000;
 const STORE = 'smeltr-demo';
+/** The leader's own words for a capture it no longer holds (`capture_api::NO_CAPTURE`). */
+const NO_CAPTURE = 'no capture by that id -- it may have been saved, or swept after finishing';
 
 /** `/api/x?b=2&a=1` as `/api/x?a=1&b=2`, the recording's key for it. */
 export function keyOf(url: URL): string {
@@ -122,6 +124,7 @@ interface Capture {
   pool: string | null;
   source: string | null;
   destination: string | null;
+  filter: string | null;
   maxMatches: number;
   deadlineSecs: number;
   startedAt: number;
@@ -139,7 +142,7 @@ const ok = (body: Record<string, unknown> = {}): Answer => ({
   status: 200,
   body: { ok: true, errors: [], ...body },
 });
-const refused = (errors: ApiError[], status = 200): Answer => ({
+const refused = (status: number, errors: ApiError[]): Answer => ({
   status,
   body: { ok: false, errors },
 });
@@ -153,22 +156,37 @@ const WAKE_RETRY_MS = 3_000;
 export const waking = { now: false };
 export const WAKING_EVENT = 'smeltr-demo:waking';
 
-/** The service failing to answer, as a refusal both of the GUI's readers show: one that reads `errors` and one that
- * reads `error` from a status that is not 200 (`api.ts`, `apiJson`). */
-const unreachable = (message: string, status: number): Answer => ({
-  status,
-  body: { ok: false, errors: [bareError(message)], error: message },
-});
+/** The service failing to answer, as the leader refuses. */
+const unreachable = (message: string, status: number): Answer =>
+  refused(status, [bareError(message)]);
 
-/** The sections a bundle stores as one file each, by the path the GUI writes them at. */
-const SECTIONS: Record<string, string> = {
-  '/api/sources': 'sources',
-  '/api/destinations': 'destinations',
-  '/api/routes': 'routes',
-  '/api/identities': 'identities',
-  '/api/lookup-tables': 'lookupTables',
-  '/api/grok-patterns': 'grokPatterns',
+/** The sections a bundle stores as one file each, by the path within an area the GUI writes them at: the section's
+ * key in a bundle, and its file. */
+const SECTIONS: Record<string, [string, string]> = {
+  '/sources': ['sources', 'sources.json'],
+  '/destinations': ['destinations', 'destinations.json'],
+  '/routes': ['routes', 'routes.json'],
+  '/lookups': ['lookupTables', 'lookup-tables.json'],
+  '/grok-patterns': ['grokPatterns', 'grok-patterns.json'],
+  // One file per schema; a save is told as the directory that holds them.
+  '/schemas': ['schemas', 'schemas'],
 };
+
+/** The kind of object each section of an area's path holds, as the service names it. */
+const KINDS: Record<string, string> = {
+  sources: 'source',
+  routes: 'route',
+  pipelines: 'pipeline',
+  destinations: 'destination',
+  lookups: 'lookupTable',
+  'grok-patterns': 'grokPattern',
+};
+
+/** `/api/areas/<area><within>` as its area and the path within it; `null` for a path in no area. */
+export function areaOf(path: string): { area: string; within: string } | null {
+  const found = path.match(/^\/api\/areas\/([^/]+)(\/.*)?$/);
+  return found && { area: decodeURIComponent(found[1]), within: found[2] ?? '' };
+}
 
 /** Each pipeline that calls another, by the one it calls (`config_file::callers_of`). */
 export function callersOf(
@@ -197,7 +215,7 @@ const UNDONE: Record<string, string> = {
   routes: 'route',
   lookupTables: 'lookup table',
   grokPatterns: 'grok pattern',
-  identities: 'identity',
+  schemas: 'schema',
   pipelines: 'pipeline',
 };
 
@@ -292,7 +310,7 @@ export class DemoLeader {
       if (answer) return answer;
     }
     // A scope the fleet had no tests in.
-    if (url.pathname === '/api/tests') return ok({ tests: [] });
+    if (areaOf(url.pathname)?.within === '/tests') return ok({ tests: [] });
     return NOT_RECORDED;
   }
 
@@ -310,17 +328,18 @@ export class DemoLeader {
     for (const [key, { body }] of Object.entries(this.recording.answers)) {
       const url = new URL(key, 'http://demo');
       const branch = url.searchParams.get('branch');
-      const scope = url.searchParams.get('scope');
-      if (!branch || !scope || url.searchParams.has('at')) continue;
+      const area = areaOf(url.pathname);
+      if (!branch || !area || url.searchParams.has('at')) continue;
+      const { area: scope, within } = area;
       const b = body as { config?: Bundle; commit?: string; sample?: SampleDto; test?: TestDto };
-      if (url.pathname === '/api/config' && b.config && b.commit) {
+      if (within === '' && b.config && b.commit) {
         if (!configs.has(branch)) configs.set(branch, new Map());
         configs.get(branch)!.set(scope, { config: b.config, commit: b.commit });
       }
-      if (url.pathname.startsWith('/api/samples/') && b.sample) {
+      if (within.startsWith('/samples/') && b.sample) {
         ((samples[branch] ??= {})[scope] ??= {})[b.sample.id] = b.sample;
       }
-      if (url.pathname.startsWith('/api/tests/') && b.test) {
+      if (within.startsWith('/tests/') && b.test) {
         ((tests[branch] ??= {})[scope] ??= {})[b.test.id] = b.test;
       }
     }
@@ -413,15 +432,13 @@ export class DemoLeader {
         body: JSON.stringify(body),
       });
       const text = await res.text();
-      let answer: { errors?: ApiError[] };
+      let answer: unknown;
       try {
         answer = JSON.parse(text);
       } catch {
         return unreachable(text || `HTTP ${res.status}`, res.ok ? 502 : res.status);
       }
-      if (res.ok) return { status: res.status, body: answer };
-      const said = (answer.errors ?? []).map((e) => e.message).join('; ');
-      return { status: res.status, body: { ...answer, error: said || `HTTP ${res.status}` } };
+      return { status: res.status, body: answer };
     } catch (e) {
       return unreachable(String(e), 502);
     }
@@ -488,9 +505,32 @@ export class DemoLeader {
         ...e,
         message: `worker group ${JSON.stringify(id)}: ${e.message}`,
       }));
-      return refused(named);
+      return refused(422, named);
     }
     return undefined;
+  }
+
+  /** What `name`'s change breaks of a schema in each group it touches, by group, as the leader's review reads it:
+   * what main already broke is left out. A group whose bundle does not load is left out, as the leader leaves it out. */
+  private async schemaFindings(name: string): Promise<Answer> {
+    const branch = this.branch(name);
+    if (!branch) return refused(404, [bareError(`no branch ${JSON.stringify(name)}`)]);
+    const main = this.branch('main')!;
+    const groups = new Set(
+      branch.touches.flatMap((file) => /^groups\/([^/]+)\//.exec(file)?.[1] ?? []),
+    );
+    const own = (b: Branch, group: string) =>
+      this.bundleOf(b, group, b.bundles[group] ?? { version: 1 });
+    const findings: object[] = [];
+    for (const group of groups) {
+      const answer = await this.ask('/schema-findings', {
+        ...own(branch, group),
+        base: own(main, group),
+      });
+      const body = answer.body as { ok?: boolean; findings?: object[] };
+      if (body.ok) findings.push(...(body.findings ?? []).map((f) => ({ group, ...f })));
+    }
+    return ok({ findings });
   }
 
   /** The leader's answer to `method url`, with `body` as sent. */
@@ -498,13 +538,17 @@ export class DemoLeader {
     const path = url.pathname;
     const q = url.searchParams;
     const name = q.get('branch') ?? 'main';
-    const scope = q.get('scope') ?? SHARED;
+    const area = areaOf(path);
+    const scope = area?.area ?? SHARED;
+    const within = area?.within;
     const json = () => (body ? JSON.parse(body) : {});
     const at = q.has('at');
+    // The tests of a change, across every scope it touches.
+    const change = path.match(/^\/api\/branches\/([^/]+)\/(tests|test-runs)$/);
 
     // A branch read at its own commit, or at main's (the editor's "changed on this branch"), is what this tab holds;
     // the recording read neither for a branch the visitor started.
-    if (method === 'GET' && at && path === '/api/config') {
+    if (method === 'GET' && at && within === '') {
       const commit = q.get('at');
       const held = [this.branch(name), this.branch('main')].find((b) => b?.commit === commit);
       const own = held?.bundles[scope] ?? (scope === SHARED ? undefined : { version: 1 });
@@ -515,56 +559,61 @@ export class DemoLeader {
       const branch = this.branch(name);
       const own =
         branch && (branch.bundles[scope] ?? (scope === SHARED ? undefined : { version: 1 }));
-      if (path === '/api/config' && branch && own) {
+      if (within === '' && branch && own) {
         return ok({ config: own, commit: branch.commit });
       }
-      if (path === '/api/pipelines' && branch && own) {
+      if (within === '/pipelines' && branch && own) {
         return ok({ pipelines: own.pipelines ?? [], commit: branch.commit });
       }
-      const pipeline = path.match(/^\/api\/pipelines\/([^/]+)$/);
+      const pipeline = within?.match(/^\/pipelines\/([^/]+)$/);
       if (pipeline && branch && own) {
         const id = decodeURIComponent(pipeline[1]);
         const found = (own.pipelines ?? []).find((p) => p.id === id);
         if (found) return ok({ pipeline: found, commit: branch.commit });
-        const missing = refused([bareError(`no pipeline ${JSON.stringify(id)}`)], 404);
+        const missing = refused(404, [bareError(`no pipeline ${JSON.stringify(id)}`)]);
         return {
           ...missing,
           body: { ...(missing.body as object), pipeline: null, commit: branch.commit },
         };
       }
-      if (path === '/api/pipeline-callers' && branch && own) {
+      if (within === '/pipeline-callers' && branch && own) {
         return ok({ callers: callersOf(own.pipelines ?? []) });
       }
-      if (path === '/api/samples' && branch) {
+      if (within === '/samples' && branch) {
         const samples = Object.values(branch.samples[scope] ?? {}).map((s) => ({
           id: s.id,
           name: s.name,
           source: s.source,
           records: s.records.length,
+          captured: (s.records[0]?.__capture as { timestamp?: string } | undefined)?.timestamp,
         }));
         return ok({ samples, commit: branch.commit });
       }
-      const sample = path.match(/^\/api\/samples\/([^/]+)$/);
+      const sample = within?.match(/^\/samples\/([^/]+)$/);
       if (sample && branch) {
         const found = branch.samples[scope]?.[decodeURIComponent(sample[1])];
         if (found) return ok({ sample: found, commit: branch.commit });
-        const missing = refused([bareError('there is no sample by that name on this branch')]);
+        const missing = refused(404, [bareError('there is no sample by that name on this branch')]);
         return {
           ...missing,
           body: { ...(missing.body as object), sample: null, commit: branch.commit },
         };
       }
       if (path === '/api/branches') return this.branches();
-      if (path === '/api/tests' && branch)
-        return this.tests(branch, q.has('ownScopes') ? null : scope, []);
-      const test = path.match(/^\/api\/tests\/([^/]+)$/);
+      if (within === '/tests' && branch) return this.tests(branch, scope, []);
+      if (change?.[2] === 'tests') {
+        const of = this.branch(decodeURIComponent(change[1]));
+        if (of) return this.tests(of, null, []);
+      }
+      const test = within?.match(/^\/tests\/([^/]+)$/);
       if (test && branch) {
         const found = branch.tests[scope]?.[decodeURIComponent(test[1])];
         if (found) return ok({ test: found });
-        return refused([bareError('there is no test by that name on this branch')]);
+        return refused(404, [bareError('there is no test by that name on this branch')]);
       }
       if (path === '/api/map' && branch) return this.map(branch);
-      if (path === '/api/connections' && branch) {
+      const connections = within?.match(/^\/([^/]+)\/([^/]+)\/connections$/);
+      if (connections && KINDS[connections[1]] && branch) {
         // An object `shared/` declares runs in every group; a group's own, in that group alone.
         const groups = (scope === SHARED ? this.groups() : [scope]).map((id) => ({
           id,
@@ -573,10 +622,12 @@ export class DemoLeader {
         return this.ask('/connections', {
           shared: branch.bundles[SHARED],
           groups,
-          kind: q.get('kind'),
-          id: q.get('id'),
+          kind: KINDS[connections[1]],
+          id: decodeURIComponent(connections[2]),
         });
       }
+      const findings = path.match(/^\/api\/branches\/([^/]+)\/schema-findings$/);
+      if (findings) return this.schemaFindings(decodeURIComponent(findings[1]));
       const capture = path.match(/^\/api\/captures\/([^/]+)$/);
       if (capture) return this.captureStatus(decodeURIComponent(capture[1]));
       const live = this.live(url, branch);
@@ -584,14 +635,14 @@ export class DemoLeader {
       return this.nearest(url);
     }
 
-    if (method === 'PUT' && SECTIONS[path]) {
-      const section = SECTIONS[path];
+    if (method === 'PUT' && within !== undefined && SECTIONS[within]) {
+      const [section, file] = SECTIONS[within];
       const items = json();
-      return this.write(name, scope, `${path.slice('/api/'.length)}.json`, (b) => {
+      return this.write(name, scope, file, (b) => {
         b[section] = items;
       });
     }
-    const pipeline = path.match(/^\/api\/pipelines\/([^/]+)$/);
+    const pipeline = within?.match(/^\/pipelines\/([^/]+)$/);
     if (pipeline && (method === 'PUT' || method === 'DELETE')) {
       const id = decodeURIComponent(pipeline[1]);
       const next = method === 'PUT' ? json() : null;
@@ -602,32 +653,35 @@ export class DemoLeader {
         b.pipelines = pipelines;
       });
     }
-    if (path === '/api/tests' && method === 'PUT') {
-      const test = json() as TestDto;
-      return this.write(name, scope, `tests/${test.id}.json`, (_, { tests }) => {
-        tests[test.id] = test;
+    const test = within?.match(/^\/tests\/([^/]+)$/);
+    if (test && method === 'PUT') {
+      const id = decodeURIComponent(test[1]);
+      const locked = { ...(json() as TestDto), id };
+      return this.write(name, scope, `tests/${id}.json`, (_, { tests }) => {
+        tests[id] = locked;
       });
     }
-    const test = path.match(/^\/api\/tests\/([^/]+)$/);
     if (test && method === 'DELETE') {
       const id = decodeURIComponent(test[1]);
       return this.write(name, scope, `tests/${id}.json`, (_, { tests }) => {
         delete tests[id];
       });
     }
-    if (path === '/api/tests/run' && method === 'POST') {
-      const branch = this.branch(name) ?? this.state.branches.main;
+    if ((within === '/test-runs' || change?.[2] === 'test-runs') && method === 'POST') {
+      const on = change ? decodeURIComponent(change[1]) : name;
+      const branch = this.branch(on) ?? this.state.branches.main;
       const { ids } = json() as { ids?: string[] };
-      return this.tests(branch, q.has('ownScopes') ? null : scope, ids ?? [], true);
+      return this.tests(branch, change ? null : scope, ids ?? [], true);
     }
 
-    if (path === '/api/samples' && method === 'PUT') {
-      const sample = json() as SampleDto;
-      return this.write(name, scope, `samples/${sample.id}.json`, (_, { samples }) => {
-        samples[sample.id] = sample;
+    const sample = within?.match(/^\/samples\/([^/]+)$/);
+    if (sample && method === 'PUT') {
+      const id = decodeURIComponent(sample[1]);
+      const saved = { ...(json() as SampleDto), id };
+      return this.write(name, scope, `samples/${id}.json`, (_, { samples }) => {
+        samples[id] = saved;
       });
     }
-    const sample = path.match(/^\/api\/samples\/([^/]+)$/);
     if (sample && method === 'DELETE') {
       const id = decodeURIComponent(sample[1]);
       return this.write(name, scope, `samples/${id}.json`, (_, { samples }) => {
@@ -640,28 +694,39 @@ export class DemoLeader {
     }
     const named = path.match(/^\/api\/branches\/([^/]+)$/);
     if (named && method === 'DELETE') return this.deleteBranch(decodeURIComponent(named[1]));
-    if (path === '/api/undo' && method === 'POST') return this.undo(name, scope, json());
+    const capture = path.match(/^\/api\/captures\/([^/]+)$/);
+    if (capture && method === 'DELETE') return this.discardCapture(decodeURIComponent(capture[1]));
+    if (within === '/undo' && method === 'POST') return this.undo(name, scope, json());
 
     if (method === 'POST') {
-      if (path === '/api/preview') return this.preview(name, scope, json());
-      if (path === '/api/route-preview') return this.routePreview(name, scope, json());
-      if (path === '/api/grok-captures') return this.ask('/grok-captures', json());
-      if (path === '/api/line-breaker') return this.ask('/line-breaker', json());
-      if (path === '/api/onboard/propose') return this.ask('/onboard/propose', json());
-      if (path === '/api/captures') return this.startCapture(json());
-      const capture = path.match(/^\/api\/captures\/([^/]+)\/(stop|save|discard)$/);
-      if (capture) {
-        const session = decodeURIComponent(capture[1]);
-        if (capture[2] === 'stop') return this.stopCapture(session);
-        if (capture[2] === 'discard') return this.discardCapture(session);
-        return this.saveCapture(session, name, scope, json());
+      if (within === '/preview/pipeline') return this.preview(name, scope, json());
+      if (within === '/preview/routes') return this.routePreview(name, scope, json());
+      if (within === '/samples') {
+        const { capture, ...save } = json() as {
+          capture: string;
+          id: string;
+          name: string;
+          source?: string;
+        };
+        return this.saveCapture(capture, name, scope, save);
       }
-      if (path === '/api/auth/activity') return ok();
+      if (path === '/api/preview/grok') return this.ask('/grok-captures', json());
+      if (path === '/api/preview/line-breaker') return this.ask('/line-breaker', json());
+      if (path === '/api/preview/format') return this.ask('/format', json());
+      if (path === '/api/preview/onboard') return this.ask('/onboard/propose', json());
+      if (path === '/api/preview/schema-read') return this.ask('/schemas/read', json());
+      if (path === '/api/preview/schema-export') return this.ask('/schemas/export', json());
+      if (path === '/api/captures') return this.startCapture(json());
+      const stop = path.match(/^\/api\/captures\/([^/]+)\/stop$/);
+      if (stop) return this.stopCapture(decodeURIComponent(stop[1]));
+      if (path === '/api/auth/session/activity') return ok();
     }
 
+    if (method === 'GET' && path === '/api/preview/schema-standards')
+      return this.ask('/schemas/standards', {});
     if (method === 'GET') return this.nearest(url);
     // `results` too: a test run's caller reads it whether or not the run was refused.
-    return { status: 200, body: { ok: false, errors: [bareError(DEMO_REFUSAL)], results: [] } };
+    return { status: 403, body: { ok: false, errors: [bareError(DEMO_REFUSAL)], results: [] } };
   }
 
   /** A live answer, as the fleet moved when it was recorded, round and round. The map's measurements on a branch the
@@ -705,7 +770,7 @@ export class DemoLeader {
         results?: unknown[];
       };
       if (!a.ok) return { status: answer.status, body: { ...a, tests: [], results: [] } };
-      tests.push(...(a.tests ?? []).map((t) => ({ scope: s, ...t })));
+      tests.push(...(a.tests ?? []).map((t) => ({ area: s, ...t })));
       results.push(...(a.results ?? []));
     }
     return run ? ok({ results }) : ok({ tests });
@@ -714,12 +779,12 @@ export class DemoLeader {
   /** `name` started at `main`, as the leader starts a branch on purpose (`git::create_branch`). */
   private startBranch(name: string): Answer {
     const bad = badBranchName(name);
-    if (bad) return refused([bareError(bad)]);
+    if (bad) return refused(422, [bareError(bad)]);
     if (name === 'main') {
-      return refused([bareError('main is what deploys move -- it is not a branch to start')]);
+      return refused(422, [bareError('main is what deploys move -- it is not a branch to start')]);
     }
     if (this.state.branches[name]) {
-      return refused([bareError(`branch ${JSON.stringify(name)} is already there`)]);
+      return refused(409, [bareError(`branch ${JSON.stringify(name)} is already there`)]);
     }
     const started = this.branch(name, true)!;
     started.started = true;
@@ -730,9 +795,9 @@ export class DemoLeader {
   /** `name` gone, with the work it carries, as the leader deletes a branch. */
   private deleteBranch(name: string): Answer {
     if (name === 'main')
-      return refused([bareError('main is what deploys move and is not deleted')]);
+      return refused(422, [bareError('main is what deploys move and is not deleted')]);
     if (!this.state.branches[name]) {
-      return refused([bareError(`there is no branch ${JSON.stringify(name)}`)]);
+      return refused(404, [bareError(`there is no branch ${JSON.stringify(name)}`)]);
     }
     delete this.state.branches[name];
     this.save();
@@ -751,9 +816,9 @@ export class DemoLeader {
     const noun = UNDONE[section];
     const branch = name === 'main' ? undefined : this.state.branches[name];
     if (!noun)
-      return refused([bareError(`there is no section ${JSON.stringify(section)} to undo in`)]);
+      return refused(422, [bareError(`there is no section ${JSON.stringify(section)} to undo in`)]);
     if (!branch) {
-      return refused([
+      return refused(409, [
         bareError(`${JSON.stringify(name)} has no saves, so there is nothing to undo`),
       ]);
     }
@@ -761,14 +826,14 @@ export class DemoLeader {
     const was = listOf(this.state.branches.main.bundles[scope]);
     const back = putBack(was, listOf(branch.bundles[scope]), id);
     if (!back) {
-      return refused([
+      return refused(404, [
         bareError(
           `there is no ${noun} ${JSON.stringify(id)} on ${JSON.stringify(name)} or where it left main`,
         ),
       ]);
     }
     if (back.same) {
-      return refused([
+      return refused(409, [
         bareError(
           `${noun} ${JSON.stringify(back.name)} is as it was where ${JSON.stringify(name)} left main: there is nothing to undo`,
         ),
@@ -777,9 +842,7 @@ export class DemoLeader {
     const file =
       section === 'pipelines'
         ? `pipelines/${id}.json`
-        : `${Object.keys(SECTIONS)
-            .find((k) => SECTIONS[k] === section)!
-            .slice('/api/'.length)}.json`;
+        : Object.values(SECTIONS).find(([key]) => key === section)![1];
     return this.write(name, scope, file, (b) => {
       b[section] = back.objects;
     });
@@ -839,22 +902,30 @@ export class DemoLeader {
       show_internal: boolean;
       at_micros: number | null;
       filter: string | null;
+      attribution?: boolean;
+      after_dot: unknown;
+      capture_filter: unknown;
     },
   ): Promise<Answer> {
     const branch = this.branch(name) ?? this.state.branches.main;
     const sample = req.sample === null ? undefined : this.sampleOn(branch, scope, req.sample);
     if (req.sample !== null && !sample) {
-      return refused([
+      return refused(404, [
         bareError(`there is no sample ${JSON.stringify(req.sample)} on this branch`),
       ]);
     }
     return this.ask('/preview', {
       ...this.bundleOf(branch, scope, JSON.parse(req.config)),
       pipeline: req.pipeline,
-      sample,
+      // What follows a dot reads the sample's columns, never its records: only the one a sample must hold crosses
+      // the network.
+      sample: sample && req.after_dot ? { ...sample, records: sample.records.slice(0, 1) } : sample,
       showInternal: req.show_internal,
       atMicros: req.at_micros,
       filter: req.filter,
+      attribution: req.attribution ?? false,
+      afterDot: req.after_dot ?? undefined,
+      captureFilter: req.capture_filter ?? undefined,
     });
   }
 
@@ -866,7 +937,7 @@ export class DemoLeader {
     const branch = this.branch(name) ?? this.state.branches.main;
     const sample = this.sampleOn(branch, scope, req.sample);
     if (!sample)
-      return refused([
+      return refused(404, [
         bareError(`there is no sample ${JSON.stringify(req.sample)} on this branch`),
       ]);
     return this.ask('/route-preview', {
@@ -935,7 +1006,7 @@ export class DemoLeader {
           sample: { id: 'pool', name: 'pool', ...this.recording.captures[pool].sample },
         });
         const a = answer.body as { ok?: boolean; errors?: ApiError[]; kept?: number[] };
-        if (!a.ok) return refused(a.errors ?? []);
+        if (!a.ok) return refused(422, a.errors ?? []);
         kept = a.kept ?? [];
       }
     } else {
@@ -950,6 +1021,7 @@ export class DemoLeader {
       pool,
       source: (req.source?.id as string | undefined) ?? null,
       destination: req.destination ?? null,
+      filter: req.filter?.trim() || null,
       maxMatches,
       deadlineSecs,
       startedAt: this.now(),
@@ -986,7 +1058,7 @@ export class DemoLeader {
   private captureStatus(session: string): Answer {
     const capture = this.state.captures[session];
     if (!capture)
-      return refused([bareError('no capture by that id -- it may already have been saved')]);
+      return refused(404, [bareError('no capture by that id -- it may already have been saved')]);
     const { batches, done, full } = this.held(capture);
     const workers = [
       ...new Set(batches.flatMap((b) => b.rows.map((r) => r.worker ?? '')).filter(Boolean)),
@@ -1021,7 +1093,7 @@ export class DemoLeader {
     const found = session in this.state.captures;
     delete this.state.captures[session];
     this.save();
-    return { status: 200, body: { ok: found } };
+    return found ? ok() : refused(404, [bareError(NO_CAPTURE)]);
   }
 
   private async saveCapture(
@@ -1032,28 +1104,43 @@ export class DemoLeader {
   ): Promise<Answer> {
     const capture = this.state.captures[session];
     if (!capture)
-      return refused([bareError('no capture by that id -- it may already have been saved')]);
+      return refused(404, [bareError('no capture by that id -- it may already have been saved')]);
     const { done } = this.held(capture);
     const pool = capture.pool ? this.recording.captures[capture.pool].sample : undefined;
     if (!done)
-      return refused([
+      return refused(409, [
         bareError('this capture is still running. Stop it first to save what it holds'),
       ]);
     const { batches } = this.held(capture);
     if (!pool || !batches.length) {
-      return refused([
+      return refused(409, [
         bareError(
           'this capture caught nothing, and a sample of no records would preview as an empty pipeline rather than as the problem it is',
         ),
       ]);
     }
     const arrived = this.held(capture).batches.reduce((n, b) => n + b.rows.length, 0);
-    const records = capture.kept.slice(0, arrived).map((i) => pool.records[i]);
+    // How it was taken, on every record as its `__source` fields are (`Captures::capture_fields`).
+    const taken: Record<string, [string, string]> = {
+      timestamp: ['datetime', new Date(capture.startedAt).toISOString()],
+      ...(capture.source ? { source: ['str', capture.source] } : {}),
+      ...(capture.destination ? { destination: ['str', capture.destination] } : {}),
+      group: ['str', capture.group],
+      ...(capture.filter ? { filter: ['str', capture.filter] } : {}),
+      config: ['str', this.state.branches.main.commit],
+    };
+    const fields = Object.fromEntries(Object.entries(taken).map(([k, [, v]]) => [k, v]));
+    const records = capture.kept
+      .slice(0, arrived)
+      .map((i) => ({ ...pool.records[i], __capture: fields }));
     const sample: SampleDto = {
       id: req.id,
       name: req.name,
       source: req.source,
-      columns: pool.columns,
+      columns: [
+        ...(pool.columns ?? []),
+        ...Object.entries(taken).map(([k, [type]]) => ({ name: `__capture.${k}`, type })),
+      ],
       records,
     };
     const saved = await this.write(name, scope, `samples/${sample.id}.json`, (_, { samples }) => {
@@ -1068,11 +1155,20 @@ export class DemoLeader {
   }
 }
 
-const NOT_RECORDED: Answer = refused([bareError('not found')], 404);
+const NOT_RECORDED: Answer = refused(404, [bareError('not found')]);
 
 /** What the demo says to a write it does not play. */
 export const DEMO_REFUSAL =
   "The demo can't do this. It runs in your browser, but you can download the full smeltr to try it: https://smeltr.sh/get/";
+
+/** What the GUI sent as text, inflated when the GUI gzipped it. */
+async function sentText(init?: RequestInit): Promise<string | null> {
+  const body = init?.body;
+  if (typeof body === 'string') return body;
+  if (body == null || new Headers(init?.headers).get('content-encoding') !== 'gzip') return null;
+  const stream = new Response(body).body!.pipeThrough(new DecompressionStream('gzip'));
+  return new Response(stream).text();
+}
 
 /** Answer every `/api/` call this page makes from `leader`. */
 export function install(leader: DemoLeader) {
@@ -1085,7 +1181,7 @@ export function install(leader: DemoLeader) {
     const method = (
       init?.method ?? (input instanceof Request ? input.method : 'GET')
     ).toUpperCase();
-    const body = typeof init?.body === 'string' ? init.body : null;
+    const body = await sentText(init);
     const answer = await leader.answer(method, url, body);
     if (method !== 'GET') window.dispatchEvent(new Event(CHANGED_EVENT));
     return new Response(JSON.stringify(answer.body), {

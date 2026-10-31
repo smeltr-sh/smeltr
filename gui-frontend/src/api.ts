@@ -16,7 +16,7 @@ export interface ApiError {
    * step with `PreviewError`'s own field (`pipeline.ts`) so the two share one
    * shape for `errorsByStep`. */
   assignmentIndex: number | null;
-  /** The source, destination or identity this is about: its section of the
+  /** The source or destination this is about: its section of the
    * bundle and its id there. */
   item: { section: string; id: string } | null;
   /** The setting this is about, by its name in the file: a key of `item`, or
@@ -49,6 +49,7 @@ export interface MutationResult {
 }
 
 import { funnyBranchName } from './branchNames';
+import { store, stored } from './stored';
 import { csrf, recheck, signedOut, type AccessDto, type AccessLevel } from './session';
 import { bareError, errors, Reported, type Call, type Weight } from './errors.svelte';
 
@@ -77,25 +78,17 @@ export const isLeaderStored = (r: SecretRef | undefined): r is LeaderSecret =>
 /** How a leader-stored reference reads where there is no picker for one. */
 export const secretLabel = (r: LeaderSecret) => `${r.secret} @ v${r.version}`;
 
-/** One identity a worker connects out under: what it shows a source or a
- * destination, and which authorities it verifies that far end against.
- *
- * A far end that asks for no certificate needs only the authorities, and one
- * served from a public root needs only the certificate, so either half may be
- * absent -- but not both, which the save refuses. A certificate is public and
- * is committed; its private key is a credential and is only named, like every
- * other. A client under it trusts the public roots and `authorities` both,
- * unless `trustPublic` is false. A receiver admits by `authorities` alone. */
-export type IdentityDto = {
-  id: string;
-  description?: string;
-  /** PEM, leaf first, with any intermediates after it. */
+/** The TLS a connector speaks of its own: what it presents to the far end, and what it verifies the far end
+ * against. A client under none presents no certificate and trusts the public roots; a receiver under none serves
+ * plain TCP. Mirrors `config_file::dto::TlsDto`. */
+export type TlsDto = {
+  /** The certificate it presents, from the list on Admin -> Certificates, by name. A worker presents the newest
+   * version. A receiver serves TLS only with one. */
   certificate?: string;
-  /** Where `certificate`'s private key lives, never the key itself. */
-  key?: SecretRef;
-  /** PEM. A trust store holds more than one root, so several may follow one another. */
-  authorities?: string;
-  /** Absent is true. False trusts `authorities` alone. */
+  /** PEM. What the far end's certificate must chain to; several may follow one another. A receiver admits a sender
+   * by these alone. */
+  trustedAuthorities?: string;
+  /** Absent is true: a client trusts the public roots and `trustedAuthorities` both. False trusts `trustedAuthorities` alone. */
   trustPublic?: boolean;
 };
 
@@ -108,8 +101,8 @@ export type IdentityDto = {
  * credential-valued property in the first map.
  *
  * Properties smeltr sets itself (`brokers`, `groupId`, `compression`,
- * `fetchBytes`, `bufferBytes`, `start`) are refused in both maps, and so are the fetch and batch sizes the worker
- * derives from those two at deployment. */
+ * `fetchBytes`, `bufferBytes`, `start`) are refused in both maps, and so are the fetch sizes the worker
+ * derives from `fetchBytes` at deployment. */
 export type KafkaProps = {
   properties?: Record<string, string>;
   credentials?: Record<string, SecretRef>;
@@ -122,7 +115,7 @@ import type { Answer, AnswerName, ExceptionsDto } from './exceptions';
 export type { Answer, ExceptionsDto } from './exceptions';
 
 /** Where an SQL source connects, and what it reads: `postgres` and `mysql` alike. */
-export interface SqlConnection {
+export interface SqlConnection extends TlsDto {
   id: string;
   host: string;
   /** Absent is the kind's own: 5432 for `postgres`, 3306 for `mysql`. */
@@ -133,8 +126,6 @@ export interface SqlConnection {
   password?: SecretRef;
   /** Absent is `require`, which encrypts and verifies the server's certificate and name. */
   tls?: 'require' | 'disable';
-  /** The identity it connects under, by id. Only with `tls` `require`. */
-  identity?: string;
   /** A `SELECT` or a `WITH`, with no `ORDER BY` or `LIMIT` of its own. */
   query: string;
   mode: SqlMode;
@@ -148,15 +139,13 @@ export interface SqlConnection {
 
 /** A source. Switching `type` replaces the whole object. */
 export type SourceDto =
-  | ({
+  | (TlsDto & {
       id: string;
       type: 'kafka';
       brokers: string;
       topics: string[];
       /** The consumer group it reads as. Absent is its worker group's own, `smeltr.<worker group>`. */
       groupId?: string;
-      /** The identity this consumer connects under, by id. */
-      identity?: string;
       /** Where the read begins. Absent is `earliest`, which is what a
        * source that decided nothing gets. */
       start?: StartPosition;
@@ -183,67 +172,66 @@ export type SourceDto =
       fetchBytes?: ByteCount;
       encoding?: string;
     } & StreamReadFormat)
-  | (S3Access & {
-      id: string;
-      type: 's3Sqs';
-      /** The queue's own URL, which names its region and account. */
-      queueUrl: string;
-      /** The identity this client connects under, by id. */
-      identity?: string;
-      /** Absent is `lines`. */
-      framing?: Framing;
-      lineBreaker?: string;
-      /** As a Kafka source's. */
-      encoding?: string;
-      visibilitySecs?: number;
-    } & ReadFormat)
-  | (AzureAccess & {
-      id: string;
-      type: 'azureBlobQueue';
-      /** The Storage queue's own URL. */
-      queueUrl: string;
-      identity?: string;
-      framing?: Framing;
-      lineBreaker?: string;
-      encoding?: string;
-      visibilitySecs?: number;
-      /** Receives before a message is moved to `<queue>-poison`. */
-      maxDeliveries?: number;
-    } & ReadFormat)
-  | (GcsAccess & {
-      id: string;
-      type: 'gcsPubSub';
-      /** `projects/<project>/subscriptions/<subscription>`. */
-      subscription: string;
-      /** Another Pub/Sub address, such as an emulator's. Absent is Google's. */
-      pubsubEndpoint?: string;
-      identity?: string;
-      framing?: Framing;
-      lineBreaker?: string;
-      encoding?: string;
-      /** The ack deadline: at most `LIMITS.ackDeadlineSecs.max`. */
-      visibilitySecs?: number;
-    } & ReadFormat)
-  | (S3Access &
+  | (TlsDto &
+      S3Access & {
+        id: string;
+        type: 's3Sqs';
+        /** The queue's own URL, which names its region and account. */
+        queueUrl: string;
+        /** Absent is `lines`. */
+        framing?: Framing;
+        lineBreaker?: string;
+        /** As a Kafka source's. */
+        encoding?: string;
+        visibilitySecs?: number;
+      } & ReadFormat)
+  | (TlsDto &
+      AzureAccess & {
+        id: string;
+        type: 'azureBlobQueue';
+        /** The Storage queue's own URL. */
+        queueUrl: string;
+        framing?: Framing;
+        lineBreaker?: string;
+        encoding?: string;
+        visibilitySecs?: number;
+        /** Receives before a message is moved to `<queue>-poison`. */
+        maxDeliveries?: number;
+      } & ReadFormat)
+  | (TlsDto &
+      GcsAccess & {
+        id: string;
+        type: 'gcsPubSub';
+        /** `projects/<project>/subscriptions/<subscription>`. */
+        subscription: string;
+        /** Another Pub/Sub address, such as an emulator's. Absent is Google's. */
+        pubsubEndpoint?: string;
+        framing?: Framing;
+        lineBreaker?: string;
+        encoding?: string;
+        /** The ack deadline: at most `LIMITS.ackDeadlineSecs.max`. */
+        visibilitySecs?: number;
+      } & ReadFormat)
+  | (TlsDto &
+      S3Access &
       ListingSettings & {
         id: string;
         type: 's3List';
         bucket: string;
-        identity?: string;
       })
-  | (GcsAccess &
+  | (TlsDto &
+      GcsAccess &
       ListingSettings & {
         id: string;
         type: 'gcsList';
         bucket: string;
-        identity?: string;
       })
-  | (AzureAccess &
+  | (TlsDto &
+      AzureAccess &
       ListingSettings & {
         id: string;
         type: 'azureBlobList';
         container: string;
-        identity?: string;
       })
   | (SftpAccess &
       ListingSettings & {
@@ -355,12 +343,12 @@ export type SourceDto =
       id: string;
       type: 'syslogReceiver';
       /** The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token,
-       * so this admits a sender, unless the identity names authorities a sender's certificate must chain to. */
+       * so this admits a sender, unless the receiver names authorities a sender's certificate must chain to. */
       allowFrom?: string[];
       /** As a Kafka source's. */
       encoding?: string;
       /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a message, served without TLS, so it
-       * takes no identity and only `allowFrom` admits a sender. */
+       * takes no certificate or authorities and only `allowFrom` admits a sender. */
       transport?: 'tcp' | 'udp';
       /** Where a message over TCP ends, as an object source's `lineBreaker`. Absent, at a newline. Octet counting
        * still frames a message that starts with its length. */
@@ -477,14 +465,13 @@ export interface SqlStatementsResult {
   later?: SqlStatement;
   /** What Run runs: the result from the beginning, a few rows. */
   run?: SqlStatement;
+  /** What Run reads but a save refuses. */
+  warning?: string;
 }
 
 /** The statements an SQL source runs, built by the leader as a poll builds them. Nothing connects. */
-export function sqlStatement(
-  source: SourceDto,
-  identity?: IdentityDto,
-): Promise<SqlStatementsResult> {
-  return post('/api/sql/statement', { source, identity }, 'quiet');
+export function sqlStatement(source: SourceDto): Promise<SqlStatementsResult> {
+  return post('/api/preview/sql', { source }, 'quiet');
 }
 
 /** Which of OpenTelemetry's signals an OTLP receiver takes, mirroring `plan::topology::Signal`. */
@@ -507,14 +494,21 @@ export type HttpCompression = Extract<Compression, 'none' | 'gzip'>;
 export type HttpBody = 'lines' | 'jsonArray' | 'single';
 export const COMPRESSIONS: Compression[] = ['none', 'gzip', 'snappy', 'lz4', 'zstd'];
 
+/** How many replicas hold a Kafka batch before it counts as delivered, mirroring `config_file::dto::AcksDto`. */
+export const ACKS = ['none', 'one', 'all'] as const;
+export type Acks = (typeof ACKS)[number];
+
 /** Bounds and defaults of the numeric delivery settings, mirroring the
  * newtypes in `config_file::dto` (`BulkBytes`, `FetchBytes`, ...). The Rust
- * side is the authority; these keep the inputs from offering a value the
- * save would reject. */
+ * side is the authority, and `config_file::load`'s
+ * `the_gui_offers_the_bounds_a_save_enforces` keeps these equal to it, so the
+ * inputs never offer a value the save would reject. */
 export const LIMITS = {
   inFlight: { min: 1, max: 64, default: 4 },
   maxBulkBytes: { min: 64 * 1024, max: 100 * 1024 * 1024, default: 5 * 1024 * 1024 },
   maxRequestBytes: { min: 4 * 1024, max: 100 * 1024 * 1024, default: 1024 * 1024 },
+  /** An HTTP destination's `maxRequestBytes` (`HttpRequestBytes`): one whole batch by default. */
+  httpRequestBytes: { min: 4 * 1024, max: 100 * 1024 * 1024, default: 4 * 1024 * 1024 },
   /** A Log Analytics destination's `maxRequestBytes`: at most what the Logs Ingestion API takes in one call. */
   logAnalyticsRequestBytes: { min: 4 * 1024, max: 1024 * 1024, default: 1024 * 1024 },
   /** A receiver's `maxRequestBytes` (`MaxRequestBytes`): at most what one request may hold of its inbox. */
@@ -546,15 +540,16 @@ export const LIMITS = {
  * shape: the two kinds share only `id`, and the loader rejects unknown
  * fields, so a Kafka field left on an Elasticsearch destination would stop
  * the bundle loading. */
-export type DestinationDto =
-  | ({
+export type DestinationDto = {
+  /** The schemas a pipeline delivering here should produce one of, by id. Review checks it; nothing refuses. */
+  accepts?: string[];
+} & (
+  | (TlsDto & {
       id: string;
       type: 'kafka';
       exceptions?: ExceptionsDto;
       brokers: string;
       defaultTopic: string;
-      /** The identity this producer connects under, by id. */
-      identity?: string;
       /** How each record is written. Absent is `json`. `avro` frames each row with its record's schema's id in
        * `schemaRegistry`. */
       format?: StreamFormat | 'avro';
@@ -562,6 +557,8 @@ export type DestinationDto =
        * `bytes`. */
       field?: string;
       compression?: Compression;
+      /** Absent is `all`. */
+      acks?: Acks;
       stallAfterSecs?: number;
       bufferBytes?: ByteCount;
       /** Where `format` is `avro`: the registry each route's record is registered with. */
@@ -585,7 +582,7 @@ export type DestinationDto =
       bufferBytes?: ByteCount;
       schemaRegistry?: SchemaRegistry;
     })
-  | {
+  | (TlsDto & {
       id: string;
       type: 'elasticsearch';
       exceptions?: ExceptionsDto;
@@ -593,9 +590,10 @@ export type DestinationDto =
       /** Zone to the address a worker in that zone sends to instead of `url`. */
       zoneUrls?: Record<string, string>;
       defaultIndex: string;
-      /** The identity this client connects under, by id. */
-      identity?: string;
       auth?: SecretRef;
+      /** Basic auth, in place of `auth`: `username` and `password` together. */
+      username?: string;
+      password?: SecretRef;
       docId?: DocIdPolicy;
       idField?: string;
       inFlight?: number;
@@ -606,8 +604,8 @@ export type DestinationDto =
       sniff?: boolean;
       /** The node attribute naming a node's zone. Only with `sniff`; absent is `zone`. */
       zoneAttribute?: string;
-    }
-  | {
+    })
+  | (TlsDto & {
       id: string;
       type: 'splunkHec';
       exceptions?: ExceptionsDto;
@@ -627,14 +625,12 @@ export type DestinationDto =
        * `bytes`. */
       field?: string;
       acknowledgement?: SplunkAcknowledgement;
-      /** The identity this client connects under, by id. */
-      identity?: string;
       inFlight?: number;
       maxRequestBytes?: ByteCount;
       bufferBytes?: ByteCount;
       stallAfterSecs?: number;
-    }
-  | {
+    })
+  | (TlsDto & {
       id: string;
       type: 'http';
       exceptions?: ExceptionsDto;
@@ -656,14 +652,12 @@ export type DestinationDto =
       headers?: Record<string, string>;
       /** Header name to where its value lives. */
       credentials?: Record<string, SecretRef>;
-      /** The identity this client connects under, by id. Only on an https:// URL. */
-      identity?: string;
       inFlight?: number;
       maxRequestBytes?: ByteCount;
       bufferBytes?: ByteCount;
       stallAfterSecs?: number;
-    }
-  | {
+    })
+  | (TlsDto & {
       id: string;
       type: 'prometheus';
       exceptions?: ExceptionsDto;
@@ -675,29 +669,26 @@ export type DestinationDto =
       headers?: Record<string, string>;
       /** Header name to where its value lives. */
       credentials?: Record<string, SecretRef>;
-      /** The identity this client connects under, by id. Only on an https:// URL. */
-      identity?: string;
-      maxRequestBytes?: ByteCount;
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
-    }
-  | (EntraSignIn & {
-      id: string;
-      type: 'logAnalytics';
-      exceptions?: ExceptionsDto;
-      /** The rule's logs ingestion endpoint, or the data collection endpoint linked to it. */
-      endpoint: string;
-      /** The rule's immutable id, `dcr-` and 32 hex digits. */
-      ruleId: string;
-      /** The rule's stream the rows go to, such as `Custom-Events_CL`. */
-      stream: string;
-      /** The identity this client connects under, by id. */
-      identity?: string;
-      inFlight?: number;
       maxRequestBytes?: ByteCount;
       bufferBytes?: ByteCount;
       stallAfterSecs?: number;
     })
+  | (TlsDto &
+      EntraSignIn & {
+        id: string;
+        type: 'logAnalytics';
+        exceptions?: ExceptionsDto;
+        /** The rule's logs ingestion endpoint, or the data collection endpoint linked to it. */
+        endpoint: string;
+        /** The rule's immutable id, `dcr-` and 32 hex digits. */
+        ruleId: string;
+        /** The rule's stream the rows go to, such as `Custom-Events_CL`. */
+        stream: string;
+        inFlight?: number;
+        maxRequestBytes?: ByteCount;
+        bufferBytes?: ByteCount;
+        stallAfterSecs?: number;
+      })
   | (ObjectSettings &
       CloudSettings &
       S3Access & {
@@ -731,66 +722,65 @@ export type DestinationDto =
         /** Absolute, or under the user's home directory. Absent is the home directory. It must exist. */
         directory?: string;
       })
-  | (S3Access & {
-      id: string;
-      type: 'iceberg';
-      exceptions?: ExceptionsDto;
-      /** The REST catalog's base address, before `/v1`. */
-      catalog: string;
-      /** Absent is the catalog's default warehouse. */
-      warehouse?: string;
-      /** The table's namespace, its levels joined by `.`. */
-      namespace: string;
-      table: string;
-      /** The partition spec a created table takes: `host`, `day(ts)`, `bucket(16, id)`, `truncate(4, name)`. */
-      partitionBy?: string[];
-      /** A bearer token for the catalog. Not with `clientId` or `signingName`. */
-      token?: SecretRef;
-      /** OAuth client credentials: `clientId` and `clientSecret` together. */
-      clientId?: string;
-      clientSecret?: SecretRef;
-      /** Where client credentials are exchanged for a token. Absent is the catalog's own `/v1/oauth/tokens`. */
-      tokenUrl?: string;
-      scope?: string;
-      /** Signs every catalog call with AWS Signature Version 4 for this service, `glue` or `s3tables`. Not with
-       * `token` or `clientId`. */
-      signingName?: string;
-      /** The identity this client connects under, to the catalog and to storage, by id. */
-      identity?: string;
-      /** How each Parquet file compresses its columns. Absent is `zstd`. */
-      compression?: Compression;
-      /** Parts of one file uploading at once. */
-      inFlight?: number;
-      maxObjectBytes?: ByteCount;
-      /** Memory for records not yet committed. Absent is `LIMITS.objectBufferBytes.default`. */
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
-      /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
-      fileIntervalSecs?: number;
-    })
-  | (S3Access & {
-      id: string;
-      type: 'delta';
-      exceptions?: ExceptionsDto;
-      /** The table's root, `s3://bucket/path`. Exactly one of `location` and `unityCatalog`. */
-      location?: string;
-      /** A Unity Catalog external table, whose root and storage credentials the catalog gives. */
-      unityCatalog?: UnityCatalog;
-      /** The columns a created table is partitioned by, each a top-level column of the record. */
-      partitionBy?: string[];
-      /** The identity this client connects to storage under, by id. */
-      identity?: string;
-      /** How each Parquet file compresses its columns. Absent is `zstd`. */
-      compression?: Compression;
-      /** Parts of one file uploading at once. */
-      inFlight?: number;
-      maxObjectBytes?: ByteCount;
-      /** Memory for records not yet committed. Absent is `LIMITS.objectBufferBytes.default`. */
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
-      /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
-      fileIntervalSecs?: number;
-    });
+  | (TlsDto &
+      S3Access & {
+        id: string;
+        type: 'iceberg';
+        exceptions?: ExceptionsDto;
+        /** The REST catalog's base address, before `/v1`. */
+        catalog: string;
+        /** Absent is the catalog's default warehouse. */
+        warehouse?: string;
+        /** The table's namespace, its levels joined by `.`. */
+        namespace: string;
+        table: string;
+        /** The partition spec a created table takes: `host`, `day(ts)`, `bucket(16, id)`, `truncate(4, name)`. */
+        partitionBy?: string[];
+        /** A bearer token for the catalog. Not with `clientId` or `signingName`. */
+        token?: SecretRef;
+        /** OAuth client credentials: `clientId` and `clientSecret` together. */
+        clientId?: string;
+        clientSecret?: SecretRef;
+        /** Where client credentials are exchanged for a token. Absent is the catalog's own `/v1/oauth/tokens`. */
+        tokenUrl?: string;
+        scope?: string;
+        /** Signs every catalog call with AWS Signature Version 4 for this service, `glue` or `s3tables`. Not with
+         * `token` or `clientId`. */
+        signingName?: string;
+        /** How each Parquet file compresses its columns. Absent is `zstd`. */
+        compression?: Compression;
+        /** Parts of one file uploading at once. */
+        inFlight?: number;
+        maxObjectBytes?: ByteCount;
+        /** Memory for records not yet committed. Absent is `LIMITS.objectBufferBytes.default`. */
+        bufferBytes?: ByteCount;
+        stallAfterSecs?: number;
+        /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
+        fileIntervalSecs?: number;
+      })
+  | (TlsDto &
+      S3Access & {
+        id: string;
+        type: 'delta';
+        exceptions?: ExceptionsDto;
+        /** The table's root, `s3://bucket/path`. Exactly one of `location` and `unityCatalog`. */
+        location?: string;
+        /** A Unity Catalog external table, whose root and storage credentials the catalog gives. */
+        unityCatalog?: UnityCatalog;
+        /** The columns a created table is partitioned by, each a top-level column of the record. */
+        partitionBy?: string[];
+        /** How each Parquet file compresses its columns. Absent is `zstd`. */
+        compression?: Compression;
+        /** Parts of one file uploading at once. */
+        inFlight?: number;
+        maxObjectBytes?: ByteCount;
+        /** Memory for records not yet committed. Absent is `LIMITS.objectBufferBytes.default`. */
+        bufferBytes?: ByteCount;
+        stallAfterSecs?: number;
+        /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
+        fileIntervalSecs?: number;
+      })
+);
 
 /** A Databricks Unity Catalog table, signed in to as a service principal with OAuth client credentials. */
 export interface UnityCatalog {
@@ -903,10 +893,8 @@ export type ApiRecords = 'body' | 'lines' | 'array';
 /** What every receiver takes, mirroring `config_file::dto::ReceiverSettingsDto`: where it listens, the TLS it serves
  * and how large a request it reads. Every worker of the group listens on `port`, at the address its own startup
  * settings name. */
-export interface ReceiverSettings {
+export interface ReceiverSettings extends Pick<TlsDto, 'certificate' | 'trustedAuthorities'> {
   port: number;
-  /** The identity it serves TLS under, by id. Its authorities are what a sender's certificate must chain to. */
-  identity?: string;
   /** Absent is `LIMITS.receiverRequestBytes.default`. */
   maxRequestBytes?: number;
 }
@@ -918,6 +906,10 @@ export type HecToken = {
   acknowledgement?: boolean;
 };
 
+/** Every destination's `bufferBytes` help, in the reference too (`connector-reference.json`). */
+export const BUFFER_HELP =
+  'Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput.';
+
 /** How an S2S receiver breaks one sourcetype's stream into events, mirroring `config_file::dto::SourcetypeDto`. */
 export type Sourcetype = {
   /** A pattern whose first capture group is where an event ends, the group dropped, as Splunk's `LINE_BREAKER`. */
@@ -925,9 +917,7 @@ export type Sourcetype = {
 };
 
 /** What every API source takes besides where it asks and how it signs in. */
-export interface ApiSettings {
-  /** The identity this client connects under, by id. */
-  identity?: string;
+export interface ApiSettings extends TlsDto {
   /** Seconds from the start of one poll to the start of the next. Absent is `LIMITS.pollIntervalSecs.default`. */
   pollIntervalSecs?: number;
   /** What the first poll asks for. Absent is `everything`. */
@@ -991,11 +981,9 @@ export interface ObjectSettings {
 }
 
 /** What an object store destination reached over HTTPS takes besides its `ObjectSettings`. */
-export interface CloudSettings {
+export interface CloudSettings extends TlsDto {
   /** One of `STORAGE_CLASSES` for the kind. Absent is the bucket's default. */
   storageClass?: string;
-  /** The identity this client connects under, by id. */
-  identity?: string;
 }
 
 export type ObjectFormat = 'ndjson' | 'json' | 'parquet' | 'avro' | 'csv' | 'text' | 'bytes';
@@ -1056,6 +1044,8 @@ export interface PipelineDto {
   id: string;
   name: string;
   steps: unknown[];
+  /** The schemas its rows are held to, by their ids in the bundle. */
+  produces?: string[];
 }
 
 /** A shared lookup table, referenced by id from any `lookup` step. `headers`
@@ -1086,6 +1076,31 @@ export interface GrokPatternDto {
   pattern: string;
 }
 
+/** A bundle's own schema (`src/schema.rs`): a table of fields, named by id from the pipelines that produce it and
+ * the destinations that accept it. */
+export interface SchemaDto {
+  id: string;
+  /** Shown for it. The id where absent. */
+  title?: string;
+  description?: string;
+  fields: SchemaFieldDto[];
+}
+
+/** One field of a schema: a row of its table. */
+export interface SchemaFieldDto {
+  /** Its keys from the record's root, dotted. */
+  field: string;
+  /** What it must hold, spelled as a declaration spells a type: `str`, `array<i64>`, `{...}` for an object. */
+  type: string;
+  /** Whether a row must hold it. */
+  required?: boolean;
+  description?: string;
+  /** A value it may hold, as text. */
+  example?: string;
+  /** How it maps in an Elasticsearch index: its mapping, laid over the one its type has. */
+  elasticsearch?: { type: string; [parameter: string]: unknown };
+}
+
 export interface FileConfigDto {
   version: number;
   /** What each exception does to its row, under each route's own. Absent leaves the built-in answers. The group's
@@ -1097,7 +1112,7 @@ export interface FileConfigDto {
   routes: RouteDto[];
   lookupTables: LookupTableDto[];
   grokPatterns: GrokPatternDto[];
-  identities: IdentityDto[];
+  schemas?: SchemaDto[];
   /** A group's display name, from its manifest. Absent shows the id. */
   name?: string;
 }
@@ -1182,6 +1197,19 @@ const HANDLED = ['conflicts', 'doesNotLoad', 'config', 'samples', 'pipelines'];
 /** The session ended: the shell shows the sign-in screen, so no page shows it as an error. */
 class SignedOut extends Reported {}
 
+/** A request body longer than this goes gzipped. The leader inflates any
+ * request; below it, gzip saves next to nothing. */
+const GZIP_OVER = 1024;
+
+/** `body` as the leader is sent it: gzipped, with `headers` saying so, when it
+ * is text longer than `GZIP_OVER`. */
+async function gzipped(body: BodyInit | null | undefined, headers: Headers) {
+  if (typeof body !== 'string' || body.length <= GZIP_OVER) return body;
+  headers.set('content-encoding', 'gzip');
+  const stream = new Response(body).body!.pipeThrough(new CompressionStream('gzip'));
+  return new Response(stream).arrayBuffer();
+}
+
 async function send<T>(url: string, method: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!SAFE.has(method)) {
@@ -1202,7 +1230,7 @@ async function send<T>(url: string, method: string, init?: RequestInit): Promise
     headers.set('content-type', 'application/json');
   }
 
-  const res = await fetch(url, { ...init, headers });
+  const res = await fetch(url, { ...init, headers, body: await gzipped(body, headers) });
   if (res.status === 401) {
     signedOut();
     throw new SignedOut('your session ended -- sign in again');
@@ -1218,17 +1246,35 @@ async function send<T>(url: string, method: string, init?: RequestInit): Promise
   } catch {
     throw new Error(`HTTP ${res.status}: ${text.slice(0, 300) || res.statusText}`);
   }
-  // A refusal is JSON too, and parses into whatever shape the caller asked for.
-  // Returned, `{ok: false, error}` read as a certificates page says this leader
-  // holds no certificate, and read as a worker list says the fleet is empty. The
-  // status is what tells the two apart, so it is what decides here.
-  if (!res.ok) {
-    const said = (answer as { error?: unknown } | null)?.error;
-    throw new Error(
-      typeof said === 'string' && said !== '' ? said : `HTTP ${res.status}: ${res.statusText}`,
-    );
+  // A refusal is the envelope at its status, and goes to the caller like any answer: a save
+  // places its errors on the fields they name. An answer at a failing status that is not one
+  // came from something other than the leader.
+  if (!res.ok && !refusedAnswer(answer)) {
+    throw new Error(`HTTP ${res.status}: ${text.slice(0, 300) || res.statusText}`);
   }
   return answer as T;
+}
+
+/** An answer the leader refused: `ok` false, and its errors say why. */
+type RefusedAnswer = { ok: false; errors: ApiError[] };
+
+function refusedAnswer(answer: unknown): answer is RefusedAnswer {
+  const body = answer as Partial<RefusedAnswer> | null;
+  return body?.ok === false && Array.isArray(body.errors);
+}
+
+/** A read whose answer is the thing asked for. */
+async function readJson<T>(url: string, weight: Weight = 'bar'): Promise<T> {
+  return taken(await apiJson<T | RefusedAnswer>(url, undefined, weight), weight);
+}
+
+/** `answer`, where it is the thing asked for. A refusal is thrown rather than handed back as that
+ * thing: a worker list that came back refused is not an empty fleet. */
+function taken<T>(answer: T | RefusedAnswer, weight: Weight): T {
+  if (!refusedAnswer(answer)) return answer;
+  const why = answer.errors.map((e) => e.message).join('; ');
+  // `apiJson` reported it already, unless the caller shows it itself.
+  throw weight === 'quiet' ? new Error(why) : new Reported(why);
 }
 
 // -- the branch being edited ----------------------------------------------
@@ -1247,8 +1293,7 @@ const BRANCH_KEY = 'smeltr-branch';
  * was on screen. A browser that remembers none opens on `main`, what the fleet
  * runs, so its first edit asks where to go (W1). */
 function loadBranch(): string {
-  if (typeof window === 'undefined') return MAIN_BRANCH;
-  return window.localStorage.getItem(BRANCH_KEY) || MAIN_BRANCH;
+  return stored(BRANCH_KEY) || MAIN_BRANCH;
 }
 
 let branch = loadBranch();
@@ -1284,7 +1329,7 @@ function startBranch(chosen: string): void {
 export function setBranch(name: string): void {
   branch = name;
   baseCommit = null;
-  if (typeof window !== 'undefined') window.localStorage.setItem(BRANCH_KEY, name);
+  store(BRANCH_KEY, name);
 }
 
 /** Where a call against `current` must land. `main` is what deploys move
@@ -1329,14 +1374,12 @@ export function currentBaseCommit(): string | null {
 // so a page that holds what it read is never wrong about which bundle that was.
 
 /** Matches `config_file::SHARED_DIR`. Always exists, which is why it is
- * where a scope that stops existing sends you. Every config call names its
- * scope: the leader refuses one that names none. */
+ * where a scope that stops existing sends you. */
 export const SHARED_SCOPE = 'shared';
 const SCOPE_KEY = 'smeltr-scope';
 
 function loadScope(): string {
-  if (typeof window === 'undefined') return SHARED_SCOPE;
-  return window.localStorage.getItem(SCOPE_KEY) || SHARED_SCOPE;
+  return stored(SCOPE_KEY) || SHARED_SCOPE;
 }
 
 let scope = loadScope();
@@ -1352,8 +1395,8 @@ export function currentScope(): string {
 export function setScope(name: string, hash?: string): void {
   scope = name;
   baseCommit = null;
+  store(SCOPE_KEY, name);
   if (typeof window !== 'undefined') {
-    window.localStorage.setItem(SCOPE_KEY, name);
     // The shell draws the scope -- the chip, the rail's hue and the page
     // itself -- from its own copy. A scope switched from anywhere else has to
     // reach it, or the page says one group while the writes go to another.
@@ -1384,31 +1427,17 @@ export function leaveScope(name: string, keepBase?: string | null): boolean {
 
 function branched(url: string, name: string = branch): string {
   const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}branch=${encodeURIComponent(name)}&scope=${encodeURIComponent(scope)}`;
-}
-
-/** `branched()` without `scope=` -- for a call whose scope the server derives or does not use at all, so
- * sending the chip's would be inert-but-present, which reads as meaningful when it is not. */
-function branchOnly(url: string, name: string = branch): string {
-  const sep = url.includes('?') ? '&' : '?';
   return `${url}${sep}branch=${encodeURIComponent(name)}`;
 }
 
-/** What a review's test calls need: `onBranch`, the branch under review, and `ownScopes=true` telling
- * the server to derive that branch's own scopes (`test_api::TestScopeQuery`) rather than trust the chip
- * -- the chip is the reviewer's own editing scope, not the change's.
- *
- * `true` spelled out: the field is a `bool`, and serde reads only `true` or `false` there. `1` is a
- * deserialize error, which arrives as an HTTP 400 in place of the test results. */
-function reviewScoped(url: string, onBranch: string): string {
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}branch=${encodeURIComponent(onBranch)}&ownScopes=true`;
+/** `rest` within area `inArea`, the chip's unless named: `/api/areas/<area><rest>`. */
+function inArea(rest: string, area: string = scope): string {
+  return `/api/areas/${encodeURIComponent(area)}${rest}`;
 }
 
 /** What a config call needs beyond its URL and its body. Each field is
  * documented on `configJson`, the only thing that reads one. */
 interface ConfigCall {
-  scoped?: boolean;
   adopt?: boolean;
   base?: string | null;
   /** How a failure is shown (`apiJson`). */
@@ -1421,10 +1450,6 @@ interface ConfigCall {
  * one of them lands the same way a first edit always has.
  * A refused save carries no commit, so the base stays what it was until a
  * read moves it.
- *
- * `scoped` is false for a write the scope chip has nothing to say about --
- * a worker group is not held in one -- so the chip's value is not sent as
- * inert-but-present. Everything else about a config write still applies.
  *
  * `adopt` decides whether this call's commit becomes the shared base, and
  * defaults to true: ordinarily a GET here is the page's own primary read,
@@ -1449,7 +1474,7 @@ interface ConfigCall {
 async function configJson<T extends { commit?: string | null }>(
   url: string,
   init?: RequestInit,
-  { scoped = true, adopt = true, base, weight }: ConfigCall = {},
+  { adopt = true, base, weight }: ConfigCall = {},
 ): Promise<T> {
   const method = init?.method;
   const write = !!method && method !== 'GET';
@@ -1473,18 +1498,14 @@ async function configJson<T extends { commit?: string | null }>(
   }
   const headers = new Headers(init?.headers);
   // The two empty values mean different things, so this cannot take a default
-  // the way `scoped` and `adopt` do: `undefined` is "I did not say", which
+  // the way `adopt` does: `undefined` is "I did not say", which
   // takes the shared base, and `null` is "against no commit", which sends
   // nothing.
   const against = base === undefined ? baseCommit : base;
   if (write && against) {
     headers.set('x-smeltr-base-commit', against);
   }
-  const result = await apiJson<T>(
-    scoped ? branched(url) : branchOnly(url),
-    { ...init, headers },
-    weight,
-  );
+  const result = await apiJson<T>(branched(url), { ...init, headers }, weight);
   if (result.commit && adopt) {
     baseCommit = result.commit;
   }
@@ -1506,7 +1527,7 @@ function putBody(body: unknown): RequestInit {
 }
 
 export function getConfig(): Promise<GetConfigResult> {
-  return configJson('/api/config');
+  return configJson(inArea(''));
 }
 
 /** A save landed on the branch it was aimed at. */
@@ -1517,9 +1538,9 @@ export const SAVED_EVENT = 'smeltr:saved';
  * comparing a branch against `main` in every scope it touched, and none of
  * those reads is where the editor happens to be. */
 export function configAt(onBranch: string, inScope: string, at?: string): Promise<GetConfigResult> {
-  const q = new URLSearchParams({ branch: onBranch, scope: inScope });
+  const q = new URLSearchParams({ branch: onBranch });
   if (at) q.set('at', at);
-  return apiJson(`/api/config?${q}`);
+  return apiJson(`${inArea('', inScope)}?${q}`);
 }
 
 /** `shared/`'s bundle on the current branch, which a group's pages show beside the group's own, since a group
@@ -1531,15 +1552,13 @@ export async function sharedConfig(): Promise<FileConfigDto | null> {
 
 /** A section of a bundle, by its key in `FileConfigDto`. */
 export type ConfigSection =
-  | 'sources'
-  | 'destinations'
-  | 'routes'
-  | 'lookupTables'
-  | 'grokPatterns'
-  | 'identities'
-  | 'pipelines';
+  'sources' | 'destinations' | 'routes' | 'lookupTables' | 'grokPatterns' | 'schemas' | 'pipelines';
 
-/** Undo changes: put one object back the way it was where `onBranch` left
+/** What Undo changes puts back: one object, or one file no section owns by
+ * its path in the scope's bundle. */
+export type UndoTarget = { section: ConfigSection; id: string } | { path: string };
+
+/** Undo changes: put `what` back the way it was where `onBranch` left
  * `main`, as a new save on that branch. Names the branch and scope itself,
  * since a review can act on a branch the editor is not on. `base` is the
  * commit the caller read the branch at; the leader refuses the save if the
@@ -1547,18 +1566,17 @@ export type ConfigSection =
 export async function undoChanges(
   onBranch: string,
   inScope: string,
-  section: ConfigSection,
-  id: string,
+  what: UndoTarget,
   base: string,
 ): Promise<MutationResult> {
-  const q = new URLSearchParams({ branch: onBranch, scope: inScope });
+  const q = new URLSearchParams({ branch: onBranch });
   // Refused beside the undo that asked.
   const result = await apiJson<MutationResult>(
-    `/api/undo?${q}`,
+    `${inArea('/undo', inScope)}?${q}`,
     {
       method: 'POST',
       headers: { 'x-smeltr-base-commit': base },
-      body: JSON.stringify({ section, id }),
+      body: JSON.stringify(what),
     },
     'quiet',
   );
@@ -1569,36 +1587,34 @@ export async function undoChanges(
 }
 
 export function putSources(sources: SourceDto[], base?: string | null): Promise<MutationResult> {
-  return configJson('/api/sources', putBody(sources), { base });
+  return configJson(inArea('/sources'), putBody(sources), { base });
 }
 
 export function putDestinations(
   destinations: DestinationDto[],
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson('/api/destinations', putBody(destinations), { base });
+  return configJson(inArea('/destinations'), putBody(destinations), { base });
 }
 
 /** What the leader reads out of a PEM: every certificate in it, or why it is
  * not one. Asked of the leader because `leader::tls` already reads PEM, and a
  * second reading in the browser would drift from the one a save is judged by. */
-export function describeCertificates(
+export async function describeCertificates(
   pem: string,
 ): Promise<{ certificates: DescribedCertificate[] } | { error: string }> {
-  return post('/api/identities/describe', { pem }, 'quiet');
-}
-
-/** Refused when an identity's certificate and the key it names are not a pair --
- * the one check the leader makes that the bundle alone cannot. */
-export function putIdentities(
-  identities: IdentityDto[],
-  base?: string | null,
-): Promise<MutationResult> {
-  return configJson('/api/identities', putBody(identities), { base });
+  const answer = await post<{
+    ok: boolean;
+    errors: ApiError[];
+    certificates?: DescribedCertificate[];
+  }>('/api/preview/certificate', { pem }, 'quiet');
+  return answer.ok
+    ? { certificates: answer.certificates ?? [] }
+    : { error: answer.errors.map((e) => e.message).join('; ') };
 }
 
 export function putRoutes(routes: RouteDto[], base?: string | null): Promise<MutationResult> {
-  return configJson('/api/routes', putBody(routes), { base });
+  return configJson(inArea('/routes'), putBody(routes), { base });
 }
 
 /** The group's manifest. A `null` leaves the built-in answers. Refused in `shared/`: the manifest is a group's own. */
@@ -1608,21 +1624,25 @@ export function putManifest(
   },
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson('/api/manifest', putBody(manifest), { base });
+  return configJson(inArea('/manifest'), putBody(manifest), { base });
 }
 
 export function putGrokPatterns(
   grokPatterns: GrokPatternDto[],
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson('/api/grok-patterns', putBody(grokPatterns), { base });
+  return configJson(inArea('/grok-patterns'), putBody(grokPatterns), { base });
+}
+
+export function putSchemas(schemas: SchemaDto[], base?: string | null): Promise<MutationResult> {
+  return configJson(inArea('/schemas'), putBody(schemas), { base });
 }
 
 export function putLookupTables(
   lookupTables: LookupTableDto[],
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson('/api/lookup-tables', putBody(lookupTables), { base });
+  return configJson(inArea('/lookups'), putBody(lookupTables), { base });
 }
 
 /** A lookup file upload: one commit on the branch, like every other save. */
@@ -1646,7 +1666,11 @@ export function uploadLookupFile(
   const body = new FormData();
   body.append('file', file);
   const q = delimiter ? `?${new URLSearchParams({ delimiter })}` : '';
-  return configJson(`/api/lookup/upload${q}`, { method: 'POST', body }, { base, weight: 'quiet' });
+  return configJson(
+    inArea(`/lookups/upload${q}`),
+    { method: 'POST', body },
+    { base, weight: 'quiet' },
+  );
 }
 
 /** A CSV lookup file's whole text. */
@@ -1654,7 +1678,7 @@ type LookupFileResult = { ok: boolean; errors: ApiError[]; text?: string; commit
 
 export function getLookupFile(path: string): Promise<LookupFileResult> {
   const q = new URLSearchParams({ path });
-  return configJson(`/api/lookup/file?${q}`, undefined, { adopt: false, weight: 'quiet' });
+  return configJson(inArea(`/lookups/file?${q}`), undefined, { adopt: false, weight: 'quiet' });
 }
 
 /** A CSV lookup file's whole text at commit `at` of `onBranch`, as `configAt` reads a bundle. */
@@ -1664,8 +1688,8 @@ export function lookupFileAt(
   path: string,
   at: string,
 ): Promise<LookupFileResult> {
-  const q = new URLSearchParams({ branch: onBranch, scope: inScope, path, at });
-  return apiJson(`/api/lookup/file?${q}`, undefined, 'quiet');
+  const q = new URLSearchParams({ branch: onBranch, path, at });
+  return apiJson(`${inArea('/lookups/file', inScope)}?${q}`, undefined, 'quiet');
 }
 
 /** An MMDB file's metadata, and with `ip` the record for that address: `null` on a miss. */
@@ -1683,13 +1707,13 @@ export interface LookupMmdbResult {
 
 export function getLookupMmdb(path: string, ip?: string): Promise<LookupMmdbResult> {
   const q = new URLSearchParams(ip ? { path, ip } : { path });
-  return configJson(`/api/lookup/mmdb?${q}`, undefined, { adopt: false, weight: 'quiet' });
+  return configJson(inArea(`/lookups/mmdb?${q}`), undefined, { adopt: false, weight: 'quiet' });
 }
 
 // -- files that do not load --------------------------------------------------
 //
 // A file that does not parse never reaches the section editor that owns it, so it is reached
-// here instead: by its full path in the repository, as raw text. Saving and deleting one are
+// here instead: by its path in its area's bundle, as raw text. Saving and deleting one are
 // writes like any other, on the branch and against its base.
 
 /** One file of a bundle that does not load. */
@@ -1711,8 +1735,7 @@ export interface UnreadableFilesResult {
 /** The files of `inScope`'s bundle that do not load. Not the page's own read, so it does not
  * move the base. */
 export function unreadableFiles(inScope: string = scope): Promise<UnreadableFilesResult> {
-  const q = new URLSearchParams({ scope: inScope });
-  return configJson(`/api/config/unreadable?${q}`, undefined, { scoped: false, adopt: false });
+  return configJson(inArea('/unreadable', inScope), undefined, { adopt: false });
 }
 
 /** `unreadableFiles` at commit `at` of `onBranch`, as `configAt` reads a bundle. */
@@ -1721,8 +1744,8 @@ export function unreadableAt(
   inScope: string,
   at: string,
 ): Promise<UnreadableFilesResult> {
-  const q = new URLSearchParams({ branch: onBranch, scope: inScope, at });
-  return apiJson(`/api/config/unreadable?${q}`);
+  const q = new URLSearchParams({ branch: onBranch, at });
+  return apiJson(`${inArea('/unreadable', inScope)}?${q}`);
 }
 
 export interface ConfigFileResult {
@@ -1733,10 +1756,17 @@ export interface ConfigFileResult {
   commit?: string;
 }
 
-/** One file's raw text, by its full path. The path names its scope, so the chip's is not sent. */
+/** The route of a file by its full path in the repository, as `unreadableFiles` lists it: the area the path
+ * names, and the rest of it within that area's bundle (`policy::area_of_path`). */
+function fileRoute(path: string): string {
+  const [top, ...rest] = path.split('/');
+  const [area, within] = top === 'groups' ? [rest[0] ?? '', rest.slice(1)] : [top, rest];
+  return inArea(`/files/${within.map(encodeURIComponent).join('/')}`, area);
+}
+
+/** One file's raw text, by its full path. The path names its area, so the chip's is not used. */
 export function getConfigFile(path: string): Promise<ConfigFileResult> {
-  const q = new URLSearchParams({ path });
-  return configJson(`/api/config/file?${q}`, undefined, { scoped: false });
+  return configJson(fileRoute(path));
 }
 
 export function putConfigFile(
@@ -1744,21 +1774,19 @@ export function putConfigFile(
   text: string,
   base?: string | null,
 ): Promise<MutationResult> {
-  const q = new URLSearchParams({ path });
-  return configJson(`/api/config/file?${q}`, putBody({ text }), { scoped: false, base });
+  return configJson(fileRoute(path), putBody({ text }), { base });
 }
 
 export function deleteConfigFile(path: string, base?: string | null): Promise<MutationResult> {
-  const q = new URLSearchParams({ path });
-  return configJson(`/api/config/file?${q}`, { method: 'DELETE' }, { scoped: false, base });
+  return configJson(fileRoute(path), { method: 'DELETE' }, { base });
 }
 
 export function listPipelines(): Promise<ListPipelinesResult> {
-  return configJson('/api/pipelines');
+  return configJson(inArea('/pipelines'));
 }
 
 export function getPipeline(id: string): Promise<GetPipelineResult> {
-  return configJson(`/api/pipelines/${encodeURIComponent(id)}`);
+  return configJson(inArea(`/pipelines/${encodeURIComponent(id)}`));
 }
 
 export function putPipeline(
@@ -1766,11 +1794,11 @@ export function putPipeline(
   pipeline: PipelineDto,
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(`/api/pipelines/${encodeURIComponent(id)}`, putBody(pipeline), { base });
+  return configJson(inArea(`/pipelines/${encodeURIComponent(id)}`), putBody(pipeline), { base });
 }
 
 export function deletePipeline(id: string): Promise<MutationResult> {
-  return configJson(`/api/pipelines/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return configJson(inArea(`/pipelines/${encodeURIComponent(id)}`), { method: 'DELETE' });
 }
 
 // -- samples ----------------------------------------------------------------
@@ -1788,6 +1816,13 @@ export function deletePipeline(id: string): Promise<MutationResult> {
  * source spelled it, its field listed under `smeltr.mistyped`, and fails
  * again when the sample is read. */
 export type SampleRecordDto = Record<string, unknown>;
+
+/** Whether the root key of `path`, a field's path, is internal: smeltr's own, starting `__`, as
+ * `plan::tree::is_internal` reads one. A root key the path has to quote
+ * (`["__a.b"]`) counts as well. */
+export function isInternal(path: string): boolean {
+  return path.startsWith('__') || path.startsWith('["__');
+}
 
 /** The fields a sample record's source set, if it was read from one. */
 export function sampleSource(record: SampleRecordDto): Record<string, unknown> | undefined {
@@ -1823,6 +1858,12 @@ export interface SampleDto {
   records: SampleRecordDto[];
 }
 
+/** When `sample` was captured, in unix milliseconds, if it was. */
+export function capturedAt(sample: { captured?: string }): number | undefined {
+  const at = sample.captured ? Date.parse(sample.captured) : NaN;
+  return Number.isNaN(at) ? undefined : at;
+}
+
 /** A library listing: everything but the records. */
 export interface SampleSummary {
   id: string;
@@ -1830,7 +1871,10 @@ export interface SampleSummary {
   source?: string;
   records: number;
   /** Unix seconds: when the leader last wrote the sample. */
-  captured?: number;
+  written?: number;
+  /** When its records were captured, RFC 3339: the first record's
+   * `__capture.timestamp`. A pasted or uploaded sample has none. */
+  captured?: string;
 }
 
 export interface ListSamplesResult {
@@ -1848,11 +1892,11 @@ export interface GetSampleResult {
 }
 
 export function listSamples(): Promise<ListSamplesResult> {
-  return configJson('/api/samples');
+  return configJson(inArea('/samples'));
 }
 
 export function getSample(id: string): Promise<GetSampleResult> {
-  return configJson(`/api/samples/${encodeURIComponent(id)}`);
+  return configJson(inArea(`/samples/${encodeURIComponent(id)}`));
 }
 
 /** One sample of `inScope` at commit `at` of `onBranch`, read as `configAt` reads a bundle. */
@@ -1862,17 +1906,17 @@ export function sampleAt(
   id: string,
   at: string,
 ): Promise<GetSampleResult> {
-  const q = new URLSearchParams({ branch: onBranch, scope: inScope, at });
-  return apiJson(`/api/samples/${encodeURIComponent(id)}?${q}`);
+  const q = new URLSearchParams({ branch: onBranch, at });
+  return apiJson(`${inArea(`/samples/${encodeURIComponent(id)}`, inScope)}?${q}`);
 }
 
-/** Create or replace: the sample carries its own id. */
+/** Create or replace, by the sample's own id. */
 export function putSample(sample: SampleDto): Promise<MutationResult> {
-  return configJson('/api/samples', putBody(sample));
+  return configJson(inArea(`/samples/${encodeURIComponent(sample.id)}`), putBody(sample));
 }
 
 export function deleteSample(id: string): Promise<MutationResult> {
-  return configJson(`/api/samples/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return configJson(inArea(`/samples/${encodeURIComponent(id)}`), { method: 'DELETE' });
 }
 
 // -- pipeline preview ---------------------------------------------------
@@ -1896,12 +1940,42 @@ export interface PreviewRequest {
   /** A Bool over the pipeline's output: only the rows it is true for come back.
    * One that does not compile fails at the `filter` stage. */
   filter?: string;
+  /** Say which steps changed each row's fields and dropped it. The leader
+   * runs the pipeline once more per step for it. */
+  attribution?: boolean;
+  /** Asks what may follow a `.` instead of running the sample. */
+  afterDot?: { text: string; dot: number; at: DotAt };
+  /** A capture filter at a destination to check against each route delivering there. Asked, the preview answers it
+   * instead of running a sample. */
+  captureFilter?: { text: string; destination: string };
 }
+
+/** Where an expression sits, which decides what its names read: at the start
+ * of a step of the request's pipeline, a source's record as it arrives (a
+ * route's condition, a capture filter there), a route's pipeline's output (its
+ * `when`s), or what every route delivering to a destination gives it (a capture
+ * filter there). Each by its id. */
+export type DotAt =
+  { step: string } | { source: string } | { when: string } | { destination: string };
+
+/** What may follow a `.`: the type of what it follows, as the engine spells
+ * it (absent where it does not resolve), an object's fields, and each
+ * function a call there may name, with what its first parameter takes. */
+export interface DotAnswer {
+  ty?: string;
+  fields: [string, string][];
+  methods: { name: string; takes: string; fits: boolean }[];
+}
+
+/** Asks what may follow the `.` at `dot` in `text`, an expression at `at`: `afterDot` over the bundle being edited. */
+export type AskAt = (at: DotAt) => (text: string, dot: number) => Promise<DotAnswer | null>;
 
 export interface PreviewException {
   /** The answer the exception's kind takes. */
   answer: 'ignore' | 'tag' | 'drop' | 'block';
   message: string;
+  /** The step that raised it, by id; absent for one raised reading the record. */
+  step?: string;
 }
 
 export interface PreviewRow {
@@ -1909,6 +1983,11 @@ export interface PreviewRow {
   /** `null` when the row did not survive the pipeline. */
   json: unknown | null;
   exceptions: PreviewException[];
+  /** With `attribution`: each field a step changed or added, by path, and
+   * those steps by id in the order they ran. */
+  steps?: Record<string, string[]>;
+  /** With `attribution`: the step after which the row was gone. */
+  droppedBy?: string;
 }
 
 /** One field a parser step read from the sample. `suggested` is a declared
@@ -1944,6 +2023,25 @@ export interface PreviewResult {
   parsers: ParserProposal[];
   /** The record the pipeline writes. Absent when it did not compile. */
   dictionary?: DictionaryOut;
+  /** The answer to `PreviewRequest.afterDot`. Absent where the dot follows no value. */
+  after_dot?: DotAnswer;
+  /** The answer to `PreviewRequest.captureFilter`. */
+  capture_filter?: CaptureFilterCheck;
+  /** What compiles but is likely a mistake, each placed at its step as an error is. */
+  warnings?: ApiError[];
+  /** How many of `warnings` are where the rows break the schemas the pipeline produces. */
+  schema_findings?: number;
+  /** The fields the schemas the pipeline produces require and its rows lack. */
+  missing?: MissingField[];
+}
+
+/** A field a schema requires that a pipeline's rows lack (`schema::Missing`). */
+export interface MissingField {
+  path: string;
+  /** What a pipeline writes to keep it, as a declaration spells a type. */
+  written_as: string;
+  /** The schema's title. */
+  schema: string;
 }
 
 /** What a preview that did not run says went wrong. */
@@ -1967,7 +2065,7 @@ export interface DictionaryOut {
 
 export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
   return post(
-    branched('/api/preview'),
+    branched(inArea('/preview/pipeline')),
     {
       config: req.config,
       pipeline: req.pipeline ?? null,
@@ -1975,9 +2073,43 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       show_internal: req.showInternal ?? false,
       at_micros: req.atMicros ?? null,
       filter: req.filter ?? null,
+      attribution: req.attribution ?? false,
+      after_dot: req.afterDot ?? null,
+      capture_filter: req.captureFilter ?? null,
     },
     'quiet',
   );
+}
+
+/** What may follow the `.` at `dot` in `text`, an expression at `at` in `config`. Null where the dot follows no
+ * value, or the engine could not say. */
+export async function afterDot(
+  req: Pick<PreviewRequest, 'config' | 'pipeline' | 'sample'> & {
+    text: string;
+    dot: number;
+    at: DotAt;
+  },
+): Promise<DotAnswer | null> {
+  const { text, dot, at, ...rest } = req;
+  const res = await previewPipeline({ ...rest, afterDot: { text, dot, at } });
+  return (res.ok && res.after_dot) || null;
+}
+
+/** How many routes delivering to a destination a capture filter there runs on, and each it passes over with why: it
+ * does not compile against that route's output. */
+export interface CaptureFilterCheck {
+  reads: number;
+  skips: { route: string; error: string }[];
+}
+
+/** What a capture filter at `destination` makes of each route delivering there, over `config`. */
+export async function checkCaptureFilter(
+  config: string,
+  text: string,
+  destination: string,
+): Promise<CaptureFilterCheck | null> {
+  const res = await previewPipeline({ config, captureFilter: { text, destination } });
+  return (res.ok && res.capture_filter) || null;
 }
 
 /** What a grok pattern captures, which is the set of fields the step declares.
@@ -1999,7 +2131,7 @@ export function grokCaptures(
   customPatterns: { name: string; pattern: string }[],
   grokPatterns: GrokPatternDto[] = [],
 ): Promise<GrokCaptures> {
-  return post('/api/grok-captures', { patterns, customPatterns, grokPatterns }, 'quiet');
+  return post('/api/preview/grok', { patterns, customPatterns, grokPatterns }, 'quiet');
 }
 
 /** Whether a save would take a line breaker, asked as one is typed. Not `ok` when it would refuse it, with why, in
@@ -2010,7 +2142,18 @@ export interface LineBreakerVerdict {
 }
 
 export function lineBreakerVerdict(pattern: string): Promise<LineBreakerVerdict> {
-  return post('/api/line-breaker', { pattern }, 'quiet');
+  return post('/api/preview/line-breaker', { pattern }, 'quiet');
+}
+
+/** Pipeline code laid out in the style, or `code: null` where it does not parse yet. */
+export interface Formatted {
+  ok: boolean;
+  errors: ApiError[];
+  code: string | null;
+}
+
+export function formatCode(code: string, kind: 'expr' | 'block'): Promise<Formatted> {
+  return post('/api/preview/format', { code, kind }, 'quiet');
 }
 
 // -- onboarding -----------------------------------------------------------
@@ -2039,7 +2182,10 @@ const PROPOSED_FROM = 200;
 // each one's `__source` goes too.
 export function proposeOnboard(records: SampleRecordDto[]): Promise<OnboardProposal> {
   const filed = records.map((r) => r.__source ?? null);
-  return post('/api/onboard/propose', { records: records.slice(0, PROPOSED_FROM), filed }, 'quiet');
+  const body = { records: records.slice(0, PROPOSED_FROM), filed };
+  return post<OnboardProposal | RefusedAnswer>('/api/preview/onboard', body, 'quiet').then((a) =>
+    taken(a, 'quiet'),
+  );
 }
 
 // -- tests --------------------------------------------------------------
@@ -2055,9 +2201,9 @@ export type TestSummary = {
   name: string;
   /** Absent names an end-to-end test: the sample routed by its source, not one pipeline. */
   pipeline?: string;
-  /** Which scope this test is on. `id` is unique only within a scope, so a review running more than one
-   * scope's tests at once needs this to tell two groups' same-named tests apart. */
-  scope: string;
+  /** Which area this test is in. `id` is unique only within an area, so a review running more than one
+   * area's tests at once needs this to tell two groups' same-named tests apart. */
+  area: string;
   sample: string;
   rowsIn: number;
   /** Documents kept; fewer than `rowsIn` means rows were dropped, or (for an end-to-end test) matched no
@@ -2144,8 +2290,8 @@ export type TestResult = {
   name: string;
   /** Absent for an end-to-end test, which names no pipeline. */
   pipeline?: string;
-  /** Which scope this ran in, same reason `TestSummary.scope` carries one. */
-  scope: string;
+  /** Which area this ran in, same reason `TestSummary.area` carries one. */
+  area: string;
   /** Absent when the run could not happen at all. */
   verdict?: Verdict;
   /** Why there is no verdict: a missing sample, a pipeline that will not
@@ -2198,9 +2344,9 @@ export type Impact = {
   pipelineNames?: Record<string, string>;
 };
 
-/** One scope's `Impact`, tagged with the scope -- `Reached.id` is unique only within a scope, the same
- * reason `TestSummary.scope` carries one. */
-export type ScopedImpact = { scope: string } & Impact;
+/** One area's `Impact`, tagged with the area -- `Reached.id` is unique only within an area, the same
+ * reason `TestSummary.area` carries one. */
+export type ScopedImpact = { area: string } & Impact;
 
 export interface RunTestsResult {
   ok: boolean;
@@ -2218,11 +2364,13 @@ export interface RunTestsResult {
  * another open change's tests without switching the nav's own scope, any more than it switches its
  * branch). */
 export function listTests(onBranch?: string): Promise<ListTestsResult> {
-  return apiJson(onBranch ? reviewScoped('/api/tests', onBranch) : branched('/api/tests'));
+  return apiJson(
+    onBranch ? `/api/branches/${encodeURIComponent(onBranch)}/tests` : branched(inArea('/tests')),
+  );
 }
 
 export function getTest(id: string): Promise<GetTestResult> {
-  return apiJson(branched(`/api/tests/${encodeURIComponent(id)}`));
+  return apiJson(branched(inArea(`/tests/${encodeURIComponent(id)}`)));
 }
 
 /** One test of `inScope` at commit `at` of `onBranch`, read as `configAt` reads a bundle. */
@@ -2232,17 +2380,17 @@ export function testAt(
   id: string,
   at: string,
 ): Promise<GetTestResult> {
-  const q = new URLSearchParams({ branch: onBranch, scope: inScope, at });
-  return apiJson(`/api/tests/${encodeURIComponent(id)}?${q}`);
+  const q = new URLSearchParams({ branch: onBranch, at });
+  return apiJson(`${inArea(`/tests/${encodeURIComponent(id)}`, inScope)}?${q}`);
 }
 
 /** Lock a test, or replace one under the same id. */
 export function putTest(test: TestDto): Promise<MutationResult> {
-  return configJson('/api/tests', putBody(test));
+  return configJson(inArea(`/tests/${encodeURIComponent(test.id)}`), putBody(test));
 }
 
 export function deleteTest(id: string): Promise<MutationResult> {
-  return configJson(`/api/tests/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return configJson(inArea(`/tests/${encodeURIComponent(id)}`), { method: 'DELETE' });
 }
 
 /** Run tests against a branch, other than the one being edited when `onBranch` names one -- a change under
@@ -2252,7 +2400,9 @@ export function runTests(
   opts: { ids?: string[]; touched?: boolean } = {},
   onBranch?: string,
 ): Promise<RunTestsResult> {
-  const url = onBranch ? reviewScoped('/api/tests/run', onBranch) : branched('/api/tests/run');
+  const url = onBranch
+    ? `/api/branches/${encodeURIComponent(onBranch)}/test-runs`
+    : branched(inArea('/test-runs'));
   return post(url, { ids: opts.ids ?? [], touched: opts.touched ?? false }, 'quiet');
 }
 
@@ -2260,7 +2410,7 @@ export function runTests(
 //
 // Where a sample's records would go: which routes match, what each matched
 // pipeline produces, and which destinations the delivery rules choose
-// (`runtime::preview_routes`). Distinct from `/api/preview`, which runs one
+// (`runtime::preview_routes`). Distinct from `preview/pipeline`, which runs one
 // pipeline over a sample and answers rows in, rows out.
 
 /** One document a route produced, and where it would go. */
@@ -2310,6 +2460,8 @@ export interface RoutePreviewResult {
    * resolves an index in `matched`/`through` to the id the config gave that
    * route, which an edit keeps and a delete-and-insert does not. */
   route_ids: string[];
+  /** Each route's name, by route index (`routeName`). */
+  route_names: string[];
   destination_names: Record<number, string>;
   /** What happens to a row no route matched, with the destination by its author's id. */
   unmatched: Answer;
@@ -2329,7 +2481,7 @@ export function routePreview(
   atMicros?: number,
 ): Promise<RoutePreviewResult> {
   return post(
-    branched('/api/route-preview'),
+    branched(inArea('/preview/routes')),
     { config, sample, at_micros: atMicros ?? null },
     'quiet',
   );
@@ -2365,6 +2517,7 @@ export type WarningCondition =
   | 'destinationRefusing'
   | 'destinationUnreachable'
   | 'lagClimbing'
+  | 'destinationMemoryBound'
   | 'sourceRowsBelow'
   | 'sourceRowsAbove'
   | 'groupNotDeployed'
@@ -2374,18 +2527,27 @@ export type WarningCondition =
   | 'authorityExpiring'
   | 'authorityAging'
   | 'enrollmentCodeNamesOutgoingAuthority'
-  | 'identityExpiring'
+  | 'certificateExpiring'
   | 'workerLoggedWarnings'
   | 'deployHeld'
   | 'remoteNotFollowed'
   | 'deployDoesNotLoad'
   | 'deployFailsTests'
+  | 'deployBreaksSchemas'
   | 'declaredFieldFailing'
   | 'declaredFieldGone'
-  | 'streamUnrouted';
+  | 'streamUnrouted'
+  | 'newerRelease'
+  | 'workerOnAnotherRelease'
+  | 'secretsKeyUnusable'
+  | 'secretNeedsValue'
+  | 'acmeRenewalFailing'
+  | 'leaderCertificateRunningOut'
+  | 'issuedCertificateNotRenewed';
 
-/** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. */
-export type WarningSeverity = 'failed' | 'warning';
+/** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
+ * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
+export type WarningSeverity = 'failed' | 'warning' | 'info';
 
 /** A named condition about one object, derived fresh by the leader on every poll. Nothing
  * stores it and nothing acknowledges it: it is gone when its fact is. */
@@ -2398,8 +2560,9 @@ export interface WarningDto {
     | 'group'
     | 'leader'
     | 'enrollmentCode'
-    | 'identity'
-    | 'pipeline';
+    | 'pipeline'
+    | 'secret'
+    | 'certificate';
   /** Unique only within `group`, not fleet-wide -- a worker's own id is the exception. */
   subjectId: string;
   /** Which group this is about, or null where there is none to report -- an enrolled worker
@@ -2413,9 +2576,9 @@ export interface WarningDto {
   /** The log site a `workerLoggedWarnings` is about: one worker raises it once per site.
    * Absent on every other condition. */
   site?: string;
-  /** The scope whose bundle declares a pipeline subject: `shared` or its group. Absent on every
+  /** The area whose bundle declares a pipeline subject: `shared` or its group. Absent on every
    * other subject, and where the deployed commit does not say. */
-  scope?: string;
+  area?: string;
 }
 
 /** What a reader scans before the sentence. */
@@ -2439,6 +2602,8 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Destination unreachable';
     case 'lagClimbing':
       return 'Lag climbing';
+    case 'destinationMemoryBound':
+      return 'Held back by memory';
     case 'sourceRowsBelow':
       return 'Rows below normal';
     case 'sourceRowsAbove':
@@ -2457,8 +2622,8 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Authority running out';
     case 'enrollmentCodeNamesOutgoingAuthority':
       return 'Enrollment code names the outgoing authority';
-    case 'identityExpiring':
-      return 'Identity certificate running out';
+    case 'certificateExpiring':
+      return 'Certificate expiring';
     case 'workerLoggedWarnings':
       return 'Logged a warning';
     case 'deployHeld':
@@ -2469,17 +2634,36 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Deployed config does not load';
     case 'deployFailsTests':
       return 'Test failing';
+    case 'deployBreaksSchemas':
+      return 'Rows do not fit a schema';
     case 'declaredFieldFailing':
       return 'Field not its declared type';
     case 'declaredFieldGone':
       return 'Field no longer arriving';
     case 'streamUnrouted':
       return 'Stream unrouted';
+    case 'newerRelease':
+      return 'Newer release';
+    case 'workerOnAnotherRelease':
+      return 'On another release';
+    case 'secretsKeyUnusable':
+      return 'Secrets encryption key unusable';
+    case 'secretNeedsValue':
+      return 'Secret or certificate needs a new value';
+    case 'acmeRenewalFailing':
+      return 'ACME renewal failing';
+    case 'leaderCertificateRunningOut':
+      return 'Leader certificate running out';
+    case 'issuedCertificateNotRenewed':
+      return 'Certificate not renewed';
   }
 }
 
-export function listWarnings(): Promise<WarningDto[]> {
-  return apiJson('/api/warnings');
+/** The catalog the caller sees. Info entries come only with `info`: every view that judges health reads without
+ * it, so a notice can never make anything look unhealthy. */
+export async function listWarnings(opts: { info?: boolean } = {}): Promise<WarningDto[]> {
+  const url = opts.info ? '/api/warnings?info=true' : '/api/warnings';
+  return (await readJson<{ warnings: WarningDto[] }>(url)).warnings;
 }
 
 /** One column of a captured batch, as sent. A column with `value` is constant: every row
@@ -2660,9 +2844,6 @@ export function startCapture(
            * configuration. */
           group: string;
           source: SourceDto;
-          /** The identity that source names. A worker may never have seen it either,
-           * so it travels with the source. */
-          identity?: IdentityDto;
           filter?: string;
           /** Where a Kafka or Event Hubs source's capture starts. Absent, it reads from the latest. */
           start?: StartPosition;
@@ -2704,25 +2885,20 @@ export function saveCapture(
   /** The scope the sample is saved into, when it is not the chip's: the source's own. */
   into?: string,
 ): Promise<SaveCaptureResult & { commit?: string }> {
-  const url = `/api/captures/${encodeURIComponent(session)}/save`;
   return configJson(
-    into ? `${url}?scope=${encodeURIComponent(into)}` : url,
+    inArea('/samples', into),
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, name, source }),
+      body: JSON.stringify({ capture: session, id, name, source }),
     },
     // A capture says what went wrong in its own flow, from start to save.
-    { base, scoped: !into, weight: 'quiet' },
+    { base, weight: 'quiet' },
   );
 }
 
 export function discardCapture(session: string): Promise<{ ok: boolean }> {
-  return apiJson(
-    `/api/captures/${encodeURIComponent(session)}/discard`,
-    { method: 'POST' },
-    'quiet',
-  );
+  return apiJson(`/api/captures/${encodeURIComponent(session)}`, { method: 'DELETE' }, 'quiet');
 }
 
 /** A pasted or uploaded file, as records. The whole text is tried as one
@@ -2730,16 +2906,33 @@ export function discardCapture(session: string): Promise<{ ok: boolean }> {
  * value becomes one record. That covers a pretty-printed object and a JSON
  * array, which one-record-per-line does not. Anything that is not one JSON
  * value -- NDJSON, JSONL, a plain log file -- falls back to one record per
- * non-empty line. Either way each record is a byte record whose `_raw` is
- * one line: a parsed element is re-serialized with `JSON.stringify`. */
+ * non-empty line. Each record is a byte record whose `_raw` is one line: a
+ * parsed element is re-serialized with `JSON.stringify`. An object that has a
+ * `_raw` field is a whole record already, internal fields and all, and is
+ * taken as it is. */
 export function recordsFromText(text: string): SampleRecordDto[] {
   const elements = pastedElements(text);
-  if (elements) return elements.map((el) => ({ _raw: JSON.stringify(el) }));
+  if (elements) return elements.map((el) => wholeRecord(el) ?? { _raw: JSON.stringify(el) });
   return text
     .split('\n')
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
-    .map((line) => ({ _raw: line }));
+    .map((line) => wholeRecord(parsedLine(line)) ?? { _raw: line });
+}
+
+/** `value` when it is a record: an object with a `_raw` field. */
+function wholeRecord(value: unknown): SampleRecordDto | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && '_raw' in value
+    ? (value as SampleRecordDto)
+    : null;
+}
+
+function parsedLine(line: string): unknown {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
 }
 
 /** `text` as one JSON value's records: an array's elements, or the value itself. `null` when `text` is not one JSON
@@ -2910,7 +3103,7 @@ export type ClusterStatus = {
 };
 
 export function getClusterStatus(): Promise<ClusterStatus> {
-  return apiJson('/api/cluster');
+  return readJson('/api/cluster');
 }
 
 // -- fleet management (`src/leader/mod.rs`, worker groups via
@@ -2920,8 +3113,7 @@ export function getClusterStatus(): Promise<ClusterStatus> {
 // gated by the same operator cookie as everything else under `/api`. A worker
 // group is different: it is a manifest in the config repository (design
 // doc, Control plane), so listing and creating one names the branch,
-// through `branchOnly()`
-// -- never `scope=`, since a group's own id is its scope
+// through `branched()` -- never an area, since a group's own id is its area
 // (`worker_groups_api::create_group_in`) and listing reads the whole tree.
 
 /** What a worker-revoking call answers. */
@@ -2944,7 +3136,7 @@ export interface ListWorkerGroupsResult {
  * roster, the map -- leaves it false, so a read racing the page's own does not silently move the
  * base out from under an edit already in flight. */
 export function listWorkerGroups(asBase = false): Promise<ListWorkerGroupsResult> {
-  return configJson('/api/worker-groups', undefined, { scoped: false, adopt: asBase });
+  return configJson('/api/worker-groups', undefined, { adopt: asBase });
 }
 
 export interface CreateWorkerGroupResult {
@@ -2966,15 +3158,11 @@ export function createWorkerGroup(
   name: string,
   hue?: number,
 ): Promise<CreateWorkerGroupResult> {
-  return configJson(
-    '/api/worker-groups',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, name, ...(hue === undefined ? {} : { hue }) }),
-    },
-    { scoped: false },
-  );
+  return configJson('/api/worker-groups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, name, ...(hue === undefined ? {} : { hue }) }),
+  });
 }
 
 /** Renames an existing group. A config write on a branch like any other, so
@@ -2990,7 +3178,7 @@ export function updateWorkerGroup(id: string, name: string): Promise<CreateWorke
       body: JSON.stringify({ name }),
     },
     // Refused beside the name being edited.
-    { scoped: false, weight: 'quiet' },
+    { weight: 'quiet' },
   );
 }
 
@@ -3000,13 +3188,7 @@ export function updateWorkerGroup(id: string, name: string): Promise<CreateWorke
  * still running under this id has nothing to run and stops its pipelines
  * until it is moved to another group or shut down. */
 export function deleteWorkerGroup(id: string): Promise<CreateWorkerGroupResult> {
-  return configJson(
-    `/api/worker-groups/${encodeURIComponent(id)}`,
-    { method: 'DELETE' },
-    {
-      scoped: false,
-    },
-  );
+  return configJson(`/api/worker-groups/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export type SetGroupHueResult = { ok: boolean; errors: ApiError[] };
@@ -3101,8 +3283,8 @@ export function withdrawEnrollmentCode(id: string, weight?: Weight): Promise<Adm
   return apiJson(`/api/enrollment-codes/${encodeURIComponent(id)}`, { method: 'DELETE' }, weight);
 }
 
-export function listWorkers(): Promise<WorkerCredentialDto[]> {
-  return apiJson('/api/workers');
+export async function listWorkers(): Promise<WorkerCredentialDto[]> {
+  return (await readJson<{ workers: WorkerCredentialDto[] }>('/api/workers')).workers;
 }
 
 /** How long an ephemeral worker may be silent before the leader forgets it.
@@ -3158,6 +3340,25 @@ export function putWarningSettings(sourceRowsBandPercent: number): Promise<Warni
     method: 'PUT',
     body: JSON.stringify({ sourceRowsBandPercent }),
   });
+}
+
+/** Whether this leader looks for a newer release. */
+export interface UpdateSettingsDto {
+  check: boolean;
+}
+
+export type UpdateSettingsResult = {
+  ok: boolean;
+  errors: ApiError[];
+  settings: UpdateSettingsDto | null;
+};
+
+export function getUpdateSettings(): Promise<UpdateSettingsResult> {
+  return apiJson('/api/settings/updates');
+}
+
+export function putUpdateSettings(check: boolean): Promise<UpdateSettingsResult> {
+  return apiJson('/api/settings/updates', { method: 'PUT', body: JSON.stringify({ check }) });
 }
 
 /** Why the last sync did not leave `main` at the remote's head. */
@@ -3236,11 +3437,7 @@ export function shutdownWorker(workerId: string): Promise<AdminActionResult> {
 /** Removes a worker that is not heartbeating, for good: revoked, and gone from
  * every list. Its id is never enrolled again. */
 export function removeWorker(workerId: string): Promise<AdminActionResult> {
-  return apiJson(
-    `/api/workers/${encodeURIComponent(workerId)}/remove`,
-    { method: 'POST' },
-    'quiet',
-  );
+  return apiJson(`/api/workers/${encodeURIComponent(workerId)}`, { method: 'DELETE' }, 'quiet');
 }
 
 /** Soft revocation: refuses the credential from its next request. Does not
@@ -3284,10 +3481,11 @@ export type SecretDto = {
 };
 
 /** The newest version held, which is what a reference written today quotes. */
-export const currentVersion = (s: SecretDto): SecretVersionDto | undefined => s.versions.at(-1);
+export const currentVersion = (s: { versions: SecretVersionDto[] }): SecretVersionDto | undefined =>
+  s.versions.at(-1);
 
-export function listSecrets(): Promise<SecretDto[]> {
-  return apiJson('/api/secrets');
+export async function listSecrets(): Promise<SecretDto[]> {
+  return (await readJson<{ secrets: SecretDto[] }>('/api/secrets')).secrets;
 }
 
 /** `value` is required for leader-stored custody and refused for
@@ -3308,8 +3506,8 @@ export function createSecret(
 /** Stores a value as a new version, keeping the ones still in use. It is
  * staged, not live: what deploys it is a bundle quoting that version. */
 export function storeSecretValue(name: string, value: string): Promise<AdminActionResult> {
-  return apiJson(`/api/secrets/${encodeURIComponent(name)}`, {
-    method: 'PUT',
+  return apiJson(`/api/secrets/${encodeURIComponent(name)}/versions`, {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ value }),
   });
@@ -3336,7 +3534,7 @@ export async function pointSecretAt(
   const result = await apiJson<PointSecretResult>(
     `/api/secrets/${encodeURIComponent(name)}/references`,
     {
-      method: 'PUT',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ version, branch }),
     },
@@ -3383,6 +3581,72 @@ export function deleteSecret(name: string): Promise<AdminActionResult> {
   return apiJson(`/api/secrets/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
+/** One certificate in the list: a chain and its private key, kept like a leader-stored secret. */
+export type CertificateDto = {
+  name: string;
+  description: string;
+  /** Every version still held, oldest first. */
+  versions: SecretVersionDto[];
+  /** The newest version's chain, leaf first. Empty where this leader cannot open it. */
+  chain: DescribedCertificate[];
+  /** Whether the leader serves a copy of it. */
+  served: boolean;
+  /** Whether the newest version can be served, which a receiver and the leader do. */
+  forServers: boolean;
+  /** Whether the newest version can be presented by a connector connecting out. */
+  forClients: boolean;
+  /** How this leader keeps it up to date, where it renews it. */
+  kept?: 'issued' | 'acme';
+};
+
+export async function listCertificates(): Promise<CertificateDto[]> {
+  return (await readJson<{ certificates: CertificateDto[] }>('/api/certificates')).certificates;
+}
+
+/** `certificate` is PEM, leaf first, ending with its root for a private authority; `privateKey` is its PEM key. */
+export function createCertificate(
+  name: string,
+  description: string,
+  certificate: string,
+  privateKey: string,
+): Promise<AdminActionResult> {
+  return apiJson('/api/certificates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'supplied', name, description, certificate, privateKey }),
+  });
+}
+
+/** Has this leader issue a certificate for `names` under its own authority. */
+export function issueCertificate(
+  name: string,
+  description: string,
+  names: string[],
+  validityDays: number,
+): Promise<AdminActionResult> {
+  return apiJson('/api/certificates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'issued', name, description, names, validityDays }),
+  });
+}
+
+/** The lifetimes offered for a certificate this leader issues. Each renewal lasts the same. */
+export const ISSUED_VALIDITY_DAYS = [90, 365, 2 * 365, 3 * 365] as const;
+
+/** Stores a new version, which the leader serves too where it serves this certificate. */
+export function replaceCertificate(
+  name: string,
+  certificate: string,
+  privateKey: string,
+): Promise<AdminActionResult> {
+  return apiJson(`/api/certificates/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ certificate, privateKey }),
+  });
+}
+
 /** Whether a candidate is the stored value -- what answers "does this still
  * need rotating" without the value reaching the browser. Bounded to a few
  * attempts a minute per secret, and every attempt is logged by the leader. */
@@ -3396,6 +3660,29 @@ export function verifySecret(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ version, candidate }),
   });
+}
+
+/** Where the secrets encryption key stands (`EncryptionKeyOut`). `missing` and
+ * `mismatched` refuse every stored secret until the key is restored or
+ * regenerated. */
+export interface EncryptionKeyDto {
+  state: 'absent' | 'held' | 'missing' | 'mismatched';
+  /** Absent where there is no key file. */
+  keyId: string | null;
+  path: string;
+  /** Each value whose newest copy the key cannot open: what to enter again. */
+  unopenable: { kind: 'secret' | 'certificate' | 'setting'; name: string; label: string }[];
+}
+
+export function getEncryptionKey(): Promise<EncryptionKeyDto> {
+  return readJson('/api/settings/encryption-key');
+}
+
+/** Writes a new key in place of a missing or mismatched one. */
+export function regenerateEncryptionKey(): Promise<
+  { ok: boolean; errors: ApiError[] } & Partial<EncryptionKeyDto>
+> {
+  return apiJson('/api/settings/encryption-key/regenerate', { method: 'POST' });
 }
 
 // -- flow (E2), `src/leader/mod.rs` ----------------------------------------
@@ -3466,11 +3753,11 @@ export type LogsResponseDto = {
 
 /** `query` is `logs.ts`'s `toQuery` output: the filters plus a limit. */
 export function getLogs(query: string): Promise<LogsResponseDto> {
-  return apiJson(`/api/logs?${query}`);
+  return readJson(`/api/logs?${query}`);
 }
 
 export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
-  return apiJson(`/api/flow?windowMinutes=${windowMinutes}`);
+  return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
 }
 
 // -- the topology map (design doc "The map", `src/leader/map.rs`) ---------
@@ -3478,7 +3765,7 @@ export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
 // The whole fleet's compiled topology, one band per worker group: every source, pipeline and
 // destination a route or delivery rule actually names, marked by the warning catalog. Reads what
 // is committed, not an editor's in-progress buffer -- there is no draft form of a map, and no
-// `scope=` either: the map has its own group filter, below the branch chip, unrelated to the
+// area either: the map has its own group filter, below the branch chip, unrelated to the
 // scope an editor is working in (design doc "One fleet, many groups": "a group is a filter on that view rather than a mode that hides the rest").
 
 export type MapNodeKind = 'source' | 'pipeline' | 'destination';
@@ -3610,7 +3897,7 @@ export type MapResponse = {
   commit?: string;
 };
 
-/** Branch only -- never `scope=`, which names an editor's own bundle and has nothing to do with
+/** Branch only -- never an area, which names an editor's own bundle and has nothing to do with
  * what the fleet runs. */
 export function getMap(): Promise<MapResponse> {
   return apiJson(`/api/map?branch=${encodeURIComponent(branch)}`, undefined, 'quiet');
@@ -3679,8 +3966,7 @@ export type MeasurementsResponse = {
   /** How many milliseconds a rate is read over. */
   bucketMillis: number;
   nodes: NodeReadingDto[];
-  /** The catalog's warnings naming a group but no source or destination in it: a worker's, an
-   * identity's. */
+  /** The catalog's warnings naming a group but no source or destination in it: a worker's. */
   groupWarnings: WarningDto[];
 };
 
@@ -3937,14 +4223,8 @@ export function getStats(
   id: string,
   windowMinutes: number,
 ): Promise<StatsResponse> {
-  const q = new URLSearchParams({
-    branch,
-    group,
-    kind,
-    id,
-    windowMinutes: String(windowMinutes),
-  });
-  return apiJson(`/api/stats?${q}`);
+  const q = new URLSearchParams({ branch, kind, id, windowMinutes: String(windowMinutes) });
+  return apiJson(`${inArea('/stats', group)}?${q}`);
 }
 
 // -- pipeline callers -----------------------------------------------------
@@ -3960,7 +4240,7 @@ export type PipelineCallersResponse = {
 };
 
 export function getPipelineCallers(): Promise<PipelineCallersResponse> {
-  return apiJson(branched('/api/pipeline-callers'), undefined, 'quiet');
+  return apiJson(branched(inArea('/pipeline-callers')), undefined, 'quiet');
 }
 
 // -- connections (blast radius, user story A5) ----------------------------
@@ -3968,13 +4248,13 @@ export function getPipelineCallers(): Promise<PipelineCallersResponse> {
 // What a change to one object reaches, on the branch being edited (`leader::connections`).
 
 export type ConnectionKind =
-  'source' | 'route' | 'pipeline' | 'destination' | 'lookupTable' | 'grokPattern' | 'identity';
+  'source' | 'route' | 'pipeline' | 'destination' | 'lookupTable' | 'grokPattern';
 
 export type Connected = {
   kind: ConnectionKind;
   id: string;
   /** The group that declares it, or `shared`. */
-  scope: string;
+  area: string;
 };
 
 export type ConnectionsResponse = {
@@ -3990,9 +4270,19 @@ export type ConnectionsResponse = {
   drawnIn: string[];
 };
 
+/** The section of an area's path that holds each kind of object. */
+const SECTION_OF: Record<ConnectionKind, string> = {
+  source: 'sources',
+  route: 'routes',
+  pipeline: 'pipelines',
+  destination: 'destinations',
+  lookupTable: 'lookups',
+  grokPattern: 'grok-patterns',
+};
+
 export function getConnections(kind: ConnectionKind, id: string): Promise<ConnectionsResponse> {
-  const q = new URLSearchParams({ kind, id });
-  return apiJson(branched(`/api/connections?${q}`), undefined, 'quiet');
+  const object = `/${SECTION_OF[kind]}/${encodeURIComponent(id)}/connections`;
+  return apiJson(branched(inArea(object)), undefined, 'quiet');
 }
 
 // -- branches -------------------------------------------------------------
@@ -4023,6 +4313,8 @@ export type BranchDto = {
   commits: number;
   behind: number;
   touches: string[];
+  /** Those of `touches` that are samples no test names, which a deploy leaves out. */
+  leftOut?: string[];
   change?: ChangeDto;
   /** Present only while a git remote is set. */
   push?: PushDto;
@@ -4154,7 +4446,7 @@ export function branchDiff(name: string, path?: string): Promise<DiffResult> {
 export function commitDiff(from: string, to: string, path?: string): Promise<DiffResult> {
   const q = new URLSearchParams({ from, to });
   if (path) q.set('path', path);
-  return apiJson(`/api/diff?${q}`);
+  return apiJson(`/api/main/diff?${q}`);
 }
 
 /** A change was opened, closed or retitled. */
@@ -4175,13 +4467,15 @@ export function openChange(
   title: string,
   description: string,
 ): Promise<BranchMutationResult> {
-  return announced(post('/api/changes', { branch, title, description }, 'quiet'));
+  return announced(
+    post(`/api/branches/${encodeURIComponent(branch)}/open`, { title, description }, 'quiet'),
+  );
 }
 
 /** Closing keeps the branch, so no work is lost. A reason is offered and
  * never required (W6). */
 export function closeChange(branch: string, reason: string): Promise<BranchMutationResult> {
-  return announced(post(`/api/changes/${encodeURIComponent(branch)}/close`, { reason }, 'quiet'));
+  return announced(post(`/api/branches/${encodeURIComponent(branch)}/close`, { reason }, 'quiet'));
 }
 
 /** Rename an open change. The title is `main`'s commit subject and the
@@ -4194,7 +4488,7 @@ export function retitleChange(
 ): Promise<BranchMutationResult> {
   return announced(
     apiJson(
-      `/api/changes/${encodeURIComponent(branch)}`,
+      `/api/branches/${encodeURIComponent(branch)}`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -4209,7 +4503,7 @@ export function retitleChange(
  * pipeline, one of its steps, by the step's id), or a line of a file as it
  * stood at the branch head the comment was written at. */
 export type CommentAnchor =
-  | { kind: 'object'; scope: string; section: ConfigSection; objectId: string; step?: string }
+  | { kind: 'object'; area: string; section: ConfigSection; objectId: string; step?: string }
   | { kind: 'line'; path: string; line: number };
 
 /** One thing that happened to a change. `opened`, `renamed` and `reopened`
@@ -4262,7 +4556,7 @@ export interface TimelineResult {
 
 /** What happened to the change on `branch`, oldest first. */
 export function changeTimeline(branch: string): Promise<TimelineResult> {
-  return apiJson(`/api/changes/${encodeURIComponent(branch)}/timeline`);
+  return apiJson(`/api/branches/${encodeURIComponent(branch)}/timeline`);
 }
 
 /** Comment on the change on `branch`: on the change as a whole, on what
@@ -4272,7 +4566,7 @@ export function commentOnChange(
   body: string,
   opts: { anchor?: CommentAnchor; replyTo?: string } = {},
 ): Promise<BranchMutationResult> {
-  return post(`/api/changes/${encodeURIComponent(branch)}/comments`, { body, ...opts }, 'quiet');
+  return post(`/api/branches/${encodeURIComponent(branch)}/comments`, { body, ...opts }, 'quiet');
 }
 
 /** Resolve the thread comment `id` started, or reopen it. */
@@ -4282,7 +4576,7 @@ export function resolveThread(
   resolved: boolean,
 ): Promise<BranchMutationResult> {
   return post(
-    `/api/changes/${encodeURIComponent(branch)}/threads/${encodeURIComponent(id)}`,
+    `/api/branches/${encodeURIComponent(branch)}/threads/${encodeURIComponent(id)}`,
     {
       resolved,
     },
@@ -4300,13 +4594,13 @@ export function reviewChange(
   verdict: ReviewVerdict,
   body: string,
 ): Promise<BranchMutationResult> {
-  return post(`/api/changes/${encodeURIComponent(branch)}/reviews`, { verdict, body }, 'quiet');
+  return post(`/api/branches/${encodeURIComponent(branch)}/reviews`, { verdict, body }, 'quiet');
 }
 
 /** Approve: squash-merges onto `main` and deletes the branch. Merging is
  * deploying -- there is no separate deploy step (W5). */
 export function deployChange(branch: string): Promise<BranchMutationResult> {
-  return post(`/api/changes/${encodeURIComponent(branch)}/deploy`, undefined, 'severe');
+  return post(`/api/branches/${encodeURIComponent(branch)}/deploy`, undefined, 'severe');
 }
 
 /** Bring a change current with `main`, which a change behind it must be
@@ -4324,7 +4618,7 @@ export function bringCurrent(
       side: chosen.sides[i],
     })),
   };
-  return post(`/api/changes/${encodeURIComponent(branch)}/bring-current`, { choices });
+  return post(`/api/branches/${encodeURIComponent(branch)}/bring-current`, { choices });
 }
 
 export type CommitDto = {
@@ -4373,40 +4667,44 @@ export interface HistoryResult {
 
 /** `main`'s history, newest first, with what the fleet runs and any hold. */
 export function history(limit?: number): Promise<HistoryResult> {
-  return apiJson(`/api/history${limit ? `?limit=${limit}` : ''}`);
+  return apiJson(`/api/main/history${limit ? `?limit=${limit}` : ''}`);
 }
 
 /** Deploy a commit already in `main`'s history. A rollback is this and
  * nothing else (W7); deploying `main`'s head releases a hold. One where a
  * group does not load is refused with `doesNotLoad` unless `confirm`. */
 export function deployCommit(commit: string, confirm = false): Promise<BranchMutationResult> {
-  return post('/api/deploy', { commit, confirm }, 'severe');
+  return post('/api/main/deploy', { commit, confirm }, 'severe');
 }
 
 // -- accounts ---------------------------------------------------------------
 //
-// The roster and what an administrator does to it (`users_api.rs`). Every
+// The roster and what an administrator does to it (`accounts_api.rs`). Every
 // mutation but a rename re-asks for the acting administrator's own password:
 // a session alone is not enough to create an administrator or end somebody's
 // access, which is what stands between a walked-away-from browser and either.
 
-/** An account as the roster shows it. No verifier, and no password state
- * beyond whether one must be changed. */
-export interface UserDto {
+/** An account as the roster shows it. No verifier, no password state beyond
+ * whether one must be changed, and never a key. */
+export interface AccountDto {
   id: string;
   username?: string;
   displayName: string;
   enabled: boolean;
-  administrator: boolean;
-  /** How the account signs in: `local` (a password) or `oidc` (the provider). */
-  authSource: 'local' | 'oidc';
+  /** How the account signs in: `local` (a password), `oidc` (the provider) or `key`. */
+  authSource: 'local' | 'oidc' | 'key';
   /** What the provider last called an OIDC account: its email, else its preferred username. */
   providerLogin?: string;
   createdAt: number;
   updatedAt: number;
-  /** The roles this account holds: its provider groups a role exists for. Empty for a local account. */
+  /** The roles this account holds: those an OIDC account's provider groups give, or the roles a
+   * local or key account was given. */
   roles: string[];
+  /** Every group the provider named at the last sign-in or refresh, exactly as named. Empty for any other account. */
+  groups: string[];
   access: AccessDto;
+  /** A key account's keys in force. Absent for any other account. */
+  keys?: KeyDto[];
 }
 
 /** A generated password, shown once and never retrievable. */
@@ -4420,20 +4718,13 @@ export interface TemporaryPasswordDto {
  * that something went wrong. */
 export type AccountRefusal = { status: number; error: string };
 
-/** The roster, which is a bare JSON array rather than an envelope with `ok`.
- *
- * `apiJson` hands back whatever parsed, which for a `503` is the error object:
- * it would be assigned as though it were the roster and then fail to iterate,
- * somewhere far from the call. A shape that is not an array is an error here,
- * where it can still say so. */
-export async function listUsers(): Promise<UserDto[]> {
-  const body = await apiJson<UserDto[] | { error?: string }>('/api/users');
-  if (Array.isArray(body)) return body;
-  throw new Error(body.error || 'the roster could not be read');
+/** Every account, however it signs in, oldest first. */
+export async function listAccounts(): Promise<AccountDto[]> {
+  return (await readJson<{ accounts: AccountDto[] }>('/api/accounts')).accounts;
 }
 
-/** `POST`, `PATCH` and the two actions all answer a body with `error` on a
- * refusal, which the form shows as it is. */
+/** `POST`, `PATCH` and the two actions all answer the envelope, whose first error the
+ * form shows as it is on a refusal. */
 async function accountCall<T>(
   url: string,
   init: RequestInit,
@@ -4447,7 +4738,7 @@ async function accountCall<T>(
   const call = errors.call(init.method ?? 'GET', url, weight);
   let res: Response;
   try {
-    res = await fetch(url, { ...init, headers });
+    res = await fetch(url, { ...init, headers, body: await gzipped(init.body, headers) });
   } catch (e) {
     throw failed(call, e);
   }
@@ -4456,9 +4747,9 @@ async function accountCall<T>(
     return { status: 401, error: 'your session ended -- sign in again' };
   }
   if (res.status === 403) void recheck();
-  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  const body = (await res.json().catch(() => ({}))) as { errors?: ApiError[] };
   if (!res.ok) {
-    const error = body.error || 'that did not work';
+    const error = body.errors?.[0]?.message || 'that did not work';
     errors.report(call, [bareError(error)]);
     return { status: res.status, error };
   }
@@ -4467,92 +4758,157 @@ async function accountCall<T>(
   return body as T;
 }
 
-export function createUser(
+/** A local account holding the roles given, answered with the temporary password to hand over. */
+export function createLocalAccount(
   username: string,
   displayName: string,
+  roles: string[],
 ): Promise<TemporaryPasswordDto | AccountRefusal> {
-  return accountCall('/api/users', {
+  return accountCall('/api/accounts', {
     method: 'POST',
-    body: JSON.stringify({ username, displayName }),
+    body: JSON.stringify({ authSource: 'local', username, displayName, roles }),
   });
 }
 
-export function renameUser(id: string, displayName: string): Promise<UserDto | AccountRefusal> {
-  return accountCall(`/api/users/${encodeURIComponent(id)}`, {
+/** An enabled key account holding no key yet. */
+export function createKeyAccount(
+  displayName: string,
+  roles: string[],
+): Promise<AccountDto | AccountRefusal> {
+  return accountCall('/api/accounts', {
+    method: 'POST',
+    body: JSON.stringify({ authSource: 'key', displayName, roles }),
+  });
+}
+
+/** One change to an account: the leader takes one field per request, and roles only for a local or
+ * key account. */
+export type AccountChange = { displayName: string } | { enabled: boolean } | { roles: string[] };
+
+export function changeAccount(
+  id: string,
+  change: AccountChange,
+): Promise<AccountDto | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    body: JSON.stringify({ displayName }),
+    body: JSON.stringify(change),
   });
 }
 
-export function setUserEnabled(id: string, enabled: boolean): Promise<UserDto | AccountRefusal> {
-  return accountCall(`/api/users/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ enabled }),
-  });
-}
-
-export function resetUserPassword(id: string): Promise<TemporaryPasswordDto | AccountRefusal> {
-  return accountCall(`/api/users/${encodeURIComponent(id)}/reset-password`, {
+export function resetAccountPassword(id: string): Promise<TemporaryPasswordDto | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}/reset-password`, {
     method: 'POST',
   });
 }
 
 /** `ended` is the wire field: how many sessions this ended. */
-export function revokeUserSessions(id: string): Promise<{ ended: number } | AccountRefusal> {
-  return accountCall(`/api/users/${encodeURIComponent(id)}/revoke-sessions`, {
+export function revokeAccountSessions(id: string): Promise<{ ended: number } | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}/revoke-sessions`, {
     method: 'POST',
   });
 }
 
 // -- roles --------------------------------------------------------------------
 //
-// A role is one provider group, by the name the provider gives it, and what holding it gives
-// (`roles_api.rs`). Administrators only, like the roster.
+// A role is what holding it gives, and the provider groups that give it (`roles_api.rs`).
+// Administrators only, like the roster.
+
+/** The built-in role that holds everything. */
+export const ADMINISTRATOR = 'administrator';
 
 export interface RoleDto {
   name: string;
-  administrator: boolean;
-  /** Empty for an administrator role, which holds every area. */
+  /** The administrator role, which holds everything, gives no level in an area, and is never removed. */
+  builtIn: boolean;
+  /** The provider groups that give it, exactly as the groups claim names them. */
+  groups: string[];
+  /** Empty for the administrator role, which holds every area. */
   areas: Record<string, AccessLevel>;
 }
 
 /** Every role, sorted by name. */
-export function listRoles(): Promise<RoleDto[]> {
-  return apiJson('/api/roles');
+export async function listRoles(): Promise<RoleDto[]> {
+  return (await readJson<{ roles: RoleDto[] }>('/api/roles')).roles;
 }
 
-/** Creates the role or replaces what it gives. */
+/** Creates the role or replaces its groups and what it gives. */
 export function putRole(
   name: string,
-  administrator: boolean,
+  groups: string[],
   areas: Record<string, AccessLevel>,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(
     `/api/roles/${encodeURIComponent(name)}`,
     {
       method: 'PUT',
-      body: JSON.stringify({ administrator, areas }),
+      body: JSON.stringify({ groups, areas }),
     },
     'quiet',
   );
 }
 
-export function deleteRole(name: string): Promise<{ ok: boolean; error?: string }> {
+export function deleteRole(name: string): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(`/api/roles/${encodeURIComponent(name)}`, { method: 'DELETE' }, 'quiet');
+}
+
+// -- keys ---------------------------------------------------------------------
+//
+// A key account is an account a script calls the API as, with one of its keys (`key_accounts_api.rs`).
+// Administrators only, like the roster.
+
+/** A key not revoked, expired or not. Never the key itself, which only `createKey` answers. */
+export interface KeyDto {
+  id: string;
+  label: string;
+  createdAt: number;
+  /** Null for a key that never expires. */
+  expiresAt: number | null;
+  /** To the minute; null for a key never used. */
+  lastUsedAt: number | null;
+}
+
+/** A key just made: the one answer that carries it. */
+export interface CreatedKeyDto {
+  id: string;
+  label: string;
+  createdAt: number;
+  expiresAt: number | null;
+  key: string;
+}
+
+/** `expiresInDays` null makes a key that never expires. */
+export function createKey(
+  id: string,
+  label: string,
+  expiresInDays: number | null,
+): Promise<CreatedKeyDto | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}/keys`, {
+    method: 'POST',
+    body: JSON.stringify({ label, expiresInDays }),
+  });
+}
+
+export function revokeKey(id: string, key: string): Promise<object | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}/keys/${encodeURIComponent(key)}`, {
+    method: 'DELETE',
+  });
 }
 
 // -- agents -------------------------------------------------------------------
 //
 // The leader's agent, acting for a person within their agent permissions (`agents_api.rs`).
 
-/** What a person lets their own agent use: everything they hold, or up to `default` in each area and the level
- * `areas` names in the ones it names. The agent holds the lower of this and what the person holds. */
-export type AgentPermissionsDto =
-  | { kind: 'everything' }
-  | { kind: 'upto'; default: AccessLevel; areas: Record<string, AccessLevel> };
+/** What a person lets their own agent use: up to `default` in each area and the level `areas` names in the ones it
+ * names, and with `administrator` the administrator role, when the person holds it. The agent holds the lower of
+ * this and what the person holds. */
+export type AgentPermissionsDto = {
+  administrator: boolean;
+  default: AccessLevel;
+  areas: Record<string, AccessLevel>;
+};
 
 export function getAgentPermissions(): Promise<AgentPermissionsDto> {
-  return apiJson('/api/me/agent-permissions');
+  return readJson('/api/me/agent-permissions');
 }
 
 export function putAgentPermissions(
@@ -4571,27 +4927,56 @@ export interface SystemInfoDto {
   smeltrVersion: string;
   /** The release this build is, `1.2.0`; absent on any other build. */
   release?: string;
+  /** The newest published release, when it is newer than this one. */
+  newerRelease?: { release: string; url: string };
+  /** The last look for a newer release: when, and why it failed if it did. Absent until the first, and on a build
+   * that is no release. */
+  releaseCheck?: { checkedAt: number; failure?: string };
   /** The SASL mechanisms this leader's build can select. A form offering
    * one that is not here would be offering a save the leader refuses. */
   saslMechanisms?: string[];
+  /** The librdkafka properties a save refuses, each with why smeltr owns it. */
+  kafkaReserved?: Record<string, string>;
+  /** The librdkafka properties a save refuses beside a connector's own TLS settings. */
+  kafkaTlsProps?: string[];
 }
 
 export function getSystemInfo(): Promise<SystemInfoDto> {
-  return apiJson('/api/system/info');
+  return readJson('/api/system');
+}
+
+/** What this leader's build can do with a Kafka client: the SASL mechanisms it can select, the properties a save
+ * refuses, each with why smeltr owns it, and those it refuses beside the TLS settings. */
+export interface KafkaFacts {
+  mechanisms: string[];
+  reserved: Map<string, string>;
+  tlsProps: Set<string>;
 }
 
 /** What a source's or destination's form picks from: the secret catalog, so a credential can be pointed at one
- * the leader holds, and the SASL mechanisms this leader's build can select. A failure offers none rather than
- * failing the form: a variable can still be named, and no mechanism is offered that the save would refuse. */
-export async function fieldCatalogs(): Promise<{ secrets: SecretDto[]; mechanisms: string[] }> {
-  const [secrets, mechanisms] = await Promise.all([
+ * the leader holds, and what this leader's build can do with a Kafka client. A failure offers none rather than
+ * failing the form: a variable can still be named, no mechanism is offered that the save would refuse, and a
+ * property the form lets through is still refused by the save. */
+export async function fieldCatalogs(): Promise<{ secrets: SecretDto[]; kafka: KafkaFacts }> {
+  const [secrets, kafka] = await Promise.all([
     listSecrets().catch((): SecretDto[] => []),
     getSystemInfo()
-      .then((info) => info.saslMechanisms ?? [])
-      .catch((): string[] => []),
+      .then((info) => ({
+        mechanisms: info.saslMechanisms ?? [],
+        reserved: new Map(Object.entries(info.kafkaReserved ?? {})),
+        tlsProps: new Set(info.kafkaTlsProps ?? []),
+      }))
+      .catch(() => NO_KAFKA_FACTS),
   ]);
-  return { secrets, mechanisms };
+  return { secrets, kafka };
 }
+
+/** What a form knows of Kafka before the leader has answered, or when it cannot. */
+export const NO_KAFKA_FACTS: KafkaFacts = {
+  mechanisms: [],
+  reserved: new Map(),
+  tlsProps: new Set(),
+};
 
 /** The Sessions tab of Admin -> System. Seconds on the wire; the form
  * converts to the minutes and hours a person thinks in. The bounds come from
@@ -4604,7 +4989,7 @@ export interface SessionSettingsDto {
 }
 
 export function getSessionSettings(): Promise<SessionSettingsDto> {
-  return apiJson('/api/settings/sessions');
+  return readJson('/api/settings/sessions');
 }
 
 export function putSessionSettings(
@@ -4617,7 +5002,7 @@ export function putSessionSettings(
   });
 }
 
-/** The Single sign-on tab of Admin -> System (`oidc_api.rs`). The client
+/** The Single sign-on tab of Admin -> Accounts (`oidc_api.rs`). The client
  * secret is never sent back, only whether one is stored. */
 export interface OidcSettingsDto {
   enabled: boolean;
@@ -4625,7 +5010,6 @@ export interface OidcSettingsDto {
   clientId: string;
   clientSecretSet: boolean;
   groupsClaim: string;
-  requiredGroup: string;
   /** What the administrator registers at the provider as the sign-in redirect. */
   redirectUri: string;
 }
@@ -4648,7 +5032,6 @@ export function putOidcSettings(req: {
   clientId: string;
   clientSecret?: string;
   groupsClaim: string;
-  requiredGroup: string;
 }): Promise<OidcSettingsResult | AccountRefusal> {
   return accountCall('/api/settings/oidc', { method: 'PUT', body: JSON.stringify(req) });
 }
@@ -4678,7 +5061,7 @@ export type AgentSettingsResult = {
 };
 
 export function getAgentSettings(): Promise<AgentSettingsResult> {
-  return apiJson('/api/settings/agents');
+  return apiJson('/api/settings/agent');
 }
 
 /** `apiKey` undefined keeps the stored one, which the leader forgets on its own when the provider or endpoint
@@ -4692,7 +5075,7 @@ export function putAgentSettings(req: {
   keepDays?: number;
   contextTokens?: number;
 }): Promise<AgentSettingsResult | AccountRefusal> {
-  return accountCall('/api/settings/agents', { method: 'PUT', body: JSON.stringify(req) });
+  return accountCall('/api/settings/agent', { method: 'PUT', body: JSON.stringify(req) });
 }
 
 /** What one certificate says about itself. Epoch milliseconds, like every
@@ -4717,14 +5100,18 @@ export interface RotationDto {
   /** When this leader signs under `incoming` on its own, whether or not the
    * fleet has taken it by then. */
   deadlineMillis: number;
+  /** The latest `deadlineMillis` can move to. */
+  latestDeadlineMillis: number;
   /** What the cutover puts in force: another authority of the leader's own,
    * an uploaded certificate, or the leader's own again. */
-  installs: 'nextKey' | 'supplied' | 'own';
+  installs: 'nextKey' | 'supplied';
   /** Where that comes from. */
   source: CertificateSource;
   /** Workers that verify this leader by an authority their operator gave
    * them, and so take none from it. The cutover does not wait for them. */
   notFollowing: string[];
+  /** Each worker the cutover waits for, and whether it holds `incoming` yet. */
+  workers: { id: string; holdsIncoming: boolean }[];
 }
 
 export interface CertificatesDto {
@@ -4738,43 +5125,40 @@ export interface CertificatesDto {
   /** Whether an operator supplied what is being served. */
   supplied: boolean;
   source: CertificateSource;
+  /** The list entry served, where one is. */
+  entry: string | null;
+  /** The names this leader answers to. A supplied certificate covers at least one. */
+  names: string[];
+  /** The name the worker inside this leader reaches it by, where one runs. A supplied certificate covers it. */
+  workerName: string | null;
   /** Set when a certificate reached the leader's disk and its socket refused it.
    * Everything above is then what the disk holds rather than what a client is
    * shown, and only a restart closes the gap. */
   restartRequired: boolean;
+  /** Set while the entry above is not what clients are shown: a start could not serve it, so this leader serves
+   * its own until a certificate is served again. Says why, and what to do. */
+  unserved: string | null;
   /** Set while this leader is rotating to a new authority. */
   rotation: RotationDto | null;
 }
 
 export function getCertificates(): Promise<CertificatesDto> {
-  return apiJson('/api/settings/certificates');
+  return readJson('/api/settings/tls');
 }
 
 /** The authority's own download URL. A plain link rather than a fetch: the
  * browser names the file and puts it where downloads go. Ungated, because a
  * worker holding an enrollment code fetches the same bytes with no session. */
-export const AUTHORITY_URL = '/api/authority';
+export const AUTHORITY_URL = '/api/worker/authority';
 
-export function putCertificate(
-  certificate: string,
-  privateKey: string,
-  authority: string,
-): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates', {
+/** The certificate this leader issues itself and serves unless another is chosen (`tls::OWN_ENTRY`). */
+export const OWN_CERTIFICATE = 'leader';
+
+/** Serves the certificate `name` from the list. */
+export function putCertificate(name: string): Promise<CertificatesDto | AccountRefusal> {
+  return accountCall('/api/settings/tls', {
     method: 'PUT',
-    body: JSON.stringify({ certificate, privateKey, authority }),
-  });
-}
-
-export function withdrawCertificate(): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates/supplied', {
-    method: 'DELETE',
-  });
-}
-
-export function reissueCertificate(): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates/reissue', {
-    method: 'POST',
+    body: JSON.stringify({ certificate: name }),
   });
 }
 
@@ -4792,7 +5176,7 @@ export function beginRotation(
   waitHours: number,
   authorityValidityDays: number,
 ): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates/rotation', {
+  return accountCall('/api/settings/tls/rotation', {
     method: 'POST',
     body: JSON.stringify({ waitHours, authorityValidityDays }),
   });
@@ -4801,14 +5185,24 @@ export function beginRotation(
 /** Signs under the incoming authority now. A worker that has not yet taken it
  * stops being able to verify this leader. */
 export function cutOverRotation(): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates/rotation/cutover', {
+  return accountCall('/api/settings/tls/rotation/cutover', {
     method: 'POST',
+  });
+}
+
+/** Moves when the open rotation cuts over without the fleet. */
+export function setRotationDeadline(
+  deadlineMillis: number,
+): Promise<CertificatesDto | AccountRefusal> {
+  return accountCall('/api/settings/tls/rotation/deadline', {
+    method: 'PUT',
+    body: JSON.stringify({ deadlineMillis }),
   });
 }
 
 /** Drops the incoming authority. This leader keeps serving what it serves today. */
 export function abandonRotation(): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates/rotation', {
+  return accountCall('/api/settings/tls/rotation', {
     method: 'DELETE',
   });
 }
@@ -4824,17 +5218,22 @@ export interface AcmeDto {
   eabKeyId: string;
   /** Whether an external account HMAC key is stored. The key itself is never sent back. */
   eabHmacSet: boolean;
+  dnsProvider: AcmeDnsProvider;
+  /** Whether a Cloudflare API token is stored. The token itself is never sent back. */
+  cloudflareTokenSet: boolean;
   /** Where this leader answers an authority's HTTP-01 challenge. */
   httpPort: number;
-  /** The certificate the last order installed, by fingerprint, and its dates. `null` before any. */
-  issued: string | null;
+  /** The dates of the certificate the last order stored. `null` before any. */
   notAfterMillis: number | null;
   renewAfterMillis: number | null;
   lastAttemptMillis: number | null;
   lastError: string | null;
 }
 
-export type AcmeChallenge = 'tls-alpn-01' | 'http-01';
+export type AcmeChallenge = 'tls-alpn-01' | 'http-01' | 'dns-01';
+
+/** Who publishes a DNS-01 record. */
+export type AcmeDnsProvider = 'cloudflare';
 
 export interface AcmeSettings {
   enabled: boolean;
@@ -4846,6 +5245,9 @@ export interface AcmeSettings {
   eabKeyId: string;
   /** `null` keeps the stored key; empty removes it. */
   eabHmac: string | null;
+  dnsProvider: AcmeDnsProvider;
+  /** `null` keeps the stored token; empty removes it. */
+  cloudflareToken: string | null;
 }
 
 /** The directories the page offers by name. Any other is typed as a URL. */
@@ -4858,11 +5260,11 @@ export const ACME_DIRECTORIES = [
 ] as const;
 
 export function getAcme(): Promise<AcmeDto> {
-  return apiJson('/api/settings/acme');
+  return readJson('/api/settings/tls/acme');
 }
 
 export function putAcme(settings: AcmeSettings): Promise<AcmeDto | AccountRefusal> {
-  return accountCall('/api/settings/acme', {
+  return accountCall('/api/settings/tls/acme', {
     method: 'PUT',
     body: JSON.stringify(settings),
   });
@@ -4871,7 +5273,7 @@ export function putAcme(settings: AcmeSettings): Promise<AcmeDto | AccountRefusa
 /** Orders a certificate from the authority the settings name, and serves it: at once under the root in force,
  * else as the switch an upload under another root begins. */
 export function orderAcme(): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/acme/order', {
+  return accountCall('/api/settings/tls/acme/order', {
     method: 'POST',
   });
 }
@@ -4999,4 +5401,153 @@ export function restartConversation(
 
 export function deleteConversation(id: string): Promise<object | AccountRefusal> {
   return accountCall(conversationPath(id), { method: 'DELETE' });
+}
+
+// -- schemas ----------------------------------------------------------------
+// A standard's file in, a schema out in an export format (`src/bin/smeltr/schema_api.rs`). A bundle's schemas are its config, saved with `putSchemas`.
+
+export interface ReadSchema {
+  ok: boolean;
+  errors: ApiError[];
+  /** The schema the file declares. */
+  schema: SchemaDto;
+  /** Asked for, what a CSV holds before it is read. */
+  preview?: CsvPreview;
+}
+
+/** Which column of a CSV holds what, each by its index from 0. */
+export type CsvColumns = Partial<
+  Record<'field' | 'type' | 'required' | 'description' | 'example' | 'elasticsearch', number>
+>;
+
+/** A CSV before its columns are chosen: its header, its rows to show, the columns its header names, and each value of
+ * its type column. */
+export interface CsvPreview {
+  header: string[];
+  /** The first rows, and after them the first row of each type value they do not hold. */
+  rows: string[][];
+  /** How many of `rows` are the file's first; those after are added for their type values. */
+  first: number;
+  columns: CsvColumns;
+  /** In the order the file first holds them. */
+  types: CsvTypeValue[];
+}
+
+/** One value of a CSV's type column. */
+export interface CsvTypeValue {
+  value: string;
+  /** The type it reads as, null where the reader does not know it. */
+  readsAs: string | null;
+  /** How many rows hold it. */
+  fields: number;
+}
+
+/** A file a schema is read from: JSON Schema, ECS's `fields.csv` or `ecs_flat.yml`, `ocsf-schema-compiler`'s output,
+ * or a CSV of fields under a header row. */
+export type SchemaReadFormat = 'json-schema' | 'ecs' | 'ocsf' | 'csv';
+
+/** An OCSF requirement level. */
+export type OcsfLevel = 'required' | 'recommended' | 'optional';
+
+/** A release of a standard the leader carries. */
+export interface StandardRelease {
+  version: string;
+  /** Where the release is published. */
+  source: string;
+}
+
+/** An OCSF class: its name, which a schema is read by, its caption, and its category; empty for none. */
+export interface OcsfClass {
+  name: string;
+  caption: string;
+  category: string;
+}
+
+/** The releases of ECS and OCSF the leader carries, which `readSchema` reads with `builtIn`. */
+export interface SchemaStandards {
+  ecs: StandardRelease;
+  /** With OCSF's classes. */
+  ocsf: StandardRelease & { classes: OcsfClass[] };
+}
+
+export function getSchemaStandards(): Promise<SchemaStandards> {
+  return readJson('/api/preview/schema-standards', 'quiet');
+}
+
+/** `text`, a file in `format`, read as the schema `id`. Not `ok`, with why, where it does not read. */
+export function readSchema(req: {
+  id: string;
+  format: SchemaReadFormat;
+  text: string;
+  /** Read the release of ECS or OCSF the leader carries rather than `text`. */
+  builtIn?: boolean;
+  /** The OCSF class to read. */
+  class?: string;
+  /** How much of the OCSF class: how many keys deep, and which requirement levels. */
+  cut?: { depth: number; levels: OcsfLevel[] };
+  /** Which column of a CSV holds what; absent, its header says. */
+  columns?: CsvColumns;
+  /** The type of each value of a CSV's type column the reader does not know. */
+  types?: Record<string, string>;
+  /** Answer what a CSV holds rather than read it. */
+  preview?: boolean;
+}): Promise<ReadSchema> {
+  return post('/api/preview/schema-read', req, 'quiet');
+}
+
+/** The schema `id` that `pipeline` of `config`, the bundle as the editor holds it, writes when run over the records of
+ * `text`, an uploaded file, on the branch: each row it writes is a field. Not `ok`, with why, where the pipeline does not run
+ * or a row is no field. */
+export function importSchema(req: {
+  id: string;
+  title?: string;
+  config: FileConfigDto;
+  pipeline: string;
+  /** The uploaded file, cut into records on the leader as a source cuts its bytes. */
+  text: string;
+  /** Where a record ends; absent, each line is one. */
+  lineBreaker?: string;
+}): Promise<ReadSchema> {
+  return post(
+    branched(inArea('/preview/schema-import')),
+    {
+      config: JSON.stringify(req.config),
+      pipeline: req.pipeline,
+      id: req.id,
+      title: req.title ?? '',
+      text: req.text,
+      lineBreaker: req.lineBreaker,
+    },
+    'quiet',
+  );
+}
+
+/** What a schema is exported as: a JSON Schema document, or an Elasticsearch index's mapping. */
+export type ExportFormat = 'json-schema' | 'elasticsearch';
+
+export interface ExportedSchema {
+  ok: boolean;
+  errors: ApiError[];
+  document: Record<string, unknown>;
+}
+
+/** `schema` written as `format` has it. */
+export function exportSchema(schema: SchemaDto, format: ExportFormat): Promise<ExportedSchema> {
+  return post('/api/preview/schema-export', { schema, format }, 'quiet');
+}
+
+/** One schema finding at a branch's tip (`LoadedSystem::schema_findings`). */
+export interface SchemaFindingDto {
+  group: string;
+  pipeline: string;
+  /** The step that wrote the field. Absent for a field no step writes, and for a destination's accepts. */
+  step?: string;
+  message: string;
+}
+
+/** What breaks a schema at `branch`'s tip, in every group its change reaches. */
+export function branchSchemaFindings(
+  branch: string,
+): Promise<{ ok: boolean; errors: ApiError[]; findings: SchemaFindingDto[] }> {
+  return apiJson(`/api/branches/${encodeURIComponent(branch)}/schema-findings`, undefined, 'quiet');
 }

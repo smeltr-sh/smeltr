@@ -33,6 +33,9 @@ impl Scanner for Kv<'_> {
         let bytes = spread::row_bytes(input, row)?;
         // A record that is not whole keeps the pairs read before it broke off.
         let whole = kv_scan::split_pairs(bytes, self.0, pairs);
+        if !self.0.skip.is_empty() {
+            pairs.retain(|p| !self.0.skip.iter().any(|k| k == p.key));
+        }
         lay(row, pairs, spread, pool);
         Some(whole)
     }
@@ -87,8 +90,8 @@ mod tests {
     use crate::core::column::{DataType, StrBuilder, VarType};
     use crate::core::ctx::Ctx;
     use crate::core::error::ErrorSink;
+    use crate::plan::compile::{Call, Op, Output, ParseObject, Plan, compile};
     use crate::plan::config::{DeclaredField, FunctionConfig, FunctionKind, ParserKind, PipelineConfig, Step};
-    use crate::plan::plan::{Call, Op, Output, ParseObject, Plan, compile};
 
     fn compile_pipeline(config: KvConfig, declared: &[(&str, DataType)]) -> Plan {
         let p = PipelineConfig {
@@ -98,6 +101,7 @@ mod tests {
                 0,
                 FunctionKind::Parser {
                     input: "_raw".into(),
+                    into: crate::plan::tree::ROOT.to_string(),
                     kind: ParserKind::KeyValue(config),
                     declared: declared
                         .iter()

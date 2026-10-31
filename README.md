@@ -30,7 +30,9 @@ Stable Rust, Node 22 and [`just`](https://just.systems); the native dependencies
 ```sh
 just build        # frontend, then an optimized binary with it embedded
 just run          # the same, started
-just check        # what the files changed since origin/main can break; run before every push
+just build-dev    # frontend, then an unoptimized binary: what the GUI tests run, and quick to rebuild
+just run-dev      # the same, started
+just check        # what the files changed since origin/nightly can break; run before every push
 just --list       # everything else
 ```
 

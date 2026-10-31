@@ -6,7 +6,7 @@
 -->
 <script lang="ts" module>
   import { byteCount } from './bytes';
-  import { LIMITS } from './api';
+  import { LIMITS, BUFFER_HELP } from './api';
   import type { ByteCount } from './bytes';
 
   /** The settings the fields hold, as every request destination names them; a size is `maxRequestBytes` or
@@ -50,10 +50,8 @@
     sizeLabel = 'request size',
     sizeDefault,
     sizeHelp,
-    sizeNote,
     requests = 'Requests',
     concurrent = true,
-    bufferHelp,
     including = 'retries included',
   }: {
     value: RequestDelivery;
@@ -61,24 +59,20 @@
     sizeLabel?: string;
     sizeDefault: number;
     sizeHelp: Snippet;
-    sizeNote: Snippet;
     /** What is in flight, as "Requests" or "Bulk requests". */
     requests?: string;
     /** Whether the destination sends more than one request at once; one that does not has no concurrency to set. */
     concurrent?: boolean;
-    /** The buffer's second sentence, in place of what dividing it by the size gives. */
-    bufferHelp?: Snippet;
     /** What one batch's delivery time counts besides the request, as "retries included". */
     including?: string;
   } = $props();
 </script>
 
 {#if concurrent}
-  <Field field="inFlight" label="starting concurrency">
+  <Field optional field="inFlight" label="starting concurrency">
     {#snippet help()}
       {requests} in flight at once when the destination starts, per worker; it adapts from there.
     {/snippet}
-    {#snippet note()}Default {LIMITS.inFlight.default}.{/snippet}
     <input
       type="number"
       min={LIMITS.inFlight.min}
@@ -88,27 +82,24 @@
     />
   </Field>
 {/if}
-<Field field={size} label={sizeLabel} help={sizeHelp} note={sizeNote}>
+<Field optional field={size} label={sizeLabel} help={sizeHelp}>
   <BytesInput value={d[size]} fallback={sizeDefault} onchange={(n) => (d[size] = n)} />
 </Field>
-<Field field="bufferBytes" label="delivery buffer">
+<Field optional field="bufferBytes" label="buffer">
   {#snippet help()}
-    The most one worker holds for this destination, queued or sent and not yet acknowledged.
-    {#if bufferHelp}{@render bufferHelp()}{:else}Divided by the {sizeLabel}, it is the most requests
-      in flight.{/if}
+    {BUFFER_HELP}
   {/snippet}
-  {#snippet note()}Default {exactBytes(LIMITS.bufferBytes.default)}.{/snippet}
   <BytesInput
     value={d.bufferBytes}
     fallback={LIMITS.bufferBytes.default}
+    auto
     onchange={(n) => (d.bufferBytes = n)}
   />
 </Field>
-<Field field="stallAfterSecs" label="stall after (seconds)">
+<Field optional field="stallAfterSecs" label="stall after (seconds)">
   {#snippet help()}
     How long one batch may take to deliver, {including}, before this destination counts as stalled.
   {/snippet}
-  {#snippet note()}Default {LIMITS.stallAfterSecs.default}.{/snippet}
   <input
     type="number"
     min={LIMITS.stallAfterSecs.min}

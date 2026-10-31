@@ -11,9 +11,9 @@ use crate::core::error::{ErrorSink, Exception};
 use crate::core::id::SlotId;
 use crate::core::variant;
 use crate::format::record::RecordView;
+use crate::plan::compile::Plan;
 use crate::plan::config::{Answer, OnException};
 use crate::plan::exec::run;
-use crate::plan::plan::Plan;
 
 /// Run `plan` and serialize every row still live, in row order. Dropped rows are absent.
 pub fn run_to_json<'a>(plan: &'a Plan, batch: &mut Batch, ctx: &mut Ctx<'a>) -> Vec<Vec<u8>> {
@@ -39,9 +39,13 @@ pub struct PreviewRow {
     /// Whether the preview's filter is true for the row. Every row matches when there is no filter.
     pub matched: bool,
     pub json: Option<Vec<u8>>,
-    /// Each exception's message, with the answer its kind takes.
-    pub exceptions: Vec<(&'static str, String)>,
+    /// Each exception's message, with the answer its kind takes and the step that raised it, by its own id. No step
+    /// for one raised reading the record, before any step.
+    pub exceptions: Vec<RaisedOn>,
 }
+
+/// One exception on a preview's row: the answer its kind takes, its message, and the step that raised it.
+pub type RaisedOn = (&'static str, String, Option<String>);
 
 /// `run_to_json` for every row, with exceptions and the tag `on_exception` names: the GUI's preview. A row is shown as
 /// its answer leaves it: tagged, as it is, or absent under `Drop` and `Deliver`; under `Block` it is shown tagged,
@@ -113,13 +117,14 @@ pub fn run_to_json_marked<'a>(
     // The tag first, as `runtime` hands it over.
     let tagged = record().with_field(on_exception.tag_field.as_str(), batch.peek(tag_slot));
 
-    let mut by_row: HashMap<u32, Vec<(&'static str, String)>> = HashMap::new();
+    let mut by_row: HashMap<u32, Vec<RaisedOn>> = HashMap::new();
     for a in ctx.errors.entries() {
         let message = a.message(&slot_names);
         let messages = by_row.entry(a.row).or_default();
         // Two different coercions on one row are two different facts; dedup on the message, not the kind.
-        if !messages.iter().any(|(_, m)| *m == message) {
-            messages.push((on_exception.answer(&a.kind).label(), message));
+        if !messages.iter().any(|(_, m, _)| *m == message) {
+            let step = plan.step_ids.get(a.function as usize).cloned();
+            messages.push((on_exception.answer(&a.kind).label(), message, step));
         }
     }
 

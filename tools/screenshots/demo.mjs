@@ -64,7 +64,7 @@ for (const extra of [
   '#/admin/accounts/roles',
   '#/admin/system/general',
   '#/admin/system/sessions',
-  '#/admin/system/oidc',
+  '#/admin/accounts/oidc',
   '#/admin/system/certificates',
   '#/admin/system/git',
   '#/admin/system/license',
@@ -119,42 +119,43 @@ const listed = answers['/api/branches'].body.branches.map((b) => b.name).filter(
 for (const [branch, scope] of ['main', ...listed].flatMap((b) =>
   ['shared', 'network', 'apps'].map((s) => [b, s]),
 )) {
-  const q = `branch=${encodeURIComponent(branch)}&scope=${scope}`;
+  const q = `branch=${encodeURIComponent(branch)}`;
+  const area = `/api/areas/${scope}`;
   // The tables come from main: the service holds one `lookups/` for every branch.
   const read = await reader.evaluate(
-    async ([q, onMain]) => {
+    async ([area, q, onMain]) => {
       const get = (u) => fetch(u).then((r) => r.json());
-      const { samples = [] } = await get(`/api/samples?${q}`);
+      const { samples = [] } = await get(`${area}/samples?${q}`);
       const each = await Promise.all(
-        samples.map((s) => get(`/api/samples/${encodeURIComponent(s.id)}?${q}`)),
+        samples.map((s) => get(`${area}/samples/${encodeURIComponent(s.id)}?${q}`)),
       );
-      const { tests = [] } = await get(`/api/tests?${q}`);
+      const { tests = [] } = await get(`${area}/tests?${q}`);
       const locked = await Promise.all(
-        tests.map((t) => get(`/api/tests/${encodeURIComponent(t.id)}?${q}`)),
+        tests.map((t) => get(`${area}/tests/${encodeURIComponent(t.id)}?${q}`)),
       );
-      const configured = await get(`/api/config?${q}`);
+      const configured = await get(`${area}?${q}`);
       const config = configured.config;
       const tables = await Promise.all(
         (onMain ? (config?.lookupTables ?? []) : [])
           .filter((t) => t.type === 'csv')
           .map(async (t) => {
-            const key = `/api/lookup/file?${q}&path=${encodeURIComponent(t.path)}`;
+            const key = `${area}/lookups/file?${q}&path=${encodeURIComponent(t.path)}`;
             return { key, path: t.path, body: await get(key) };
           }),
       );
       return { each, locked, tables, configured };
     },
-    [q, branch === 'main'],
+    [area, q, branch === 'main'],
   );
   if (read.configured.config)
-    answers[keyOf(`/api/config?${q}`)] = { status: 200, body: read.configured };
+    answers[keyOf(`${area}?${q}`)] = { status: 200, body: read.configured };
   for (const answer of read.each)
-    answers[keyOf(`/api/samples/${encodeURIComponent(answer.sample.id)}?${q}`)] = {
+    answers[keyOf(`${area}/samples/${encodeURIComponent(answer.sample.id)}?${q}`)] = {
       status: 200,
       body: answer,
     };
   for (const answer of read.locked)
-    answers[keyOf(`/api/tests/${encodeURIComponent(answer.test.id)}?${q}`)] = {
+    answers[keyOf(`${area}/tests/${encodeURIComponent(answer.test.id)}?${q}`)] = {
       status: 200,
       body: answer,
     };
@@ -171,15 +172,19 @@ answers['/api/streams'] = {
 // Every object's panel on the Map, whether or not a page opened it. The demo answers other branches from main's.
 for (const node of answers['/api/map?branch=main'].body.nodes) {
   const { group, kind, authorId: id } = node;
-  const q = new URLSearchParams({ branch: 'main', group, kind, id, windowMinutes: '10' });
-  const key = keyOf(`/api/stats?${q}`);
-  answers[key] = { status: 200, body: await reader.evaluate((u) => fetch(u).then((r) => r.json()), key) };
+  const q = new URLSearchParams({ branch: 'main', kind, id, windowMinutes: '10' });
+  const key = keyOf(`/api/areas/${group}/stats?${q}`);
+  answers[key] = {
+    status: 200,
+    body: await reader.evaluate((u) => fetch(u).then((r) => r.json()), key),
+  };
 }
 await reader.close();
 
 // The fleet moving: every live answer read again every five seconds for a minute, so the demo's Map, charts and
 // counters move as the fleet's did. A config read is not live; the demo's own edits change those.
-const LIVE = /^\/api\/(map\/measurements|stats|flow|cluster|workers|warnings|streams)\b/;
+const LIVE =
+  /^\/api\/(map\/measurements|areas\/[^/?]+\/stats|flow|cluster|workers|warnings|streams)\b/;
 const live = Object.keys(answers).filter((k) => LIVE.test(k));
 const api = await ctx.newPage();
 await api.goto(`${BASE}/#/map`, { waitUntil: 'networkidle' });
@@ -205,12 +210,13 @@ const capture = (group, what, branch) =>
   api.evaluate(
     async ([group, what, max, branch]) => {
       const { csrf } = await fetch('/api/auth/session').then((r) => r.json());
-      const post = (u, body) =>
+      const send = (method, u, body) =>
         fetch(u, {
-          method: 'POST',
+          method,
           headers: { 'Content-Type': 'application/json', 'x-smeltr-csrf': csrf },
           body: body && JSON.stringify(body),
         }).then((r) => r.json());
+      const post = (u, body) => send('POST', u, body);
       const started = await post('/api/captures', {
         group,
         ...what,
@@ -223,18 +229,19 @@ const capture = (group, what, branch) =>
         const { capture } = await fetch(`/api/captures/${started.session}`).then((r) => r.json());
         if (!capture.done) continue;
         if (capture.batches.every((b) => !b.rows.length)) {
-          await post(`/api/captures/${started.session}/discard`);
+          await send('DELETE', `/api/captures/${started.session}`);
           return { batches: capture.batches };
         }
         const id = `pool-${what.source?.id ?? what.destination}-${Date.now()}`;
-        const q = `branch=${branch}&scope=${group}`;
-        const saved = await post(`/api/captures/${started.session}/save?${q}`, {
+        const samples = `/api/areas/${group}/samples`;
+        const saved = await post(`${samples}?branch=${branch}`, {
+          capture: started.session,
           id,
           name: id,
           source: what.source?.id,
         });
         if (!saved.ok) throw new Error(JSON.stringify(saved.errors));
-        const { sample } = await fetch(`/api/samples/${id}?${q}`).then((r) => r.json());
+        const { sample } = await fetch(`${samples}/${id}?branch=${branch}`).then((r) => r.json());
         return {
           batches: capture.batches,
           sample: { columns: sample.columns, records: sample.records },
@@ -244,7 +251,7 @@ const capture = (group, what, branch) =>
     [group, what, POOL, branch],
   );
 for (const scope of ['network', 'apps']) {
-  const { config } = answers[`/api/config?branch=main&scope=${scope}`].body;
+  const { config } = answers[`/api/areas/${scope}?branch=main`].body;
   for (const source of config.sources) {
     const pool = await capture(scope, { source }, POOLS);
     captures[`${scope}/source/${source.id}`] = pool;

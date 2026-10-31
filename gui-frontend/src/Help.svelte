@@ -8,11 +8,8 @@
   labelable, so inside a `<label>` it would become the label's control,
   taking the field's name and its clicks. A span leaves the label to the
   field. Without `popovertarget` the platform no longer toggles the
-  popover from it, so the handlers below do.
-
-  Placed from script. CSS anchor positioning would do it declaratively
-  but only Chromium has it, and the popover must sit under its own button
-  in every browser.
+  popover from it, so the handlers below do. It is placed under its
+  button by `float.ts`.
 -->
 <script module lang="ts">
   let seq = 0;
@@ -20,6 +17,7 @@
 
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { follow } from './float';
 
   let { label, children }: { label: string; children: Snippet } = $props();
 
@@ -32,29 +30,9 @@
   // so the click must not open it again.
   let openAtPress = false;
 
-  // The top layer has no layout relation to the page, so the box comes
-  // from the button. `beforetoggle` runs before the popover is shown, so
-  // it lands in place rather than appearing centered and jumping.
-  function place() {
-    const b = ask.getBoundingClientRect();
-    pop.style.left = `${b.left}px`;
-    pop.style.top = `${b.bottom + 6}px`;
-  }
-
-  // Then, once it has a size to measure, pull it back inside the window.
-  function clamp() {
-    const r = pop.getBoundingClientRect();
-    const overX = r.right - (window.innerWidth - 8);
-    if (overX > 0) pop.style.left = `${Math.max(8, r.left - overX)}px`;
-
-    // Below the button ran past the bottom edge: flip above it instead, the one other side a
-    // button beside a label ever has room on.
-    const overY = r.bottom - (window.innerHeight - 8);
-    if (overY > 0) {
-      const b = ask.getBoundingClientRect();
-      pop.style.top = `${Math.max(8, b.top - r.height - 6)}px`;
-    }
-  }
+  let stop: (() => void) | undefined;
+  // A page left with the help open drops it without a toggle, and its anchor with it.
+  $effect(() => () => stop?.());
 </script>
 
 <span
@@ -84,12 +62,14 @@
   popover
   class="pop"
   onbeforetoggle={(e) => {
-    if ((e as ToggleEvent).newState === 'open') place();
+    stop?.();
+    // Before it is shown, so it lands in place rather than appearing centered and jumping.
+    stop =
+      (e as ToggleEvent).newState === 'open'
+        ? follow(pop, () => ask.getBoundingClientRect()).stop
+        : undefined;
   }}
-  ontoggle={(e) => {
-    open = (e as ToggleEvent).newState === 'open';
-    if (open) clamp();
-  }}
+  ontoggle={(e) => (open = (e as ToggleEvent).newState === 'open')}
 >
   {@render children()}
 </div>
@@ -127,11 +107,7 @@
     border-color: var(--accent);
   }
 
-  /* Overrides the UA rule that centers a popover in the viewport. */
   .pop {
-    position: fixed;
-    inset: auto;
-    margin: 0;
     max-width: min(32rem, calc(100vw - 1rem));
     padding: 0.6rem 0.75rem;
     border: 1px solid var(--border);

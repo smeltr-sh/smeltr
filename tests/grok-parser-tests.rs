@@ -16,6 +16,7 @@ fn grok_parser(id: FunctionId, config: GrokConfig, declared: &[(&str, DataType)]
         id,
         FunctionKind::Parser {
             input: "_raw".into(),
+            into: "$".into(),
             kind: ParserKind::Grok(config),
             declared: declared
                 .iter()

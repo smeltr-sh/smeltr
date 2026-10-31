@@ -19,6 +19,8 @@
 <script lang="ts">
   import ConversationEntry from './ConversationEntry.svelte';
   import ConversationEvent from './ConversationEvent.svelte';
+  import Markdown from './Markdown.svelte';
+  import { firstLineText } from './markdown';
   import Collapsible from './Collapsible.svelte';
   import ModelPicker from './ModelPicker.svelte';
   import ContextGauge from './ContextGauge.svelte';
@@ -146,8 +148,8 @@
   async function remove() {
     if (!open || !shown) return;
     const sure = await ask({
-      title: 'Delete this conversation?',
-      body: `“${shown.title}” and everything said in it are deleted for good.`,
+      title: 'delete conversation',
+      body: `“${firstLineText(shown.title)}” and everything said in it are deleted for good.`,
       action: 'Delete',
       danger: true,
     });
@@ -163,7 +165,7 @@
     if (!open) return;
     if (!summarize) {
       const sure = await ask({
-        title: 'Clear the context?',
+        title: 'clear context',
         body: 'Your agent forgets everything said so far.',
         action: 'Clear',
       });
@@ -229,7 +231,7 @@
   {#if open && shown}
     {#if !compact}
       <div class="head">
-        <h2>{shown.title}</h2>
+        <h2>{firstLineText(shown.title)}</h2>
         <button type="button" class="compact" onclick={remove}>Delete conversation</button>
       </div>
     {/if}
@@ -237,14 +239,15 @@
       {#if compact && (item.kind === 'message' || item.kind === 'answer')}
         <!-- A terminal's shape: what was said is the line after the prompt, and the answer the lines under it. -->
         <div class="line" class:said={item.kind === 'message'}>
-          {#if item.kind === 'message'}<span class="prompt" aria-label={me}>›</span>{/if}<span
-            class="text">{item.text}</span
-          >
+          {#if item.kind === 'message'}<span class="prompt" aria-label={me}>›</span>{/if}<Markdown
+            text={item.text}
+          />
         </div>
       {:else if item.kind === 'message' || item.kind === 'answer'}
         {@const who = item.kind === 'message' ? me : 'Agent'}
-        <ConversationEntry author={who} text={item.text}>
+        <ConversationEntry author={who}>
           {#snippet head()}<span class="who">{who}</span>{/snippet}
+          <Markdown text={item.text} />
         </ConversationEntry>
       {:else if item.kind === 'call'}
         {@const answered = item.result ? split(item.result.output) : null}
@@ -278,7 +281,7 @@
             <Collapsible variant="row">
               {#snippet summary()}Summarized. Your agent reads this summary in place of what is
                 above.{/snippet}
-              <p class="summary">{item.summary}</p>
+              <div class="summary"><Markdown text={item.summary} /></div>
             </Collapsible>
           {/if}
         </ConversationEvent>
@@ -386,11 +389,6 @@
   .line {
     display: flex;
     gap: 0.5rem;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  .line .text {
-    min-width: 0;
   }
   .line.said {
     color: var(--ink);
@@ -447,7 +445,6 @@
     color: var(--dim);
   }
   .summary {
-    white-space: pre-wrap;
     margin: 0.4rem 0 0;
   }
   .mono {

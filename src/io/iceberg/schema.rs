@@ -6,17 +6,28 @@
 //!
 //! A missing table takes the record as its schema, ids assigned as Iceberg assigns fresh ones. A table that exists
 //! keeps every column and its id; a field it lacks, at any depth, is added as an optional column with a new id; a
-//! field it holds as another type is refused, and the user renames the field in the pipeline or the column in the
-//! table.
+//! field it holds narrower (an `int`, a `float`, a `date` or a `timestamp`, as `parquet::narrows` says) is written as
+//! that type; a field it holds as another type is refused, and the user renames the field in the pipeline or the
+//! column in the table. A column the table has and the record lacks is written with its write default, or null
+//! (`with_field_ids`).
 
 use std::sync::Arc;
 
+use arrow_array::{
+    Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, FixedSizeBinaryArray, Float32Array,
+    Float64Array, Int32Array, Int64Array, ListArray, MapArray, StringArray, StructArray, Time64MicrosecondArray,
+    TimestampMicrosecondArray, new_empty_array, new_null_array,
+};
+use arrow_buffer::OffsetBuffer;
+use arrow_schema::extension::Uuid;
 use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 
 use super::metadata::{ListType, NestedField, Primitive, Schema, StructTag, StructType, Type};
+use super::transform::{parse_date, parse_timestamp};
 use crate::core::column::DataType;
-use crate::io::parquet::{at, columns};
+use crate::io::parquet::{WriteDefault, at, columns, narrows};
+use crate::io::table::Kind;
 
 /// The table's schema for a record, and whether it differs from the table's current one.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,31 +85,270 @@ pub fn table_schema(record: &DataType, current: Option<&Schema>, last_column_id:
 }
 
 /// `arrow` with every field, at any depth and a list's element too, carrying its id in `schema` under
-/// `PARQUET:field_id`, so a Parquet file written with it carries the table's field ids. Fields are matched by name;
-/// one `schema` does not name keeps no id.
-pub fn with_field_ids(arrow: &ArrowSchema, schema: &Schema) -> Arc<ArrowSchema> {
-    let fields: Fields = arrow.fields().iter().map(|f| labelled(f, &schema.fields)).collect();
-    Arc::new(ArrowSchema::new_with_metadata(fields, arrow.metadata().clone()))
+/// `PARQUET:field_id`, so a Parquet file written with it carries the table's field ids, and each struct ending with
+/// the columns of `schema` it lacks, which its rows write null: a data file holds every column. Fields are matched by
+/// name; one `schema` does not name keeps no id.
+///
+/// With it, what each of those columns takes in every row: its write default.
+///
+/// Err names a column the record lacks of a type this writer has no Parquet type for, or whose write default is not
+/// of its type.
+pub fn with_field_ids(arrow: &ArrowSchema, schema: &Schema) -> Result<(Arc<ArrowSchema>, Vec<WriteDefault>), String> {
+    let (fields, defaults) = labelled(arrow.fields(), &schema.fields, "")?;
+    let written = ArrowSchema::new_with_metadata(fields, arrow.metadata().clone());
+    Ok((Arc::new(written), defaults))
 }
 
-fn labelled(field: &Field, table: &[NestedField]) -> Field {
-    match table.iter().find(|t| t.name == *field.name()) {
-        Some(t) => with_id(field, t.id, &t.field_type),
-        None => field.clone(),
+/// `fields` as `table` names them, then `table`'s fields they lack; and what each takes where the record lacks it.
+fn labelled(fields: &Fields, table: &[NestedField], path: &str) -> Result<(Fields, Vec<WriteDefault>), String> {
+    let (mut labelled, mut defaults): (Vec<Field>, Vec<WriteDefault>) = (fields.iter())
+        .map(|field| match table.iter().find(|t| t.name == *field.name()) {
+            Some(t) => with_id(field, t.id, &t.field_type, &at(path, &t.name)),
+            None => Ok((field.as_ref().clone(), WriteDefault::Written)),
+        })
+        .collect::<Result<Vec<_>, String>>()?
+        .into_iter()
+        .unzip();
+    for t in table.iter().filter(|t| !fields.iter().any(|f| f.name() == &t.name)) {
+        let path = at(path, &t.name);
+        let field = column(&t.name, &t.field_type, true, t.id, &path)?;
+        defaults.push(WriteDefault::Value(write_default(t, field.data_type(), &path)?));
+        labelled.push(field);
     }
+    Ok((labelled.into(), defaults))
 }
 
-fn with_id(field: &Field, id: i32, ty: &Type) -> Field {
-    let data_type = match (field.data_type(), ty) {
+fn with_id(field: &Field, id: i32, ty: &Type, path: &str) -> Result<(Field, WriteDefault), String> {
+    let (data_type, default) = match (field.data_type(), ty) {
         (Arrow::Struct(fields), Type::Struct(s)) => {
-            Arrow::Struct(fields.iter().map(|f| labelled(f, &s.fields)).collect())
+            let (fields, defaults) = labelled(fields, &s.fields, path)?;
+            (Arrow::Struct(fields), WriteDefault::Struct(defaults))
         }
-        (Arrow::List(element), Type::List(l)) => Arrow::List(Arc::new(with_id(element, l.element_id, &l.element))),
-        (other, _) => other.clone(),
+        (Arrow::List(element), Type::List(l)) => {
+            let (element, default) = with_id(element, l.element_id, &l.element, &format!("{path}[]"))?;
+            (Arrow::List(Arc::new(element)), WriteDefault::List(Box::new(default)))
+        }
+        (other, Type::Primitive(p)) => (narrow(p).unwrap_or_else(|| other.clone()), WriteDefault::Written),
+        (other, _) => (other.clone(), WriteDefault::Written),
     };
+    Ok((with_metadata(field.clone().with_data_type(data_type), id), default))
+}
+
+/// The value `field` takes where a row does not write it, as one row of `arrow`, its Parquet type: its
+/// `write-default`, or null without one. A struct's default is null or `{}`, whose fields each take their own.
+///
+/// Err names the field when the default is not a value of its type, or a struct's required field has none.
+pub fn write_default(field: &NestedField, arrow: &Arrow, path: &str) -> Result<ArrayRef, String> {
+    single_value(field.other.get("write-default"), &field.field_type, arrow, path)
+}
+
+/// `value`, the spec's JSON single value of a `ty`, as one row of `arrow`; null where there is none.
+fn single_value(value: Option<&serde_json::Value>, ty: &Type, arrow: &Arrow, path: &str) -> Result<ArrayRef, String> {
+    let Some(value) = value.filter(|v| !v.is_null()) else {
+        return Ok(new_null_array(arrow, 1));
+    };
+    let bad = || format!("the table's column {path} has the write default {value}, which is not of type {ty}");
+    let array: ArrayRef = match (ty, arrow) {
+        (Type::Struct(s), Arrow::Struct(fields)) => {
+            if value.as_object().is_none_or(|o| !o.is_empty()) {
+                return Err(bad());
+            }
+            let children = (s.fields.iter().zip(fields))
+                .map(|(child, arrow)| {
+                    let path = at(path, &child.name);
+                    let value = write_default(child, arrow.data_type(), &path)?;
+                    if child.required && value.is_null(0) {
+                        return Err(format!(
+                            "the table's column {path} is required, and has no write default for a row that lacks it"
+                        ));
+                    }
+                    Ok(value)
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Arc::new(StructArray::new(fields.clone(), children, None))
+        }
+        (Type::List(l), Arrow::List(element)) => {
+            let items = value.as_array().ok_or_else(bad)?;
+            let values = single_values(items, &l.element, element.data_type(), path)?;
+            let offsets = OffsetBuffer::from_lengths([items.len()]);
+            Arc::new(ListArray::new(element.clone(), offsets, values, None))
+        }
+        (Type::Map(map), Arrow::Map(entries, sorted)) => {
+            let Arrow::Struct(parts) = entries.data_type() else {
+                unreachable!("a map's entries are a struct")
+            };
+            let part = |name: &str, at: usize| -> Result<ArrayRef, String> {
+                let ty: Type = serde_json::from_value(map[name].clone()).map_err(|_| bad())?;
+                let items = value[format!("{name}s")].as_array().ok_or_else(bad)?;
+                single_values(items, &ty, parts[at].data_type(), path)
+            };
+            let (keys, values) = (part("key", 0)?, part("value", 1)?);
+            if keys.len() != values.len() || keys.null_count() > 0 {
+                return Err(bad());
+            }
+            let offsets = OffsetBuffer::from_lengths([keys.len()]);
+            let entries_array = StructArray::new(parts.clone(), vec![keys, values], None);
+            Arc::new(MapArray::new(entries.clone(), offsets, entries_array, None, *sorted))
+        }
+        (Type::Primitive(p), arrow) => primitive_default(p, value, arrow).ok_or_else(bad)?,
+        _ => return Err(bad()),
+    };
+    Ok(array)
+}
+
+/// `items`, a list's or a map's single values, each a `ty`, as one array of `arrow`.
+fn single_values(items: &[serde_json::Value], ty: &Type, arrow: &Arrow, path: &str) -> Result<ArrayRef, String> {
+    let arrays = (items.iter())
+        .map(|item| single_value(Some(item), ty, arrow, path))
+        .collect::<Result<Vec<_>, String>>()?;
+    let refs: Vec<&dyn Array> = arrays.iter().map(|a| a.as_ref()).collect();
+    Ok(match refs.is_empty() {
+        true => new_empty_array(arrow),
+        false => arrow_select::concat::concat(&refs).expect("values of one type"),
+    })
+}
+
+/// `default`, the spec's JSON single value of a `p`, as one row of `arrow`. None when it is no value of `p`.
+fn primitive_default(p: &Primitive, default: &serde_json::Value, arrow: &Arrow) -> Option<ArrayRef> {
+    let text = default.as_str();
+    Some(match p {
+        Primitive::Boolean => Arc::new(BooleanArray::from(vec![default.as_bool()?])),
+        Primitive::Int => Arc::new(Int32Array::from(vec![i32::try_from(default.as_i64()?).ok()?])),
+        Primitive::Long => Arc::new(Int64Array::from(vec![default.as_i64()?])),
+        Primitive::Float => Arc::new(Float32Array::from(vec![default.as_f64()? as f32])),
+        Primitive::Double => Arc::new(Float64Array::from(vec![default.as_f64()?])),
+        Primitive::Date => Arc::new(Date32Array::from(vec![i32::try_from(parse_date(text?)?).ok()?])),
+        Primitive::Timestamp => Arc::new(TimestampMicrosecondArray::from(vec![parse_timestamp(text?)?])),
+        Primitive::Timestamptz => {
+            let micros = parse_timestamp(text?.strip_suffix("+00:00")?)?;
+            Arc::new(TimestampMicrosecondArray::from(vec![micros]).with_data_type(arrow.clone()))
+        }
+        Primitive::String => Arc::new(StringArray::from(vec![text?])),
+        Primitive::Binary => Arc::new(BinaryArray::from_vec(vec![&unhex(text?)?])),
+        Primitive::Other(name) => match (name.as_str(), arrow) {
+            ("time", _) => {
+                let micros = parse_timestamp(&format!("1970-01-01T{}", text?))?;
+                Arc::new(Time64MicrosecondArray::from(vec![micros]))
+            }
+            ("uuid", _) => {
+                let hex: String = text?.split('-').collect();
+                (text?.len() == 36).then_some(())?;
+                Arc::new(FixedSizeBinaryArray::try_from_iter([unhex(&hex)?].into_iter()).ok()?)
+            }
+            (_, Arrow::FixedSizeBinary(n)) => {
+                let bytes = unhex(text?)?;
+                (bytes.len() == *n as usize).then_some(())?;
+                Arc::new(FixedSizeBinaryArray::try_from_iter([bytes].into_iter()).ok()?)
+            }
+            (_, Arrow::Decimal128(precision, scale)) => {
+                let unscaled = parse_decimal(text?, *precision, *scale)?;
+                Arc::new(Decimal128Array::from(vec![unscaled]).with_data_type(arrow.clone()))
+            }
+            _ => return None,
+        },
+    })
+}
+
+/// The bytes of `s`, two hex digits for each.
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    (s.len().is_multiple_of(2) && s.is_ascii()).then_some(())?;
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
+/// `14.20` as the unscaled value of a decimal of `precision` and `scale`: its digits after the point at most `scale`.
+fn parse_decimal(s: &str, precision: u8, scale: i8) -> Option<i128> {
+    let (negative, digits) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s),
+    };
+    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    let scale = usize::try_from(scale).ok()?;
+    let all = format!("{whole}{fraction:0<scale$}");
+    let valid = !whole.is_empty() && fraction.len() <= scale && all.bytes().all(|b| b.is_ascii_digit());
+    (valid && all.trim_start_matches('0').len() <= precision as usize).then_some(())?;
+    let unscaled: i128 = all.parse().ok()?;
+    Some(if negative { -unscaled } else { unscaled })
+}
+
+fn with_metadata(field: Field, id: i32) -> Field {
     let mut metadata = field.metadata().clone();
-    metadata.insert(PARQUET_FIELD_ID_META_KEY, id.to_string());
-    field.clone().with_data_type(data_type).with_metadata(metadata)
+    metadata.insert(PARQUET_FIELD_ID_META_KEY.to_string(), id.to_string());
+    field.with_metadata(metadata)
+}
+
+/// The field `name` of `ty`, with id `id`, as a column the record does not write is written: the spec's Parquet type
+/// for it, every field in it optional but a map's key.
+fn column(name: &str, ty: &Type, nullable: bool, id: i32, path: &str) -> Result<Field, String> {
+    let data_type = match ty {
+        Type::Primitive(p) => primitive_arrow(p)
+            .ok_or_else(|| format!("the table's column {path} is a {p}, a type this writer cannot write"))?,
+        Type::Struct(s) => Arrow::Struct(
+            (s.fields.iter())
+                .map(|t| column(&t.name, &t.field_type, true, t.id, &at(path, &t.name)))
+                .collect::<Result<Fields, String>>()?,
+        ),
+        Type::List(l) => Arrow::List(Arc::new(column(
+            "element",
+            &l.element,
+            true,
+            l.element_id,
+            &format!("{path}[]"),
+        )?)),
+        Type::Map(map) => {
+            let refused = || format!("the table's column {path} is a map this writer cannot read");
+            let part = |part: &str, nullable: bool| {
+                let ty: Type = serde_json::from_value(map[part].clone()).map_err(|_| refused())?;
+                let id = map[format!("{part}-id")].as_i64().ok_or_else(refused)?;
+                column(part, &ty, nullable, id as i32, &format!("{path}.{part}"))
+            };
+            let entries = Fields::from(vec![part("key", false)?, part("value", true)?]);
+            Arrow::Map(Arc::new(Field::new("key_value", Arrow::Struct(entries), false)), false)
+        }
+    };
+    let field = Field::new(name, data_type, nullable);
+    let field = match ty {
+        // Parquet's UUID type, where a bare fixed[16] would be Iceberg's fixed.
+        Type::Primitive(Primitive::Other(t)) if t == "uuid" => field.with_extension_type(Uuid),
+        _ => field,
+    };
+    Ok(with_metadata(field, id))
+}
+
+/// The Arrow type of a column of `p`, as the spec has Parquet hold it.
+pub(super) fn primitive_arrow(p: &Primitive) -> Option<Arrow> {
+    use arrow_schema::TimeUnit::Microsecond;
+    Some(match p {
+        Primitive::Boolean => Arrow::Boolean,
+        Primitive::Int => Arrow::Int32,
+        Primitive::Long => Arrow::Int64,
+        Primitive::Float => Arrow::Float32,
+        Primitive::Double => Arrow::Float64,
+        Primitive::Date => Arrow::Date32,
+        Primitive::Timestamp => Arrow::Timestamp(Microsecond, None),
+        Primitive::Timestamptz => Arrow::Timestamp(Microsecond, Some("UTC".into())),
+        Primitive::String => Arrow::Utf8,
+        Primitive::Binary => Arrow::Binary,
+        Primitive::Other(name) => match name.as_str() {
+            "time" => Arrow::Time64(Microsecond),
+            "uuid" => Arrow::FixedSizeBinary(16),
+            name => {
+                if let Some(n) = name.strip_prefix("fixed[").and_then(|n| n.strip_suffix(']')) {
+                    Arrow::FixedSizeBinary(n.parse().ok()?)
+                } else {
+                    let (p, s) = name.strip_prefix("decimal(")?.strip_suffix(')')?.split_once(',')?;
+                    Arrow::Decimal128(p.trim().parse().ok()?, s.trim().parse().ok()?)
+                }
+            }
+        },
+    })
+}
+
+/// The Parquet type a column of `p` is written as, where it is narrower than any record type.
+fn narrow(p: &Primitive) -> Option<Arrow> {
+    p.kind().as_ref().and_then(Kind::narrowed)
 }
 
 /// The Iceberg type a record's primitive is written as.
@@ -139,6 +389,7 @@ impl Ids {
                 required: false,
                 field_type: self.fresh_type(t),
                 doc: None,
+                other: Default::default(),
             })
             .collect()
     }
@@ -183,12 +434,13 @@ impl Ids {
                     field_type: self.evolve_type(&field.field_type, t, &path)?,
                     ..field.clone()
                 }),
-                None if field.required => {
+                // Every row takes the column's write default (`write_default`).
+                None if field.required && field.other.get("write-default").is_none_or(|d| d.is_null()) => {
                     return Err(format!(
                         "the table's column {path} is required, and the record does not write it"
                     ));
                 }
-                // Reads as null in the rows written.
+                // Takes its write default in the rows written, or null.
                 None => fields.push(field.clone()),
             }
         }
@@ -201,6 +453,7 @@ impl Ids {
                     required: false,
                     field_type: self.fresh_type(t),
                     doc: None,
+                    other: Default::default(),
                 });
             }
         }
@@ -220,7 +473,8 @@ impl Ids {
                 ..l.clone()
             })),
             (Type::Primitive(p), t)
-                if !matches!(t, DataType::Array(_) | DataType::Struct(..)) && *p == primitive(t) =>
+                if !matches!(t, DataType::Array(_) | DataType::Struct(..))
+                    && (*p == primitive(t) || narrow(p).is_some_and(|to| narrows(t, &to))) =>
             {
                 Ok(table.clone())
             }
@@ -263,6 +517,7 @@ mod tests {
             required: false,
             field_type,
             doc: None,
+            other: Default::default(),
         }
     }
 
@@ -393,6 +648,55 @@ mod tests {
         assert_eq!(e.schema.fields[5], field(20, "gone", prim(Primitive::Int)));
     }
 
+    /// A column the table holds narrower than the record types it takes the record's values, each converted as it is
+    /// written; a duration is still no `int`.
+    #[test]
+    fn a_column_the_table_holds_narrower_is_written_as_its_type() {
+        let table = Schema {
+            kind: StructTag,
+            schema_id: 0,
+            identifier_field_ids: Vec::new(),
+            fields: vec![
+                field(1, "i", prim(Primitive::Int)),
+                field(2, "f", prim(Primitive::Float)),
+                field(3, "d", prim(Primitive::Date)),
+                field(4, "ts", prim(Primitive::Timestamp)),
+            ],
+        };
+        let narrow = st(
+            &[
+                ("i", DataType::I64),
+                ("f", DataType::F64),
+                ("d", DataType::DateTime),
+                ("ts", DataType::DateTime),
+            ],
+            false,
+        );
+        let evolved = table_schema(&narrow, Some(&table), 4).unwrap();
+        assert_eq!(
+            (evolved.schema.fields.clone(), evolved.changed),
+            (table.fields.clone(), false)
+        );
+        let file = crate::io::parquet::Schema::new(&narrow).unwrap();
+        let types: Vec<_> = (with_field_ids(file.arrow(), &evolved.schema).unwrap().0.fields().iter())
+            .map(|f| f.data_type().clone())
+            .collect();
+        assert_eq!(
+            types,
+            vec![
+                Arrow::Int32,
+                Arrow::Float32,
+                Arrow::Date32,
+                Arrow::Timestamp(arrow_schema::TimeUnit::Microsecond, None)
+            ]
+        );
+        assert!(
+            table_schema(&st(&[("i", DataType::Duration)], false), Some(&table), 4)
+                .unwrap_err()
+                .starts_with("i is int in the table")
+        );
+    }
+
     #[test]
     fn a_type_the_table_holds_otherwise_is_refused() {
         let table = table_schema(&record(), None, 0).unwrap().schema;
@@ -408,20 +712,15 @@ mod tests {
             "http.status is long in the table, and the record writes str there as string; rename the field in the \
              pipeline or the column in the table"
         );
-        let mut naive = table.clone();
-        naive.fields[0].field_type = prim(Primitive::Timestamp);
-        assert_eq!(
-            table_schema(&record(), Some(&naive), 11).unwrap_err(),
-            "ts is timestamp in the table, and the record writes datetime there as timestamptz; rename the field in \
-             the pipeline or the column in the table"
-        );
-        let mut narrow = table.clone();
-        narrow.fields.push(field(12, "n", prim(Primitive::Int)));
+        let mut other = table.clone();
+        other
+            .fields
+            .push(field(12, "n", prim(Primitive::Other("decimal(10, 2)".into()))));
         let wide = st(&[("n", DataType::I64)], false);
         assert!(
-            table_schema(&wide, Some(&narrow), 12)
+            table_schema(&wide, Some(&other), 12)
                 .unwrap_err()
-                .starts_with("n is int in the table")
+                .starts_with("n is decimal(10, 2) in the table")
         );
         let flat = st(&[("http", DataType::Str)], false);
         assert!(
@@ -429,6 +728,53 @@ mod tests {
                 .unwrap_err()
                 .starts_with("http is struct in the table")
         );
+    }
+
+    #[test]
+    fn a_column_the_record_lacks_of_a_type_no_file_here_holds_is_refused() {
+        let mut table = table_schema(&record(), None, 0).unwrap().schema;
+        let Type::Struct(http) = &mut table.fields[1].field_type else {
+            panic!("http is a struct")
+        };
+        http.fields
+            .push(field(12, "v", prim(Primitive::Other("timestamp_ns".into()))));
+        let parquet = crate::io::parquet::Schema::new(&record()).unwrap();
+        assert_eq!(
+            with_field_ids(parquet.arrow(), &table).unwrap_err(),
+            "the table's column http.v is a timestamp_ns, a type this writer cannot write"
+        );
+    }
+
+    #[test]
+    fn a_column_with_a_write_default_keeps_it_and_one_required_the_record_does_not_write_is_written() {
+        let mut table = table_schema(&record(), None, 0).unwrap().schema;
+        let Type::Struct(http) = &mut table.fields[1].field_type else {
+            panic!("http is a struct")
+        };
+        http.fields[0]
+            .other
+            .insert("write-default".into(), serde_json::json!(200));
+        http.fields[0]
+            .other
+            .insert("initial-default".into(), serde_json::json!(0));
+        let evolved = table_schema(&record(), Some(&table), 11).unwrap().schema;
+        let Type::Struct(http) = &evolved.fields[1].field_type else {
+            panic!("http is a struct")
+        };
+        assert_eq!(
+            http.fields[0].other["write-default"], 200,
+            "a schema evolved keeps a field's defaults"
+        );
+        assert_eq!(http.fields[0].other["initial-default"], 0);
+
+        // Every row takes the default where the record does not write the column, so it may be required.
+        let Type::Struct(http) = &mut table.fields[1].field_type else {
+            panic!("http is a struct")
+        };
+        http.fields[0].required = true;
+        let without = st(&[("http", st(&[("hdrs", arr(DataType::Str))], false))], false);
+        let evolved = table_schema(&without, Some(&table), 11).unwrap().schema;
+        assert_eq!(evolved.fields, table.fields);
     }
 
     #[test]
@@ -491,7 +837,7 @@ mod tests {
         let record = record();
         let parquet = crate::io::parquet::Schema::new(&record).unwrap();
         let table = table_schema(&record, None, 0).unwrap().schema;
-        let labelled = with_field_ids(parquet.arrow(), &table);
+        let labelled = with_field_ids(parquet.arrow(), &table).unwrap().0;
         assert!(labelled.contains(parquet.arrow()));
         let id = |f: &Field| {
             f.metadata()

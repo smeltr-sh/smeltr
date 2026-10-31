@@ -10,15 +10,20 @@
   deploys, an admin who read only the row's name would believe it is live.
 -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import PasswordField from './PasswordField.svelte';
   import Dialog from './Dialog.svelte';
   import { ask } from './Confirm.svelte';
   import SortButton from './SortButton.svelte';
+  import SecondaryTabs from './SecondaryTabs.svelte';
+  import EncryptionKeySettings, { keyProblem } from './EncryptionKeySettings.svelte';
+  import { SECRETS_TABS, secretsHash, type SecretsSection } from './nav';
   import { TableSort } from './sort.svelte';
   import {
     errorText,
@@ -30,24 +35,39 @@
     pointSecretNow,
     currentVersion,
     currentBranch,
+    getEncryptionKey,
+    type EncryptionKeyDto,
     type SecretDto,
   } from './api';
   import { ago } from './time';
 
+  let { section }: { section: SecretsSection } = $props();
+
   let secrets: SecretDto[] = $state([]);
   let loading = $state(true);
+  // Read beside the list: a broken key is the reason every row says unusable, and the row cannot say so.
+  let key = $state<EncryptionKeyDto | null>(null);
 
   async function load() {
     loading = true;
+    const before = key;
     try {
-      secrets = await listSecrets();
+      const [listed, read] = await Promise.all([listSecrets(), getEncryptionKey()]);
+      secrets = listed;
+      // A regeneration that answered while this was loading is newer than what this read.
+      if (key === before) key = read;
     } catch (e) {
       reported(e);
     } finally {
       loading = false;
     }
   }
-  load();
+  // Again on each tab: regenerating the key on the other one changes what every row here says.
+  $effect(() => {
+    void section;
+    // Untracked: load reads the key it then writes, which would otherwise run it again.
+    untrack(load);
+  });
 
   /** Which versions `main` runs -- more than one when two groups are on
    * different versions, which is what a part-way rotation looks like.
@@ -186,11 +206,11 @@
 
   async function remove(s: SecretDto) {
     const yes = await ask({
-      title: `Delete ${s.name}?`,
+      title: 'delete secret',
       body:
         s.custody === 'leader-stored'
-          ? 'Every version goes with it. Nothing can recover them, and any bundle naming this secret stops deploying until the reference is taken out.'
-          : 'The name stops being listed. Hosts keep the variable; bundles naming it keep working.',
+          ? `Delete ${s.name}. Every version goes with it. Nothing can recover them, and any bundle naming this secret stops deploying until the reference is taken out.`
+          : `Delete ${s.name}. The name stops being listed. Hosts keep the variable; bundles naming it keep working.`,
       action: 'Delete',
       danger: true,
     });
@@ -236,184 +256,209 @@
     {/snippet}
   </PageHeader>
 
-  <div class="toolbar">
-    <button type="button" class="primary" onclick={startAdding} disabled={adding}>
-      + Add secret
-    </button>
-  </div>
+  <SecondaryTabs tabs={SECRETS_TABS} active={secretsHash(section)} ariaLabel="Secrets" />
 
-  <Dialog open={adding} title="new secret" oncancel={cancelAdding} onsubmit={add}>
-    <div class="form-body">
-      <Field label="Name" error={nameProblem(newName)}>
-        {#snippet help()}The name a source or destination picks it by. Letters, digits, - _ and .{/snippet}
-        <input bind:value={newName} placeholder="kafka-west-sasl" class="mono" />
-      </Field>
-      <Field label="Value lives on">
-        {#snippet help()}
-          <strong>The leader</strong>: stored here, encrypted, and sent to the workers whose group
-          needs it. <strong>The worker host</strong>: an environment variable on each worker host;
-          the leader learns only its name. Fixed once the secret exists.
-        {/snippet}
-        <select bind:value={newCustody}>
-          <option value="leader-stored">The leader</option>
-          <option value="worker-local">The worker host</option>
-        </select>
-      </Field>
-      {#if newCustody === 'leader-stored'}
-        <Field label="Value">
-          {#snippet help()}Stored encrypted and never shown again.{/snippet}
-          <PasswordField bind:value={newValue} ariaLabel="value" />
-        </Field>
-      {/if}
-      <Field label="Description">
-        <input bind:value={newDescription} placeholder="the west broker's SCRAM password" />
-      </Field>
-    </div>
-    {#snippet actions()}
-      <button type="button" onclick={cancelAdding} disabled={saving}>Cancel</button>
-      <button type="submit" class="primary" disabled={!canAdd}>
-        {saving ? 'Adding…' : 'Add'}
-      </button>
-    {/snippet}
-  </Dialog>
-
-  {#if rowNote}<p class="note-line">{rowNote}</p>{/if}
-
-  {#if loading}
-    <p class="dim">Loading…</p>
-  {:else if secrets.length === 0}
-    <p class="dim">No secrets declared yet.</p>
+  {#if section === 'key'}
+    {#if key}
+      <div class="key"><EncryptionKeySettings bind:key /></div>
+    {:else if loading}
+      <p class="dim">Loading…</p>
+    {/if}
   {:else}
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th aria-sort={secretSort.aria('name')}
-              ><SortButton sort={secretSort} key="name">Name</SortButton></th
-            >
-            <th aria-sort={secretSort.aria('custody')}
-              ><SortButton sort={secretSort} key="custody">Value lives on</SortButton></th
-            >
-            <th class="num" aria-sort={secretSort.aria('stored')}
-              ><SortButton sort={secretSort} key="stored">Stored</SortButton></th
-            >
-            <th aria-sort={secretSort.aria('running')}
-              ><SortButton sort={secretSort} key="running">Running</SortButton></th
-            >
-            <th aria-sort={secretSort.aria('setAt')}
-              ><SortButton sort={secretSort} key="setAt">Last set</SortButton></th
-            >
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each sortedSecrets as s (s.name)}
-            {@const current = currentVersion(s)}
-            {@const running = deployedVersions(s)}
-            <tr>
-              <td>
-                <span class="mono">{s.name}</span>
-                {#if s.description}<small class="note">{s.description}</small>{/if}
-              </td>
-              <td class="one-line">
-                {CUSTODY_LABEL[s.custody]}
-                {#if current && !current.usable}
-                  <small class="unusable">
-                    unusable &mdash; sealed with a key this leader no longer has
-                  </small>
-                {/if}
-              </td>
-              <td class="num mono">{current ? `v${current.version}` : '--'}</td>
-              <td class="mono one-line">
-                {#if s.custody === 'worker-local'}
-                  <span class="dim">--</span>
-                {:else if running.length === 0}
-                  <span class="dim">nothing</span>
-                {:else}
-                  {running.map((v) => `v${v}`).join(', ')}
-                {/if}
-                {#if staged(s)}
-                  <small class="staged">stored, not deployed</small>
-                {/if}
-              </td>
-              <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
-              <td class="row-actions">
-                {#if s.custody === 'leader-stored'}
-                  <button type="button" onclick={() => openPanel(s, 'check')}> Check </button>
-                  <button type="button" onclick={() => openPanel(s, 'store')}> New value </button>
-                {/if}
-                <button type="button" onclick={() => remove(s)}>Delete</button>
-              </td>
-            </tr>
+    {#if keyProblem(key)}
+      <p class="critical" role="alert">{keyProblem(key, ' under Encryption key')}</p>
+    {/if}
 
-            {#if showing(s, 'store')}
-              <tr>
-                <td colspan="6">
-                  <div class="row-edit">
-                    <PasswordField
-                      bind:value={storeValue}
-                      ariaLabel="the new value"
-                      placeholder="the new value"
-                    />
-                    <button
-                      type="button"
-                      class="primary"
-                      disabled={busy || storeValue.length === 0}
-                      onclick={() => store(s.name)}
-                    >
-                      {busy ? 'Storing…' : 'Store'}
-                    </button>
-                    <button type="button" onclick={() => (open = null)}>Cancel</button>
-                    <Help label="New value">
-                      Stores a new version and points every reference to this secret at it, as a
-                      change on your branch.
-                    </Help>
-                  </div>
-                </td>
-              </tr>
-            {/if}
-
-            {#if showing(s, 'check')}
-              <tr>
-                <td colspan="6">
-                  <div class="row-edit">
-                    <PasswordField
-                      bind:value={checkValue}
-                      ariaLabel="the value you think is stored"
-                      placeholder="the value you think is stored"
-                    />
-                    <button
-                      type="button"
-                      disabled={busy || checkValue.length === 0}
-                      onclick={() => check(s.name)}
-                    >
-                      {busy ? 'Checking…' : 'Check'}
-                    </button>
-                    <button type="button" onclick={() => (open = null)}>Close</button>
-                    {#if checkAnswer && checkAnswer.name === s.name}
-                      <span class={checkAnswer.matches ? 'match' : 'no-match'}>
-                        {checkAnswer.matches
-                          ? 'That matches what is stored.'
-                          : 'That does not match.'}
-                      </span>
-                    {/if}
-                    <small class="note">A few attempts a minute; the leader logs every one.</small>
-                  </div>
-                </td>
-              </tr>
-            {/if}
-          {/each}
-        </tbody>
-      </table>
+    <div class="toolbar">
+      <button type="button" class="primary" onclick={startAdding} disabled={adding}>
+        + Add secret
+      </button>
     </div>
-    <p class="note-line">
-      Open changes are reviewed and deployed in <a href="#/changes">Branches</a>. Current branch:
-      <code class="mono">{currentBranch()}</code>.
-    </p>
+
+    <Dialog open={adding} title="new secret" oncancel={cancelAdding} onsubmit={add}>
+      <div class="form-body">
+        <Field required label="Name" error={nameProblem(newName)}>
+          {#snippet help()}The name a source or destination picks it by. Letters, digits, - _ and .{/snippet}
+          <input bind:value={newName} placeholder="kafka-west-sasl" class="mono" />
+        </Field>
+        <Field label="Value lives on">
+          {#snippet help()}
+            <strong>The leader</strong>: stored here, encrypted, and sent to the workers whose group
+            needs it. <strong>The worker host</strong>: an environment variable on each worker host;
+            the leader learns only its name. Fixed once the secret exists.
+          {/snippet}
+          <select bind:value={newCustody}>
+            <option value="leader-stored">The leader</option>
+            <option value="worker-local">The worker host</option>
+          </select>
+        </Field>
+        {#if newCustody === 'leader-stored'}
+          <Nested>
+            <Field required label="Value">
+              {#snippet help()}Stored encrypted and never shown again.{/snippet}
+              <PasswordField bind:value={newValue} ariaLabel="value" />
+            </Field>
+          </Nested>
+        {/if}
+        <Field
+          optional
+          label="Description"
+          help="A note shown under the secret's name in the list, to say what it is for."
+        >
+          <input bind:value={newDescription} placeholder="the west broker's SCRAM password" />
+        </Field>
+      </div>
+      {#snippet actions()}
+        <button type="button" onclick={cancelAdding} disabled={saving}>Cancel</button>
+        <button type="submit" class="primary" disabled={!canAdd}>
+          {saving ? 'Adding…' : 'Add'}
+        </button>
+      {/snippet}
+    </Dialog>
+
+    {#if rowNote}<p class="note-line">{rowNote}</p>{/if}
+
+    {#if loading}
+      <p class="dim">Loading…</p>
+    {:else if secrets.length === 0}
+      <p class="dim">No secrets declared yet.</p>
+    {:else}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th aria-sort={secretSort.aria('name')}
+                ><SortButton sort={secretSort} key="name">Name</SortButton></th
+              >
+              <th aria-sort={secretSort.aria('custody')}
+                ><SortButton sort={secretSort} key="custody">Value lives on</SortButton></th
+              >
+              <th class="num" aria-sort={secretSort.aria('stored')}
+                ><SortButton sort={secretSort} key="stored">Stored</SortButton></th
+              >
+              <th aria-sort={secretSort.aria('running')}
+                ><SortButton sort={secretSort} key="running">Running</SortButton></th
+              >
+              <th aria-sort={secretSort.aria('setAt')}
+                ><SortButton sort={secretSort} key="setAt">Last set</SortButton></th
+              >
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each sortedSecrets as s (s.name)}
+              {@const current = currentVersion(s)}
+              {@const running = deployedVersions(s)}
+              <tr>
+                <td>
+                  <span class="mono">{s.name}</span>
+                  {#if s.description}<small class="note">{s.description}</small>{/if}
+                </td>
+                <td class="one-line">
+                  {CUSTODY_LABEL[s.custody]}
+                  {#if current && !current.usable}
+                    <small class="unusable">
+                      unusable &mdash; encrypted with a key this leader no longer has
+                    </small>
+                  {/if}
+                </td>
+                <td class="num mono">{current ? `v${current.version}` : '--'}</td>
+                <td class="mono one-line">
+                  {#if s.custody === 'worker-local'}
+                    <span class="dim">--</span>
+                  {:else if running.length === 0}
+                    <span class="dim">nothing</span>
+                  {:else}
+                    {running.map((v) => `v${v}`).join(', ')}
+                  {/if}
+                  {#if staged(s)}
+                    <small class="staged">stored, not deployed</small>
+                  {/if}
+                </td>
+                <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
+                <td class="row-actions">
+                  {#if s.custody === 'leader-stored'}
+                    <button type="button" onclick={() => openPanel(s, 'check')}> Check </button>
+                    <button type="button" onclick={() => openPanel(s, 'store')}> New value </button>
+                  {/if}
+                  <button type="button" onclick={() => remove(s)}>Delete</button>
+                </td>
+              </tr>
+
+              {#if showing(s, 'store')}
+                <tr>
+                  <td colspan="6">
+                    <div class="row-edit">
+                      <PasswordField
+                        bind:value={storeValue}
+                        ariaLabel="the new value"
+                        placeholder="the new value"
+                      />
+                      <button
+                        type="button"
+                        class="primary"
+                        disabled={busy || storeValue.length === 0}
+                        onclick={() => store(s.name)}
+                      >
+                        {busy ? 'Storing…' : 'Store'}
+                      </button>
+                      <button type="button" onclick={() => (open = null)}>Cancel</button>
+                      <Help label="New value">
+                        Stores a new version and points every reference to this secret at it, as a
+                        change on your branch.
+                      </Help>
+                    </div>
+                  </td>
+                </tr>
+              {/if}
+
+              {#if showing(s, 'check')}
+                <tr>
+                  <td colspan="6">
+                    <div class="row-edit">
+                      <PasswordField
+                        bind:value={checkValue}
+                        ariaLabel="the value you think is stored"
+                        placeholder="the value you think is stored"
+                      />
+                      <button
+                        type="button"
+                        disabled={busy || checkValue.length === 0}
+                        onclick={() => check(s.name)}
+                      >
+                        {busy ? 'Checking…' : 'Check'}
+                      </button>
+                      <button type="button" onclick={() => (open = null)}>Close</button>
+                      {#if checkAnswer && checkAnswer.name === s.name}
+                        <span class={checkAnswer.matches ? 'match' : 'no-match'}>
+                          {checkAnswer.matches
+                            ? 'That matches what is stored.'
+                            : 'That does not match.'}
+                        </span>
+                      {/if}
+                      <small class="note">A few attempts a minute; the leader logs every one.</small
+                      >
+                    </div>
+                  </td>
+                </tr>
+              {/if}
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      <p class="note-line">
+        Open changes are reviewed and deployed in <a href="#/changes">Branches</a>. Current branch:
+        <code class="mono">{currentBranch()}</code>.
+      </p>
+    {/if}
   {/if}
 </SectionShell>
 
 <style>
+  .key {
+    max-width: 52rem;
+  }
+
   .toolbar {
     display: flex;
     gap: 0.6rem;
@@ -530,10 +575,6 @@
   .note-line {
     color: var(--ink);
     font-size: var(--text-note);
-  }
-
-  .dim {
-    color: var(--dim);
   }
 
   .mono {

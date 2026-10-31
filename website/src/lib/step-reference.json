@@ -44,6 +44,13 @@
             "what": "The text field to read. Defaults to `_raw`."
           },
           {
+            "name": "into",
+            "type": "field",
+            "absent": "`$`, the top level of the record",
+            "examples": ["app", "event.original"],
+            "what": "The object the parsed fields go under, such as `app`. In the GUI this is **write into**, under **Advanced**. Declared fields are named as the parse finds them, so a declared `status` lands typed at `app.status`. If `app` already holds an object, each parsed key replaces the key of its name and the others stay. If an earlier step made `app` something other than an object, the step does not compile. If a record arrives with an `app` that is not an object, the parsed object replaces it and the record gets a [`CoercionRefused`](/docs/code-reference#exceptions) exception. [`$`](/docs/code-reference#names) is the record itself, so the fields go at its top level."
+          },
+          {
             "name": "kind",
             "type": "format",
             "required": true,
@@ -207,6 +214,21 @@
               ]
             ],
             "what": "Each pair moves the field `from` to `to`, in order."
+          }
+        ]
+      },
+      {
+        "type": "remove",
+        "name": "Remove",
+        "summary": "Takes fields out of each record.",
+        "shared": true,
+        "settings": [
+          {
+            "name": "fields",
+            "type": "list of fields",
+            "required": true,
+            "examples": [["payload"], ["user_agent", "path"]],
+            "what": "Each field leaves the record, for the steps after it and every destination. With a filter, each is null on the records the filter selects, and the field stays."
           }
         ]
       },
@@ -437,6 +459,13 @@
             "required": true,
             "examples": [",", ";", "|"],
             "what": "The one ASCII character between values. Defaults to `,`."
+          },
+          {
+            "name": "rebuild",
+            "type": "bool",
+            "absent": "`false`",
+            "examples": [true],
+            "what": "Whether the step rebuilds the field it reads, each column of type `skip` left empty, so every column after it keeps its place. With no column skipped, the field is unchanged."
           }
         ]
       },
@@ -472,6 +501,13 @@
             "absent": "`true`",
             "examples": [false],
             "what": "Whether an unquoted value runs to the `pairSep` before the next key: in `level=info debug x=1`, `level` is `info debug`. Off, `debug` is a bare key, `debug=true`."
+          },
+          {
+            "name": "rebuild",
+            "type": "bool",
+            "absent": "`false`",
+            "examples": [true],
+            "what": "Whether the step rebuilds the field it reads, each field of type `skip` left out. A skipped key makes no field. With no field skipped, the field is unchanged."
           }
         ]
       },

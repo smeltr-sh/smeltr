@@ -132,21 +132,25 @@
   {#if way === 'paste' || way === 'upload'}
     <div class="form-body">
       {#if way === 'upload'}
-        <Field label="File">
-          {#snippet note()}One record per non-empty line; each line becomes <code>_raw</code
+        <Field required label="File">
+          {#snippet help()}One record per non-empty line; each line becomes <code>_raw</code
             >.{/snippet}
           <input type="file" accept=".json,.ndjson,.jsonl,.txt,.log" onchange={pickFile} />
         </Field>
       {/if}
-      <Field label="Name">
+      <Field required label="Name">
         <input bind:value={name} placeholder="orders-west, ordinary hour" />
       </Field>
-      <Field label="Source it stands for" note="Optional.">
+      <Field
+        optional
+        label="Source it stands for"
+        help="A route selects on a source, so a sample with none runs through a pipeline but not through a route."
+      >
         <input bind:value={source} placeholder="orders-west" class="mono" />
       </Field>
       {#if way === 'paste'}
-        <Field label="Records">
-          {#snippet note()}One per line; each line becomes <code>_raw</code>.{/snippet}
+        <Field required label="Records">
+          {#snippet help()}One record per line; each line becomes <code>_raw</code>.{/snippet}
           <textarea bind:value={text} rows="8" spellcheck="false"></textarea>
         </Field>
       {/if}
@@ -186,8 +190,5 @@
   }
   .mono {
     font-family: var(--mono);
-  }
-  .dim {
-    color: var(--dim);
   }
 </style>

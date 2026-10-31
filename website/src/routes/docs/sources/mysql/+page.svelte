@@ -73,8 +73,8 @@ LIMIT 5000`;
         or
         <a href="https://mariadb.com/kb/en/secure-connections-overview/"
           >MariaDB: Secure connections overview</a
-        >. For a certificate from a private authority, give the source a
-        <a href="/docs/secrets#identities">connection identity</a> that trusts it.
+        >. For a certificate from a private authority, paste it into the source's
+        <a href="/docs/certificates#connectors">authorities</a>.
       </li>
       <li>Put the password in a <a href="/docs/secrets">credential</a>.</li>
       <li>

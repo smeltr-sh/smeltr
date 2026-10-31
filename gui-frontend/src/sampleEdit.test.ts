@@ -7,8 +7,6 @@ import {
   matches,
   parseCell,
   pastedRecords,
-  readFrom,
-  readFromFields,
   withCell,
 } from './sampleEdit';
 
@@ -56,25 +54,29 @@ const sql: SampleDto = {
 };
 
 describe('editColumns', () => {
-  it('shows a record its own fields, typed by the capture, and never its source or mistyped list', () => {
+  it('shows every field, an internal object as a column per field, typed by the capture', () => {
     expect(editColumns(sql)).toEqual([
       { name: 'invoice_id', type: 'i64' },
       { name: 'amount', type: 'f64' },
       { name: 'status', type: 'str' },
+      { name: '__source.database', type: 'str' },
+      { name: '__source.name', type: undefined },
+      { name: '__source.type', type: undefined },
     ]);
-    expect(editColumns(kafka)).toEqual([{ name: '_raw', type: undefined }]);
+    expect(editColumns(kafka).map((c) => c.name)).toEqual([
+      '_raw',
+      '__source.name',
+      '__source.type',
+      '__source.topic',
+      '__source.partition',
+      '__source.offset',
+    ]);
   });
 
-  it('keeps a tag field that holds more than the mistyped list', () => {
+  it('shows a mistyped list as the cells it marks, and a tag that holds more as a field', () => {
+    expect(editColumns(sql).map((c) => c.name)).not.toContain('smeltr');
     const at = { ...sql, records: [{ a: 1, smeltr: { mistyped: ['a'], message: 'x' } }] };
     expect(editColumns(at).map((c) => c.name)).toEqual(['a', 'smeltr']);
-  });
-});
-
-describe('read from', () => {
-  it('names the source fields that tell records apart, and only those', () => {
-    expect(readFromFields(kafka)).toEqual(['partition', 'offset']);
-    expect(readFrom(kafka.records[1], ['partition', 'offset'])).toBe('1 · 9');
   });
 
   it('keeps the order the capture gave its columns, which a stored record does not', () => {
@@ -84,37 +86,30 @@ describe('read from', () => {
       records: [{ amount: 1, invoice_id: 1, status: 'x' }],
     };
     expect(editColumns(sorted).map((c) => c.name)).toEqual(['status', 'invoice_id', 'amount']);
-    const captured = {
+  });
+
+  it('shows an internal field that is not an object as one column', () => {
+    const at = {
       ...kafka,
-      columns: [
-        { name: '__source.partition', type: 'i64' },
-        { name: '__source.offset', type: 'i64' },
-      ],
-      records: kafka.records.map(({ _raw, __source }) => ({
-        _raw,
-        __source: Object.fromEntries(Object.entries(__source as object).sort()),
-      })),
+      records: [{ _raw: 'a', __exception: 'boom', __capture: { failed: [] } }],
     };
-    expect(readFromFields(captured)).toEqual(['partition', 'offset']);
+    expect(editColumns(at).map((c) => c.name)).toEqual(['_raw', '__exception', '__capture.failed']);
+  });
+});
+
+describe('internal cells', () => {
+  it('reads and writes a field inside an internal object by its path', () => {
+    const column = { name: '__source.offset', type: 'i64' };
+    expect(cellText(kafka.records[1], column.name)).toBe('9');
+    const edited = withCell(kafka.records[1], column, '12');
+    expect(edited.__source).toEqual({ ...(kafka.records[1].__source as object), offset: 12 });
+    expect(kafka.records[1].__source).toMatchObject({ offset: 9 });
   });
 
-  it('never shows the bytes a byte record was read as', () => {
-    const withBytes = {
-      ...kafka,
-      records: kafka.records.map((r, i) => ({
-        ...r,
-        __source: { ...(r.__source as object), bytes: btoa(String(i)) },
-      })),
-    };
-    expect(readFromFields(withBytes)).toEqual(['partition', 'offset']);
-  });
-
-  it('is nothing for a SQL sample, whose rows share one source', () => {
-    expect(readFromFields(sql)).toEqual([]);
-  });
-
-  it('is empty for a pasted record', () => {
-    expect(readFrom({ _raw: 'x' }, ['offset'])).toBe('');
+  it('clearing one removes it from its object', () => {
+    const edited = withCell(kafka.records[0], { name: '__source.partition', type: 'i64' }, '');
+    expect(edited.__source).not.toHaveProperty('partition');
+    expect(edited.__source).toHaveProperty('offset', 7);
   });
 });
 
@@ -181,6 +176,13 @@ describe('pastedRecords', () => {
     });
   });
 
+  it('takes a whole record as it is, internal fields and all, and other JSON as text', () => {
+    const record = '{"_raw":"a","__source":{"offset":9}}';
+    expect(pastedRecords(`${record}\n{"id":4}`, editColumns(kafka))).toEqual({
+      records: [{ _raw: 'a', __source: { offset: 9 } }, { _raw: '{"id":4}' }],
+    });
+  });
+
   it('takes a JSON object a line for a sample of fields, and names a line that is not one', () => {
     const columns = editColumns(sql);
     expect(pastedRecords('{"invoice_id":3}', columns)).toEqual({ records: [{ invoice_id: 3 }] });
@@ -208,5 +210,12 @@ describe('matches', () => {
     expect(matches(sql.records[1], 'OPEN')).toBe(true);
     expect(matches(sql.records[1], 'paid')).toBe(false);
     expect(matches(sql.records[1], ' ')).toBe(true);
+  });
+
+  it('reads a value as its text, not as JSON', () => {
+    const record = { _raw: 'user acme\\mgarcia said "hi"', __source: { offset: 18233 } };
+    expect(matches(record, 'acme\\mgarcia')).toBe(true);
+    expect(matches(record, 'said "hi"')).toBe(true);
+    expect(matches(record, '18233')).toBe(true);
   });
 });

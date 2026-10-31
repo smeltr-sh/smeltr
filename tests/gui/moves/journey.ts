@@ -2,6 +2,8 @@
 // (`specs/journey-fuzz.spec.ts`) strings together. Each move is done through the GUI, by role and label, and then
 // checked against what is true outside the page: the leader's API, the worker it started, the rows at the sink.
 // `World` is what the moves so far have left the leader holding; a move is offered only when it makes sense there.
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Browser, Locator, Page } from '@playwright/test';
 import {
   expect,
@@ -11,6 +13,7 @@ import {
   type Api,
   type Fleet,
   type Leader,
+  withKey,
 } from '../fleet';
 import type { Rng } from '../fuzz';
 import { MODEL_CONTEXT, MODEL_KEY, request, say, type FakeModel } from '../model';
@@ -30,15 +33,19 @@ import { avro, avroFile, type FakeS3 } from '../buckets';
 import {
   acmeNewRoot,
   renewAcme,
+  refuseDns01,
+  replaceCertificate,
   switchToAcme,
   switchToLeaderIssued,
   switchToUploaded,
+  type Pki,
 } from './certificates';
 import { historyRow } from './change';
 
 /** What one branch or deploy holds of what the moves add: the ids of sources, destinations, lookup tables, grok
- * patterns and worker groups, the names of pipelines and samples, each eval step as its pipeline and the field it sets, and
- * each route by its source, its pipeline's name and the destination it delivers to, if any. */
+ * patterns, schemas and worker groups, the names of pipelines and samples, each eval step as its pipeline and the field
+ * it sets, each schema a pipeline produces as its pipeline and the schema's id, and each route by its source, its
+ * pipeline's name and the destination it delivers to, if any. */
 export type Config = {
   sources: string[];
   destinations: string[];
@@ -47,6 +54,8 @@ export type Config = {
   routes: { source: string; pipeline: string; to: string | null }[];
   lookups: string[];
   grokPatterns: string[];
+  schemas: string[];
+  produces: string[];
   samples: string[];
   groups: string[];
 };
@@ -59,6 +68,8 @@ const EMPTY: Config = {
   routes: [],
   lookups: [],
   grokPatterns: [],
+  schemas: [],
+  produces: [],
   samples: [],
   groups: [],
 };
@@ -71,6 +82,8 @@ export type World = {
   branch: string | null;
   /** The branch exists on the leader: a save went onto it. */
   branchSaved: boolean;
+  /** A save on the branch is one a deploy puts on main: anything but a sample, which no test names. */
+  landing: boolean;
   /** What the branch holds, or main when there is none. */
   editing: Config;
   /** `main`'s commits that deployed something, oldest first, the install's own first. */
@@ -87,14 +100,20 @@ export type World = {
   workers: Map<string, { state: 'heartbeating' | 'revoked'; group: string }>;
   /** Each secret's newest version. */
   secrets: Map<string, number>;
+  /** Each certificate added to the list, by name. */
+  certificates: Map<string, Pki>;
   /** For names nothing has used yet. */
   made: number;
+  /** The schemas added with fields, whose fields the Elasticsearch view can map. */
+  fielded: string[];
   /** When the administrator signed in, the API's own sign-in among them: the leader allows five a minute. */
   signIns: number[];
   /** Each local account the administrator added, by username, and whether it is enabled. */
   accounts: Map<string, boolean>;
-  /** Each role, by the provider group it names. */
-  roles: Set<string>;
+  /** Each role the journey made, and the administrator role, with the provider groups that give it. */
+  roles: Map<string, string[]>;
+  /** Each key account, by display name, and the key it holds in force. */
+  keyAccounts: Map<string, string | null>;
   /** AI agents are turned on, against the journey's model endpoint. */
   agentsOn: boolean;
   /** The administrator's conversations with their agent, by title. */
@@ -103,12 +122,18 @@ export type World = {
   restarted: string[];
   /** Single sign-on is on, through the journey's provider. */
   sso: boolean;
+  /** The provider's person has signed in, so the leader knows their groups. */
+  ssoSignedIn: boolean;
+  /** An administrator has found the provider's person's refused sign-in in the logs. */
+  refusalSeen: boolean;
   /** The idle timeout the Sessions form last saved, in seconds. */
   idle: number | null;
   /** An uploaded certificate is in force, in place of the leader's own. */
   supplied: boolean;
   /** The certificate in force was ordered from the journey's certificate authority. It is supplied too. */
   acme: boolean;
+  /** A certificate was ordered over ACME, so ordering is on, and stays on after a switch away from it. */
+  ordered: boolean;
 };
 
 export function newWorld(): World {
@@ -116,6 +141,7 @@ export function newWorld(): World {
     password: null,
     branch: null,
     branchSaved: false,
+    landing: false,
     editing: copy(EMPTY),
     deploys: [{ subject: 'worker group default', config: copy(EMPTY) }],
     running: 0,
@@ -124,17 +150,23 @@ export function newWorld(): World {
     closed: false,
     workers: new Map(),
     secrets: new Map(),
+    certificates: new Map(),
     made: 0,
+    fielded: [],
     signIns: [],
     accounts: new Map(),
-    roles: new Set(),
+    roles: new Map([['administrator', []]]),
+    keyAccounts: new Map(),
     agentsOn: false,
     conversations: [],
     restarted: [],
     sso: false,
+    ssoSignedIn: false,
+    refusalSeen: false,
     idle: null,
     supplied: false,
     acme: false,
+    ordered: false,
   };
 }
 
@@ -205,23 +237,26 @@ async function configOn(api: Api, branch: string): Promise<Config> {
   const names = new Map<string, string>();
   const routes: { source: string; pipeline: string; deliver?: { to: string[] }[] }[] = [];
   for (const scope of ['shared', 'default']) {
-    const res = await api.get(`/api/config?branch=${on}&scope=${scope}`);
+    const res = await api.get(`/api/areas/${scope}?branch=${on}`);
     c.sources.push(...res.config.sources.map((s: { id: string }) => s.id));
     c.destinations.push(...res.config.destinations.map((d: { id: string }) => d.id));
     for (const p of res.config.pipelines as {
       id: string;
       name: string;
+      produces?: string[];
       steps: { type: string; assignments?: { target: string }[] }[];
     }[]) {
       c.pipelines.push(p.name);
       names.set(p.id, p.name);
+      c.produces.push(...(p.produces ?? []).map((schema) => `${p.name}:${schema}`));
       for (const step of p.steps)
         if (step.type === 'eval') c.steps.push(`${p.name}:${step.assignments![0].target}`);
     }
     routes.push(...res.config.routes);
     c.lookups.push(...(res.config.lookupTables ?? []).map((t: { id: string }) => t.id));
     c.grokPatterns.push(...(res.config.grokPatterns ?? []).map((p: { id: string }) => p.id));
-    const samples: { name: string }[] = (await api.get(`/api/samples?branch=${on}&scope=${scope}`))
+    c.schemas.push(...(res.config.schemas ?? []).map((s: { id: string }) => s.id));
+    const samples: { name: string }[] = (await api.get(`/api/areas/${scope}/samples?branch=${on}`))
       .samples;
     c.samples.push(...samples.map((s) => s.name));
   }
@@ -267,13 +302,15 @@ async function nameBranch(j: Journey) {
   world.branch = name;
 }
 
-/** Clicks `button`, which saves, naming a branch if the GUI asks for one, and waits until `done`. */
-async function saveBy(j: Journey, button: Locator, done: () => Promise<void>) {
+/** Clicks `button`, which saves, naming a branch if the GUI asks for one, and waits until `done`. A deploy leaves
+ * out a `sample` saved. */
+async function saveBy(j: Journey, button: Locator, done: () => Promise<void>, sample = false) {
   await button.click();
   await nameBranch(j);
   await done();
   await settled(j.page);
   j.world.branchSaved = true;
+  if (!sample) j.world.landing = true;
 }
 
 /** Captures two rows with the capture `form`, long enough for a fleet only now deployed to send them, and saves
@@ -292,7 +329,7 @@ async function captureTwo(
   await expect(saving).toBeVisible({ timeout: 60_000 });
   await seen(saving);
   await saving.getByLabel('Save as').fill(name);
-  await saveBy(j, saving.getByRole('button', { name: 'Save sample' }), () => done(saving));
+  await saveBy(j, saving.getByRole('button', { name: 'Save sample' }), () => done(saving), true);
   j.world.editing.samples.push(name);
 }
 
@@ -317,8 +354,9 @@ async function signInLocally(page: Page, world: World, username: string, passwor
   await signInThroughGui(page, username, password);
 }
 
+// A save can take seconds on a busy machine, and the flag stays until it answers.
 const unsaved = (page: Page) => () =>
-  expect(page.getByText('Unsaved', { exact: true })).toBeHidden();
+  expect(page.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 30_000 });
 
 const firstStart: Move = {
   name: 'first-start',
@@ -412,7 +450,9 @@ const enrollWorker: Move = {
     world.workers.set(name, { state: 'heartbeating', group: 'default' });
     const workers: { workerId: string; revoked: boolean }[] = await (
       await j.truth()
-    ).get('/api/workers');
+    )
+      .get('/api/workers')
+      .then((a) => a.workers);
     expect(workers.find((w) => w.workerId === name)?.revoked).toBe(false);
     return `enroll ${name}`;
   },
@@ -436,7 +476,9 @@ const revokeWorker: Move = {
     world.workers.set(name, { ...world.workers.get(name)!, state: 'revoked' });
     const workers: { workerId: string; revoked: boolean }[] = await (
       await j.truth()
-    ).get('/api/workers');
+    )
+      .get('/api/workers')
+      .then((a) => a.workers);
     expect(workers.find((w) => w.workerId === name)?.revoked).toBe(true);
     // A revoked worker keeps running what it has, a receiver's port with it, so the administrator shuts it down.
     await j.fleet.stopWorker(name);
@@ -450,7 +492,11 @@ const revokeWorker: Move = {
       .click();
     await expect(workerRowOf(page, name)).toHaveCount(0);
     world.workers.delete(name);
-    const after: { workerId: string }[] = await (await j.truth()).get('/api/workers');
+    const after: { workerId: string }[] = await (
+      await j.truth()
+    )
+      .get('/api/workers')
+      .then((a) => a.workers);
     expect(after.map((w) => w.workerId)).not.toContain(name);
     return `revoke ${name}, and remove it`;
   },
@@ -531,7 +577,7 @@ const METRICS_STREAM = '__smeltr_metrics';
 
 const routeStream: Move = {
   name: 'route-stream',
-  leadsTo: ['open-change'],
+  leadsTo: ['open-change', 'refused-route'],
   // A metrics source the fleet runs with no route, so its rows arrive as a stream no route takes, and nothing
   // since has routed it.
   weight: (w) =>
@@ -562,7 +608,7 @@ const routeStream: Move = {
     const on = encodeURIComponent(world.branch ?? 'main');
     const routes: { source: string; condition?: string }[] = [];
     for (const scope of ['shared', 'default'])
-      routes.push(...(await api.get(`/api/config?branch=${on}&scope=${scope}`)).config.routes);
+      routes.push(...(await api.get(`/api/areas/${scope}?branch=${on}`)).config.routes);
     expect(routes.find((r) => r.source === source)?.condition).toBe(condition);
     return `route ${source}'s stream ${METRICS_STREAM} from the map, its pipeline from a capture as ${sample}`;
   },
@@ -640,6 +686,7 @@ const ORDER_FIELDS = [
 
 const fillAvro: Move = {
   name: 'fill-avro',
+  leadsTo: ['refused-route'],
   weight: (w) =>
     heartbeating(w, 'default').length && !w.editing.sources.some((s) => s.startsWith('avro-'))
       ? 1
@@ -668,7 +715,7 @@ const fillAvro: Move = {
         .last()
         .selectOption('str');
     }
-    await form.getByRole('button', { name: /Advanced/ }).click();
+    await form.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
     await form.getByRole('textbox', { name: /^endpoint/ }).fill(bucket.url);
     await form.getByRole('textbox', { name: /^region/ }).fill('us-east-1');
 
@@ -692,7 +739,7 @@ const fillAvro: Move = {
     world.editing.sources.push(id);
     await editingIsSaved(j);
     const on = encodeURIComponent(world.branch!);
-    const res = await (await j.truth()).get(`/api/config?branch=${on}&scope=shared`);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${on}`);
     const saved = res.config.sources.find((s: { id: string }) => s.id === id);
     expect(saved.fields, `${id} declares the file's fields`).toEqual(fields);
     return `add Avro source ${id}, its fields filled from a message${typed ? ', total typed str first' : ''}`;
@@ -711,6 +758,14 @@ async function addElasticsearch(j: Journey, id: string, index: string) {
   await form.getByRole('button', { name: 'Add', exact: true }).click();
   return form;
 }
+
+/** The pipelines that compile for `source`. A pipeline made from a capture parses `_raw` as JSON, which an Avro source,
+ * reading declared fields, does not have: the leader refuses that route's save. */
+const pipelinesFor = (w: World, source: string) =>
+  w.editing.pipelines.filter((p) => !(source.startsWith('avro-') && p.endsWith('-parse')));
+
+/** The sources a new route can take, each with a pipeline that compiles for it. */
+const routable = (w: World) => w.editing.sources.filter((s) => pipelinesFor(w, s).length);
 
 /** Adds a route on the Routes page and picks its source and pipeline. A source's routes share one card, the new
  * route last on it; the card, which is a line while it holds one route to one destination. */
@@ -765,15 +820,11 @@ const addRoute: Move = {
   name: 'add-route',
   leadsTo: ['open-change', 'blast-radius'],
   weight: (w) =>
-    !w.editing.sources.length || !w.editing.pipelines.length || w.editing.routes.length >= 3
-      ? 0
-      : w.editing.routes.length
-        ? 1
-        : 4,
+    !routable(w).length || w.editing.routes.length >= 3 ? 0 : w.editing.routes.length ? 1 : 4,
   run: async (j) => {
     const { page, rng, world } = j;
-    const source = rng.pick(world.editing.sources);
-    const pipeline = rng.pick(world.editing.pipelines);
+    const source = rng.pick(routable(world));
+    const pipeline = rng.pick(pipelinesFor(world, source));
     await startRoute(j, source, pipeline);
     await save(j, unsaved(page));
     // A new route delivers to the first destination there is.
@@ -789,16 +840,15 @@ const addRouteToNewDestination: Move = {
   leadsTo: ['open-change'],
   weight: (w) =>
     !w.password ||
-    !w.editing.sources.length ||
-    !w.editing.pipelines.length ||
+    !routable(w).length ||
     w.editing.routes.length >= 3 ||
     w.editing.destinations.length >= 2
       ? 0
       : 1,
   run: async (j) => {
     const { page, rng, world } = j;
-    const source = rng.pick(world.editing.sources);
-    const pipeline = rng.pick(world.editing.pipelines);
+    const source = rng.pick(routable(world));
+    const pipeline = rng.pick(pipelinesFor(world, source));
     const id = `dst-${world.made++}`;
     const card = await startRoute(j, source, pipeline);
     // The destination is made from the card, and saved on Add: a line card's + beside "destination" wires it to
@@ -838,6 +888,32 @@ const addRouteToNewDestination: Move = {
   },
 };
 
+/** The routes whose pipeline does not compile for their source, each a source and a pipeline. */
+const unroutable = (w: World) =>
+  w.editing.sources.flatMap((s) =>
+    w.editing.pipelines.filter((p) => !pipelinesFor(w, s).includes(p)).map((p) => [s, p]),
+  );
+
+const refusedRoute: Move = {
+  name: 'refused-route',
+  // On a branch already saved, so the refused save names none.
+  weight: (w) => (w.branch !== null && w.branchSaved && unroutable(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, rng, world } = j;
+    const [source, pipeline] = rng.pick(unroutable(world));
+    const before = await configOn(await j.truth(), world.branch!);
+    await startRoute(j, source, pipeline);
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    // The leader says why, and the edit stays to be put right or discarded.
+    await expect(page.getByRole('alert').filter({ hasText: '`_raw` is a variant' })).toBeVisible();
+    await expect(page.getByText('Unsaved', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Discard' }).click();
+    await unsaved(page)();
+    expect(await configOn(await j.truth(), world.branch!)).toEqual(before);
+    return `a route from ${source} through "${pipeline}" is refused`;
+  },
+};
+
 const blastRadius: Move = {
   name: 'blast-radius',
   weight: (w) => (w.editing.routes.some((r) => r.to !== null) ? 1 : 0),
@@ -855,8 +931,8 @@ const blastRadius: Move = {
     const on = encodeURIComponent(world.branch ?? 'main');
     const reached: string[] = [];
     for (const scope of ['shared', 'default']) {
-      const q = `kind=source&id=${encodeURIComponent(route.source)}&branch=${on}&scope=${scope}`;
-      const res = await api.get(`/api/connections?${q}`);
+      const source = encodeURIComponent(route.source);
+      const res = await api.get(`/api/areas/${scope}/sources/${source}/connections?branch=${on}`);
       reached.push(...res.downstream.map((o: { id: string }) => o.id));
     }
     expect(reached).toContain(to);
@@ -897,7 +973,7 @@ const comment: Move = {
     await expect(page.getByText(text)).toBeVisible();
     await page.reload();
     await expect(page.getByText(text)).toBeVisible();
-    const timeline = await (await j.truth()).get(`/api/changes/${world.branch}/timeline`);
+    const timeline = await (await j.truth()).get(`/api/branches/${world.branch}/timeline`);
     expect(JSON.stringify(timeline)).toContain(text);
     return `comment on "${world.change}"`;
   },
@@ -917,7 +993,7 @@ const deploy: Move = {
     // A source deployed without a route is a stream no route takes.
     'route-stream',
   ],
-  weight: (w) => (w.change && !w.closed ? 3 : 0),
+  weight: (w) => (w.change && !w.closed ? (w.landing ? 3 : 1) : 0),
   run: async (j) => {
     const { page, leader, world } = j;
     const title = world.change!;
@@ -929,10 +1005,21 @@ const deploy: Move = {
       .getByRole('dialog', { name: verb.toLowerCase(), exact: true })
       .getByRole('button', { name: verb, exact: true })
       .click();
-    await expect(page).not.toHaveURL(/#\/changes\/review/);
+    if (!world.landing) {
+      // Only samples, all left out: main would not change, so the change stays open.
+      const refused = page.getByRole('dialog').filter({ hasText: 'there is nothing to deploy' });
+      await refused.getByRole('button', { name: 'Close' }).click();
+      await expect(page).toHaveURL(/#\/changes\/review/);
+      return `"${title}" holds only samples a deploy leaves out, and deploys nothing`;
+    }
+    // The deploy itself, then the reload it ends with, can outlast the default wait on a busy machine.
+    await expect(page).not.toHaveURL(/#\/changes\/review/, { timeout: 30_000 });
     const api = await j.truth();
-    const history: History = await api.get('/api/history');
+    const history: History = await api.get('/api/main/history');
     expect(history.commits[0].subject).toBe(title);
+    // A deploy leaves out the samples no test names, and the journey writes no tests: main keeps its own.
+    const main = world.deploys[world.deploys.length - 1].config;
+    world.editing.samples = world.editing.samples.filter((s) => main.samples.includes(s));
     world.deploys.push({ subject: title, config: copy(world.editing) });
     // A rollback's hold outlives an approval: main moves, and the fleet stays where it was held.
     if (world.held) expect(history.deployed).not.toBe(history.commits[0].commit);
@@ -944,6 +1031,7 @@ const deploy: Move = {
     expect(branches.map((b) => b.name)).not.toContain(world.branch);
     world.branch = null;
     world.branchSaved = false;
+    world.landing = false;
     world.change = null;
     await expect(page.getByRole('button', { name: /^Branch: / })).toHaveAccessibleName(
       /^Branch: main\b/,
@@ -953,11 +1041,17 @@ const deploy: Move = {
 };
 
 /** The routes the fleet runs that carry rows to the sink: from a metrics source, which makes rows of its own,
- * unlike a receiver nothing sends to, into an Elasticsearch destination, which every one the moves add writes. */
-const flowing = (w: World) =>
-  w.deploys[w.running].config.routes.filter(
-    (r) => r.source.startsWith('src-') && r.to?.startsWith('dst-'),
+ * unlike a receiver nothing sends to, into an Elasticsearch destination, which every one the moves add writes. The
+ * moves' routes match every row, so only a source's first route takes its rows. */
+const flowing = (w: World) => {
+  const routes = w.deploys[w.running].config.routes;
+  return routes.filter(
+    (r) =>
+      r.source.startsWith('src-') &&
+      r.to?.startsWith('dst-') &&
+      routes.find((first) => first.source === r.source) === r,
   );
+};
 
 const rowsArrive: Move = {
   name: 'rows-arrive',
@@ -995,7 +1089,7 @@ const rollBack: Move = {
       .click();
     await expect(page).toHaveURL(/#\/status\?deploying=/);
     const api = await j.truth();
-    const history: History = await api.get('/api/history');
+    const history: History = await api.get('/api/main/history');
     expect(history.held).toBeDefined();
     expect(history.commits.find((c) => c.commit === history.deployed)?.subject).toBe(subject);
     // Until a worker has taken the rollback, it still reports the commit a release returns to, and a capture after
@@ -1039,7 +1133,7 @@ const release: Move = {
       .getByRole('button', { name: 'Release' })
       .click();
     await expect(page).toHaveURL(/#\/status\?deploying=/);
-    const history: History = await (await j.truth()).get('/api/history');
+    const history: History = await (await j.truth()).get('/api/main/history');
     expect(history.held).toBeUndefined();
     expect(history.deployed).toBe(history.commits[0].commit);
     world.held = false;
@@ -1069,7 +1163,7 @@ const addSecret: Move = {
       .filter({ has: page.getByRole('cell', { name, exact: true }) });
     await expect(row.getByRole('cell', { name: 'v1', exact: true })).toBeVisible();
     world.secrets.set(name, 1);
-    const secrets: Secret[] = await (await j.truth()).get('/api/secrets');
+    const secrets: Secret[] = await (await j.truth()).get('/api/secrets').then((a) => a.secrets);
     expect(secrets.find((s) => s.name === name)?.versions).toHaveLength(1);
     expect(JSON.stringify(secrets)).not.toContain(value);
     expect(await page.content()).not.toContain(value);
@@ -1098,10 +1192,123 @@ const rotateSecret: Move = {
     await expect(page.getByRole('dialog', { name: 'branch required' })).toHaveCount(0);
     await expect(row.getByRole('cell', { name: `v${version}`, exact: true })).toBeVisible();
     world.secrets.set(name, version);
-    const secrets: Secret[] = await (await j.truth()).get('/api/secrets');
+    const secrets: Secret[] = await (await j.truth()).get('/api/secrets').then((a) => a.secrets);
     expect(secrets.find((s) => s.name === name)?.versions).toHaveLength(version);
     expect(JSON.stringify(secrets)).not.toContain(value);
     return `rotate ${name} to v${version}`;
+  },
+};
+
+/** Where the journey's leader keeps its secrets encryption key: the default, under its own directory. */
+const keyFile = (leader: Leader) =>
+  path.join(leader.proc.dir, 'smeltr-leader-secrets', 'sealing.key');
+
+/** The key file is lost, which is not something the GUI does; finding out and regenerating it is. Only while
+ * nothing else is sealed: single sign-on and the agents would stop working until entered again, and no move
+ * enters them again. */
+const regenerateKey: Move = {
+  name: 'regenerate-key',
+  leadsTo: ['rotate-secret'],
+  weight: (w) => (w.password && w.secrets.size ? 3 : 0),
+  run: async (j) => {
+    const { page, leader, world } = j;
+    // The settings it encrypts, each entered again from the link beside it, so a later move finds them working.
+    const settings = [
+      ...(world.sso
+        ? [
+            {
+              key: 'oidc.client_secret',
+              label: 'Single sign-on client secret',
+              field: 'client secret',
+              value: CLIENT_SECRET,
+            },
+          ]
+        : []),
+      ...(world.agentsOn
+        ? [
+            {
+              key: 'agents.api_key',
+              label: 'AI agents API key',
+              field: 'API key',
+              value: MODEL_KEY,
+            },
+          ]
+        : []),
+    ];
+    fs.rmSync(keyFile(leader));
+    await openAdmin(page, 'Secrets');
+    await expect(page.getByText(/^The key file is missing/)).toBeVisible();
+    await page
+      .getByRole('navigation', { name: 'Secrets' })
+      .getByRole('link', { name: 'Encryption key', exact: true })
+      .click();
+    await page.getByRole('button', { name: 'Regenerate key' }).click();
+    await page
+      .getByRole('dialog', { name: 'regenerate the encryption key' })
+      .getByRole('button', { name: 'Regenerate key' })
+      .click();
+    await expect(page.getByText('To enter again')).toBeVisible();
+    for (const name of world.secrets.keys())
+      await expect(page.getByText(name, { exact: true })).toBeVisible();
+    expect(fs.existsSync(keyFile(leader))).toBe(true);
+    const unopenable = async () => {
+      const key: { state: string; unopenable: { name: string }[] } = await (
+        await j.truth()
+      ).get('/api/settings/encryption-key');
+      expect(key.state).toBe('held');
+      // While ordering is on, the leader orders the certificate again whether or not it is in force, so it may
+      // be sealed or not.
+      return key.unopenable
+        .map((u) => u.name)
+        .filter((name) => !(world.ordered && name === 'acme'))
+        .sort();
+    };
+    // An ordered certificate is not entered again, and the leader's own certificate is renewed at once, so only
+    // what an admin entered is left to enter again.
+    await expect
+      .poll(unopenable, { timeout: 30_000 })
+      .toEqual(
+        [
+          ...world.secrets.keys(),
+          ...world.certificates.keys(),
+          ...settings.map((s) => s.key),
+        ].sort(),
+      );
+    // Each certificate is entered again from its link, as it was uploaded.
+    for (const [name, pki] of world.certificates) {
+      await page
+        .getByRole('listitem')
+        .filter({ has: page.getByText(name, { exact: true }) })
+        .getByRole('link', { name: 'Certificates' })
+        .click();
+      await expect(page).toHaveURL(/#\/admin\/certificates$/);
+      await replaceCertificate(page, name, pki);
+      await openAdmin(page, 'Secrets');
+      await page
+        .getByRole('navigation', { name: 'Secrets' })
+        .getByRole('link', { name: 'Encryption key', exact: true })
+        .click();
+      await expect(page.getByText(name, { exact: true })).toHaveCount(0);
+    }
+    for (const setting of settings) {
+      await page.getByRole('listitem').filter({ hasText: setting.label }).getByRole('link').click();
+      // A value the key cannot open reads as none stored, so the page offers an empty input, not Replace.
+      await page.getByRole('textbox', { name: setting.field, exact: true }).fill(setting.value);
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(
+        page.getByRole('button', { name: `replace the ${setting.field}` }),
+      ).toBeVisible();
+      await openAdmin(page, 'Secrets');
+      await page
+        .getByRole('navigation', { name: 'Secrets' })
+        .getByRole('link', { name: 'Encryption key', exact: true })
+        .click();
+      await expect(page.getByText(setting.label, { exact: true })).toHaveCount(0);
+    }
+    expect(await unopenable()).toEqual([...world.secrets.keys()].sort());
+    const again = [...world.certificates.keys(), ...settings.map((s) => s.label)];
+    const entered = again.length ? `, ${again.join(' and ')} entered again` : '';
+    return `regenerate the key, ${world.secrets.size} to enter again${entered}`;
   },
 };
 
@@ -1114,17 +1321,28 @@ const addStep: Move = {
     const field = `journey_${world.made++}`;
     await goto(page, leader, '#/build/pipelines');
     await page.getByRole('link', { name: pipeline, exact: true }).click();
-    await page.getByRole('button', { name: 'Add step' }).click();
+    // At the end, or above a step the pipeline has.
+    const above = page.getByRole('button', { name: 'Insert step' });
+    await expect(page.getByRole('button', { name: 'Add step' })).toBeVisible();
+    const at = rng.below((await above.count()) + 1);
+    const end = at === (await above.count());
+    await (end ? page.getByRole('button', { name: 'Add step' }) : above.nth(at)).click();
     await page
       .getByRole('dialog', { name: 'add step' })
       .getByRole('button', { name: 'Eval', exact: true })
       .click();
-    await page.getByPlaceholder('target field').last().fill(field);
-    await page.getByPlaceholder('expression').last().fill(`"${field}"`);
+    // The new step is the open one with nothing in it yet. Held by its id, since filling it ends that.
+    const id = await page
+      .locator('.card.open')
+      .filter({ has: page.locator('input[placeholder="target field"]:placeholder-shown') })
+      .getAttribute('id');
+    const step = page.locator(`[id="${id}"]`);
+    await step.getByPlaceholder('target field').fill(field);
+    await step.getByPlaceholder('expression').fill(`"${field}"`);
     await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
     world.editing.steps.push(`${pipeline}:${field}`);
     await editingIsSaved(j);
-    return `add a step to "${pipeline}" that sets ${field}`;
+    return `add a step to "${pipeline}" ${end ? 'at the end' : `above step ${at + 1}`} that sets ${field}`;
   },
 };
 
@@ -1143,8 +1361,10 @@ const declareFromProduction: Move = {
     await goto(page, leader, '#/build/pipelines');
     await page.getByRole('link', { name: pipeline, exact: true }).click();
     // The editor opens on the steps it opened last, so the Parser may be open already.
-    const parser = page.getByRole('button', { name: /as JSON/ });
-    if ((await parser.getAttribute('aria-expanded')) !== 'true') await parser.click();
+    const parser = page.getByRole('button', { name: /^Parser .*as JSON/ });
+    // At its start: on a narrow page the step's controls, arriving on hover, cover the head's middle.
+    if ((await parser.getAttribute('aria-expanded')) !== 'true')
+      await parser.click({ position: { x: 8, y: 8 } });
     const suggested = page.getByRole('group', { name: 'Suggested fields' });
     // Shown once a worker's heartbeat has carried what the parser read to the leader. Suggesting again reads again.
     await expect(async () => {
@@ -1167,7 +1387,7 @@ const declareFromProduction: Move = {
     const declared: { name: string; type: unknown }[] = [];
     for (const scope of ['shared', 'default']) {
       const res = await truth.get(
-        `/api/config?branch=${encodeURIComponent(world.branch!)}&scope=${scope}`,
+        `/api/areas/${scope}?branch=${encodeURIComponent(world.branch!)}`,
       );
       for (const p of res.config.pipelines as {
         name: string;
@@ -1184,6 +1404,48 @@ const declareFromProduction: Move = {
       `${field} is declared as shown`,
     ).toBe(type);
     return `declare ${field} as ${type} in "${pipeline}", from what production read`;
+  },
+};
+
+/** The pipelines made from a capture, which nothing has deleted since: each a JSON Parser over `_raw`. */
+const parsing = (w: World) => w.editing.pipelines.filter((p) => p.endsWith('-parse'));
+
+const writeInto: Move = {
+  name: 'write-into',
+  weight: (w) => (parsing(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const pipeline = rng.pick(parsing(world));
+    await goto(page, leader, '#/build/pipelines');
+    await page.getByRole('link', { name: pipeline, exact: true }).click();
+    // The step's head: once records show, each field's step glyph names the step too.
+    const parser = page.getByRole('button', { name: /^Parser .*as JSON/ });
+    if ((await parser.getAttribute('aria-expanded')) !== 'true')
+      await parser.click({ position: { x: 8, y: 8 } });
+    const box = page.getByRole('textbox', { name: 'write into' });
+    // Advanced is open where it holds something set.
+    if (!(await box.isVisible())) await page.getByRole('button', { name: /^Advanced/ }).click();
+    // An object of its own, or the record again: never the one it writes into now, which leaves nothing to save.
+    const into = (await box.inputValue()) !== '$' && rng.chance(4) ? '$' : `o${world.made++}`;
+    await box.fill(into);
+    await expect(parser).toContainText(into === '$' ? /as JSON( \(|$)/ : `as JSON into ${into}`);
+    await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
+    await editingIsSaved(j);
+    const truth = await j.truth();
+    const written: string[] = [];
+    for (const scope of ['shared', 'default']) {
+      const res = await truth.get(
+        `/api/areas/${scope}?branch=${encodeURIComponent(world.branch!)}`,
+      );
+      for (const p of res.config.pipelines as {
+        name: string;
+        steps: { type: string; into: string }[];
+      }[])
+        if (p.name === pipeline)
+          for (const step of p.steps) if (step.type === 'parser') written.push(step.into);
+    }
+    expect(written, `${pipeline} writes into ${into}`).toEqual([into]);
+    return `parse "${pipeline}" into ${into === '$' ? 'the record' : into}`;
   },
 };
 
@@ -1265,7 +1527,7 @@ const addLookup: Move = {
     await save(j, unsaved(page));
     world.editing.lookups.push(id);
     await editingIsSaved(j);
-    const res = await (await j.truth()).get(`/api/config?branch=${world.branch}&scope=shared`);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
     const table = res.config.lookupTables.find((t: { id: string }) => t.id === id);
     expect(table.rows).toHaveLength(rows);
     return `add lookup table ${id} of ${rows} row(s)`;
@@ -1287,10 +1549,321 @@ const addGrokPattern: Move = {
     await save(j, unsaved(page));
     world.editing.grokPatterns.push(id);
     await editingIsSaved(j);
-    const res = await (await j.truth()).get(`/api/config?branch=${world.branch}&scope=shared`);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
     const saved = res.config.grokPatterns.find((p: { id: string }) => p.id === id);
     expect(saved.pattern).toBe(pattern);
     return `add grok pattern ${id}`;
+  },
+};
+
+/** A field's type in each format a schema is read from, the type the schema's table spells it as, and how it maps
+ * in Elasticsearch where that is not its type's own. */
+const FORMAT_TYPES = [
+  { json: 'string', ecs: 'keyword', ocsf: 'string_t', common: 'VARCHAR', type: 'str' },
+  { json: 'integer', ecs: 'long', ocsf: 'integer_t', common: 'BIGINT', type: 'i64' },
+  { json: 'number', ecs: 'double', ocsf: 'float_t', common: 'double', type: 'f64' },
+  { json: 'boolean', ecs: 'boolean', ocsf: 'boolean_t', common: 'Boolean', type: 'bool' },
+  {
+    json: 'string',
+    ecs: 'ip',
+    ocsf: 'ip_t',
+    common: 'String',
+    type: 'str',
+    elasticsearch: { type: 'ip' },
+  },
+] as const;
+
+/** The tile each format is added from. */
+const FORMAT_TILES = {
+  empty: 'Empty schema',
+  'json-schema': 'JSON Schema',
+  csv: 'CSV of fields',
+  ecs: 'ECS',
+  ocsf: 'OCSF',
+} as const;
+
+type SchemaFormat = keyof typeof FORMAT_TILES;
+
+/** A field as the move writes it, and as the leader keeps it. */
+type Drawn = {
+  field: string;
+  type: string;
+  required?: true;
+  description?: string;
+  example?: string;
+  elasticsearch?: { type: string };
+};
+
+const addSchema: Move = {
+  name: 'add-schema',
+  leadsTo: ['produce-schema', 'map-schema-field'],
+  weight: (w) => (w.password && w.editing.schemas.length < 2 ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const id = `schema-${world.made++}`;
+    const format = rng.pick(Object.keys(FORMAT_TILES) as SchemaFormat[]);
+    // A few fields, some required, read from the format drawn. ECS requires only fields of its own, and an OCSF class
+    // read as by default takes the required and the recommended.
+    const drawn = Array.from({ length: format === 'empty' ? 0 : 1 + rng.below(3) }, (_, i) => {
+      const t = rng.pick(FORMAT_TYPES);
+      const requirement = i === 0 ? 'required' : rng.pick(['required', 'recommended', 'optional']);
+      return { i, t, requirement, example: rng.chance(2) ? `e${i}, "quoted"` : '' };
+    });
+    const onlyRequired = format === 'ocsf' && rng.chance(3);
+    const taken = drawn.filter(
+      (d) =>
+        format !== 'ocsf' ||
+        d.requirement === 'required' ||
+        (d.requirement === 'recommended' && !onlyRequired),
+    );
+    const fields: Drawn[] = taken.map(({ i, t, requirement, example }) => ({
+      field: `f${i}`,
+      type: t.type,
+      ...(requirement === 'required' && format !== 'ecs' ? { required: true as const } : {}),
+      ...(format === 'csv' || format === 'ecs' || format === 'ocsf'
+        ? { description: `Field ${i}.` }
+        : {}),
+      ...(example && format !== 'json-schema' ? { example } : {}),
+      ...('elasticsearch' in t && format !== 'json-schema'
+        ? { elasticsearch: t.elasticsearch }
+        : {}),
+    }));
+    // A CSV's columns picked by hand, under a header that names none of them; its types as other systems spell them.
+    const picked = format === 'csv' && rng.chance(2);
+    const common = taken.map(() => rng.chance(2));
+    const told = taken.map(() => format === 'csv' && rng.chance(4));
+    const cell = (s: string) => (/[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s);
+    const file = {
+      empty: '',
+      'json-schema': JSON.stringify({
+        type: 'object',
+        required: drawn.filter((d) => d.requirement === 'required').map((d) => `f${d.i}`),
+        properties: Object.fromEntries(drawn.map((d) => [`f${d.i}`, { type: d.t.json }])),
+      }),
+      csv:
+        (picked
+          ? 'Name,Kind,Must,About,Sample,Index\n'
+          : 'Field,Type,Required,Description,Example,Elasticsearch\n') +
+        fields
+          .map((f, i) =>
+            [
+              f.field,
+              // As another system spells it, a type the leader knows, or one it is told.
+              told[i] ? `kind ${i}` : common[i] ? taken[i].t.common : f.type,
+              f.required ? 'yes' : '',
+              f.description!,
+              f.example ?? '',
+              f.elasticsearch?.type ?? '',
+            ]
+              .map(cell)
+              .join(','),
+          )
+          .join('\n'),
+      ecs:
+        'ECS_Version,Indexed,Field_Set,Field,Type,Level,Normalization,Example,Description\n' +
+        drawn
+          .map((d) =>
+            ['9.1.0', 'true', 'base', `f${d.i}`, d.t.ecs, 'core', '', d.example, `Field ${d.i}.`]
+              .map(cell)
+              .join(','),
+          )
+          .join('\n'),
+      ocsf: JSON.stringify({
+        classes: {
+          web: {
+            attributes: Object.fromEntries(
+              drawn.map((d) => [
+                `f${d.i}`,
+                {
+                  type: d.t.ocsf,
+                  requirement: d.requirement,
+                  description: `Field ${d.i}.`,
+                  ...(d.example ? { example: d.example } : {}),
+                },
+              ]),
+            ),
+          },
+        },
+        objects: {},
+      }),
+    }[format];
+    await goto(page, leader, '#/build/schemas');
+    await page.getByRole('button', { name: '+ Add schema' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: FORMAT_TILES[format], exact: true }).click();
+    await dialog.getByLabel('id', { exact: true }).fill(id);
+    if (format === 'json-schema') {
+      await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(file);
+    } else if (format !== 'empty') {
+      const name = { csv: 'fields.csv', ecs: 'fields.csv', ocsf: 'ocsf.json' }[format];
+      if (format === 'ecs' || format === 'ocsf') {
+        await dialog.getByRole('button', { name: 'Upload a file', exact: true }).click();
+      }
+      await dialog
+        .getByLabel(/^File/)
+        .setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(file) });
+    }
+    if (format === 'csv' && picked) {
+      const roles = ['field', 'type', 'required', 'description', 'example', 'elasticsearch'];
+      const names = ['Name', 'Kind', 'Must', 'About', 'Sample', 'Index'];
+      for (const [i, role] of roles.entries()) {
+        await dialog.getByRole('combobox', { name: `Column ${names[i]} holds` }).selectOption(role);
+      }
+    }
+    for (const [i, f] of fields.entries()) {
+      if (told[i]) {
+        await dialog
+          .getByRole('combobox', { name: `Type of kind ${i}`, exact: true })
+          .selectOption(f.type);
+      }
+    }
+    if (format === 'ocsf') {
+      await expect(dialog.getByRole('combobox', { name: 'Class' })).toHaveValue('web');
+      if (onlyRequired) await dialog.getByRole('checkbox', { name: 'recommended' }).uncheck();
+    }
+    await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await save(j, unsaved(page));
+    world.editing.schemas.push(id);
+    if (fields.length) world.fielded.push(id);
+    await editingIsSaved(j);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
+    const saved = res.config.schemas.find((s: { id: string }) => s.id === id);
+    expect(saved.fields, `${id} from ${format}`).toEqual(fields);
+    return `add schema ${id} from ${format}, of ${fields.length} field(s)`;
+  },
+};
+
+const addBuiltInSchema: Move = {
+  name: 'add-built-in-schema',
+  leadsTo: ['produce-schema'],
+  weight: (w) => (w.password && w.editing.schemas.length < 2 ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const id = `schema-${world.made++}`;
+    const format = rng.pick(['ecs', 'ocsf'] as const);
+    const truth = await j.truth();
+    const standards = await truth.get('/api/preview/schema-standards');
+    const release = standards[format];
+    // An OCSF class, cut as deep and to the requirements drawn.
+    const klass: string =
+      format === 'ocsf' ? rng.pick(release.classes as { name: string }[]).name : '';
+    const depth = 1 + rng.below(3);
+    const levels = ['required', 'recommended', 'optional'].filter(
+      (l, i) => i === 0 || rng.chance(2),
+    );
+    await goto(page, leader, '#/build/schemas');
+    await page.getByRole('button', { name: '+ Add schema' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: FORMAT_TILES[format], exact: true }).click();
+    await dialog.getByLabel('id', { exact: true }).fill(id);
+    const name = `${FORMAT_TILES[format]} ${release.version}, built in`;
+    await expect(dialog.getByRole('button', { name, exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    if (format === 'ocsf') {
+      await dialog.getByRole('combobox', { name: 'Class' }).selectOption(klass);
+      await dialog.getByRole('spinbutton', { name: 'Depth' }).fill(String(depth));
+      for (const l of ['recommended', 'optional']) {
+        await dialog.getByRole('checkbox', { name: l }).setChecked(levels.includes(l));
+      }
+    }
+    await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await save(j, unsaved(page));
+    world.editing.schemas.push(id);
+    await editingIsSaved(j);
+    const res = await truth.get(`/api/areas/shared?branch=${world.branch}`);
+    const saved = res.config.schemas.find((s: { id: string }) => s.id === id);
+    const read = await truth.post('/api/preview/schema-read', {
+      id,
+      format,
+      builtIn: true,
+      ...(format === 'ocsf' ? { class: klass, cut: { depth, levels } } : {}),
+    });
+    expect(saved.fields, `${id} from ${name}`).toEqual(read.schema.fields);
+    return `add schema ${id} from ${name}${format === 'ocsf' ? `, ${klass} ${depth} deep, ${levels.join(' and ')}` : ''}`;
+  },
+};
+
+/** The schemas on the branch that have fields. */
+const fielded = (w: World) => w.fielded.filter((s) => w.editing.schemas.includes(s));
+
+const mapSchemaField: Move = {
+  name: 'map-schema-field',
+  weight: (w) => (fielded(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const id = rng.pick(fielded(world));
+    // Landing on it opens it alone, so the dropdowns are its own.
+    await goto(page, leader, `#/build/schemas?open=${id}`);
+    await page.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+    const selects = page.getByRole('combobox', { name: /^Elasticsearch type of / });
+    await expect(selects.first()).toBeVisible();
+    // A field whose type maps one way only, a bool's, offers no other choice.
+    const choices: number[] = [];
+    for (let i = 0; i < (await selects.count()); i++) {
+      if ((await selects.nth(i).locator('option').count()) > 1) choices.push(i);
+    }
+    if (!choices.length) return `map nothing: every field of ${id} maps one way only`;
+    const select = selects.nth(rng.pick(choices));
+    const field = (await select.getAttribute('aria-label'))!.replace('Elasticsearch type of ', '');
+    // Another than it shows, so the choice is an edit. The first is its type's own, which saves no mapping.
+    const was = await select.inputValue();
+    const offered = await select
+      .locator('option')
+      .evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
+    const type = rng.pick(offered.filter((t) => t !== was));
+    await select.selectOption(type);
+    await save(j, unsaved(page));
+    await editingIsSaved(j);
+    const truth = await j.truth();
+    const res = await truth.get(`/api/areas/shared?branch=${world.branch}`);
+    const schema = res.config.schemas.find((s: { id: string }) => s.id === id);
+    const saved = schema.fields.find((f: { field: string }) => f.field === field);
+    // An integer's date in seconds is a date its format reads as seconds.
+    const mapping =
+      type === 'date in seconds'
+        ? { type: 'date', format: 'epoch_second||strict_date_optional_time' }
+        : { type };
+    expect(saved.elasticsearch, `${id}'s ${field} maps as chosen`).toEqual(
+      type === offered[0] ? undefined : mapping,
+    );
+    // The export maps it as chosen, or, a variant that says nothing, as the first type it allows.
+    const exported = await truth.post('/api/preview/schema-export', {
+      schema,
+      format: 'elasticsearch',
+    });
+    expect(exported.document.mappings.properties[field]).toMatchObject(
+      type ? mapping : { type: offered[1] },
+    );
+    return `map ${id}'s ${field} in Elasticsearch as ${type || 'dynamic'}`;
+  },
+};
+
+/** Each pipeline and schema the pipeline does not yet produce, as `pipeline:schema`. */
+const unproduced = (w: World) =>
+  w.editing.pipelines.flatMap((p) =>
+    w.editing.schemas.map((s) => `${p}:${s}`).filter((ps) => !w.editing.produces.includes(ps)),
+  );
+
+const produceSchema: Move = {
+  name: 'produce-schema',
+  weight: (w) => (unproduced(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const pair = rng.pick(unproduced(world));
+    const [pipeline, schema] = pair.split(':');
+    await goto(page, leader, '#/build/pipelines');
+    await page.getByRole('link', { name: pipeline, exact: true }).click();
+    const produces = page.locator('.produces');
+    await produces.getByRole('combobox', { name: 'Add a schema it produces' }).selectOption(schema);
+    await expect(produces.getByRole('link', { name: schema, exact: true })).toBeVisible();
+    await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
+    world.editing.produces.push(pair);
+    await editingIsSaved(j);
+    return `name schema ${schema} under what "${pipeline}" produces`;
   },
 };
 
@@ -1306,18 +1879,21 @@ const pasteSample: Move = {
     await page.getByRole('button', { name: 'Add sample' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Paste' }).click();
     // Found by what it holds: a branch prompt can open beside it.
-    const dialog = page.getByRole('dialog').filter({ has: page.getByLabel('Records') });
+    const dialog = page.getByRole('dialog').filter({ has: page.getByLabel(/^Records/) });
     await dialog.getByLabel('Name').fill(name);
     await dialog
-      .getByLabel('Records')
+      .getByLabel(/^Records/)
       .fill(
         Array.from({ length: records }, (_, i) => JSON.stringify({ id: i, total: i * 10 })).join(
           '\n',
         ),
       );
     await expect(dialog.getByText(`${records} record${records === 1 ? '' : 's'}`)).toBeVisible();
-    await saveBy(j, dialog.getByRole('button', { name: 'Save sample' }), () =>
-      expect(dialog).toBeHidden(),
+    await saveBy(
+      j,
+      dialog.getByRole('button', { name: 'Save sample' }),
+      () => expect(dialog).toBeHidden(),
+      true,
     );
     world.editing.samples.push(name);
     await expect(page.getByRole('row', { name: new RegExp(name) })).toBeVisible();
@@ -1348,21 +1924,21 @@ const editSample: Move = {
     const name = rng.pick(world.editing.samples);
     const api = await j.truth();
     // Read where the GUI edits: main until a save names a branch. A capture made in a group's scope is saved there.
-    const on = (scope: string) =>
-      `branch=${encodeURIComponent(world.branch ?? 'main')}&scope=${scope}`;
+    const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
     let scope = 'shared';
     let id: string | undefined;
     for (scope of ['shared', 'default']) {
-      const { samples } = await api.get(`/api/samples?${on(scope)}`);
+      const { samples } = await api.get(`/api/areas/${scope}/samples?${on}`);
       id = samples.find((s: { name: string }) => s.name === name)?.id;
       if (id) break;
     }
     const read = async () =>
-      (await api.get(`/api/samples/${encodeURIComponent(id!)}?${on(scope)}`)).sample
+      (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample
         .records as Record<string, unknown>[];
     // Each record by the number the editor gives it, which it keeps while others go.
     let draft = (await read()).map((record, i) => ({ n: i + 1, record }));
-    const raw = draft.every((r) => ownFields(r.record).join() === '_raw');
+    // The editor reads pasted lines as text wherever a record has `_raw`, whatever other fields it shows.
+    const raw = draft.some((r) => '_raw' in r.record);
     await goto(page, leader, '#/build');
     if (scope !== 'shared') await switchScope(page, 'shared', scope);
     await page
@@ -1428,8 +2004,11 @@ const editSample: Move = {
       done.push('paste one');
     }
 
-    await saveBy(j, editor.getByRole('button', { name: 'Save sample' }), () =>
-      expect(editor).toBeHidden(),
+    await saveBy(
+      j,
+      editor.getByRole('button', { name: 'Save sample' }),
+      () => expect(editor).toBeHidden(),
+      true,
     );
     expect(await read(), `${name} holds the edited records`).toEqual(draft.map((r) => r.record));
     await editingIsSaved(j);
@@ -1451,6 +2030,7 @@ const deleteSample: Move = {
       j,
       page.getByRole('dialog', { name: 'delete sample' }).getByRole('button', { name: 'Delete' }),
       () => expect(row).toHaveCount(0),
+      true,
     );
     world.editing.samples = world.editing.samples.filter((s) => s !== name);
     await editingIsSaved(j);
@@ -1565,7 +2145,7 @@ const enrollInGroup: Move = {
     await openWorkersTab(page, 'Enrollment codes');
     await page.getByRole('button', { name: '+ Add enrollment code' }).click();
     const mint = page.getByRole('dialog', { name: 'new enrollment code' });
-    await mint.getByLabel('Group').selectOption({ label: group.replace('group-', 'Group ') });
+    await mint.getByLabel(/^Group/).selectOption({ label: group.replace('group-', 'Group ') });
     await mint.getByRole('button', { name: 'Mint' }).click();
     const lines = await page
       .locator('pre')
@@ -1579,7 +2159,9 @@ const enrollInGroup: Move = {
     world.workers.set(name, { state: 'heartbeating', group });
     const workers: { workerId: string; revoked: boolean }[] = await (
       await j.truth()
-    ).get('/api/workers');
+    )
+      .get('/api/workers')
+      .then((a) => a.workers);
     expect(workers.find((w) => w.workerId === name)?.revoked).toBe(false);
     return `enroll ${name} in ${group}`;
   },
@@ -1591,20 +2173,50 @@ type Account = {
   enabled: boolean;
   authSource: string;
   roles: string[];
+  groups: string[];
+  access: { administrator: boolean };
+  keys?: { label: string; createdAt: number; expiresAt: number | null }[];
 };
+
+/** A day, in the milliseconds a key's expiry is kept in. */
+const DAY_MILLIS = 86_400_000;
+
+/** In the open access form, some of the roles there are, the administrator role among them, or none. Answers
+ * them, sorted as the leader keeps them. */
+async function chooseAccess(j: Journey, within: Locator): Promise<string[]> {
+  const { rng, world } = j;
+  const offered = [...world.roles.keys()].sort();
+  const roles = offered.filter(() => rng.chance(3));
+  for (const role of offered)
+    await within.getByRole('checkbox', { name: role }).setChecked(roles.includes(role));
+  return roles;
+}
+
+function said(roles: string[]): string {
+  return roles.length ? `holding ${roles.join(', ')}` : 'holding nothing';
+}
+
+/** The roles a person holding `groups` is given by the roles the world has. */
+function givenBy(world: World, groups: string[]): string[] {
+  return [...world.roles]
+    .filter(([, given]) => given.some((g) => groups.includes(g)))
+    .map(([name]) => name)
+    .sort();
+}
 
 const addAccount: Move = {
   name: 'add-account',
-  leadsTo: ['disable-account'],
+  leadsTo: ['disable-account', 'change-access', 'find-account'],
   weight: (w) => (w.password && w.accounts.size < 2 ? 1 : 0),
   run: async (j) => {
     const { page, leader, browser, rng, world } = j;
-    const username = `admin${world.made++}`;
+    const username = `person${world.made++}`;
     await openAdmin(page, 'Accounts');
-    await page.getByRole('button', { name: '+ Add user' }).click();
-    const dialog = page.getByRole('dialog', { name: 'new administrator' });
-    await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(`Admin ${username}`);
+    await page.getByRole('button', { name: '+ Add account' }).click();
+    const dialog = page.getByRole('dialog', { name: 'new account' });
+    await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(`Person ${username}`);
     await dialog.getByRole('textbox', { name: /^Username\b/ }).fill(username);
+    const access = await chooseAccess(j, dialog);
     await dialog.getByRole('button', { name: 'Add' }).click();
     const handover = page.locator('section.handover').filter({ hasText: username });
     await expect(handover.getByText('it is shown only once')).toBeVisible();
@@ -1612,12 +2224,13 @@ const addAccount: Move = {
     await handover.getByRole('button', { name: 'Done' }).click();
     await expect(handover).toHaveCount(0);
     world.accounts.set(username, true);
-    const users: Account[] = await (await j.truth()).get('/api/users');
+    const users: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
     expect(users.find((u) => u.username === username)).toMatchObject({
       enabled: true,
       authSource: 'local',
+      roles: access,
     });
-    if (!rng.chance(2)) return `add administrator ${username}`;
+    if (!rng.chance(2)) return `add ${username}, ${said(access)}`;
 
     // The one handed the password signs in with it, and chooses their own.
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
@@ -1637,7 +2250,7 @@ const addAccount: Move = {
     } finally {
       await context.close();
     }
-    return `add administrator ${username}, who signs in and chooses a password`;
+    return `add ${username}, ${said(access)}, who signs in and chooses a password`;
   },
 };
 
@@ -1657,44 +2270,261 @@ const disableAccount: Move = {
       .click();
     await expect(page.getByRole('status')).toHaveText('account disabled; its sessions are over');
     world.accounts.set(username, false);
-    const users: Account[] = await (await j.truth()).get('/api/users');
+    const users: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
     expect(users.find((u) => u.username === username)?.enabled).toBe(false);
     return `disable ${username}`;
   },
 };
 
+/** The roster's row for the key account `name`, by the name it is shown under. */
+function keyAccountRow(page: Page, name: string): Locator {
+  return page
+    .getByRole('row')
+    .filter({ has: page.locator('.name').getByText(name, { exact: true }) });
+}
+
+const addKeyAccount: Move = {
+  name: 'add-key-account',
+  leadsTo: ['revoke-key', 'change-access'],
+  weight: (w) => (w.password && w.keyAccounts.size < 2 ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const name = `key-account-${world.made++}`;
+    const days = rng.pick([null, 1, 30]);
+    await openAdmin(page, 'Accounts');
+    await page.getByRole('button', { name: '+ Add account' }).click();
+    const dialog = page.getByRole('dialog', { name: 'new account' });
+    await dialog.getByRole('button', { name: 'Key' }).click();
+    await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(name);
+    const access = await chooseAccess(j, dialog);
+    const administrator = access.includes('administrator');
+    await dialog.getByRole('button', { name: 'Add' }).click();
+    await expect(dialog).toHaveCount(0);
+
+    // The new account's row opens on its own, and a key is made there.
+    await page.getByRole('button', { name: '+ New key' }).click();
+    await page.getByRole('textbox', { name: /^Label\b/ }).fill('journey');
+    if (days !== null)
+      await page.getByRole('spinbutton', { name: /^Expires in \(days\)/ }).fill(String(days));
+    await page.getByRole('button', { name: 'Create key' }).click();
+    const handover = page.locator('section.handover').filter({ hasText: name });
+    await expect(handover.getByText('it is shown only once')).toBeVisible();
+    const key = (await handover.locator('.secret code').innerText()).trim();
+    await handover.getByRole('button', { name: 'Done' }).click();
+    await expect(handover).toHaveCount(0);
+    world.keyAccounts.set(name, key);
+
+    const accounts: Account[] = await (
+      await j.truth()
+    )
+      .get('/api/accounts')
+      .then((a) => a.accounts);
+    const made = accounts.find((a) => a.displayName === name)!;
+    expect(made).toMatchObject({ authSource: 'key', roles: access, keys: [{ label: 'journey' }] });
+    const [held] = made.keys!;
+    expect(held.expiresAt).toBe(days === null ? null : held.createdAt + days * DAY_MILLIS);
+    // The health of the fleet is the administrator's alone; a role reads no more than shared.
+    expect(await withKey(leader, key, 'GET', '/api/health')).toBe(administrator ? 200 : 403);
+    expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(administrator ? 200 : 403);
+    const lasts = days === null ? 'never expires' : `expires in ${days} days`;
+    return `add key account ${name}, ${said(access)}, with a key that ${lasts}`;
+  },
+};
+
+const revokeKey: Move = {
+  name: 'revoke-key',
+  weight: (w) => ([...w.keyAccounts.values()].some((k) => k) ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const name = rng.pick([...world.keyAccounts].filter(([, k]) => k).map(([n]) => n));
+    const key = world.keyAccounts.get(name)!;
+    await openAdmin(page, 'Accounts');
+    await keyAccountRow(page, name).getByRole('button', { name: 'Manage' }).click();
+    await page
+      .getByRole('table', { name: 'Keys' })
+      .getByRole('row')
+      .filter({ hasText: 'journey' })
+      .getByRole('button', { name: 'Revoke' })
+      .click();
+    await page
+      .getByRole('dialog', { name: 'revoke key' })
+      .getByRole('button', { name: 'Revoke key' })
+      .click();
+    await expect(page.getByRole('status')).toHaveText('key revoked');
+    world.keyAccounts.set(name, null);
+    const accounts: Account[] = await (
+      await j.truth()
+    )
+      .get('/api/accounts')
+      .then((a) => a.accounts);
+    expect(accounts.find((a) => a.displayName === name)?.keys).toEqual([]);
+    expect(await withKey(leader, key, 'GET', '/api/health')).toBe(403);
+    return `revoke ${name}'s key`;
+  },
+};
+
+/** A local or key account the journey made, changed to hold something else, and the leader holds it. */
+const changeAccess: Move = {
+  name: 'change-access',
+  weight: (w) => (w.accounts.size + w.keyAccounts.size > 0 ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const name = rng.pick([
+      ...[...world.accounts.keys()].map((u) => ({ local: true, name: u })),
+      ...[...world.keyAccounts.keys()].map((n) => ({ local: false, name: n })),
+    ]);
+    await openAdmin(page, 'Accounts');
+    const row = name.local
+      ? page.getByRole('row').filter({ hasText: name.name })
+      : keyAccountRow(page, name.name);
+    await row.getByRole('button', { name: 'Manage' }).click();
+    await page.getByRole('button', { name: 'Change access' }).click();
+    const form = page.locator('tr.fold form');
+    const access = await chooseAccess(j, form);
+    await form.getByRole('button', { name: 'Save access' }).click();
+    await expect(form).toHaveCount(0);
+    const accounts: Account[] = await (
+      await j.truth()
+    )
+      .get('/api/accounts')
+      .then((a) => a.accounts);
+    const changed = accounts.find((a) =>
+      name.local ? a.username === name.name : a.displayName === name.name,
+    );
+    expect(changed).toMatchObject({ roles: access });
+    const key = name.local ? null : world.keyAccounts.get(name.name);
+    if (key) {
+      const expected = access.includes('administrator') ? 200 : 403;
+      expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(expected);
+    }
+    return `change ${name.name} to ${said(access)}`;
+  },
+};
+
+/** Admin › Accounts searched and filtered by sign-in, and the roster shows what the leader's answer does. */
+const findAccount: Move = {
+  name: 'find-account',
+  weight: (w) => (w.password && w.accounts.size + w.keyAccounts.size > 0 ? 1 : 0),
+  run: async (j) => {
+    const { page, rng } = j;
+    await openAdmin(page, 'Accounts');
+    const accounts: (Account & { providerLogin?: string })[] = await (
+      await j.truth()
+    )
+      .get('/api/accounts')
+      .then((a) => a.accounts);
+    const kinds = { local: 'Password', oidc: 'SSO', key: 'Key' } as const;
+    const kind = rng.pick([null, 'local', 'oidc', 'key'] as const);
+    const named = rng.pick(accounts);
+    const query = rng.pick([
+      '',
+      named.displayName,
+      named.username ?? named.displayName,
+      named.displayName.slice(1, 4).toUpperCase(),
+    ]);
+    const search = page.getByRole('searchbox', { name: 'Search accounts' });
+    const chips = page.getByRole('group', { name: 'Filter accounts by sign-in' });
+    await search.fill(query);
+    await chips
+      .getByRole('button', { name: new RegExp(`^${kind === null ? 'All' : kinds[kind]}\\b`) })
+      .click();
+    const needle = query.trim().toLowerCase();
+    const expected = accounts
+      .filter((a) => kind === null || a.authSource === kind)
+      .filter((a) =>
+        [a.displayName, a.username, a.providerLogin].some((n) => n?.toLowerCase().includes(needle)),
+      )
+      .map((a) => a.displayName)
+      .sort();
+    const shown = page.locator('tbody tr:not(.fold) .name');
+    await expect
+      .poll(async () => (await shown.allInnerTexts()).map((n) => n.replace(/ · you$/, '')).sort())
+      .toEqual(expected);
+    if (expected.length === 0) await expect(page.getByText('No account matches.')).toBeVisible();
+    // Left as found, so the next move sees every account.
+    await search.fill('');
+    await chips.getByRole('button', { name: /^All\b/ }).click();
+    const by = kind === null ? 'every sign-in' : kinds[kind];
+    return `find "${query}" among ${by}: ${expected.length} shown`;
+  },
+};
+
 /** The group the journey's provider puts the one person it signs in into. */
 export const PROVIDER_GROUP = 'journey-people';
+/** Their other group, which gives no role until an administrator makes one from it on the roster. */
+export const REVIEW_GROUP = 'journey-reviewers';
+/** A group the provider puts nobody into. */
+const OTHER_GROUP = 'journey-others';
 
 const LEVELS = ['viewer', 'editor', 'deployer'] as const;
+
+type Role = { name: string; builtIn: boolean; groups: string[]; areas: Record<string, string> };
+
+/** The open role's groups field. */
+function groupsField(page: Page): Locator {
+  return page.locator('tr.fold form').getByRole('textbox', { name: /^Groups\b/ });
+}
+
+/** Gives the role whose row is open `groups` and, unless it is the administrator role, a level in shared; saves
+ * it, and checks the leader holds it. Answers what it gives. */
+async function saveRole(j: Journey, name: string, groups: string[]): Promise<string> {
+  const { page, rng, world } = j;
+  await groupsField(page).fill(groups.join('\n'));
+  const level = name === 'administrator' ? null : rng.pick(LEVELS);
+  if (level !== null)
+    await page.getByRole('combobox', { name: 'shared level' }).selectOption(level);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(groupsField(page)).toHaveCount(0);
+  world.roles.set(name, groups);
+  const roles: Role[] = await (await j.truth()).get('/api/roles').then((a) => a.roles);
+  expect(roles.find((r) => r.name === name)).toMatchObject({
+    groups: [...groups].sort(),
+    areas: level === null ? {} : { shared: level },
+  });
+  return level === null ? 'everything' : `${level} in shared`;
+}
 
 const addRole: Move = {
   name: 'add-role',
   leadsTo: ['sso-sign-in'],
-  weight: (w) => (w.password && w.roles.size < 2 ? 1 : 0),
+  weight: (w) => (w.password && w.roles.size < 3 ? 1 : 0),
   run: async (j) => {
-    const { page, rng, world } = j;
-    // The first names the provider's group, so the person it signs in holds it.
-    const name = world.roles.size ? `role-${world.made++}` : PROVIDER_GROUP;
-    const level = rng.pick(LEVELS);
+    const { page, world } = j;
+    // The first is given by the provider's group, so the person it signs in holds it.
+    const name = `role-${world.made++}`;
+    const groups = world.roles.size > 1 ? [] : [PROVIDER_GROUP];
     await openAdmin(page, 'Accounts');
     await page.getByRole('link', { name: 'Roles', exact: true }).click();
     await page.getByRole('button', { name: '+ Add role' }).click();
     const dialog = page.getByRole('dialog', { name: 'new role' });
     await dialog.getByRole('textbox', { name: /^Role\b/ }).fill(name);
     await dialog.getByRole('button', { name: 'Add' }).click();
-    await page.getByRole('combobox', { name: 'shared level' }).selectOption(level);
-    await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.getByRole('combobox', { name: 'shared level' })).toHaveCount(0);
-    world.roles.add(name);
-    const roles: { name: string; administrator: boolean; areas: Record<string, string> }[] = await (
-      await j.truth()
-    ).get('/api/roles');
-    expect(roles.find((r) => r.name === name)).toMatchObject({
-      administrator: false,
-      areas: { shared: level },
-    });
-    return `add role ${name}, ${level} in shared`;
+    const gives = await saveRole(j, name, groups);
+    return `add role ${name}, given by ${groups.join(', ') || 'no group'}, ${gives}`;
+  },
+};
+
+/** A role, the administrator role among them, given by other groups. The administrator role cannot be removed. */
+const roleGroups: Move = {
+  name: 'role-groups',
+  leadsTo: ['sso-sign-in'],
+  weight: (w) => (w.password ? 1 : 0),
+  run: async (j) => {
+    const { page, rng, world } = j;
+    const name = rng.pick([...world.roles.keys()].sort());
+    const groups = [PROVIDER_GROUP, REVIEW_GROUP, OTHER_GROUP].filter(() => rng.chance(3));
+    await openAdmin(page, 'Accounts');
+    await page.getByRole('link', { name: 'Roles', exact: true }).click();
+    await page
+      .getByRole('row')
+      .filter({ has: page.locator('.name').getByText(name, { exact: true }) })
+      .getByRole('button', { name: 'Manage' })
+      .click();
+    await expect(page.getByRole('button', { name: 'Remove role' })).toHaveCount(
+      name === 'administrator' ? 0 : 1,
+    );
+    const gives = await saveRole(j, name, groups);
+    return `give ${name} to ${groups.join(', ') || 'no group'}, ${gives}`;
   },
 };
 
@@ -1709,15 +2539,12 @@ const turnOnAgents: Move = {
     await expect(page.getByRole('combobox', { name: /^Provider\b/ })).toHaveValue('anthropic');
     await page.getByRole('textbox', { name: /^Endpoint URL\b/ }).fill(model.base);
     await expect(page.getByRole('textbox', { name: /^Model\b/ })).toHaveValue('claude-opus-5-5');
-    await page.getByLabel('API key', { exact: true }).fill(MODEL_KEY);
+    await page.getByRole('textbox', { name: 'API key', exact: true }).fill(MODEL_KEY);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.getByLabel('API key', { exact: true })).toHaveAttribute(
-      'placeholder',
-      'stored',
-    );
+    await expect(page.getByRole('button', { name: 'replace the API key' })).toBeVisible();
     world.agentsOn = true;
     const truth = await j.truth();
-    expect((await truth.get('/api/settings/agents')).settings).toEqual({
+    expect((await truth.get('/api/settings/agent')).settings).toEqual({
       enabled: true,
       provider: 'anthropic',
       endpoint: model.base,
@@ -1739,21 +2566,29 @@ const setAgentPermissions: Move = {
     await page.getByRole('button', { name: /^signed in as / }).click();
     await page.getByRole('button', { name: 'Agent permissions' }).click();
     await expect(page.getByRole('heading', { name: 'Agent permissions' })).toBeVisible();
+    // The journey's person is an administrator, so they are offered the administrator role for their agent, and
+    // holding it leaves no levels to set.
+    const administrator = page.getByRole('checkbox', { name: 'Your agent is an administrator' });
     let expected: object;
     if (rng.chance(3)) {
-      await page.getByRole('button', { name: 'Everything you hold' }).click();
-      expected = { kind: 'everything' };
+      await administrator.check();
+      await expect(page.getByRole('combobox', { name: /^Every area\b/ })).toHaveCount(0);
+      expected = { administrator: true };
     } else {
       const level = rng.pick(LEVELS);
       const shared = rng.pick(LEVELS);
-      await page.getByRole('button', { name: 'Up to a level' }).click();
+      await administrator.uncheck();
       await page.getByRole('combobox', { name: /^Every area\b/ }).selectOption(level);
       await page.getByRole('combobox', { name: 'shared level' }).selectOption(shared);
-      expected = { kind: 'upto', default: level, areas: { shared } };
+      expected = { administrator: false, default: level, areas: { shared } };
     }
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByRole('status')).toHaveText('agent permissions saved');
-    expect(await (await j.truth()).get('/api/me/agent-permissions')).toEqual(expected);
+    expect(await (await j.truth()).get('/api/me/agent-permissions')).toMatchObject({
+      ok: true,
+      errors: [],
+      ...expected,
+    });
     return `set my agent's permissions to ${JSON.stringify(expected)}`;
   },
 };
@@ -1807,7 +2642,7 @@ const askAgentInPanel: Move = {
   run: async (j) => {
     const { page, leader, model, rng, world } = j;
     await goto(page, leader, rng.pick(['#/build/sources', '#/map', '#/admin/system/agents']));
-    const chip = page.getByRole('button', { name: 'Agent panel' });
+    const chip = page.getByRole('button', { name: 'Agent panel', exact: true });
     if ((await chip.getAttribute('aria-pressed')) !== 'true') await chip.click();
     const panel = page.getByRole('complementary', { name: 'Agent' });
     const going = world.conversations.length > 0 && rng.chance(2);
@@ -1847,7 +2682,7 @@ const restartConversation: Move = {
     const summary = `Summary ${world.made++}`;
     if (summarize) model.answer([say(summary)]);
     const before = model.asked.length;
-    await page.getByRole('button', { name: /^Context \d+% full$/ }).click();
+    await openRowMenu(page, /^Context \d+% full$/);
     await page
       .getByRole('button', { name: summarize ? 'Summarize now' : 'Clear', exact: true })
       .click();
@@ -1857,7 +2692,7 @@ const restartConversation: Move = {
       expect(asked).toContain('Summarize the conversation');
     } else {
       await page
-        .getByRole('dialog', { name: 'Clear the context?' })
+        .getByRole('dialog', { name: 'clear context' })
         .getByRole('button', { name: 'Clear', exact: true })
         .click();
       await expect(page.getByText(/^Cleared\./).last()).toBeVisible();
@@ -1878,7 +2713,7 @@ const deleteConversation: Move = {
     await conversationLink(page, title).click();
     await page.getByRole('button', { name: 'Delete conversation' }).click();
     await page
-      .getByRole('dialog', { name: 'Delete this conversation?' })
+      .getByRole('dialog', { name: 'delete conversation' })
       .getByRole('button', { name: 'Delete', exact: true })
       .click();
     world.conversations = world.conversations.filter((t) => t !== title);
@@ -1891,23 +2726,19 @@ const deleteConversation: Move = {
 
 const setUpSso: Move = {
   name: 'set-up-sso',
-  leadsTo: ['sso-sign-in'],
+  leadsTo: ['sso-sign-in', 'refused-sign-in'],
   weight: (w) => (w.password && !w.sso ? 1 : 0),
   run: async (j) => {
     const { page, leader, provider, world } = j;
-    await goto(page, leader, '#/admin/system/oidc');
+    await goto(page, leader, '#/admin/accounts/oidc');
     await page.getByRole('switch', { name: 'single sign-on enabled' }).check();
     await page.getByRole('textbox', { name: /^Issuer URL\b/ }).fill(provider.base);
     await page.getByRole('textbox', { name: /^Client ID\b/ }).fill(CLIENT_ID);
     await page.getByLabel('client secret', { exact: true }).fill(CLIENT_SECRET);
-    await page.getByRole('textbox', { name: /^Required group\b/ }).fill(PROVIDER_GROUP);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    // Saved, the secret is kept and never shown again; the button alone disables while the save is in flight.
-    await expect(page.getByLabel('client secret', { exact: true })).toHaveAttribute(
-      'placeholder',
-      'stored',
-    );
-    await expect(page.getByLabel('client secret', { exact: true })).toHaveValue('');
+    // Saved, the secret is held and offers no input to type over, only Replace.
+    await expect(page.getByRole('button', { name: 'replace the client secret' })).toBeVisible();
+    await expect(page.getByLabel('client secret', { exact: true })).toHaveCount(0);
     world.sso = true;
     const { settings } = await (await j.truth()).get('/api/settings/oidc');
     expect(settings).toMatchObject({
@@ -1915,7 +2746,6 @@ const setUpSso: Move = {
       issuer: provider.base,
       clientId: CLIENT_ID,
       clientSecretSet: true,
-      requiredGroup: PROVIDER_GROUP,
     });
     expect(JSON.stringify(settings)).not.toContain(CLIENT_SECRET);
     return 'set up single sign-on';
@@ -1924,9 +2754,10 @@ const setUpSso: Move = {
 
 const ssoSignIn: Move = {
   name: 'sso-sign-in',
-  weight: (w) => (w.sso && w.roles.has(PROVIDER_GROUP) ? 1 : 0),
+  leadsTo: ['role-from-group'],
+  weight: (w) => (w.sso && givenBy(w, [PROVIDER_GROUP, REVIEW_GROUP]).length > 0 ? 1 : 0),
   run: async (j) => {
-    const { leader, browser, provider } = j;
+    const { leader, browser, provider, world } = j;
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
     try {
       const theirs = await context.newPage();
@@ -1938,12 +2769,73 @@ const ssoSignIn: Move = {
     } finally {
       await context.close();
     }
-    const users: Account[] = await (await j.truth()).get('/api/users');
-    expect(users.find((u) => u.authSource === 'oidc')).toMatchObject({
+    world.ssoSignedIn = true;
+    const users: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
+    const person = users.find((u) => u.authSource === 'oidc');
+    expect(person).toMatchObject({
       displayName: provider.person.name,
-      roles: [PROVIDER_GROUP],
+      groups: [PROVIDER_GROUP, REVIEW_GROUP],
     });
+    const held = givenBy(world, [PROVIDER_GROUP, REVIEW_GROUP]);
+    expect([...person!.roles].sort()).toEqual(held);
+    expect(person!.access.administrator).toBe(held.includes('administrator'));
     return `${provider.person.name} signs in through the provider`;
+  },
+};
+
+/** The provider's person is turned away while their groups give no role, and an administrator reads why. */
+const refusedSignIn: Move = {
+  name: 'refused-sign-in',
+  weight: (w) =>
+    w.sso && !w.refusalSeen && givenBy(w, [PROVIDER_GROUP, REVIEW_GROUP]).length === 0 ? 1 : 0,
+  run: async (j) => {
+    const { page, leader, browser, provider, world } = j;
+    const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    try {
+      const theirs = await context.newPage();
+      await theirs.goto(leader.url);
+      await theirs.getByRole('link', { name: 'Sign in with SSO' }).click();
+      await expect(theirs.getByText('single sign-on refused that account')).toBeVisible();
+    } finally {
+      await context.close();
+    }
+    await openAdmin(page, 'Accounts');
+    await page.getByRole('link', { name: 'Roles', exact: true }).click();
+    await page.getByRole('button', { name: 'Refused sign-ins' }).click();
+    const row = page.getByRole('row').filter({ hasText: 'leader.sign_in_refused' }).first();
+    // The leader's own logs reach the page on its next pass, so the page is read again until they do.
+    await expect(async () => {
+      await page.reload();
+      await expect(row).toBeVisible({ timeout: 1000 });
+    }).toPass();
+    await row.getByRole('button', { name: /^\d+ fields?$/ }).click();
+    await expect(row).toContainText(`${PROVIDER_GROUP}, ${REVIEW_GROUP}`);
+    world.refusalSeen = true;
+    return `${provider.person.name} is refused, and the logs name their groups`;
+  },
+};
+
+/** A role made from a group the roster shows the person holds and no role lists yet, given by that group. */
+const roleFromGroup: Move = {
+  name: 'role-from-group',
+  leadsTo: ['sso-sign-in'],
+  weight: (w) =>
+    w.ssoSignedIn && !w.roles.has(REVIEW_GROUP) && givenBy(w, [REVIEW_GROUP]).length === 0 ? 1 : 0,
+  run: async (j) => {
+    const { page } = j;
+    await openAdmin(page, 'Accounts');
+    await page
+      .getByRole('navigation', { name: 'Accounts' })
+      .getByRole('link', { name: 'Accounts', exact: true })
+      .click();
+    await page.getByRole('button', { name: `+ ${REVIEW_GROUP}` }).click();
+    await expect(page.getByRole('link', { name: 'Roles', exact: true })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    await expect(groupsField(page)).toHaveValue(REVIEW_GROUP);
+    const gives = await saveRole(j, REVIEW_GROUP, [REVIEW_GROUP]);
+    return `make the role ${REVIEW_GROUP} from the roster, ${gives}`;
   },
 };
 
@@ -1999,10 +2891,10 @@ const uploadCertificate: Move = {
   weight: (w) => (w.password && !w.supplied ? 1 : 0),
   leadsTo: ['withdraw-certificate'],
   run: async (j) => {
-    const pki = await j.fleet.externalPki();
-    await switchToUploaded(j.page, pki);
+    const pki = j.fleet.externalPki();
+    j.world.certificates.set(await switchToUploaded(j.page, pki), pki);
     j.world.supplied = true;
-    const { supplied, rotation } = await (await j.truth()).get('/api/settings/certificates');
+    const { supplied, rotation } = await (await j.truth()).get('/api/settings/tls');
     expect({ supplied, rotation }).toEqual({ supplied: true, rotation: null });
     await fleetStillHeard(j);
     return `switch to an uploaded certificate, with ${heartbeating(j.world).length} workers following`;
@@ -2016,7 +2908,7 @@ const withdrawCertificate: Move = {
     await switchToLeaderIssued(j.page);
     j.world.supplied = false;
     j.world.acme = false;
-    const { supplied, rotation } = await (await j.truth()).get('/api/settings/certificates');
+    const { supplied, rotation } = await (await j.truth()).get('/api/settings/tls');
     expect({ supplied, rotation }).toEqual({ supplied: false, rotation: null });
     await fleetStillHeard(j);
     return `switch back to the leader's own certificate, with ${heartbeating(j.world).length} workers following`;
@@ -2034,7 +2926,8 @@ const orderAcme: Move = {
     await switchToAcme(j.page, j.authority, [LEADER_NAME]);
     j.world.supplied = true;
     j.world.acme = true;
-    const { source, rotation, served } = await (await j.truth()).get('/api/settings/certificates');
+    j.world.ordered = true;
+    const { source, rotation, served } = await (await j.truth()).get('/api/settings/tls');
     expect({ source, rotation }).toEqual({ source: 'acme', rotation: null });
     expect(served.names).toContain(LEADER_NAME);
     await fleetStillHeard(j);
@@ -2047,9 +2940,9 @@ const renewAcmeCertificate: Move = {
   weight: (w) => (w.acme ? 1 : 0),
   run: async (j) => {
     const challenge = j.rng.pick(['TLS-ALPN-01', 'HTTP-01'] as const);
-    const before = await (await j.truth()).get('/api/settings/certificates');
+    const before = await (await j.truth()).get('/api/settings/tls');
     await renewAcme(j.page, challenge);
-    const after = await (await j.truth()).get('/api/settings/certificates');
+    const after = await (await j.truth()).get('/api/settings/tls');
     expect(after.source).toBe('acme');
     expect(after.served.fingerprint).not.toBe(before.served.fingerprint);
     expect(after.authority.fingerprint).toBe(before.authority.fingerprint);
@@ -2058,13 +2951,25 @@ const renewAcmeCertificate: Move = {
   },
 };
 
+const acmeDns01Refused: Move = {
+  name: 'acme-dns-01-refused',
+  weight: (w) => (w.acme ? 1 : 0),
+  run: async (j) => {
+    const before = await (await j.truth()).get('/api/settings/tls/acme');
+    await refuseDns01(j.page, `cf-${j.rng.below(1_000_000)}`, LEADER_NAME);
+    // Refused whole: neither the challenge nor the token was stored.
+    expect(await (await j.truth()).get('/api/settings/tls/acme')).toEqual(before);
+    return `DNS-01 refused for ${LEADER_NAME}, an IP address`;
+  },
+};
+
 const acmeUnderNewRoot: Move = {
   name: 'acme-new-root',
   weight: (w) => (w.acme ? 1 : 0),
   run: async (j) => {
-    const before = await (await j.truth()).get('/api/settings/certificates');
+    const before = await (await j.truth()).get('/api/settings/tls');
     await acmeNewRoot(j.page, j.authority);
-    const after = await (await j.truth()).get('/api/settings/certificates');
+    const after = await (await j.truth()).get('/api/settings/tls');
     expect({ source: after.source, rotation: after.rotation }).toEqual({
       source: 'acme',
       rotation: null,
@@ -2072,25 +2977,6 @@ const acmeUnderNewRoot: Move = {
     expect(after.authority.fingerprint).not.toBe(before.authority.fingerprint);
     await fleetStillHeard(j);
     return `the authority issues under a new root, with ${heartbeating(j.world).length} workers following`;
-  },
-};
-
-const reissueCertificate: Move = {
-  name: 'reissue-certificate',
-  weight: (w) => (w.password && !w.supplied ? 1 : 0),
-  run: async (j) => {
-    const { page } = j;
-    await openAdmin(page, 'System');
-    await page.getByRole('link', { name: 'Certificates', exact: true }).click();
-    const served = page.getByRole('region', { name: /^Leader certificate/ });
-    const fingerprint = served.getByText(/^[0-9a-f]{16}…[0-9a-f]{8}$/);
-    const before = await fingerprint.innerText();
-    await served.getByRole('button', { name: 'Issue a new one' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: 'Issue a new one' }).click();
-    await expect(served.getByRole('status')).toHaveText('a new certificate is in force');
-    await expect(fingerprint).not.toHaveText(before);
-    await fleetStillHeard(j);
-    return 'reissue the leader certificate';
   },
 };
 
@@ -2175,7 +3061,7 @@ async function setFirstValue(j: Journey, branch: string, id: string, value: stri
   await page.getByLabel('row 1 value').fill(value);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await unsaved(page)();
-  const res = await (await j.truth()).get(`/api/config?branch=${branch}&scope=shared`);
+  const res = await (await j.truth()).get(`/api/areas/shared?branch=${branch}`);
   const table = res.config.lookupTables.find((t: { id: string }) => t.id === id);
   expect(table.rows[0][1], `${id} on ${branch}`).toBe(value);
 }
@@ -2206,6 +3092,8 @@ const bringCurrent: Move = {
     await goto(page, leader, '#/changes');
     await page.getByPlaceholder('a name for new work').fill(theirs);
     await page.getByRole('button', { name: 'Start a branch' }).click();
+    // The branch menu lists the branches as they are when it opens, so not before this one is there.
+    await expect(page.getByRole('row').filter({ hasText: theirs })).toBeVisible();
     await switchBranch(page, theirs);
     await setFirstValue(j, theirs, id, `theirs-${n}`);
     await goto(page, leader, '#/build');
@@ -2219,7 +3107,8 @@ const bringCurrent: Move = {
       .getByRole('dialog', { name: verb.toLowerCase(), exact: true })
       .getByRole('button', { name: verb, exact: true })
       .click();
-    await expect(page).not.toHaveURL(/#\/changes\/review/);
+    // The deploy itself, then the reload it ends with, can outlast the default wait on a busy machine.
+    await expect(page).not.toHaveURL(/#\/changes\/review/, { timeout: 30_000 });
     world.deploys.push({
       subject: title,
       config: copy(world.deploys[world.deploys.length - 1].config),
@@ -2237,7 +3126,7 @@ const bringCurrent: Move = {
     await page.getByLabel('Keep').selectOption(keep);
     await page.getByRole('button', { name: 'Apply' }).click();
     await expect(page.getByText('Current with main', { exact: true })).toBeVisible();
-    const res = await (await j.truth()).get(`/api/config?branch=${mine}&scope=shared`);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${mine}`);
     const table = res.config.lookupTables.find((t: { id: string }) => t.id === id);
     expect(table.rows[0][1]).toBe(keep === 'main' ? `theirs-${n}` : `mine-${n}`);
     await editingIsSaved(j);
@@ -2262,6 +3151,7 @@ export const MOVES: readonly Move[] = [
   addPipeline,
   addRoute,
   addRouteToNewDestination,
+  refusedRoute,
   blastRadius,
   openChange,
   comment,
@@ -2271,12 +3161,18 @@ export const MOVES: readonly Move[] = [
   release,
   addSecret,
   rotateSecret,
+  regenerateKey,
   addStep,
   declareFromProduction,
+  writeInto,
   addReceiver,
   addOtherDestination,
   addLookup,
   addGrokPattern,
+  addSchema,
+  addBuiltInSchema,
+  mapSchemaField,
+  produceSchema,
   pasteSample,
   editSample,
   deleteSample,
@@ -2286,6 +3182,11 @@ export const MOVES: readonly Move[] = [
   addAccount,
   disableAccount,
   addRole,
+  roleGroups,
+  addKeyAccount,
+  revokeKey,
+  changeAccess,
+  findAccount,
   turnOnAgents,
   setAgentPermissions,
   askAgent,
@@ -2294,12 +3195,14 @@ export const MOVES: readonly Move[] = [
   deleteConversation,
   setUpSso,
   ssoSignIn,
+  refusedSignIn,
+  roleFromGroup,
   sessions,
-  reissueCertificate,
   uploadCertificate,
   withdrawCertificate,
   orderAcme,
   renewAcmeCertificate,
+  acmeDns01Refused,
   acmeUnderNewRoot,
   refusedRemote,
   closeChange,

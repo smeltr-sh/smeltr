@@ -51,9 +51,7 @@ use super::{CommitMap, IoError, RecordChunkBuilder, Source, SourceRecord};
 use crate::egress::QueuePool;
 use crate::format::json::write_json_string;
 use crate::format::json_scan::{Next, Reader};
-use crate::plan::topology::{
-    ApiRecords, HeldSecrets, Identity, Listen, Receiver, ReceiverConfig, Signal, SourceMeta, Transport,
-};
+use crate::plan::topology::{ApiRecords, HeldSecrets, Listen, Receiver, ReceiverConfig, Signal, SourceMeta, Transport};
 
 /// Where a receiver answers whether it takes requests: 200 while it does, 503 while it is busy, blocked or stopping.
 /// What a balancer's health check or a Kubernetes readiness probe asks.
@@ -163,8 +161,8 @@ pub fn open(
     }
     let listener = TcpListener::from(bound(config.listens())?);
     if let Receiver::S2s(_) | Receiver::Syslog(_) = &config.receiver {
-        let tls = match &config.identity {
-            Some(identity) => Some(server_tls(identity, secrets)?),
+        let tls = match &config.tls {
+            Some(tls) => Some(server_tls(tls, secrets)?),
             None => None,
         };
         // `from_std` registers the socket with the runtime it is called in.
@@ -289,15 +287,15 @@ fn bound(listen: Listen) -> Result<socket2::Socket, IoError> {
     })
 }
 
-/// The TLS an HTTP receiver serves under its identity, offering HTTP/2, which gRPC needs, and HTTP/1.1.
+/// The TLS an HTTP receiver serves, offering HTTP/2, which gRPC needs, and HTTP/1.1.
 fn http_tls(
     config: &ReceiverConfig,
     secrets: &HeldSecrets,
 ) -> Result<Option<axum_server::tls_rustls::RustlsConfig>, IoError> {
-    let Some(identity) = &config.identity else {
+    let Some(tls) = &config.tls else {
         return Ok(None);
     };
-    let mut tls = server_tls(identity, secrets)?;
+    let mut tls = server_tls(tls, secrets)?;
     tls.alpn_protocols = http_alpn();
     Ok(Some(axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls))))
 }
@@ -402,7 +400,7 @@ fn otlp_ports() -> &'static Mutex<HashMap<SocketAddr, Weak<OtlpPort>>> {
 impl OtlpPort {
     /// `server`, a receiver of `signal`, on `config`'s address: on the port another signal's receiver serves there,
     /// or on one it starts. A port is served as the receiver that started it says, since the config plane holds the
-    /// receivers of one port to one address and identity.
+    /// receivers of one port to one address and certificate.
     fn join(
         config: &ReceiverConfig,
         signal: Signal,
@@ -1099,6 +1097,8 @@ pub(super) struct Holdings {
     account: Mutex<Account>,
     reserve: usize,
     ceiling: usize,
+    /// This receiver's name in `pool`.
+    lender: u64,
     pool: Option<Arc<QueuePool>>,
     /// Woken when it gives bytes back or its turn is let go.
     freed: Notify,
@@ -1158,6 +1158,7 @@ impl Holdings {
             account: Mutex::new(Account::default()),
             reserve,
             ceiling: INBOX_BYTES,
+            lender: pool.as_ref().map_or(0, |p| p.lender()),
             pool,
             freed: Notify::new(),
             full: std::sync::atomic::AtomicU64::new(0),
@@ -1168,8 +1169,11 @@ impl Holdings {
     /// the reserve, taking the turn when it is free. Whether it took them.
     fn take(&self, bytes: usize, counted: &mut Counted, turn: &mut bool) -> bool {
         let mut account = self.account.lock().unwrap();
-        let shared =
-            account.counted.shared + bytes <= self.ceiling && self.pool.as_ref().is_none_or(|p| p.take(bytes, false));
+        let shared = account.counted.shared + bytes <= self.ceiling
+            && self
+                .pool
+                .as_ref()
+                .is_none_or(|p| p.take(self.lender, account.counted.shared, bytes, false));
         if shared {
             account.counted.shared += bytes;
             counted.shared += bytes;
@@ -1195,7 +1199,7 @@ impl Holdings {
         account.counted.shared -= counted.shared;
         account.counted.reserved -= counted.reserved;
         if let Some(pool) = &self.pool {
-            pool.give(counted.shared);
+            pool.give(self.lender, account.counted.shared, counted.shared);
         }
         drop(account);
         self.freed.notify_waiters();
@@ -1220,7 +1224,11 @@ impl Holdings {
     /// Whether a taker without the turn, or one that would take it, takes another byte.
     fn has_room(&self) -> bool {
         let account = self.account.lock().unwrap();
-        (account.counted.shared < self.ceiling && self.pool.as_ref().is_none_or(|p| p.fits(1)))
+        (account.counted.shared < self.ceiling
+            && self
+                .pool
+                .as_ref()
+                .is_none_or(|p| p.fits(self.lender, account.counted.shared, 1)))
             || (!account.turn && account.counted.reserved < self.reserve)
     }
 
@@ -2625,17 +2633,16 @@ fn split(records: &ApiRecords, body: Vec<u8>) -> Result<Records, String> {
     })
 }
 
-/// What a receiver serves TLS under: its identity's certificate and key, and, when the identity names authorities,
-/// a sender's certificate required to chain to one of them. It offers no application protocol: the caller adds what
-/// it speaks.
-fn server_tls(identity: &Identity, secrets: &HeldSecrets) -> Result<rustls::ServerConfig, IoError> {
-    let named = |what: &str| format!("the identity {:?}: {what}", identity.id);
-    // Save-time validation refuses a receiver whose identity holds no certificate.
-    let super::trust::Presented { chain, key, .. } = super::trust::presented(identity, secrets)?
-        .ok_or_else(|| IoError::transient(named("it holds no certificate for a receiver to serve")))?;
-    let authorities = match identity.authorities.as_deref() {
+/// What a receiver serves: its certificate and key, and, when it names authorities, a sender's certificate required
+/// to chain to one of them. It offers no application protocol: the caller adds what it speaks.
+fn server_tls(tls: &crate::plan::topology::Tls, secrets: &HeldSecrets) -> Result<rustls::ServerConfig, IoError> {
+    let named = |what: &str| format!("{}: {what}", tls.of);
+    // Save-time validation refuses a receiver that names no certificate.
+    let super::trust::Presented { chain, key, .. } = super::trust::presented(tls, secrets)?
+        .ok_or_else(|| IoError::transient(named("it names no certificate for a receiver to serve")))?;
+    let authorities = match tls.authorities.as_deref() {
         None => None,
-        Some(pem) => Some(super::trust::certificates(identity, pem, "what it trusts")?),
+        Some(pem) => Some(super::trust::certificates(tls, pem, "what it trusts")?),
     };
     serving_tls(chain, key, authorities).map_err(|refused| {
         IoError::transient(match refused {
@@ -3780,7 +3787,6 @@ mod tests {
     /// One connection's failed handshake ends that connection, and the next sender is served.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_failed_handshake_ends_only_its_own_connection() {
-        use crate::plan::topology::SecretRef;
         use std::io::{Read, Write};
 
         let key = rcgen::KeyPair::generate().unwrap();
@@ -3789,18 +3795,20 @@ mod tests {
             .self_signed(&key)
             .unwrap();
         let mut secrets = HeldSecrets::default();
-        secrets.set_stored([("receiver-key".to_string(), 1, key.serialize_pem())]);
-        let identity = Identity {
-            id: "receiver".into(),
-            certificate: Some(certificate.pem()),
-            key: Some(SecretRef::LeaderStored {
-                name: "receiver-key".into(),
-                version: 1,
-            }),
+        secrets.take([crate::heartbeat::SecretDelivery {
+            name: "receiver".into(),
+            version: 1,
+            value: key.serialize_pem(),
+            chain: Some(certificate.pem()),
+        }]);
+        let serving = crate::plan::topology::Tls {
+            of: "source \"receiver\"".into(),
+            certificate: Some("receiver".into()),
             authorities: None,
             trust_public: true,
+            side: crate::io::trust::Side::Server,
         };
-        let tls = server_tls(&identity, &secrets).unwrap();
+        let tls = server_tls(&serving, &secrets).unwrap();
         assert!(tls.alpn_protocols.is_empty(), "a stream offers no application protocol");
         let (at, shared) = serve_lines(Some(tls));
 

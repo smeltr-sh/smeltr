@@ -57,7 +57,7 @@ describe('the session the GUI holds', () => {
   it('reports a throttled sign-in as a wait rather than a failure', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       answer(
-        { ok: false, error: 'too many sign-in attempts' },
+        { ok: false, errors: [{ message: 'too many sign-in attempts' }] },
         { status: 429, headers: { 'retry-after': '45' } },
       ),
     );
@@ -92,7 +92,9 @@ describe('the session the GUI holds', () => {
     await signIn('morgan', 'a password');
 
     vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(answer({ ok: false, error: 'your session ended' }, { status: 401 }))
+      .mockResolvedValueOnce(
+        answer({ ok: false, errors: [{ message: 'your session ended' }] }, { status: 401 }),
+      )
       .mockResolvedValueOnce(
         answer({ authenticated: false, administrator: false, mustChangePassword: false }),
       );
@@ -110,7 +112,9 @@ describe('the session the GUI holds', () => {
     expect(leaderAnswered()).toBe(true);
 
     vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(answer({ ok: false, error: 'your session ended' }, { status: 401 }))
+      .mockResolvedValueOnce(
+        answer({ ok: false, errors: [{ message: 'your session ended' }] }, { status: 401 }),
+      )
       .mockRejectedValueOnce(new Error('the leader went away'));
     await changePassword('morgan', null, 'another one');
     expect(leaderAnswered()).toBe(false);
@@ -124,7 +128,10 @@ describe('the session the GUI holds', () => {
 
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
-        answer({ ok: false, error: 'that is not your current password' }, { status: 401 }),
+        answer(
+          { ok: false, errors: [{ message: 'that is not your current password' }] },
+          { status: 401 },
+        ),
       )
       .mockResolvedValueOnce(answer(SIGNED_IN));
     await changePassword('morgan', 'wrong', 'another one');
@@ -161,7 +168,7 @@ describe('what every API call carries', () => {
     expect(session().authenticated).toBe(true);
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
-      answer({ ok: false, error: 'sign in to use this' }, { status: 401 }),
+      answer({ ok: false, errors: [{ message: 'sign in to use this' }] }, { status: 401 }),
     );
     await expect(listWorkers()).rejects.toThrow(/session ended/);
     expect(session().authenticated).toBe(false);
@@ -179,7 +186,10 @@ describe('what every API call carries', () => {
       .mockImplementation(async (input) =>
         String(input) === '/api/auth/session'
           ? answer({ ...SIGNED_IN, administrator: false, access: viewer })
-          : answer({ ok: false, error: 'this needs an administrator' }, { status: 403 }),
+          : answer(
+              { ok: false, errors: [{ message: 'this needs an administrator' }] },
+              { status: 403 },
+            ),
       );
     await Promise.allSettled([listWorkers(), listWorkers()]);
     await vi.waitFor(() => expect(session().access).toEqual(viewer));

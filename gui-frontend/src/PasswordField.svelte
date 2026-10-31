@@ -19,12 +19,15 @@
     placeholder = '',
     ariaLabel,
     rows = 6,
+    required = false,
   }: {
     value: string;
     placeholder?: string;
     ariaLabel?: string;
     /** How tall it grows once it has to. */
     rows?: number;
+    /** Said to a screen reader only, as `aria-required`: the browser does not refuse it empty. */
+    required?: boolean;
   } = $props();
 
   let revealed = $state(false);
@@ -69,6 +72,7 @@
       {placeholder}
       autocomplete="off"
       aria-label={ariaLabel}
+      aria-required={required || undefined}
       onpaste={paste}
       data-bwignore="true"
       data-lpignore="true"
@@ -77,7 +81,7 @@
     />
     <button
       type="button"
-      class="reveal"
+      class="icon reveal"
       onclick={() => (revealed = !revealed)}
       aria-label={revealed ? 'hide the value' : 'show the value'}
       aria-pressed={revealed}
@@ -142,20 +146,5 @@
     right: 0.3rem;
     top: 50%;
     transform: translateY(-50%);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.6rem;
-    height: 1.6rem;
-    padding: 0;
-    border: none;
-    border-radius: var(--radius);
-    background: none;
-    color: var(--dim);
-    cursor: pointer;
-  }
-
-  .reveal:hover {
-    color: var(--ink);
   }
 </style>

@@ -1,41 +1,46 @@
-//! Managing roles: which provider group gives what, in which area.
+//! Managing roles: what each gives, in which area, and which provider groups give it.
 //!
-//! A role is named for the group exactly as the provider's groups claim sends it, so it takes effect for whoever
-//! holds that group on their next request, and for someone newly added to the group at their next sign-in.
-//! Behind the gate and needing an administrator, like every other change to who may do what.
+//! A role takes effect for whoever holds it on their next request, and for someone newly added to one of its groups
+//! at their next sign-in. The built-in administrator role holds everything: it is never removed, and only its groups
+//! change. Behind the gate and needing an administrator, like every other change to who may do what.
 
 use std::collections::BTreeMap;
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
+use smeltr::leader::envelope::Envelope;
 
 use smeltr::config_file::{SHARED_DIR, group_subtree};
-use smeltr::leader::access::{Level, Role};
+use smeltr::leader::access::{ADMINISTRATOR, Level, Role};
 use smeltr::leader::accounts;
 use smeltr::leader::store::Actor;
 
+use crate::accounts_api::store_call;
 use crate::gate::{Auth, refuse};
-use crate::users_api::{no_store, store_call};
 
-/// The longest role name, in characters. A provider group can be a distinguished name, which runs long; past this
-/// it is not one a person would type into a claim mapping.
+/// The longest role or group name, in characters. A provider group can be a distinguished name, which runs long;
+/// past this it is not one a person would type into a claim mapping.
 const MAX_NAME_CHARS: usize = 256;
 
 /// A role as the API carries it.
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RoleDto {
     pub name: String,
-    pub administrator: bool,
+    /// The administrator role, which holds everything and is never removed.
+    pub built_in: bool,
+    pub groups: Vec<String>,
     pub areas: BTreeMap<String, Level>,
 }
 
 impl From<Role> for RoleDto {
     fn from(role: Role) -> RoleDto {
         RoleDto {
+            built_in: role.name == ADMINISTRATOR,
             name: role.name,
-            administrator: role.administrator,
+            groups: role.groups,
             areas: role.areas,
         }
     }
@@ -47,7 +52,7 @@ impl From<Role> for RoleDto {
 #[serde(deny_unknown_fields)]
 pub struct PutRole {
     #[serde(default)]
-    pub administrator: bool,
+    pub groups: Vec<String>,
     #[serde(default)]
     pub areas: BTreeMap<String, String>,
 }
@@ -56,12 +61,15 @@ pub struct PutRole {
 pub async fn list_roles(State(auth): State<Auth>) -> Response {
     let store = auth.store.clone();
     match store_call(move || store.list_roles()).await {
-        Ok(roles) => no_store(roles.into_iter().map(RoleDto::from).collect::<Vec<_>>()),
+        Ok(roles) => {
+            Envelope::ok(serde_json::json!({ "roles": roles.into_iter().map(RoleDto::from).collect::<Vec<_>>() }))
+                .into_response()
+        }
         Err(response) => *response,
     }
 }
 
-/// `PUT /api/roles/:name`: create the role, or replace it whole.
+/// `PUT /api/roles/:name`: create the role, or replace it whole. The administrator role takes only its groups.
 pub async fn put_role(
     State(auth): State<Auth>,
     actor: axum::Extension<Actor>,
@@ -70,28 +78,36 @@ pub async fn put_role(
 ) -> Response {
     let role = match role_of(name, request) {
         Ok(role) => role,
-        Err(why) => return refuse(StatusCode::BAD_REQUEST, &why),
+        Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, &why),
     };
     let event = accounts::event_for(&actor, "role-put", &role.name, "ok");
     let store = auth.store.clone();
     let written = role.clone();
     match store_call(move || store.put_role(&written, &event)).await {
-        Ok(()) => no_store(RoleDto::from(role)),
+        Ok(()) => Envelope::ok(RoleDto::from(role)).into_response(),
         Err(response) => *response,
     }
 }
 
-/// `DELETE /api/roles/:name`. Whoever held only this role holds nothing from their next request.
+/// `DELETE /api/roles/:name`. Whoever held only this role holds nothing from their next request, and is signed out
+/// at their next refresh.
 pub async fn delete_role(
     State(auth): State<Auth>,
     actor: axum::Extension<Actor>,
     Path(name): Path<String>,
 ) -> Response {
+    if name == ADMINISTRATOR {
+        accounts::record(auth.store.as_ref(), &actor, "role-delete", &name, "refused");
+        return refuse(
+            StatusCode::CONFLICT,
+            "the administrator role is built in and cannot be deleted",
+        );
+    }
     let event = accounts::event_for(&actor, "role-delete", &name, "ok");
     let store = auth.store.clone();
     let target = name.clone();
     match store_call(move || store.delete_role(&target, &event)).await {
-        Ok(true) => no_store(serde_json::json!({ "ok": true })),
+        Ok(true) => Envelope::done().into_response(),
         Ok(false) => {
             accounts::record(auth.store.as_ref(), &actor, "role-delete", &name, "refused");
             refuse(StatusCode::NOT_FOUND, "there is no role by that name")
@@ -108,6 +124,21 @@ fn role_of(name: String, request: PutRole) -> Result<Role, String> {
     if name.chars().any(char::is_control) {
         return Err("a role's name holds no control characters".to_string());
     }
+    if name == ADMINISTRATOR && !request.areas.is_empty() {
+        return Err("the administrator role holds everything, so only its groups can be changed".to_string());
+    }
+    let mut groups: Vec<String> = Vec::new();
+    for group in request.groups {
+        if group.is_empty() || group.chars().count() > MAX_NAME_CHARS {
+            return Err(format!("a group's name is between 1 and {MAX_NAME_CHARS} characters"));
+        }
+        if group.chars().any(char::is_control) {
+            return Err("a group's name holds no control characters".to_string());
+        }
+        if !groups.contains(&group) {
+            groups.push(group);
+        }
+    }
     let mut areas = BTreeMap::new();
     for (area, level) in request.areas {
         if area != SHARED_DIR && group_subtree(&area).is_err() {
@@ -118,11 +149,7 @@ fn role_of(name: String, request: PutRole) -> Result<Role, String> {
         };
         areas.insert(area, level);
     }
-    Ok(Role {
-        name,
-        administrator: request.administrator,
-        areas,
-    })
+    Ok(Role { name, groups, areas })
 }
 
 #[cfg(test)]
@@ -131,7 +158,7 @@ mod tests {
 
     fn request(areas: &[(&str, &str)]) -> PutRole {
         PutRole {
-            administrator: false,
+            groups: Vec::new(),
             areas: areas.iter().map(|(a, l)| (a.to_string(), l.to_string())).collect(),
         }
     }
@@ -148,10 +175,36 @@ mod tests {
         assert_eq!(role.areas["payments"], Level::Deployer);
     }
 
-    /// A distinguished name is a provider group too, commas, equals signs and spaces included.
+    /// A distinguished name is a provider group too, commas, equals signs and spaces included. A group named twice
+    /// is kept once.
     #[test]
-    fn a_name_is_the_group_as_the_provider_sends_it() {
-        assert!(role_of("CN=Smeltr Editors,OU=Groups,DC=example,DC=com".into(), request(&[])).is_ok());
+    fn a_group_is_as_the_provider_sends_it() {
+        let dn = "CN=Smeltr Editors,OU=Groups,DC=example,DC=com".to_string();
+        let mut asked = request(&[]);
+        asked.groups = vec![dn.clone(), "smeltr-editors".into(), dn.clone()];
+        let role = role_of("editors".into(), asked).unwrap();
+        assert_eq!(role.groups, vec![dn, "smeltr-editors".to_string()]);
+    }
+
+    #[test]
+    fn a_group_is_bounded() {
+        for bad in [String::new(), "a".repeat(MAX_NAME_CHARS + 1), "a\nb".into()] {
+            let mut asked = request(&[]);
+            asked.groups = vec![bad.clone()];
+            assert!(role_of("r".into(), asked).is_err(), "{bad:?}");
+        }
+    }
+
+    /// Model, point 3: the administrator role holds everything, so it gives no level in an area; its groups change.
+    #[test]
+    fn the_administrator_role_takes_only_groups() {
+        assert!(role_of(ADMINISTRATOR.into(), request(&[("payments", "viewer")])).is_err());
+        let mut asked = request(&[]);
+        asked.groups = vec!["smeltr-admins".into()];
+        assert_eq!(
+            role_of(ADMINISTRATOR.into(), asked).unwrap().groups,
+            vec!["smeltr-admins"]
+        );
     }
 
     #[test]
@@ -178,8 +231,8 @@ mod tests {
 
     #[test]
     fn the_body_takes_nothing_it_does_not_know() {
-        assert!(serde_json::from_str::<PutRole>(r#"{"administrator":true,"areas":{}}"#).is_ok());
-        assert!(serde_json::from_str::<PutRole>(r#"{"administrator":true,"grants":{}}"#).is_err());
+        assert!(serde_json::from_str::<PutRole>(r#"{"groups":["g"],"areas":{}}"#).is_ok());
+        assert!(serde_json::from_str::<PutRole>(r#"{"administrator":true,"areas":{}}"#).is_err());
     }
 
     /// The handlers behind the gate, mounted as the leader mounts them.
@@ -211,16 +264,16 @@ mod tests {
             Arc::new(smeltr::leader::sqlite_store::SqliteStore::open(FsPath::new(":memory:"), &key).unwrap())
         }
 
-        /// An OIDC account holding an administrator role.
+        /// An OIDC account given the administrator role by its group.
         fn administrator(store: &dyn Store) -> UserRecord {
             let admins = Role {
-                name: "smeltr-admins".into(),
-                administrator: true,
+                name: ADMINISTRATOR.into(),
+                groups: vec!["smeltr-admins".into()],
                 areas: BTreeMap::new(),
             };
             let event = accounts::event_for(&Actor::system(), "role-put", &admins.name, "ok");
             store.put_role(&admins, &event).unwrap();
-            let groups = vec![admins.name.clone()];
+            let groups = admins.groups.clone();
             let new_id = accounts::generate_user_id();
             let created = accounts::event_for(&Actor::system(), "account-create", &new_id, "ok");
             store
@@ -315,6 +368,41 @@ mod tests {
             let (status, body) = ask(at, &auth, &ada, "DELETE", "/api/roles/%2Fteam%2Fsub", "").await;
             assert_eq!(status, 200, "{body}");
             assert!(!store.list_roles().unwrap().iter().any(|r| r.name == "/team/sub"));
+        }
+
+        /// Model, point 3: the administrator role always exists, and gives no level in an area.
+        #[tokio::test]
+        async fn the_administrator_role_stays_and_only_its_groups_change() {
+            let store = store();
+            let ada = administrator(store.as_ref());
+            let auth = auth(store.clone());
+            let at = serve(auth.clone()).await;
+
+            let (status, body) = ask(at, &auth, &ada, "DELETE", "/api/roles/administrator", "").await;
+            assert_eq!(status, 409, "{body}");
+            let (status, body) = ask(
+                at,
+                &auth,
+                &ada,
+                "PUT",
+                "/api/roles/administrator",
+                r#"{"groups":["smeltr-admins"],"areas":{"payments":"viewer"}}"#,
+            )
+            .await;
+            assert_eq!(status, 422, "{body}");
+            let (status, body) = ask(
+                at,
+                &auth,
+                &ada,
+                "PUT",
+                "/api/roles/administrator",
+                r#"{"groups":["smeltr-admins","smeltr-ops"]}"#,
+            )
+            .await;
+            assert_eq!(status, 200, "{body}");
+            let roles = store.list_roles().unwrap();
+            let admin = roles.iter().find(|r| r.name == ADMINISTRATOR).unwrap();
+            assert_eq!(admin.groups, vec!["smeltr-admins", "smeltr-ops"]);
         }
 
         /// Deleting a role that is not there changes nothing, and the audit says it was refused.

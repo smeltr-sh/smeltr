@@ -157,7 +157,7 @@ export type WorkerHealth = 'healthy' | WarningSeverity;
 
 /** The worst of the worker's heartbeat (silent, never heartbeated and revoked are failed), the
  * warnings about the worker itself, and the warnings about the sources, destinations,
- * pipelines, identities and group of its group. A warning names a group, not the worker running
+ * pipelines and group of its group. A warning names a group, not the worker running
  * its subject, so an object's warning lands on every worker in that group. */
 export function workerHealth(row: WorkerRow, warnings: WarningDto[]): WorkerHealth {
   if (row.status === 'silent' || row.status === 'neverHeartbeated' || row.status === 'revoked') {
@@ -181,7 +181,6 @@ const GROUP_OBJECTS: ReadonlySet<WarningDto['subjectKind']> = new Set([
   'destination',
   'pipeline',
   'group',
-  'identity',
 ]);
 
 /** Counts a displayed roster by the same status labels the Status page uses. */

@@ -4,7 +4,7 @@
   first, what it does with an object once it is committed, and how often it
   lists. Every listing source draws the same block, so the four read alike.
 
-  Mutates `value` in place, as `ObjectStoreAccess` does; the page's Save
+  Mutates `value` in place, as `ConnectorAccess` does; the page's Save
   commits. `show` picks the half: what every form shows, or the poll interval,
   which sits under the form's Advanced.
 -->
@@ -41,6 +41,7 @@
 
 <script lang="ts">
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import { numberOrUnset } from './page';
 
   let {
@@ -62,7 +63,7 @@
 </script>
 
 {#if show === 'main'}
-  <Field field="prefix" label="prefix">
+  <Field optional field="prefix" label="prefix">
     {#snippet help()}
       Only {noun}s whose name in the {within} starts with it. It does not start with <code>/</code>.
       Empty is the whole {within}.
@@ -82,7 +83,6 @@
       it.
       <code>move</code> moves it under the move prefix in place of the prefix.
     {/snippet}
-    {#snippet note()}Default <code>keep</code>.{/snippet}
     <select
       value={value.afterCommit ?? 'keep'}
       onchange={(e) => setAfterCommit(value, e.currentTarget.value as AfterCommit)}
@@ -93,26 +93,27 @@
     </select>
   </Field>
   {#if value.afterCommit === 'move'}
-    <Field field="movePrefix" label="move prefix">
-      {#snippet help()}
-        Where <code>move</code> puts {noun === 'object' ? 'an' : 'a'}
-        {noun}, in place of the prefix, and outside it. It does not start with <code>/</code>, and
-        ends in <code>/</code> when the prefix does or is empty, and only then.
-      {/snippet}
-      <input
-        type="text"
-        value={value.movePrefix ?? ''}
-        oninput={(e) => (value.movePrefix = optional(e.currentTarget.value))}
-        placeholder="done/"
-      />
-    </Field>
+    <Nested>
+      <Field required field="movePrefix" label="move prefix">
+        {#snippet help()}
+          Where <code>move</code> puts {noun === 'object' ? 'an' : 'a'}
+          {noun}, in place of the prefix, and outside it. It does not start with <code>/</code>, and
+          ends in <code>/</code> when the prefix does or is empty, and only then.
+        {/snippet}
+        <input
+          type="text"
+          value={value.movePrefix ?? ''}
+          oninput={(e) => (value.movePrefix = optional(e.currentTarget.value))}
+          placeholder="done/"
+        />
+      </Field>
+    </Nested>
   {/if}
   <Field field="start" label="start at">
     {#snippet help()}
       What it reads first: <code>everything</code> its first listing finds, or only what arrives
       after it, <code>new</code>. <code>new</code> needs after commit <code>keep</code>.
     {/snippet}
-    {#snippet note()}Default <code>everything</code>.{/snippet}
     <select
       value={value.start ?? 'everything'}
       onchange={(e) => setStart(value, e.currentTarget.value as ListStart)}
@@ -122,11 +123,7 @@
     </select>
   </Field>
 {:else}
-  <Field
-    field="pollIntervalSecs"
-    label="poll interval (seconds)"
-    note="Default {LIMITS.pollIntervalSecs.default}."
-  >
+  <Field optional field="pollIntervalSecs" label="poll interval (seconds)">
     {#snippet help()}
       Seconds from the start of one listing to the start of the next. At least {LIMITS
         .pollIntervalSecs.min}.

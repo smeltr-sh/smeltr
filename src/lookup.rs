@@ -3,7 +3,7 @@
 //! covers the first and third (`MatchKind::Exact`/`Regex` over a `LookupSource::Csv`/`Inline` table), `mmdb::MmdbTable`
 //! the second.
 //!
-//! Every table loads once, at `plan::plan::compile` time — never per batch, never per row. "Lookup files load once per
+//! Every table loads once, at `plan::compile::compile` time — never per batch, never per row. "Lookup files load once per
 //! deployment, `Arc`" and "missing lookup file is a compile-time error" (design doc, Compiler): `Op::Call`
 //! carries the already-loaded `Table` directly, so a compiled `Plan` never touches the filesystem again, and a bad
 //! path, a malformed CIDR/regex row, or a corrupt MMDB file is a `CompileError`, never a row-time surprise.
@@ -28,8 +28,8 @@ use crate::core::id::SlotId;
 use crate::format::csv_scan;
 use crate::ops::convert::{parse_bool, parse_f64, parse_i64};
 use crate::ops::timeparse;
+use crate::plan::compile::Output;
 use crate::plan::config::{MatchKind, Multiplicity, TimeSource};
-use crate::plan::plan::Output;
 
 #[derive(Debug)]
 pub struct LookupError(pub String);
@@ -348,7 +348,7 @@ impl RowTable {
         key_column: &str,
         match_kind: MatchKind,
     ) -> Result<RowTable, LookupError> {
-        let (headers, _) = csv_header(shown, &file, delimiter)?;
+        let (headers, rest) = csv_header(shown, &file, delimiter)?;
         let key = key_of(&headers, key_column)?;
         let kept = stored.map(|stored| index_path(stored, key_column, match_kind, delimiter));
         // An index this host kept is used when it reads as sound; anything else is built again.
@@ -358,7 +358,7 @@ impl RowTable {
         {
             return RowTable::open(headers, Some(file), index, match_kind, key);
         }
-        let (_, lines) = csv_lines(shown, &file, delimiter)?;
+        let lines = csv_rows(shown, &file[rest..], delimiter)?;
         let mut cells = CellsBuilder::default();
         for (i, fields) in lines.enumerate() {
             let fields = fields?;
@@ -723,7 +723,7 @@ fn check_width(row: usize, fields: usize, width: usize) -> Result<(), LookupErro
 /// A lookup table's `path` is an arbitrary string in the config file, and the file's contents come straight back out
 /// through the table's output fields. Without this, anyone who can write a pipeline could read any file the process
 /// can — `/etc/passwd` parses as a perfectly good colon-delimited table — turning "can edit a pipeline" into "can
-/// read the sealing key, the TLS key, and every other tenant's config".
+/// read the secrets encryption key, the TLS key, and every other tenant's config".
 ///
 /// The file travels in the repository beside the config naming it, so the same text has to work at whatever absolute
 /// path the leader and each worker checked the commit out to. It resolves against `at` -- the directory of the
@@ -770,8 +770,8 @@ pub fn check_relative(path: &str) -> Result<(), LookupError> {
 /// A lookup table file's headers, every row checked and none kept: what an upload needs to know of a table that may
 /// be gigabytes.
 pub fn csv_headers(shown: &str, bytes: &[u8], delimiter: u8) -> Result<Vec<String>, LookupError> {
-    let (headers, lines) = csv_lines(shown, bytes, delimiter)?;
-    for line in lines {
+    let (headers, rest) = csv_header(shown, bytes, delimiter)?;
+    for line in csv_rows(shown, &bytes[rest..], delimiter)? {
         line?;
     }
     Ok(headers)
@@ -797,31 +797,20 @@ fn csv_header(shown: &str, bytes: &[u8], delimiter: u8) -> Result<(Vec<String>, 
     Err(LookupError(format!("lookup file `{shown}` is empty")))
 }
 
-/// A lookup file's headers, and each later line split into its fields. Blank lines are skipped.
-#[allow(clippy::type_complexity)]
-fn csv_lines<'b>(
+/// A lookup file's lines after its header, `rows`, each split into its fields. Blank lines are skipped.
+fn csv_rows<'b>(
     shown: &str,
-    bytes: &'b [u8],
+    rows: &'b [u8],
     delimiter: u8,
-) -> Result<
-    (
-        Vec<String>,
-        impl Iterator<Item = Result<Vec<csv_scan::Field<'b>>, LookupError>>,
-    ),
-    LookupError,
-> {
-    let (headers, rest) = csv_header(shown, bytes, delimiter)?;
-    let text = std::str::from_utf8(&bytes[rest..])
-        .map_err(|e| LookupError(format!("lookup file `{shown}` is not valid UTF-8: {e}")))?;
+) -> Result<impl Iterator<Item = Result<Vec<csv_scan::Field<'b>>, LookupError>>, LookupError> {
+    let text =
+        std::str::from_utf8(rows).map_err(|e| LookupError(format!("lookup file `{shown}` is not valid UTF-8: {e}")))?;
     let shown = shown.to_string();
     let lines = text.lines().filter(|l| !l.trim().is_empty()).enumerate();
-    Ok((
-        headers,
-        lines.map(move |(n, line)| {
-            csv_scan::split_line(line.as_bytes(), delimiter)
-                .ok_or_else(|| LookupError(format!("lookup file `{shown}` line {}: malformed quoting", n + 2)))
-        }),
-    ))
+    Ok(lines.map(move |(n, line)| {
+        csv_scan::split_line(line.as_bytes(), delimiter)
+            .ok_or_else(|| LookupError(format!("lookup file `{shown}` line {}: malformed quoting", n + 2)))
+    }))
 }
 
 /// What an `Op::Call` that looks up runs: a loaded table, how many of its rows a key takes, and each output's miss
@@ -1052,7 +1041,7 @@ pub fn run(
                 }
                 for (i, builder) in builders.iter_mut().enumerate() {
                     let Some(col_idx) = row_columns[i] else {
-                        // Validated once at compile time (`plan::plan`'s Lookup arm) -- unreachable here.
+                        // Validated once at compile time (`plan::compile`'s Lookup arm) -- unreachable here.
                         unreachable!("output column resolved at compile time");
                     };
                     let default = defaults[i].as_deref().map(str::as_bytes);
@@ -1079,7 +1068,7 @@ pub fn run(
                     let value = values.and_then(|v| v[i].as_deref()).map(str::as_bytes);
                     let default = defaults[i].as_deref().map(str::as_bytes);
                     if all {
-                        // Multiplicity is moot for Mmdb (its trie finds at most one record) -- `plan::plan` rejects
+                        // Multiplicity is moot for Mmdb (its trie finds at most one record) -- `plan::compile` rejects
                         // `All` for this source as a compile error, so this arm is unreachable in practice; kept
                         // exhaustive rather than assumed away.
                         let texts: Vec<&[u8]> = value.into_iter().collect();

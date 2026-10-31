@@ -114,10 +114,49 @@ either side: it is polled, delivered and committed once, whatever its slices.
 Egress is one thread per destination, owning that destination's client and
 draining a queue every reader pushes to. Retry belongs to egress: it keeps
 each unit until acknowledged and re-sends it itself, so a reader carries
-offsets and nothing else. A destination's concurrency is found, not
-configured: a transport that answers per request discovers its limit from the
-destination's own refusals, backing off fast and recovering slowly. A
-destination states what it may hold in bytes, and its concurrency follows.
+offsets and nothing else. A destination that names which of a batch's rows
+did not land has only those sent again: the rest of the batch is released,
+and the batch is acknowledged once they land. A batch the destination would not
+take is sent again alone. A destination that fails as a whole sends again every
+unit not yet acknowledged. A unit that failed waits its own backoff, doubling
+with each failure, so the batches that land beside it do not wait on it; only a
+destination where nothing lands backs off as a whole. The destination counts as
+recovered once every unit that failed has landed. A destination's limit is its
+share of the pool when the worker sizes it, else the `bufferBytes` it states or
+its kind's default.
+One that writes files holds up to its limit, since it acknowledges a batch
+only once the file holding it commits. Every other destination is paced:
+egress sets a target, the rate its acknowledgments come back at times the
+least round trip they take, with a gain over it while the rate still grows
+and a short probe above and below it after, and never over the limit. The
+target is at least two batches, so the link does not idle while an
+acknowledgment comes back. Once the least round trip is ten seconds old, the
+target is one batch until one sent alone comes back, which is the round trip
+measured again. When a destination asks to be sent less (a 429, a 503, or a
+bulk item refused because its queue is full), the target is capped at a fixed
+fraction of what it had in flight then, at most once a round trip, and the
+cap is raised at each probe the destination takes without asking again. The
+target is the queue's budget, and a batch's bytes stay in it until the
+destination acknowledges the batch, so the target bounds what is in flight
+too. A sample taken while the source was not pressing on the queue may
+raise the estimate but never lower it, so a quiet source does not shrink a
+fast link's target, and a slow link
+stops the queue growing where more bytes would buy no more throughput. A link
+measured to carry the limit or more, on average over five minutes of
+delivering, when the worker sized the limit from memory, is a notice: memory,
+not the link, is what bounds the destination.
+
+```mermaid
+flowchart LR
+  A[acknowledgments] --> R[rate, windowed max]
+  A --> T[round trip, windowed min]
+  A --> S[asked to be sent less]
+  R --> X[target: rate x round trip x gain]
+  T --> X
+  S -->|caps it: cut once a round trip, raised at each probe it does not ask in| X
+  X -->|clamped: two batches to the limit| B[queue budget]
+  B --> D[destination in-flight bound]
+```
 
 ## Commit
 
@@ -158,13 +197,19 @@ no change to the bundle. The columnar budget stops at a fixed amount per
 transform thread, past which a thread no longer waits on it, and leaves the
 rest to the queues.
 
-Each destination queue the bundle leaves unset holds a small reserve of its
-own and borrows above it from the pool, up to a ceiling past which a busier
-destination gains little. So a busy destination takes what idle ones leave,
-and memory follows the traffic rather than the count of destinations. A full
-pool refuses an offer as a full queue does, and the batch waits on its lane.
-A stalled destination holds at most its ceiling, so the others keep the rest,
-and an empty queue always takes one batch, so every destination moves.
+Each destination queue the bundle leaves unset holds one batch as its reserve
+and borrows above it from the pool as far as its paced budget asks. Alone, a
+queue may take the whole pool. A queue the pool refused is wanting for a
+moment after; while any queue wants, each may hold only an equal share of the
+pool, and one above it gives back as its acknowledgments come in, never by
+taking back what is in flight. So a busy destination takes what idle ones
+leave, a slow one holds little, and memory follows the traffic rather than
+the count of destinations. A full pool refuses an offer as a full queue does,
+and the batch waits on its lane. A stalled destination's target falls to one
+batch, and an empty queue always takes one batch, so every destination moves.
+A destination that grew alone and then stalls keeps what it has in flight
+until that is acknowledged or given up, and the others share the rest
+meanwhile.
 
 Receivers share a pool of their own the same way. Each holds one request of
 the largest it reads as its reserve, so every receiver takes a request
@@ -173,24 +218,25 @@ whatever the others hold, and borrows above it up to its ceiling.
 Each lane and each reserve holds whole batches whatever the traffic, so they
 grow with the count of sources and destinations. When they would take more
 than half the memory, the worker cuts its batches smaller, down to a floor
-below which the work per batch outweighs the batch. A destination's senders
-are held whatever the traffic too, and are cut toward the count each starts
-with when together they would take more than a quarter of it. A sender gone
-idle hands back what its allocator holds free.
+below which the work per batch outweighs the batch. The senders a destination
+starts with are held whatever the traffic too. A paced destination starts
+another sender when all its senders are busy. Each sender borrows what it
+holds from the pool before it starts and keeps it while the destination
+lives, and the target is held to what the pool lends beyond the senders. A
+sender gone idle hands back what its allocator holds free.
 
 ```mermaid
 flowchart LR
   T[transform threads] -->|offer| Q1[queue: reserve]
   T -->|offer| Q2[queue: reserve]
-  Q1 -. above reserve, up to ceiling .-> P[(pool)]
-  Q2 -. above reserve, up to ceiling .-> P
+  Q1 -. above reserve, to its budget and share .-> P[(pool)]
+  Q2 -. above reserve, to its budget and share .-> P
   Q1 -->|acknowledged| P
 ```
 
-Its memory is what its startup configuration names,
-or else its container's limit, except inside a leader, whose share of the
-container has no fixed size. With neither, every unset cap takes its default,
-since a host's memory is shared with whatever else runs there.
+Its memory is what its startup configuration names, or else most of its
+container's limit, or of the host's memory without one. The rest is left to
+what runs beside it: a leader in the same process, or the host's own.
 
 ## A stalled destination stops every source feeding it and nothing else
 
@@ -208,10 +254,12 @@ hands back a batch and later commits it; it declares the metadata fields its
 records carry and the encoding they arrive in. A destination is handed a
 batch's rows once, whole, after the batch has run clean; it delivers without
 waiting, and reports completions and individual refusals as it learns of them.
-A Kafka source and a Kafka destination build without reaching their broker,
-so a deployment starts during a broker outage and reports it as a connection
-error. A Kafka source places each partition its group hands it: at the
-group's committed offset, or else at its start, a timestamp resolved then.
+A Kafka source builds without reaching its broker. A Kafka destination asks
+its broker for its topic's message ceiling at build, within one bounded wait,
+and builds with librdkafka's sizes when there is no answer. So a deployment
+starts during a broker outage and reports it as a connection error. A Kafka
+source places each partition its group hands it: at the group's committed
+offset, or else at its start, a timestamp resolved then.
 Its stop, when set, ends each partition before the first record at or past
 it. Each commit carries the start its offset descends from and the time of
 the deployed commit that placed it. A partition whose commit carries another

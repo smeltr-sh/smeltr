@@ -14,9 +14,9 @@ use serde_json::Value;
 use smeltr::core::buffer::BufferPool;
 use smeltr::core::ctx::Ctx;
 use smeltr::core::error::ErrorSink;
+use smeltr::plan::compile::compile;
 use smeltr::plan::config::LookupSource;
 use smeltr::plan::output::run_to_json_marked;
-use smeltr::plan::plan::compile;
 use smeltr::plan::topology::SourceMeta;
 
 use crate::harness;
@@ -123,7 +123,7 @@ fn case(code: &str, input: &[&str], expect: Expect) {
         let notes = r
             .exceptions
             .iter()
-            .map(|(_, m)| m.as_str())
+            .map(|(_, m, _)| m.as_str())
             .collect::<Vec<_>>()
             .join("; ");
         let note_ok = match want_note {

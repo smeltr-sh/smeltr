@@ -17,14 +17,12 @@ export type Tab = 'status' | 'map' | 'build' | 'changes' | 'admin' | 'me';
 
 /** The tabs of Admin -> System. Logging is named in the design and has no
  * leader-side settings yet, so it is not offered. */
-export type SystemSection =
-  'general' | 'sessions' | 'oidc' | 'certificates' | 'git' | 'agents' | 'license';
+export type SystemSection = 'general' | 'sessions' | 'certificates' | 'git' | 'agents' | 'license';
 
 export const SYSTEM_SECTIONS: { section: SystemSection; label: string }[] = [
   { section: 'general', label: 'General' },
   { section: 'sessions', label: 'Sessions' },
-  { section: 'oidc', label: 'Single sign-on' },
-  { section: 'certificates', label: 'Certificates' },
+  { section: 'certificates', label: 'Leader certificate' },
   { section: 'git', label: 'Git remote' },
   { section: 'agents', label: 'AI agents' },
   { section: 'license', label: 'License' },
@@ -33,8 +31,11 @@ export const SYSTEM_SECTIONS: { section: SystemSection; label: string }[] = [
 /** The tabs of Admin -> Workers: the fleet's workers, and the enrollment codes that bring them in. */
 export type WorkersSection = 'workers' | 'enrollment';
 
-/** The tabs of Admin -> Accounts: the people, and the roles their provider's groups give them. */
-export type AccountsSection = 'users' | 'roles';
+/** The tabs of Admin -> Accounts: the accounts, the roles provider groups give them, and the provider. */
+export type AccountsSection = 'accounts' | 'roles' | 'oidc';
+
+/** The tabs of Admin -> Secrets: the secrets, and the key that encrypts the ones the leader stores. */
+export type SecretsSection = 'secrets' | 'key';
 
 export type Route =
   // `deploying` is the commit a deploy just pointed the fleet at, whose
@@ -86,13 +87,14 @@ export type Route =
   // `only` narrows a list to the objects an editor's Connections linked to (`connections.ts`).
   | { tab: 'build'; page: 'sources'; json: boolean; focus?: string; only?: string[] }
   | { tab: 'build'; page: 'destinations'; json: boolean; focus?: string; only?: string[] }
-  | { tab: 'build'; page: 'identities'; json: boolean }
   | { tab: 'build'; page: 'samples' }
   // `sample` carries the choice from a sample row's "Run in a pipeline"
   // link, so the list can say which sample opening a pipeline will preview.
   | { tab: 'build'; page: 'pipelines'; sample?: string; only?: string[] }
   | { tab: 'build'; page: 'lookups'; json: boolean }
   | { tab: 'build'; page: 'grok'; json: boolean; only?: string[] }
+  // `open` is a schema to land on, opened: what a pipeline's Produces links to.
+  | { tab: 'build'; page: 'schemas'; json: boolean; open?: string }
   // `sampling` is the Route a sample tab (`ROUTES_TABS`). `make` opens a new route; `chose` puts the pipeline the editor just saved on one being made (`Making`), and
   // `group` is that one's.
   // `back` is the page Save returns to.
@@ -135,7 +137,8 @@ export type Route =
   | { tab: 'changes'; page: 'history' }
   | { tab: 'admin'; page: 'workers'; section: WorkersSection }
   | { tab: 'admin'; page: 'groups' }
-  | { tab: 'admin'; page: 'secrets' }
+  | { tab: 'admin'; page: 'secrets'; section: SecretsSection }
+  | { tab: 'admin'; page: 'certificates'; adding?: boolean }
   // `section` is which tab of Accounts is showing.
   | { tab: 'admin'; page: 'accounts'; section: AccountsSection }
   // `section` is which tab of System is showing; the others arrive when their
@@ -258,6 +261,7 @@ const SECTIONS: Partial<Record<Tab, SectionItem[]>> = {
     { label: 'Workers', hash: '#/admin' },
     { label: 'Worker groups', hash: '#/admin/groups' },
     { label: 'Secrets', hash: '#/admin/secrets' },
+    { label: 'Certificates', hash: '#/admin/certificates' },
     { label: 'Accounts', hash: '#/admin/accounts' },
     { label: 'System', hash: '#/admin/system/general' },
   ],
@@ -271,7 +275,7 @@ export const RESOURCES_TABS: SectionItem[] = [
   { label: 'Samples', hash: '#/build' },
   { label: 'Lookup tables', hash: '#/build/lookups' },
   { label: 'Grok patterns', hash: '#/build/grok' },
-  { label: 'Connection identities', hash: '#/build/identities' },
+  { label: 'Schemas', hash: '#/build/schemas' },
 ];
 
 /** The Resources tabs the person signed in may open: samples are an editor's. */
@@ -291,11 +295,32 @@ export const WORKERS_TABS: SectionItem[] = [
   { label: 'Enrollment codes', hash: '#/admin/enrollment' },
 ];
 
-/** Admin -> Accounts' tabs, in the same strip. */
-export const ACCOUNTS_TABS: SectionItem[] = [
-  { label: 'Users', hash: '#/admin/accounts' },
-  { label: 'Roles', hash: '#/admin/accounts/roles' },
+/** The tabs of Admin -> Accounts. The first is where the bare `#/admin/accounts` lands. */
+export const ACCOUNTS_SECTIONS: { section: AccountsSection; label: string }[] = [
+  { section: 'accounts', label: 'Accounts' },
+  { section: 'roles', label: 'Roles' },
+  { section: 'oidc', label: 'Single sign-on' },
 ];
+
+export function accountsHash(section: AccountsSection): string {
+  return section === 'accounts' ? '#/admin/accounts' : `#/admin/accounts/${section}`;
+}
+
+/** Admin -> Secrets' tabs. The first is where the bare `#/admin/secrets` lands. */
+export const SECRETS_TABS: SectionItem[] = [
+  { label: 'Secrets', hash: '#/admin/secrets' },
+  { label: 'Encryption key', hash: '#/admin/secrets/key' },
+];
+
+export function secretsHash(section: SecretsSection): string {
+  return section === 'secrets' ? '#/admin/secrets' : `#/admin/secrets/${section}`;
+}
+
+/** Admin -> Accounts' tabs, in the same strip. */
+export const ACCOUNTS_TABS: SectionItem[] = ACCOUNTS_SECTIONS.map((s) => ({
+  label: s.label,
+  hash: accountsHash(s.section),
+}));
 
 /** Which entry of its section a page marks. A page opened from a list --
  * a pipeline, a preview, a locked test, a branch under review -- marks
@@ -307,12 +332,12 @@ const SECTION_OF: Record<Route['page'], string | null> = {
   graph: null,
   sources: 'Sources',
   destinations: 'Destinations',
-  identities: 'Resources',
   samples: 'Resources',
   pipelines: 'Pipelines',
   routes: 'Routes',
   lookups: 'Resources',
   grok: 'Resources',
+  schemas: 'Resources',
   'route-preview': 'Routes',
   pipeline: 'Pipelines',
   'lock-test': 'Resources',
@@ -323,6 +348,7 @@ const SECTION_OF: Record<Route['page'], string | null> = {
   workers: 'Workers',
   groups: 'Worker groups',
   secrets: 'Secrets',
+  certificates: 'Certificates',
   accounts: 'Accounts',
   system: 'System',
   'agent-permissions': null,
@@ -347,7 +373,6 @@ export function section(route: Route): { items: SectionItem[]; here: string } | 
 const SCOPED_PAGES: ReadonlySet<Route['page']> = new Set([
   'sources',
   'destinations',
-  'identities',
   'samples',
   'pipelines',
   'pipeline',
@@ -355,6 +380,7 @@ const SCOPED_PAGES: ReadonlySet<Route['page']> = new Set([
   'route-preview',
   'lookups',
   'grok',
+  'schemas',
   'lock-test',
 ]);
 
@@ -374,20 +400,21 @@ const MOVED: Record<string, string> = {
   samples: '#/build',
   'map/sources': '#/build/sources',
   'map/destinations': '#/build/destinations',
+  'admin/system/oidc': '#/admin/accounts/oidc',
 };
 
 /** The hash a moved route should be rewritten to, or null when it is already
  * a current one. Whatever followed the section is carried over, so
  * `#/sources/json` and `#/pipelines/orders` both keep what they named.
  *
- * Longest key first, since a key can be two segments: `#/map/sources` is a
+ * Longest key first, since a key can be several segments: `#/map/sources` is a
  * moved route while `#/map` is a current one. */
 export function movedTo(hash: string): string | null {
   const parts = hash
     .replace(/^#\/?/, '')
     .split('/')
     .filter((p) => p.length > 0);
-  for (let take = Math.min(2, parts.length); take > 0; take--) {
+  for (let take = Math.min(3, parts.length); take > 0; take--) {
     const to = MOVED[parts.slice(0, take).join('/')];
     if (to) return [to, ...parts.slice(take)].join('/');
   }
@@ -482,10 +509,13 @@ export function parseRoute(hash: string): Route {
           return { tab: 'build', page, json: false, focus: decodeURIComponent(parts[2]) };
         return { tab: 'build', page, json: false, ...only(search) };
       }
-      if (parts[1] === 'identities') return { tab: 'build', page: 'identities', json: json(2) };
       if (parts[1] === 'lookups') return { tab: 'build', page: 'lookups', json: json(2) };
       if (parts[1] === 'grok')
         return { tab: 'build', page: 'grok', json: json(2), ...only(search) };
+      if (parts[1] === 'schemas') {
+        const open = new URLSearchParams(search).get('open');
+        return { tab: 'build', page: 'schemas', json: json(2), ...(open ? { open } : {}) };
+      }
       if (parts[1] === 'routes') {
         if (parts[2] === 'preview') return { tab: 'build', page: 'route-preview' };
         const params = new URLSearchParams(search);
@@ -573,13 +603,16 @@ export function parseRoute(hash: string): Route {
       return { tab: 'changes', page: 'changes' };
     case 'admin':
       if (parts[1] === 'groups') return { tab: 'admin', page: 'groups' };
-      if (parts[1] === 'secrets') return { tab: 'admin', page: 'secrets' };
+      if (parts[1] === 'secrets') {
+        return { tab: 'admin', page: 'secrets', section: parts[2] === 'key' ? 'key' : 'secrets' };
+      }
+      if (parts[1] === 'certificates')
+        return parts[2] === 'new'
+          ? { tab: 'admin', page: 'certificates', adding: true }
+          : { tab: 'admin', page: 'certificates' };
       if (parts[1] === 'accounts') {
-        return {
-          tab: 'admin',
-          page: 'accounts',
-          section: parts[2] === 'roles' ? 'roles' : 'users',
-        };
+        const named = ACCOUNTS_SECTIONS.find((s) => s.section === parts[2]);
+        return { tab: 'admin', page: 'accounts', section: named?.section ?? 'accounts' };
       }
       if (parts[1] === 'system') {
         const named = SYSTEM_SECTIONS.find((s) => s.section === parts[2]);
@@ -633,7 +666,7 @@ function pipelineCrumb(id: string, names: PipelineNames): string {
  * themselves here, the same way a `RESOURCES_TABS` entry names itself in
  * the tab strip. */
 function drilledInto(route: Route, names: PipelineNames): Crumb[] {
-  const [samplesTab, lookupsTab, grokTab, identitiesTab] = RESOURCES_TABS;
+  const [samplesTab, lookupsTab, grokTab, schemasTab] = RESOURCES_TABS;
   switch (route.page) {
     case 'samples':
       return [{ label: samplesTab.label }];
@@ -641,8 +674,8 @@ function drilledInto(route: Route, names: PipelineNames): Crumb[] {
       return [{ label: lookupsTab.label }];
     case 'grok':
       return [{ label: grokTab.label }];
-    case 'identities':
-      return [{ label: identitiesTab.label }];
+    case 'schemas':
+      return [{ label: schemasTab.label }];
     case 'route-preview':
       return [{ label: 'route preview' }];
     case 'pipeline':
@@ -738,7 +771,7 @@ const HELD_PAGES: Record<string, string> = {
   manifest: 'routes',
   lookups: 'lookups',
   grok: 'grok',
-  identities: 'identities',
+  schemas: 'schemas',
 };
 
 const SECTION_PAGES: Record<string, string> = {
@@ -747,7 +780,6 @@ const SECTION_PAGES: Record<string, string> = {
   'routes.json': 'routes',
   'lookup-tables.json': 'lookups',
   'grok-patterns.json': 'grok',
-  'identities.json': 'identities',
 };
 
 /** Where a bundle path is edited: the scope holding it, and the page holding
@@ -764,6 +796,7 @@ export function editorFor(path: string): { scope: string; hash: string } | null 
 
   const pipeline = /^pipelines\/(.+)\.json$/.exec(file);
   if (pipeline) return { scope, hash: `#/build/pipelines/${encodeURIComponent(pipeline[1])}` };
+  if (/^schemas\/.+\.json$/.test(file)) return { scope, hash: '#/build/schemas' };
 
   const page = SECTION_PAGES[file];
   return page ? { scope, hash: `#/build/${page}` } : null;

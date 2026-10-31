@@ -248,7 +248,7 @@
 
     <div class="card fields">
       <div class="grow">
-        <Field label="Name">
+        <Field required label="Name">
           <input
             bind:value={name}
             placeholder="what this test checks"
@@ -350,18 +350,12 @@
 </SectionShell>
 
 <style>
-  .grow {
-    flex-grow: 1;
-  }
   h2 {
     margin: 0;
     font-size: var(--text-micro);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--dim);
-  }
-  .dim {
     color: var(--dim);
   }
   .warn {

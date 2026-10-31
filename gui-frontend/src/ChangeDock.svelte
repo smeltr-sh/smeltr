@@ -1,10 +1,11 @@
 <!--
   Where a change stands before it deploys, held at the bottom of the viewport
   so it stays in view while the conversation and the diff scroll: what its
-  reviewers said, how its tests came out, whether it is current with main,
-  and the button that deploys it.
+  reviewers said, how its tests came out, what it holds that will not deploy,
+  whether it is current with main, and the button that deploys it.
 -->
 <script lang="ts">
+  import StateMark from './StateMark.svelte';
   import Locked from './Locked.svelte';
   import type { Reviews, TestsTally } from './review';
   import { count } from './time';
@@ -14,6 +15,8 @@
     tests,
     testsLoading,
     behind,
+    leftOut = 0,
+    schemaFindings,
     bringingCurrent,
     bringCurrentDisabled,
     onbringcurrent,
@@ -29,6 +32,10 @@
     testsLoading: boolean;
     /** Commits `main` has that the branch does not. */
     behind: number;
+    /** Samples no test names, which the deploy leaves out. */
+    leftOut?: number;
+    /** Where the rows do not fit a schema their pipeline produces, absent while they are read. */
+    schemaFindings?: number;
     bringingCurrent: boolean;
     bringCurrentDisabled: boolean;
     onbringcurrent: () => void;
@@ -50,39 +57,55 @@
     <div class="dock-row">
       <span class="item">
         {#if reviews.state === 'changes-requested'}
-          <span class="mark req" aria-hidden="true">!</span>
+          <StateMark state="warning" size={17} />
           <span>{reviews.names.join(', ')} requested changes</span>
         {:else if reviews.state === 'approved'}
-          <span class="mark ok" aria-hidden="true">&#10003;</span>
+          <StateMark state="ok" size={17} />
           <span>Approved by {reviews.names.join(', ')}</span>
         {:else}
-          <span class="mark" aria-hidden="true"></span>
+          <StateMark state="info" size={17} />
           <span class="dim">No reviews yet</span>
         {/if}
       </span>
 
       <span class="item">
         {#if testsLoading}
-          <span class="mark" aria-hidden="true"></span>
+          <StateMark state="info" size={17} />
           <span class="dim">Running tests&hellip;</span>
         {:else if tests.total === 0}
-          <span class="mark" aria-hidden="true"></span>
+          <StateMark state="info" size={17} />
           <span class="dim">No tests</span>
         {:else if tests.failed > 0}
-          <span class="mark req" aria-hidden="true">!</span>
+          <StateMark state="error" size={17} />
           <span>{tests.failed} of {count(tests.total, 'test')} fail</span>
         {:else if tests.couldNotRun > 0}
-          <span class="mark" aria-hidden="true"></span>
+          <StateMark state="warning" size={17} />
           <span>{tests.couldNotRun} of {count(tests.total, 'test')} could not run</span>
         {:else}
-          <span class="mark ok" aria-hidden="true">&#10003;</span>
+          <StateMark state="ok" size={17} />
           <span>{tests.passed} of {count(tests.total, 'test')}</span>
         {/if}
       </span>
 
+      {#if leftOut > 0}
+        <span class="item">
+          <!-- Nothing to fix: what stays on the branch is said, not warned about. -->
+          <StateMark state="info" size={17} />
+          <span>{count(leftOut, 'sample')} left out</span>
+        </span>
+      {/if}
+
+      {#if schemaFindings}
+        <span class="item">
+          <!-- Said, never blocking: a schema finding does not block the deploy. -->
+          <StateMark state="warning" size={17} />
+          <span>{count(schemaFindings, 'schema finding')}</span>
+        </span>
+      {/if}
+
       <span class="item">
         {#if behind > 0}
-          <span class="mark req" aria-hidden="true">!</span>
+          <StateMark state="warning" size={17} />
           <span>Behind <span class="mono">main</span> by {count(behind, 'commit')}</span>
           <button
             type="button"
@@ -93,7 +116,7 @@
             {bringingCurrent ? 'Bringing current…' : 'Bring current'}
           </button>
         {:else}
-          <span class="mark ok" aria-hidden="true">&#10003;</span>
+          <StateMark state="ok" size={17} />
           <span>Current with <span class="mono">main</span></span>
         {/if}
       </span>
@@ -128,7 +151,8 @@
     position: fixed;
     left: 0;
     right: 0;
-    bottom: 0;
+    /* Above the agent panel while it is open. */
+    bottom: var(--agent-panel, 0);
     z-index: 15;
     background: var(--panel);
     border-top: 1px solid var(--border);
@@ -151,28 +175,6 @@
     gap: 0.45rem;
   }
 
-  .mark {
-    flex-shrink: 0;
-    width: 1.1rem;
-    height: 1.1rem;
-    border-radius: 50%;
-    display: inline-grid;
-    place-items: center;
-    box-sizing: border-box;
-    border: 1px solid var(--border);
-    font-size: var(--text-micro);
-    font-weight: 700;
-    color: var(--on-accent);
-  }
-  .mark.ok {
-    border-color: var(--added);
-    background: var(--added);
-  }
-  .mark.req {
-    border-color: var(--accent);
-    background: var(--accent);
-  }
-
   .act {
     margin-left: auto;
     display: inline-flex;
@@ -187,9 +189,6 @@
     font-size: var(--text-note);
   }
 
-  .dim {
-    color: var(--dim);
-  }
   .mono {
     font-family: var(--mono);
   }

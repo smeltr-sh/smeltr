@@ -1,12 +1,13 @@
 <!--
   A panel docked beside the map: a top line with what kind of thing it shows, its group and its
-  actions, × last; then its title, which takes focus when the panel opens, so a keyboard or
+  actions, ✕ last; then its title, which takes focus when the panel opens, so a keyboard or
   screen reader user lands on what the selection opened rather than back at the top of the map.
   Shared by an object's panel (`FocusView.svelte`) and a stack's (`StackView.svelte`), so the
   two read as one panel.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import CrossButton from './CrossButton.svelte';
 
   let {
     kind,
@@ -23,7 +24,7 @@
     /** Whether the title is a name, set in the code face. */
     mono?: boolean;
     onclose: () => void;
-    /** Icons before ×, each a `.icon`. */
+    /** Icons before ✕, each an `.icon` control. */
     actions?: Snippet;
     children: Snippet;
   } = $props();
@@ -41,7 +42,7 @@
     <span class="pill mono">{group}</span>
     <span class="actions">
       {@render actions?.()}
-      <button type="button" class="icon close" onclick={onclose} aria-label="Close">&times;</button>
+      <CrossButton label="Close" onclick={onclose} />
     </span>
   </div>
   <h2 id={titleId} class:mono tabindex="-1" bind:this={heading}>{title}</h2>
@@ -93,28 +94,5 @@
     display: flex;
     gap: 0.15rem;
     margin-left: auto;
-  }
-
-  .actions :global(.icon) {
-    width: 24px;
-    height: 24px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 0;
-    border-radius: var(--radius);
-    background: none;
-    color: var(--dim);
-    cursor: pointer;
-  }
-
-  .actions :global(.icon:hover) {
-    color: var(--ink);
-    background: color-mix(in oklch, var(--ink) 12%, transparent);
-  }
-
-  .close {
-    font-size: 1.1rem;
-    line-height: 1;
   }
 </style>

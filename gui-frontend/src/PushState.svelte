@@ -91,9 +91,6 @@
     align-items: center;
     gap: 0.2rem 0.5rem;
   }
-  .dim {
-    color: var(--dim);
-  }
   .warn {
     color: var(--warn);
   }

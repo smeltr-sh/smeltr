@@ -155,6 +155,8 @@ mod pipelined_tests;
 mod postgres_live_tests;
 #[path = "prometheus-receiver-fuzz.rs"]
 mod prometheus_receiver_fuzz;
+#[path = "rebuild-fuzz.rs"]
+mod rebuild_fuzz;
 #[path = "receiver-tests.rs"]
 mod receiver_tests;
 #[path = "remote-write-fuzz.rs"]

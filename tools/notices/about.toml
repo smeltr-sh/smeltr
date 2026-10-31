@@ -31,3 +31,13 @@ private = { ignore = true }
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
 ignore-transitive-dependencies = false
+
+# AWS-LC's C sources each carry a license header, and cargo-about would reproduce a share of those files whole,
+# a different share on each machine. Its one LICENSE holds every license the crate is under.
+[aws-lc-fips-sys.clarify]
+license = "ISC AND (Apache-2.0 OR ISC) AND OpenSSL"
+
+[[aws-lc-fips-sys.clarify.files]]
+path = "LICENSE"
+license = "ISC AND (Apache-2.0 OR ISC) AND OpenSSL"
+checksum = "5df09a98cac8843239a4d8f48a85089de6b68ed106612afcd2aa37a6453c2e3f"

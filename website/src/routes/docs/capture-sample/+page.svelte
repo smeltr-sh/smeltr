@@ -71,9 +71,17 @@
     </li>
   </ol>
   <p>
-    The filter runs before the pipeline. It can read <code>_raw</code> and fields the source
-    provides; fields your parser creates are not available yet. The filter does not support array
-    <code>map</code> and <code>filter</code> calls.
+    At a source, the filter runs before the pipeline. It can read <code>_raw</code> and fields the source
+    provides; fields your parser creates are not available yet.
+  </p>
+  <p>
+    When you capture at a destination, the filter reads each record as the route's pipeline
+    delivered it, so it can use fields your parsers created. When several routes deliver there, the
+    capture keeps records only from routes where the filter can run. Before you start, the dialog
+    lists the other routes and why each is skipped.
+  </p>
+  <p>
+    The filter does not support array <code>map</code> and <code>filter</code> calls.
   </p>
   <ProductScreenshot
     source="capture-running"
@@ -86,13 +94,14 @@
   <p>
     Enter a name under <strong>Save as</strong> and select <strong>Save sample</strong>. Open the
     saved sample in your pipeline, run it, and inspect the output. Save an expected result as a
-    test, following <a href="/build#test-heading">the Build page</a>. Choose
+    test, as <a href="/docs/steps#verify">Verify</a> describes. Choose
     <strong>Edit</strong> on a sample's row under Build → Resources → Samples to change it.
   </p>
   <p>
-    You need at least one captured record to save. Choose <strong>Discard</strong> if the records are
-    not useful. Capture only enough to test the case you care about: saved samples become part of the
-    versioned configuration.
+    You need at least one captured record to save. Choose <strong>Discard</strong> if the records
+    are not useful. Capture only enough to test the case you care about. A saved sample stays on
+    your branch and deploys only when a test uses it; the change's review lists the others under
+    <strong>Left out</strong>.
   </p>
   <h2 id="blocked">Capture a blocked source</h2>
   <p>
@@ -106,6 +115,10 @@
       Read the reason shown for each worker. Check its connection and credentials if it failed.
     </li>
     <li>Try without a filter, send a known record, and capture again.</li>
+    <li>
+      At a destination, read the message under the filter. If it says no route can use the filter,
+      change or clear the filter.
+    </li>
     <li>
       Check that the selected group has online workers and that the source has records available
       during the capture window.

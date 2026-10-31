@@ -18,7 +18,7 @@
   import Panel from './Panel.svelte';
   import Field from './Field.svelte';
   import UnitInput from './UnitInput.svelte';
-  import PasswordField from './PasswordField.svelte';
+  import LeaderSecretField from './LeaderSecretField.svelte';
   import UrlField from './UrlField.svelte';
   import { ago, shortCommit } from './time';
 
@@ -29,6 +29,7 @@
   let url = $state('');
   let user = $state('');
   let token = $state('');
+  let replacingToken = $state(false);
   let timer = $state(true);
   let minutes = $state(1);
   let approvePushes = $state(false);
@@ -38,6 +39,7 @@
     url = next.url;
     user = next.user;
     token = '';
+    replacingToken = false;
     timer = next.pollSeconds > 0;
     minutes = next.pollSeconds > 0 ? next.pollSeconds / 60 : 1;
     approvePushes = next.approvePushes;
@@ -141,6 +143,7 @@
     {/snippet}
 
     <UrlField
+      required
       label="URL"
       bind:value={url}
       sends={token !== '' || tokenKept}
@@ -152,20 +155,24 @@
         server.{/snippet}
     </UrlField>
 
-    <Field label="User">
+    <Field optional label="User">
       {#snippet help()}
         The name the token is sent with. Use the name your host takes with a token.
       {/snippet}
       <input bind:value={user} placeholder="smeltr" />
     </Field>
 
-    <Field label="Token">
+    <Field optional label="Token" group>
       {#snippet help()}
         An access token that can read the repository and push branches to it, Git LFS included.
-        Stored encrypted and never shown again. Left empty, the stored one is kept while the URL
-        stays the same.
+        Stored encrypted and never shown again.
       {/snippet}
-      <PasswordField bind:value={token} ariaLabel="token" placeholder={tokenKept ? 'stored' : ''} />
+      <LeaderSecretField
+        bind:value={token}
+        bind:replacing={replacingToken}
+        stored={tokenKept}
+        ariaLabel="token"
+      />
     </Field>
 
     <Field label="Fetch" group error={pollProblem || null}>
@@ -235,10 +242,6 @@
 
   .mono {
     font-family: var(--mono);
-  }
-
-  .dim {
-    color: var(--dim);
   }
 
   p {

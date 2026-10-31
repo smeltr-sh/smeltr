@@ -172,8 +172,8 @@ report lag, and is the only way to sample a source nothing consumes yet.
 
 **Reuses:** `Transform` without a `Reader`: a `Handoff` fed by the
 capture endpoint, stepped by `Transform` with capture targets.
-`/api/preview` becomes "this branch over this session". The leader needs
-no source or destination credential.
+`/api/areas/:area/preview/pipeline` becomes "this branch over this
+session". The leader needs no source or destination credential.
 
 **Removes:** `live.rs` and its hand-built worker.
 

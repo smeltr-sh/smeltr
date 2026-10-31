@@ -152,6 +152,16 @@ pub enum ToRuntime {
     Stop,
 }
 
+/// What one runtime process holds for as long as it runs, shared by the deployment it starts and the supervisor's
+/// commands it obeys: the captures it serves, the secrets it was sent, its metrics registry and the sources it holds.
+#[derive(Clone, Default)]
+pub struct Runtime {
+    pub captures: Arc<super::capture::Captures>,
+    pub secrets: crate::plan::topology::HeldSecrets,
+    pub registry: Arc<crate::metrics::Metrics>,
+    pub held: Arc<super::held::Held>,
+}
+
 /// Everything a runtime needs to become one. No path to a working tree: a commit is read out of the object store.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StartSpec {
@@ -167,7 +177,7 @@ pub struct StartSpec {
     pub memory: Option<usize>,
     pub worker_id: String,
     /// Only what this commit names. A runtime is not given credentials its own bundle does not quote.
-    pub secrets: Vec<(String, i64, String)>,
+    pub secrets: Vec<crate::heartbeat::SecretDelivery>,
     /// Which incarnation this is. Echoed on every frame the child sends, so a message from one the supervisor has
     /// replaced is recognized and dropped rather than attributed to its successor.
     pub incarnation: u64,
@@ -196,8 +206,8 @@ pub enum FromRuntime {
     Stopped { incarnation: u64 },
 }
 
-/// One reader's published facts, as they cross the boundary. In one process these were locks the heartbeat read
-/// directly; across two they are a snapshot, and its age is the report interval.
+/// One reader's published facts: what its thread keeps current behind a lock, and what crosses to the supervisor as
+/// a snapshot whose age is the report interval.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ReaderReport {
     pub thread_id: String,
@@ -206,48 +216,66 @@ pub struct ReaderReport {
     pub connection_error: Option<MetricSampleDto>,
 }
 
-/// Everything the heartbeat says about a running deployment, plus what the runtime's own registry and log buffer
-/// have accumulated since the last report.
+/// Everything the heartbeat says about a running deployment: what it is doing now, and what it has gathered since
+/// the last report.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct RuntimeReport {
+    pub state: RuntimeState,
+    pub gathered: Gathered,
+}
+
+/// What a deployment is doing now. A later report's replaces an earlier one's.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct RuntimeState {
     pub readers: Vec<ReaderReport>,
     pub pool_thread_ids: Vec<String>,
     pub egress_ids: Vec<crate::core::id::DestId>,
     pub egress_refusals: Vec<(crate::core::id::DestId, Vec<MetricSampleDto>)>,
     /// What the metrics' subject labels resolve against: the topology they were written under.
     pub subjects: crate::metrics::Subjects,
+    /// Every single-worker source this deployment runs, held here or not.
+    pub single_worker: Vec<crate::heartbeat::SourceKey>,
+    /// Every single-worker source this runtime holds now, as of the holds frame numbered `holds_applied`. One the
+    /// supervisor sent in that frame or before and that this leaves out is a grant that failed.
+    pub holding: Vec<crate::heartbeat::SourceKey>,
+    pub holds_applied: u64,
+}
+
+/// What a deployment gathered since its last report, owed to the leader. A later report's adds to an earlier one's,
+/// since the leader has had neither, and outlives the runtime that gathered it.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Gathered {
     /// The runtime's own registry since the last report. Committed on send rather than on the leader's
     /// acknowledgment: a runtime that is killed loses at most one window of counts, which is the trade
     /// Observability already makes for metrics and never makes for data.
     pub metrics: Vec<MetricSampleDto>,
-    /// Carries the child's own boot id, so the leader dedupes a batch that arrives twice by sequence number.
+    /// Each carries the boot id of the runtime that numbered it, so the leader dedupes a batch that arrives twice
+    /// by sequence number, and two runtimes' sequences never collide under one key.
     pub logs: Vec<LogDto>,
-    pub boot_id: u64,
-    /// Every single-worker source this deployment runs, held here or not.
-    #[serde(default)]
-    pub single_worker: Vec<crate::heartbeat::SourceKey>,
-    /// Every single-worker source this runtime holds now, as of the holds frame numbered `holds_applied`. One the
-    /// supervisor sent in that frame or before and that this leaves out is a grant that failed.
-    #[serde(default)]
-    pub holding: Vec<crate::heartbeat::SourceKey>,
-    #[serde(default)]
-    pub holds_applied: u64,
     /// What held sources have delivered since the last report, oldest first. Owed to the supervisor once written,
     /// as the logs are, and carried on until the leader acknowledges it.
-    #[serde(default)]
     pub progress: Vec<crate::heartbeat::SourceProgress>,
     /// What the deployment saw of its streams since the last report (`streams::Streams::drain`). Owed to the
     /// supervisor once written, as the logs are, and carried on until the leader acknowledges it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub streams: Option<crate::heartbeat::StreamReport>,
 }
 
 impl RuntimeReport {
     /// This report brought up to date by a later one. What a thread is doing is whatever it is doing now; what it
-    /// counted and said is both windows, because the leader has had neither.
-    pub fn followed_by(self, mut next: RuntimeReport) -> RuntimeReport {
-        // Two windows of streams the leader has not seen are one: the counts sum (`StreamReport::absorb`).
-        let streams = match (self.streams, next.streams.take()) {
+    /// gathered is both windows, because the leader has had neither.
+    pub fn followed_by(self, next: RuntimeReport) -> RuntimeReport {
+        RuntimeReport {
+            state: next.state,
+            gathered: self.gathered.followed_by(next.gathered),
+        }
+    }
+}
+
+impl Gathered {
+    /// Two windows the leader has not seen, as one.
+    pub fn followed_by(self, next: Gathered) -> Gathered {
+        // Two windows of streams are one: the counts sum (`StreamReport::absorb`).
+        let streams = match (self.streams, next.streams) {
             (Some(mut earlier), Some(later)) => {
                 earlier.absorb(later);
                 Some(earlier)
@@ -255,11 +283,16 @@ impl RuntimeReport {
             (earlier, later) => earlier.or(later),
         };
         let mut metrics = self.metrics;
+        // By series, so a report costs its own length rather than that times what is held: what waits for the
+        // leader can be every series a large deployment has.
+        let mut at: std::collections::HashMap<(String, Vec<(String, String)>), usize> = metrics
+            .iter()
+            .enumerate()
+            .map(|(i, held)| ((held.metric.clone(), held.labels.clone()), i))
+            .collect();
         for sample in next.metrics {
-            match metrics
-                .iter_mut()
-                .find(|held| held.metric == sample.metric && held.labels == sample.labels)
-            {
+            let series = (sample.metric.clone(), sample.labels.clone());
+            match at.get(&series).map(|&i| &mut metrics[i]) {
                 // A counter arrives as the increase since the runtime last reported, so two windows the leader
                 // has not seen are one increase. A gauge and a fact are whatever they last were.
                 Some(held) => match (&mut held.value, sample.value) {
@@ -267,25 +300,14 @@ impl RuntimeReport {
                     (MetricValueDto::FloatCounter(held), MetricValueDto::FloatCounter(added)) => *held += added,
                     (held, newer) => *held = newer,
                 },
-                None => metrics.push(sample),
+                None => {
+                    at.insert(series, metrics.len());
+                    metrics.push(sample);
+                }
             }
         }
-        // Each log keeps the boot id of the process that numbered it. The leader dedupes on `(worker, boot, seq)`
-        // and a sequence restarts with every process, so a log stamped with a later runtime's id would collide
-        // with that runtime's own -- and one or the other would vanish as a duplicate.
-        let own = self.boot_id;
-        let mut logs: Vec<LogDto> = self
-            .logs
-            .into_iter()
-            .map(|mut log| {
-                log.boot_id.get_or_insert(own);
-                log
-            })
-            .collect();
-        logs.extend(next.logs.into_iter().map(|mut log| {
-            log.boot_id.get_or_insert(next.boot_id);
-            log
-        }));
+        let mut logs = self.logs;
+        logs.extend(next.logs);
         // The buffer a log came from is bounded and so is this: what a runtime says faster than its worker can
         // deliver is dropped at the oldest end, which is where the least useful of it is.
         let overflow = logs.len().saturating_sub(UNDELIVERED_LOGS);
@@ -293,13 +315,11 @@ impl RuntimeReport {
         // Each is a step the leader applies in order, so none is merged or dropped.
         let mut progress = self.progress;
         progress.extend(next.progress);
-        RuntimeReport {
+        Gathered {
             metrics,
             logs,
-            boot_id: next.boot_id,
             progress,
             streams,
-            ..next
         }
     }
 }
@@ -455,20 +475,14 @@ pub fn run_runtime_child() -> ! {
         }
     };
 
-    let registry = Arc::new(crate::metrics::Metrics::new());
-    let captures = Arc::new(super::capture::Captures::default());
-    let held = Arc::new(super::held::Held::default());
-    let mut secrets = crate::plan::topology::HeldSecrets::default();
-    secrets.take(
-        spec.secrets
-            .iter()
-            .map(|(name, version, value)| crate::heartbeat::SecretDelivery {
-                name: name.clone(),
-                version: *version,
-                value: value.clone(),
-            })
-            .collect::<Vec<_>>(),
-    );
+    let mut runtime = Runtime::default();
+    runtime.secrets.take(spec.secrets.clone());
+    let Runtime {
+        captures,
+        registry,
+        held,
+        ..
+    } = &runtime;
 
     // Started before the deployment it serves, not after: a supervisor that dies while startup is stalled shows
     // up only as end of file on the pipe this thread reads, and nothing else arms the deadline that ends an
@@ -476,16 +490,10 @@ pub fn run_runtime_child() -> ! {
     // never finishes leaves running forever.
     let stopping = Arc::new(AtomicBool::new(false));
     {
-        let (stopping, captures, registry, secrets, held) = (
-            stopping.clone(),
-            captures.clone(),
-            registry.clone(),
-            secrets.clone(),
-            held.clone(),
-        );
+        let (stopping, runtime) = (stopping.clone(), runtime.clone());
         std::thread::spawn(move || {
             for frame in incoming {
-                if !obey(frame, &captures, &registry, &secrets, &held) {
+                if !obey(frame, &runtime) {
                     stopping.store(true, Ordering::Relaxed);
                     return;
                 }
@@ -510,7 +518,7 @@ pub fn run_runtime_child() -> ! {
     }
 
     let out = std::io::stdout();
-    let deployment = match super::start_deployment(&spec, &captures, &secrets, &registry, &held) {
+    let deployment = match super::start_deployment(&spec, &runtime) {
         Ok(d) => d,
         Err(reason) => {
             let _ = send(&mut out.lock(), &FromRuntime::Failed { incarnation, reason });
@@ -538,22 +546,22 @@ pub fn run_runtime_child() -> ! {
         deployment.relog_memory_warning();
         deployment.note_pools();
         let mut locked = out.lock();
-        let pending = collect_report(&facts, &registry, &held);
+        let pending = collect_report(&facts, registry, held);
         let owed = Pending {
             report: RuntimeReport::default(),
             peeked: pending.peeked,
             logs: pending.logs,
         };
-        let streams = pending.report.streams.clone();
-        match send_report(&mut locked, incarnation, pending.report, &held) {
-            Ok(()) => owed.committed(&registry),
+        let streams = pending.report.gathered.streams.clone();
+        match send_report(&mut locked, incarnation, pending.report, held) {
+            Ok(()) => owed.committed(registry),
             // A window nothing can carry is dropped rather than kept: the same collection would build the same
             // frame on every interval, and holding it would stop this runtime ever reporting again. Metrics are
             // where this system trades durability for simplicity, and losing a window of them is that trade;
             // never reporting is not.
             // Progress is not part of that trade: it goes back for the next report, which a cap keeps it inside.
             Err(Refused::TooLarge { bytes, limit }) => {
-                owed.committed(&registry);
+                owed.committed(registry);
                 tracing::warn!(
                     target: "runtime.report_too_large",
                     bytes,
@@ -628,20 +636,23 @@ pub fn run_runtime_child() -> ! {
     // more as the progress it yielded needs.
     // A report that does not go hands its progress back, so a last report too large for its logs leaves the
     // progress to the reports that carry nothing else.
-    let pending = collect_report(&facts, &registry, &held);
-    let _ = send_report(&mut locked, incarnation, pending.report, &held);
+    let pending = collect_report(&facts, registry, held);
+    let _ = send_report(&mut locked, incarnation, pending.report, held);
     loop {
         let progress = held.take_progress(LEDGER_PER_REPORT, PROGRESS_BYTES_PER_REPORT);
         if progress.is_empty() {
             break;
         }
         let report = RuntimeReport {
-            boot_id: crate::logs::boot_id(),
-            ..held_report(&held, progress)
+            state: held_state(held),
+            gathered: Gathered {
+                progress,
+                ..Default::default()
+            },
         };
         // A report that does not go keeps its progress, though a pipe that refused a frame of this size will take
         // nothing more: the supervisor is gone.
-        if send_report(&mut locked, incarnation, report, &held).is_err() {
+        if send_report(&mut locked, incarnation, report, held).is_err() {
             break;
         }
     }
@@ -652,13 +663,13 @@ pub fn run_runtime_child() -> ! {
 }
 
 /// Act on one frame from the supervisor. `false` is a stop: the caller stops reading and drains.
-fn obey(
-    frame: ToRuntime,
-    captures: &Arc<super::capture::Captures>,
-    registry: &Arc<crate::metrics::Metrics>,
-    secrets: &crate::plan::topology::HeldSecrets,
-    held: &super::held::Held,
-) -> bool {
+fn obey(frame: ToRuntime, runtime: &Runtime) -> bool {
+    let Runtime {
+        captures,
+        secrets,
+        registry,
+        held,
+    } = runtime;
     match frame {
         ToRuntime::Stop => return false,
         ToRuntime::Capture(invitation) => super::serve_capture(captures, *invitation, registry, secrets),
@@ -706,35 +717,34 @@ fn collect_report(
     super::record_memory_gauge(registry, "runtime");
     let peeked = registry.peek_delta(crate::metrics::SUBSCRIBER_HEARTBEAT);
     let metrics: Vec<MetricSampleDto> = peeked.iter().cloned().map(MetricSampleDto::from).collect();
+    let boot_id = crate::logs::boot_id();
     let logs = crate::logs::pending_map(crate::heartbeat::LOGS_PER_HEARTBEAT, |event: &crate::logs::Event| {
-        LogDto::from(event)
+        LogDto {
+            boot_id: Some(boot_id),
+            ..LogDto::from(event)
+        }
     });
     let owed_logs = logs.len();
 
     let report = RuntimeReport {
-        readers: facts
-            .readers
-            .iter()
-            .map(|r| ReaderReport {
-                thread_id: r.thread_id.clone(),
-                partitions: r.partitions.lock().unwrap().clone(),
-                held: r.held.lock().unwrap().clone(),
-                connection_error: r.connection_error.lock().unwrap().clone(),
-            })
-            .collect(),
-        pool_thread_ids: facts.pool_thread_ids.clone(),
-        egress_ids: facts.egress_ids.clone(),
-        egress_refusals: facts
-            .egress_ids
-            .iter()
-            .map(|id| (*id, facts.refusals.heartbeat_facts(*id)))
-            .collect(),
-        subjects: (*facts.subjects).clone(),
-        metrics,
-        logs,
-        streams: facts.streams.drain(),
-        boot_id: crate::logs::boot_id(),
-        ..held_report(held, held.take_progress(LEDGER_PER_REPORT, PROGRESS_BYTES_PER_REPORT))
+        state: RuntimeState {
+            readers: facts.readers.iter().map(|r| r.lock().unwrap().clone()).collect(),
+            pool_thread_ids: facts.pool_thread_ids.clone(),
+            egress_ids: facts.egress_ids.clone(),
+            egress_refusals: facts
+                .egress_ids
+                .iter()
+                .map(|id| (*id, facts.refusals.heartbeat_facts(*id)))
+                .collect(),
+            subjects: (*facts.subjects).clone(),
+            ..held_state(held)
+        },
+        gathered: Gathered {
+            metrics,
+            logs,
+            progress: held.take_progress(LEDGER_PER_REPORT, PROGRESS_BYTES_PER_REPORT),
+            streams: facts.streams.drain(),
+        },
     };
     Pending {
         report,
@@ -743,15 +753,14 @@ fn collect_report(
     }
 }
 
-/// A report of what `held` holds, carrying `progress` taken from it.
-fn held_report(held: &super::held::Held, progress: Vec<crate::heartbeat::SourceProgress>) -> RuntimeReport {
-    RuntimeReport {
+/// What `held` says of the single-worker sources this deployment runs.
+fn held_state(held: &super::held::Held) -> RuntimeState {
+    RuntimeState {
         single_worker: held.keys(),
         // Read before what it holds: a frame applied between the two reads leaves this behind what `holding`
         // shows, never ahead of it, so no grant is judged failed before it was tried.
         holds_applied: held.applied(),
         holding: held.holding(),
-        progress,
         ..Default::default()
     }
 }
@@ -763,7 +772,7 @@ fn send_report(
     report: RuntimeReport,
     held: &super::held::Held,
 ) -> Result<(), Refused> {
-    let progress = report.progress.clone();
+    let progress = report.gathered.progress.clone();
     let sent = write_frame(
         out,
         &FromRuntime::Report {
@@ -1364,20 +1373,31 @@ mod tests {
     #[test]
     fn reports_waiting_for_one_heartbeat_add_up_rather_than_replace_each_other() {
         let first = RuntimeReport {
-            pool_thread_ids: vec!["pool-0".to_string()],
-            metrics: vec![counter("smeltr_rows_in_total", 3)],
-            logs: vec![],
-            ..Default::default()
+            state: RuntimeState {
+                pool_thread_ids: vec!["pool-0".to_string()],
+                ..Default::default()
+            },
+            gathered: Gathered {
+                metrics: vec![counter("smeltr_rows_in_total", 3)],
+                logs: vec![],
+                ..Default::default()
+            },
         };
         let second = RuntimeReport {
-            pool_thread_ids: vec!["pool-0".to_string(), "pool-1".to_string()],
-            metrics: vec![counter("smeltr_rows_in_total", 4), counter("smeltr_rows_out_total", 1)],
-            logs: vec![],
-            ..Default::default()
+            state: RuntimeState {
+                pool_thread_ids: vec!["pool-0".to_string(), "pool-1".to_string()],
+                ..Default::default()
+            },
+            gathered: Gathered {
+                metrics: vec![counter("smeltr_rows_in_total", 4), counter("smeltr_rows_out_total", 1)],
+                logs: vec![],
+                ..Default::default()
+            },
         };
 
         let merged = first.followed_by(second);
         let rows_in = merged
+            .gathered
             .metrics
             .iter()
             .find(|m| m.metric == "smeltr_rows_in_total")
@@ -1387,9 +1407,13 @@ mod tests {
             "two windows the leader has not seen are one increase: {:?}",
             rows_in.value
         );
-        assert_eq!(merged.metrics.len(), 2, "a counter only the later report saw is kept");
         assert_eq!(
-            merged.pool_thread_ids.len(),
+            merged.gathered.metrics.len(),
+            2,
+            "a counter only the later report saw is kept"
+        );
+        assert_eq!(
+            merged.state.pool_thread_ids.len(),
             2,
             "what the threads are is the newer answer, not both answers"
         );
@@ -1405,14 +1429,20 @@ mod tests {
             value: MetricValueDto::Gauge(v),
         };
         let merged = RuntimeReport {
-            metrics: vec![dial(4.0)],
+            gathered: Gathered {
+                metrics: vec![dial(4.0)],
+                ..Default::default()
+            },
             ..Default::default()
         }
         .followed_by(RuntimeReport {
-            metrics: vec![dial(9.0)],
+            gathered: Gathered {
+                metrics: vec![dial(9.0)],
+                ..Default::default()
+            },
             ..Default::default()
         });
-        assert!(matches!(merged.metrics[0].value, MetricValueDto::Gauge(v) if v == 9.0));
+        assert!(matches!(merged.gathered.metrics[0].value, MetricValueDto::Gauge(v) if v == 9.0));
     }
 
     #[test]
@@ -1493,7 +1523,12 @@ mod tests {
     fn a_start_carrying_a_large_secret_set_is_not_refused() {
         let mut spec = spec();
         spec.secrets = (0..4)
-            .map(|i| (format!("s{i}"), 1, "x".repeat(3 * 1024 * 1024)))
+            .map(|i| crate::heartbeat::SecretDelivery {
+                name: format!("s{i}"),
+                version: 1,
+                value: "x".repeat(3 * 1024 * 1024),
+                chain: None,
+            })
             .collect();
         let mut written = Vec::new();
         send(&mut written, &ToRuntime::Start(Box::new(spec))).expect("a start with large secrets fits its frame");
@@ -1540,27 +1575,20 @@ mod tests {
             }))
             .expect("an invitation")
         };
-        let captures = Arc::new(super::super::capture::Captures::default());
+        let runtime = Runtime::default();
+        let captures = &runtime.captures;
         captures.admit(&[invitation("s1"), invitation("s2")]);
-        let registry = Arc::new(crate::metrics::Metrics::new());
-        let secrets = crate::plan::topology::HeldSecrets::default();
 
         assert!(obey(
             ToRuntime::Listed {
                 sessions: vec!["s1".into()]
             },
-            &captures,
-            &registry,
-            &secrets,
-            &Default::default()
+            &runtime
         ));
         assert!(captures.holds("s1"), "a listed session was let go");
         assert!(!captures.holds("s2"), "an unlisted session still filling was kept");
 
-        assert!(
-            !obey(ToRuntime::Stop, &captures, &registry, &secrets, &Default::default()),
-            "a stop did not end the read"
-        );
+        assert!(!obey(ToRuntime::Stop, &runtime), "a stop did not end the read");
     }
 
     fn key(source: &str) -> crate::heartbeat::SourceKey {
@@ -1598,27 +1626,16 @@ mod tests {
         };
         assert_eq!(holds, &vec![holding]);
 
-        let held = super::super::held::Held::default();
+        let runtime = Runtime::default();
         let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut source = held.source(key("listing"), {
+        let mut source = runtime.held.source(key("listing"), {
             let opened = opened.clone();
             Box::new(move || {
                 opened.fetch_add(1, Ordering::Relaxed);
                 Ok(Box::new(crate::io::fake::FakeSource::default()) as Box<dyn crate::io::Source>)
             })
         });
-        let (captures, registry, secrets) = (
-            Arc::new(super::super::capture::Captures::default()),
-            Arc::new(crate::metrics::Metrics::new()),
-            crate::plan::topology::HeldSecrets::default(),
-        );
-        assert!(obey(
-            read.into_iter().next().unwrap(),
-            &captures,
-            &registry,
-            &secrets,
-            &held
-        ));
+        assert!(obey(read.into_iter().next().unwrap(), &runtime));
         crate::io::Source::poll_batch(&mut source, 1, 1, Duration::from_millis(1)).expect("a poll");
         assert_eq!(opened.load(Ordering::Relaxed), 1, "a granted source was not opened");
     }
@@ -1635,17 +1652,27 @@ mod tests {
             },
         };
         let merged = RuntimeReport {
-            single_worker: vec![key("listing")],
-            progress: vec![progress("1")],
-            ..Default::default()
+            state: RuntimeState {
+                single_worker: vec![key("listing")],
+                ..Default::default()
+            },
+            gathered: Gathered {
+                progress: vec![progress("1")],
+                ..Default::default()
+            },
         }
         .followed_by(RuntimeReport {
-            single_worker: vec![key("listing"), key("other")],
-            progress: vec![progress("2")],
-            ..Default::default()
+            state: RuntimeState {
+                single_worker: vec![key("listing"), key("other")],
+                ..Default::default()
+            },
+            gathered: Gathered {
+                progress: vec![progress("2")],
+                ..Default::default()
+            },
         });
-        assert_eq!(merged.progress, vec![progress("1"), progress("2")]);
-        assert_eq!(merged.single_worker, vec![key("listing"), key("other")]);
+        assert_eq!(merged.gathered.progress, vec![progress("1"), progress("2")]);
+        assert_eq!(merged.state.single_worker, vec![key("listing"), key("other")]);
     }
 
     /// What the supervisor sends lands in the runtime's mirror, for a metrics or logs source to read, and nowhere
@@ -1654,9 +1681,8 @@ mod tests {
     fn obeying_a_mirror_fills_the_registrys_mirror_and_the_logs_readers_only() {
         let _taps = crate::logs::TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let reader = crate::logs::tap();
-        let captures = Arc::new(super::super::capture::Captures::default());
-        let registry = Arc::new(crate::metrics::Metrics::new());
-        let secrets = crate::plan::topology::HeldSecrets::default();
+        let runtime = Runtime::default();
+        let registry = &runtime.registry;
         let sample = MetricSampleDto {
             metric: "smeltr_logs_dropped_total".into(),
             labels: vec![("process".into(), "supervisor".into())],
@@ -1681,10 +1707,7 @@ mod tests {
                     fields: vec![("subject".into(), crate::heartbeat::FieldValueDto::Str("w1".into()))],
                 }],
             },
-            &captures,
-            &registry,
-            &secrets,
-            &Default::default()
+            &runtime
         ));
         let mirrored = registry.take_mirrored_delta(&mut Default::default());
         assert_eq!(mirrored.len(), 1, "{mirrored:?}");

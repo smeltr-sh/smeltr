@@ -1,6 +1,6 @@
 <!--
-  Grok patterns page: `grok-patterns.json`, read through `GET /api/config`
-  and written with `PUT /api/grok-patterns`, plus the raw-JSON page. A
+  Grok patterns page: `grok-patterns.json`, read through `GET /api/areas/:area`
+  and written with `PUT /api/areas/:area/grok-patterns`, plus the raw-JSON page. A
   pattern is declared once for the bundle and named as `%{NAME}` from any
   grok in its group, the way a lookup table is named by id.
 
@@ -29,12 +29,13 @@
   import JsonEditPage from './JsonEditPage.svelte';
   import { resourcesTabs } from './nav';
   import { sharedConfig, putGrokPatterns, type GrokPatternDto } from './api';
-  import TrashIcon from './TrashIcon.svelte';
+  import CrossButton from './CrossButton.svelte';
   import { count } from './time';
   import {
     builtinRegex,
     GROK_BUILTIN_PATTERNS,
     grokNameProblem,
+    highlightGrok,
     sharedGrokSuggestions,
   } from './grokPatterns';
   import { editable } from './access';
@@ -204,29 +205,35 @@
             >
               <tr hidden={ownShown[n] === false} onfocusin={() => (focused = p)}>
                 <td class="name">
-                  <Field bare field="id" label="name" error={grokNameProblem(p.id, taken(n))}>
+                  <Field
+                    required
+                    bare
+                    field="id"
+                    label="name"
+                    error={grokNameProblem(p.id, taken(n))}
+                  >
                     <input type="text" placeholder="NAME" bind:value={p.id} />
                   </Field>
                 </td>
                 <td>
-                  <Field bare field="pattern" label="pattern">
+                  <Field required bare field="pattern" label="pattern">
                     <ValidatedField
                       ariaLabel={(p.id || 'unnamed') + ' pattern'}
                       placeholder={'%{WORD:vendor},%{GREEDYDATA:rest}'}
                       bind:value={p.pattern}
                       autocomplete="grok"
                       grokNamed={sharedGrokSuggestions(others(n))}
+                      wrap
                     />
                   </Field>
                 </td>
                 <td class="act">
                   {#if !readOnly}
-                    <button
-                      type="button"
-                      class="icon"
-                      aria-label="Remove {p.id || 'unnamed'}"
-                      onclick={() => patterns.splice(n, 1)}><TrashIcon /></button
-                    >
+                    <CrossButton
+                      removes
+                      label="Remove {p.id || 'unnamed'}"
+                      onclick={() => patterns.splice(n, 1)}
+                    />
                   {/if}
                 </td>
               </tr>
@@ -247,7 +254,7 @@
               <tr class="fixed" title={b.about}>
                 <td class="name mono">{b.id}</td>
                 {#if b.pattern}
-                  <td class="mono">{b.pattern}</td>
+                  <td class="mono tokens">{@html highlightGrok(b.pattern)}</td>
                 {:else}
                   <td class="dim">{b.about}</td>
                 {/if}
@@ -343,19 +350,6 @@
     flex: 1;
   }
 
-  /* A bare glyph that turns red only on hover. */
-  .icon {
-    display: inline-grid;
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--dim);
-  }
-
-  .icon:hover {
-    color: var(--error);
-  }
-
   /* Names a column whose head would otherwise be an empty cell. */
   .hidden {
     position: absolute;
@@ -368,9 +362,5 @@
 
   .mono {
     font-family: var(--mono);
-  }
-
-  .dim {
-    color: var(--dim);
   }
 </style>

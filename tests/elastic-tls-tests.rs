@@ -1,4 +1,4 @@
-//! A real TLS handshake for the Elasticsearch transport: what an identity makes the client present, and what it
+//! A real TLS handshake for the Elasticsearch transport: what its TLS settings make the client present, and what it
 //! makes the client accept.
 //!
 //! Against a rustls server in this process, not an Elastic cluster. What is under test is smeltr's own TLS configuration --
@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use smeltr::io::http::{HttpTransport, Transport, agent_config};
-use smeltr::plan::topology::{HeldSecrets, Identity, SecretRef};
+use smeltr::plan::topology::{HeldSecrets, Tls};
 
 /// What the bulk API answers when every document landed. Enough for the transport to call the request a success.
 const ACCEPTED: &str = r#"{"took":1,"errors":false,"items":[]}"#;
@@ -102,29 +102,31 @@ fn content_length(head: &[u8]) -> usize {
         .unwrap_or(0)
 }
 
-/// The key a `LeaderStored` reference resolves to, as a worker would hold it.
-fn holding(key: &str) -> HeldSecrets {
+/// The certificate entry a connector's reference resolves to, as a worker would hold it.
+fn holding(certificate: &str, key: &str) -> HeldSecrets {
     let mut secrets = HeldSecrets::default();
-    secrets.set_stored([("client-key".to_string(), 1, key.to_string())]);
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "client".to_string(),
+        version: 1,
+        value: key.to_string(),
+        chain: Some(certificate.to_string()),
+    }]);
     secrets
 }
 
-fn identity(certificate: Option<&str>, authorities: Option<&str>) -> Identity {
-    Identity {
-        id: "acme".to_string(),
-        certificate: certificate.map(str::to_string),
-        key: certificate.map(|_| SecretRef::LeaderStored {
-            name: "client-key".to_string(),
-            version: 1,
-        }),
+fn tls(presents: bool, authorities: Option<&str>) -> Tls {
+    Tls {
+        of: "source \"acme\"".into(),
+        certificate: presents.then(|| "client".to_string()),
         authorities: authorities.map(str::to_string),
         trust_public: true,
+        side: smeltr::io::trust::Side::Client,
     }
 }
 
-fn post(url: &str, identity: Option<&Identity>, secrets: &HeldSecrets) -> Result<Vec<u8>, String> {
+fn post(url: &str, tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<Vec<u8>, String> {
     certs::install_provider();
-    let config = agent_config(identity, secrets).map_err(|e| e.to_string())?;
+    let config = agent_config(tls, secrets).map_err(|e| e.to_string())?;
     let mut transport = HttpTransport::new(url, "application/x-ndjson", Vec::new(), &config);
     transport
         .post("/_bulk", b"{\"index\":{}}\n{\"a\":1}\n", Duration::from_secs(10))
@@ -132,10 +134,10 @@ fn post(url: &str, identity: Option<&Identity>, secrets: &HeldSecrets) -> Result
         .map_err(|e| e.to_string())
 }
 
-/// An identity's certificate reaches the far end, and its authority is what the far end is checked against.
+/// A connector's certificate reaches the far end, and its authority is what the far end is checked against.
 /// Neither is true of the default agent this replaced.
 #[test]
-fn an_identity_completes_a_mutual_tls_handshake() {
+fn a_certificate_completes_a_mutual_tls_handshake() {
     let authority = certs::Authority::new("Acme Root CA");
     let served = authority.issue("es.internal", vec!["localhost".to_string()]);
     let client = authority.issue("smeltr-orders-west", vec!["smeltr".to_string()]);
@@ -143,20 +145,20 @@ fn an_identity_completes_a_mutual_tls_handshake() {
     let server = serve(certs::server_config(&served, &authority));
     let answered = post(
         &server.url,
-        Some(&identity(Some(&client.certificate), Some(&authority.pem))),
-        &holding(&client.key),
+        Some(&tls(true, Some(&authority.pem))),
+        &holding(&client.certificate, &client.key),
     );
     assert!(server.finish(), "the server never answered a request");
 
     assert_eq!(
         answered.as_deref().map(String::from_utf8_lossy),
         Ok(std::borrow::Cow::Borrowed(ACCEPTED)),
-        "an identity naming a certificate, its key and its authority did not complete the handshake"
+        "a connector naming a certificate, its key and its authority did not complete the handshake"
     );
 }
 
 /// The gap this work closed: an Elastic cluster served under a private authority is unreachable without one, and
-/// configuration short of an identity could say so.
+/// configuration short of TLS settings could say so.
 #[test]
 fn without_the_authority_a_privately_issued_server_is_refused() {
     let authority = certs::Authority::new("Acme Root CA");
@@ -168,8 +170,8 @@ fn without_the_authority_a_privately_issued_server_is_refused() {
     // server's against but the platform's public roots.
     let refused = post(
         &server.url,
-        Some(&identity(Some(&client.certificate), None)),
-        &holding(&client.key),
+        Some(&tls(true, None)),
+        &holding(&client.certificate, &client.key),
     );
     assert!(
         !server.finish(),
@@ -186,7 +188,7 @@ fn without_the_authority_a_privately_issued_server_is_refused() {
 
 /// An authority a far end does not chain to is not trust, and is refused as plainly as no authority at all.
 #[test]
-fn an_identity_trusting_another_authority_is_refused() {
+fn trusting_another_authority_is_refused() {
     let authority = certs::Authority::new("Acme Root CA");
     let served = authority.issue("es.internal", vec!["localhost".to_string()]);
     let client = authority.issue("smeltr-orders-west", vec!["smeltr".to_string()]);
@@ -195,8 +197,8 @@ fn an_identity_trusting_another_authority_is_refused() {
     let server = serve(certs::server_config(&served, &authority));
     let refused = post(
         &server.url,
-        Some(&identity(Some(&client.certificate), Some(&elsewhere.pem))),
-        &holding(&client.key),
+        Some(&tls(true, Some(&elsewhere.pem))),
+        &holding(&client.certificate, &client.key),
     );
     assert!(
         !server.finish(),
@@ -210,7 +212,7 @@ fn an_identity_trusting_another_authority_is_refused() {
     );
 }
 
-/// The other half. A far end that asks for a certificate gets nothing from an identity that presents none, and the
+/// The other half. A far end that asks for a certificate gets nothing from TLS settings that present none, and the
 /// connection does not complete -- which is what makes the positive test above about the certificate.
 #[test]
 fn trusting_without_presenting_is_refused_where_a_certificate_is_demanded() {
@@ -220,7 +222,7 @@ fn trusting_without_presenting_is_refused_where_a_certificate_is_demanded() {
     let server = serve(certs::server_config(&served, &authority));
     let refused = post(
         &server.url,
-        Some(&identity(None, Some(&authority.pem))),
+        Some(&tls(false, Some(&authority.pem))),
         &HeldSecrets::default(),
     );
     // The far end's own verdict, not what this client made of it: a server that ends the connection and a
@@ -242,8 +244,8 @@ fn a_key_that_is_not_pem_is_refused_when_the_agent_is_built() {
     let mangled = client.key.replace('\n', " ");
 
     let built = agent_config(
-        Some(&identity(Some(&client.certificate), Some(&authority.pem))),
-        &holding(&mangled),
+        Some(&tls(true, Some(&authority.pem))),
+        &holding(&client.certificate, &mangled),
     );
     let message = built.err().map(|e| e.to_string()).unwrap_or_default();
     assert!(

@@ -23,7 +23,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::metadata::{PartitionSpec, Schema, Snapshot, TableMetadata};
+use super::metadata::{PartitionSpec, Schema, Snapshot, SnapshotRef, TableMetadata};
 use crate::io::IoError;
 use crate::io::client_credentials::ClientCredentials;
 use crate::io::http::percent_encode;
@@ -159,11 +159,10 @@ pub enum Update {
     /// The schema to make current; -1 is the one last added in this commit.
     SetCurrentSchema(i32),
     AddSnapshot(Snapshot),
-    /// Points the ref `name` at a snapshot. `kind` is `branch` or `tag`.
+    /// Sets the ref `name` to `reference`, replacing it whole.
     SetSnapshotRef {
         name: String,
-        snapshot_id: i64,
-        kind: String,
+        reference: SnapshotRef,
     },
 }
 
@@ -175,16 +174,22 @@ impl Serialize for Update {
             }
             Update::SetCurrentSchema(id) => json!({"action": "set-current-schema", "schema-id": id}),
             Update::AddSnapshot(snapshot) => json!({"action": "add-snapshot", "snapshot": snapshot}),
-            Update::SetSnapshotRef {
-                name,
-                snapshot_id,
-                kind,
-            } => json!({
-                "action": "set-snapshot-ref",
-                "ref-name": name,
-                "type": kind,
-                "snapshot-id": snapshot_id,
-            }),
+            Update::SetSnapshotRef { name, reference } => {
+                #[derive(Serialize)]
+                #[serde(rename_all = "kebab-case")]
+                struct SetSnapshotRef<'a> {
+                    action: &'static str,
+                    ref_name: &'a str,
+                    #[serde(flatten)]
+                    reference: &'a SnapshotRef,
+                }
+                return SetSnapshotRef {
+                    action: "set-snapshot-ref",
+                    ref_name: name,
+                    reference,
+                }
+                .serialize(serializer);
+            }
         }
         .serialize(serializer)
     }
@@ -1009,6 +1014,7 @@ mod tests {
                 required: false,
                 field_type: Type::Primitive(Primitive::Timestamptz),
                 doc: None,
+                other: Default::default(),
             }],
         }
     }
@@ -1017,6 +1023,7 @@ mod tests {
         PartitionSpec {
             spec_id: 0,
             fields: vec![PartitionField {
+                source_ids: None,
                 name: "ts_day".into(),
                 transform: Transform::Day,
                 source_id,
@@ -1067,6 +1074,8 @@ mod tests {
 
     fn snapshot() -> Snapshot {
         Snapshot {
+            first_row_id: None,
+            added_rows: None,
             snapshot_id: 7,
             parent_snapshot_id: Some(6),
             sequence_number: 3,
@@ -1107,8 +1116,12 @@ mod tests {
                 Update::AddSnapshot(snapshot()),
                 Update::SetSnapshotRef {
                     name: "main".into(),
-                    snapshot_id: 7,
-                    kind: "branch".into(),
+                    reference: SnapshotRef {
+                        snapshot_id: 7,
+                        kind: "branch".into(),
+                        max_ref_age_ms: Some(86_400_000),
+                        ..SnapshotRef::default()
+                    },
                 },
             ],
         );
@@ -1141,7 +1154,8 @@ mod tests {
                         "sequence-number": 3, "timestamp-ms": 1_700_000_000_000_i64,
                         "manifest-list": "s3://bucket/wh/logs/metadata/snap-7.avro",
                         "summary": {"operation": "append"}, "schema-id": 1}},
-                    {"action": "set-snapshot-ref", "ref-name": "main", "type": "branch", "snapshot-id": 7},
+                    {"action": "set-snapshot-ref", "ref-name": "main", "snapshot-id": 7, "type": "branch",
+                     "max-ref-age-ms": 86_400_000},
                 ],
             })
         );

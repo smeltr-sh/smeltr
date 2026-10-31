@@ -138,11 +138,11 @@ export function recheck(): Promise<SessionDto> {
 }
 
 /** The sentence a refused call carries, or a fallback. Every handler answers
- * JSON with `ok` and `error`, on any status. */
+ * the envelope, its errors saying why, on any status. */
 async function errorOf(res: Response, fallback: string): Promise<string> {
   try {
-    const body = (await res.json()) as { error?: string };
-    return body.error || fallback;
+    const body = (await res.json()) as { errors?: { message?: string }[] };
+    return body.errors?.[0]?.message || fallback;
   } catch {
     return fallback;
   }
@@ -179,8 +179,8 @@ export async function signIn(
 export async function signOut(): Promise<void> {
   const token = csrf();
   try {
-    await fetch('/api/auth/logout', {
-      method: 'POST',
+    await fetch('/api/auth/session', {
+      method: 'DELETE',
       headers: token === null ? {} : { 'x-smeltr-csrf': token },
     });
   } finally {
@@ -191,7 +191,7 @@ export async function signOut(): Promise<void> {
   }
 }
 
-/** `POST /api/auth/password`. Succeeds by signing you out: choosing a
+/** `PUT /api/auth/password`. Succeeds by signing you out: choosing a
  * password ends every session holding the old one, including this one.
  *
  * `currentPassword` is `null` for a required change: that session was issued
@@ -203,7 +203,7 @@ export async function changePassword(
 ): Promise<true | AuthFailure> {
   const token = csrf();
   const res = await fetch('/api/auth/password', {
-    method: 'POST',
+    method: 'PUT',
     headers: {
       'content-type': 'application/json',
       ...(token === null ? {} : { 'x-smeltr-csrf': token }),
@@ -235,7 +235,7 @@ export async function reportActivity(): Promise<void> {
   const token = csrf();
   if (token === null) return;
   try {
-    const res = await fetch('/api/auth/activity', {
+    const res = await fetch('/api/auth/session/activity', {
       method: 'POST',
       headers: { 'x-smeltr-csrf': token },
     });

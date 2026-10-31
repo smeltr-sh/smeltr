@@ -5,7 +5,7 @@ use std::time::Duration;
 use smeltr::egress::Egress;
 use smeltr::handoff::Ready;
 use smeltr::io::fake::{AsyncDestination, FakeDestination};
-use smeltr::io::{Destination, Dispatched, OutgoingRecord, OwnedRecord, SalvageTarget};
+use smeltr::io::{BatchId, Destination, Dispatched, OutgoingRecord, OwnedRecord, SalvageTarget};
 use smeltr::metrics::{Metrics, MetricsHandle};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -354,11 +354,11 @@ fn a_refused_record_comes_back_as_a_rejection_not_a_failed_batch() {
     assert_eq!(dest.sent().len(), 1, "the rest of the batch still went out");
 }
 
-/// The level a destination's own loop settled on is visible, and a destination that has no loop publishes no series:
-/// a zero there would read as a stalled destination rather than an absent question.
+/// The requests a destination has open are visible, and a destination that opens none of its own publishes no
+/// series: a zero there would read as a stalled destination rather than an absent question.
 #[test]
-fn the_concurrency_a_destination_allows_is_reported_and_only_when_it_has_one() {
-    /// Reports whatever it is told to, so this test is about egress reading the figure, not about AIMD.
+fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_own() {
+    /// Reports whatever it is told to, so this test is about egress reading the figure, not about what sets it.
     #[derive(Clone)]
     struct Reporting(Arc<std::sync::Mutex<Option<usize>>>);
 
@@ -903,7 +903,6 @@ fn dropping_an_egress_ends_the_capture_at_its_destination() {
         group: "g".to_string(),
         source: None,
         destination: Some("es".to_string()),
-        identity: None,
         filter: None,
         start: None,
         max_matches: 10,
@@ -955,7 +954,6 @@ fn a_capture_at_a_blocking_destination_sees_its_held_rows_once() {
         group: "g".to_string(),
         source: None,
         destination: Some("es".to_string()),
-        identity: None,
         filter: None,
         start: None,
         max_matches: 10,
@@ -1010,4 +1008,380 @@ fn a_capture_at_a_blocking_destination_sees_its_held_rows_once() {
             serde_json::Value::Null
         ]
     );
+}
+
+/// How far away [`Link`] is.
+const LINK_RTT: Duration = Duration::from_millis(20);
+
+/// A link [`LINK_RTT`] away, over which a destination answers each batch once it has been open that long. Answering
+/// on a tick instead would answer a batch sent just before it at once, and the model's least round trip, which keeps
+/// such a reading, would shrink what it holds.
+#[derive(Default)]
+struct Link(std::collections::HashMap<u64, std::time::Instant>);
+
+impl Link {
+    /// Acknowledge what `dest` has held for a round trip; how many batches that was.
+    fn answer(&mut self, dest: &AsyncDestination) -> usize {
+        // Read after `outstanding`, so a batch is never taken as open before it was.
+        let open = dest.outstanding();
+        let now = std::time::Instant::now();
+        let mut answered = 0;
+        for b in open {
+            let at = *self.0.entry(b).or_insert(now);
+            if now.duration_since(at) >= LINK_RTT {
+                self.0.remove(&b);
+                dest.complete(b);
+                answered += 1;
+            }
+        }
+        answered
+    }
+}
+
+/// What destination `id`'s queue may hold, as its egress stage last reported it.
+fn budget(registry: &Metrics, id: u32) -> Option<usize> {
+    let label = id.to_string();
+    registry.snapshot().into_iter().find_map(|s| match s.value {
+        smeltr::metrics::MetricValue::Gauge(v)
+            if s.key.name == "smeltr_destination_queue_budget_bytes"
+                && s.key.labels.iter().any(|(k, v)| *k == "destination" && *v == label) =>
+        {
+            Some(v as usize)
+        }
+        _ => None,
+    })
+}
+
+/// A paced queue starts at one batch and, while its source presses and the destination keeps up, grows its budget
+/// toward its share of the pool; it never passes that share.
+#[test]
+fn a_paced_queue_grows_from_one_batch_while_its_source_presses() {
+    let registry = Arc::new(Metrics::new());
+    let row = vec![b'x'; 64 * 1024];
+    let pool = smeltr::egress::QueuePool::new(64 * 1024 * 1024);
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(
+        0,
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        pool.limit(),
+        MetricsHandle::new(registry.clone(), "egress-0"),
+    )
+    .borrowing(pool.clone(), row.len(), 1)
+    .paced(row.len());
+    let mut h = egress.handle();
+
+    // A source that always has more, over a link a few milliseconds away.
+    let mut link = Link::default();
+    let started = std::time::Instant::now();
+    let mut batch = 0;
+    let mut most = 0;
+    while started.elapsed() < Duration::from_secs(2) {
+        while let Dispatched::InFlight = hand(&mut h, batch, &[OutgoingRecord::new(&row)]) {
+            batch += 1;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+        link.answer(&dest);
+        most = most.max(budget(&registry, 0).unwrap_or(0));
+    }
+    assert!(most >= 8 * row.len(), "the budget grew from one batch: {most}");
+    assert!(most <= row.len() + pool.limit(), "never past the share: {most}");
+}
+
+/// Two paced queues on one pool smaller than either would hold alone. The first, alone, grows over most of it; once
+/// the second presses too, each settles near an equal share. Once the first stalls, holding what it has, the second
+/// still moves.
+#[test]
+fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neither() {
+    let registry = Arc::new(Metrics::new());
+    let row = vec![b'x'; 64 * 1024];
+    let pool = smeltr::egress::QueuePool::new(8 * 64 * 1024);
+    let batches = pool.limit() / row.len();
+    let dests = [AsyncDestination::new(), AsyncDestination::new()];
+    let mut egresses: Vec<Egress> = dests
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let metrics = MetricsHandle::new(registry.clone(), format!("egress-{i}"));
+            Egress::start(i as u32, "d", Box::new(d.clone()), timeout(), pool.limit(), metrics)
+                .borrowing(pool.clone(), row.len(), 1)
+                .paced(row.len())
+        })
+        .collect();
+    let mut handles: Vec<_> = egresses.iter_mut().map(Egress::handle).collect();
+    let mut next = [0u64; 2];
+    let mut links: [Link; 2] = Default::default();
+    // For `secs`, each of `pressing` sends while it has room and each of `answering` answers over its link.
+    // Answers each queue's budget in batches, on average over the last second, and how many batches each delivered.
+    let mut run = |secs: u64, pressing: &[usize], answering: &[usize]| {
+        let started = std::time::Instant::now();
+        let (mut held, mut samples, mut delivered) = ([0usize; 2], 0, [0usize; 2]);
+        while started.elapsed() < Duration::from_secs(secs) {
+            for &i in pressing {
+                while let Dispatched::InFlight = hand(&mut handles[i], next[i], &[OutgoingRecord::new(&row)]) {
+                    next[i] += 1;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(1));
+            let last_second = started.elapsed() + Duration::from_secs(1) >= Duration::from_secs(secs);
+            for (i, d) in dests.iter().enumerate() {
+                if answering.contains(&i) {
+                    delivered[i] += links[i].answer(d);
+                }
+                if last_second {
+                    held[i] += budget(&registry, i as u32).unwrap_or(0) / row.len();
+                }
+            }
+            samples += usize::from(last_second);
+        }
+        (held.map(|h| h / samples.max(1)), delivered)
+    };
+
+    let (alone, _) = run(2, &[0], &[0]);
+    assert!(
+        alone[0] > batches / 2,
+        "alone, the first grows over most of the pool: {alone:?} of {batches}"
+    );
+
+    let (both, delivered) = run(3, &[0, 1], &[0, 1]);
+    assert!(
+        both[1] >= batches / 4,
+        "the second gets near its share: {both:?} of {batches}"
+    );
+    assert!(
+        both[0] <= 3 * batches / 4,
+        "the first gives back toward its share: {both:?} of {batches}"
+    );
+    assert!(
+        2 * delivered[1] >= delivered[0] && 2 * delivered[0] >= delivered[1],
+        "each carries about as much: {delivered:?}"
+    );
+
+    let (stalled, delivered_stalled) = run(1, &[0, 1], &[1]);
+    assert!(
+        stalled[1] + 1 >= both[1],
+        "the first stalled, the second keeps its share: {stalled:?} after {both:?}"
+    );
+    assert!(
+        6 * delivered_stalled[1] >= delivered[1],
+        "and carries at least half as much a second: {delivered_stalled:?} in one, {delivered:?} in three"
+    );
+}
+
+/// A batch part of which did not land is sent again as only that part, while the batches beside it are not sent
+/// again, and its reader hears of it once, when the rest lands, with every refusal.
+#[test]
+fn only_the_rows_that_did_not_land_are_sent_again() {
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut h = egress.handle();
+    hand(
+        &mut h,
+        1,
+        &[
+            OutgoingRecord::new(b"refused"),
+            OutgoingRecord::new(b"lost"),
+            OutgoingRecord::new(b"landed"),
+        ],
+    );
+    hand(&mut h, 2, &[OutgoingRecord::new(b"beside")]);
+    let units_within = |n: usize| {
+        let deadline = std::time::Instant::now() + timeout();
+        loop {
+            let units = dest.units();
+            if units.len() >= n || std::time::Instant::now() >= deadline {
+                return units;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let units = units_within(2);
+    assert_eq!(units.len(), 2, "both batches reached the destination");
+    let (first, beside) = (units[0].0, units[1].0);
+
+    let refused = smeltr::io::Rejection {
+        doc: 0,
+        reason: "refused it".into(),
+        record: None,
+    };
+    dest.fail_rows(first, vec![1], vec![refused], "the connection was reset");
+    dest.complete(beside);
+    let units = units_within(3);
+    assert_eq!(units.len(), 3, "the part that did not land went again");
+    assert_eq!(units[2].1, vec![b"lost".to_vec()], "and only it");
+    let done = completions_within(&mut h, timeout());
+    assert_eq!(
+        done.iter().map(|c| c.batch).collect::<Vec<_>>(),
+        vec![2],
+        "the batch beside it is done, and the one with a part outstanding is not"
+    );
+
+    dest.complete(units[2].0);
+    let done = completions_within(&mut h, timeout());
+    assert_eq!(done.len(), 1, "done once the rest landed");
+    assert_eq!(done[0].batch, 1);
+    assert_eq!(
+        done[0].rejections.len(),
+        1,
+        "with the refusal answered before the failure"
+    );
+    assert_eq!(
+        done[0].rejections[0].record.as_ref().map(|r| r.value.clone()),
+        Some(b"refused".to_vec())
+    );
+    assert_eq!(dest.units().len(), 3, "nothing else was sent again");
+}
+
+/// A batch the destination would not take is sent again alone: the batch already in flight stays with the destination
+/// and is answered for once, not sent again.
+#[test]
+fn a_batch_the_destination_would_not_take_is_sent_again_alone() {
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut h = egress.handle();
+    let units_within = |n: usize| {
+        let deadline = std::time::Instant::now() + timeout();
+        loop {
+            let units = dest.units();
+            if units.len() >= n || std::time::Instant::now() >= deadline {
+                return units;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    hand(&mut h, 1, &[OutgoingRecord::new(b"in flight")]);
+    assert_eq!(units_within(1).len(), 1);
+    dest.fail_next_deliver("the producer's queue stayed full");
+    hand(&mut h, 2, &[OutgoingRecord::new(b"refused once")]);
+    let units = units_within(2);
+    let values: Vec<_> = units.iter().map(|(_, rows)| rows.clone()).collect();
+    assert_eq!(
+        values,
+        vec![vec![b"in flight".to_vec()], vec![b"refused once".to_vec()]]
+    );
+    for (batch, _) in &units {
+        dest.complete(*batch);
+    }
+    let mut done = Vec::new();
+    while done.len() < 2 {
+        let more = completions_within(&mut h, timeout());
+        assert!(!more.is_empty(), "both batches complete: {done:?}");
+        done.extend(more.into_iter().map(|c| c.batch));
+    }
+    done.sort();
+    assert_eq!(done, vec![1, 2]);
+    assert_eq!(dest.units().len(), 2, "the one in flight was not sent again");
+}
+
+/// Wait for `dest` to have taken `n` batches, and answer when the last arrived.
+fn taken_within(dest: &AsyncDestination, n: usize) -> std::time::Instant {
+    let deadline = std::time::Instant::now() + timeout();
+    loop {
+        let units = dest.units();
+        if units.len() >= n {
+            return std::time::Instant::now();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{n} batches taken, not {}",
+            units.len()
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// The first batch taken after the first `from` whose one row is `row`, and when it was seen.
+fn taken_with(dest: &AsyncDestination, from: usize, row: &[u8]) -> (BatchId, std::time::Instant) {
+    let deadline = std::time::Instant::now() + timeout();
+    loop {
+        if let Some((batch, _)) = dest.units()[from..].iter().find(|(_, rows)| rows[..] == [row.to_vec()]) {
+            return (*batch, std::time::Instant::now());
+        }
+        assert!(std::time::Instant::now() < deadline, "no batch of {row:?} taken");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// A route that keeps failing beside ones that land: what lands does not clear the stall, and the rows that fail are
+/// sent again on their own backoff, which grows, while the batches that land do not wait on them.
+#[test]
+fn a_route_that_keeps_failing_holds_the_stall_and_backs_off_alone() {
+    let registry = Arc::new(Metrics::new());
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(
+        0,
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        MetricsHandle::new(registry.clone(), "egress-0"),
+    );
+    let mut h = egress.handle();
+    let healthy = || {
+        registry.snapshot().into_iter().find_map(|s| match s.value {
+            smeltr::metrics::MetricValue::Gauge(v) if s.key.name == "smeltr_destination_healthy" => Some(v),
+            _ => None,
+        })
+    };
+
+    hand(&mut h, 1, &[OutgoingRecord::new(b"bad")]);
+    taken_within(&dest, 1);
+    let mut bad = dest.units()[0].0;
+    let mut waits = Vec::new();
+    for round in 0..4u64 {
+        dest.fail_rows(bad, vec![0], vec![], "that route is down");
+        let failed_at = std::time::Instant::now();
+        let before = dest.units().len();
+        // A batch on a route that works, handed while the bad one waits: it lands without waiting on it.
+        hand(&mut h, 10 + round, &[OutgoingRecord::new(b"good")]);
+        let (good, _) = taken_with(&dest, before, b"good");
+        // The first waits are shorter than a loaded machine takes to hand the good batch on, so only a long one
+        // says which went first.
+        if round >= 2 {
+            assert!(
+                dest.units()[before..]
+                    .iter()
+                    .all(|(_, rows)| rows[..] != [b"bad".to_vec()]),
+                "the good batch went before the bad one's wait was over"
+            );
+        }
+        dest.complete(good);
+        assert_eq!(completions_within(&mut h, timeout()).len(), 1);
+        assert_eq!(
+            healthy(),
+            Some(0.0),
+            "a batch that landed beside the failing route did not clear the stall"
+        );
+        let (next, again_at) = taken_with(&dest, before, b"bad");
+        bad = next;
+        waits.push(again_at - failed_at);
+    }
+    assert!(
+        waits[3] >= Duration::from_millis(400),
+        "each failure doubles the bad rows' wait: {waits:?}"
+    );
+
+    dest.complete(bad);
+    assert_eq!(completions_within(&mut h, timeout()).len(), 1);
+    assert_eq!(healthy(), Some(1.0), "recovered once the rows that failed landed");
+}
+
+/// A destination where nothing lands backs off as a whole: each failure waits longer before the next attempt.
+#[test]
+fn a_destination_where_nothing_lands_backs_off_as_a_whole() {
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut h = egress.handle();
+    hand(&mut h, 1, &[OutgoingRecord::new(b"row")]);
+    taken_within(&dest, 1);
+    let mut waits = Vec::new();
+    for n in 1..5 {
+        dest.fail_rows(dest.units()[n - 1].0, vec![0], vec![], "down");
+        let failed_at = std::time::Instant::now();
+        waits.push(taken_within(&dest, n + 1) - failed_at);
+    }
+    assert!(waits[3] >= Duration::from_millis(400), "the waits grow: {waits:?}");
+    dest.complete(dest.units()[4].0);
+    assert_eq!(completions_within(&mut h, timeout()).len(), 1);
 }

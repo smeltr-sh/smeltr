@@ -50,7 +50,7 @@ fn config(s: &live::Splunk, acknowledgement: Acknowledgement) -> SplunkHecDestin
         host: None,
         endpoint: Endpoint::Event,
         acknowledgement,
-        identity: None,
+        tls: None,
         in_flight: 2,
         max_request_bytes: 1024 * 1024,
         buffer_bytes: 4 * 1024 * 1024,

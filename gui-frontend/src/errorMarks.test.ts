@@ -22,6 +22,10 @@ describe('markRuns', () => {
     expect(marked(text, ['ipVersion'])).toEqual(['ipVersion', 'ipVersion']);
   });
 
+  it('marks nothing for a token with no name in it', () => {
+    expect(marked('u = a.b;\nx = u.', ['.'])).toEqual([]);
+  });
+
   it('takes the longest token where two start at one place', () => {
     expect(marked('a.b = 1', ['a', 'a.b'])).toEqual(['a.b']);
   });

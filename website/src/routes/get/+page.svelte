@@ -5,7 +5,7 @@
 <svelte:head
   ><title>Get smeltr</title><meta
     name="description"
-    content="Smeltr is free under 250 employees. Above that, it is $10,000 a year per production leader."
+    content="Smeltr is free for individuals and for organizations with fewer than 250 employees. Above that, it is $10,000 a year for each production leader, the server that manages your workers."
   /></svelte:head
 >
 
@@ -15,10 +15,15 @@
   </section>
   <article>
     <p>
-      Smeltr is free for production use by organizations with fewer than 250 employees.
-      Organizations with 250 or more employees pay $10,000 per year for each leader they run in
-      production; workers are not counted. Evaluation, development, and testing are free for
-      everyone.
+      Smeltr is free for production use by individuals, and by organizations with fewer than 250
+      employees. Organizations with 250 or more employees pay $10,000 per year for each server they
+      run as a leader in production, however many people use it. Evaluation, development, and
+      testing are free for everyone.
+    </p>
+    <p>
+      A leader is the Smeltr server you sign in to, where you build and deploy your configuration.
+      Workers run it and move your data. One leader manages any number of workers, and only leaders
+      are counted. <a href="/docs/getting-started#overview">How Smeltr fits together →</a>
     </p>
     <p>
       Every plan includes the same features. Email support is included with the paid license; the
@@ -36,10 +41,6 @@
             <td><a href="/docs/install-leader/container">Run the container image</a></td>
           </tr>
           <tr>
-            <td><a href={latestFile('smeltr-image.tar.gz')}>Image archive</a></td>
-            <td><a href="/docs/install-leader/container#archive">Run the container image</a></td>
-          </tr>
-          <tr>
             <td><a href={latestFile('smeltr-linux.tar.gz')}>Linux x86-64</a></td>
             <td><a href="/docs/install-leader/binary">Install the binary</a></td>
           </tr>
@@ -48,16 +49,11 @@
             <td><a href="/docs/install-leader/binary">Install the binary</a></td>
           </tr>
           <tr>
-            <td><a href={latestFile('SHA256SUMS')}>Checksums</a></td>
-            <td></td>
-          </tr>
-          <tr>
             <td>
-              Reports: <a href={latestFile('smeltr-sbom.cdx.json')}>SBOM</a>,
-              <a href={latestFile('smeltr-stig.html')}>STIG</a>,
-              <a href={latestFile('smeltr-cves.txt')}>CVEs</a>
+              <a href={latestFile('smeltr-extras.zip')}>Extras</a>: image archive, SBOM, CVE report
+              and STIG report
             </td>
-            <td></td>
+            <td><a href="/docs/release-extras">Release extras</a></td>
           </tr>
           <tr>
             <td><a href={source}>Source code</a></td>

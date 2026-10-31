@@ -76,7 +76,7 @@ export function recordField(name: string): RecordField {
  * the commercial license use. */
 export function inline(
   text: string,
-): { kind: 'text' | 'code' | 'strong' | 'link'; text: string; href?: string }[] {
+): { kind: 'text' | 'code' | 'strong' | 'link'; text: string; href?: string; code?: boolean }[] {
   return text
     .split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/)
     .filter((piece) => piece.length > 0)
@@ -84,7 +84,10 @@ export function inline(
       if (piece.startsWith('`')) return { kind: 'code', text: piece.slice(1, -1) };
       if (piece.startsWith('**')) return { kind: 'strong', text: piece.slice(2, -2) };
       const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(piece);
-      if (link) return { kind: 'link', text: link[1], href: link[2] };
+      // [`name`](href) links a code span: its text is the name, set as code.
+      const code = !!link && /^`[^`]+`$/.test(link[1]);
+      if (link)
+        return { kind: 'link', text: code ? link[1].slice(1, -1) : link[1], href: link[2], code };
       return { kind: 'text', text: piece };
     });
 }

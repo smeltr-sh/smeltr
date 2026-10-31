@@ -16,13 +16,20 @@
 //! Where the record types a place wider than the column holding it (the tag field, met with what the pipeline writes
 //! there), each row is read into the record's type by the declared-type table (`tag::decode_column`). A row that does
 //! not fit is marked in the chunk, and refused alone where it is delivered.
+//!
+//! A table may hold a leaf narrower than the record types it (`narrows`): an `i64` in an 8, 16 or 32-bit integer, an
+//! `f64` in a 32-bit float, a `datetime` in a date (its UTC day) or a timestamp without a zone. A route's rows are cut
+//! once, to the record's own types, for every destination on it; a table's file converts each value as it writes it,
+//! a float rounded, and a row whose value the column cannot hold is refused alone where it is delivered
+//! (`Schema::unfit`).
 
 use std::sync::{Arc, Mutex};
 
 use arrow_array::builder::StringBuilder;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, ListArray, NullArray, RecordBatch,
-    StringArray, StructArray, TimestampMicrosecondArray, new_null_array,
+    Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Float32Array, Float64Array, Int8Array, Int16Array,
+    Int32Array, Int64Array, ListArray, NullArray, RecordBatch, StringArray, StructArray, TimestampMicrosecondArray,
+    new_null_array,
 };
 use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema, TimeUnit};
@@ -47,9 +54,40 @@ pub(crate) const REST: &str = "rest";
 pub struct Schema {
     root: Arc<Node>,
     arrow: Arc<ArrowSchema>,
-    /// The schema a file is written with, when it differs from `arrow` in names and metadata alone: a table format's
-    /// field ids or physical column names. Rows are cut to and matched against `arrow`.
+    /// The schema a file is written with, when it differs from `arrow` in names and metadata, a table format's field
+    /// ids or physical column names, or in a leaf a table holds narrower. Rows are cut to and matched against `arrow`.
     written: Option<Arc<ArrowSchema>>,
+    /// Whether `written` holds a leaf narrower than `arrow`, so a row's values are checked against it.
+    narrowed: bool,
+    /// What each of `written`'s root fields takes where the record does not write it; null for one beyond.
+    defaults: Arc<[WriteDefault]>,
+    /// Columns the destination computes, written after the record's own.
+    computed: Vec<Arc<dyn Computed>>,
+    /// The record's columns that hold a partition's values, each by the partition field's name and its index.
+    partition_columns: Vec<(String, usize)>,
+}
+
+/// What a field of a written schema takes in each row where the record does not write it.
+#[derive(Clone, Debug)]
+pub enum WriteDefault {
+    /// A field the record does not write: one row of the field's type, which every row takes.
+    Value(ArrayRef),
+    /// A struct the record writes: its fields', in the written schema's order.
+    Struct(Vec<WriteDefault>),
+    /// A list the record writes: its element's.
+    List(Box<WriteDefault>),
+    /// A leaf the record writes.
+    Written,
+}
+
+/// A column a destination computes for each row it writes, after the record's own, such as a table's identity.
+pub trait Computed: std::fmt::Debug + Send + Sync {
+    /// The column as the file carries it.
+    fn field(&self) -> Arc<Field>;
+    /// Why `columns`' row can take no value. Each row admitted is filled at most once, after it is admitted.
+    fn admit(&self, columns: &Columns) -> Result<(), String>;
+    /// The column's values for `batch`'s rows, each admitted, `batch` under the record's own names.
+    fn fill(&self, batch: &RecordBatch) -> ArrayRef;
 }
 
 #[derive(Debug)]
@@ -129,21 +167,66 @@ impl Schema {
             root: Arc::new(root),
             arrow,
             written: None,
+            narrowed: false,
+            defaults: Arc::new([]),
+            computed: Vec::new(),
+            partition_columns: Vec::new(),
         })
     }
 
     /// This schema, its files written with `written`: the same fields, at any depth, renamed or with metadata of their
-    /// own, such as Iceberg's field ids or Delta's physical names.
+    /// own, such as Iceberg's field ids or Delta's physical names, and a leaf a table holds narrower of that type
+    /// (`narrows`). A struct may end with fields the record lacks, such as a table's columns it does not write, which
+    /// every row writes null.
     pub fn with_written(self, written: Arc<ArrowSchema>) -> Schema {
-        assert!(
-            written.fields().len() == self.arrow.fields().len()
-                && (written.fields().iter().zip(self.arrow.fields())).all(|(w, a)| alike(w.data_type(), a.data_type())),
-            "a written schema is the record's own, renamed or with metadata added"
-        );
+        let Some(Arrow::Struct(fields)) = narrowed(&self.root, &Arrow::Struct(written.fields().clone())) else {
+            panic!("a written schema is the record's own, renamed, with metadata added or a leaf narrowed");
+        };
         Schema {
+            narrowed: fields != *self.arrow.fields(),
             written: Some(written),
             ..self
         }
+    }
+
+    /// This schema, a field its record does not write taking `defaults`, one for each of the written schema's root
+    /// fields, rather than null.
+    pub fn with_defaults(self, defaults: Vec<WriteDefault>) -> Schema {
+        Schema {
+            defaults: defaults.into(),
+            ..self
+        }
+    }
+
+    /// This schema, its files written with `computed` after the record's columns.
+    pub fn with_computed(self, computed: Vec<Arc<dyn Computed>>) -> Schema {
+        Schema { computed, ..self }
+    }
+
+    /// This schema, its record's columns `columns` holding the partition's values, each named by its partition field.
+    /// A file of a partition whose value is empty, which a Hive-style table reads as null, holds that column null.
+    pub fn with_partition_columns(self, columns: Vec<(String, usize)>) -> Schema {
+        Schema {
+            partition_columns: columns,
+            ..self
+        }
+    }
+
+    /// Admits `columns`' row to every computed column: Err is why one can give it no value.
+    pub fn admit(&self, columns: &Columns) -> Result<(), String> {
+        self.computed.iter().try_for_each(|c| c.admit(columns))
+    }
+
+    /// Why `columns`' row cannot be written, when a value of it is one a column its table holds narrower cannot hold.
+    pub fn unfit(&self, columns: &Columns) -> Option<String> {
+        let written = self.written.as_ref().filter(|_| self.narrowed)?;
+        let batch = &columns.chunk.batch;
+        (batch
+            .columns()
+            .iter()
+            .zip(batch.schema().fields())
+            .zip(written.fields()))
+        .find_map(|((column, own), to)| unfit_at(column, to.data_type(), columns.row as usize, &|| own.name().into()))
     }
 
     /// Whether `columns` were cut to this schema, so they can be written by a writer opened on it.
@@ -263,45 +346,81 @@ impl Columns {
     }
 }
 
-/// Whether `a` and `b` are one type but for the names and metadata of the fields within.
-fn alike(a: &Arrow, b: &Arrow) -> bool {
-    match (a, b) {
-        (Arrow::Struct(a), Arrow::Struct(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| alike(a.data_type(), b.data_type()))
+/// Whether a table may hold a leaf the record types `record` as `to`, each value converted as its file is written.
+pub fn narrows(record: &DataType, to: &Arrow) -> bool {
+    matches!(
+        (record, to),
+        (DataType::I64, Arrow::Int8 | Arrow::Int16 | Arrow::Int32)
+            | (DataType::F64, Arrow::Float32)
+            | (
+                DataType::DateTime,
+                Arrow::Date32 | Arrow::Timestamp(TimeUnit::Microsecond, None)
+            )
+    )
+}
+
+/// `node`'s type with each leaf `written` holds narrower (`narrows`) of that type. `None` when `written` is not the
+/// node's type, renamed, with metadata added, a leaf narrowed or fields ending a struct that the node lacks.
+fn narrowed(node: &Node, written: &Arrow) -> Option<Arrow> {
+    match (&node.kind, written) {
+        (Kind::Struct(s), Arrow::Struct(w)) if w.len() >= s.arrow.len() => {
+            let fields = (s.arrow.iter().zip(w).enumerate())
+                .map(|(i, (ours, w))| {
+                    let t = match s.fields.get(i) {
+                        Some((_, child)) => narrowed(child, w.data_type())?,
+                        // `rest`
+                        None => (w.data_type() == ours.data_type()).then(|| ours.data_type().clone())?,
+                    };
+                    Some(ours.as_ref().clone().with_data_type(t))
+                })
+                .collect::<Option<Fields>>()?;
+            Some(Arrow::Struct(fields))
         }
-        (Arrow::List(a), Arrow::List(b)) => alike(a.data_type(), b.data_type()),
-        (a, b) => a == b,
+        (Kind::List(element, field), Arrow::List(w)) => {
+            let t = narrowed(element, w.data_type())?;
+            Some(Arrow::List(Arc::new(field.as_ref().clone().with_data_type(t))))
+        }
+        (Kind::Struct(_) | Kind::List(..), _) => None,
+        (_, w) if *w == node.arrow => Some(node.arrow.clone()),
+        (_, w) if narrows(&node.ty, w) => Some(w.clone()),
+        _ => None,
     }
 }
 
-/// `batch` under `schema`, which `alike` matches to its own. No value is copied.
-fn relabel(batch: &RecordBatch, schema: &Arc<ArrowSchema>) -> RecordBatch {
-    let columns = (batch.columns().iter())
-        .zip(schema.fields())
-        .map(|(column, field)| relabelled(column, field.data_type()))
-        .collect();
-    RecordBatch::try_new(schema.clone(), columns).expect("a written schema alike the rows' own")
+/// `batch` under `schema`, which `narrowed` matches to its own, a field it lacks taking its `defaults`. No value of
+/// the batch's is copied.
+fn relabel(batch: &RecordBatch, schema: &Arc<ArrowSchema>, defaults: &[WriteDefault]) -> RecordBatch {
+    let columns = relabelled_fields(batch.columns(), schema.fields(), batch.num_rows(), defaults);
+    RecordBatch::try_new(schema.clone(), columns)
+        .expect("a written schema the rows' own but for names, metadata and narrowed leaves")
 }
 
-fn relabelled(array: &ArrayRef, to: &Arrow) -> ArrayRef {
+fn relabelled(array: &ArrayRef, to: &Arrow, default: Option<&WriteDefault>) -> ArrayRef {
     use arrow_array::cast::AsArray;
     if array.data_type() == to {
         return array.clone();
     }
     match to {
         Arrow::Struct(fields) => {
-            let parent = array.as_struct_opt().expect("a written schema alike the rows' own");
-            let children = (parent.columns().iter())
-                .zip(fields)
-                .map(|(child, field)| relabelled(child, field.data_type()))
-                .collect();
+            let parent = array
+                .as_struct_opt()
+                .expect("a written schema the rows' own but for names, metadata and narrowed leaves");
+            let defaults = match default {
+                Some(WriteDefault::Struct(defaults)) => &defaults[..],
+                _ => &[],
+            };
+            let children = relabelled_fields(parent.columns(), fields, parent.len(), defaults);
             Arc::new(StructArray::new(fields.clone(), children, parent.nulls().cloned()))
         }
         Arrow::List(field) => {
             let list = array
                 .as_list_opt::<i32>()
-                .expect("a written schema alike the rows' own");
-            let values = relabelled(list.values(), field.data_type());
+                .expect("a written schema the rows' own but for names, metadata and narrowed leaves");
+            let element = match default {
+                Some(WriteDefault::List(element)) => Some(&**element),
+                _ => None,
+            };
+            let values = relabelled(list.values(), field.data_type(), element);
             Arc::new(ListArray::new(
                 field.clone(),
                 list.offsets().clone(),
@@ -309,7 +428,107 @@ fn relabelled(array: &ArrayRef, to: &Arrow) -> ArrayRef {
                 list.nulls().cloned(),
             ))
         }
-        _ => unreachable!("`alike` holds other types equal"),
+        // `Schema::unfit` refused every row whose value this column cannot hold.
+        to => narrow_leaf(array, to),
+    }
+}
+
+/// `columns` as `fields`, and for each field after theirs a column of `rows` of its default, or null.
+fn relabelled_fields(columns: &[ArrayRef], fields: &Fields, rows: usize, defaults: &[WriteDefault]) -> Vec<ArrayRef> {
+    (fields.iter().enumerate())
+        .map(|(i, field)| match (columns.get(i), defaults.get(i)) {
+            (Some(column), default) => relabelled(column, field.data_type(), default),
+            (None, Some(WriteDefault::Value(value))) if value.is_valid(0) => {
+                let first = arrow_array::UInt32Array::from(vec![0; rows]);
+                arrow_select::take::take(value, &first, None).expect("a default's one row")
+            }
+            (None, _) => new_null_array(field.data_type(), rows),
+        })
+        .collect()
+}
+
+/// Why value `i` of `array` cannot be written as `to`, `written`'s type for it, naming it by `path`, made only then.
+fn unfit_at(array: &ArrayRef, to: &Arrow, i: usize, path: &dyn Fn() -> String) -> Option<String> {
+    use arrow_array::cast::AsArray;
+    if array.is_null(i) {
+        return None;
+    }
+    match (array.data_type(), to) {
+        (Arrow::Struct(own), Arrow::Struct(fields)) => (array.as_struct().columns().iter().zip(own).zip(fields))
+            .find_map(|((child, own), to)| unfit_at(child, to.data_type(), i, &|| at(&path(), own.name()))),
+        (Arrow::List(_), Arrow::List(to)) => {
+            let list = array.as_list::<i32>();
+            let (items, offsets) = (list.values(), list.value_offsets());
+            let path = || format!("{}[]", path());
+            (offsets[i] as usize..offsets[i + 1] as usize).find_map(|e| unfit_at(items, to.data_type(), e, &path))
+        }
+        (own, to) if own == to => None,
+        _ => misfit(array, i, to).map(|why| format!("{} {why}", path())),
+    }
+}
+
+/// Why value `i` of `array`, a leaf of the record's, cannot be held by a column a table holds as `to` (`narrows`):
+/// `is 300, which an 8-bit integer column cannot hold`. None when it can, and for a time, which every one can.
+pub fn misfit(array: &ArrayRef, i: usize, to: &Arrow) -> Option<String> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::{Float64Type, Int64Type};
+    let int = |fits: bool, width: &str| {
+        let v = array.as_primitive::<Int64Type>().value(i);
+        (!fits).then(|| format!("is {v}, which {width} integer column cannot hold"))
+    };
+    match to {
+        Arrow::Int8 => int(
+            i8::try_from(array.as_primitive::<Int64Type>().value(i)).is_ok(),
+            "an 8-bit",
+        ),
+        Arrow::Int16 => int(
+            i16::try_from(array.as_primitive::<Int64Type>().value(i)).is_ok(),
+            "a 16-bit",
+        ),
+        Arrow::Int32 => int(
+            i32::try_from(array.as_primitive::<Int64Type>().value(i)).is_ok(),
+            "a 32-bit",
+        ),
+        Arrow::Float32 => {
+            let v = array.as_primitive::<Float64Type>().value(i);
+            (v.is_finite() && !(v as f32).is_finite())
+                .then(|| format!("is {v:?}, beyond a 32-bit float column's range"))
+        }
+        _ => None,
+    }
+}
+
+/// `array`'s values as `to`, a type a table holds narrower (`narrows`), a float rounded; a value the column cannot
+/// hold (`misfit`) is null.
+fn narrow_leaf(array: &ArrayRef, to: &Arrow) -> ArrayRef {
+    use crate::ops::civil::MICROS_PER_DAY;
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::{Float64Type, Int64Type, TimestampMicrosecondType};
+    let held = |i: usize| !array.is_null(i) && misfit(array, i, to).is_none();
+    let ints = || (0..array.len()).map(|i| held(i).then(|| array.as_primitive::<Int64Type>().value(i)));
+    match to {
+        Arrow::Int8 => Arc::new(ints().map(|v| v.map(|v| v as i8)).collect::<Int8Array>()),
+        Arrow::Int16 => Arc::new(ints().map(|v| v.map(|v| v as i16)).collect::<Int16Array>()),
+        Arrow::Int32 => Arc::new(ints().map(|v| v.map(|v| v as i32)).collect::<Int32Array>()),
+        // Rounded: what a float column is.
+        Arrow::Float32 => Arc::new(
+            (0..array.len())
+                .map(|i| held(i).then(|| array.as_primitive::<Float64Type>().value(i) as f32))
+                .collect::<Float32Array>(),
+        ),
+        // Every day an i64 of microseconds reaches is an i32.
+        Arrow::Date32 => Arc::new(
+            (array.as_primitive::<TimestampMicrosecondType>().iter())
+                .map(|v| v.map(|v| v.div_euclid(MICROS_PER_DAY) as i32))
+                .collect::<Date32Array>(),
+        ),
+        Arrow::Timestamp(TimeUnit::Microsecond, None) => Arc::new(
+            array
+                .as_primitive::<TimestampMicrosecondType>()
+                .clone()
+                .with_timezone_opt(None::<String>),
+        ),
+        to => unreachable!("`with_written` narrows a leaf to no {to}"),
     }
 }
 
@@ -354,6 +573,12 @@ pub struct FileWriter {
     rows: u64,
     /// The schema each batch is relabelled with before it is written, when the file's differs from its rows'.
     written: Option<Arc<ArrowSchema>>,
+    defaults: Arc<[WriteDefault]>,
+    /// Columns computed for each batch, and the file's schema with them, when there are any.
+    computed: Vec<Arc<dyn Computed>>,
+    file: Arc<ArrowSchema>,
+    /// The record's columns this file holds null: those of a partition value that is empty.
+    nulled: Vec<usize>,
 }
 
 /// What the Parquet writer writes into, shared with the `FileWriter` that drains it.
@@ -380,41 +605,103 @@ impl Sink {
     }
 }
 
+/// How a file's bytes are written: what a destination's config asks, or a table's own properties.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WriteOptions {
+    pub codec: Compression,
+    /// The codec's level, where it takes one (gzip, zstd); its default when `None` or out of its range.
+    pub level: Option<i32>,
+    /// Leaf columns, by their names in the written file, that carry a bloom filter, each with its false-positive
+    /// probability.
+    pub bloom_filters: Vec<(Vec<String>, f64)>,
+}
+
+impl From<Compression> for WriteOptions {
+    fn from(codec: Compression) -> WriteOptions {
+        WriteOptions {
+            codec,
+            level: None,
+            bloom_filters: Vec::new(),
+        }
+    }
+}
+
+impl WriteOptions {
+    fn properties(&self) -> WriterProperties {
+        use parquet::basic::{Compression as Codec, GzipLevel, ZstdLevel};
+        use parquet::schema::types::ColumnPath;
+        let compression = match self.codec {
+            Compression::None => Codec::UNCOMPRESSED,
+            Compression::Gzip => Codec::GZIP(
+                (self.level.and_then(|l| u32::try_from(l).ok()))
+                    .and_then(|l| GzipLevel::try_new(l).ok())
+                    .unwrap_or_default(),
+            ),
+            Compression::Snappy => Codec::SNAPPY,
+            Compression::Lz4 => Codec::LZ4_RAW,
+            Compression::Zstd => Codec::ZSTD(self.level.and_then(|l| ZstdLevel::try_new(l).ok()).unwrap_or_default()),
+        };
+        // Row groups end where `take_row_group` says, not where the writer's own limits fall.
+        let mut props = WriterProperties::builder()
+            .set_compression(compression)
+            .set_max_row_group_row_count(None)
+            .set_max_row_group_bytes(None);
+        for (path, fpp) in &self.bloom_filters {
+            let column = ColumnPath::new(path.clone());
+            props = props
+                .set_column_bloom_filter_enabled(column.clone(), true)
+                .set_column_bloom_filter_fpp(column, *fpp);
+        }
+        props.build()
+    }
+}
+
 impl FileWriter {
-    /// A writer for rows of chunks cut to `schema`, compressed with `codec`.
-    pub fn open(schema: &Schema, codec: Compression) -> FileWriter {
-        match &schema.written {
-            Some(written) => FileWriter {
-                written: Some(written.clone()),
-                ..FileWriter::on(written.clone(), codec)
-            },
-            None => FileWriter::on(schema.arrow.clone(), codec),
+    /// A writer for rows of chunks cut to `schema`, its bytes written as `options` say.
+    pub fn open(schema: &Schema, options: &WriteOptions) -> FileWriter {
+        let own = schema.written.as_ref().unwrap_or(&schema.arrow);
+        let file = if schema.computed.is_empty() {
+            own.clone()
+        } else {
+            let fields: Vec<Arc<Field>> = (own.fields().iter().cloned())
+                .chain(schema.computed.iter().map(|c| c.field()))
+                .collect();
+            Arc::new(ArrowSchema::new_with_metadata(fields, own.metadata().clone()))
+        };
+        FileWriter {
+            written: schema.written.clone(),
+            defaults: schema.defaults.clone(),
+            computed: schema.computed.clone(),
+            ..FileWriter::on(file, options)
         }
     }
 
-    fn on(schema: Arc<ArrowSchema>, codec: Compression) -> FileWriter {
-        use parquet::basic::{Compression as Codec, GzipLevel, ZstdLevel};
-        let compression = match codec {
-            Compression::None => Codec::UNCOMPRESSED,
-            Compression::Gzip => Codec::GZIP(GzipLevel::default()),
-            Compression::Snappy => Codec::SNAPPY,
-            Compression::Lz4 => Codec::LZ4_RAW,
-            Compression::Zstd => Codec::ZSTD(ZstdLevel::default()),
-        };
-        // Row groups end where `take_row_group` says, not where the writer's own limits fall.
-        let props = WriterProperties::builder()
-            .set_compression(compression)
-            .set_max_row_group_row_count(None)
-            .set_max_row_group_bytes(None)
-            .build();
+    /// A file of the partition whose values are `values`, by field name.
+    pub fn of_partition(schema: &Schema, options: &WriteOptions, values: &[(String, String)]) -> FileWriter {
+        let empty = |name: &String| values.iter().any(|(n, v)| n == name && v.is_empty());
+        FileWriter {
+            nulled: (schema.partition_columns.iter())
+                .filter(|(name, _)| empty(name))
+                .map(|(_, at)| *at)
+                .collect(),
+            ..FileWriter::open(schema, options)
+        }
+    }
+
+    fn on(schema: Arc<ArrowSchema>, options: &WriteOptions) -> FileWriter {
+        let props = options.properties();
         let sink = Sink::default();
         // Writing to memory fails only on a schema Parquet cannot hold, and `Schema::new` refuses those.
-        let writer = ArrowWriter::try_new(sink.clone(), schema, Some(props)).expect("a writable schema");
+        let writer = ArrowWriter::try_new(sink.clone(), schema.clone(), Some(props)).expect("a writable schema");
         FileWriter {
             writer,
             sink,
             rows: 0,
             written: None,
+            defaults: Arc::new([]),
+            computed: Vec::new(),
+            file: schema,
+            nulled: Vec::new(),
         }
     }
 
@@ -438,8 +725,21 @@ impl FileWriter {
         }
         let batches: Vec<&RecordBatch> = chunks.iter().map(|c| &c.batch).collect();
         let mut batch = arrow_select::interleave::interleave_record_batch(&batches, &at).expect("chunks of one schema");
+        let computed: Vec<ArrayRef> = self.computed.iter().map(|c| c.fill(&batch)).collect();
         if let Some(written) = &self.written {
-            batch = relabel(&batch, written);
+            batch = relabel(&batch, written, &self.defaults);
+        }
+        if !self.nulled.is_empty() {
+            let mut columns = batch.columns().to_vec();
+            for &at in &self.nulled {
+                columns[at] = new_null_array(columns[at].data_type(), batch.num_rows());
+            }
+            batch = RecordBatch::try_new(batch.schema(), columns).expect("null columns of their fields' types");
+        }
+        if !computed.is_empty() {
+            let mut columns = batch.columns().to_vec();
+            columns.extend(computed);
+            batch = RecordBatch::try_new(self.file.clone(), columns).expect("computed columns of their fields' types");
         }
         self.writer.write(&batch).expect("a batch of the writer's own schema");
         self.rows += at.len() as u64;
@@ -491,7 +791,7 @@ pub fn write<'a>(rows: impl IntoIterator<Item = &'a Columns>, codec: Compression
     let Some(first) = rows.peek() else {
         return Vec::new();
     };
-    let mut writer = FileWriter::on(first.chunk.batch.schema(), codec);
+    let mut writer = FileWriter::on(first.chunk.batch.schema(), &codec.into());
     writer.write(rows);
     writer.finish().0
 }
@@ -916,9 +1216,28 @@ mod tests {
     }
 
     #[test]
+    fn a_file_carries_the_codec_and_the_bloom_filters_asked() {
+        let schema = raw_schema();
+        let options = WriteOptions {
+            codec: Compression::Gzip,
+            level: Some(9),
+            bloom_filters: vec![(vec!["_raw".into()], 0.05), (vec!["nowhere".into()], 0.05)],
+        };
+        let mut w = FileWriter::open(&schema, &options);
+        w.write(&rows(&schema, &["a", "b"]));
+        let (_, metadata) = w.finish();
+        let column = metadata.row_group(0).column(0);
+        assert!(matches!(column.compression(), parquet::basic::Compression::GZIP(_)));
+        assert!(column.bloom_filter_offset().is_some(), "a bloom filter for _raw");
+        let mut plain = FileWriter::open(&schema, &Compression::Gzip.into());
+        plain.write(&rows(&schema, &["a", "b"]));
+        assert_eq!(plain.finish().1.row_group(0).column(0).bloom_filter_offset(), None);
+    }
+
+    #[test]
     fn a_file_streams_out_a_row_group_at_a_time() {
         let schema = raw_schema();
-        let mut w = FileWriter::open(&schema, Compression::Zstd);
+        let mut w = FileWriter::open(&schema, &Compression::Zstd.into());
         assert!(w.take_row_group().is_empty());
 
         let first = rows(&schema, &["a", "b"]);
@@ -959,6 +1278,170 @@ mod tests {
         assert!(write(std::iter::empty(), Compression::None).is_empty());
     }
 
+    /// A column a table holds narrower takes each value converted as the file is written, at any depth, and a row
+    /// whose value it cannot hold is unfit.
+    #[test]
+    fn a_column_a_table_holds_narrower_is_written_as_its_type() {
+        use crate::core::column::Column;
+        use arrow_array::cast::AsArray;
+        use arrow_array::types::{Date32Type, Float32Type, Int8Type, Int16Type};
+        let mut pool = BufferPool::new();
+        let mut n = Column::alloc(&mut pool, &DataType::I64, 3);
+        n.i64_mut().unwrap().values.copy_from_slice(&[1, 40_000, 0]);
+        n.i64_mut().unwrap().validity.set_valid(2, false);
+        let mut f = Column::alloc(&mut pool, &DataType::F64, 3);
+        f.f64_mut().unwrap().values.copy_from_slice(&[1.1, 2.0, 1e300]);
+        let mut t = Column::alloc(&mut pool, &DataType::DateTime, 3);
+        t.datetime_mut()
+            .unwrap()
+            .values
+            .copy_from_slice(&[86_400_000_000 + 1, -1, 0]);
+        let mut m = Column::alloc(&mut pool, &DataType::I64, 3);
+        m.i64_mut().unwrap().values.copy_from_slice(&[-128, 127, 5]);
+        let record = st(
+            &[
+                ("n", DataType::I64),
+                ("f", DataType::F64),
+                ("t", DataType::DateTime),
+                ("ctx", st(&[("m", DataType::I64)], false)),
+            ],
+            false,
+        );
+        let schema = Schema::new(&record).unwrap();
+        let ctx = Fields::from(vec![Field::new("m", Arrow::Int8, true)]);
+        let written = Arc::new(ArrowSchema::new(vec![
+            Field::new("n", Arrow::Int16, true),
+            Field::new("f", Arrow::Float32, true),
+            Field::new("t", Arrow::Date32, true),
+            Field::new("ctx", Arrow::Struct(ctx), true),
+        ]));
+        let narrow = schema.clone().with_written(written.clone());
+        let view = RecordView::from_named([("n", &n), ("f", &f), ("t", &t), ("ctx.m", &m)]);
+        let chunk = Arc::new(Chunk::cut(&schema, &[(&view, &[0, 1, 2])], 0, &mut pool));
+        for c in [n, f, t, m] {
+            c.reclaim(&mut pool);
+        }
+        let rows: Vec<Columns> = (0..3)
+            .map(|row| Columns {
+                chunk: chunk.clone(),
+                row,
+            })
+            .collect();
+
+        assert!(narrow.matches(&rows[0]), "rows are cut to the record's own types");
+        assert_eq!(narrow.unfit(&rows[0]), None);
+        assert_eq!(
+            narrow.unfit(&rows[1]).as_deref(),
+            Some("n is 40000, which a 16-bit integer column cannot hold")
+        );
+        assert_eq!(
+            narrow.unfit(&rows[2]).as_deref(),
+            Some("f is 1e300, beyond a 32-bit float column's range")
+        );
+        assert_eq!(
+            schema.unfit(&rows[1]),
+            None,
+            "a schema that narrows nothing checks nothing"
+        );
+
+        let mut w = FileWriter::open(&narrow, &Compression::None.into());
+        w.write([&rows[0]]);
+        let (file, _) = w.finish();
+        let batch = ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+            tokio_util::bytes::Bytes::from(file),
+        )
+        .unwrap()
+        .build()
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+        assert_eq!(batch.schema().fields(), written.fields());
+        assert_eq!(batch.column(0).as_primitive::<Int16Type>().value(0), 1);
+        assert_eq!(
+            batch.column(1).as_primitive::<Float32Type>().value(0),
+            1.1f32,
+            "rounded"
+        );
+        assert_eq!(batch.column(2).as_primitive::<Date32Type>().value(0), 1, "its UTC day");
+        let m = batch
+            .column(3)
+            .as_struct()
+            .column(0)
+            .as_primitive::<Int8Type>()
+            .value(0);
+        assert_eq!(m, -128);
+    }
+
+    /// A list's items a table holds narrower: a row is unfit for any one the column cannot hold, and written each one
+    /// converted.
+    #[test]
+    fn a_list_a_table_holds_narrower_is_checked_and_written_item_by_item() {
+        use arrow_array::cast::AsArray;
+        use arrow_array::types::{Int32Type, Int64Type};
+        let lists = ListArray::from_iter_primitive::<Int64Type, _, _>([
+            Some(vec![Some(1), None, Some(2)]),
+            Some(vec![Some(3), Some(1 << 40)]),
+            None,
+        ]);
+        let lists: ArrayRef = Arc::new(lists);
+        let to = Arrow::List(Arc::new(Field::new_list_field(Arrow::Int32, true)));
+        assert_eq!(unfit_at(&lists, &to, 0, &|| "n".into()), None);
+        assert_eq!(
+            unfit_at(&lists, &to, 1, &|| "n".into()).as_deref(),
+            Some("n[] is 1099511627776, which a 32-bit integer column cannot hold")
+        );
+        assert_eq!(
+            unfit_at(&lists, &to, 2, &|| "n".into()),
+            None,
+            "a null list holds nothing"
+        );
+        let written = relabelled(&lists.slice(0, 1), &to, None);
+        let items = written.as_list::<i32>().value(0);
+        let items = items.as_primitive::<Int32Type>();
+        assert_eq!(items.iter().collect::<Vec<_>>(), vec![Some(1), None, Some(2)]);
+    }
+
+    /// A written schema may narrow only a leaf the record types wider.
+    #[test]
+    #[should_panic(expected = "a leaf narrowed")]
+    fn a_written_schema_narrows_no_leaf_the_record_types_otherwise() {
+        let schema = Schema::new(&st(&[("s", DataType::Str)], false)).unwrap();
+        let _ = schema.with_written(Arc::new(ArrowSchema::new(vec![Field::new("s", Arrow::Int32, true)])));
+    }
+
+    #[test]
+    fn a_file_of_a_partition_whose_value_is_empty_holds_its_column_null() {
+        use arrow_array::cast::AsArray;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        let schema = raw_schema().with_partition_columns(vec![("p".into(), 0)]);
+        let own = rows(&schema, &["", ""]);
+        let read = |values: &[(String, String)]| {
+            let mut w = FileWriter::of_partition(&schema, &Compression::None.into(), values);
+            w.write(&own);
+            let (file, _) = w.finish();
+            let reader = ParquetRecordBatchReaderBuilder::try_new(tokio_util::bytes::Bytes::from(file))
+                .unwrap()
+                .build()
+                .unwrap();
+            (reader.map(Result::unwrap))
+                .flat_map(|b| {
+                    b.column(0)
+                        .as_string::<i32>()
+                        .iter()
+                        .map(|v| v.map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(read(&[("p".into(), String::new())]), [None, None]);
+        assert_eq!(
+            read(&[("q".into(), String::new())]),
+            [Some(String::new()), Some(String::new())]
+        );
+        assert_eq!(read(&[]), [Some(String::new()), Some(String::new())]);
+    }
+
     #[test]
     fn a_file_written_with_field_ids_carries_them() {
         use parquet::file::reader::{FileReader, SerializedFileReader};
@@ -968,7 +1451,7 @@ mod tests {
         let labelled = schema.clone().with_written(Arc::new(ArrowSchema::new(vec![field])));
         let own = rows(&schema, &["a", "b"]);
         assert!(labelled.matches(&own[0]));
-        let mut w = FileWriter::open(&labelled, Compression::None);
+        let mut w = FileWriter::open(&labelled, &Compression::None.into());
         w.write(&own);
         let (file, _) = w.finish();
         let path = std::env::temp_dir().join(format!("smeltr-parquet-{}-ids.parquet", std::process::id()));
@@ -996,7 +1479,9 @@ mod tests {
         );
         let schema = Schema::new(&record).unwrap();
         let table = table_schema(&record, None, 0).unwrap().schema;
-        let labelled = schema.clone().with_written(with_field_ids(schema.arrow(), &table));
+        let labelled = schema
+            .clone()
+            .with_written(with_field_ids(schema.arrow(), &table).unwrap().0);
 
         let Arrow::Struct(o) = schema.arrow().field(0).data_type().clone() else {
             panic!("o is a struct")
@@ -1017,7 +1502,7 @@ mod tests {
             row: 0,
         };
         assert!(labelled.matches(&row));
-        let mut w = FileWriter::open(&labelled, Compression::None);
+        let mut w = FileWriter::open(&labelled, &Compression::None.into());
         w.write([&row]);
         let (file, _) = w.finish();
 
@@ -1038,6 +1523,302 @@ mod tests {
             .collect();
         assert_eq!(leaves, [3, 4]);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_table_column_the_record_lacks_is_written_null_at_every_depth() {
+        use crate::io::iceberg::metadata::{ListType, NestedField, Primitive, StructType, Type};
+        use crate::io::iceberg::schema::{table_schema, with_field_ids};
+        use arrow_array::cast::AsArray;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use parquet::basic::LogicalType;
+
+        let record = st(&[("o", st(&[("a", DataType::I64)], false))], false);
+        let schema = Schema::new(&record).unwrap();
+        let mut table = table_schema(&record, None, 0).unwrap().schema;
+        let field = |id: i32, name: &str, field_type: Type| NestedField {
+            id,
+            name: name.into(),
+            required: false,
+            field_type,
+            doc: None,
+            other: Default::default(),
+        };
+        let other = |name: &str| Type::Primitive(Primitive::Other(name.into()));
+        let Type::Struct(o) = &mut table.fields[0].field_type else {
+            panic!("o is a struct")
+        };
+        o.fields.push(field(3, "b", Type::Primitive(Primitive::String)));
+        table.fields.extend([
+            field(4, "d", other("decimal(10, 2)")),
+            field(5, "u", other("uuid")),
+            field(6, "f", other("fixed[4]")),
+            field(7, "t", other("time")),
+            field(
+                8,
+                "l",
+                Type::List(ListType {
+                    element_id: 9,
+                    element_required: false,
+                    element: Box::new(Type::Primitive(Primitive::Int)),
+                }),
+            ),
+            field(
+                10,
+                "m",
+                Type::Map(
+                    serde_json::json!({"type": "map", "key-id": 11, "key": "string", "value-id": 12,
+                    "value": "long", "value-required": false}),
+                ),
+            ),
+            field(
+                13,
+                "s",
+                Type::Struct(StructType {
+                    fields: vec![field(14, "x", Type::Primitive(Primitive::Timestamptz))],
+                }),
+            ),
+        ]);
+        let labelled = schema
+            .clone()
+            .with_written(with_field_ids(schema.arrow(), &table).unwrap().0);
+
+        let Arrow::Struct(fields) = schema.arrow().field(0).data_type().clone() else {
+            panic!("o is a struct")
+        };
+        let o: ArrayRef = Arc::new(StructArray::new(
+            fields,
+            vec![Arc::new(Int64Array::from(vec![1, 2]))],
+            None,
+        ));
+        let batch = RecordBatch::try_new(schema.arrow().clone(), vec![o]).unwrap();
+        let chunk = Arc::new(Chunk::new(batch, Vec::new()));
+        let rows: Vec<Columns> = (0..2)
+            .map(|row| Columns {
+                chunk: chunk.clone(),
+                row,
+            })
+            .collect();
+        assert!(labelled.matches(&rows[0]));
+        let mut w = FileWriter::open(&labelled, &Compression::None.into());
+        w.write(&rows);
+        let (file, _) = w.finish();
+
+        let path = std::env::temp_dir().join(format!("smeltr-parquet-{}-all-columns.parquet", std::process::id()));
+        std::fs::write(&path, &file).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&path).unwrap()).unwrap();
+        let descr = builder.metadata().file_metadata().schema_descr();
+        let leaves: Vec<(i32, Option<LogicalType>)> = (0..descr.num_columns())
+            .map(|i| {
+                let column = descr.column(i);
+                (
+                    column.self_type().get_basic_info().id(),
+                    column.logical_type_ref().cloned(),
+                )
+            })
+            .collect();
+        let ids: Vec<i32> = leaves.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [2, 3, 4, 5, 6, 7, 9, 11, 12, 14]);
+        assert_eq!(leaves[2].1, Some(LogicalType::decimal(2, 10)));
+        assert_eq!(leaves[3].1, Some(LogicalType::Uuid));
+        assert_eq!(
+            leaves[5].1,
+            Some(LogicalType::time(false, parquet::basic::TimeUnit::MICROS))
+        );
+
+        let read: Vec<RecordBatch> = builder.build().unwrap().map(Result::unwrap).collect();
+        std::fs::remove_file(&path).unwrap();
+        let batch = &read[0];
+        let names: Vec<&str> = batch.schema_ref().fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, ["o", "d", "u", "f", "t", "l", "m", "s"]);
+        let o = batch.column(0).as_struct();
+        assert_eq!(o.column(0).null_count(), 0);
+        assert_eq!(o.column(1).null_count(), 2, "o.b");
+        for (column, name) in batch.columns().iter().zip(names).skip(1) {
+            assert_eq!(column.null_count(), 2, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_table_column_the_record_lacks_takes_its_write_default_at_every_depth() {
+        use crate::io::iceberg::metadata::{ListType, NestedField, Primitive, StructType, Type};
+        use crate::io::iceberg::schema::{table_schema, with_field_ids};
+        use arrow_array::cast::AsArray;
+        use arrow_array::types::{
+            Date32Type, Decimal128Type, Int32Type, Int64Type, Time64MicrosecondType, TimestampMicrosecondType,
+        };
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use serde_json::json;
+
+        let record = st(&[("o", st(&[("a", DataType::I64)], false))], false);
+        let schema = Schema::new(&record).unwrap();
+        let mut table = table_schema(&record, None, 0).unwrap().schema;
+        let field = |id: i32, name: &str, field_type: Type, default: serde_json::Value| NestedField {
+            id,
+            name: name.into(),
+            required: false,
+            field_type,
+            doc: None,
+            other: [("write-default".to_string(), default)].into(),
+        };
+        let other = |name: &str| Type::Primitive(Primitive::Other(name.into()));
+        let Type::Struct(o) = &mut table.fields[0].field_type else {
+            panic!("o is a struct")
+        };
+        o.fields
+            .push(field(3, "b", Type::Primitive(Primitive::String), json!("dflt")));
+        let mut required = field(16, "r", Type::Primitive(Primitive::Long), json!(7));
+        required.required = true;
+        table.fields.extend([
+            field(4, "d", other("decimal(10, 2)"), json!("-14.2")),
+            field(5, "u", other("uuid"), json!("f79c3e09-677c-4bbd-a479-3f349cb785e7")),
+            field(6, "f", other("fixed[2]"), json!("0a0B")),
+            field(7, "t", other("time"), json!("22:31:08.000123")),
+            field(
+                8,
+                "l",
+                Type::List(ListType {
+                    element_id: 9,
+                    element_required: false,
+                    element: Box::new(Type::Primitive(Primitive::Int)),
+                }),
+                json!([1, 2]),
+            ),
+            field(
+                10,
+                "m",
+                Type::Map(json!({"type": "map", "key-id": 11, "key": "string", "value-id": 12,
+                    "value": "long", "value-required": false})),
+                json!({"keys": ["k"], "values": [5]}),
+            ),
+            field(
+                13,
+                "s",
+                Type::Struct(StructType {
+                    fields: vec![field(
+                        14,
+                        "x",
+                        Type::Primitive(Primitive::Timestamptz),
+                        json!("1970-01-01T00:00:01+00:00"),
+                    )],
+                }),
+                json!({}),
+            ),
+            field(15, "n", Type::Primitive(Primitive::Date), json!("1970-01-03")),
+            required,
+            field(17, "z", Type::Primitive(Primitive::Boolean), serde_json::Value::Null),
+        ]);
+        let (written, defaults) = with_field_ids(schema.arrow(), &table).unwrap();
+        let labelled = schema.clone().with_written(written).with_defaults(defaults);
+
+        let Arrow::Struct(fields) = schema.arrow().field(0).data_type().clone() else {
+            panic!("o is a struct")
+        };
+        // The second row's o is null, and so is the o.b it holds.
+        let o: ArrayRef = Arc::new(StructArray::new(
+            fields,
+            vec![Arc::new(Int64Array::from(vec![Some(1), None]))],
+            Some(NullBuffer::from(vec![true, false])),
+        ));
+        let batch = RecordBatch::try_new(schema.arrow().clone(), vec![o]).unwrap();
+        let chunk = Arc::new(Chunk::new(batch, Vec::new()));
+        let rows: Vec<Columns> = (0..2)
+            .map(|row| Columns {
+                chunk: chunk.clone(),
+                row,
+            })
+            .collect();
+        let mut w = FileWriter::open(&labelled, &Compression::None.into());
+        w.write(&rows);
+        let (file, _) = w.finish();
+
+        let read: Vec<RecordBatch> = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(file))
+            .unwrap()
+            .build()
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let batch = &read[0];
+        let column = |name: &str| batch.column_by_name(name).unwrap().clone();
+        let o = column("o");
+        let b = o.as_struct().column(1).as_string::<i32>();
+        assert_eq!((b.value(0), o.is_null(1)), ("dflt", true));
+        for row in 0..2 {
+            assert_eq!(column("d").as_primitive::<Decimal128Type>().value(row), -1420);
+            assert_eq!(
+                column("u").as_fixed_size_binary().value(row),
+                [
+                    0xf7, 0x9c, 0x3e, 0x09, 0x67, 0x7c, 0x4b, 0xbd, 0xa4, 0x79, 0x3f, 0x34, 0x9c, 0xb7, 0x85, 0xe7
+                ]
+            );
+            assert_eq!(column("f").as_fixed_size_binary().value(row), [10, 11]);
+            assert_eq!(
+                column("t").as_primitive::<Time64MicrosecondType>().value(row),
+                ((22 * 60 + 31) * 60 + 8) * 1_000_000 + 123
+            );
+            let l = column("l");
+            assert_eq!(
+                l.as_list::<i32>().value(row).as_primitive::<Int32Type>().values(),
+                &[1, 2]
+            );
+            let m = column("m");
+            let entries = m.as_map().value(row);
+            assert_eq!(entries.column(0).as_string::<i32>().value(0), "k");
+            assert_eq!(entries.column(1).as_primitive::<Int64Type>().value(0), 5);
+            let x = column("s").as_struct().column(0).clone();
+            assert_eq!(x.as_primitive::<TimestampMicrosecondType>().value(row), 1_000_000);
+            assert_eq!(column("n").as_primitive::<Date32Type>().value(row), 2);
+            assert_eq!(column("r").as_primitive::<Int64Type>().value(row), 7);
+        }
+        assert_eq!(column("z").null_count(), 2);
+    }
+
+    #[test]
+    fn a_write_default_that_is_no_value_of_its_column_is_refused() {
+        use crate::io::iceberg::metadata::{NestedField, Primitive, StructType, Type};
+        use crate::io::iceberg::schema::{table_schema, with_field_ids};
+        use serde_json::json;
+
+        let record = st(&[("a", DataType::I64)], false);
+        let schema = Schema::new(&record).unwrap();
+        let field = |name: &str, field_type: Type, default: serde_json::Value| NestedField {
+            id: 9,
+            name: name.into(),
+            required: false,
+            field_type,
+            doc: None,
+            other: [("write-default".to_string(), default)].into(),
+        };
+        let other = |name: &str| Type::Primitive(Primitive::Other(name.into()));
+        let refused = |column: NestedField| {
+            let mut table = table_schema(&record, None, 0).unwrap().schema;
+            table.fields.push(column);
+            with_field_ids(schema.arrow(), &table).unwrap_err()
+        };
+        assert_eq!(
+            refused(field("i", Type::Primitive(Primitive::Int), json!(3_000_000_000_i64))),
+            "the table's column i has the write default 3000000000, which is not of type int"
+        );
+        for (ty, default) in [
+            (other("decimal(3, 1)"), json!("100.0")),
+            (other("decimal(3, 1)"), json!("1.25")),
+            (other("uuid"), json!("f79c3e09677c4bbda4793f349cb785e7")),
+            (other("fixed[2]"), json!("0a")),
+            (Type::Primitive(Primitive::Timestamptz), json!("1970-01-01T00:00:00")),
+            (Type::Primitive(Primitive::Date), json!(2)),
+        ] {
+            assert!(
+                refused(field("v", ty, default.clone())).contains("which is not of type"),
+                "{default}"
+            );
+        }
+        let mut x = field("x", Type::Primitive(Primitive::Long), serde_json::Value::Null);
+        x.required = true;
+        let s = field("s", Type::Struct(StructType { fields: vec![x] }), json!({}));
+        assert_eq!(
+            refused(s),
+            "the table's column s.x is required, and has no write default for a row that lacks it"
+        );
     }
 
     #[test]
@@ -1065,9 +1846,7 @@ mod tests {
             false,
         );
         let schema = Schema::new(&record).unwrap();
-        let table = table_schema(&record, None, Mapping::Name { max_column_id: 0 })
-            .unwrap()
-            .schema;
+        let table = table_schema(&record, None, Mapping::name(0), None).unwrap().schema;
         let written = physical(schema.arrow(), &table);
         let labelled = schema.clone().with_written(written.clone());
 
@@ -1094,7 +1873,7 @@ mod tests {
             row: 0,
         };
         assert!(labelled.matches(&row));
-        let mut w = FileWriter::open(&labelled, Compression::None);
+        let mut w = FileWriter::open(&labelled, &Compression::None.into());
         w.write([&row]);
         let (file, _) = w.finish();
 

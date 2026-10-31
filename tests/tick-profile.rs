@@ -82,11 +82,12 @@ fn produce_with(brokers: &str, topic: &str, n: usize, row: impl Fn(usize) -> Vec
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: brokers.to_string(),
             default_topic: topic.to_string(),
             service: smeltr::plan::topology::KafkaService::Kafka,
-            identity: None,
+            tls: None,
             buffer_bytes: 64 * 1024 * 1024,
             props: Default::default(),
             avro: None,
@@ -170,7 +171,12 @@ fn run_once(brokers: &str, inputs: &[String], output: &str, rows: usize, max_row
 /// `run_once` with the source declaring `encoding`.
 fn decoding(brokers: &str, inputs: &[String], output: &str, rows: usize, max_rows: usize, encoding: &str) -> Profile {
     let group = unique("profile-group");
-    run_in_group(brokers, inputs, output, rows, max_rows, &group, None, encoding)
+    run_bundle(
+        &bundle_json(brokers, inputs, output, &group, encoding),
+        rows,
+        max_rows,
+        None,
+    )
 }
 
 /// Where the members of one consumer group wait for each other between
@@ -206,21 +212,10 @@ impl Gate {
     }
 }
 
-/// `run_once` in a caller-chosen group, optionally behind a gate
+/// `run_once` on `bundle` (`bundle_json`), optionally behind a gate
 /// between warm-up and the timed run.
-#[allow(clippy::too_many_arguments)]
-fn run_in_group(
-    brokers: &str,
-    inputs: &[String],
-    output: &str,
-    rows: usize,
-    max_rows: usize,
-    group: &str,
-    gate: Option<&Gate>,
-    encoding: &str,
-) -> Profile {
-    let system =
-        smeltr::config_file::load_str(&bundle_json(brokers, inputs, output, group, encoding)).expect("bundle loads");
+fn run_bundle(bundle: &str, rows: usize, max_rows: usize, gate: Option<&Gate>) -> Profile {
+    let system = smeltr::config_file::load_str(bundle).expect("bundle loads");
     let topology = system.compile_topology().expect("bundle compiles");
 
     let registry = Arc::new(Metrics::new());
@@ -251,14 +246,12 @@ fn run_in_group(
             on_reject: d.on_reject.clone(),
             wants_doc_id: d.kind.wants_doc_id(),
             placement: d.kind.placement(),
-            id_field: d.kind.id_field().map(str::to_string),
         })
         .collect();
 
     let mut worker = Worker::new(
         system.topology.sources[0].id,
         Box::new(source),
-        system.topology.sources[0].kind.encoding(),
         topology,
         destinations,
         MemoryBudget::unlimited(),
@@ -481,7 +474,7 @@ fn thread_scaling() {
                     group.clone(),
                     gate.clone(),
                 );
-                std::thread::spawn(move || run_in_group(&b, &i, &o, ROWS, 4000, &g, Some(&gate), "auto"))
+                std::thread::spawn(move || run_bundle(&bundle_json(&b, &i, &o, &g, "auto"), ROWS, 4000, Some(&gate)))
             })
             .collect();
         let profiles: Vec<Profile> = handles.into_iter().map(|h| h.join().unwrap()).collect();

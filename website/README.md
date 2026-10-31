@@ -224,22 +224,29 @@ The type scale is a reader's, not the app's dense one.
 
 ## Website workflow and the guided example
 
-The marketing routes are `/`, `/build`, `/demo`, `/review`, `/operate`,
-`/docs`, and `/docs/code-reference`.
+The marketing routes are `/`, `/siem-costs`, `/one-schema`, `/how-it-works`, `/demo`,
+`/docs`, and `/docs/code-reference`. `/build`, `/review` and `/operate` redirect to
+`/how-it-works`, `/build#test-heading` to `/docs/steps#verify` and `/build#filtering`
+to `/siem-costs#drop-heading`.
 
-The homepage opens with the Smeltr wordmark and a short tagline. `HomeDataFlow.svelte`
-shows sources, processing, and destinations using the shared filtering-example records:
-three records enter, health checks and debug fields are removed, and two records leave.
-It uses the shared source/destination glyphs and stacks vertically on narrow screens.
+The homepage opens with the Smeltr wordmark, a short tagline and its two actions.
+`HomeDataFlow.svelte` shows sources, processing, and destinations using
+`src/lib/home-flow-example.json`: three firewall records enter, the NTP record is dropped,
+and both denied connections leave in ECS fields. The paragraph saying what Smeltr is sits
+under that section's heading. The flow uses the shared source/destination glyphs and stacks
+vertically on narrow screens.
 The editor section uses the supplied light/dark screenshots of a running PAN-OS pipeline
 with a directory lookup open. `pipeline-editor-{light,dark}.png` are the unchanged
 2880×2000 originals from `07-editor-panos-lookup-step` in the supplied screenshot set.
 Its staging README identifies the data as synthetic. `EditorScreenshot.svelte` shows two labeled CSS crop windows on the homepage and
-the complete image on Build. Original screenshot pixels are unchanged. Both views follow
-the site’s selected theme, load lazily, and link to their full-size originals. Build uses four screenshot-led sections: parse, enrich, test, and review.
-`ProductScreenshot.svelte` renders the full parse, tests, and Changes views in both themes.
-The unchanged assets come from `08-editor-nginx-grok-step`, `16-samples-and-tests`,
-and `18-changes` in the supplied set. Web-log and firewall examples are labeled separately.
+the complete image on How it works. Original screenshot pixels are unchanged. Both views follow
+the site’s selected theme, load lazily, and link to their full-size originals.
+
+`/siem-costs` runs ten PAN-OS traffic logs through a Parser that rebuilds the line and a Drop
+step, and its destination writes text. `siem-step-*-{light,dark}.png` are its steps' cards in the demo GUI. `SiemSteps.svelte` folds open each step's
+settings, and `SiemCutExample.svelte` lists every record and its bytes from
+`src/lib/siem-cut-example.json`, the preview service's answer for that run.
+`/one-schema` shows sources mapped to one schema from `src/lib/one-schema-example.json`.
 The detailed review screenshot is not used here because its identity notice is outdated. Competitor names and links are omitted. The worked tutorial
 at `/docs/first-pipeline` takes an existing installation from a saved sample
 through regression tests, route preview, deployment and a live Kafka output
@@ -257,8 +264,8 @@ The homepage introduces the source → Smeltr → destination data path without 
 connector count. `/docs/sources` and `/docs/destinations` follow
 [Reference pages](#reference-pages). The kind indexes live in
 `src/lib/connections.ts`, settings in `src/lib/connector-reference.json` and
-examples in `src/lib/connector-examples.json`. Shared authentication and
-connection identities live in `/docs/secrets`. Keep private repository links
+examples in `src/lib/connector-examples.json`. Shared authentication
+lives in `/docs/secrets`. Keep private repository links
 out of rendered pages. The setup guide retains `#connections` as
 a short set of links for existing bookmarks.
 The setup guide's completion checklist links each expected result to its procedure.
@@ -279,8 +286,8 @@ and parser references. `/reference` redirects there with its query and section b
 intact and is excluded from search. Keep future references under `/docs`; reserve
 `/docs/api-reference` for an API guide when it is ready.
 
-`FilteringExample.svelte` shares three illustrative inputs and their expected outputs
-from `src/lib/filtering-example.json` between Build and the first-pipeline tutorial.
+`FilteringExample.svelte` gives the first-pipeline tutorial its three illustrative inputs and their expected outputs
+from `src/lib/filtering-example.json`.
 The tutorial gives JSON Parser, Drop, and Eval settings plus a deliberate failing-test
 check. The JSON serializer omits null object fields; this is why clearing `debug`
 and `_raw` removes them from delivery. Keep field omission distinct from dropping

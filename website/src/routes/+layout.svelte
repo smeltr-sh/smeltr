@@ -6,7 +6,6 @@
   import { page } from '$app/state';
   import Logo from '#lib/components/Logo.svelte';
   import ThemeToggle from '#lib/components/ThemeToggle.svelte';
-  import { isReferencePage } from '#lib/step-pages.ts';
   import { source } from '#lib/release.ts';
 
   let { children } = $props();
@@ -24,6 +23,11 @@
   }
 </script>
 
+<svelte:head>
+  <!-- One address per page for search engines, whichever host, scheme or slash a link used. -->
+  <link rel="canonical" href={`https://smeltr.sh${page.url.pathname}`} />
+</svelte:head>
+
 <a class="skip-link" href="#main">Skip to content</a>
 
 <header use:measureHeader>
@@ -34,25 +38,16 @@
     </a>
 
     <div class="links">
-      <a href="/get" aria-current={page.url.pathname === '/get' ? 'page' : undefined}>Get</a>
-      <a href="/build" aria-current={page.url.pathname === '/build' ? 'page' : undefined}>Build</a>
-      <a href="/review" aria-current={page.url.pathname === '/review' ? 'page' : undefined}
-        >Review &amp; deploy</a
-      >
-      <a href="/operate" aria-current={page.url.pathname === '/operate' ? 'page' : undefined}
-        >Operate</a
-      >
+      {#each [['/siem-costs', 'Cut SIEM costs'], ['/one-schema', 'One schema'], ['/how-it-works', 'How it works']] as [href, label] (href)}
+        <a {href} aria-current={page.url.pathname === href ? 'page' : undefined}>{label}</a>
+      {/each}
       <a
         href="/docs"
-        aria-current={page.url.pathname === '/docs' ||
-        (page.url.pathname.startsWith('/docs/') && !isReferencePage(page.url.pathname))
+        aria-current={page.url.pathname === '/docs' || page.url.pathname.startsWith('/docs/')
           ? 'page'
           : undefined}>Docs</a
       >
-      <a
-        href="/docs/code-reference"
-        aria-current={isReferencePage(page.url.pathname) ? 'page' : undefined}>Reference</a
-      >
+      <a href="/get" aria-current={page.url.pathname === '/get' ? 'page' : undefined}>Get smeltr</a>
     </div>
     <div class="theme-control"><ThemeToggle /></div>
   </nav>
@@ -68,7 +63,6 @@
       <Logo size={20} />
       <span>smeltr</span>
     </a>
-    <p>Run data pipelines with confidence.</p>
   </div>
   <p><a href={source}>Source code</a> · <a href="mailto:support@smeltr.sh">support@smeltr.sh</a></p>
 </footer>

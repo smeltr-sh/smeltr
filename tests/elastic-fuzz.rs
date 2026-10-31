@@ -3,7 +3,7 @@
 //!
 //! Offline, a destination the save refuses is refused on the setting that was broken. One it accepts loads as drawn,
 //! loads the same once saved, builds when this worker holds every credential it names and refuses to when it does
-//! not, and delivers drawn batches to a cluster in this process, over TLS when it names an identity. That cluster
+//! not, and delivers drawn batches to a cluster in this process, over TLS when it sets its own TLS. That cluster
 //! answers as Elasticsearch does: it files each document under its action's index and id, refuses some, asks for some
 //! again, takes some into a failure store, refuses a request past its size limit whole, and is now and then busy or
 //! too slow. What it holds at the end is exactly what was sent and not refused, each document once and byte for byte;
@@ -27,11 +27,11 @@ use serde_json::{Map, Value, json};
 use smeltr::config_file::load_str;
 use smeltr::core::column::DataType;
 use smeltr::io::OwnedRecord;
-use smeltr::io::elastic_mapping::{Ecs, mapping};
+use smeltr::io::elastic_mapping::mapping;
 use smeltr::plan::topology::{DestinationKind, DocIdPolicy, ElasticDestinationConfig, HeldSecrets, SecretRef};
 
 use crate::harness::destination::{
-    self, Broken, Head, Pki, Reached, connector_secrets, read_request, unknown_key_taken,
+    self, Broken, ClientTls, Head, Pki, Reached, connector_secrets, read_request, set_tls, unknown_key_taken,
 };
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::live;
@@ -72,10 +72,12 @@ const OPTIONS: &[&str] = &[
     "auth.leaderStored",
     "auth.workerLocal",
     "auth.apiKey",
+    "auth.bareKey",
     "auth.basic",
+    "auth.userPassword",
     "auth.lineBreak",
-    "identity.authorities",
-    "identity.certificate",
+    "tls.trustedAuthorities",
+    "tls.certificate",
     "docId.auto",
     "docId.dedupe",
     "docId.overwrite",
@@ -106,11 +108,11 @@ const OPTIONS: &[&str] = &[
     "answer.split",
     "answer.stall",
     "broken.url.blank",
-    "broken.url.identity",
+    "broken.url.tls",
     "broken.zoneUrls",
     "broken.zoneAttribute",
     "broken.defaultIndex",
-    "broken.identity",
+    "broken.certificate",
     "broken.inFlight",
     "broken.inFlight.affords",
     "broken.maxBulkBytes",
@@ -118,6 +120,8 @@ const OPTIONS: &[&str] = &[
     "broken.bufferBytes.request",
     "broken.stallAfterSecs",
     "broken.auth",
+    "broken.username",
+    "broken.password",
     "broken.docId",
     "mangled",
 ];
@@ -138,15 +142,6 @@ enum Target<'a> {
     Live(&'a str),
 }
 
-/// What the identity a destination names holds.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Identity {
-    /// An authority to verify the cluster against.
-    Trusts,
-    /// That, and a certificate to present.
-    Presents,
-}
-
 /// Where the drawn URL leads.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Endpoint {
@@ -163,14 +158,16 @@ enum Endpoint {
 /// One drawn destination.
 struct Draw {
     destination: Map<String, Value>,
-    identity: Option<Identity>,
+    tls: Option<ClientTls>,
     endpoint: Endpoint,
     /// The zone of the worker that runs the destination.
     zone: Option<&'static str>,
     /// Whether the destination sniffs, and if so whether the cluster lists its nodes.
     sniff: Option<bool>,
-    /// The `Authorization` value the leader holds for `auth`.
+    /// The `Authorization` value the cluster is sent.
     auth: Option<String>,
+    /// What the leader holds for the credential the destination names: `auth`'s, or `password`'s.
+    held: Option<String>,
     /// A pipeline step setting `__destination.id`, for a policy that wants an id from a row with no `idField`.
     sets_id: bool,
     /// The setting broken, if one was. `Some(None)` is a break the save refuses on no one field.
@@ -181,13 +178,13 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
     let mut d = Map::new();
     d.insert("id".into(), json!("es"));
     d.insert("type".into(), json!("elasticsearch"));
-    let (url, endpoint, identity) = match target {
+    let (url, endpoint, tls) = match target {
         Target::Live(url) => (url.to_string(), Endpoint::Live, None),
         Target::Offline(port) => draw_url(rng, cov, port),
     };
     d.insert("url".into(), json!(url));
-    if identity.is_some() {
-        d.insert("identity".into(), json!("client"));
+    if let Some(tls) = tls {
+        set_tls(&mut d, tls);
     }
     let mut zone = match target {
         Target::Live(_) => None,
@@ -215,7 +212,10 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
     });
     d.insert("defaultIndex".into(), json!(index));
 
-    let mut auth = None;
+    const API_KEY: &str = "VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw==";
+    // `elastic:changeme`, as Basic auth sends it.
+    const BASIC: &str = "Basic ZWxhc3RpYzpjaGFuZ2VtZQ==";
+    let (mut auth, mut held) = (None, None);
     match rng.below(4) {
         0 => cov.reach("auth.none"),
         3 if !matches!(target, Target::Live(_)) => {
@@ -224,20 +224,33 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
         }
         _ => {
             cov.reach("auth.leaderStored");
-            let value = if rng.chance(2) {
-                cov.reach("auth.apiKey");
-                "ApiKey VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw=="
-            } else {
-                cov.reach("auth.basic");
-                "Basic ZWxhc3RpYzpjaGFuZ2VtZQ=="
+            let (field, value, sent) = match rng.below(4) {
+                0 => {
+                    cov.reach("auth.apiKey");
+                    ("auth", format!("ApiKey {API_KEY}"), format!("ApiKey {API_KEY}"))
+                }
+                1 => {
+                    cov.reach("auth.bareKey");
+                    ("auth", API_KEY.to_string(), format!("ApiKey {API_KEY}"))
+                }
+                2 => {
+                    cov.reach("auth.basic");
+                    ("auth", BASIC.to_string(), BASIC.to_string())
+                }
+                _ => {
+                    cov.reach("auth.userPassword");
+                    d.insert("username".into(), json!("elastic"));
+                    ("password", "changeme".to_string(), BASIC.to_string())
+                }
             };
             // A value pasted with its trailing newline, which no header can carry.
             let pasted = !matches!(target, Target::Live(_)) && rng.chance(12);
             if pasted {
                 cov.reach("auth.lineBreak");
             }
-            auth = Some(format!("{value}{}", if pasted { "\n" } else { "" }));
-            d.insert("auth".into(), json!({"secret": "es-auth", "version": 1 + rng.below(3)}));
+            held = Some(format!("{value}{}", if pasted { "\n" } else { "" }));
+            auth = Some(sent);
+            d.insert(field.into(), json!({"secret": "es-auth", "version": 1 + rng.below(3)}));
         }
     }
 
@@ -268,11 +281,12 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
 
     let mut draw = Draw {
         destination: d,
-        identity,
+        tls,
         endpoint,
         zone,
         sniff,
         auth,
+        held,
         sets_id,
         broken: None,
     };
@@ -282,8 +296,8 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
     draw
 }
 
-/// A URL for the cluster in this process on `port`, or one nothing listens at, and the identity it is reached under.
-fn draw_url(rng: &mut Rng, cov: &mut Reached, port: u16) -> (String, Endpoint, Option<Identity>) {
+/// A URL for the cluster in this process on `port`, or one nothing listens at, and the TLS it is reached under.
+fn draw_url(rng: &mut Rng, cov: &mut Reached, port: u16) -> (String, Endpoint, Option<ClientTls>) {
     let tail = match rng.below(6) {
         0 => {
             cov.reach("url.trailingSlash");
@@ -300,13 +314,13 @@ fn draw_url(rng: &mut Rng, cov: &mut Reached, port: u16) -> (String, Endpoint, O
         }
         _ => "",
     };
-    let identity = |rng: &mut Rng, cov: &mut Reached| {
+    let tls = |rng: &mut Rng, cov: &mut Reached| {
         if rng.chance(2) {
-            cov.reach("identity.authorities");
-            Identity::Trusts
+            cov.reach("tls.trustedAuthorities");
+            ClientTls::Trusts
         } else {
-            cov.reach("identity.certificate");
-            Identity::Presents
+            cov.reach("tls.certificate");
+            ClientTls::Presents
         }
     };
     match rng.below(10) {
@@ -322,8 +336,8 @@ fn draw_url(rng: &mut Rng, cov: &mut Reached, port: u16) -> (String, Endpoint, O
         }
         7 | 8 => {
             cov.reach("url.https");
-            let named = identity(rng, cov);
-            (format!("https://localhost:{port}{tail}"), Endpoint::Tls, Some(named))
+            let own = tls(rng, cov);
+            (format!("https://localhost:{port}{tail}"), Endpoint::Tls, Some(own))
         }
         _ => {
             cov.reach("url.elsewhere");
@@ -336,8 +350,8 @@ fn draw_url(rng: &mut Rng, cov: &mut Reached, port: u16) -> (String, Endpoint, O
             if url.contains("[::1]") {
                 cov.reach("url.ipv6");
             }
-            let named = (url.starts_with("https://") && rng.chance(2)).then(|| identity(rng, cov));
-            (format!("{url}{tail}"), Endpoint::Elsewhere, named)
+            let own = (url.starts_with("https://") && rng.chance(2)).then(|| tls(rng, cov));
+            (format!("{url}{tail}"), Endpoint::Elsewhere, own)
         }
     }
 }
@@ -392,11 +406,11 @@ fn draw_sizes(rng: &mut Rng, cov: &mut Reached, d: &mut Map<String, Value>) {
 fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'static str> {
     let what = *rng.pick(&[
         "url.blank",
-        "url.identity",
+        "url.tls",
         "zoneUrls",
         "zoneAttribute",
         "defaultIndex",
-        "identity",
+        "certificate",
         "inFlight",
         "inFlight.affords",
         "maxBulkBytes",
@@ -404,6 +418,8 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
         "bufferBytes.request",
         "stallAfterSecs",
         "auth",
+        "username",
+        "password",
         "docId",
     ]);
     cov.reach(format!("broken.{what}"));
@@ -413,10 +429,10 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             d.insert("url".into(), json!(rng.pick(&["", "  "])));
             Some("url")
         }
-        "url.identity" => {
-            // An identity on a URL that never negotiates TLS.
-            draw.identity = Some(Identity::Trusts);
-            d.insert("identity".into(), json!("client"));
+        "url.tls" => {
+            // TLS settings on a URL that never negotiates TLS.
+            draw.tls = Some(ClientTls::Trusts);
+            set_tls(d, ClientTls::Trusts);
             d.insert(
                 "url".into(),
                 json!(rng.pick(&["http://127.0.0.1:9200", "http://es.internal:9200"])),
@@ -439,9 +455,9 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             d.insert("defaultIndex".into(), json!(rng.pick(&["", " ", "\t"])));
             Some("defaultIndex")
         }
-        "identity" => {
-            d.insert("identity".into(), json!("nobody"));
-            Some("identity")
+        "certificate" => {
+            d.insert("certificate".into(), json!(" "));
+            Some("certificate")
         }
         "inFlight" => {
             d.insert("inFlight".into(), json!(rng.pick(&[0, 65, 1000])));
@@ -483,6 +499,31 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             d.insert("auth".into(), blank);
             Some("auth")
         }
+        "username" => {
+            // A password with no one to sign in as: no username, or a blank one.
+            d.remove("auth");
+            d.insert("password".into(), json!({"secret": "es-auth", "version": 1}));
+            if rng.chance(2) {
+                d.insert("username".into(), json!(rng.pick(&["", " "])));
+            } else {
+                d.remove("username");
+            }
+            Some("username")
+        }
+        "password" => {
+            d.insert("username".into(), json!("elastic"));
+            if rng.chance(2) {
+                // A user with no password.
+                d.remove("auth");
+                d.remove("password");
+                Some("password")
+            } else {
+                // A password beside an API key.
+                d.insert("auth".into(), json!({"secret": "es-auth", "version": 1}));
+                d.insert("password".into(), json!({"secret": "es-password", "version": 1}));
+                Some("auth")
+            }
+        }
         "docId" => {
             // A policy that wants an id, and nothing that gives one: no field, and no pipeline setting it.
             d.insert("docId".into(), json!(rng.pick(&["dedupe", "overwrite"])));
@@ -494,7 +535,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
     }
 }
 
-/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the identity it names.
+/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the authority it trusts.
 fn bundle(draw: &Draw, pki: &Pki) -> Value {
     let steps = if draw.sets_id {
         json!([{"id": "id", "type": "code", "body": "__destination.id = _raw;"}])
@@ -508,17 +549,8 @@ fn bundle(draw: &Draw, pki: &Pki) -> Value {
         "pipelines": [{"id": "p", "name": "p", "steps": steps}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["es"]}]}],
     });
-    match draw.identity {
-        None => {}
-        Some(Identity::Trusts) => b["identities"] = json!([{"id": "client", "authorities": pki.authority.pem}]),
-        Some(Identity::Presents) => {
-            b["identities"] = json!([{
-                "id": "client",
-                "authorities": pki.authority.pem,
-                "certificate": pki.client.certificate,
-                "key": {"secret": "client-key", "version": 1},
-            }])
-        }
+    if let Some(authorities) = b["destinations"][0].get_mut("trustedAuthorities") {
+        *authorities = json!(pki.authority.pem);
     }
     b
 }
@@ -526,19 +558,25 @@ fn bundle(draw: &Draw, pki: &Pki) -> Value {
 /// The secrets the worker holds for `draw`: every credential the leader stores. And whether `draw` names one unheld:
 /// a worker-local one, which it never has.
 fn secrets_held(draw: &Draw, pki: &Pki) -> (HeldSecrets, bool) {
-    let mut stored = vec![("client-key".to_string(), 1, pki.client.key.clone())];
+    let mut stored = Vec::new();
     let mut unheld = false;
-    match draw.destination.get("auth") {
+    match draw.destination.get("auth").or(draw.destination.get("password")) {
         Some(Value::Object(o)) => stored.push((
             o["secret"].as_str().unwrap().to_string(),
             o["version"].as_i64().unwrap(),
-            draw.auth.clone().unwrap(),
+            draw.held.clone().unwrap(),
         )),
         Some(Value::String(_)) => unheld = true,
         _ => {}
     }
     let mut secrets = HeldSecrets::default();
     secrets.set_stored(stored);
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "client".to_string(),
+        version: 1,
+        value: pki.client.key.clone(),
+        chain: Some(pki.client.certificate.clone()),
+    }]);
     (secrets, unheld)
 }
 
@@ -601,19 +639,23 @@ fn check_loaded(draw: &Draw, c: &ElasticDestinationConfig, named: &[SecretRef]) 
     });
     expect("sniff", format!("{sniff:?}"), format!("{:?}", c.sniff));
     expect("defaultIndex", s("defaultIndex").unwrap(), c.default_index.clone());
-    let auth = d.get("auth").map(|v| match v {
+    let reference = |v: &Value| match v {
         Value::String(var) => SecretRef::WorkerLocal(var.clone()),
         v => SecretRef::LeaderStored {
             name: v["secret"].as_str().unwrap().to_string(),
             version: v["version"].as_i64().unwrap(),
         },
-    });
+    };
+    let auth = d.get("auth").map(reference);
     expect("auth", format!("{auth:?}"), format!("{:?}", c.auth));
-    let identity = c.identity.as_ref().map(|i| match i.certificate {
-        Some(_) => Identity::Presents,
-        None => Identity::Trusts,
+    let password = d.get("password").map(reference);
+    let basic = s("username").zip(password.clone());
+    expect("basic", format!("{basic:?}"), format!("{:?}", c.basic));
+    let tls = c.tls.as_ref().map(|t| match t.certificate {
+        Some(_) => ClientTls::Presents,
+        None => ClientTls::Trusts,
     });
-    expect("identity", format!("{:?}", draw.identity), format!("{identity:?}"));
+    expect("tls", format!("{:?}", draw.tls), format!("{tls:?}"));
     let policy = match s("docId").as_deref() {
         None | Some("auto") => DocIdPolicy::Auto,
         Some("dedupe") => DocIdPolicy::Dedupe,
@@ -632,7 +674,7 @@ fn check_loaded(draw: &Draw, c: &ElasticDestinationConfig, named: &[SecretRef]) 
     let stall = d.get("stallAfterSecs").map_or(30, |v| v.as_u64().unwrap());
     expect("stallAfterSecs", stall.to_string(), c.stall_after.as_secs().to_string());
     let credentials: Vec<String> = named.iter().map(|r| format!("{r:?}")).collect();
-    let drawn: Vec<String> = auth.iter().map(|r| format!("{r:?}")).collect();
+    let drawn: Vec<String> = auth.iter().chain(&password).map(|r| format!("{r:?}")).collect();
     expect("credentials", format!("{drawn:?}"), format!("{credentials:?}"));
     if wrong.is_empty() {
         Ok(())
@@ -860,7 +902,8 @@ fn fates(rng: &mut Rng, cov: &mut Reached, rows: &Rows, sent: &mut [Sent]) {
 
 /// What a cluster holds once `sent` is delivered under `policy`: by index, each document under its id, and the
 /// documents filed under an id the cluster made up. In the order sent, so the first write of an id is the one a
-/// `create` keeps and the last the one an `index` keeps.
+/// `create` keeps and the last the one an `index` keeps, were they to land in that order; [`Versions`] says which
+/// others may stand instead.
 #[derive(Debug, Default, PartialEq)]
 struct Held {
     by_id: BTreeMap<(String, String), Vec<u8>>,
@@ -896,14 +939,41 @@ impl Held {
     }
 }
 
-/// What the cluster holds once `sent` is delivered under `policy`, and how many documents it answered a conflict to
-/// because their id was already there.
-fn expected(policy: DocIdPolicy, sent: &[Vec<Sent>]) -> (Held, usize) {
+/// Every document written under an id written more than once. Rows land in no promised order, so any of them may
+/// be the one the cluster keeps.
+#[derive(Default)]
+struct Versions(BTreeMap<(String, String), Vec<Vec<u8>>>);
+
+impl Versions {
+    /// `want` with each id written more than once holding what `got` holds under it, where that is one of its versions.
+    fn settle(&self, mut want: Held, got: &Held, canonical: impl Fn(&[u8]) -> Vec<u8>) -> Held {
+        for (key, docs) in self.0.iter().filter(|(_, docs)| docs.len() > 1) {
+            if let Some(doc) = got.by_id.get(key)
+                && docs.iter().any(|d| canonical(d) == *doc)
+            {
+                want.by_id.insert(key.clone(), doc.clone());
+            }
+        }
+        want
+    }
+}
+
+/// What the cluster holds once `sent` is delivered under `policy`, how many documents it answered a conflict to
+/// because their id was already there, and the versions of each id.
+fn expected(policy: DocIdPolicy, sent: &[Vec<Sent>]) -> (Held, usize, Versions) {
     let mut held = Held::default();
     let mut conflicts = 0;
+    let mut versions = Versions::default();
     for s in sent.iter().flatten() {
         match s.fate {
             Some(Fate::Indexed | Fate::Retried(_)) => {
+                if let Some(id) = &s.id {
+                    versions
+                        .0
+                        .entry((s.index.clone(), id.clone()))
+                        .or_default()
+                        .push(s.row.value.clone());
+                }
                 if !held.file(policy, &s.index, s.id.as_deref(), &s.row.value) {
                     conflicts += 1;
                 }
@@ -912,7 +982,7 @@ fn expected(policy: DocIdPolicy, sent: &[Vec<Sent>]) -> (Held, usize) {
             None | Some(Fate::Refused) => {}
         }
     }
-    (held.sorted(), conflicts)
+    (held.sorted(), conflicts, versions)
 }
 
 // -- the cluster in this process ----------------------------------------------------------------------------------
@@ -1297,7 +1367,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let metrics = smeltr::metrics::MetricsHandle::new(registry.clone(), "fuzz");
     let built = smeltr::io::build_destination(&DestinationKind::Elasticsearch(c.clone()), 0, metrics, &secrets, None);
-    if let Some(value) = draw.auth.as_ref().filter(|v| v.ends_with('\n')) {
+    if let Some(value) = draw.held.as_ref().filter(|v| v.ends_with('\n')) {
         // Refused where it is built, naming the reference and never the value.
         let why = match built {
             Ok(_) => return Err(format!("built with an `auth` value holding a line break\n{json}")),
@@ -1363,9 +1433,9 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     if slow {
         answers.slow_on = Some((rng.pick(&carried).to_vec(), Duration::from_millis(1300)));
     }
-    let tls = match draw.identity {
+    let tls = match draw.tls {
         _ if draw.endpoint == Endpoint::Plain => None,
-        Some(Identity::Presents) => Some(pki.mutual()),
+        Some(ClientTls::Presents) => Some(pki.mutual()),
         _ => Some(pki.server_only()),
     };
     let fates = (sent.iter().flatten())
@@ -1424,8 +1494,9 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     }
     let refused = written.map_err(fail)?;
     destination::check_refused(&sent, &refused, Sent::refused).map_err(fail)?;
-    let (want, conflicts) = expected(c.doc_id, &sent);
+    let (want, conflicts, versions) = expected(c.doc_id, &sent);
     let got = cluster.held.sorted();
+    let want = versions.settle(want, &got, <[u8]>::to_vec);
     if got != want {
         return Err(fail(format!("the cluster holds\n  {got:?}\nnot\n  {want:?}")));
     }
@@ -1467,7 +1538,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
 
 // -- record types and their mappings ------------------------------------------------------------------------------
 
-/// The names a record's fields take: ECS names a mapping treats apart, dotted ones, and ones a path would escape.
+/// The names a record's fields take: plain ones, dotted ones, and ones a path would escape.
 const TOP: &[&str] = &[
     "message",
     "url",
@@ -1494,7 +1565,7 @@ const NESTED: &[&str] = &[
     "when",
 ];
 
-/// Every type and ECS mapping the mapping fuzzer must reach over its seeds.
+/// Every type the mapping fuzzer must reach over its seeds.
 const MAPPING_OPTIONS: &[&str] = &[
     "type.bool",
     "type.i64",
@@ -1507,11 +1578,6 @@ const MAPPING_OPTIONS: &[&str] = &[
     "type.struct",
     "type.null",
     "type.variant",
-    "ecs.keywordText",
-    "ecs.matchOnlyText",
-    "ecs.wildcard",
-    "ecs.wildcardText",
-    "ecs.unindexed",
 ];
 
 fn draw_type(rng: &mut Rng, depth: usize) -> DataType {
@@ -1546,24 +1612,19 @@ fn draw_struct(rng: &mut Rng, depth: usize, names: &[&str]) -> DataType {
     if chosen.contains("a") {
         chosen.remove("a.b");
     }
-    // An ECS object, so a field under it is one ECS names.
-    let parent = ["url", "error", "event", "user", "host"];
     let fields = chosen
         .into_iter()
-        .map(|name| {
-            let ty = if parent.contains(&name) && depth == 0 && rng.chance(2) {
-                draw_struct(rng, depth + 1, NESTED)
-            } else {
-                draw_type(rng, depth)
-            };
-            (name.to_string(), ty)
-        })
+        .map(|name| (name.to_string(), draw_type(rng, depth)))
         .collect();
     DataType::Struct(fields, rng.chance(2))
 }
 
 /// Checks `m` is the mapping of `ty` at `path`, and notes what it reached. `None` is a field left out.
 fn check_mapping(ty: &DataType, m: Option<&Value>, path: &str, cov: &mut Coverage) -> Result<(), String> {
+    if let DataType::Array(element) = ty {
+        cov.reach("type.array");
+        return check_mapping(element, m, path, cov);
+    }
     let scalar = |name: &str| Some(json!({ "type": name }));
     let want = match ty {
         DataType::Null | DataType::Variant => {
@@ -1600,33 +1661,12 @@ fn check_mapping(ty: &DataType, m: Option<&Value>, path: &str, cov: &mut Coverag
         }
         DataType::Str => {
             cov.reach("type.str");
-            return check_string(m, path, cov);
+            return check_keyword(m, path);
         }
-        DataType::Array(element) => {
-            cov.reach("type.array");
-            return check_mapping(element, m, path, cov);
-        }
-        DataType::Struct(fields, _) => {
+        DataType::Array(_) => unreachable!("an array is its elements"),
+        DataType::Struct(..) => {
             cov.reach("type.struct");
-            let Some(properties) = m.and_then(|m| m.get("properties")).and_then(Value::as_object) else {
-                return Err(format!("{path}: a struct maps as {m:?}"));
-            };
-            if m.unwrap().as_object().unwrap().len() != 1 {
-                return Err(format!("{path}: a struct maps with more than its properties: {m:?}"));
-            }
-            for (name, t) in fields {
-                let at = if path.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{path}.{name}")
-                };
-                check_mapping(t, properties.get(name), &at, cov)?;
-            }
-            let known: BTreeSet<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
-            if let Some(extra) = properties.keys().find(|k| !known.contains(k.as_str())) {
-                return Err(format!("{path}: maps {extra:?}, which is no field of it"));
-            }
-            return Ok(());
+            return check_properties(ty, m, path, cov);
         }
     };
     if m != want.as_ref() {
@@ -1635,94 +1675,46 @@ fn check_mapping(ty: &DataType, m: Option<&Value>, path: &str, cov: &mut Coverag
     Ok(())
 }
 
-/// A string maps as ECS names it, else as a keyword, and a keyword it indexes never passes the 32766 bytes past which
-/// Elasticsearch refuses the whole document.
-///
-/// What ECS names is read from `io::ecs_fields::FIELDS`, the product's own table, so this checks that a field the
-/// table names is mapped as the table says, not that the table is right: the `ecs.*` options record that each of its
-/// kinds was reached. [`well_known_ecs_fields_map_as_ecs_says`] checks a few fields against ECS itself.
-fn check_string(m: Option<&Value>, path: &str, cov: &mut Coverage) -> Result<(), String> {
-    let m = m.ok_or_else(|| format!("{path}: a string left out"))?;
-    let fields = smeltr::io::ecs_fields::FIELDS;
-    let ecs = fields
-        .binary_search_by(|(n, _)| (*n).cmp(path))
-        .ok()
-        .map(|i| fields[i].1);
-    let kind = m["type"].as_str().unwrap_or_default();
-    let want = match ecs {
-        None => "keyword",
-        Some(Ecs::KeywordText) => {
-            cov.reach("ecs.keywordText");
-            "keyword"
-        }
-        Some(Ecs::Unindexed) => {
-            cov.reach("ecs.unindexed");
-            if m["index"] != json!(false) {
-                return Err(format!("{path}: ECS keeps it unindexed, and it maps as {m}"));
-            }
-            "keyword"
-        }
-        Some(Ecs::MatchOnlyText) => {
-            cov.reach("ecs.matchOnlyText");
-            "match_only_text"
-        }
-        Some(Ecs::Wildcard) => {
-            cov.reach("ecs.wildcard");
-            "wildcard"
-        }
-        Some(Ecs::WildcardText) => {
-            cov.reach("ecs.wildcardText");
-            "wildcard"
-        }
+/// Checks `m` is `{"properties": ...}` of the struct `ty`, its fields each mapped as `check_mapping` says.
+fn check_properties(ty: &DataType, m: Option<&Value>, path: &str, cov: &mut Coverage) -> Result<(), String> {
+    let DataType::Struct(fields, _) = ty else {
+        unreachable!("properties are a struct's")
     };
-    if kind != want {
-        return Err(format!("{path}: a string maps as {m}, not as a {want}"));
+    let Some(properties) = m.and_then(|m| m.get("properties")).and_then(Value::as_object) else {
+        return Err(format!("{path}: a struct maps as {m:?}"));
+    };
+    if m.unwrap().as_object().unwrap().len() != 1 {
+        return Err(format!("{path}: a struct maps with more than its properties: {m:?}"));
     }
-    if kind == "keyword" && m["index"] != json!(false) {
-        let above = m["ignore_above"].as_u64().unwrap_or(u64::MAX);
-        if above * 4 > 32766 {
-            return Err(format!(
-                "{path}: a keyword indexes up to {above} characters, past 32766 bytes"
-            ));
-        }
+    for (name, t) in fields {
+        let at = if path.is_empty() {
+            name.clone()
+        } else {
+            format!("{path}.{name}")
+        };
+        check_mapping(t, properties.get(name), &at, cov)?;
+    }
+    let known: BTreeSet<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+    if let Some(extra) = properties.keys().find(|k| !known.contains(k.as_str())) {
+        return Err(format!("{path}: maps {extra:?}, which is no field of it"));
     }
     Ok(())
 }
 
-/// A few fields as the ECS reference gives their mappings, written out here rather than read from the product's
-/// table.
-#[test]
-fn well_known_ecs_fields_map_as_ecs_says() {
-    let st = |fields: &[(&str, DataType)]| {
-        DataType::Struct(fields.iter().map(|(n, t)| (n.to_string(), t.clone())).collect(), false)
-    };
-    let record = st(&[
-        ("@timestamp", DataType::DateTime),
-        ("message", DataType::Str),
-        ("host", st(&[("name", DataType::Str)])),
-        ("user", st(&[("name", DataType::Str)])),
-        ("url", st(&[("path", DataType::Str), ("original", DataType::Str)])),
-        ("error", st(&[("stack_trace", DataType::Str)])),
-        ("event", st(&[("original", DataType::Str)])),
-    ]);
-    let m = mapping(&record);
-    let p = &m["mappings"]["properties"];
-    let text = json!({"text": {"type": "match_only_text"}});
-    assert_eq!(p["@timestamp"]["type"], "date", "{m}");
-    assert_eq!(p["message"]["type"], "match_only_text", "{m}");
-    assert_eq!(p["host"]["properties"]["name"]["type"], "keyword", "{m}");
-    assert_eq!(p["user"]["properties"]["name"]["type"], "keyword", "{m}");
-    assert_eq!(p["user"]["properties"]["name"]["fields"], text, "{m}");
-    assert_eq!(p["url"]["properties"]["path"]["type"], "wildcard", "{m}");
-    assert_eq!(p["url"]["properties"]["original"]["type"], "wildcard", "{m}");
-    assert_eq!(p["url"]["properties"]["original"]["fields"], text, "{m}");
-    assert_eq!(p["error"]["properties"]["stack_trace"]["type"], "wildcard", "{m}");
-    let original = &p["event"]["properties"]["original"];
-    assert_eq!(
-        (&original["type"], &original["index"], &original["doc_values"]),
-        (&json!("keyword"), &json!(false), &json!(false)),
-        "{m}"
-    );
+/// Checks `m` is a keyword that indexes a value only while it stays under the 32766 bytes past which Elasticsearch
+/// refuses the whole document.
+fn check_keyword(m: Option<&Value>, path: &str) -> Result<(), String> {
+    let m = m.ok_or_else(|| format!("{path}: a string left out"))?;
+    if m["type"] != "keyword" {
+        return Err(format!("{path}: a string maps as {m}, not as a keyword"));
+    }
+    let above = m["ignore_above"].as_u64().unwrap_or(u64::MAX);
+    if above * 4 > 32766 {
+        return Err(format!(
+            "{path}: a keyword indexes up to {above} characters, past 32766 bytes"
+        ));
+    }
+    Ok(())
 }
 
 /// Every record type maps as its fields say.
@@ -1733,7 +1725,7 @@ fn elastic_mapping_fuzz() {
         let mut rng = Rng::seeded(seed);
         // A record is an object: its type is always a struct.
         let record = draw_struct(&mut rng, 0, TOP);
-        let m = mapping(&record);
+        let m = mapping(&record, &Default::default());
         let root = m.get("mappings").ok_or_else(|| format!("no mappings: {m}"))?;
         if m.as_object().unwrap().len() != 1 {
             return Err(format!("more than mappings: {m}"));
@@ -1790,7 +1782,7 @@ fn live_options() -> Vec<&'static str> {
         .filter(|o| {
             !o.starts_with("broken.")
                 && !o.starts_with("url.")
-                && !o.starts_with("identity.")
+                && !o.starts_with("tls.")
                 // One cluster, at one address.
                 && !o.starts_with("zoneUrls.")
                 && ![
@@ -1798,7 +1790,9 @@ fn live_options() -> Vec<&'static str> {
                     "auth.workerLocal",
                     // Security is off on the live cluster, so it reads no `Authorization` header.
                     "auth.apiKey",
+                    "auth.bareKey",
                     "auth.basic",
+                    "auth.userPassword",
                     "auth.lineBreak",
                     "defaultIndex",
                     "defaultIndex.escaped",
@@ -1935,7 +1929,7 @@ fn live_seed(seed: u64, url: &str, reached: &mut Reached, pki: &Pki) -> Result<(
     };
     fields.extend([("n".to_string(), DataType::I64), ("num".to_string(), DataType::I64)]);
     let record = DataType::Struct(fields, open);
-    let m = mapping(&record);
+    let m = mapping(&record, &Default::default());
     for index in made {
         let (status, answer) = call("PUT", &format!("{url}/{index}"), Some(&m))?;
         if status != 200 {
@@ -1969,10 +1963,11 @@ fn live_seed(seed: u64, url: &str, reached: &mut Reached, pki: &Pki) -> Result<(
             .collect();
         return Err(fail(format!("{e}\nrefusing {why:?}\nmapping {m}")));
     }
-    let (want, conflicts) = expected(c.doc_id, &sent);
+    let (want, conflicts, versions) = expected(c.doc_id, &sent);
     let want = canonical_held(want);
     let named: BTreeSet<(String, String)> = want.by_id.keys().cloned().collect();
     let got = read_back(url, made, &named)?;
+    let want = versions.settle(want, &got, canonical);
     if got != want {
         return Err(fail(format!("the cluster holds\n  {got:?}\nnot\n  {want:?}")));
     }

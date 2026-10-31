@@ -64,9 +64,9 @@
     </li>
     <li>Give the Kafka account permission to read the topics and use the consumer group.</li>
     <li>
-      For an authenticated broker, configure <a href="/docs/secrets#kafka">Kafka security</a>.
-      Select a
-      <a href="/docs/secrets#identities">connection identity</a> for a private CA or a client certificate.
+      For an authenticated broker, configure <a href="/docs/secrets#kafka">Kafka security</a>. For a
+      private CA or a client certificate, fill in the
+      <a href="/docs/certificates#connectors">TLS settings</a>.
     </li>
   </ul>
 

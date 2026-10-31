@@ -12,11 +12,12 @@
 //! ```
 //!
 //! The authority proves the leader holds a name by connecting to it: on the port the leader serves, asking for
-//! `acme-tls/1` (`leader::resolver`), or on the HTTP port, asking for the challenge's token. The certificate
-//! arrives the way an uploaded one does ([`tls::install`] under the root already in force, a rotation
-//! ([`tls::begin_supplied_rotation`]) under another), so a worker is given the root that signed it and nothing
-//! about serving it is new. What this module keeps is under `tls/acme/`: the account, and what the last order
-//! left and when the next is due.
+//! `acme-tls/1` (`leader::resolver`), or on the HTTP port, asking for the challenge's token; or by asking the
+//! name's DNS for a TXT record the leader published through the zone's provider (`leader::acme_dns`). The certificate
+//! is stored as the newest version of the list entry [`ENTRY`], and served the way any entry is ([`tls::serve`]
+//! under the root already in force, a rotation ([`tls::begin_supplied_rotation`]) under another), so a worker is
+//! given the root that signed it and nothing about serving it is new. What this module keeps is under `tls/acme/`:
+//! the account, and when the next order is due.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -31,9 +32,10 @@ use instant_acme::{
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 
+use super::acme_dns;
 use super::private_file;
 use super::resolver::Resolver;
-use super::store::{Store, StoreError};
+use super::store::{Kept, Store, StoreError};
 use super::tls::{self, Described};
 
 pub const ENABLED_KEY: &str = "acme.enabled";
@@ -43,8 +45,11 @@ pub const DIRECTORY_KEY: &str = "acme.directory";
 pub const CONTACT_KEY: &str = "acme.contact";
 /// The names the certificate carries, comma-separated.
 pub const NAMES_KEY: &str = "acme.names";
-/// How the authority is to prove the leader holds a name: `tls-alpn-01` or `http-01`.
+/// How the authority is to prove the leader holds a name: `tls-alpn-01`, `http-01` or `dns-01`.
 pub const CHALLENGE_KEY: &str = "acme.challenge";
+/// Which provider publishes a DNS-01 record (`acme_dns::Kind`), and Cloudflare's API token, sealed.
+pub const DNS_PROVIDER_KEY: &str = "acme.dns.provider";
+pub const CLOUDFLARE_TOKEN_KEY: &str = "acme.dns.cloudflare.token";
 /// Roots this leader trusts beyond the platform's, PEM: the authority's own, where it is not publicly trusted.
 pub const AUTHORITY_KEY: &str = "acme.authority";
 /// External account binding, for an authority that asks for one: the key id, and the HMAC key, sealed.
@@ -53,12 +58,17 @@ pub const EAB_HMAC_KEY: &str = "acme.eab_hmac";
 
 /// Under `tls/`.
 pub const DIR: &str = "acme";
+/// The certificate list entry each order is a version of.
+pub const ENTRY: &str = "acme";
 const ACCOUNT: &str = "account.json";
 const STATE: &str = "state.json";
 
 /// How long an order may take, the authority's validation included. Let's Encrypt validates within seconds; a
 /// minute is for an authority that queues.
 const ORDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// A DNS-01 order also waits for each record to reach the zone's nameservers, which a provider may take minutes
+/// over.
+const DNS_ORDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// How a certificate authority proves the leader holds a name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -67,6 +77,8 @@ pub enum Challenge {
     TlsAlpn01,
     #[serde(rename = "http-01")]
     Http01,
+    #[serde(rename = "dns-01")]
+    Dns01,
 }
 
 impl Challenge {
@@ -74,6 +86,7 @@ impl Challenge {
         match self {
             Challenge::TlsAlpn01 => "tls-alpn-01",
             Challenge::Http01 => "http-01",
+            Challenge::Dns01 => "dns-01",
         }
     }
 
@@ -81,6 +94,7 @@ impl Challenge {
         match text {
             "tls-alpn-01" => Some(Challenge::TlsAlpn01),
             "http-01" => Some(Challenge::Http01),
+            "dns-01" => Some(Challenge::Dns01),
             _ => None,
         }
     }
@@ -97,6 +111,8 @@ pub struct Settings {
     pub authority: String,
     pub eab_key_id: String,
     pub eab_hmac: Option<String>,
+    pub dns_provider: acme_dns::Kind,
+    pub cloudflare_token: Option<String>,
 }
 
 impl Settings {
@@ -113,6 +129,11 @@ impl Settings {
             authority: store.setting(AUTHORITY_KEY)?.unwrap_or_default(),
             eab_key_id: store.setting(EAB_KEY_ID_KEY)?.unwrap_or_default(),
             eab_hmac: store.opened_setting(EAB_HMAC_KEY)?.filter(|s| !s.is_empty()),
+            dns_provider: store
+                .setting(DNS_PROVIDER_KEY)?
+                .and_then(|p| acme_dns::Kind::parse(&p))
+                .unwrap_or(acme_dns::Kind::Cloudflare),
+            cloudflare_token: store.opened_setting(CLOUDFLARE_TOKEN_KEY)?.filter(|s| !s.is_empty()),
         })
     }
 }
@@ -141,13 +162,6 @@ pub struct State {
     /// The authority the certificate came from, so a changed directory orders afresh.
     #[serde(default)]
     pub directory: String,
-    /// The certificate the last order installed. What says a served certificate is this module's.
-    #[serde(default)]
-    pub fingerprint: Option<String>,
-    /// The one before it, while an order under a new root waits on the fleet: served until the cutover, and
-    /// still this module's.
-    #[serde(default)]
-    pub previous_fingerprint: Option<String>,
     #[serde(default)]
     pub not_after_millis: Option<i64>,
     /// Two thirds of the way through the certificate's life, which is when a renewal is ordered.
@@ -182,20 +196,10 @@ pub fn write_state(tls_dir: &Path, state: &State) -> Result<(), String> {
     tls::write_durably(&path, &json).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Whether a renewal is due: nothing issued yet, or the certificate two thirds through its life.
-pub fn due(state: &State, now_ms: i64) -> bool {
-    match (state.fingerprint.as_ref(), state.renew_after_millis) {
-        (None, _) => true,
-        (Some(_), Some(after)) => now_ms >= after,
-        (Some(_), None) => true,
-    }
-}
-
-/// Whether the renewal task orders now: only to renew the certificate this module issued, while it is the one
-/// served. A first order is the administrator's, and so is coming back to ACME after another source: the task never
-/// changes what is served on its own.
-pub fn renews(state: &State, served: Source, now_ms: i64) -> bool {
-    served == Source::Acme && due(state, now_ms)
+/// Whether the renewal task orders now: the certificate an order stored two thirds through its life, whether or not
+/// it is served. A first order is the administrator's.
+pub fn renews(state: &State, now_ms: i64) -> bool {
+    state.renew_after_millis.is_some_and(|after| now_ms >= after)
 }
 
 /// Where a served certificate came from.
@@ -210,36 +214,23 @@ pub enum Source {
     Acme,
 }
 
-/// Where what is served came from. An uploaded certificate and an ordered one are the same thing to `tls`; what
-/// tells them apart is whether the one in force is the one the last order installed.
+/// Where what is served came from: the list entry it is, by name.
 pub fn source(tls_dir: &Path) -> Result<Source, String> {
-    let (materials, served) = tls::in_force(tls_dir)?;
-    if !materials.supplied {
-        return Ok(Source::Own);
-    }
-    supplied_by(tls_dir, &served, "the certificate")
+    Ok(source_of(tls::served(tls_dir)?.as_ref()))
 }
 
 /// Where what `rotation` puts in force comes from.
-pub fn incoming(tls_dir: &Path, rotation: &tls::Rotation) -> Result<Source, String> {
-    if rotation.installs != tls::Installs::Supplied {
-        return Ok(Source::Own);
-    }
-    match tls::incoming_certificate(tls_dir)? {
-        Some(pem) => supplied_by(tls_dir, &pem, "the incoming certificate"),
-        None => Ok(Source::Upload),
-    }
+pub fn incoming(rotation: &tls::Rotation) -> Source {
+    source_of(rotation.entry.as_ref())
 }
 
-/// Which supplier a supplied certificate came from: this module, if `pem` is what an order installed, else an
-/// operator.
-fn supplied_by(tls_dir: &Path, pem: &[u8], what: &str) -> Result<Source, String> {
-    let fingerprint = tls::describe(pem, what)?.fingerprint;
-    let state = state(tls_dir)?;
-    Ok(match (state.fingerprint, state.previous_fingerprint) {
-        (Some(issued), _) | (_, Some(issued)) if issued == fingerprint => Source::Acme,
-        _ => Source::Upload,
-    })
+fn source_of(entry: Option<&tls::Entry>) -> Source {
+    match entry {
+        None => Source::Own,
+        Some(entry) if entry.name == tls::OWN_ENTRY => Source::Own,
+        Some(entry) if entry.name == ENTRY => Source::Acme,
+        Some(_) => Source::Upload,
+    }
 }
 
 /// Where a proof goes while the authority checks it.
@@ -249,6 +240,8 @@ pub trait Prover: Send + Sync {
     async fn tls_alpn(&self, name: &str, digest: &[u8]) -> Result<(), String>;
     /// Answer `GET /.well-known/acme-challenge/{token}` with `key_authorization`.
     async fn http(&self, token: &str, key_authorization: &str) -> Result<(), String>;
+    /// Answer a TXT query for `name`'s `_acme-challenge` with `value`, once it is there to be asked.
+    async fn dns(&self, name: &str, value: &str) -> Result<(), String>;
     /// The order is over, however it ended.
     async fn done(&self);
 }
@@ -261,6 +254,7 @@ pub trait Issuer: Send + Sync {
 }
 
 /// What an order produced, before anything serves it.
+#[derive(Clone)]
 pub struct Issued {
     pub chain: Vec<u8>,
     pub key: Vec<u8>,
@@ -286,8 +280,8 @@ pub async fn order(
         return Err("name at least one name for the certificate to carry".to_string());
     }
     // Asked before the authority is, so an order that cannot be served is not spent: an authority counts them.
-    // A required name is the one the worker inside this process reaches the leader by. Neither challenge can prove
-    // a wildcard, so the names carry it as written or not at all. A renewal of the
+    // A required name is the one the worker inside this process reaches the leader by. Only DNS-01 can prove a
+    // wildcard, so the names carry it as written or not at all. A renewal of the
     // certificate in force changes no root and is served whatever rotation is open; anything else would begin
     // one, and only one is open at a time.
     if let Some(name) = required
@@ -315,21 +309,21 @@ pub async fn order(
         .serialize_request(&key)
         .map_err(|e| format!("the certificate request: {e}"))?;
 
-    let issued = tokio::time::timeout(ORDER_TIMEOUT, issuer.issue(&settings.names, csr.der(), prover)).await;
+    let within = match settings.challenge {
+        Challenge::Dns01 => DNS_ORDER_TIMEOUT,
+        Challenge::TlsAlpn01 | Challenge::Http01 => ORDER_TIMEOUT,
+    };
+    let issued = tokio::time::timeout(within, issuer.issue(&settings.names, csr.der(), prover)).await;
     prover.done().await;
     let chain = match issued {
         Ok(Ok(chain)) => chain.into_bytes(),
         Ok(Err(e)) => return Err(e),
-        Err(_) => {
-            return Err(format!(
-                "the authority did not finish within {}s",
-                ORDER_TIMEOUT.as_secs()
-            ));
-        }
+        Err(_) => return Err(format!("the authority did not finish within {}s", within.as_secs())),
     };
     let key = key.serialize_pem().into_bytes();
 
-    let ca = root_of(&chain, &settings.authority)?.into_bytes();
+    let (chain, ca) = root_of(&chain, &settings.authority)?;
+    let ca = ca.into_bytes();
     tls::check_supplied(&chain, &key, &ca, names, required)?;
     let rotates = tls::supplying_changes_root(tls_dir, &chain, &ca)?;
     // Under another root, it would begin a rotation while one is open: refused here, before a caller records one
@@ -347,48 +341,57 @@ pub async fn order(
     })
 }
 
-/// The root that signed `chain`, PEM: from `authority` where it holds one, else from the platform's roots. A
-/// worker is given this one certificate, as it would be given an uploaded authority.
-fn root_of(chain: &[u8], authority: &str) -> Result<String, String> {
-    if !authority.trim().is_empty()
-        && let Ok((_, pem)) = tls::signing_root_pem(authority.as_bytes(), chain)
-    {
-        return Ok(pem);
-    }
-    let public = crate::io::trust::pem(None).map_err(|e| e.to_string())?;
-    tls::signing_root_pem(public.as_bytes(), chain)
-        .map(|(_, pem)| pem)
-        .map_err(|_| {
-            "the authority issued a certificate under a root neither the platform nor the authority setting \
-             trusts. Add the root to the authority setting."
-                .to_string()
-        })
+/// `chain` as it is served, and the root that signed it, PEM: as [`tls::split_root`] finds it, from `authority`
+/// or else the platform's roots. A worker is given this one certificate, as it would be given an uploaded one.
+fn root_of(chain: &[u8], authority: &str) -> Result<(Vec<u8>, String), String> {
+    tls::split_root(chain, authority.as_bytes())?.ok_or_else(|| {
+        "the authority issued a certificate under a root neither the platform nor the authority setting \
+         trusts. Add the root to the authority setting."
+            .to_string()
+    })
 }
 
-/// Serves `issued`: at once under the root in force, else as the rotation an upload under another root begins.
-/// Records what it installed and when to renew.
-pub fn take(
-    tls_dir: &Path,
-    settings: &Settings,
-    issued: &Issued,
-    names: &[String],
-    required: &[String],
-    now_ms: i64,
-) -> Result<(), String> {
-    if issued.rotates {
-        tls::rotation_may_begin(tls_dir, tls::Installs::Supplied).map_err(|e| e.message().to_string())?;
-        tls::begin_supplied_rotation(tls_dir, &issued.chain, &issued.key, &issued.ca, names, required, now_ms)?;
-    } else {
-        tls::install(tls_dir, &issued.chain, &issued.key, &issued.ca, names, required)?;
+/// Stores `issued` as the newest version of [`ENTRY`], which the first order creates, and answers that version.
+/// Refuses an entry of that name the leader does not order.
+pub fn list(store: &dyn Store, issued: &Issued) -> Result<tls::Entry, String> {
+    let chain = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&issued.chain).trim_end(),
+        String::from_utf8_lossy(&issued.ca).trim_end()
+    );
+    let key = String::from_utf8_lossy(&issued.key);
+    let known = store
+        .list_secrets()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .any(|r| r.name == ENTRY);
+    let version = match store.kept_certificates().map_err(|e| e.to_string())?.get(ENTRY) {
+        Some(Kept::Acme) => store.add_certificate_version(ENTRY, &chain, &key),
+        _ if known => {
+            return Err(format!(
+                "a certificate named {ENTRY:?} is already in the list and this leader did not order it. Delete \
+                 it, then order again"
+            ));
+        }
+        _ => store
+            .create_kept_certificate(ENTRY, "", &Kept::Acme, &chain, &key)
+            .map(|()| 1),
     }
+    .map_err(|e| e.to_string())?;
+    Ok(tls::Entry {
+        name: ENTRY.to_string(),
+        version,
+        ca: String::from_utf8_lossy(&issued.ca).into_owned(),
+    })
+}
+
+/// Records that an attempt at `now_ms` issued `issued`, and when to renew it, whether or not it is served.
+pub fn succeeded(tls_dir: &Path, settings: &Settings, issued: &Issued, now_ms: i64) -> Result<(), String> {
     let life = issued.certificate.not_after_millis - issued.certificate.not_before_millis;
-    let was = state(tls_dir)?;
     write_state(
         tls_dir,
         &State {
             directory: settings.directory.clone(),
-            fingerprint: Some(issued.certificate.fingerprint.clone()),
-            previous_fingerprint: issued.rotates.then_some(was.fingerprint).flatten(),
             not_after_millis: Some(issued.certificate.not_after_millis),
             renew_after_millis: Some(issued.certificate.not_before_millis + life / 3 * 2),
             last_attempt_millis: Some(now_ms),
@@ -397,23 +400,20 @@ pub fn take(
     )
 }
 
-/// Forgets the order an abandoned switch would have served: nothing will serve it. What is served stays this
-/// module's if it was, with the dates it carries.
+/// Renews by the version served, where an abandoned switch leaves an earlier version of [`ENTRY`] serving: the
+/// newest one's dates would let that one run out first.
 pub fn abandoned(tls_dir: &Path) -> Result<(), String> {
-    let was = state(tls_dir)?;
-    let (_, served) = tls::in_force(tls_dir)?;
-    let served = tls::describe(&served, "the certificate")?;
-    let kept = was.previous_fingerprint.filter(|p| *p == served.fingerprint);
+    if source(tls_dir)? != Source::Acme {
+        return Ok(());
+    }
+    let served = tls::describe(&tls::current(tls_dir)?.served, "the certificate")?;
     let life = served.not_after_millis - served.not_before_millis;
-    let dates = kept.is_some();
     write_state(
         tls_dir,
         &State {
-            fingerprint: kept,
-            previous_fingerprint: None,
-            not_after_millis: dates.then_some(served.not_after_millis),
-            renew_after_millis: dates.then_some(served.not_before_millis + life / 3 * 2),
-            ..was
+            not_after_millis: Some(served.not_after_millis),
+            renew_after_millis: Some(served.not_before_millis + life / 3 * 2),
+            ..state(tls_dir)?
         },
     )
 }
@@ -539,6 +539,7 @@ impl Issuer for Directory {
         let kind = match self.settings.challenge {
             Challenge::TlsAlpn01 => ChallengeType::TlsAlpn01,
             Challenge::Http01 => ChallengeType::Http01,
+            Challenge::Dns01 => ChallengeType::Dns01,
         };
         let mut authorizations = order.authorizations();
         while let Some(authorization) = authorizations.next().await {
@@ -557,6 +558,7 @@ impl Issuer for Directory {
             match self.settings.challenge {
                 Challenge::TlsAlpn01 => prover.tls_alpn(&name, key_authorization.digest().as_ref()).await?,
                 Challenge::Http01 => prover.http(&challenge.token, key_authorization.as_str()).await?,
+                Challenge::Dns01 => prover.dns(&name, &key_authorization.dns_value()).await?,
             }
             challenge
                 .set_ready()
@@ -714,6 +716,10 @@ impl Prover for Proving {
         Ok(())
     }
 
+    async fn dns(&self, _: &str, _: &str) -> Result<(), String> {
+        Err("a DNS-01 proof is published through the zone's provider, not on this leader".to_string())
+    }
+
     async fn done(&self) {
         self.resolver.done();
         self.tokens.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -752,8 +758,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("smeltr-acme-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let dir = dir.join("tls");
+        tls::tests::listing(&dir);
         tls::ensure(&dir, names(), A_YEAR, &[]).expect("the leader's own authority");
         dir
+    }
+
+    /// Lists `issued` in `dir`'s list and serves it, as an order from the administrator does.
+    fn took(dir: &Path, settings: &Settings, issued: &Issued, now_ms: i64) -> Result<(), String> {
+        let entry = list(tls::tests::list_in(dir).as_ref(), issued)?;
+        if issued.rotates {
+            tls::begin_supplied_rotation(dir, &entry, &names(), &[], now_ms)?;
+        } else {
+            tls::serve(dir, &entry, &names(), &[])?;
+        }
+        succeeded(dir, settings, issued, now_ms)
     }
 
     /// A certificate authority of somebody else's, signing what it is asked to.
@@ -829,6 +847,7 @@ mod tests {
                             return Err(format!("the listener answered {body:?}"));
                         }
                     }
+                    Challenge::Dns01 => prover.dns(name, &format!("value-{name}")).await?,
                 }
             }
             match self.fails {
@@ -850,13 +869,15 @@ mod tests {
             authority,
             eab_key_id: String::new(),
             eab_hmac: None,
+            dns_provider: acme_dns::Kind::Cloudflare,
+            cloudflare_token: None,
         }
     }
 
     /// Proofs answered by the leader whose `tls/` is `dir`, HTTP-01 on `http_port`.
     fn proving(dir: &Path, http_port: u16) -> Proving {
-        let materials = tls::current(dir).unwrap();
-        let resolver = Resolver::load(&materials.server_cert_path, &materials.server_key_path).unwrap();
+        let (_, chain, key) = tls::to_serve(dir).unwrap();
+        let resolver = Resolver::load(&chain, &key).unwrap();
         Proving::new(resolver, ([127, 0, 0, 1], http_port).into())
     }
 
@@ -912,7 +933,7 @@ mod tests {
                         .serialize_request(&key)
                         .unwrap();
                     let chain = previous.sign(csr.der());
-                    tls::install(
+                    tls::tests::install(
                         &dir,
                         chain.as_bytes(),
                         key.serialize_pem().as_bytes(),
@@ -935,7 +956,7 @@ mod tests {
                     let issued = runtime
                         .block_on(order(&dir, &earlier, &issuer, &proving, &names(), &[]))
                         .unwrap();
-                    take(&dir, &earlier, &issued, &names(), &[], now()).unwrap();
+                    took(&dir, &earlier, &issued, now()).unwrap();
                     // Rotated to, since the leader's own root was in force: cut over so it is served.
                     tls::cut_over(&dir, names(), A_YEAR).unwrap();
                     assert_eq!(source(&dir).unwrap(), Source::Acme);
@@ -978,7 +999,7 @@ mod tests {
                 http_port,
             };
 
-            let before = tls::in_force(&dir).unwrap().1;
+            let before = tls::current(&dir).unwrap().served;
             let source_before = source(&dir)?;
             let outcome = runtime.block_on(order(&dir, &settings, &issuer, &proving, &names(), &[]));
             // Whatever happened, the order is over: nothing is proving anything and the listener is gone.
@@ -1022,20 +1043,19 @@ mod tests {
             if !issued.rotates {
                 return Err("a certificate under another root serves at once".to_string());
             }
-            take(&dir, &settings, &issued, &names(), &[], now())?;
+            took(&dir, &settings, &issued, now())?;
             coverage.reach("rotated");
             // Nothing served yet: the rotation is open and what is served has not moved.
-            if tls::in_force(&dir).unwrap().1 != before {
+            if tls::current(&dir).unwrap().served != before {
                 return Err("what is served moved before the fleet held the root".to_string());
             }
             if source(&dir)? != source_before {
                 return Err(format!("what is served now reads as {:?}", source(&dir)?));
             }
-            let state = state(&dir)?;
-            if state.fingerprint.as_deref() != Some(&issued.certificate.fingerprint) {
-                return Err("the state does not name what was ordered".to_string());
+            if tls::rotation(&dir)?.map(|r| incoming(&r)) != Some(Source::Acme) {
+                return Err("the rotation does not serve what was ordered".to_string());
             }
-            if due(&state, now()) {
+            if renews(&state(&dir)?, now()) {
                 return Err("a renewal is due the moment a certificate is ordered".to_string());
             }
             tls::cut_over(&dir, names(), A_YEAR)?;
@@ -1070,21 +1090,22 @@ mod tests {
             coverage.reach("renewal-not-due");
             earlier.renew_after_millis.unwrap() - 1
         };
-        if !renews(&earlier, source(dir)?, when) {
+        if !renews(&earlier, when) {
             // Not due: the task would not order. Nothing else to check.
             return Ok(());
         }
+        let version = tls::served(dir)?.map(|e| e.version);
         let issued = runtime.block_on(order(dir, settings, &issuer, proving, &names(), &[]))?;
         if issued.rotates {
             return Err("a renewal under the root in force rotates".to_string());
         }
-        take(dir, settings, &issued, &names(), &[], when)?;
+        took(dir, settings, &issued, when)?;
         coverage.reach("installed");
         if source(dir)? != Source::Acme {
             return Err("the renewal is not what is served".to_string());
         }
-        if state(dir)?.fingerprint == earlier.fingerprint {
-            return Err("the state still names the certificate renewed away from".to_string());
+        if tls::served(dir)?.map(|e| e.version) <= version {
+            return Err("the version renewed away from is still served".to_string());
         }
         if rotation_open && tls::rotation(dir)?.is_none() {
             return Err("a renewal ended the rotation".to_string());
@@ -1106,7 +1127,7 @@ mod tests {
             .serialize_request(&key)
             .unwrap();
         let chain = switching.sign(csr.der());
-        tls::begin_supplied_rotation(
+        tls::tests::rotate_to(
             dir,
             chain.as_bytes(),
             key.serialize_pem().as_bytes(),
@@ -1133,8 +1154,6 @@ mod tests {
             &dir,
             &State {
                 directory: "https://acme.test/dir".to_string(),
-                fingerprint: Some("abc".to_string()),
-                previous_fingerprint: None,
                 not_after_millis: Some(NOW + 1),
                 renew_after_millis: Some(NOW),
                 last_attempt_millis: Some(NOW - 1),
@@ -1144,39 +1163,33 @@ mod tests {
         .unwrap();
         failed(&dir, NOW, "the authority is down").unwrap();
         let state = state(&dir).unwrap();
-        assert_eq!(state.fingerprint.as_deref(), Some("abc"));
+        assert_eq!(state.renew_after_millis, Some(NOW));
         assert_eq!(state.last_attempt_millis, Some(NOW));
         assert_eq!(state.last_error.as_deref(), Some("the authority is down"));
-        assert!(due(&state, NOW));
+        assert!(renews(&state, NOW));
         assert_eq!(source(&dir).unwrap(), Source::Own);
     }
 
-    /// The task renews what it issued, while that is served, and nothing else: not a first order that failed, and
-    /// not after another source took over.
+    /// The task renews what an order stored once it is due, and never places a first order.
     #[test]
-    fn the_task_renews_only_what_it_issued_while_it_is_served() {
+    fn the_task_renews_only_what_an_order_stored() {
         let issued = State {
-            fingerprint: Some("abc".to_string()),
             renew_after_millis: Some(NOW),
             ..State::default()
         };
-        assert!(renews(&issued, Source::Acme, NOW));
-        assert!(!renews(&issued, Source::Acme, NOW - 1));
-        assert!(!renews(&issued, Source::Own, NOW));
-        assert!(!renews(&issued, Source::Upload, NOW));
+        assert!(renews(&issued, NOW));
+        assert!(!renews(&issued, NOW - 1));
         let never = State {
             last_error: Some("the authority is down".to_string()),
             ..State::default()
         };
-        assert!(due(&never, NOW));
-        assert!(!renews(&never, Source::Own, NOW));
-        assert!(!renews(&never, Source::Upload, NOW));
+        assert!(!renews(&never, NOW));
     }
 
-    /// An abandoned switch forgets the order it would have served. A first order leaves nothing; a renewal under a
-    /// new root leaves the certificate still served as this module's, due when that one is.
+    /// An abandoned switch leaves the order in the list, due by its own dates. A renewal under a new root leaves the
+    /// version still served due when that one is.
     #[test]
-    fn an_abandoned_switch_forgets_its_order() {
+    fn an_abandoned_switch_renews_by_what_is_served() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let order_and_abandon = |dir: &Path, issuer: &FakeIssuer, proving: &Proving| {
             let ordered = settings(names(), Challenge::TlsAlpn01, issuer.authority.pem.clone());
@@ -1184,7 +1197,7 @@ mod tests {
                 .block_on(order(dir, &ordered, issuer, proving, &names(), &[]))
                 .unwrap();
             assert!(issued.rotates);
-            take(dir, &ordered, &issued, &names(), &[], now()).unwrap();
+            took(dir, &ordered, &issued, now()).unwrap();
             let incoming = tls::rotation(dir).unwrap().expect("a switch").incoming;
             tls::abandon_rotation(dir, &incoming).unwrap();
             abandoned(dir).unwrap();
@@ -1200,8 +1213,10 @@ mod tests {
         let dir = scratch("abandon-first");
         let port = free_port();
         let first = order_and_abandon(&dir, &issuer("first", port), &proving(&dir, port));
-        assert_eq!(first.fingerprint, None);
-        assert_eq!(first.renew_after_millis, None);
+        assert!(
+            first.renew_after_millis.is_some(),
+            "an order nothing serves is no longer renewed"
+        );
         assert_eq!(source(&dir).unwrap(), Source::Own);
 
         let dir = scratch("abandon-renewal");
@@ -1212,12 +1227,10 @@ mod tests {
         let issued = runtime
             .block_on(order(&dir, &ordered, &earlier, &proving, &names(), &[]))
             .unwrap();
-        take(&dir, &ordered, &issued, &names(), &[], now()).unwrap();
+        took(&dir, &ordered, &issued, now()).unwrap();
         tls::cut_over(&dir, names(), A_YEAR).unwrap();
         let served = issued.certificate;
         let renewal = order_and_abandon(&dir, &issuer("later", port), &proving);
-        assert_eq!(renewal.fingerprint, Some(served.fingerprint));
-        assert_eq!(renewal.previous_fingerprint, None);
         assert_eq!(renewal.not_after_millis, Some(served.not_after_millis));
         assert!(renewal.renew_after_millis.is_some());
         assert_eq!(source(&dir).unwrap(), Source::Acme);
@@ -1242,7 +1255,7 @@ mod tests {
         let issued = runtime
             .block_on(order(&dir, &first, &earlier, &proving, &names(), &[]))
             .unwrap();
-        take(&dir, &first, &issued, &names(), &[], now()).unwrap();
+        took(&dir, &first, &issued, now()).unwrap();
         tls::cut_over(&dir, names(), A_YEAR).unwrap();
         open_rotation(&dir);
         let before = state(&dir).unwrap();
@@ -1256,6 +1269,59 @@ mod tests {
         assert!(refused.contains("already rotating"), "{refused}");
         assert_eq!(state(&dir).unwrap(), before);
         assert_eq!(source(&dir).unwrap(), Source::Acme);
+    }
+
+    /// Each order is a version of the one list entry, which the leader serves a copy of; an entry of that name the
+    /// leader does not order is never written over.
+    #[test]
+    fn each_order_is_a_version_of_the_acme_entry() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = scratch("listed");
+        let port = free_port();
+        let proving = proving(&dir, port);
+        let issuer = FakeIssuer {
+            authority: Authority::new("listed"),
+            challenge: Challenge::TlsAlpn01,
+            fails: Fails::Never,
+            http_port: port,
+        };
+        let ordered = settings(names(), Challenge::TlsAlpn01, issuer.authority.pem.clone());
+        let store = tls::tests::list_in(&dir);
+        for _ in 0..2 {
+            let issued = runtime
+                .block_on(order(&dir, &ordered, &issuer, &proving, &names(), &[]))
+                .unwrap();
+            took(&dir, &ordered, &issued, now()).unwrap();
+            if issued.rotates {
+                tls::cut_over(&dir, names(), A_YEAR).unwrap();
+            }
+            let (_, chain, _) = crate::leader::newest_certificate(store.as_ref(), ENTRY)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                tls::describe(chain.as_bytes(), "c").unwrap().fingerprint,
+                issued.certificate.fingerprint
+            );
+        }
+        let entry = store
+            .list_secrets()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.name == ENTRY)
+            .unwrap();
+        assert_eq!(entry.versions.len(), 2);
+        assert_eq!(store.kept_certificates().unwrap().get(ENTRY), Some(&Kept::Acme));
+        assert_eq!(crate::leader::served_names(&dir).unwrap(), [ENTRY]);
+
+        let other = scratch("listed-taken");
+        let taken = tls::tests::list_in(&other);
+        let (chain, key) = tls::issue(&other, names(), A_YEAR).unwrap();
+        taken.create_certificate(ENTRY, "", &chain, &key).unwrap();
+        let issued = runtime
+            .block_on(order(&other, &ordered, &issuer, &proving, &names(), &[]))
+            .unwrap();
+        let refused = list(taken.as_ref(), &issued).unwrap_err();
+        assert!(refused.contains("this leader did not order it"), "{refused}");
     }
 
     /// An authority that must not be asked.

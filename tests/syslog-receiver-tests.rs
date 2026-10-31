@@ -8,9 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
-use smeltr::plan::topology::{
-    HeldSecrets, Identity, Receiver, ReceiverConfig, SecretRef, SourceKind, SyslogReceiverConfig, Transport,
-};
+use smeltr::plan::topology::{HeldSecrets, Receiver, ReceiverConfig, SourceKind, SyslogReceiverConfig, Tls, Transport};
 
 use crate::live;
 
@@ -25,11 +23,11 @@ fn free_port() -> SocketAddr {
 fn receiver(
     listen: SocketAddr,
     allow_from: &[&str],
-    identity: Option<Identity>,
+    tls: Option<Tls>,
     max: usize,
     secrets: &HeldSecrets,
 ) -> Box<dyn Source> {
-    open(Transport::Tcp, listen, allow_from, identity, max, secrets)
+    open(Transport::Tcp, listen, allow_from, tls, max, secrets)
 }
 
 /// A syslog receiver taking datagrams on `listen` from senders in `allow_from`, of up to `max` bytes.
@@ -41,7 +39,7 @@ fn open(
     transport: Transport,
     listen: SocketAddr,
     allow_from: &[&str],
-    identity: Option<Identity>,
+    tls: Option<Tls>,
     max: usize,
     secrets: &HeldSecrets,
 ) -> Box<dyn Source> {
@@ -53,7 +51,7 @@ fn open(
         }),
         listen,
         tokens: Vec::new(),
-        identity: identity.map(Arc::new),
+        tls,
         max_request_bytes: max,
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());
@@ -238,26 +236,28 @@ fn a_message_too_large_closes_the_connection() {
     nothing_arrives(&mut source);
 }
 
-/// Under an identity the receiver serves TLS, as RFC 5425 has it.
+/// Under a certificate the receiver serves TLS, as RFC 5425 has it.
 #[test]
 fn a_sender_is_served_over_tls() {
     crate::certs::install_provider();
     let authority = crate::certs::Authority::new("syslog tests");
     let served = authority.issue("receiver", vec!["localhost".to_string()]);
     let mut secrets = HeldSecrets::default();
-    secrets.set_stored([("receiver-key".to_string(), 1, served.key.clone())]);
-    let identity = Identity {
-        id: "receiver".into(),
-        certificate: Some(served.certificate.clone()),
-        key: Some(SecretRef::LeaderStored {
-            name: "receiver-key".into(),
-            version: 1,
-        }),
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "receiver".into(),
+        version: 1,
+        value: served.key.clone(),
+        chain: Some(served.certificate.clone()),
+    }]);
+    let tls = Tls {
+        of: "source \"receiver\"".into(),
+        certificate: Some("receiver".into()),
         authorities: None,
-        trust_public: true,
+        trust_public: false,
+        side: smeltr::io::trust::Side::Server,
     };
     let at = free_port();
-    let mut source = receiver(at, &["127.0.0.1"], Some(identity), 1 << 16, &secrets);
+    let mut source = receiver(at, &["127.0.0.1"], Some(tls), 1 << 16, &secrets);
 
     let mut roots = rustls::RootCertStore::empty();
     for root in crate::certs::certificates(&authority.pem) {

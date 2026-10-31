@@ -43,16 +43,6 @@ describe('parseRoute', () => {
       sampling: true,
     });
     expect(parseRoute('#/build/routes/preview')).toEqual({ tab: 'build', page: 'route-preview' });
-    expect(parseRoute('#/build/identities')).toEqual({
-      tab: 'build',
-      page: 'identities',
-      json: false,
-    });
-    expect(parseRoute('#/build/identities/json')).toEqual({
-      tab: 'build',
-      page: 'identities',
-      json: true,
-    });
     expect(parseRoute('#/build/lookups/json')).toEqual({
       tab: 'build',
       page: 'lookups',
@@ -68,11 +58,26 @@ describe('parseRoute', () => {
       page: 'workers',
       section: 'enrollment',
     });
-    expect(parseRoute('#/admin/secrets')).toEqual({ tab: 'admin', page: 'secrets' });
+    expect(parseRoute('#/admin/secrets')).toEqual({
+      tab: 'admin',
+      page: 'secrets',
+      section: 'secrets',
+    });
+    expect(parseRoute('#/admin/secrets/key')).toEqual({
+      tab: 'admin',
+      page: 'secrets',
+      section: 'key',
+    });
+    expect(parseRoute('#/admin/certificates')).toEqual({ tab: 'admin', page: 'certificates' });
+    expect(parseRoute('#/admin/certificates/new')).toEqual({
+      tab: 'admin',
+      page: 'certificates',
+      adding: true,
+    });
     expect(parseRoute('#/admin/accounts')).toEqual({
       tab: 'admin',
       page: 'accounts',
-      section: 'users',
+      section: 'accounts',
     });
     expect(parseRoute('#/admin/accounts/roles')).toEqual({
       tab: 'admin',
@@ -85,9 +90,9 @@ describe('parseRoute', () => {
     });
     expect(parseRoute('#/me/agent')).toEqual({ tab: 'me', page: 'agent' });
     expect(parseRoute('#/me/agent/c1')).toEqual({ tab: 'me', page: 'agent', conversation: 'c1' });
-    expect(parseRoute('#/admin/system/oidc')).toEqual({
+    expect(parseRoute('#/admin/accounts/oidc')).toEqual({
       tab: 'admin',
-      page: 'system',
+      page: 'accounts',
       section: 'oidc',
     });
   });
@@ -307,6 +312,7 @@ describe('movedTo', () => {
     expect(movedTo('#/routes')).toBe('#/build/routes');
     expect(movedTo('#/lookup-tables')).toBe('#/build/lookups');
     expect(movedTo('#/samples')).toBe('#/build');
+    expect(movedTo('#/admin/system/oidc')).toBe('#/admin/accounts/oidc');
   });
 
   it('carries over whatever followed the section', () => {
@@ -489,11 +495,6 @@ describe('trail', () => {
       'Resources',
       'Grok patterns',
     ]);
-    expect(trail({ tab: 'build', page: 'identities', json: true }).map((c) => c.label)).toEqual([
-      'Build',
-      'Resources',
-      'Connection identities',
-    ]);
     // The page itself never links, same as every other trail's last crumb.
     expect(trail({ tab: 'build', page: 'lookups', json: false }).map((c) => c.hash)).toEqual([
       '#/build/routes',
@@ -524,7 +525,7 @@ describe('trail', () => {
       { label: 'Branches', hash: '#/changes' },
       { label: 'History', hash: undefined },
     ]);
-    expect(trail({ tab: 'admin', page: 'secrets' })).toEqual([
+    expect(trail({ tab: 'admin', page: 'secrets', section: 'secrets' })).toEqual([
       { label: 'Admin', hash: '#/admin' },
       { label: 'Secrets', hash: undefined },
     ]);
@@ -558,7 +559,6 @@ describe('section', () => {
   it('gives Resources one rail entry for its three pages, Samples included', () => {
     expect(section({ tab: 'build', page: 'samples' })?.here).toBe('Resources');
     expect(section({ tab: 'build', page: 'lookups', json: false })?.here).toBe('Resources');
-    expect(section({ tab: 'build', page: 'identities', json: false })?.here).toBe('Resources');
   });
 });
 
@@ -581,14 +581,6 @@ describe('editorFor', () => {
     expect(editorFor('groups/west/lookup-tables.json')?.hash).toBe('#/build/lookups');
   });
 
-  it('sends an identities file to the identities page', () => {
-    expect(editorFor('shared/identities.json')).toEqual({
-      scope: 'shared',
-      hash: '#/build/identities',
-    });
-    expect(editorFor('groups/west/identities.json')?.hash).toBe('#/build/identities');
-  });
-
   it('opens a pipeline on its own page', () => {
     expect(editorFor('groups/west/pipelines/enrich-orders.json')).toEqual({
       scope: 'west',
@@ -598,6 +590,13 @@ describe('editorFor', () => {
 
   it('escapes a slug that would otherwise change the route', () => {
     expect(editorFor('shared/pipelines/a b.json')?.hash).toBe('#/build/pipelines/a%20b');
+  });
+
+  it('opens a schema file on the schemas page', () => {
+    expect(editorFor('groups/west/schemas/ecs.json')).toEqual({
+      scope: 'west',
+      hash: '#/build/schemas',
+    });
   });
 
   it('has no page for a group manifest', () => {

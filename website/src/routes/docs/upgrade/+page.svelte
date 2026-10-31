@@ -1,6 +1,7 @@
 <script lang="ts">
   import GuideLayout from '#lib/components/GuideLayout.svelte';
   const sections = [
+    { id: 'new-release', title: 'Know when a release is out' },
     { id: 'executable', title: 'Upgrade the executable' },
     { id: 'kubernetes', title: 'Operate and upgrade on Kubernetes' },
   ];
@@ -12,6 +13,12 @@
   {sections}
 >
   <h1>Upgrade Smeltr</h1>
+  <h2 id="new-release">Know when a release is out</h2>
+  <p>
+    Once a day, the leader asks <code>smeltr.sh</code> whether a newer release is out. A newer
+    release shows next to Version on <strong>Admin → System → General</strong>, and on the Issues
+    page. To stop these checks, turn off <strong>Check for new releases</strong> there.
+  </p>
   <h2 id="executable">Upgrade the executable</h2>
   <p>Complete this checklist in order:</p>
   <ul class="checklist">

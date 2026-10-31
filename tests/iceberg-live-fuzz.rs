@@ -106,7 +106,7 @@ impl Val {
             Val::Bool(b) => Literal::Boolean(*b),
             Val::Long(v) => Literal::Long(*v),
             Val::Double(bits) => Literal::Double(f64::from_bits(*bits)),
-            Val::Micros(us) => Literal::Timestamptz(*us),
+            Val::Micros(us) => Literal::Micros(*us),
             Val::Str(s) => Literal::String(s.clone()),
         })
     }
@@ -513,7 +513,7 @@ fn run(catalog: &str, s3: &str, seed: u64, case: &Case) -> Seen {
             role: None,
         }),
         compression: case.compression,
-        identity: None,
+        tls: None,
         in_flight: case.in_flight,
         max_object_bytes: case.max_object_bytes,
         buffer_bytes: case.buffer_bytes,
@@ -574,7 +574,7 @@ fn id_of(row: &BTreeMap<String, Val>) -> i64 {
 }
 
 /// The plan reading a row of `columns` from its JSON.
-fn plan(columns: &[(&str, &str)]) -> smeltr::plan::plan::Plan {
+fn plan(columns: &[(&str, &str)]) -> smeltr::plan::compile::Plan {
     let declarations: String = columns.iter().map(|(n, t)| format!("{n}: {t}; ")).collect();
     harness::compile_ok(vec![harness::code(
         0,
@@ -608,7 +608,7 @@ fn row_json(row: &BTreeMap<String, Val>, tags: bool) -> String {
 }
 
 /// Hands `batches` over as egress would, and waits until every one has landed.
-fn drive(d: &mut dyn Destination, plan: &smeltr::plan::plan::Plan, tags: bool, batches: &[Batch]) {
+fn drive(d: &mut dyn Destination, plan: &smeltr::plan::compile::Plan, tags: bool, batches: &[Batch]) {
     let mut waiting = HashSet::new();
     let take = |d: &mut dyn Destination, waiting: &mut HashSet<u64>| {
         for c in d.poll_completions().expect("landed") {

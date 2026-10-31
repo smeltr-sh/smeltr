@@ -1045,7 +1045,7 @@ fn every_http_api_setting_delivers_each_page_once_and_every_event_in_the_end() {
                 since: since.clone(),
                 sign_in: app_sign_in,
             }),
-            identity: None,
+            tls: None,
             poll_interval: Duration::from_millis(rng.below(80) as u64),
         });
         let mut secrets = HeldSecrets::default();
@@ -1706,7 +1706,7 @@ fn every_okta_setting_delivers_each_event_in_order_and_resumes_after_what_it_del
                 },
                 start,
             }),
-            identity: None,
+            tls: None,
             poll_interval: Duration::from_millis(rng.below(80) as u64),
         });
         let mut secrets = HeldSecrets::default();

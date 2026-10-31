@@ -8,8 +8,6 @@
 // A failure names its seed and the moves that led there. `SMELTR_FUZZ_SEED=n` replays one; `SMELTR_FUZZ_SEEDS=n`
 // runs `n`. One journey makes only some of the moves; over several, `journey-fuzz-coverage.spec.ts` checks that
 // the seeds made every one.
-import fs from 'node:fs';
-import path from 'node:path';
 import { test as base, expect, signedIn, watchRequests, type Api } from '../fleet';
 import { Rng, seeds } from '../fuzz';
 import { THEMES, VIEWPORTS } from '../gui-fuzz';
@@ -17,6 +15,7 @@ import {
   AVRO_OBJECTS,
   JOURNEY_SEEDS,
   PROVIDER_GROUP,
+  REVIEW_GROUP,
   newWorld,
   nextMove,
   type Journey,
@@ -26,7 +25,7 @@ import { FakeModel } from '../model';
 import { Authority } from '../acme';
 import { Provider } from '../oidc';
 import { listen, onScreen } from '../onscreen';
-import { RUN_DIR } from '../run';
+import { recordReached } from '../run';
 import { FakeElasticsearch } from '../sinks';
 
 /** Moves a journey makes after its first start: enough in `check-gui` for one long journey, and more where
@@ -74,7 +73,7 @@ for (const seed of seeds(JOURNEY_SEEDS)) {
       subject: 'journey-person',
       name: 'Journey Person',
       email: 'journey.person@example.com',
-      groups: [PROVIDER_GROUP],
+      groups: [PROVIDER_GROUP, REVIEW_GROUP],
     });
     const model = await FakeModel.start();
     const authority = await Authority.start({
@@ -129,9 +128,7 @@ for (const seed of seeds(JOURNEY_SEEDS)) {
       await provider.stop();
       await model.stop();
       await authority.stop();
-      const dir = path.join(process.env[RUN_DIR] ?? '', 'journey');
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, `${seed}.json`), JSON.stringify([...made]));
+      recordReached('journey', seed, made);
     }
   });
 }

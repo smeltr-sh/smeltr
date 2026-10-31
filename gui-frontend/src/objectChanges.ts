@@ -16,9 +16,11 @@ import {
   type TestDto,
   type TestResult,
   type TestSummary,
+  type UndoTarget,
 } from './api';
 import { diffObjects, type DiffEntry } from './diff';
 import { stepSummary, stepsFromDto } from './pipeline';
+import { bundleRoutes } from './routeFlow';
 
 export type Noun =
   | 'source'
@@ -26,8 +28,8 @@ export type Noun =
   | 'route'
   | 'lookup table'
   | 'grok pattern'
+  | 'schema'
   | 'pipeline'
-  | 'identity'
   | 'worker group'
   | 'sample'
   | 'test'
@@ -59,7 +61,7 @@ export interface SectionSpec {
 }
 
 /** Every section a change can touch, in the order a change is told:
- * sources, destinations, routes, lookup tables, grok patterns, identities, pipelines. */
+ * sources, destinations, routes, lookup tables, grok patterns, schemas, pipelines. */
 export const SECTIONS: SectionSpec[] = [
   { key: 'sources', noun: 'source', skip: ['id'] },
   { key: 'destinations', noun: 'destination', skip: ['id'] },
@@ -67,7 +69,7 @@ export const SECTIONS: SectionSpec[] = [
   { key: 'routes', noun: 'route', skip: ['id'], ordered: true },
   { key: 'lookupTables', noun: 'lookup table', skip: ['id'] },
   { key: 'grokPatterns', noun: 'grok pattern', skip: ['id'] },
-  { key: 'identities', noun: 'identity', skip: ['id'] },
+  { key: 'schemas', noun: 'schema', skip: ['id'] },
   { key: 'pipelines', noun: 'pipeline', skip: ['id', 'steps'] },
 ];
 
@@ -96,7 +98,7 @@ export function emptyConfig(): FileConfigDto {
     routes: [],
     lookupTables: [],
     grokPatterns: [],
-    identities: [],
+    schemas: [],
   };
 }
 
@@ -182,6 +184,15 @@ export function isSectionChange(c: ObjectChange): c is SectionChange {
   return SECTIONS.some((spec) => spec.key === c.section);
 }
 
+/** What Undo changes puts back for a card: its object, or its file by its
+ * path in the bundle. Null for a group's own card. */
+export function undoTarget(c: ObjectChange): UndoTarget | null {
+  if (isSectionChange(c)) return { section: c.section, id: c.id };
+  if (c.section === SAMPLES || c.section === TESTS) return { path: `${c.section}/${c.id}.json` };
+  if (c.section === LOOKUPS || c.section === UNREADABLE) return { path: c.id };
+  return null;
+}
+
 /** One scope's two sides. */
 export interface ScopePair {
   scope: string;
@@ -201,26 +212,71 @@ export interface ScopePair {
   /** The scope's files that do not read at each end: each path, within the
    * bundle, to why. */
   unreadable?: { before: Map<string, string>; after: Map<string, string> };
+  /** `shared/`'s bundle at each end, for a group's: a group runs shared routes before its own, so they count in a
+   * route's name (`routeName`). */
+  shared?: { before: FileConfigDto; after: FileConfigDto };
+}
+
+/** Each end's pipelines by id, to their names: a scope's own over `shared/`'s, which a group runs too. */
+export interface SideNames {
+  before: Map<string, string>;
+  after: Map<string, string>;
+}
+
+export function sidePipelineNames(pair: Pick<ScopePair, 'before' | 'after' | 'shared'>): SideNames {
+  const names = (config: FileConfigDto, shared?: FileConfigDto) =>
+    new Map([...(shared?.pipelines ?? []), ...config.pipelines].map((p) => [p.id, p.name]));
+  return {
+    before: names(pair.before, pair.shared?.before),
+    after: names(pair.after, pair.shared?.after),
+  };
+}
+
+/** Pipeline `id` as a reader calls it at `side`: its name there, else at the other end, else the id itself. */
+export function pipelineNameAt(names: SideNames, id: string, side: 'before' | 'after'): string {
+  const other = side === 'before' ? 'after' : 'before';
+  return names[side].get(id) || names[other].get(id) || id;
+}
+
+/** A route's `pipeline` field, naming its pipeline at each end. */
+function pipelineByName(f: DiffEntry, names: SideNames): DiffEntry {
+  if (f.key !== 'pipeline') return f;
+  const at = (v: unknown, side: 'before' | 'after') =>
+    typeof v === 'string' ? pipelineNameAt(names, v, side) : v;
+  return { ...f, before: at(f.before, 'before'), after: at(f.after, 'after') };
+}
+
+/** Route `id` of a scope by its `routeName`: as the change leaves it, or as it was where the change removes it. */
+export function changedRouteName(
+  pair: Pick<ScopePair, 'before' | 'after' | 'shared'>,
+  id: string,
+): string | undefined {
+  const named = (config: FileConfigDto, shared?: FileConfigDto) =>
+    bundleRoutes(config, shared).find((r) => r.id === id)?.name;
+  return named(pair.after, pair.shared?.after) ?? named(pair.before, pair.shared?.before);
 }
 
 /** The file each section is read from. A section whose file does not read
- * is read as empty, so every object in it would read as removed or added. */
+ * is read as empty, so every object in it would read as removed or added. A
+ * pipeline and a schema each have a file of their own (`fileOfObject`). */
 const SECTION_FILE: Record<ConfigSection, string> = {
   sources: 'sources.json',
   destinations: 'destinations.json',
   routes: 'routes.json',
   lookupTables: 'lookup-tables.json',
   grokPatterns: 'grok-patterns.json',
-  identities: 'identities.json',
+  schemas: '',
   pipelines: '',
 };
 
 /** The file `spec`'s object `id` is read from. */
 function fileOfObject(spec: SectionSpec, id: string): string {
-  return spec.key === 'pipelines' ? `pipelines/${pipelineSlug(id)}.json` : SECTION_FILE[spec.key];
+  if (spec.key === 'pipelines' || spec.key === 'schemas')
+    return `${spec.key}/${pipelineSlug(id)}.json`;
+  return SECTION_FILE[spec.key];
 }
 
-/** A pipeline's filename, as the leader names it (`config_file::slugify`). */
+/** A pipeline's or schema's filename, as the leader names it (`config_file::slugify`). */
 export function pipelineSlug(id: string): string {
   // Only ASCII letters and digits survive, lowered after: lowering first would turn `K` (Kelvin) into `k`.
   const slug = id
@@ -437,6 +493,7 @@ function objectChange(
   before: unknown,
   after: unknown,
   moved: boolean,
+  label = labelOf(after ?? before, id),
 ): ObjectChange | null {
   const status: Status =
     before === undefined ? 'added' : after === undefined ? 'removed' : 'changed';
@@ -451,7 +508,7 @@ function objectChange(
     section: spec.key,
     noun: spec.noun,
     id,
-    label: labelOf(after ?? before, id),
+    label,
     status,
     fields,
   };
@@ -674,6 +731,7 @@ export function objectChanges(pairs: ScopePair[]): ObjectChange[] {
     const group = unread.has('system.json') ? null : groupChange(pair);
     if (group) out.push(group);
     out.push(...unreadableChanges(scope, pair));
+    const names = sidePipelineNames(pair);
     for (const spec of SECTIONS) {
       const wasList = (before[spec.key] ?? []) as { id: string }[];
       const nowList = (after[spec.key] ?? []) as { id: string }[];
@@ -684,7 +742,18 @@ export function objectChanges(pairs: ScopePair[]): ObjectChange[] {
       for (const id of ids) {
         // Its file says what it is, not that it was removed or added.
         if (unread.has(fileOfObject(spec, id))) continue;
-        const change = objectChange(scope, spec, id, was.get(id), now.get(id), moved.has(id));
+        const route = spec.key === 'routes' ? changedRouteName(pair, id) : undefined;
+        const change = objectChange(
+          scope,
+          spec,
+          id,
+          was.get(id),
+          now.get(id),
+          moved.has(id),
+          route,
+        );
+        if (change && spec.key === 'routes')
+          change.fields = change.fields.map((f) => pipelineByName(f, names));
         if (change) out.push(change);
       }
     }
@@ -718,8 +787,8 @@ export function testsCovering(
   id: string,
 ): TestResult[] {
   return results.filter((t) => {
-    if (t.scope !== scope) return false;
-    const summary = summaries.get(scopedKey(t.scope, t.id));
+    if (t.area !== scope) return false;
+    const summary = summaries.get(scopedKey(t.area, t.id));
     const pipelines = summary ? summary.pipelines : t.pipeline ? [t.pipeline] : [];
     return pipelines.includes(id);
   });

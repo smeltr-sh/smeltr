@@ -19,7 +19,7 @@
     "@sveltejs/adapter-static": "^4.0.0",
     "@sveltejs/kit": "^3.0.0",
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
-    "happy-dom": "^20.14.6",
+    "happy-dom": "^21.0.4",
     "pagefind": "^1.5.2",
     "prettier": "^3.9.6",
     "prettier-plugin-svelte": "^4.1.1",
@@ -32,10 +32,11 @@
   },
   "allowScripts": {
     "sharp@0.33.5": true,
-    "esbuild@0.28.1": true,
+    "esbuild@0.28.2": true,
     "workerd@1.20261006.1": true
   },
   "overrides": {
-    "sharp": "0.35.5"
+    "sharp": "0.35.5",
+    "undici": "7.30.1"
   }
 }

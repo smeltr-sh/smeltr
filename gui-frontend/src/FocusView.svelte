@@ -6,7 +6,7 @@
   routes it sits on.
 
   What it shows comes from two places: the leader's per-object stats over a window
-  (`/api/stats`), read here, and the map's current reading for the node (`/api/map/measurements`),
+  (`/api/areas/:area/stats`), read here, and the map's current reading for the node (`/api/map/measurements`),
   handed in by `MapPage.svelte` with the topology it already holds.
 -->
 <script module lang="ts">
@@ -72,7 +72,7 @@
     editHash,
     onedit,
     onclose,
-    footer,
+    controls,
     gap,
     onroute,
   }: {
@@ -100,8 +100,8 @@
      * switches scope here first. */
     onedit?: () => void;
     onclose: () => void;
-    /** The map's own controls for the selection, at the panel's foot. */
-    footer?: Snippet;
+    /** The map's own controls for the selection. */
+    controls?: Snippet;
     /** What arrives at a source that no route takes (`map.ts`, gaps). */
     gap?: SourceGap;
     /** Opens a new route on this source, taking what `condition` selects, or all of it. */
@@ -260,7 +260,7 @@
 
 <MapPanel kind={node.kind} group={node.group} title={node.name} mono {onclose}>
   {#snippet actions()}
-    <a class="icon" href={editHash} onclick={onedit} title="Edit {node.name}"><PencilIcon /></a>
+    <a class="btn icon" href={editHash} onclick={onedit} title="Edit {node.name}"><PencilIcon /></a>
   {/snippet}
   <div class="sub dim">
     {#if node.system}<span>{node.system}</span>{/if}
@@ -325,6 +325,11 @@
         {/if}
       </ul>
     </section>
+  {/if}
+
+  <!-- Above the readings, so they cannot move it as they arrive. -->
+  {#if controls}
+    <div class="controls">{@render controls()}</div>
   {/if}
 
   <div class="tabs">
@@ -539,6 +544,7 @@
           <div class="pager">
             <button
               type="button"
+              class="icon"
               disabled={workers.page === 0}
               onclick={() => (page = workers.page - 1)}
               aria-label="Previous workers">&lsaquo;</button
@@ -546,6 +552,7 @@
             <span class="small">{workers.start}&ndash;{workers.end} of {workers.total}</span>
             <button
               type="button"
+              class="icon"
               disabled={workers.page === workers.pages - 1}
               onclick={() => (page = workers.page + 1)}
               aria-label="Next workers">&rsaquo;</button
@@ -652,13 +659,10 @@
       {/if}
     </section>
   {/if}
-  {#if footer}
-    <div class="footer">{@render footer()}</div>
-  {/if}
 </MapPanel>
 
 <style>
-  .footer {
+  .controls {
     margin-top: 1rem;
   }
 
@@ -725,10 +729,6 @@
 
   .tabs {
     margin: 0.7rem 0 0.2rem;
-  }
-
-  .dim {
-    color: var(--dim);
   }
 
   .mono {

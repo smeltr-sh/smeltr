@@ -17,8 +17,8 @@ use crate::lookup;
 use crate::metrics::MetricsHandle;
 use crate::ops::arrayops::{Piece, build_from_pieces};
 use crate::ops::convert::{self, parse_bool};
+use crate::plan::compile::{ArrayFold, Call, Instr, Loop, Op, Output, Plan, TryStep};
 use crate::plan::config::{ParserKind, TimeSource};
-use crate::plan::plan::{ArrayFold, Call, Instr, Loop, Op, Output, Plan, TryStep};
 
 /// Run every instruction, with `__live` primed all-true. `__source.offset` and `_raw` must already be in the batch.
 pub fn run<'a>(plan: &'a Plan, batch: &mut Batch, ctx: &mut Ctx<'a>) {
@@ -941,7 +941,7 @@ fn run_array_fold(
     guard: Option<SlotId>,
     scope: MetricsScope,
 ) {
-    use crate::plan::plan::FoldOp;
+    use crate::plan::compile::FoldOp;
     let rows = batch.rows();
     let (mut exploded, offsets, element_row) = explode_array(
         layout,
@@ -1123,10 +1123,10 @@ fn fold_i64(
     offsets: &[u32],
     rows: usize,
     keep: &impl Fn(usize) -> bool,
-    op: crate::plan::plan::FoldOp,
+    op: crate::plan::compile::FoldOp,
     ctx: &mut Ctx,
 ) -> Column {
-    use crate::plan::plan::FoldOp;
+    use crate::plan::compile::FoldOp;
     let sv = seed_col.i64().unwrap();
     let mv = mapped.i64().unwrap();
 
@@ -1170,10 +1170,10 @@ fn fold_f64(
     offsets: &[u32],
     rows: usize,
     keep: &impl Fn(usize) -> bool,
-    op: crate::plan::plan::FoldOp,
+    op: crate::plan::compile::FoldOp,
     pool: &mut BufferPool,
 ) -> Column {
-    use crate::plan::plan::FoldOp;
+    use crate::plan::compile::FoldOp;
     let sv = seed_col.f64().unwrap();
     let mv = mapped.f64().unwrap();
     let mut out = Column::alloc(pool, &DataType::F64, rows);
@@ -1209,10 +1209,10 @@ fn fold_bool(
     offsets: &[u32],
     rows: usize,
     keep: &impl Fn(usize) -> bool,
-    op: crate::plan::plan::FoldOp,
+    op: crate::plan::compile::FoldOp,
     pool: &mut BufferPool,
 ) -> Column {
-    use crate::plan::plan::FoldOp;
+    use crate::plan::compile::FoldOp;
     // A `null` seed or map carries no bitmap.
     let read = |c: &Column, i: usize| {
         c.bool()
@@ -1317,7 +1317,7 @@ fn all_true(pool: &mut crate::core::buffer::BufferPool, rows: usize) -> Column {
 mod tests {
     use super::*;
     use crate::core::error::ErrorSink;
-    use crate::plan::plan::FoldOp;
+    use crate::plan::compile::FoldOp;
 
     fn i64s(p: &mut BufferPool, values: &[i64]) -> Column {
         let mut c = Column::alloc(p, &DataType::I64, values.len());

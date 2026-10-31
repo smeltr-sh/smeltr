@@ -29,7 +29,7 @@ beforeEach(async () => {
           mustChangePassword: false,
           access: { administrator: false, areas: { shared: 'viewer' } },
         };
-      } else if (url.pathname === '/api/config') {
+      } else if (url.pathname === '/api/areas/shared') {
         answer = {
           ok: true,
           config: {
@@ -40,9 +40,9 @@ beforeEach(async () => {
         };
       } else if (url.pathname === '/api/worker-groups') {
         answer = { ok: true, groups: [], errors: [] };
-      } else if (url.pathname === '/api/connections') {
+      } else if (url.pathname.endsWith('/connections')) {
         answer = { ok: true, errors: [], upstream: [], downstream: [], groups: [], drawnIn: [] };
-      } else if (url.pathname === '/api/pipelines/audit') {
+      } else if (url.pathname === '/api/areas/shared/pipelines/audit') {
         answer = { ok: true, pipeline: { id: 'audit', name: 'Audit', steps: [] }, errors: [] };
       } else {
         // What an editor alone may ask for: samples and previews.
@@ -74,7 +74,7 @@ describe('a viewer in the pipeline editor', () => {
     await vi.waitFor(() => expect(target.querySelector('#pipeline-name')).not.toBeNull());
     await new Promise((resolve) => setTimeout(resolve, 600));
     await tick();
-    expect(asked.filter((p) => p.startsWith('/api/samples') || p === '/api/preview')).toEqual([]);
+    expect(asked.filter((p) => /^\/api\/areas\/[^/]+\/(samples|preview)/.test(p))).toEqual([]);
     expect(target.querySelector('#sample')).toBeNull();
     expect(target.querySelector('p.error')).toBeNull();
     expect(target.textContent).not.toContain('Run now');

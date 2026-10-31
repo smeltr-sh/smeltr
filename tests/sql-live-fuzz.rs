@@ -25,7 +25,7 @@ use smeltr::core::column::DataType;
 use smeltr::io::mysql::{MySqlConnection, MySqlDriver};
 use smeltr::io::postgres::{PostgresConnection, PostgresDriver};
 use smeltr::io::sql::{Dialect, Query};
-use smeltr::io::sql_source::{Mode, Position, SqlSource, SqlSourceConfig, Start, Tls};
+use smeltr::io::sql_source::{Encrypted, Mode, Position, SqlSource, SqlSourceConfig, Start};
 use smeltr::io::values::Value;
 use smeltr::io::{CommitMap, Progress, Source, SourceRecord, TopicPartition};
 use smeltr::plan::topology::{HeldSecrets, SecretRef, SourceMeta};
@@ -139,8 +139,8 @@ impl Server for Postgres {
             database: DATABASE.to_string(),
             user: READER.to_string(),
             password: password(),
-            tls: Tls::Disable,
-            identity: None,
+            encrypted: Encrypted::Disable,
+            tls: None,
         };
         let driver = PostgresDriver::new(connection, &secrets()).expect("a driver");
         Box::new(SqlSource::new(driver, config))
@@ -204,8 +204,8 @@ impl Server for MySql {
             database: DATABASE.to_string(),
             user: READER.to_string(),
             password: password(),
-            tls: Tls::Disable,
-            identity: None,
+            encrypted: Encrypted::Disable,
+            tls: None,
         };
         let driver = MySqlDriver::new(connection, &secrets()).expect("a driver");
         Box::new(SqlSource::new(driver, config))

@@ -126,6 +126,7 @@
         >First pipeline: sample to verified delivery <span aria-hidden="true">→</span></a
       >
       <a href="/docs/capture-sample">Capture a sample <span aria-hidden="true">→</span></a>
+      <a href="/docs/schemas">Schemas <span aria-hidden="true">→</span></a>
       <a href="/docs/routing/records">Routing <span aria-hidden="true">→</span></a>
       <a href="/docs/git/configuration">Git &amp; configuration <span aria-hidden="true">→</span></a
       >

@@ -5,14 +5,13 @@
   import NewObject from './NewObject.svelte';
   import DestinationFields from './DestinationFields.svelte';
   import { DESTINATION_TYPES, blankDestination, typeLabel } from './destinations';
-  import type { DestinationDto, IdentityDto, SecretDto } from './api';
+  import type { DestinationDto, KafkaFacts, SecretDto } from './api';
 
   let {
     open,
     unavailable,
-    identities,
     secrets,
-    mechanisms,
+    kafka,
     onadd,
     oncancel,
   }: {
@@ -20,9 +19,8 @@
     open: boolean;
     /** Every id the new one may not take. */
     unavailable: string[];
-    identities: IdentityDto[];
     secrets: SecretDto[];
-    mechanisms: string[];
+    kafka: KafkaFacts;
     /** Takes the destination. The dialog stays open until its owner closes it. */
     onadd: (destination: DestinationDto) => void | Promise<void>;
     oncancel: () => void;
@@ -40,6 +38,6 @@
   {oncancel}
 >
   {#snippet fields(draft)}
-    <DestinationFields destination={draft} {identities} {secrets} {mechanisms} />
+    <DestinationFields destination={draft} {secrets} {kafka} />
   {/snippet}
 </NewObject>

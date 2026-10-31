@@ -102,7 +102,7 @@
     "port": 8088,
     "path": "/hooks/ci",
     "tokens": { "ci": "HOOK_TOKEN" },
-    "identity": "receiver-tls",
+    "certificate": "receiver-tls",
     "records": "lines"
   },
   "hecReceiverSource": {
@@ -110,14 +110,14 @@
     "type": "hecReceiver",
     "port": 8088,
     "tokens": { "otel": { "token": "HEC_TOKEN" } },
-    "identity": "receiver-tls"
+    "certificate": "receiver-tls"
   },
   "s2sReceiverSource": {
     "id": "forwarders",
     "type": "s2sReceiver",
     "port": 9997,
     "tokens": { "uf-fleet": "S2S_TOKEN" },
-    "identity": "s2s-tls",
+    "certificate": "s2s-tls",
     "sourcetypes": {
       "java:app": { "lineBreaker": "([\\r\\n]+)\\d{4}-\\d{2}-\\d{2}" },
       "access_combined": { "lineBreaker": "([\\r\\n]+)" }
@@ -128,7 +128,7 @@
     "type": "otlpReceiver",
     "port": 4318,
     "tokens": { "collectors": "OTEL_TOKEN" },
-    "identity": "receiver-tls"
+    "certificate": "receiver-tls"
   },
   "otlpTracesSource": {
     "id": "otel-traces",
@@ -136,28 +136,28 @@
     "port": 4318,
     "signal": "traces",
     "tokens": { "collectors": "OTEL_TOKEN" },
-    "identity": "receiver-tls"
+    "certificate": "receiver-tls"
   },
   "syslogReceiverSource": {
     "id": "network-syslog",
     "type": "syslogReceiver",
     "port": 6514,
     "allowFrom": ["10.20.0.0/16", "192.168.1.20"],
-    "identity": "syslog-tls"
+    "certificate": "syslog-tls"
   },
   "prometheusReceiverSource": {
     "id": "prometheus",
     "type": "prometheusReceiver",
     "port": 9090,
     "tokens": { "prometheus": "PROM_TOKEN" },
-    "identity": "receiver-tls"
+    "certificate": "receiver-tls"
   },
   "elasticReceiverSource": {
     "id": "beats",
     "type": "elasticReceiver",
     "port": 9200,
     "tokens": { "beats": "ES_TOKEN" },
-    "identity": "receiver-tls"
+    "certificate": "receiver-tls"
   },
   "oktaLogsSource": {
     "id": "okta-audit",

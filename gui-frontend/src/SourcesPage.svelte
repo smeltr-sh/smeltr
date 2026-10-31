@@ -1,6 +1,6 @@
 <!--
-  Sources page: `sources.json`, read through `GET /api/config` and written
-  with `PUT /api/sources`, plus the raw-JSON page.
+  Sources page: `sources.json`, read through `GET /api/areas/:area` and written
+  with `PUT /api/areas/:area/sources`, plus the raw-JSON page.
 -->
 <script lang="ts">
   import Connections from './Connections.svelte';
@@ -22,10 +22,11 @@
     setScope,
     putSources,
     type SourceDto,
-    type IdentityDto,
     type SecretDto,
     type NodeReadingDto,
     fieldCatalogs,
+    NO_KAFKA_FACTS,
+    type KafkaFacts,
     getMapMeasurements,
   } from './api';
   import { holdings, sourceReadings } from './mapTerms';
@@ -46,9 +47,6 @@
   /** What `shared/` declares, which this group runs too. Never saved from here: the page writes its own scope,
    * and these belong to the bundle every group draws on (design C -- read here, edited in `shared/`). */
   let sharedSources: SourceDto[] = $state([]);
-  /** Every identity a source here may name: this scope's own and `shared/`'s, the same two subtrees
-   * the group runs merged. */
-  let identities: IdentityDto[] = $state([]);
   /** A source being added (`NewSource`). It joins the list on Add, and the file on the page's Save. */
   let adding = $state(false);
   /** The row to show and mark: the one the map landed on, then the one just added. */
@@ -61,8 +59,7 @@
     pick: (config) => config.sources,
     put: putSources,
     validation,
-    onLoaded: async (config) => {
-      identities = config.identities;
+    onLoaded: async () => {
       await loadShared();
     },
   });
@@ -82,15 +79,14 @@
   async function loadShared() {
     const shared = await sharedConfig();
     sharedSources = shared ? shared.sources : [];
-    if (shared) identities = [...shared.identities, ...identities];
   }
 
   void editor.load();
 
   /** What this leader's build can select, for the security section, and the secret catalog. */
-  let mechanisms: string[] = $state([]);
+  let kafka: KafkaFacts = $state(NO_KAFKA_FACTS);
   let secrets: SecretDto[] = $state([]);
-  void fieldCatalogs().then((c) => ({ secrets, mechanisms } = c));
+  void fieldCatalogs().then((c) => ({ secrets, kafka } = c));
 
   /** Each source's current readings, by id, for the worker holding a listing source: this scope's group's, or under
    * `shared/`, which runs in every group, each group's. Best-effort: a page without readings still edits. */
@@ -217,16 +213,15 @@
         {#snippet body(source)}
           <Connections kind="source" id={source.id} />
           <div class="pair">
-            <Field field="id" label="id">
+            <Field required field="id" label="id">
               <input type="text" bind:value={source.id} />
             </Field>
             <Field label="type"><span class="fixed">{typeLabel(source.type)}</span></Field>
           </div>
           <SourceFields
             {source}
-            {identities}
             {secrets}
-            {mechanisms}
+            {kafka}
             {startMoves}
             readAt={editor.readAtCommit}
             onsaved={(commit) => (editor.readAtCommit = commit)}
@@ -247,9 +242,8 @@
       <NewSource
         open={adding}
         unavailable={unavailable()}
-        {identities}
         {secrets}
-        {mechanisms}
+        {kafka}
         readAt={editor.readAtCommit}
         onsaved={(commit) => (editor.readAtCommit = commit)}
         onadd={add}
@@ -287,10 +281,6 @@
 
   .form {
     max-width: var(--width-prose);
-  }
-
-  .dim {
-    color: var(--dim);
   }
 
   input {

@@ -1,13 +1,14 @@
 // The built-in grok macro catalog `ValidatedField`'s autocomplete suggests
 // from, mirrored by hand from `src/format/grok_pattern.rs` (`BUILTINS`).
-// Keep it in step: nothing reads this on the backend, so a stale entry
-// suggests a macro that does not compile.
+// Keep it in step: `gui_grok_sync` there checks each name and each quoted
+// regex against the engine's.
 //
 // Each description is a use case, a match and a near-miss, then the regex
 // itself as a reference -- so picking one doesn't require reading regex to
 // know whether it is the right one.
 
 import type { StdFuncEntry } from './stdlib';
+import { escape } from '../../website/src/lib/highlight/highlight';
 
 export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
   {
@@ -68,7 +69,7 @@ export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
     name: 'IPV6',
     signature: '%{IPV6}',
     description:
-      'An IPv6 address in any RFC 4291 form, with an optional zone. Matches `2001:db8::1`, `::1`, `::ffff:10.1.2.3`, `fe80::1%eth0`; not `1::2::3`, nine groups, or a plain IPv4 address.',
+      'An IPv6 address in any RFC 4291 form, with an optional zone. Matches `2001:db8::1`, `::1`, `::ffff:10.1.2.3`, `fe80::1%eth0`; not `1::2::3`, nine groups, or a plain IPv4 address. Regex: `(?:(?:(?:[0-9A-Fa-f]{1,4}:){6}|(?:[0-9A-Fa-f]{1,4}:){5}:|(?:[0-9A-Fa-f]{1,4}:){4}:(?:[0-9A-Fa-f]{1,4}:){0,1}|(?:[0-9A-Fa-f]{1,4}:){3}:(?:[0-9A-Fa-f]{1,4}:){0,2}|(?:[0-9A-Fa-f]{1,4}:){2}:(?:[0-9A-Fa-f]{1,4}:){0,3}|[0-9A-Fa-f]{1,4}::(?:[0-9A-Fa-f]{1,4}:){0,4}|::(?:[0-9A-Fa-f]{1,4}:){0,5})%{IPV4}|(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){7}:|(?:[0-9A-Fa-f]{1,4}:){6}:(?:[0-9A-Fa-f]{1,4})?|(?:[0-9A-Fa-f]{1,4}:){5}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,1})?|(?:[0-9A-Fa-f]{1,4}:){4}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,2})?|(?:[0-9A-Fa-f]{1,4}:){3}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,3})?|(?:[0-9A-Fa-f]{1,4}:){2}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,4})?|[0-9A-Fa-f]{1,4}::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,5})?|::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6})?)(?:%[0-9A-Za-z._~-]+)?`',
   },
   {
     name: 'IP',
@@ -230,25 +231,25 @@ export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
     name: 'SYSLOGLINE',
     signature: '%{SYSLOGLINE}',
     description:
-      'A whole classic syslog line, read into `log.syslog.priority`, `timestamp`, `host.hostname`, `process.name`, `process.pid` and `message`. Matches `<34>Oct 11 22:14:15 mymachine su[230]: failed`.',
+      'A whole classic syslog line, read into `log.syslog.priority`, `timestamp`, `host.hostname`, `process.name`, `process.pid` and `message`. Matches `<34>Oct 11 22:14:15 mymachine su[230]: failed`. Regex: `(?:<(?P<log.syslog.priority>[0-9]{1,3})>)?(?P<timestamp>%{SYSLOGTIMESTAMP}|%{TIMESTAMP_ISO8601}) %{NOTSPACE:host.hostname}(?: (?P<process.name>[\\x21-\\x5a\\x5c\\x5e-\\x7e]+)(?:\\[%{POSINT:process.pid}\\])?:)? %{GREEDYDATA:message}`',
   },
   {
     name: 'SYSLOG5424LINE',
     signature: '%{SYSLOG5424LINE}',
     description:
-      'A whole RFC 5424 syslog line, matches `<165>1 2003-10-11T22:14:15Z host app - ID47 - An event`, note the version after its priority.',
+      'A whole RFC 5424 syslog line, matches `<165>1 2003-10-11T22:14:15Z host app - ID47 - An event`, note the version after its priority. Regex: `<(?P<log.syslog.priority>[0-9]{1,3})>%{POSINT:log.syslog.version} (?:-|%{TIMESTAMP_ISO8601:timestamp}) (?:-|%{NOTSPACE:host.hostname}) (?:-|%{NOTSPACE:log.syslog.appname}) (?:-|%{NOTSPACE:log.syslog.procid}) (?:-|%{NOTSPACE:log.syslog.msgid}) (?:-|(?P<log.syslog.structured_data>(?:\\[(?:[^\\]"\\\\]|\\\\.|"(?:[^"\\\\]|\\\\.)*")*\\])+))(?: %{GREEDYDATA:message})?`',
   },
   {
     name: 'COMMONAPACHELOG',
     signature: '%{COMMONAPACHELOG}',
     description:
-      'For a web server\'s access log in the common format. Matches `127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /a.gif HTTP/1.0" 200 2326`.',
+      'For a web server\'s access log in the common format. Matches `127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /a.gif HTTP/1.0" 200 2326`. Regex: `%{IPORHOST:source.address} (?:-|%{NOTSPACE:apache.access.user.identity}) (?:-|%{NOTSPACE:user.name}) \\[%{HTTPDATE:timestamp}\\] "(?:(?P<http.request.method>[!#$%&\'*+.^_`|~0-9A-Za-z-]+) %{NOTSPACE:url.original}(?: HTTP/%{NUMBER:http.version})?|%{DATA})" (?P<http.response.status_code>[0-9]{3}) (?:(?P<http.response.body.bytes>[0-9]+)|-)`',
   },
   {
     name: 'COMBINEDAPACHELOG',
     signature: '%{COMBINEDAPACHELOG}',
     description:
-      'For a web server\'s access log in the combined format, the common one plus the referrer and user agent. Matches `127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /a.gif HTTP/1.0" 200 2326 "http://example.com/" "Mozilla/4.08"`.',
+      'For a web server\'s access log in the combined format, the common one plus the referrer and user agent. Matches `127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /a.gif HTTP/1.0" 200 2326 "http://example.com/" "Mozilla/4.08"`. Regex: `%{COMMONAPACHELOG} "(?:-|%{DATA:http.request.referrer})" "(?:-|%{DATA:user_agent.original})"`',
   },
 ];
 
@@ -269,7 +270,39 @@ export function grokNameProblem(name: string, taken: Iterable<string>): string |
   return null;
 }
 
-/** A built-in's definition as its description quotes it, or null for one defined by code rather than a regex. */
+/** A built-in's definition as its description quotes it last, or null for an entry that quotes none. The definition
+ * runs to the description's final backtick, as it may hold one itself. */
 export function builtinRegex(entry: StdFuncEntry): string | null {
-  return /Regex: `([^`]*)`$/.exec(entry.description)?.[1] ?? null;
+  return /Regex: `(.*)`$/s.exec(entry.description)?.[1] ?? null;
+}
+
+/** A macro, a named group's opening, a character class, an escape, a group's flags, or an operator. */
+export const GROK_TOKEN =
+  /%\{([A-Za-z0-9_]+)(?::([^}]*))?\}|\(\?P?<([^>]*)>|\[\^?\]?(?:\\.|[^\]\\])*\]|\\.|\(\?[A-Za-z-]*:?|[?*+|^$]|\{\d+(?:,\d*)?\}/g;
+
+/** `text`, a grok pattern, as escaped HTML: each macro's name as a function and its field as a key, a named group's
+ * name as a key, a character class as a string, an escape as a literal, and a quantifier, alternation, anchor or
+ * group flag as a keyword. */
+export function highlightGrok(text: string): string {
+  const span = (kind: string, s: string) => `<span class="tok-${kind}">${escape(s)}</span>`;
+  let out = '';
+  let from = 0;
+  for (const m of text.matchAll(GROK_TOKEN)) {
+    const at = m.index ?? 0;
+    out += escape(text.slice(from, at));
+    const [token, macro, field, group] = m;
+    if (macro !== undefined)
+      out +=
+        '%{' +
+        span('function', macro) +
+        (field !== undefined ? ':' + span('key', field) : '') +
+        '}';
+    else if (group !== undefined)
+      out += escape(token.slice(0, token.length - group.length - 1)) + span('key', group) + '&gt;';
+    else if (token.startsWith('[')) out += span('string', token);
+    else if (token.startsWith('\\')) out += span('literal', token);
+    else out += span('keyword', token);
+    from = at + token.length;
+  }
+  return out + escape(text.slice(from));
 }

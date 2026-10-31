@@ -15,10 +15,12 @@
 <script lang="ts">
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import Dialog from './Dialog.svelte';
   import CaptureDialog from './CaptureDialog.svelte';
   import Field from './Field.svelte';
+  import ValidatedField from './ValidatedField.svelte';
   import Advanced from './Advanced.svelte';
   import StartAt from './StartAt.svelte';
   import type { StartPosition } from './kafka';
@@ -33,7 +35,6 @@
   import { mintSampleId } from './ids';
   import { canEdit } from './access';
   import {
-    sharedConfig,
     getConfig,
     configAt,
     currentBranch,
@@ -45,9 +46,13 @@
     MAX_SAMPLE_RECORDS,
     type CaptureStatus,
     type DestinationDto,
-    type IdentityDto,
     type SourceDto,
     type WorkerGroupDto,
+    type FileConfigDto,
+    type AskAt,
+    type CaptureFilterCheck,
+    afterDot,
+    checkCaptureFilter,
   } from './api';
 
   let {
@@ -64,7 +69,7 @@
     target?: { kind: CaptureAt; id: string; scope: string; group: string; filter?: string };
     /** A source as a form edits it, saved or not, in place of a target picked from the configuration: the
      * only one the form offers. */
-    editing?: { source: SourceDto; identity?: IdentityDto; maxMatches: number };
+    editing?: { source: SourceDto; maxMatches: number };
     /** What a finished capture is for, in place of saving it as a sample: `take` is handed it and answers why it
      * could not use it, or nothing once it has, which closes the flow. */
     use?: { title: string; label: string; take: (status: CaptureStatus) => string | undefined };
@@ -89,9 +94,6 @@
 
   let sources: SourceDto[] = $state(edited ? [edited.source] : []);
   let destinations: DestinationDto[] = $state([]);
-  let identities: IdentityDto[] = $state(edited?.identity ? [edited.identity] : []);
-  /** What `shared/` declares: a source in a group scope may legally name one of these. Never saved from here. */
-  let sharedIdentities: IdentityDto[] = $state([]);
   /** The picked target, as `targetKey` writes it. */
   let selected = $state(
     edited ? targetKey('source', edited.source.id) : given ? targetKey(given.kind, given.id) : '',
@@ -130,11 +132,10 @@
       const config = given ? await configAt(currentBranch(), given.scope) : await getConfig();
       if (given) readAt = config.commit ?? null;
       if (config.config) {
+        loaded = config.config;
         // A source's sample is saved in its own scope, so only one its editor may save to is offered.
         sources = scope !== SHARED_SCOPE || canEdit(SHARED_SCOPE) ? config.config.sources : [];
         destinations = config.config.destinations;
-        identities = config.config.identities;
-        sharedIdentities = (await sharedConfig())?.identities ?? [];
         const keys = [
           ...sources.map((s) => targetKey('source', s.id)),
           ...destinations.map((d) => targetKey('destination', d.id)),
@@ -165,18 +166,71 @@
   let captureDestination = $derived(
     destinations.find((d) => targetKey('destination', d.id) === selected) ?? null,
   );
-  /** What the filter reads: a source's record, or a destination's row. */
-  let at: CaptureAt = $derived(captureDestination ? 'destination' : 'source');
-  // Sent with the source rather than named: a worker follows main, and this
-  // branch is where the identity was written.
-  let identity = $derived(
-    captureSource && 'identity' in captureSource && captureSource.identity !== undefined
-      ? (identities.find((i) => i.id === captureSource.identity) ??
-          sharedIdentities.find((i) => i.id === captureSource.identity) ??
-          null)
+  /** The bundle the targets were read from. Absent for a source a form is editing. */
+  let loaded: FileConfigDto | null = $state(null);
+  /** Asks the engine what may follow a dot in the filter: over the bundle the targets came from, or over the edited
+   * source alone. */
+  const askAt: AskAt = (at) => (text, dot) =>
+    afterDot({
+      config: JSON.stringify(
+        loaded ?? {
+          version: 1,
+          sources,
+          destinations: [],
+          routes: [],
+          pipelines: [],
+        },
+      ),
+      at,
+      text,
+      dot,
+    });
+  // What the filter makes of each route delivering to the destination, by destination and text: a route it does not
+  // compile against is passed over, as a worker passes it over. Asked once the text has sat still a moment, and kept
+  // under what it was asked for, so an answer arriving after a later keystroke cannot land on the wrong text.
+  let checks = new SvelteMap<string, CaptureFilterCheck | null>();
+  let checkKey = $derived(captureDestination ? `${captureDestination.id}\n${filter.trim()}` : '');
+  $effect(() => {
+    const key = checkKey;
+    const dest = captureDestination?.id;
+    const text = filter.trim();
+    if (!dest || !loaded || text === '' || untrack(() => checks.has(key))) return;
+    const config = JSON.stringify(loaded);
+    const timer = setTimeout(() => {
+      checkCaptureFilter(config, text, dest)
+        .then((c) => checks.set(key, c))
+        .catch(() => {});
+    }, 400);
+    return () => clearTimeout(timer);
+  });
+  let check = $derived(checks.get(checkKey) ?? null);
+  let skipErrors = $derived(check?.skips.map((s) => s.error) ?? []);
+  let readsNone = $derived(!!check && check.reads === 0 && check.skips.length > 0);
+  /** One line for each of `skips`, `line` spelling it, to the first few; past them, how many more. */
+  function skipLines(
+    skips: CaptureFilterCheck['skips'],
+    line: (route: string, error: string) => string,
+  ): string {
+    const shown = skips.slice(0, SKIPS_SHOWN).map((s) => line(s.route, s.error));
+    const more = skips.length - shown.length;
+    return [
+      ...shown,
+      ...(more > 0 ? [`…and ${more} more ${more === 1 ? 'route' : 'routes'}.`] : []),
+    ].join('\n');
+  }
+  const SKIPS_SHOWN = 3;
+  let filterError = $derived(
+    readsNone
+      ? `No route can use this filter, so nothing would be captured.\n${skipLines(check!.skips, (r, e) => `Route ${r}: ${e}.`)}`
       : null,
   );
-
+  let filterWarning = $derived(
+    !readsNone && check && check.skips.length > 0
+      ? skipLines(check.skips, (r, e) => `Records from route ${r} are not captured: ${e}.`)
+      : null,
+  );
+  /** What the filter reads: a source's record, or a destination's row. */
+  let at: CaptureAt = $derived(captureDestination ? 'destination' : 'source');
   /** Only a stream has a position to start from. */
   let streams = $derived(captureSource?.type === 'kafka' || captureSource?.type === 'eventHubs');
 
@@ -184,7 +238,7 @@
     captureDestination
       ? { destination: captureDestination.id }
       : captureSource
-        ? { source: captureSource, identity: identity ?? undefined }
+        ? { source: captureSource }
         : null,
   );
   let canStart = $derived(!!captureTarget && !!group);
@@ -309,12 +363,24 @@
           {/if}
         </select>
       </Field>
-      <Field label="Keep records where" note="Leave it empty to keep everything.">
+      <Field optional label="Keep records where" error={filterError} warning={filterWarning}>
         {#snippet help()}
           {#each filterHelp(at) as part, i (i)}{#if part.code}<code>{part.text}</code
-              >{:else}{part.text}{/if}{/each}
+              >{:else}{part.text}{/if}{/each} Leave it empty to keep everything.
         {/snippet}
-        <input class="mono" bind:value={filter} placeholder={filterPlaceholder(at)} />
+        <ValidatedField
+          bind:value={filter}
+          errors={readsNone ? skipErrors : []}
+          warnings={readsNone ? [] : skipErrors}
+          placeholder={filterPlaceholder(at)}
+          autocomplete="condition"
+          ask={captureSource
+            ? askAt({ source: captureSource.id })
+            : captureDestination
+              ? askAt({ destination: captureDestination.id })
+              : undefined}
+          wrap
+        />
       </Field>
       <Field label="At most" group>
         <div class="limits">
@@ -391,11 +457,5 @@
   }
   input.narrow {
     width: 5rem;
-  }
-  .mono {
-    font-family: var(--mono);
-  }
-  .dim {
-    color: var(--dim);
   }
 </style>

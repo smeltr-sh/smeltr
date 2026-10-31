@@ -29,6 +29,15 @@ describe('recordsFromText', () => {
     expect(recordsFromText(text)).toEqual([{ _raw: '{"a":1,"b":2}' }]);
   });
 
+  it('takes an object with a `_raw` field as a whole record', () => {
+    const text = '{"_raw":"a","__capture":{"group":"g"}}\nplain';
+    expect(recordsFromText(text)).toEqual([
+      { _raw: 'a', __capture: { group: 'g' } },
+      { _raw: 'plain' },
+    ]);
+    expect(recordsFromText('[{"_raw":"a"},{"b":2}]')).toEqual([{ _raw: 'a' }, { _raw: '{"b":2}' }]);
+  });
+
   it('takes a JSON array as one record per element', () => {
     const text = '[{"a":1},{"b":2},{"c":3}]';
     expect(recordsFromText(text)).toEqual([
@@ -147,11 +156,9 @@ describe('needsBranch', () => {
   });
 });
 
-// The query string a review's test calls actually send. `test_api::TestScopeQuery` reads `ownScopes`
-// as a `bool`, and serde takes only `true` or `false` there -- `1` deserializes to an HTTP 400, which
-// reaches the reviewer as no test results at all. Neither side's own tests can see the other's, so the
-// literal is pinned here and in `test_api::the_query_a_review_sends_parses`.
-describe('a review names the branch under review and asks for its own scopes', () => {
+// A review's test calls name the branch under review in the path, so the leader reads that change's own areas
+// rather than the chip's.
+describe('a review names the branch under review', () => {
   const calls: string[] = [];
 
   afterEach(() => {
@@ -166,16 +173,16 @@ describe('a review names the branch under review and asks for its own scopes', (
     });
   }
 
-  it('spells ownScopes true when listing', async () => {
+  it('when listing', async () => {
     captureFetch();
     await listTests('al/vendor-returns');
-    expect(calls).toEqual(['/api/tests?branch=al%2Fvendor-returns&ownScopes=true']);
+    expect(calls).toEqual(['/api/branches/al%2Fvendor-returns/tests']);
   });
 
-  it('spells ownScopes true when running', async () => {
+  it('when running', async () => {
     captureFetch();
     await runTests({ touched: true }, 'al/vendor-returns');
-    expect(calls).toEqual(['/api/tests/run?branch=al%2Fvendor-returns&ownScopes=true']);
+    expect(calls).toEqual(['/api/branches/al%2Fvendor-returns/test-runs']);
   });
 });
 
@@ -213,6 +220,40 @@ describe('what a body is sent as', () => {
     await uploadLookupFile(new File(['a,b\n1,2\n'], 'rates.csv', { type: 'text/csv' }));
     expect(new Headers(sent?.headers).has('content-type')).toBe(false);
     expect(sent?.body).toBeInstanceOf(FormData);
+  });
+});
+
+// A body past 1 KiB goes gzipped, and inflates to what was meant; a smaller one goes as it is.
+describe('a large request body', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function sent(tip: string) {
+    let init: RequestInit | undefined;
+    vi.stubGlobal('fetch', (_url: string, i: RequestInit) => {
+      init = i;
+      return Promise.resolve(new Response('{"ok":true,"error":null}'));
+    });
+    await overwriteBranch('work', tip, null);
+    const encoding = new Headers(init?.headers).get('content-encoding');
+    const text =
+      encoding === 'gzip'
+        ? await new Response(
+            new Response(init?.body).body!.pipeThrough(new DecompressionStream('gzip')),
+          ).text()
+        : String(init?.body);
+    return { encoding, body: JSON.parse(text) };
+  }
+
+  it('is gzipped', async () => {
+    const tip = 'a'.repeat(2000);
+    expect(await sent(tip)).toEqual({ encoding: 'gzip', body: { tip, hostTip: null } });
+  });
+
+  it('is not when small', async () => {
+    expect(await sent('def5678')).toEqual({
+      encoding: null,
+      body: { tip: 'def5678', hostTip: null },
+    });
   });
 });
 

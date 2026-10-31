@@ -11,8 +11,6 @@
 //! one protocol; where they differ (the statement timeout, how `EXPLAIN` writes its plan, what a JSON column is) the
 //! server's own version string says which one answers.
 
-use std::sync::Arc;
-
 use mysql_async::consts::{ColumnFlags, ColumnType};
 use mysql_async::prelude::Queryable as _;
 use mysql_async::{ClientIdentity, Column, Conn, Opts, OptsBuilder, Params, SslOpts, Value as MyValue};
@@ -20,14 +18,14 @@ use mysql_async::{ClientIdentity, Column, Conn, Opts, OptsBuilder, Params, SslOp
 use super::IoError;
 use super::sql::{Dialect, Statement, quote};
 use super::sql_source::{
-    CALL_TIMEOUT, CONNECT_TIMEOUT, Connection, Described, Driver, FULL_SCAN_ROWS, Failure, MAX_RESULT_BYTES, Rows,
-    STATEMENT_MARGIN, Shell, Tls, Verdict, held, too_large,
+    CALL_TIMEOUT, CONNECT_TIMEOUT, Connection, Described, Driver, Encrypted, FULL_SCAN_ROWS, Failure, MAX_RESULT_BYTES,
+    Rows, STATEMENT_MARGIN, Shell, Verdict, held, too_large,
 };
 use super::values::Value;
 use crate::core::column::DataType;
 use crate::core::variant;
 use crate::ops::civil::{MICROS_PER_DAY, civil_from_days, days_from_civil};
-use crate::plan::topology::{HeldSecrets, Identity, SecretRef};
+use crate::plan::topology::{HeldSecrets, SecretRef, Tls};
 
 const MICROS_PER_SECOND: i64 = 1_000_000;
 
@@ -46,9 +44,9 @@ pub struct MySqlConnection {
     pub database: String,
     pub user: String,
     pub password: Option<SecretRef>,
-    pub tls: Tls,
-    /// The certificate presented and the authorities trusted, under `Tls::Require`.
-    pub identity: Option<Arc<Identity>>,
+    pub encrypted: Encrypted,
+    /// The TLS it speaks, under `Encrypted::Require`.
+    pub tls: Option<Tls>,
 }
 
 pub struct MySqlDriver {
@@ -75,16 +73,16 @@ fn failed(e: mysql_async::Error) -> Failure {
 }
 
 impl MySqlDriver {
-    /// Resolves the password and the identity from `secrets` now (an absent secret is an IoError, never an
+    /// Resolves the password and the certificate from `secrets` now (an absent secret is an IoError, never an
     /// unauthenticated try); connects lazily on first use and again after a broken connection.
     pub fn new(connection: MySqlConnection, secrets: &HeldSecrets) -> Result<MySqlDriver, IoError> {
         let password = match &connection.password {
             Some(reference) => Some(super::held(secrets, reference, "the MySQL source", "password")?),
             None => None,
         };
-        let ssl = match connection.tls {
-            Tls::Disable => None,
-            Tls::Require => Some(ssl_opts(connection.identity.as_deref(), secrets)?),
+        let ssl = match connection.encrypted {
+            Encrypted::Disable => None,
+            Encrypted::Require => Some(ssl_opts(connection.tls.as_ref(), secrets)?),
         };
         let opts = OptsBuilder::default()
             .ip_or_hostname(connection.host)
@@ -111,22 +109,22 @@ impl Connection for Conn {
     }
 }
 
-/// The TLS a connection under `Tls::Require` uses. mysql_async builds its own rustls configuration, from roots and an
-/// identity rather than a configuration, and verifies the server's certificate and name with them; its rustls is
-/// smeltr's, so the provider is the one the process installed. The roots and identity are what
-/// [`super::objects::tls`] gives every other client (`io::trust`), in place of mysql_async's built-in roots.
-fn ssl_opts(identity: Option<&Identity>, secrets: &HeldSecrets) -> Result<SslOpts, IoError> {
+/// The TLS a connection under `Encrypted::Require` uses. mysql_async builds its own rustls configuration, from
+/// roots and a client identity rather than a configuration, and verifies the server's certificate and name with
+/// them; its rustls is smeltr's, so the provider is the one the process installed. The roots and certificate are
+/// what [`super::objects::client_config`] gives every other client (`io::trust`), in place of mysql_async's
+/// built-in roots.
+fn ssl_opts(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<SslOpts, IoError> {
     // Refuses a certificate, an authority or a key that cannot be read, in the words every other client uses.
-    super::objects::tls(identity, secrets)?;
+    super::objects::client_config(tls, secrets)?;
     let mut ssl = SslOpts::default()
-        .with_root_certs(vec![super::trust::pem(identity)?.into_bytes().into()])
+        .with_root_certs(vec![super::trust::pem(tls)?.into_bytes().into()])
         .with_disable_built_in_roots(true);
-    if let Some(identity) = identity
-        && let Some(certificate) = &identity.certificate
-        && let Some(presented) = super::trust::presented(identity, secrets)?
+    if let Some(tls) = tls
+        && let Some(presented) = super::trust::presented(tls, secrets)?
     {
         ssl = ssl.with_client_identity(Some(ClientIdentity::new(
-            certificate.as_bytes().to_vec().into(),
+            presented.chain_pem.into_bytes().into(),
             presented.key_pem.into_bytes().into(),
         )));
     }

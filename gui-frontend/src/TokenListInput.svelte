@@ -11,6 +11,7 @@
 -->
 <script lang="ts">
   import PickOrNew from './PickOrNew.svelte';
+  import RemovableChip from './RemovableChip.svelte';
 
   let {
     values = $bindable([]),
@@ -21,6 +22,7 @@
     label,
     newLabel,
     onnew,
+    required = false,
   }: {
     values: string[];
     placeholder?: string;
@@ -33,6 +35,8 @@
     /** The text of the choice that runs `onnew`. */
     newLabel?: string;
     onnew?: () => void;
+    /** As `PasswordField`'s, said of the input a new value is typed in. */
+    required?: boolean;
   } = $props();
 
   /** What the picker offers: each choice once, none already chosen. */
@@ -94,7 +98,7 @@
         onkeydown={(e) => onEditKeydown(e, i)}
       />
     {:else}
-      <span class="chip">
+      <RemovableChip removeLabel="remove {v}" onremove={() => removeAt(i)}>
         {#if choices}
           <span class="chip-label">{choiceLabel(v)}</span>
         {:else}
@@ -105,13 +109,7 @@
             aria-label="rename {v}">{v}</button
           >
         {/if}
-        <button
-          type="button"
-          class="chip-remove"
-          onclick={() => removeAt(i)}
-          aria-label="remove {v}">✕</button
-        >
-      </span>
+      </RemovableChip>
     {/if}
   {/each}
   {#if choices}
@@ -131,6 +129,7 @@
       class="chip-draft"
       bind:value={draft}
       placeholder={values.length === 0 ? placeholder : ''}
+      aria-required={required || undefined}
       onkeydown={onDraftKeydown}
       onblur={commitDraft}
     />
@@ -152,16 +151,6 @@
     font-size: var(--text-label);
   }
 
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    background: color-mix(in srgb, var(--ink) 8%, transparent);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 0.1rem 0.25rem 0.1rem 0.55rem;
-  }
-
   .chip-label {
     background: none;
     border: none;
@@ -170,21 +159,6 @@
     font-size: var(--text-label);
     padding: 0;
     cursor: text;
-  }
-
-  .chip-remove {
-    background: none;
-    border: none;
-    color: var(--dim);
-    font-size: var(--text-micro);
-    line-height: 1;
-    padding: 0.15rem;
-    border-radius: 999px;
-    cursor: pointer;
-  }
-
-  .chip-remove:hover {
-    color: var(--error);
   }
 
   .chip-edit {

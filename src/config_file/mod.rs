@@ -36,32 +36,35 @@ mod sample;
 mod test;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::core::column::DataType;
 use crate::core::error::ExceptionKind;
 use crate::core::id::{DestId, FunctionId};
 use crate::plan::config::{Answer, CompileError, PipelineConfig};
-use crate::plan::topology::{CompiledTopology, DestinationKind, Records, TopologyConfig};
+use crate::plan::topology::{CompiledTopology, DestinationKind, Records, RouteConfig, TopologyConfig};
 
 pub use bundle::{
-    BundleError, DirFileSet, FileSet, GROK_PATTERNS_FILE, GROUPS_DIR, LOOKUP_TABLES_FILE, LOOKUPS_DIR, RawBundle,
-    SECTION_FILES, SHARED_DIR, bundle_files, group_subtree, is_safe_group_id, is_safe_group_name, is_safe_secret_name,
-    load_bundle_dir, load_bundle_from, load_group_dir, load_group_from, manifest_bytes, read_raw_from,
-    slugged_pipelines, slugify, unsafe_group_id, unsafe_group_name, unsafe_secret_name,
+    BundleError, DirFileSet, FileSet, GROK_PATTERNS_FILE, GROUPS_DIR, LOOKUP_TABLES_FILE, LOOKUPS_DIR, PIPELINES_DIR,
+    RawBundle, SCHEMAS_DIR, SECTION_FILES, SHARED_DIR, bundle_files, group_subtree, is_safe_group_id,
+    is_safe_group_name, is_safe_secret_name, load_bundle_dir, load_bundle_from, load_group_dir, load_group_from,
+    manifest_bytes, read_raw_from, slugged_pipelines, slugged_schemas, slugify, unsafe_group_id, unsafe_group_name,
+    unsafe_secret_name,
 };
 pub use dto::{
     AnswerDto, AssignmentDto, BufferBytes, CompoundTypeDto, CustomPatternDto, DataTypeDto, DeliverRuleDto,
-    DestinationDto, DestinationKindDto, FetchBytes, FieldDto, FileConfig, GrokPatternDto, IdentityDto, LeaderSecretDto,
+    DestinationDto, DestinationKindDto, FetchBytes, FieldDto, FileConfig, GrokPatternDto, LeaderSecretDto,
     LookupOutputDto, LookupSourceDto, LookupTableDto, MatchKindDto, MultiplicityDto, OnExceptionDto, PUBSUB_ENDPOINT,
-    ParserKindDto, PipelineDto, RenamePairDto, RouteDto, SecretRefDto, SourceDto, SourceKindDto, SqlKind, SqlSourceDto,
-    StartPositionDto, StepDto,
+    ParserKindDto, PipelineDto, RenamePairDto, RouteDto, SchemaDto, SchemaFieldDto, SecretRefDto, SourceDto,
+    SourceKindDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto,
 };
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
 pub use links::{Connections, Kind, Links, Object};
 pub use load::{
-    BundleAt, DeclaredAt, ItemRef, LoadError, ValidationError, check_shared_group_starts, fill_default_group_ids,
-    line_breaker_refusal, load_str, load_str_at, on_loopback, plain_off_this_host, refuse_outside_lookups,
-    sql_connection, to_byte, validation_errors, validation_errors_at, web_url,
+    BundleAt, DeclaredAt, ItemRef, LoadError, RESERVED_KAFKA_PROPS, TLS_KAFKA_PROPS, ValidationError,
+    check_shared_group_starts, fill_default_group_ids, line_breaker_refusal, load_str, load_str_at, on_loopback,
+    plain_off_this_host, refuse_outside_lookups, sql_connection, to_byte, validation_errors, validation_errors_at,
+    web_url,
 };
 pub use merge::{ObjectConflict, SectionMerge, Side, is_section_file, merge_section, text_merge_keeps_each_side};
 pub use sample::{
@@ -84,11 +87,22 @@ pub fn validate(file: FileConfig) -> Result<LoadedSystem, LoadError> {
 /// `validate` for a bundle read from a directory: `declared_at` says where each lookup table was declared, which is
 /// what a relative lookup path resolves against.
 pub fn validate_at(file: FileConfig, declared_at: &load::DeclaredAt) -> Result<LoadedSystem, LoadError> {
-    let system = load::from_file_config_at(file, declared_at)?;
-    system
+    let mut system = load::from_file_config_at(file, declared_at)?;
+    let compiled = system
         .compile_topology()
         .map_err(|errs| LoadError::Validation(errs.into_iter().map(|e| system.to_validation_error(e)).collect()))?;
+    system.compiled = Some(compiled);
     Ok(system)
+}
+
+/// A pipeline's rows breaking a schema it produces, or a destination it delivers to accepting none it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaFinding {
+    /// The pipeline's id.
+    pub pipeline: String,
+    /// The step that wrote the field, by its id. `None` for a field no step writes, and for a destination's.
+    pub step: Option<String>,
+    pub message: String,
 }
 
 /// The compiler's inputs, with every string id resolved to an integer id. Not yet compiled: `load_str` stops here so
@@ -100,6 +114,20 @@ pub struct LoadedSystem {
     /// `PipelineConfig::id` (a compiler-local index) back to the DTO's string id, so a `CompileError::pipeline`
     /// can be reported the way the file that declared it names it.
     pub pipeline_ids: Vec<String>,
+    /// The schemas each pipeline produces, by `PipelineConfig::id`.
+    pub produces: Vec<Vec<Arc<crate::schema::Schema>>>,
+    /// The schemas each destination accepts, for the destinations that name any.
+    pub accepts: HashMap<DestId, Vec<Arc<crate::schema::Schema>>>,
+    /// What `validate` compiled; `None` for a system loaded without validating it.
+    pub compiled: Option<CompiledTopology>,
+}
+
+/// A route as `LoadedSystem::checked_routes` walks it.
+struct CheckedRoute<'a> {
+    route: &'a crate::plan::topology::CompiledRoute,
+    pipeline: String,
+    produces: &'a [Arc<crate::schema::Schema>],
+    misfits: Option<(&'a crate::plan::compile::Plan, Vec<crate::schema::Finding>)>,
 }
 
 impl LoadedSystem {
@@ -134,15 +162,36 @@ impl LoadedSystem {
             .iter()
             .map(|d| (d.id, d.kind.payload()))
             .collect();
+        compiled.id_fields = self
+            .topology
+            .destinations
+            .iter()
+            .filter_map(|d| d.kind.id_field().map(|f| (d.id, f.to_string())))
+            .collect();
         errors.extend(refused);
         if errors.is_empty() { Ok(compiled) } else { Err(errors) }
     }
 
     /// A `CompileError`'s `pipeline` and `function` are the compiler's indices; this is what a caller reports, keyed
     /// by the ids the file itself uses.
-    fn to_validation_error(&self, e: CompileError) -> load::ValidationError {
+    pub fn to_validation_error(&self, e: CompileError) -> load::ValidationError {
         // A route's error is about its condition, or about one of its rules' `when`.
         let route = e.route.and_then(|i| self.topology.routes.get(i));
+        let name = || e.route.map_or_else(String::new, |at| self.route_name(at));
+        // The message names its route, as every item's does: the error bar shows it alone. The screen shows no
+        // route's id: a route is the line from its source to its pipeline, and a rule the condition on the line
+        // on to its destinations, unnumbered. So the message names them by those.
+        let message = match (route, e.rule.and_then(|k| route?.deliver.get(k as usize))) {
+            (Some(_), Some(rule)) => {
+                let to: Vec<&str> = rule.to.iter().map(|&d| self.destination_name(d)).collect();
+                match to.as_slice() {
+                    [] => format!("the condition for no destination of route {}: {}", name(), e.message),
+                    to => format!("the condition for {} of route {}: {}", to.join(", "), name(), e.message),
+                }
+            }
+            (Some(_), None) => format!("the condition of route {}: {}", name(), e.message),
+            (None, _) => e.message,
+        };
         load::ValidationError {
             pipeline: e.pipeline.and_then(|id| self.pipeline_ids.get(id).cloned()),
             step: self.step_id_for(e.pipeline, e.function),
@@ -154,8 +203,57 @@ impl LoadedSystem {
             }),
             field: route.map(|_| if e.rule.is_some() { "deliver.when" } else { "condition" }),
             rule: route.and(e.rule),
-            ..load::ValidationError::from(e.message)
+            ..load::ValidationError::from(message)
         }
+    }
+
+    /// `e` as one line for a log or a refusal that carries no fields: a step's error after its pipeline and step.
+    pub fn describe(&self, e: CompileError) -> String {
+        let e = self.to_validation_error(e);
+        match (e.pipeline, e.step) {
+            (Some(p), Some(s)) => format!("pipeline {p}, step {s}: {}", e.message),
+            (Some(p), None) => format!("pipeline {p}: {}", e.message),
+            _ => e.message,
+        }
+    }
+
+    /// Every route's [`Self::route_name`], in the order they run.
+    pub fn route_names(&self) -> Vec<String> {
+        (0..self.topology.routes.len()).map(|at| self.route_name(at)).collect()
+    }
+
+    /// Route `at` as every screen and message names it: its source, then its pipeline, and `(n)` when another route
+    /// runs from that source to that pipeline too, `n` counting those routes in the order they run. A route's id is
+    /// minted, so it is never the name. The GUI names routes the same way (`routeName` in `routeFlow.ts`).
+    pub fn route_name(&self, at: usize) -> String {
+        let routes = &self.topology.routes;
+        let r = &routes[at];
+        let source = (self.topology.sources.iter())
+            .find(|s| s.id == r.source)
+            .map_or("", |s| &s.name);
+        let pipeline = match self.pipelines.iter().find(|p| p.id == r.pipeline) {
+            Some(p) if !p.name.is_empty() => &p.name,
+            _ => self.pipeline_ids.get(r.pipeline).map_or("", String::as_str),
+        };
+        let twin = |o: &&RouteConfig| o.source == r.source && o.pipeline == r.pipeline;
+        match routes.iter().filter(twin).count() {
+            1 => format!("{source} \u{2192} {pipeline}"),
+            _ => format!(
+                "{source} \u{2192} {pipeline} ({})",
+                routes[..at].iter().filter(twin).count() + 1
+            ),
+        }
+    }
+
+    /// The author's id for `id`, a destination the loaded system has.
+    fn destination_name(&self, id: DestId) -> &str {
+        &self
+            .topology
+            .destinations
+            .iter()
+            .find(|d| d.id == id)
+            .expect("a loaded system names destinations it has")
+            .name
     }
 
     /// `answer` as the file says it, with each destination by its author's id.
@@ -168,18 +266,21 @@ impl LoadedSystem {
             Answer::Deliver(targets) => AnswerDto::Deliver {
                 to: targets
                     .iter()
-                    .map(|&to| {
-                        self.topology
-                            .destinations
-                            .iter()
-                            .find(|d| d.id == to)
-                            .expect("a loaded system's answer names destinations it has")
-                            .name
-                            .clone()
-                    })
+                    .map(|&to| self.destination_name(to).to_string())
                     .collect(),
             },
         }
+    }
+
+    /// The pipeline the file names `id`.
+    pub fn pipeline(&self, id: &str) -> Option<&PipelineConfig> {
+        let index = self.pipeline_ids.iter().position(|p| p == id)?;
+        self.pipelines.iter().find(|p| p.id == index)
+    }
+
+    /// The schemas the pipeline `PipelineConfig::id` names produces.
+    pub fn produced_by(&self, pipeline: usize) -> &[Arc<crate::schema::Schema>] {
+        self.produces.get(pipeline).map_or(&[], Vec::as_slice)
     }
 
     /// The step a `CompileError`'s `pipeline`/`function` indices name, by its own string id. `function` is a
@@ -195,6 +296,106 @@ impl LoadedSystem {
             .step_ids
             .get(function_id as usize)
             .cloned()
+    }
+
+    /// Where a pipeline's rows break the schemas it produces, and where it delivers to a destination that accepts
+    /// none of them, over every route `compiled` runs it on. A finding never refuses the system.
+    pub fn schema_findings(&self, compiled: &CompiledTopology) -> Vec<SchemaFinding> {
+        self.schema_findings_beyond(compiled, &[])
+    }
+
+    /// Each field of a pipeline's rows that breaks a schema it produces, by the pipeline's id.
+    pub fn schema_misfits(&self, compiled: &CompiledTopology) -> Vec<(String, crate::schema::Finding)> {
+        let mut out: Vec<(String, crate::schema::Finding)> = Vec::new();
+        for checked in self.checked_routes(compiled) {
+            for f in checked.misfits.into_iter().flat_map(|(_, misfits)| misfits) {
+                if !out.iter().any(|(p, o)| *p == checked.pipeline && *o == f) {
+                    out.push((checked.pipeline.clone(), f));
+                }
+            }
+        }
+        out
+    }
+
+    /// Each route `compiled` runs, with its pipeline's id and, where the pipeline produces a schema, the plan its
+    /// rows come from and where they break what it produces. The one walk `schema_misfits` and
+    /// `schema_findings_beyond` share.
+    fn checked_routes<'a>(&'a self, compiled: &'a CompiledTopology) -> impl Iterator<Item = CheckedRoute<'a>> {
+        compiled.routes.iter().map(move |route| {
+            let produces = self.produced_by(route.pipeline);
+            let misfits = (compiled.plan_for(route.source, route.pipeline))
+                .filter(|_| !produces.is_empty())
+                .map(|plan| {
+                    let record = crate::plan::dictionary::record_type(plan, &route.on_exception.tag_field);
+                    (plan, crate::schema::check(produces, &record))
+                });
+            CheckedRoute {
+                route,
+                pipeline: self.pipeline_ids.get(route.pipeline).cloned().unwrap_or_default(),
+                produces,
+                misfits,
+            }
+        })
+    }
+
+    /// `schema_findings`, leaving out the misfits `known` holds (`schema_misfits`), so a finding that names several
+    /// fields names only the others.
+    pub fn schema_findings_beyond(
+        &self,
+        compiled: &CompiledTopology,
+        known: &[(String, crate::schema::Finding)],
+    ) -> Vec<SchemaFinding> {
+        let mut out: Vec<SchemaFinding> = Vec::new();
+        let mut push = |f: SchemaFinding| {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        };
+        for CheckedRoute {
+            route,
+            pipeline,
+            produces,
+            misfits,
+        } in self.checked_routes(compiled)
+        {
+            if let Some((plan, mut findings)) = misfits {
+                // A field the source gave is the first step's to fix, which the record enters through.
+                let first = (self.pipelines.iter().find(|p| p.id == route.pipeline))
+                    .and_then(|p| p.body.first())
+                    .map(|step| match step {
+                        crate::plan::config::Step::Function(f) => f.id,
+                        crate::plan::config::Step::If { id, .. } => *id,
+                    });
+                findings.retain(|f| !known.iter().any(|(p, k)| *p == pipeline && k == f));
+                for (keys, message) in crate::schema::told(produces, &findings) {
+                    let at = keys.and_then(|keys| crate::plan::dictionary::writer(plan, &keys).or(first));
+                    push(SchemaFinding {
+                        pipeline: pipeline.clone(),
+                        step: self.step_id_for(Some(route.pipeline), at),
+                        message,
+                    });
+                }
+            }
+            for dest in route.deliver.iter().flat_map(|rule| &rule.to) {
+                let Some(accepts) = self.accepts.get(dest) else {
+                    continue;
+                };
+                if accepts.iter().any(|a| produces.iter().any(|p| p.id == a.id)) {
+                    continue;
+                }
+                let name = (self.topology.destinations.iter().find(|d| d.id == *dest)).map_or("", |d| d.name.as_str());
+                let titles: Vec<&str> = accepts.iter().map(|a| a.title.as_str()).collect();
+                push(SchemaFinding {
+                    pipeline: pipeline.clone(),
+                    step: None,
+                    message: format!(
+                        "destination {name:?} accepts {}, but pipeline {pipeline:?} produces no schema it accepts",
+                        titles.join(", ")
+                    ),
+                });
+            }
+        }
+        out
     }
 
     /// What each destination that writes columns writes, route by route, and an error for each record it cannot hold.
@@ -437,6 +638,68 @@ mod tests {
     }
 
     #[test]
+    fn a_pipelines_schema_findings_are_at_its_steps_and_its_destinations() {
+        let json = r#"{
+          "version": 1,
+          "sources": [{ "id": "k", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g" }],
+          "schemas": [
+            { "id": "stamped", "title": "Stamped", "fields": [{ "field": "@timestamp", "type": "datetime" }] },
+            { "id": "login", "title": "Login" }
+          ],
+          "destinations": [{ "id": "out", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t",
+                             "accepts": ["login"] }],
+          "pipelines": [{ "id": "p", "name": "p", "produces": ["stamped"],
+                          "steps": [{ "id": "s", "type": "code", "body": "$[\"@timestamp\"] = \"now\";" }] }],
+          "routes": [{ "id": "r", "source": "k", "pipeline": "p", "deliver": [{ "to": ["out"] }] }]
+        }"#;
+        let system = load_str(json).unwrap();
+        let compiled = system.compile_topology().unwrap();
+        let found: Vec<_> = (system.schema_findings(&compiled).into_iter())
+            .map(|f| (f.pipeline, f.step, f.message))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (
+                    "p".to_string(),
+                    Some("s".to_string()),
+                    "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
+                ),
+                (
+                    "p".to_string(),
+                    None,
+                    "destination \"out\" accepts Login, but pipeline \"p\" produces no schema it accepts".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_route_is_named_by_its_source_and_pipeline_and_numbered_among_its_twins() {
+        let json = r#"{
+          "version": 1,
+          "sources": [{ "id": "k", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g" },
+                      { "id": "j", "type": "kafka", "brokers": "b:9092", "topics": ["u"], "groupId": "g" }],
+          "pipelines": [{ "id": "p", "name": "p", "steps": [] }, { "id": "q-1f", "name": "Enrich", "steps": [] }],
+          "routes": [{ "id": "a", "source": "k", "pipeline": "p", "condition": "true" },
+                     { "id": "b", "source": "k", "pipeline": "q-1f" },
+                     { "id": "c", "source": "j", "pipeline": "p" },
+                     { "id": "d", "source": "k", "pipeline": "p" }]
+        }"#;
+        let system = load_str(json).unwrap();
+        let names = system.route_names();
+        assert_eq!(
+            names,
+            [
+                "k \u{2192} p (1)",
+                "k \u{2192} Enrich",
+                "j \u{2192} p",
+                "k \u{2192} p (2)"
+            ]
+        );
+    }
+
+    #[test]
     fn a_route_compile_error_names_its_route_and_its_condition_or_rule() {
         let route = Some(ItemRef {
             section: "routes",
@@ -444,16 +707,18 @@ mod tests {
         });
         let errors = validation_of(&route_json("_raw", "true"));
         assert!(
-            errors
-                .iter()
-                .any(|e| e.item == route && e.field == Some("condition") && e.rule.is_none()),
+            errors.iter().any(|e| e.item == route
+                && e.field == Some("condition")
+                && e.rule.is_none()
+                && e.message.starts_with("the condition of route k \u{2192} p: ")),
             "{errors:?}"
         );
         let errors = validation_of(&route_json("true", "_raw"));
         assert!(
-            errors
-                .iter()
-                .any(|e| e.item == route && e.field == Some("deliver.when") && e.rule == Some(1)),
+            errors.iter().any(|e| e.item == route
+                && e.field == Some("deliver.when")
+                && e.rule == Some(1)
+                && e.message.starts_with("the condition for out of route k \u{2192} p: ")),
             "{errors:?}"
         );
     }

@@ -67,7 +67,7 @@ fn a_gssapi_source_authenticates_through_the_paths_deploy_uses() {
         brokers,
         topics: vec!["smeltr-kerberos-tests".to_string()],
         group_id: "smeltr-kerberos-tests".to_string(),
-        identity: None,
+        tls: None,
         start: StartPosition::Earliest,
         stop: None,
         deployed_at: 0,

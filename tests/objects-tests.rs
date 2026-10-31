@@ -16,7 +16,7 @@ use object_store::{Attribute, Attributes, ObjectStore, ObjectStoreExt};
 use smeltr::core::column::DataType;
 use smeltr::io::parquet::{Chunk, Columns};
 use smeltr::io::{BatchId, Destination, Dispatched, OwnedRecord};
-use smeltr::plan::plan::Plan;
+use smeltr::plan::compile::Plan;
 use smeltr::plan::topology::{
     Cloud, Compression, Newlines, ObjectFormat, ObjectsDestinationConfig, Records, S3Access, S3Store,
 };
@@ -33,7 +33,7 @@ fn config(format: ObjectFormat, compression: Compression) -> ObjectsDestinationC
         format,
         compression,
         storage_class: None,
-        identity: None,
+        tls: None,
         in_flight: 1,
         max_object_bytes: 1024 * 1024,
         buffer_bytes: 1024 * 1024,

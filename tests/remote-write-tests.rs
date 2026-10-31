@@ -147,7 +147,7 @@ fn config(url: &str) -> PrometheusDestinationConfig {
         version: RemoteWriteVersion::V1,
         headers: Vec::new(),
         credentials: Vec::new(),
-        identity: None,
+        tls: None,
         max_request_bytes: 1024 * 1024,
         buffer_bytes: 1024 * 1024,
         stall_after: Duration::from_secs(5),

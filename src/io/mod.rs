@@ -21,7 +21,6 @@ pub mod client_credentials;
 pub mod csv;
 pub mod delta;
 pub mod discovery;
-pub mod ecs_fields;
 pub mod elastic;
 pub mod elastic_mapping;
 pub mod elastic_nodes;
@@ -109,6 +108,9 @@ pub fn build_source(
 /// `metrics` reaches a transport that reports on itself: librdkafka's statistics arrive on its own thread, and an HTTP
 /// destination's senders each run on one, not on the egress thread that owns this client. What an Elasticsearch or
 /// Prometheus store says it did not write is in its answer, which only the protocol reads.
+/// Leave to spawn one more sender: see [`Destination::lend_senders`].
+pub type Lend = Box<dyn FnMut() -> bool + Send>;
+
 pub fn build_destination(
     kind: &crate::plan::topology::DestinationKind,
     id: crate::core::id::DestId,
@@ -121,18 +123,25 @@ pub fn build_destination(
         DestinationKind::Kafka(c) => Ok(Box::new(kafka::KafkaDestination::new(c, id, metrics, secrets)?)),
         DestinationKind::Elasticsearch(c) => {
             // A credential this worker cannot obtain is an error, never a silent unauthenticated connection.
-            let auth = match &c.auth {
-                None => None,
-                Some(reference) => Some(http::credential(
+            let auth = match (&c.auth, &c.basic) {
+                (Some(reference), _) => Some(elastic::authorization(http::credential(
                     "elasticsearch destination",
                     "auth",
                     reference,
                     secrets,
+                )?)),
+                (None, Some((user, password))) => Some(http::basic(
+                    "elasticsearch destination",
+                    "password",
+                    user,
+                    password,
+                    secrets,
                 )?),
+                (None, None) => None,
             };
             // What this destination presents and trusts, resolved once: every transport below shares it, so an
-            // identity's certificate is parsed once rather than once per sender.
-            let config = http::agent_config(c.identity.as_deref(), secrets)?;
+            // certificate is parsed once rather than once per sender.
+            let config = http::agent_config(c.tls.as_ref(), secrets)?;
             let protocol = elastic::Elastic::new(c.default_index.clone())
                 .with_doc_id_policy(c.doc_id)
                 .with_unwritten(http::Unwritten::new(metrics.clone(), id));
@@ -162,7 +171,7 @@ pub fn build_destination(
         }
         DestinationKind::SplunkHec(c) => {
             let token = http::credential("splunk destination", "token", &c.token, secrets)?;
-            let config = http::agent_config(c.identity.as_deref(), secrets)?;
+            let config = http::agent_config(c.tls.as_ref(), secrets)?;
             // One transport per sender, as Elasticsearch's, and each with its own channel: Splunk tracks
             // acknowledgements per channel.
             let make = || splunk::transport(c, &token, &config);
@@ -176,7 +185,7 @@ pub fn build_destination(
         }
         DestinationKind::Http(c) => {
             let credentials = http::credential_headers("http destination", &c.credentials, secrets)?;
-            let config = http::agent_config(c.identity.as_deref(), secrets)?;
+            let config = http::agent_config(c.tls.as_ref(), secrets)?;
             let d = http_post::destination(c, &credentials, None, "http", &config, metrics, id);
             Ok(Box::new(d))
         }
@@ -186,13 +195,13 @@ pub fn build_destination(
             let sign_in: http::SharedSignIn = Arc::new(std::sync::Mutex::new(Box::new(entra::Entra::new(
                 &c.sign_in, resource, secrets, what,
             )?)));
-            let config = http::agent_config(c.http.identity.as_deref(), secrets)?;
+            let config = http::agent_config(c.http.tls.as_ref(), secrets)?;
             let d = http_post::destination(&c.http, &[], Some(sign_in), "logAnalytics", &config, metrics, id);
             Ok(Box::new(d))
         }
         DestinationKind::Prometheus(c) => {
             let credentials = http::credential_headers("prometheus destination", &c.credentials, secrets)?;
-            let config = http::agent_config(c.identity.as_deref(), secrets)?;
+            let config = http::agent_config(c.tls.as_ref(), secrets)?;
             let transport = remote_write::transport(c, &credentials, &config);
             // No senders: every request goes from this thread, so one lands before the next is sent.
             Ok(Box::new(
@@ -1200,10 +1209,23 @@ pub type BatchId = u64;
 
 /// One batch a destination has finished with, and what it refused. The rejections travel with the completion because
 /// their indices are into that batch's documents.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BatchCompletion {
     pub batch: BatchId,
     pub rejections: Vec<Rejection>,
+    /// The destination asked to be sent less while delivering it: the pacing model cuts what it may hold.
+    pub throttled: bool,
+    /// Rows that did not land, for the caller to send again; the rest of the batch landed or was refused. `None` is
+    /// a batch wholly answered for.
+    pub undelivered: Option<Undelivered>,
+}
+
+/// What of a batch did not land, and why.
+#[derive(Debug)]
+pub struct Undelivered {
+    pub error: IoError,
+    /// Positions in the batch's rows, as a [`Rejection`]'s `doc` is.
+    pub rows: Vec<usize>,
 }
 
 /// What [`Destination::deliver`] did with a batch.
@@ -1234,16 +1256,18 @@ pub enum Dispatched {
 /// delivery failure: it comes back against its position in the rows handed over, from `deliver` if it is known then
 /// and with the batch's completion if not.
 ///
-/// A delivery failure loses no document: whatever was not acknowledged goes again. The re-send can carry a document
-/// the destination already holds, so a document may arrive more than once -- at-least-once.
+/// A delivery failure loses no document: whatever was not acknowledged goes again, and where a completion names the
+/// rows that did not land, only they do. The re-send can carry a document the destination already holds, so a
+/// document may arrive more than once -- at-least-once.
 pub trait Destination: Send {
     /// Hand over `batch`'s rows here and start delivering them without waiting. A destination ignores whichever of
     /// `OwnedRecord`'s fields it has no notion of. `rows` is owned by a caller that has no further use for them, and
     /// borrowed by one that keeps them to send again: a destination that queues them takes them without a copy.
     ///
     /// Answers the refusals known now, each carrying its row. Under `Complete` that is every one; under `InFlight`
-    /// the rest come with the completion. `Err` is a delivery failure: nothing of this batch may be committed, and the
-    /// caller hands it over again.
+    /// the rest come with the completion. `Err` is a delivery failure of this batch alone: nothing of it may be
+    /// committed, and the caller hands it over again. What is already in flight is still answered for by
+    /// `poll_completions`, by a completion or by its `Err`.
     fn deliver(
         &mut self,
         batch: BatchId,
@@ -1254,8 +1278,8 @@ pub trait Destination: Send {
     /// committed.
     fn flush(&mut self) -> Result<(), IoError>;
 
-    /// Batches acknowledged since the last call, in any order. `Err` means a delivery failed: nothing in flight may be
-    /// committed.
+    /// Batches answered for since the last call, in any order. A completion naming rows `undelivered` landed the rest:
+    /// only those rows go again. `Err` means a delivery failed: nothing in flight may be committed.
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
         Ok(Vec::new())
     }
@@ -1266,8 +1290,13 @@ pub trait Destination: Send {
         Vec::new()
     }
 
-    /// How many requests this destination currently allows outstanding, for a transport that decides that for itself.
-    /// `None` from one whose concurrency is not its own to report -- librdkafka's is inside librdkafka.
+    /// Where a destination that spawns a sender when every one it has is busy gets leave to spawn one past those it
+    /// started with: `lend` answers whether the memory it holds is lent. Given once, before the first delivery. One
+    /// that spawns none ignores it.
+    fn lend_senders(&mut self, _lend: Lend) {}
+
+    /// How many requests this destination has open, for a transport that opens them itself. `None` from one whose
+    /// requests are not its own to report -- librdkafka's are inside librdkafka.
     fn concurrency(&mut self) -> Option<usize> {
         None
     }
@@ -1313,7 +1342,7 @@ impl Rejection {
 pub mod fake {
     use super::{
         BatchCompletion, BatchId, CommitMap, Destination, Dispatched, IoError, OwnedRecord, Payload, Rejection, Source,
-        SourceRecord, TopicPartition,
+        SourceRecord, TopicPartition, Undelivered,
     };
     use std::borrow::Cow;
     use std::collections::VecDeque;
@@ -1514,7 +1543,27 @@ pub mod fake {
                     }
                 }
             }
-            st.ready.push(BatchCompletion { batch, rejections });
+            st.ready.push(BatchCompletion {
+                batch,
+                rejections,
+                throttled: false,
+                undelivered: None,
+            });
+        }
+
+        /// Answer `batch` with `rows` of it undelivered, for `why`, and `rejections` refused: the rest landed.
+        pub fn fail_rows(&self, batch: BatchId, rows: Vec<usize>, rejections: Vec<Rejection>, why: &str) {
+            let mut st = self.0.lock().unwrap();
+            st.dispatched.retain(|b| *b != batch);
+            st.ready.push(BatchCompletion {
+                batch,
+                rejections,
+                throttled: false,
+                undelivered: Some(Undelivered {
+                    error: IoError::transient(why),
+                    rows,
+                }),
+            });
         }
 
         /// Every batch `deliver` took, in order, with the rows it carried whole.
@@ -1561,6 +1610,8 @@ pub mod fake {
             st.ready.extend(pending.into_iter().map(|batch| BatchCompletion {
                 batch,
                 rejections: Vec::new(),
+                throttled: false,
+                undelivered: None,
             }));
             Ok(())
         }

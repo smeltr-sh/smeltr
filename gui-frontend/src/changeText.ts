@@ -11,7 +11,17 @@
 
 import type { FileConfigDto } from './api';
 import { diffObjects } from './diff';
-import { SECTIONS, byId, isRecord, type Noun } from './objectChanges';
+import {
+  SECTIONS,
+  byId,
+  changedRouteName,
+  isRecord,
+  pipelineNameAt,
+  sidePipelineNames,
+  type Noun,
+  type ScopePair,
+  type SideNames,
+} from './objectChanges';
 import { count } from './time';
 
 export interface ChangeText {
@@ -28,9 +38,10 @@ export interface ScopeChange {
   scope: string;
   before: FileConfigDto;
   after: FileConfigDto;
+  shared?: ScopePair['shared'];
 }
 
-/** `name` is the object as a reader calls it: its id, or a pipeline's name. */
+/** `name` is the object as a reader calls it: its id, a pipeline's name, or a route's `routeName`. */
 type Edit =
   | { op: 'add'; noun: Noun; name: string; scope: string }
   | { op: 'remove'; noun: Noun; name: string; scope: string }
@@ -47,7 +58,7 @@ function elide(text: string): string {
   return `${text.slice(0, keep)}…${text.slice(text.length - keep)}`;
 }
 
-/** A line break in a value -- a PEM certificate, an identity's authorities -- read as one line's worth: the
+/** A line break in a value -- a PEM certificate, a connector's authorities -- read as one line's worth: the
  * subject this feeds is one line by `parse_marker`'s own rule, and everything after the first would silently
  * become the body instead of the field it was describing. */
 function oneLine(text: string): string {
@@ -152,24 +163,7 @@ export function describe(value: unknown): string {
   return 'a value';
 }
 
-/** Each side's pipelines by id, to their names. A value on one side names a
- * pipeline of that side; the other side is the fallback, and the id itself
- * the last one, for an id neither side holds. */
-interface PipelineNames {
-  before: Map<string, string>;
-  after: Map<string, string>;
-}
-
-function pipelineNames(before: FileConfigDto, after: FileConfigDto): PipelineNames {
-  const names = (config: FileConfigDto) => new Map(config.pipelines.map((p) => [p.id, p.name]));
-  return { before: names(before), after: names(after) };
-}
-
-function nameOf(id: string, first: Map<string, string>, second: Map<string, string>): string {
-  return first.get(id) ?? second.get(id) ?? id;
-}
-
-/** Every changed field of one object, as `name before → after`. Keys are
+/** Every changed field of one object, as `name from before to after`. Keys are
  * compared whole (`diff.ts`), so a nested value reads as one field rather
  * than a diff inside a diff. With `names`, a `pipeline` field -- a route's,
  * a call step's -- holds a pipeline id and is said as that pipeline's name. */
@@ -177,18 +171,17 @@ function fieldPhrases(
   before: unknown,
   after: unknown,
   skip: string[],
-  names?: PipelineNames,
+  names?: SideNames,
 ): string[] {
   const say = (key: string, value: unknown, side: 'before' | 'after') => {
     if (!names || key !== 'pipeline' || typeof value !== 'string') return describe(value);
-    const other = side === 'before' ? 'after' : 'before';
-    return describe(nameOf(value, names[side], names[other]));
+    return describe(pipelineNameAt(names, value, side));
   };
   return diffObjects(before, after)
     .filter((entry) => entry.kind !== 'unchanged' && !skip.includes(entry.key))
     .map(
       (entry) =>
-        `${entry.key} ${say(entry.key, entry.before, 'before')} → ${say(entry.key, entry.after, 'after')}`,
+        `${entry.key} from ${say(entry.key, entry.before, 'before')} to ${say(entry.key, entry.after, 'after')}`,
     );
 }
 
@@ -216,7 +209,7 @@ function stepType(step: Record<string, unknown>): string {
   return typeof step.type === 'string' ? step.type : 'step';
 }
 
-function stepPhrases(before: unknown[], after: unknown[], names: PipelineNames): string[] {
+function stepPhrases(before: unknown[], after: unknown[], names: SideNames): string[] {
   const was = stepsById(before);
   const now = stepsById(after);
   const phrases: string[] = [];
@@ -251,8 +244,8 @@ interface Section {
 function sections(before: FileConfigDto, after: FileConfigDto): Section[] {
   return SECTIONS.map((spec) => ({
     noun: spec.noun,
-    before: before[spec.key],
-    after: after[spec.key],
+    before: before[spec.key] ?? [],
+    after: after[spec.key] ?? [],
     skip: spec.skip,
   }));
 }
@@ -260,11 +253,17 @@ function sections(before: FileConfigDto, after: FileConfigDto): Section[] {
 function editsForScope(change: ScopeChange): Edit[] {
   const { scope } = change;
   const edits: Edit[] = [];
-  const names = pipelineNames(change.before, change.after);
+  const names = sidePipelineNames(change);
   // A pipeline is called by the name it had, which is the one a reader
-  // knows it by; a pipeline the change adds has only its new one.
+  // knows it by; a pipeline the change adds has only its new one. A route is
+  // called as the branch has it, as its card on the change page is, falling
+  // back to main's for a route the change removes.
   const nameFor = (noun: Noun, id: string) =>
-    noun === 'pipeline' ? nameOf(id, names.before, names.after) : id;
+    noun === 'pipeline'
+      ? pipelineNameAt(names, id, 'before')
+      : noun === 'route'
+        ? (changedRouteName(change, id) ?? id)
+        : id;
 
   for (const section of sections(change.before, change.after)) {
     const was = byId(section.before);
@@ -312,7 +311,7 @@ function editsForScope(change: ScopeChange): Edit[] {
 // -- rendering -------------------------------------------------------------
 
 function plural(noun: Noun): string {
-  return noun === 'identity' ? 'identities' : `${noun}s`;
+  return `${noun}s`;
 }
 
 /** `a`, `a and b`, `a, b and c`. */
@@ -356,7 +355,7 @@ function subjectFor(edits: Edit[], sayScope: boolean): string {
 /** What to call a change, from the two configurations it sits between.
  *
  * Deterministic: the same pair always yields the same words, in the same
- * order -- sources, destinations, routes, lookup tables, identities, pipelines,
+ * order -- sources, destinations, routes, lookup tables, pipelines,
  * each in its id's order -- so the text can be pinned by a test. */
 export function changeText(changes: ScopeChange[]): ChangeText {
   const edits = changes.flatMap(editsForScope);

@@ -32,6 +32,64 @@ body {
   padding: 2rem 1.5rem 4rem;
 }
 
+/* Text that says less than what is around it: a count, a hint, a state with nothing in it yet. */
+.dim {
+  color: var(--dim);
+}
+
+/* Takes the room a row has left, pushing what follows it to the far end. */
+.grow {
+  flex-grow: 1;
+}
+
+/* A button that reads as part of the text it sits in, underlined dotted: it opens or jumps rather than
+   acts. */
+.link-button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+/* What failed, among ordinary buttons: their shape, in the error's color. A pressed one keeps
+   only the rows that failed. */
+.error-button {
+  border-color: color-mix(in srgb, var(--error) 50%, var(--border));
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  color: var(--error);
+  font-weight: 600;
+}
+
+.error-button[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--error) 22%, transparent);
+}
+
+/* A bar that says something about what sits beside it: `warn` when it works
+   but may not do what was meant, `error` when it fails. The text stays ink,
+   because a state color on its own tint reads poorly; the stripe and any
+   glyph carry the color. A component's scoped rules outweigh these, so one
+   that also draws other bars leaves these properties to them with
+   :not(.callout). */
+.callout {
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--callout);
+  border-radius: var(--radius);
+  background: color-mix(in oklab, var(--callout) 10%, var(--field));
+  color: var(--ink);
+  font-size: var(--text-label);
+}
+
+.callout.warn {
+  --callout: var(--warn);
+}
+
+.callout.error {
+  --callout: var(--error);
+}
+
 /* An instruction that must be read before acting: data lost, a step that
    cannot be undone, a condition that blocks the task. The only prose a
    page shows unasked (STYLE_GUIDE.md, "Text"). */
@@ -65,4 +123,21 @@ body {
   width: 4px;
   border-radius: 2px;
   background: oklch(var(--scope-l) var(--scope-c) var(--scope-h));
+}
+
+/* Text colored by a highlighter (`highlight`, `highlightGrok`), shown rather than edited. */
+.tokens .tok-keyword {
+  color: var(--tok-keyword);
+}
+.tokens .tok-function {
+  color: var(--tok-function);
+}
+.tokens .tok-string {
+  color: var(--tok-string);
+}
+.tokens .tok-literal {
+  color: var(--tok-literal);
+}
+.tokens .tok-key {
+  color: var(--tok-key);
 }

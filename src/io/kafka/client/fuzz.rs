@@ -306,7 +306,10 @@ fn gen_kafka(rng: &mut Rng, cov: &mut Coverage, id: String) -> Gen {
             let (key, value, allowed) = *rng.pick(PROPERTIES);
             cov.reach(if allowed {
                 "property allowed"
-            } else if RESERVED_BY_SMELTR.contains(&key) {
+            } else if crate::config_file::RESERVED_KAFKA_PROPS
+                .iter()
+                .any(|(reserved, _)| *reserved == key)
+            {
                 "property smeltr sets"
             } else {
                 "property refused otherwise"
@@ -335,7 +338,7 @@ fn gen_kafka(rng: &mut Rng, cov: &mut Coverage, id: String) -> Gen {
             brokers: brokers.to_string(),
             topics: topics.clone(),
             group_id: if group.is_empty() { "smeltr".to_string() } else { group },
-            identity: None,
+            tls: None,
             start,
             stop,
             deployed_at: 0,
@@ -353,18 +356,6 @@ fn gen_kafka(rng: &mut Rng, cov: &mut Coverage, id: String) -> Gen {
         json,
     }
 }
-
-/// The properties of `PROPERTIES` smeltr sets itself.
-const RESERVED_BY_SMELTR: &[&str] = &[
-    "group.id",
-    "client.rack",
-    "group.instance.id",
-    "auto.offset.reset",
-    "enable.auto.commit",
-    "bootstrap.servers",
-    "partition.assignment.strategy",
-    "fetch.max.bytes",
-];
 
 fn gen_event_hubs(rng: &mut Rng, cov: &mut Coverage, id: String) -> Gen {
     cov.reach("eventHubs");
@@ -425,7 +416,7 @@ fn gen_event_hubs(rng: &mut Rng, cov: &mut Coverage, id: String) -> Gen {
             brokers: brokers.to_string(),
             topics: hubs.clone(),
             group_id: group.to_string(),
-            identity: None,
+            tls: None,
             start,
             stop,
             deployed_at: 0,
@@ -685,7 +676,7 @@ fn source_config(brokers: &str, group: &str, topics: &[String]) -> KafkaSourceCo
         brokers: brokers.to_string(),
         topics: topics.to_vec(),
         group_id: group.to_string(),
-        identity: None,
+        tls: None,
         start: StartPosition::Earliest,
         stop: None,
         deployed_at: 0,

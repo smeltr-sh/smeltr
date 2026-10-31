@@ -142,9 +142,6 @@
 </ChipPicker>
 
 <style>
-  .dim {
-    color: var(--dim);
-  }
   .menu {
     min-width: 14rem;
     padding-block: 0.25rem;

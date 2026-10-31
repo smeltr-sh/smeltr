@@ -3,7 +3,7 @@
 A system of the [design document](../smeltr-design.md).
 
 Configuration is a directory of files, the **bundle**: sources, destinations,
-identities, routes, lookup tables, grok patterns, one file per pipeline, and the samples and
+routes, lookup tables, grok patterns, one file per pipeline and per schema, and the samples and
 tests an author works from. It is meant to be read by humans and reviewed like code,
 so it lives in git and a deploy points the fleet at a commit on `main`. Every
 object is keyed by a string id, unique in its scope.
@@ -46,11 +46,70 @@ one may not take a built-in's. A shared pattern resolves against shared ones
 and the built-ins alone, so it reads the same in every step, and it is checked
 at save whether or not a step names it yet.
 
+## Schemas
+
+A schema is what a pipeline's rows should hold: a table of fields, each a
+path from the record's root, the type it must hold, whether a row must hold it,
+and what it means. A path spells its keys with dots, and a type is spelled as
+a declaration spells one, so a schema, a parser's field table and a
+declaration read the same. A bundle declares its schemas as such tables. A
+schema is also read from a file a standard or a spreadsheet gives, each format
+by its own reader: JSON Schema (`schema::json_schema`), ECS's `fields.csv` or
+`ecs_flat.yml` (`schema::ecs`), one class of `ocsf-schema-compiler`'s output,
+cut to as many keys deep and to the requirements asked for (`schema::ocsf`),
+and a CSV of fields, one row per field, its columns chosen by their place or
+found by the header's names (`schema::csv`). The leader carries one release of
+ECS and one of OCSF, compiled and cut to what `schema::ocsf` reads, so either
+is read without its file (`schema::standard`); another release is uploaded. A type is read as smeltr spells
+it, or by the name a database, a spreadsheet or a standard gives it, from one
+map every reader shares (`schema::named`); a CSV's type the map does not know
+is read as the type it is told. Each reader gives the same table, checked as a
+bundle's schema is, and a field may carry an example of a value it holds, which ECS,
+OCSF and the CSV fill. A schema is exported as
+JSON Schema, or as the mapping an Elasticsearch index holding its rows should
+have. A field may say how it maps in Elasticsearch, a piece of mapping laid
+over the one its type has; its `type` is checked at save to be one a value of
+the field's type can be indexed as, and its other parameters are
+Elasticsearch's to check. A pipeline
+names the schemas it produces, and a destination may name the schemas it
+accepts. Both are checked at save to name a schema the group can see. A
+schema is also imported: a pipeline of the bundle run over an uploaded
+file's records writes one row per field, `field`, `type`, `required`,
+`description` and `elasticsearch`, and the rows are the schema. A file no
+reader takes comes in that way.
+
+```mermaid
+flowchart LR
+  S[the bundle's schemas] --> P[pipeline produces]
+  S --> D[destination accepts]
+  P --> F{rows fit?}
+  D --> F
+  F -- no --> W[finding: editor, review, deployed commit]
+```
+
+A finding never refuses a save or a deploy: it says where the rows do not fit.
+Review shows the findings a change adds, not those main already had where the
+branch left it, field by field: a finding that names several fields names only
+those the change adds.
+The record's type is held to the table path by path: a field whose type only
+the row knows keeps any, an object keeps any object type, and a required field
+is missing where the object it sits in is there and does not declare it. A
+field several schemas name is a misfit only where every one of them says so,
+and a field one requires is missing only where every schema the pipeline
+produces requires it. A route delivering to a destination whose accepts names
+none of what its pipeline produces is a finding of the same kind.
+
 ## Groups and `shared/`
 
 A repository holds one bundle per group under its subtree and one `shared/`
 bundle several draw on; a group is checked merged with `shared/` before it is
 committed. Samples and tests sit beside the bundle and no worker reads them.
+
+A sample reaches `main` only when a test beside it names it. Deploying a change
+leaves out every sample it adds or changes that no test names, and its review
+sets those apart as left out. They stay on the branch, and go with it. A
+sample removed is removed, and a bundle holding a test that does not read keeps
+every sample, since what that test names cannot be known.
 
 ## Bringing a change current
 
@@ -114,19 +173,21 @@ timeout keeps its partitions and moves none of the group's. The cost is a worker
 that leaves for good, or comes back under a new id: what it read waits out the
 session timeout before the group hands it on.
 
-## A connector names an identity
+## A connector names a certificate
 
-An identity is what a worker shows the source or destination it connects out
-to, and which authorities it verifies that far end against; either half may be
-empty. A client trusts those authorities on top of the public roots, Mozilla's
-and its host's, unless the identity trusts no public root; a receiver admits by
-the authorities alone (`io::trust`). One object, because both are the same
-organization's PKI and are uploaded together. One concept, because a connector must not have to know that
-one kind of client reaches TLS through properties and another through a client
-the code builds. An identity a connector also answers by hand, or one under a
-protocol that negotiates no TLS, is refused at save time: there is one place
-each answer comes from, and configuration nothing reads is a lie about what is
-running.
+A connector's TLS is its own settings: the certificate it presents, which is
+an entry of the leader's list named by name (`security.md`, A certificate
+travels with its key), and the trusted authorities it verifies the far end against,
+PEM in the bundle. A worker presents the entry's newest version. A form's
+save refuses a name the list does not hold. A client
+trusts the authorities on top of the public roots, Mozilla's and its host's,
+unless told to trust the authorities alone; a receiver serves the certificate
+and admits by the authorities alone (`io::trust`). One shape for every
+connector, because a connector must not have to know that one kind of client
+reaches TLS through properties and another through a client the code builds.
+TLS a connector also answers by hand, or under a protocol that negotiates no
+TLS, is refused at save time: there is one place each answer comes from, and
+configuration nothing reads is a lie about what is running.
 
 ## The GUI is sugar over the file, never a second copy
 

@@ -3,17 +3,28 @@
 //! everything it reads as arguments -- the config, the sample and where its lookup tables resolve -- so the leader's
 //! routes, its test runner and the demo's preview service give one answer.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::config_file::{self, Verdict};
 use crate::core::batch::Batch;
+use crate::core::bits;
 use crate::core::buffer::{self, BufferPool};
+use crate::core::column::{Column, DataType, Validity};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind};
-use crate::leader::envelope::{ApiError, Empty, Envelope};
+use crate::core::id::{FunctionId, SlotId};
+use crate::format::record::RecordView;
+use crate::leader::envelope::{ApiError, Envelope, Refusal};
 use crate::plan;
+use crate::plan::compile::Plan;
+use crate::plan::config::CompileError;
 use crate::plan::output::{RowFilter, run_to_json_marked};
+use crate::plan::resolve::Origin;
 use crate::plan::topology::SourceMeta;
+use crate::plan::tree;
+use crate::schema::Schema;
+use axum::http::StatusCode;
 
 #[derive(serde::Deserialize)]
 pub struct PreviewRequest {
@@ -37,6 +48,73 @@ pub struct PreviewRequest {
     /// for are returned. One that does not compile fails the preview at the `filter` stage.
     #[serde(default)]
     pub filter: Option<String>,
+    /// Say, on each row, which steps changed each of its fields and which step dropped it (`touched`). It keeps every
+    /// field's every value for the whole run and compares them, which costs about one more run.
+    #[serde(default)]
+    pub attribution: bool,
+    /// What may follow a `.` in an expression of the config. Asked, the preview answers it instead of running the
+    /// sample, and `Preview::after_dot` holds the answer.
+    #[serde(default)]
+    pub after_dot: Option<AfterDotRequest>,
+    /// A capture filter at a destination, checked against each route delivering there. Asked, the preview answers it
+    /// instead of running the sample, and `Preview::capture_filter` holds the answer.
+    #[serde(default)]
+    pub capture_filter: Option<CaptureFilterRequest>,
+}
+
+/// A capture filter's text, and the destination, by its id, it would run at.
+#[derive(serde::Deserialize)]
+pub struct CaptureFilterRequest {
+    pub text: String,
+    pub destination: String,
+}
+
+/// The routes delivering to a destination a capture filter there passes over, each with why: it does not compile
+/// against that route's output (`runtime`). `reads` is how many it runs on.
+#[derive(Default, serde::Serialize)]
+pub struct CaptureFilterCheck {
+    pub reads: usize,
+    pub skips: Vec<RouteSkip>,
+}
+
+#[derive(serde::Serialize)]
+pub struct RouteSkip {
+    /// The route's name (`LoadedSystem::route_names`).
+    pub route: String,
+    pub error: String,
+}
+
+/// A `.` an author has just typed: the expression's text, the dot's byte offset in it, and where the expression sits,
+/// which decides what its names read.
+#[derive(serde::Deserialize)]
+pub struct AfterDotRequest {
+    pub text: String,
+    pub dot: usize,
+    pub at: DotAt,
+}
+
+/// Where an expression sits: its names read the record as it is there.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DotAt {
+    /// At the start of a step of the request's pipeline, by the step's id.
+    Step(String),
+    /// A source's record as it arrives, by the source's id: a route's condition, or a capture filter at the source.
+    Source(String),
+    /// A `when` of a route's `deliver` rules, by the route's id: its pipeline's output.
+    When(String),
+    /// A capture filter at a destination, by its id: the output of every route that delivers there.
+    Destination(String),
+}
+
+/// What may follow a `.`: the type of what it follows where it sits, as the engine spells it, an object's fields, and
+/// each function a call there may name. `ty` is absent where it does not resolve.
+#[derive(serde::Serialize)]
+pub struct AfterDot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ty: Option<String>,
+    pub fields: Vec<(String, String)>,
+    pub methods: Vec<plan::dot::Method>,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -55,6 +133,22 @@ pub struct Preview {
     /// The record the pipeline writes (`plan::dictionary`). Absent when it did not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictionary: Option<DictionaryOut>,
+    /// What compiles but is likely a mistake (`Plan::warnings`), each placed at its step as an error is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<ApiError>,
+    /// How many of `warnings` are where the rows break the schemas the pipeline produces.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub schema_findings: u32,
+    /// The fields the schemas the pipeline produces require and its rows lack, which the editor shows as columns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<crate::schema::Missing>,
+    /// The answer to `PreviewRequest::after_dot`. Absent where the dot follows no value: it is in a string, a comment
+    /// or a number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_dot: Option<AfterDot>,
+    /// The answer to `PreviewRequest::capture_filter`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_filter: Option<CaptureFilterCheck>,
 }
 
 /// The record by its compiled types alone, and with the sample's output filling what only a row knows. `sampled` is
@@ -76,7 +170,7 @@ impl Dictionary {
     pub fn of(record: &crate::core::column::DataType) -> Self {
         Dictionary {
             fields: plan::dictionary::fields(record),
-            elasticsearch: crate::io::elastic_mapping::mapping(record),
+            elasticsearch: crate::io::elastic_mapping::mapping(record, &Default::default()),
         }
     }
 }
@@ -144,6 +238,19 @@ pub struct LineBreakerRequest {
     pub pattern: String,
 }
 
+/// Pipeline code as it is typed into a step's field.
+#[derive(serde::Deserialize)]
+pub struct FormatRequest {
+    pub code: String,
+    pub kind: crate::expr::pretty::Kind,
+}
+
+/// The code laid out in the style (`expr::pretty`), or null where it does not parse yet.
+#[derive(Default, serde::Serialize)]
+pub struct Formatted {
+    pub code: Option<String>,
+}
+
 /// How a declaration spells a type, which is what the editor's own type list offers.
 fn kinds_of(counts: &crate::core::tally::TagCounts) -> Vec<(String, u32)> {
     let mut kinds: Vec<(String, u32)> = [
@@ -163,18 +270,15 @@ fn kinds_of(counts: &crate::core::tally::TagCounts) -> Vec<(String, u32)> {
 }
 
 impl Preview {
-    /// Which stage stopped the preview, and why. A compile failure still names every pipeline, so the editor's
-    /// list stands.
+    /// Which stage stopped the preview, and why, at 422: what was sent to preview is what is refused. A compile
+    /// failure still names every pipeline, so the editor's list stands.
     pub fn failed(stage: &'static str, errors: Vec<ApiError>, pipeline_names: Vec<String>) -> Envelope<Preview> {
-        Envelope {
-            ok: false,
-            errors,
-            body: Preview {
-                stage: Some(stage),
-                pipeline_names,
-                ..Default::default()
-            },
-        }
+        let body = Preview {
+            stage: Some(stage),
+            pipeline_names,
+            ..Default::default()
+        };
+        Envelope::with(body, StatusCode::UNPROCESSABLE_ENTITY, errors)
     }
 }
 
@@ -184,6 +288,13 @@ pub struct RowOut {
     /// `None` when the row did not survive the pipeline.
     pub json: Option<serde_json::Value>,
     pub exceptions: Vec<ExceptionOut>,
+    /// With `attribution`: each field a step changed or added, by its name as the editor writes it, and those steps by
+    /// id in the order they ran. Absent on a row no step changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<BTreeMap<String, Vec<String>>>,
+    /// With `attribution`: the step after which the row was gone.
+    #[serde(rename = "droppedBy", skip_serializing_if = "Option::is_none")]
+    pub dropped_by: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -191,6 +302,9 @@ pub struct ExceptionOut {
     /// The answer the exception's kind takes: `ignore`, `tag`, `drop`, `deliver` or `block`.
     pub answer: &'static str,
     pub message: String,
+    /// The step that raised it, by id. Absent for one raised reading the record, before any step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
 }
 
 // -- route preview ------------------------------------------------------
@@ -228,6 +342,9 @@ pub struct RoutePreview {
     /// `RouteConfig::id`, by route index -- position-parallel to `route_pipelines`. Resolves an index in `matched`
     /// or `through` to the id the config gave that route, which an edit keeps and a delete-and-insert does not.
     pub route_ids: Vec<String>,
+    /// Each route's name (`LoadedSystem::route_names`), by route index -- position-parallel to
+    /// `route_pipelines`.
+    pub route_names: Vec<String>,
     /// Destination names by id.
     pub destination_names: HashMap<u32, String>,
     /// The answer to `Unmatched`, with each destination by its author's id. Absent only on failure.
@@ -277,15 +394,6 @@ pub struct RoutePreviewDocument {
     pub destination: std::collections::BTreeMap<&'static str, String>,
 }
 
-/// What a record a block held says about why, beside its fields (`worker::capture::EXCEPTION_MESSAGE`).
-const EXCEPTION: &str = "__exception";
-
-/// The columns of a sample that are its records' own: not why a record blocked, which is about the record and no
-/// pipeline reads.
-pub fn replayed(columns: &[crate::heartbeat::CaptureColumn]) -> impl Iterator<Item = &crate::heartbeat::CaptureColumn> {
-    columns.iter().filter(|c| c.name.split('.').next() != Some(EXCEPTION))
-}
-
 /// A sample's records as a source's meta reads them.
 pub struct SampleRead {
     pub records: Vec<crate::io::SourceRecord>,
@@ -300,23 +408,23 @@ pub struct SampleRead {
 /// reads null, and a column whose type changed reads under the new type, its failed marks dropped: a value that
 /// failed one type is judged afresh by another. A sample with no columns is read as it stands.
 ///
-/// Where `meta` is a source's, that source sets the `__source` fields, from each record's `__source`; where it is the
-/// sample's own (`SourceMeta::of_columns`), they are columns of the record like any other.
+/// Only a record's own fields are compared: an internal one (`plan::tree::is_internal`) is the engine's, not its
+/// source's. Where `meta` is a source's, the source sets its own internal fields, so the sample's are not read; where
+/// it is the sample's own (`SourceMeta::of_columns`), they are columns of the record like any other.
 pub fn read_sample(
     meta: &SourceMeta,
     columns: &[crate::heartbeat::CaptureColumn],
     records: &[crate::io::RecordObject],
 ) -> Result<SampleRead, String> {
     let from_source = !meta.source_fields().is_empty();
-    let captured: Vec<_> = replayed(columns)
-        .filter(|c| !(from_source && c.name.starts_with("__source.")))
-        .collect();
-    let declared = meta.record_fields();
     let head = |name: &str| {
         crate::plan::tree::segments(name)
             .next()
             .map(std::borrow::Cow::into_owned)
     };
+    let own = |name: &str| !head(name).is_some_and(|h| crate::plan::tree::is_internal(&h));
+    let captured: Vec<_> = columns.iter().filter(|c| own(&c.name)).collect();
+    let declared = meta.record_fields();
     // An open record keeps a top-level field no declared field claims.
     let kept = |name: &str| meta.is_open() && !declared.iter().any(|(d, _)| head(d) == head(name));
     let mut warnings = Vec::new();
@@ -345,7 +453,10 @@ pub fn read_sample(
                 Some(_) => {}
             }
         }
-        for (name, _) in declared.iter().filter(|(n, _)| *n != crate::plan::tree::UNCLAIMED) {
+        for (name, _) in declared
+            .iter()
+            .filter(|(n, _)| *n != crate::plan::tree::UNCLAIMED && own(n))
+        {
             if !captured.iter().any(|c| c.name == *name) {
                 warnings.push(format!("`{name}` is declared and was not captured, so it reads null"));
             }
@@ -356,9 +467,8 @@ pub fn read_sample(
         .map(|r| {
             let mut object = r.clone();
             if from_source {
-                object.remove("__source");
+                object.retain(|key, _| !crate::plan::tree::is_internal(key));
             }
-            object.remove(EXCEPTION);
             for name in &gone {
                 remove_at(&mut object, name);
             }
@@ -434,31 +544,31 @@ pub fn run_route_preview(
     at_micros: Option<i64>,
 ) -> Envelope<RoutePreview> {
     let Some(source_name) = sample.source.clone() else {
-        return Envelope::failed_one(
+        return Envelope::refused(Refusal::invalid(
             "this sample does not say which source it stands for, and routing selects on a source -- \
              name one on the sample to route it",
-        );
+        ));
     };
 
     let system = match config_file::load_str_at(config, &declared_at) {
         Ok(system) => system,
-        Err(e) => return Envelope::failed_one(e.to_string()),
+        Err(e) => return Envelope::refused(Refusal::invalid(e.to_string())),
     };
     let Some(source) = system.topology.sources.iter().find(|s| s.name == source_name) else {
-        return Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::invalid(format!(
             "this sample stands for source {source_name:?}, which this config does not declare"
-        ));
+        )));
     };
-    let source_id = source.id;
 
     let compiled = match system.compile_topology() {
         Ok(compiled) => compiled,
         Err(errs) => {
-            return Envelope::failed(
-                errs.iter()
-                    .map(|e| ApiError::from_compile(e, system.step_id_for(e.pipeline, e.function)))
+            return Envelope::refused(Refusal::all(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                errs.into_iter()
+                    .map(|e| ApiError::from_validation(&system.to_validation_error(e)))
                     .collect(),
-            );
+            ));
         }
     };
     let route_ids: Vec<String> = compiled.routes.iter().map(|r| r.id.clone()).collect();
@@ -469,18 +579,18 @@ pub fn run_route_preview(
         records,
         texts,
         warnings,
-    } = match read_sample(&compiled.meta_for(source_id), &sample.columns, &sample.records) {
+    } = match read_sample(&compiled.meta_for(source.id), &sample.columns, &sample.records) {
         Ok(read) => read,
-        Err(e) => return Envelope::failed_one(e),
+        Err(e) => return Envelope::refused(Refusal::invalid(e)),
     };
 
     let previewed = crate::runtime::preview_routes_at(
         &compiled,
-        &system.topology.destinations,
-        source_id,
-        &source_name,
-        &records,
-        &texts,
+        &crate::runtime::Sample {
+            source,
+            records: &records,
+            texts: &texts,
+        },
         crate::runtime::preview_memory_budget(),
         at_micros.unwrap_or_else(crate::core::ctx::wall_clock_micros),
     );
@@ -503,6 +613,7 @@ pub fn run_route_preview(
             .map(|r| system.pipeline_ids.get(r.pipeline).cloned().unwrap_or_default())
             .collect(),
         route_ids,
+        route_names: system.route_names(),
         destination_names: system
             .topology
             .destinations
@@ -556,14 +667,152 @@ pub fn captures_of(req: GrokCapturesRequest) -> Envelope<GrokCaptures> {
         Ok(m) => Envelope::ok(GrokCaptures {
             captures: m.capture_names().into_iter().map(str::to_string).collect(),
         }),
-        Err(e) => Envelope::failed_one(e.to_string()),
+        Err(e) => Envelope::refused(Refusal::invalid(e.to_string())),
     }
 }
 
 /// Not `ok` when a save would refuse the pattern, with why, word for word as the save says it.
 pub fn line_breaker_verdict(req: LineBreakerRequest) -> Envelope {
     let refusal = config_file::line_breaker_refusal("this line breaker", &req.pattern);
-    Envelope::with(Empty, refusal.into_iter().map(ApiError::new).collect())
+    match refusal {
+        Some(refusal) => Envelope::refused(Refusal::invalid(refusal)),
+        None => Envelope::done(),
+    }
+}
+
+pub fn format_code(req: FormatRequest) -> Envelope<Formatted> {
+    Envelope::ok(Formatted {
+        code: crate::expr::pretty::format(&req.code, req.kind),
+    })
+}
+
+/// `system` compiled, and the id of its destination `name`: what a capture filter there is compiled over, as a worker
+/// compiles it (`runtime`). The whole topology compiles, so an error anywhere in `system` leaves a destination no answer.
+fn at_destination(
+    system: &config_file::LoadedSystem,
+    name: &str,
+) -> Result<(plan::topology::CompiledTopology, crate::core::id::DestId), String> {
+    let dest = (system.topology.destinations.iter())
+        .find(|d| d.name == *name)
+        .ok_or_else(|| format!("this config has no destination {name:?}"))?
+        .id;
+    let compiled = system.compile_topology().map_err(|errors| {
+        (errors.into_iter())
+            .map(|e| system.describe(e))
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
+    Ok((compiled, dest))
+}
+
+/// Route `r`'s pipeline, compiled over what its source gives, and that metadata.
+fn route_plan(
+    system: &config_file::LoadedSystem,
+    r: &plan::topology::RouteConfig,
+) -> Result<(plan::compile::Plan, SourceMeta), String> {
+    let meta = (system.topology.sources.iter())
+        .find(|s| s.id == r.source)
+        .map(|s| s.kind.meta())
+        .unwrap_or(SourceMeta::NONE);
+    let p = (system.pipelines.iter())
+        .find(|p| p.id == r.pipeline)
+        .ok_or_else(|| format!("this config has no pipeline {:?}", r.pipeline))?;
+    let plan = plan::compile::compile(p, &meta)
+        .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))?;
+    Ok((plan, meta))
+}
+
+/// What a capture filter at a destination makes of each route delivering there, as a worker compiles it.
+fn capture_filter(
+    asked: &CaptureFilterRequest,
+    system: &config_file::LoadedSystem,
+) -> Result<CaptureFilterCheck, String> {
+    let (compiled, dest) = at_destination(system, &asked.destination)?;
+    let mut check = CaptureFilterCheck::default();
+    let names = system.route_names();
+    for (idx, filter) in compiled.capture_filters(dest, &asked.text) {
+        match filter {
+            Ok(_) => check.reads += 1,
+            Err(e) => check.skips.push(RouteSkip {
+                route: names[idx].clone(),
+                error: e.to_string(),
+            }),
+        }
+    }
+    Ok(check)
+}
+
+/// The answer to `asked` against `system`. A step's names read the record its pipeline's sample was captured under, as
+/// a preview of that pipeline does; a source's, the record the source gives; a `when`'s, the route's pipeline's output
+/// for that source. `Err` names an id `system` does not hold.
+fn after_dot(
+    asked: &AfterDotRequest,
+    system: &config_file::LoadedSystem,
+    pipeline: Option<&str>,
+    columns: &[crate::heartbeat::CaptureColumn],
+) -> Result<Option<AfterDot>, String> {
+    use plan::dot::{Before, before_dot, fields_of, methods_for, type_in};
+    use plan::resolve::SymbolTable;
+    let expr = match before_dot(&asked.text, asked.dot) {
+        Before::Nothing => return Ok(None),
+        Before::Unread => None,
+        Before::Value(e) => Some(e),
+    };
+    // What `e` is over a route's pipeline's output. The pipeline compiles on its own: a half-typed expression after it
+    // is not in it.
+    let over_output = |r: &plan::topology::RouteConfig, e: &crate::expr::ast::Expr| {
+        let (plan, meta) = route_plan(system, r).ok()?;
+        type_in(
+            e,
+            &plan::topology::output_symbols(&plan, &r.on_exception.tag_field, &meta),
+        )
+    };
+    let ty = match &asked.at {
+        DotAt::Step(step) => {
+            let p = pipeline
+                .and_then(|id| system.pipeline(id))
+                .ok_or("this config has no such pipeline")?;
+            let step = p
+                .function_id(step)
+                .ok_or_else(|| format!("this pipeline has no step {step:?}"))?;
+            let meta = SourceMeta::of_columns(columns)?;
+            let cut = plan::dot::cut_at(&asked.text, asked.dot);
+            expr.and_then(|e| plan::compile::type_at(p, &meta, step, &e, cut))
+        }
+        DotAt::Source(id) => {
+            let source = (system.topology.sources.iter())
+                .find(|s| s.name == *id)
+                .ok_or_else(|| format!("this config has no source {id:?}"))?;
+            let syms = SymbolTable::new(&plan::compile::ingest_fields(&source.kind.meta()));
+            expr.and_then(|e| type_in(&e, &syms))
+        }
+        DotAt::When(route) => {
+            let r = (system.topology.routes.iter())
+                .find(|r| r.id == *route)
+                .ok_or_else(|| format!("this config has no route {route:?}"))?;
+            expr.and_then(|e| over_output(r, &e))
+        }
+        DotAt::Destination(id) => {
+            // A filter there runs on each route delivering to it that it compiles on (`runtime`), so a name has
+            // what any of them gives it.
+            let (compiled, dest) = at_destination(system, id)?;
+            (compiled.delivering(dest))
+                .filter_map(|(_, r)| type_in(expr.as_ref()?, &compiled.output_of(r)))
+                .reduce(|a, b| plan::dictionary::meet(a, &b))
+        }
+    };
+    Ok(Some(match ty {
+        None => AfterDot {
+            ty: None,
+            fields: Vec::new(),
+            methods: Vec::new(),
+        },
+        Some(ty) => AfterDot {
+            fields: fields_of(&ty).iter().map(|(k, t)| (k.clone(), t.spell())).collect(),
+            methods: methods_for(&ty),
+            ty: Some(ty.spell()),
+        },
+    }))
 }
 
 pub fn run_preview(
@@ -587,12 +836,30 @@ pub fn run_preview(
 
     let pipeline_names: Vec<String> = system.pipelines.iter().map(|p| p.name.clone()).collect();
 
+    if let Some(asked) = &req.capture_filter {
+        return match capture_filter(asked, &system) {
+            Ok(check) => Envelope::ok(Preview {
+                pipeline_names,
+                capture_filter: Some(check),
+                ..Preview::default()
+            }),
+            Err(e) => Preview::failed("config", vec![ApiError::new(e)], pipeline_names),
+        };
+    }
+
+    if let Some(asked) = &req.after_dot {
+        return match after_dot(asked, &system, req.pipeline.as_deref(), columns) {
+            Ok(after_dot) => Envelope::ok(Preview {
+                pipeline_names,
+                after_dot,
+                ..Preview::default()
+            }),
+            Err(e) => Preview::failed("config", vec![ApiError::new(e)], pipeline_names),
+        };
+    }
+
     let pipeline_cfg = match &req.pipeline {
-        Some(id) => system
-            .pipeline_ids
-            .iter()
-            .position(|p| p == id)
-            .and_then(|i| system.pipelines.iter().find(|p| p.id == i)),
+        Some(id) => system.pipeline(id),
         None => system.pipelines.first(),
     };
     let Some(pipeline_cfg) = pipeline_cfg else {
@@ -606,7 +873,7 @@ pub fn run_preview(
     // A pipeline preview is of the pipeline alone, over the columns its sample was captured under, each read from the
     // record as it was stored, `__source` fields included. Not the metadata of a source that routes to this pipeline,
     // which would make `__source.topic` compile here and read null against records that never carried one.
-    let meta = match SourceMeta::of_columns(&replayed(columns).cloned().collect::<Vec<_>>()) {
+    let meta = match SourceMeta::of_columns(columns) {
         Ok(meta) => meta,
         Err(e) => return Preview::failed("sample", vec![ApiError::new(e)], pipeline_names),
     };
@@ -618,7 +885,7 @@ pub fn run_preview(
         Ok(read) => read,
         Err(e) => return Preview::failed("sample", vec![ApiError::new(e)], pipeline_names),
     };
-    let plan = match plan::plan::compile(pipeline_cfg, &meta) {
+    let mut plan = match plan::compile::compile(pipeline_cfg, &meta) {
         Ok(plan) => plan,
         Err(errs) => {
             // `compile` runs one pipeline in isolation and so never sets `CompileError::pipeline`; the pipeline
@@ -630,6 +897,17 @@ pub fn run_preview(
             return Preview::failed("compile", messages, pipeline_names);
         }
     };
+    if req.attribution {
+        keep_bindings(&mut plan);
+    }
+
+    let warn = |e: &CompileError| ApiError::from_compile(e, system.step_id_for(Some(pipeline_cfg.id), e.function));
+    let mut warnings: Vec<ApiError> = plan.warnings.iter().map(warn).collect();
+    // A field the source gave is warned of at the first step, which the record enters through.
+    let first = pipeline_cfg.body.first().map(|step| match step {
+        plan::config::Step::Function(f) => f.id,
+        plan::config::Step::If { id, .. } => *id,
+    });
 
     // A pipeline has no answers of its own: it is previewed under the group's.
     let on_exception = &system.topology.on_exception;
@@ -644,9 +922,13 @@ pub fn run_preview(
         }
     };
     if records.is_empty() {
+        let (found, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first);
+        warnings.extend(found.iter().map(warn));
         return Envelope::ok(Preview {
             stage: None,
             pipeline_names,
+            after_dot: None,
+            capture_filter: None,
             rows: vec![],
             unfiltered: filter.as_ref().map(|_| 0),
             parsers: vec![],
@@ -654,6 +936,9 @@ pub fn run_preview(
                 compiled: Dictionary::of(&record),
                 sampled: None,
             }),
+            warnings,
+            schema_findings: found.len() as u32,
+            missing,
         });
     }
 
@@ -688,23 +973,32 @@ pub fn run_preview(
             req.show_internal,
             filter.as_ref(),
         );
+        // An unroll makes rows of its own, which no longer line up with the sample's.
+        let touched = (req.attribution && batch.rows() == records.len()).then(|| touched(&plan, &batch));
         batch.reclaim(&mut pool);
-        rows
+        (rows, touched)
     });
-    let preview_rows = match previewed {
-        Ok(rows) => rows,
+    let (preview_rows, touched) = match previewed {
+        Ok(previewed) => previewed,
         Err(over) => {
-            return Preview::failed(
+            let mut refused = Preview::failed(
                 "memory",
                 vec![ApiError::new(format!(
                     "this sample asked for more memory than a preview may hold: {over}"
                 ))],
                 pipeline_names,
             );
+            refused.status = StatusCode::PAYLOAD_TOO_LARGE;
+            return refused;
         }
     };
 
-    let rows: Vec<(RowOut, bool)> = preview_rows
+    // A called pipeline's steps are the call's: the call is the step this pipeline's author sees.
+    let calls = serde_json::from_str::<serde_json::Value>(&req.config)
+        .ok()
+        .and_then(|config| calls_of(&config, req.pipeline.as_deref()))
+        .unwrap_or_default();
+    let mut rows: Vec<(RowOut, bool)> = preview_rows
         .into_iter()
         .map(|r| {
             let row = RowOut {
@@ -715,12 +1009,21 @@ pub fn run_preview(
                 exceptions: r
                     .exceptions
                     .into_iter()
-                    .map(|(answer, message)| ExceptionOut { answer, message })
+                    .map(|(answer, message, step)| ExceptionOut {
+                        answer,
+                        message,
+                        step: step.map(|id| calls.get(&id).cloned().unwrap_or(id)),
+                    })
                     .collect(),
+                steps: None,
+                dropped_by: None,
             };
             (row, r.matched)
         })
         .collect();
+    if let Some(touched) = touched {
+        attribute(&calls, &plan, touched, &mut rows);
+    }
 
     let parsers = tally
         .parses()
@@ -745,6 +1048,8 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
+    let (found, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first);
+    warnings.extend(found.iter().map(warn));
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
     let rows = rows
         .into_iter()
@@ -754,6 +1059,8 @@ pub fn run_preview(
     Envelope::ok(Preview {
         stage: None,
         pipeline_names,
+        after_dot: None,
+        capture_filter: None,
         dictionary: Some(DictionaryOut {
             compiled: Dictionary::of(&record),
             sampled: Some(Dictionary::of(&sampled)),
@@ -761,7 +1068,279 @@ pub fn run_preview(
         rows,
         unfiltered,
         parsers,
+        warnings,
+        schema_findings: found.len() as u32,
+        missing,
     })
+}
+
+/// A warning for each field of `record`, what `plan` writes, that breaks the schemas the pipeline produces
+/// (`schema::check`): at the step that wrote the field, or at `first` where the source gave it. A field the schemas
+/// require and the record lacks has no step that wrote it, and is warned of with none.
+fn schema_warnings(
+    produces: &[Arc<Schema>],
+    plan: &Plan,
+    record: &DataType,
+    first: Option<FunctionId>,
+) -> (Vec<CompileError>, Vec<crate::schema::Missing>) {
+    let findings = crate::schema::check(produces, record);
+    let warned = crate::schema::told(produces, &findings)
+        .into_iter()
+        .map(|(keys, message)| {
+            let at = keys.and_then(|keys| plan::dictionary::writer(plan, &keys).or(first));
+            CompileError::new(at, message)
+        })
+        .collect();
+    (warned, crate::schema::missing(produces, &findings))
+}
+
+/// Clear every `reuse` that would hand away a binding of a name, so `touched` can read each binding after the run.
+/// Compiler temporaries are still reused.
+fn keep_bindings(plan: &mut Plan) {
+    let named: HashSet<SlotId> = plan
+        .provenance
+        .iter()
+        .filter(|o| !o.name.starts_with('<'))
+        .map(|o| o.slot)
+        .chain(plan.aliases.iter().map(|(slot, ..)| *slot))
+        .collect();
+    for instr in &mut plan.instrs {
+        if instr.reuse.is_some_and(|s| named.contains(&s)) {
+            instr.reuse = None;
+        }
+    }
+}
+
+/// What each step did to each row, read from a run of a plan `keep_bindings` kept: a step that binds a name changed it
+/// on a row where the new value differs from the one bound before, and a step that binds `__live` dropped a row it
+/// turns false. A value is compared whole, so a step that changes one field of an object changed the object.
+struct Touched<'p> {
+    /// Per row, each name a step changed, with the step, in the order they ran.
+    changed: Vec<Vec<(&'p str, FunctionId)>>,
+    dropped_by: Vec<Option<FunctionId>>,
+}
+
+fn touched<'p>(plan: &'p Plan, batch: &Batch) -> Touched<'p> {
+    let rows = batch.rows();
+    let mut changed = vec![Vec::new(); rows];
+    let mut dropped_by = vec![None; rows];
+    // Every binding of a name in the order the compiler made it: a copy, made when there were `at` slots, comes
+    // before the slot numbered `at`.
+    let mut bindings: Vec<(usize, &'p str, SlotId, Option<FunctionId>)> = plan
+        .provenance
+        .iter()
+        .filter(|o| !o.name.starts_with('<'))
+        .map(|o| {
+            let step = match o.origin {
+                Origin::Function(f) => Some(f),
+                _ => None,
+            };
+            (2 * o.slot + 1, o.name.as_str(), o.slot, step)
+        })
+        .chain(
+            plan.aliases
+                .iter()
+                .map(|(slot, name, at, f)| (2 * at, name.as_str(), *slot, Some(*f))),
+        )
+        .collect();
+    bindings.sort_by_key(|(order, ..)| *order);
+    let mut bound: HashMap<&str, SlotId> = HashMap::new();
+    for (_, name, slot, step) in bindings {
+        let before = bound.insert(name, slot);
+        let Some(step) = step else {
+            continue;
+        };
+        if name == "__live" {
+            let live = |slot: Option<SlotId>, row: usize| {
+                slot.is_none_or(|s| {
+                    batch
+                        .peek(s)
+                        .bool()
+                        .is_ok_and(|b| b.validity.is_valid(row) && bits::get_row(b.values, row))
+                })
+            };
+            for (row, dropped) in dropped_by.iter_mut().enumerate() {
+                if dropped.is_none() && live(before, row) && !live(Some(slot), row) {
+                    *dropped = Some(step);
+                }
+            }
+            continue;
+        }
+        let now = batch.peek(slot);
+        let differs = match before.map(|s| batch.peek(s)) {
+            // A first binding changed the rows it gives a value. An object's every row is one.
+            None if !matches!(now.data_type(), DataType::Struct(..)) => {
+                (0..rows).map(|row| now.is_valid(row)).collect()
+            }
+            None => vec![true; rows],
+            Some(was) => differs(was, now).unwrap_or_else(|| {
+                // Unclaimed fields serialize as an object's own keys, under no name.
+                let field = if name.ends_with('*') { tree::UNCLAIMED } else { "v" };
+                let (was, now) = (
+                    RecordView::from_named([(field, was)]),
+                    RecordView::from_named([(field, now)]),
+                );
+                (0..rows).map(|row| was.row(row) != now.row(row)).collect()
+            }),
+        };
+        for (changed, _) in changed.iter_mut().zip(differs).filter(|(_, differs)| *differs) {
+            changed.push((name, step));
+        }
+    }
+    Touched { changed, dropped_by }
+}
+
+/// Per row, whether `was` and `now` hold different values, read straight from two columns of one type held row by
+/// row. `None` for any other pair, which only their JSON can compare.
+fn differs(was: &Column, now: &Column) -> Option<Vec<bool>> {
+    fn by_row(a: &Validity, b: &Validity, len: usize, same: impl Fn(usize) -> bool) -> Vec<bool> {
+        (0..len)
+            .map(|row| match (a.is_valid(row), b.is_valid(row)) {
+                (true, true) => !same(row),
+                (a, b) => a != b,
+            })
+            .collect()
+    }
+    let len = now.len();
+    if was.data_type() != now.data_type() {
+        return None;
+    }
+    Some(match now.data_type() {
+        DataType::Bool => {
+            let (a, b) = (was.bool().ok()?, now.bool().ok()?);
+            by_row(a.validity, b.validity, len, |r| {
+                bits::get_row(a.values, r) == bits::get_row(b.values, r)
+            })
+        }
+        DataType::I64 => {
+            let (a, b) = (was.i64().ok()?, now.i64().ok()?);
+            by_row(a.validity, b.validity, len, |r| a.values[r] == b.values[r])
+        }
+        DataType::DateTime => {
+            let (a, b) = (was.datetime().ok()?, now.datetime().ok()?);
+            by_row(a.validity, b.validity, len, |r| a.values[r] == b.values[r])
+        }
+        DataType::Duration => {
+            let (a, b) = (was.duration().ok()?, now.duration().ok()?);
+            by_row(a.validity, b.validity, len, |r| a.values[r] == b.values[r])
+        }
+        DataType::F64 => {
+            let (a, b) = (was.f64().ok()?, now.f64().ok()?);
+            by_row(a.validity, b.validity, len, |r| {
+                a.values[r].to_bits() == b.values[r].to_bits()
+            })
+        }
+        DataType::Str | DataType::Bytes => {
+            let (a, b) = (was.var().ok()?, now.var().ok()?);
+            by_row(a.validity, b.validity, len, |r| a.get(r) == b.get(r))
+        }
+        _ => return None,
+    })
+}
+
+/// `touched` written onto `rows`, each name spread over the leaves of the row at it as the editor names them, and each
+/// step named by the step of the pipeline it is in: a called pipeline's steps by the call (`calls_of`).
+fn attribute(calls: &HashMap<String, String>, plan: &Plan, touched: Touched<'_>, rows: &mut [(RowOut, bool)]) {
+    let step = |f: FunctionId| {
+        let id = plan.step_ids.get(f as usize)?;
+        Some(calls.get(id).unwrap_or(id).clone())
+    };
+    let claimed: HashSet<String> = plan.tree.leaves().into_iter().map(|(name, _)| name).collect();
+    for ((row, _), (changed, dropped)) in rows.iter_mut().zip(touched.changed.into_iter().zip(touched.dropped_by)) {
+        row.dropped_by = dropped.and_then(step);
+        let Some(json) = &row.json else {
+            continue;
+        };
+        let leaves = leaves(json);
+        let mut steps: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (name, f) in changed {
+            let Some(id) = step(f) else {
+                continue;
+            };
+            let (prefix, unclaimed) = match name.strip_suffix('*') {
+                Some(object) => (object.trim_end_matches('.'), true),
+                None => (name, false),
+            };
+            let at = leaves
+                .range::<str, _>((std::ops::Bound::Included(prefix), std::ops::Bound::Unbounded))
+                .take_while(|leaf| leaf.starts_with(prefix))
+                .filter(|leaf| under(leaf, prefix) && !(unclaimed && claimed.contains(*leaf)));
+            for leaf in at {
+                let ids = steps.entry(leaf.clone()).or_default();
+                if ids.last() != Some(&id) {
+                    ids.push(id.clone());
+                }
+            }
+        }
+        row.steps = (!steps.is_empty()).then_some(steps);
+    }
+}
+
+/// Whether `leaf` is `name` or a leaf of the object at it. `""` is the record.
+fn under(leaf: &str, name: &str) -> bool {
+    name.is_empty()
+        || leaf
+            .strip_prefix(name)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('.') || rest.starts_with('['))
+}
+
+/// Each step a `call` of the pipeline with id `pipeline` (or of the first) brought in, by the call's id.
+fn calls_of(config: &serde_json::Value, pipeline: Option<&str>) -> Option<HashMap<String, String>> {
+    let pipelines = config["pipelines"].as_array()?;
+    let own = match pipeline {
+        Some(id) => pipelines.iter().find(|p| p["id"] == id)?,
+        None => pipelines.first()?,
+    };
+    let mut calls = HashMap::new();
+    let mut walk = vec![(own["steps"].as_array()?.clone(), None::<String>)];
+    while let Some((steps, call)) = walk.pop() {
+        for step in steps {
+            let id = step["id"].as_str().unwrap_or_default().to_string();
+            if let Some(call) = &call {
+                calls.insert(id.clone(), call.clone());
+            }
+            let by = call.clone().unwrap_or(id);
+            if step["type"] == CALL {
+                let callee = pipelines.iter().find(|p| p["id"] == step["pipeline"]);
+                if let Some(steps) = callee.and_then(|p| p["steps"].as_array()) {
+                    walk.push((steps.clone(), Some(by)));
+                }
+            } else {
+                for branch in ["then", "else"] {
+                    if let Some(steps) = step[branch].as_array() {
+                        walk.push((steps.clone(), call.clone()));
+                    }
+                }
+            }
+        }
+    }
+    Some(calls)
+}
+
+const CALL: &str = "call";
+
+/// A record's leaves by name, as the editor names them. An empty object or an array is one leaf, as the editor draws
+/// it.
+fn leaves(record: &serde_json::Value) -> BTreeSet<String> {
+    fn walk(value: &serde_json::Value, path: &mut String, into: &mut BTreeSet<String>) {
+        match value {
+            serde_json::Value::Object(object) if !object.is_empty() => {
+                for (key, value) in object {
+                    let len = path.len();
+                    plan::tree::push_key(path, key);
+                    walk(value, path, into);
+                    path.truncate(len);
+                }
+            }
+            _ if !path.is_empty() => {
+                into.insert(path.clone());
+            }
+            _ => {}
+        }
+    }
+    let mut into = BTreeSet::new();
+    walk(record, &mut String::new(), &mut into);
+    into
 }
 
 /// What one test made of the config on a branch.
@@ -773,9 +1352,9 @@ pub struct TestResult {
     /// `None` for an end-to-end test, which names no pipeline.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pipeline: Option<String>,
-    /// Which scope this ran in -- ids are unique only within a scope, the same collision
-    /// `ScopedTestSummary`'s doc names.
-    pub scope: String,
+    /// Which area this ran in -- ids are unique only within an area, the same collision
+    /// `AreaTestSummary`'s doc names.
+    pub area: String,
     /// Absent when the run could not happen at all -- a sample that is gone, a pipeline that does not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verdict: Option<Verdict>,
@@ -798,7 +1377,7 @@ pub fn run_test(
         id: test.id.clone(),
         name: test.name.clone(),
         pipeline: test.pipeline.clone(),
-        scope: scope.to_string(),
+        area: scope.to_string(),
         verdict: None,
         error: None,
     };
@@ -853,12 +1432,15 @@ pub fn run_pipeline_actual(
             show_internal: false,
             at_micros: Some(locked_at),
             filter: None,
+            attribution: false,
+            after_dot: None,
+            capture_filter: None,
         },
         declared_at,
         columns,
         records,
     );
-    if !previewed.ok {
+    if !previewed.succeeded() {
         return Err(previewed
             .errors
             .iter()
@@ -879,7 +1461,7 @@ pub fn run_route_actual(
     sample: config_file::SampleDto,
 ) -> Result<Vec<Option<serde_json::Value>>, String> {
     let resp = run_route_preview(config, sample, declared_at, Some(locked_at));
-    if !resp.ok {
+    if !resp.succeeded() {
         return Err(resp
             .errors
             .iter()
@@ -927,4 +1509,325 @@ pub fn run_route_actual(
         }
     }
     Ok(actual)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bundle whose pipeline sets `u` and `n` and then has a step `s`, routed from a Kafka source with a condition and
+    /// a `when` being typed. A second pipeline sets `u` and `n` of other types, and both routes deliver to `both`.
+    const BUNDLE: &str = r#"{"version":1,
+        "sources":[{"id":"in","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}],
+        "destinations":[{"id":"out","type":"kafka","brokers":"b:9092","defaultTopic":"t"},
+            {"id":"both","type":"kafka","brokers":"b:9092","defaultTopic":"t"}],
+        "pipelines":[{"id":"p","name":"P","steps":[
+            {"id":"u","type":"code","body":"u = parseUrl(_raw); n = 1;"},
+            {"id":"s","type":"code","body":"x = 1;"}]},
+            {"id":"q","name":"Q","steps":[{"id":"v","type":"code","body":"u = {path: \"/\", seen: true}; n = 1.5;"}]}],
+        "routes":[{"id":"r","source":"in","pipeline":"p","condition":"_raw.","deliver":[{"when":"n.","to":["out","both"]}]},
+            {"id":"r2","source":"in","pipeline":"q","deliver":[{"to":["both"]}]}]}"#;
+
+    /// `BUNDLE` without the condition and the `when` being typed: a destination's filter compiles over the whole
+    /// topology, which compiles only once they are written.
+    fn compiling() -> String {
+        BUNDLE
+            .replace(r#""condition":"_raw.","#, "")
+            .replace(r#""when":"n.","#, "")
+    }
+
+    /// The schemas `producing` declares: `stamped`, of a `@timestamp`, and `login`, which requires `time` and `user`.
+    const SCHEMAS: &str = r#""schemas":[
+        {"id":"stamped","title":"Stamped","fields":[{"field":"@timestamp","type":"datetime"}]},
+        {"id":"login","title":"Login","fields":[
+            {"field":"time","type":"i64","required":true},
+            {"field":"user","type":"{...}","required":true},
+            {"field":"user.name","type":"str"}]}],"#;
+
+    /// `compiling`, declaring `SCHEMAS`, its pipeline producing `schemas`.
+    fn producing(schemas: &str) -> String {
+        compiling()
+            .replacen(r#"{"version":1,"#, &format!(r#"{{"version":1,{SCHEMAS}"#), 1)
+            .replace(
+                r#""id":"p","name":"P","#,
+                &format!(r#""id":"p","name":"P","produces":{schemas},"#),
+            )
+    }
+
+    fn warnings_of(config: String, columns: &[crate::heartbeat::CaptureColumn]) -> Vec<(Option<String>, String)> {
+        (previewed(config, columns).warnings.iter())
+            .map(|w| (w.step.clone(), w.message.clone()))
+            .collect()
+    }
+
+    fn previewed(config: String, columns: &[crate::heartbeat::CaptureColumn]) -> Preview {
+        run_preview(
+            PreviewRequest {
+                config,
+                pipeline: Some("p".into()),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            columns,
+            Vec::new(),
+        )
+        .body
+    }
+
+    #[test]
+    fn the_fields_a_schema_requires_and_the_rows_lack_are_listed_with_their_types() {
+        let missing = previewed(producing(r#"["login"]"#), &[]).missing;
+        let time = missing.iter().find(|m| m.path == "time").unwrap();
+        assert_eq!((time.written_as.as_str(), time.schema.as_str()), ("i64", "Login"));
+        assert_eq!(missing.iter().find(|m| m.path == "user").unwrap().written_as, "{...}");
+        assert_eq!(missing.len(), 2, "{missing:?}");
+    }
+
+    #[test]
+    fn a_field_a_schema_types_otherwise_is_warned_at_the_step_that_wrote_it() {
+        let body = r#""body":"$[\"@timestamp\"] = \"now\"; source = {ip: \"::1\"};""#;
+        let config = producing(r#"["stamped"]"#).replace(r#""body":"x = 1;""#, body);
+        assert_eq!(
+            warnings_of(config, &[]),
+            [(
+                Some("s".to_string()),
+                "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
+            )]
+        );
+        // A pipeline that produces no schema is held to none.
+        let config = compiling().replace(r#""body":"x = 1;""#, body);
+        assert_eq!(warnings_of(config, &[]), []);
+    }
+
+    #[test]
+    fn a_field_the_source_gave_is_warned_at_the_first_step() {
+        let column = |name: &str| crate::heartbeat::CaptureColumn {
+            name: name.into(),
+            ty: "str".into(),
+        };
+        let columns = [column("_raw"), column("@timestamp")];
+        assert_eq!(
+            warnings_of(producing(r#"["stamped"]"#), &columns),
+            [(
+                Some("u".to_string()),
+                "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_field_the_schema_requires_and_no_step_writes_is_warned_at_no_step() {
+        let warned = warnings_of(producing(r#"["login"]"#), &[]);
+        assert_eq!(
+            warned,
+            [(None, "Login requires `time`, `user`; the rows lack them.".to_string())]
+        );
+    }
+
+    fn after(text: &str, at: DotAt) -> Option<AfterDot> {
+        let config = match at {
+            DotAt::Destination(_) => compiling(),
+            _ => BUNDLE.into(),
+        };
+        let previewed = run_preview(
+            PreviewRequest {
+                config,
+                pipeline: Some("p".into()),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: Some(AfterDotRequest {
+                    dot: text.len() - 1,
+                    text: text.into(),
+                    at,
+                }),
+                capture_filter: None,
+            },
+            Default::default(),
+            &[],
+            Vec::new(),
+        );
+        assert!(
+            previewed.succeeded(),
+            "{:?}",
+            previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        previewed.body.after_dot
+    }
+
+    fn method<'a>(answer: &'a AfterDot, name: &str) -> &'a plan::dot::Method {
+        answer.methods.iter().find(|m| m.name == name).unwrap()
+    }
+
+    /// A step reads what the steps before it wrote, though the step itself does not compile yet.
+    #[test]
+    fn a_step_reads_the_record_the_steps_before_it_wrote() {
+        let answer = after("x = u.", DotAt::Step("s".into())).unwrap();
+        assert!(
+            answer.ty.as_deref().is_some_and(|t| t.starts_with('{')),
+            "{:?}",
+            answer.ty
+        );
+        assert!(
+            answer.fields.contains(&("path".into(), "str".into())),
+            "{:?}",
+            answer.fields
+        );
+        assert!(method(&answer, "keys").fits);
+        assert!(!method(&answer, "sign").fits);
+    }
+
+    /// A code step reads the names its own statements before the dot bind, `let`s among them.
+    #[test]
+    fn a_step_reads_what_its_own_statements_before_the_dot_bind() {
+        let local = after("let v = parseUrl(_raw); w = v.path.", DotAt::Step("s".into())).unwrap();
+        assert_eq!(local.ty.as_deref(), Some("str"));
+        let inner = after("if (n == 1) { let v = [1]; x = v.", DotAt::Step("s".into())).unwrap();
+        assert_eq!(inner.ty.as_deref(), Some("array<i64>"));
+    }
+
+    /// A source's record is what it gives as it arrives; a `when`, and a destination's filter, the pipeline's output.
+    #[test]
+    fn a_source_and_a_when_read_their_own_record() {
+        let raw = after("_raw.", DotAt::Source("in".into())).unwrap();
+        assert_eq!(raw.ty.as_deref(), Some("str"));
+        assert!(method(&raw, "toLowerCase").fits);
+        assert_eq!(method(&raw, "sign").takes, "i64/f64");
+        assert!(!method(&raw, "sign").fits);
+
+        let n = after("n.", DotAt::When("r".into())).unwrap();
+        assert_eq!(n.ty.as_deref(), Some("i64"));
+        // A capture filter at a destination reads what the routes delivering there give it.
+        assert_eq!(
+            after("n.", DotAt::Destination("out".into())).unwrap().ty.as_deref(),
+            Some("i64")
+        );
+        assert!(after("n.", DotAt::Source("in".into())).unwrap().ty.is_none());
+    }
+
+    /// A destination fed by routes of different types reads what any of them gives.
+    #[test]
+    fn a_destination_reads_what_any_route_delivering_there_gives() {
+        let at = || DotAt::Destination("both".into());
+        assert_eq!(after("n.", at()).unwrap().ty.as_deref(), Some("f64"));
+        let u = after("u.", at()).unwrap();
+        assert!(u.fields.contains(&("path".into(), "str".into())), "{:?}", u.fields);
+        assert!(u.fields.contains(&("domain".into(), "str".into())), "{:?}", u.fields);
+        assert!(u.fields.contains(&("seen".into(), "bool".into())), "{:?}", u.fields);
+        assert_eq!(after("x.", at()).unwrap().ty.as_deref(), Some("i64"));
+        assert_eq!(after("nope.", at()).unwrap().ty, None);
+    }
+
+    /// A capture filter at a destination runs on the routes it compiles on and names each it passes over.
+    #[test]
+    fn a_capture_filter_at_a_destination_names_the_routes_it_skips() {
+        let check = |text: &str| {
+            let previewed = run_preview(
+                PreviewRequest {
+                    config: compiling(),
+                    pipeline: None,
+                    sample: None,
+                    show_internal: false,
+                    at_micros: None,
+                    filter: None,
+                    attribution: false,
+                    after_dot: None,
+                    capture_filter: Some(CaptureFilterRequest {
+                        text: text.into(),
+                        destination: "both".into(),
+                    }),
+                },
+                Default::default(),
+                &[],
+                Vec::new(),
+            );
+            assert!(previewed.succeeded());
+            previewed.body.capture_filter.unwrap()
+        };
+        let both = check("n > 1");
+        assert_eq!((both.reads, both.skips.len()), (2, 0));
+        let one = check("x > 1");
+        assert_eq!(one.reads, 1);
+        assert_eq!(
+            one.skips.iter().map(|s| s.route.as_str()).collect::<Vec<_>>(),
+            ["in \u{2192} Q"]
+        );
+        assert!(one.skips[0].error.contains('x'), "{}", one.skips[0].error);
+        assert_eq!(check("nope > 1").reads, 0);
+    }
+
+    /// A dot in a string follows no value; an id the bundle does not hold fails.
+    #[test]
+    fn a_dot_that_follows_no_value_has_no_answer() {
+        assert!(after(r#"x == "a."#, DotAt::Source("in".into())).is_none());
+        let previewed = run_preview(
+            PreviewRequest {
+                config: BUNDLE.into(),
+                pipeline: None,
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: Some(AfterDotRequest {
+                    text: "_raw.".into(),
+                    dot: 4,
+                    at: DotAt::Source("nope".into()),
+                }),
+                capture_filter: None,
+            },
+            Default::default(),
+            &[],
+            Vec::new(),
+        );
+        assert!(!previewed.succeeded());
+    }
+
+    /// An unroll copies none of a record's payload into the rows it makes: a large record, its bulk deleted, unrolls
+    /// into many rows within the budget, and they show no `__source.bytes`.
+    #[test]
+    fn an_unroll_of_a_large_record_stays_within_the_budget() {
+        let items: Vec<serde_json::Value> = (0..40).map(|i| serde_json::json!({"i": i})).collect();
+        let raw = serde_json::json!({"pad": "x".repeat(4_000_000), "items": items}).to_string();
+        let mut record = crate::io::RecordObject::new();
+        record.insert("_raw".into(), serde_json::Value::String(raw));
+        let body =
+            "let s = json(_raw); items: array<{i: i64}> = s.items; delete(_raw); unroll(items, false); $ = items;";
+        let config = serde_json::json!({"version": 1,
+            "sources": [{"id": "in", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
+            "destinations": [{"id": "out", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t"}],
+            "pipelines": [{"id": "p", "name": "P", "steps": [{"id": "u", "type": "code", "body": body}]}],
+            "routes": [{"id": "r", "source": "in", "pipeline": "p", "deliver": [{"to": ["out"]}]}]})
+        .to_string();
+        let previewed = run_preview(
+            PreviewRequest {
+                config,
+                pipeline: Some("p".into()),
+                sample: None,
+                show_internal: true,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &[],
+            vec![record],
+        );
+        assert!(previewed.succeeded(), "{:?}", previewed.errors);
+        assert_eq!(previewed.body.rows.len(), 40);
+        for row in &previewed.body.rows {
+            let json = row.json.as_ref().unwrap();
+            assert_eq!(json.pointer("/__source/bytes"), None, "{json}");
+        }
+    }
 }

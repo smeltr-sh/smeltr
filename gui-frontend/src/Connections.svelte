@@ -18,15 +18,21 @@
 
   let open = $state(false);
   let answer = $state<ConnectionsResponse | null>(null);
+  let failed = $state(false);
   $effect(() => {
     const asked = { kind, id };
     answer = null;
+    failed = false;
     // A line that cannot be answered is left off: the editor works without it.
     getConnections(asked.kind, asked.id)
       .then((res) => {
-        if (res.ok && asked.kind === kind && asked.id === id) answer = res;
+        if (asked.kind !== kind || asked.id !== id) return;
+        if (res.ok) answer = res;
+        else failed = true;
       })
-      .catch(() => {});
+      .catch(() => {
+        if (asked.kind === kind && asked.id === id) failed = true;
+      });
   });
 
   let all = $derived(answer ? rows(kind, answer) : []);
@@ -44,7 +50,7 @@
   /** The rest of a row, one link per scope they sit in, so each opens the list it is on. */
   function rest(row: Row): { scope: string; items: Connected[] }[] {
     const by = new Map<string, Connected[]>();
-    for (const o of row.items.slice(SHOWN)) by.set(o.scope, [...(by.get(o.scope) ?? []), o]);
+    for (const o of row.items.slice(SHOWN)) by.set(o.area, [...(by.get(o.area) ?? []), o]);
     return [...by].map(([scope, items]) => ({ scope, items }));
   }
 </script>
@@ -59,11 +65,11 @@
       {#each all as row (row.label)}
         <dt>{row.label}</dt>
         <dd>
-          {#each row.items.slice(0, SHOWN) as o, i (`${o.scope}\u0000${o.id}`)}
+          {#each row.items.slice(0, SHOWN) as o, i (`${o.area}\u0000${o.id}`)}
             {#if i > 0}<span class="dim">{', '}</span>{/if}<a
               class="link name"
               href={objectHash(o)}
-              onclick={into(o.scope, objectHash(o))}>{o.id}</a
+              onclick={into(o.area, objectHash(o))}>{o.id}</a
             >
           {/each}
           {#each rest(row) as more (more.scope)}
@@ -84,6 +90,11 @@
         <dd><a class="link" href={onMap}>Show on map</a></dd>
       {/if}
     </dl>
+  </Collapsible>
+{:else if !failed}
+  <!-- Its room, held while it is asked: arriving later, it would move the editor below it under a click. -->
+  <Collapsible fixed>
+    {#snippet summary()}<span class="eyebrow">Connections</span>{/snippet}
   </Collapsible>
 {/if}
 

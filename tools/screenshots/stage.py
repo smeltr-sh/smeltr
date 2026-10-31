@@ -264,7 +264,8 @@ def accounts(one_time):
     c.change_password("admin", ADMIN_PW)
     admin = as_("admin")
     for username, (display, pw) in PEOPLE.items():
-        made = admin.call("POST", "/api/users", {"username": username, "displayName": display})
+        made = admin.call("POST", "/api/accounts", {"authSource": "local", "username": username, "displayName": display,
+                                                   "roles": ["administrator"]})
         p = api.Client()
         p.login(username, made["temporaryPassword"])
         p.change_password(username, pw)
@@ -274,7 +275,7 @@ def upload_directory(c, branch, scope):
     boundary = "----smeltr-screenshots"
     body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"directory.csv\"\r\n"
             f"Content-Type: text/csv\r\n\r\n{bundle.directory_csv()}\r\n--{boundary}--\r\n").encode()
-    res = c.call("POST", "/api/lookup/upload", params={"branch": branch, "scope": scope}, data=body,
+    res = c.call("POST", f"/api/areas/{scope}/lookups/upload", params={"branch": branch}, data=body,
                  content_type=f"multipart/form-data; boundary={boundary}")
     if not res.get("ok"):
         raise api.ApiError(f"upload refused: {res}")
@@ -313,7 +314,7 @@ def firewalls():
     c = as_("priya")
     b = "onboard-firewalls"
     c.put("destinations", bundle.destinations(bundle.NETWORK_DESTINATIONS, 1), b, "network")
-    c.put("lookup-tables", [bundle.SITES_TABLE, bundle.APPS_TABLE, upload_directory(c, b, "network")], b, "network")
+    c.put("lookups", [bundle.SITES_TABLE, bundle.APPS_TABLE, upload_directory(c, b, "network")], b, "network")
     c.put("sources", bundle.NETWORK_SOURCES, b, "network")
     for p in (bundle.ECS_COMMON, bundle.PANOS, bundle.FORTIGATE):
         c.put_pipeline(p, b, "network")
@@ -372,11 +373,11 @@ def rotate():
     log("change: rotate key")
     admin = as_("admin")
     b = "rotate-es-ingest-key"
-    admin.ok(admin.call("PUT", "/api/secrets/es-ingest-api-key", {"value": "ApiKey c21lbHRyLWluZ2VzdDpkZW1vLWtleS12Mg=="}))
-    r = admin.ok(admin.call("PUT", "/api/secrets/es-ingest-api-key/references", {"version": 2, "branch": b}))
+    admin.ok(admin.call("POST", "/api/secrets/es-ingest-api-key/versions", {"value": "ApiKey c21lbHRyLWluZ2VzdDpkZW1vLWtleS12Mg=="}))
+    r = admin.ok(admin.call("POST", "/api/secrets/es-ingest-api-key/references", {"version": 2, "branch": b}))
     if not r.get("openedChange"):
         admin.open_change(b, "Rotate the Elasticsearch ingest key")
-    admin.ok(admin.call("PATCH", f"/api/changes/{b}", {
+    admin.ok(admin.call("PATCH", f"/api/branches/{b}", {
         "title": "Rotate the Elasticsearch ingest key to v2",
         "description": "Quarterly rotation. Every Elasticsearch destination in both groups moves to v2; v1 stays "
                        "stored until the fleet reports it running."}))
@@ -401,7 +402,7 @@ def open_change():
     # Re-locked at the instant it was first locked: a lock pins `now()`, so a new instant would rewrite every
     # `event.ingested` in the test and bury the two fields this change adds.
     name = "panos-traffic maps sessions to ECS"
-    old = c.call("GET", f"/api/tests/{urllib.parse.quote(name)}", params={"branch": b, "scope": "network"})["test"]
+    old = c.call("GET", f"/api/areas/network/tests/{urllib.parse.quote(name)}", params={"branch": b})["test"]
     lock_tests(c, b, "network", [(name, "panos-traffic", "panos-traffic-sample", 10)], at=old["lockedAt"])
     c.open_change(b, "PAN-OS: score App-ID risk and alert on the riskiest apps",
                   "Adds event.risk_score from App-ID risk and sends risk-5 applications (BitTorrent, Tor, SMTP) to "

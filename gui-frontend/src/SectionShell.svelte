@@ -15,8 +15,10 @@
 <script lang="ts">
   import type { Snippet, Component } from 'svelte';
   import ScopePicker from './ScopePicker.svelte';
+  import { store, stored } from './stored';
   import PersonIcon from './PersonIcon.svelte';
   import LockIcon from './LockIcon.svelte';
+  import CertificateIcon from './CertificateIcon.svelte';
   import WorkerIcon from './WorkerIcon.svelte';
   import WorkerGroupIcon from './WorkerGroupIcon.svelte';
   import SlidersIcon from './SlidersIcon.svelte';
@@ -42,19 +44,11 @@
   const FOLDED_KEY = 'smeltr-rail-folded';
   let folded = $state(loadFolded());
   function loadFolded(): boolean {
-    try {
-      return localStorage.getItem(FOLDED_KEY) === 'true';
-    } catch {
-      return false;
-    }
+    return stored(FOLDED_KEY) === 'true';
   }
   function fold() {
     folded = !folded;
-    try {
-      localStorage.setItem(FOLDED_KEY, String(folded));
-    } catch {
-      // Best-effort: a blocked or full localStorage just forgets across reloads.
-    }
+    store(FOLDED_KEY, String(folded));
   }
 
   // Admin's items draw the icon components their pages already use; every
@@ -63,6 +57,7 @@
     Workers: WorkerIcon,
     'Worker groups': WorkerGroupIcon,
     Secrets: LockIcon,
+    Certificates: CertificateIcon,
     Accounts: PersonIcon,
     System: SlidersIcon,
   };
@@ -75,7 +70,7 @@
         <div class="rail-top">
           <button
             type="button"
-            class="fold"
+            class="icon"
             aria-expanded={!folded}
             aria-label={folded
               ? `Show ${tabLabel} section names`
@@ -167,26 +162,6 @@
     gap: 0.5rem;
   }
 
-  .fold {
-    display: inline-flex;
-    padding: 0.25rem;
-    border: none;
-    border-radius: var(--radius);
-    background: none;
-    color: var(--dim);
-    cursor: pointer;
-  }
-
-  .fold:hover {
-    color: var(--ink);
-    background: color-mix(in oklch, var(--ink) 8%, var(--bg));
-  }
-
-  .fold:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-
   .rail-title {
     font-family: var(--font-display);
     font-size: var(--text-section);
@@ -212,7 +187,7 @@
      the color of the page behind it. */
   .rail a:hover {
     color: var(--ink);
-    background: color-mix(in oklch, var(--ink) 8%, var(--bg));
+    background: color-mix(in oklab, var(--ink) 8%, var(--bg));
   }
 
   /* The row already chosen carries a left bar in the accent, not a filled
@@ -221,7 +196,7 @@
      than like a button. It does not respond to hover beyond that: its own
      colors already are the hover colors. */
   .rail a.on {
-    background: color-mix(in oklch, var(--ink) 10%, var(--bg));
+    background: color-mix(in oklab, var(--ink) 10%, var(--bg));
     border-left-color: var(--accent);
     color: var(--ink);
     font-weight: 600;

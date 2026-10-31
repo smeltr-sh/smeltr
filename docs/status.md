@@ -20,10 +20,13 @@ document's systems.
 | Bytes are not text: `decode`, `encode`, `toString(bytes, form)`, `parseBytes` (Language, Columnar data model) | built |
 | Functions as values: `let`-bound arrows, `map`/`filter` (Language) | built. Not built: a function type annotation, `(x: T) => R`; a function chosen per row, `(c ? f : g)(x)`; a `let`-bound arrow calling itself |
 | A key is a key; `splitDots` (Language) | built |
+| Compile warnings and formatting (Compiler) | built (`Plan::warnings`, `expr::pretty`, `POST /api/preview/format`). Warnings show in the pipeline editor only; a review or a deploy does not list them |
 | CSV column table, `skip` (Config plane) | built |
+| Key-value `skip`; a CSV or key-value Parser rebuilding the field it reads, `csvRebuild`, `kvRebuild` (Config plane, Language, Compiler) | built |
 | Grok: `.` matches a newline (Runtime stages) | built |
 | Lookup: CSV, inline, MMDB; exact, CIDR, regex (Runtime stages) | built; files live in the leader's lookup store as Git LFS pointers |
-| Data dictionary: a pipeline's record as an Elasticsearch mapping (Compiler, Runtime stages) | built. A mapping is per pipeline; an index fed by several is merged by hand |
+| Data dictionary: a pipeline's record as an Elasticsearch mapping (Compiler, Runtime stages) | built. Each field maps by its own type. A mapping is per pipeline; an index fed by several is merged by hand |
+| Schemas: a bundle's as tables of fields, a pipeline's produces, a destination's accepts (Config plane) | built (`schema`). A schema is read from JSON Schema, ECS's `fields.csv` or `ecs_flat.yml`, one OCSF class of `ocsf-schema-compiler`'s output cut by depth and requirement, or a CSV of fields (`POST /api/preview/schema-read`), ECS and OCSF also from the release the leader carries (`schema::standard`, listed by `GET /api/preview/schema-standards`, replaced by `just schemas-refresh`, the two adding 2.7 MB to the binary), a field carrying an optional example, and exported as JSON Schema or an Elasticsearch mapping (`POST /api/preview/schema-export`), a field's own Elasticsearch mapping laid over its type's on that export and chosen in the GUI's Elasticsearch view, and imported by a pipeline of the bundle run over an uploaded file, cut by a line breaker (`POST /api/areas/:area/preview/schema-import`); `docs/examples.md` 9 is an importer. Findings show in the pipeline editor, in review and on the deployed commit, and refuse nothing. The GUI searches fields. Not built: a schema's rows edited in place, tables made from a schema, a parser's fields declared from one, Collibra export, a schema read from a table or a stream, a source naming a schema |
 | Non-JSON output: Avro, CSV (Scope) | built. Avro (`io::avro`): to Kafka and Event Hubs framed as Confluent frames it, each route's record registered under `<topic>-value`; to object stores and SFTP as container files holding their schema. CSV (`io::csv`): to object stores and SFTP, a column per leaf of the route's record under a header row. Not built: CSV to any other destination; Avro over HTTP or to Splunk; lz4 in a container file, which Avro has no codec for |
 
 ### Destinations
@@ -39,7 +42,7 @@ document's systems.
 | Object stores: S3, GCS, Azure Blob (Runtime stages, Config plane) | built (`io::files`, `io::objects`). A batch sent again after a failure may leave a duplicate object |
 | SFTP (`sftp`) (Runtime stages, Config plane, Security) | built, on the object store destinations. A write cut off may leave its hidden temporary file |
 | Destination formats: JSON, Parquet, Avro, text, bytes (Runtime stages, Config plane) | built (`Payload`, `io::avro`) |
-| Tables: Iceberg through a REST catalog, Delta path tables and Unity Catalog external tables (Runtime stages, Config plane, Secrets boundary) | built (`io::iceberg`, `io::delta`). Not built: Iceberg format version 3 (row lineage) and encrypted tables; Delta tables Unity Catalog manages; a live test against a Databricks workspace; aborting stale multipart uploads under a table |
+| Tables: Iceberg through a REST catalog, Delta path tables and Unity Catalog external tables (Runtime stages, Config plane, Secrets boundary) | built (`io::iceberg`, `io::delta`). Iceberg format version 3 tables are written with row lineage and write defaults. Not built: v3's new types on a column the record lacks, `variant` written as Iceberg's variant, transforms of several columns, and encrypted tables, whose tables are refused; Delta tables Unity Catalog manages; Delta generated columns, column defaults, invariants and check constraints, whose tables are refused; a live test against a Databricks workspace; aborting stale multipart uploads under a table |
 
 ### Sources
 
@@ -71,6 +74,7 @@ document's systems.
 | Delivery: routes, exception answers, `Unmatched`/`Unprocessable`/`Refused` (Runtime stages) | built |
 | Reader/transform split, `Lane`s (Runtime stages) | built |
 | Egress: one thread per destination behind a `bufferBytes` queue (Runtime stages) | built |
+| A destination paced to its link, `egress::pacing`, and the pool's equal shares while queues contend (Runtime stages) | built |
 | Commit tracker, `commit.rs` (Runtime stages) | built |
 | A worker sized to its memory, `worker::memory::fit` (Runtime stages) | built. Lookup tables are not counted: they are mapped files |
 | `MemoryBudget`, split on refusal (Runtime stages) | built; chunked materialization not built |
@@ -95,7 +99,8 @@ document's systems.
 | Worker groups, registry, heartbeat, `/api/health`, Cluster page (Control plane) | built; the Cluster page is not the Status area `gui-design.md` describes. Windows does not read a container's job-object limit |
 | A default worker group (Control plane) | built |
 | Worker↔leader authentication, TLS, enrollment codes, authority rotation for every certificate source (Security) | built |
-| A certificate ordered from a certificate authority over ACME and renewed (Security) | built: the certificates page's ACME source, `/api/settings/acme`, TLS-ALPN-01 and HTTP-01, checked against Pebble in `just check-live` and against a stand-in authority in the journey |
+| A certificate ordered from a certificate authority over ACME and renewed (Security) | built: TLS-ALPN-01, HTTP-01, and DNS-01 through Cloudflare |
+| One list of certificates beside the secrets, the leader serving straight from it (Security) | built (`leader::newest_certificate`, `/api/certificates`, `tls::serve`), and a connector names a certificate from it by name; workers present its newest version and restart on a new one. The leader issues entries under its own authority and renews them unattended (`leader::renew_issued`), each ACME order is a version of the `acme` entry (`acme::list`), a start that cannot serve the chosen version serves the leader's own (`tls::unserved`), and the leader's own certificate is the issued entry `leader` (`tls::own_entry`) |
 | Config distribution (Control plane) | built; serving smart-HTTP still spawns `git`, so the leader needs it installed. A corrupt worker clone is never re-cloned |
 | One repository, one `main`, a subtree per group and `shared/` (Control plane) | built |
 | Upgrades (Control plane) | built. Not built: config file converters (there is one `system.json` version), the *Upgrade config files* action, and a supported floor |
@@ -112,7 +117,8 @@ document's systems.
 | Samples and tests as bundle files (Control plane) | built |
 | Capture at a source and at a destination; route preview (Control plane, Runtime stages) | built. A reachability check is not built |
 | Routing what arrives (`gui-design.md`, Routing what arrives) | built: the map's tags and panel, the Routes page's new route, and the workspace's capture with its parser proposed (`leader::onboard`). A line of a format with no whole-line Grok pattern is not proposed |
-| Warnings (Control plane) | built (`leader::warnings`), with a source's volume against its normal (`leader::throughput`). Not built: a weekly normal, which needs more history than the series keeps |
+| Warnings (Control plane) | built (`leader::warnings`), with notices and a source's volume against its normal (`leader::throughput`). Not built: a weekly normal, which needs more history than the series keeps |
+| A newer release (Control plane, Upgrades) | built (`leader::updates`, through smeltr.sh's `website/worker`), a notice and Admin -> System -> General |
 | Metrics history (Control plane, E2) | built |
 | Streams: what each Parser produces and what arrives unmatched, summed on the leader (Observability) | built, `GET /api/streams`, which the map, the pipeline editor's declared fields and the drift warnings (`leader::warnings`) read. Retention in `leader::series` |
 | Lag (Control plane, E6) | built |
@@ -120,12 +126,19 @@ document's systems.
 | The GUI from a phone to a 4K display; four text registers (Control plane) | built |
 | A lookup path relative to its bundle (Config plane) | built |
 | Credentials in the leader store, by name and version (Secrets boundary) | built |
-| Identity: local accounts, OIDC, roles per area (Security) | built. File permissions on `leader.db` are set on unix only; on Windows they are whatever the data directory inherits |
+| The secrets encryption key: written at first start, a failure while it is missing or does not fit, regenerated on Admin › Secrets › Encryption key (Secrets boundary) | built (`leader::secrets`, `Store::key_standing`) |
+| Identity: local, OIDC and key accounts, roles per area (Security) | built. File permissions on `leader.db` are set on unix only; on Windows they are whatever the data directory inherits |
 | The AI agent as a principal: a person's agent permissions (Security) | built: agent permissions and the gate's judgment of an agent's requests (`access::AgentPermissions`, `access::ByAgent`), and their screen: Agent permissions from a person's name. The model endpoint: Admin › System › AI agents turns them on, and the leader's one client speaks Anthropic's Messages API, OpenAI's Responses API and OpenAI-compatible Chat Completions (`leader::model`). The agent: a person's conversations with it over `/api/agent/conversations`, each turn's calls sent through the gate to the routes its catalog names, and a conversation deleted once nobody has added to it for the days set (`leader::agent`), and the Agent page, from a person's name, where they talk to it and see each request it made, and its answer as the model writes it. Past three quarters of the model's context, which an administrator sets and Anthropic's Models API fills in, a summary stands in for a conversation's older turns: Anthropic's and OpenAI's compaction, or one the leader asks an OpenAI-compatible model for. Each message may pick any model the stored key reaches and an effort, which its answer keeps and the conversation carries on with (`/api/agent/models`); OpenAI's requests carry the conversation as their cache key and a hash of the person as their safety identifier. A circle beside the model shows how full the context is, and from it a person summarizes the conversation now or clears it: the model reads on from that summary, or from nothing, while the page still shows it all. The conversation also opens in a panel along the bottom of any page. The user docs this build shipped with, as Markdown, searched and read by section over `/api/docs` (`leader::docs`, written from the website's build by `just docs-markdown`) |
+| Key accounts: an account a script calls the operator API as, with its keys (Security) | built: `AuthSource::Key` and its keys, kept by their hash (`Store::api_key_by_hash`), each to expire after the days asked or never, and the gate's Bearer path, which refuses a revoked or expired key (`gate::key_account_of`) |
 | License page (Control plane) | built: Admin › System › License states who must buy a license; no feature needs one |
-| Release | built. Not built: public downloads of the archives, an MSI, code signing |
+| Release | built, and on Windows a service. Not built: public downloads of the archives, an MSI, code signing |
 
 ## Known gaps against the architecture
+
+### API
+
+The API's contract (`api.md`) is ahead of its routes. Not built: `/api/worker/enroll` answering the envelope at its
+status, the gate's need in the same row as the agent catalog's entry.
 
 ### Control plane
 
@@ -146,14 +159,12 @@ catalog's volume entry both wait on it.
 
 ### Worker recovery
 
-- **A non-worker leader has no path to offload its own logs.** Options: structured console output through a host agent, a syslog emitter, or making the leader always an implicit worker. Undecided.
+- **A non-worker leader keeps its own logs only in its own store.** Nothing ships them anywhere else: no syslog emitter, and no worker to run a smeltr logs source.
 - **A tree confirmed dead by its pipe's end-of-file assumes every member still holds that pipe.** A descendant that closed its copy before wedging is not waited on, so `kill_and_confirm` can report a tree gone while it remains. No runtime spawns a descendant today.
 - **A capture invitation can be routed to a runtime about to be replaced.** `route_invitations` acts before the same beat's redeploy decision, so a capture racing a redeploy can be lost.
-- **A heartbeat that times out after the leader persists it can inflate a durable counter.** Closing it needs an idempotency key across the heartbeat protocol.
-- **A worker's bare clone is never repacked.** `gix` has no maintenance primitive, so a worker redeployed often accumulates packs without bound.
 - **A runtime releases a capture session once it writes the report to its own pipe, not once the leader has it,** so a slow upload can see the session re-admitted and re-captured. Closing it needs an acknowledgment frame back from the supervisor.
 - **A runtime confirmed dead with a descendant holding its output pipe is reported as still running.** `RuntimeHandle::exited` does not tell "alive" from "gone, tree unconfirmed".
-- **The heartbeat's body limit assumes a worst case nothing enforces.** `thread_limit` and the reader count have no ceiling, so a large deployment's report can outgrow `HEARTBEAT_BODY_LIMIT`. Closing it needs per-beat windowing for metrics.
+- **A heartbeat's state has no share of the body limit.** Each part of a window does, and counters past theirs spread over beats, but a beat's state -- its threads, their gauges and facts -- grows with the sources and destinations deployed, which have no ceiling.
 - **Capture sessions are retained without a cap; only the outbox (`CAPTURES_WAITING`) is capped.**
 - **The deployment warning's grace does not cover the stop it waits through.** The stop and startup budgets add up to exactly `NOT_DEPLOYING_AFTER_MS`, leaving no slack.
 - **A capture queued while its own upload is in flight is uploaded twice.**
@@ -168,7 +179,7 @@ catalog's volume entry both wait on it.
 - **Some memory parts report no fill:** a Kafka client's queue, which only librdkafka's statistics measure, and a destination's senders, whose size is an estimate.
 - **Two steps are not yet code** (Compiler). An `if` step compiles from `Step::If` rather than lowering to a code `if`. There is no `delete` step.
 - **Unroll's output is not bounded at hand-over.** One poll's records can fan out without bound, and a turn's whole output for a destination is handed over in one call; only `MemoryBudget` bounds it.
-- **`overwrite` is not ordered across in-flight batches.** Two versions of one `_id` can land in either order.
+- **`overwrite` and `dedupe` are not ordered.** Two versions of one `_id`, in one batch or in two, can land in either order.
 - **Elasticsearch: not attempted.** Index templates and ILM, `update`/`upsert` actions, OpenSearch-specific behavior.
 - **The registry never evicts a retired thread** of a permanent worker, and `thread_id` is whatever the caller sends, so one credential can grow the map.
 - **A decode exception is not counted:** `GuessedEncoding` and `InvalidUtf8` mark the row, but no counter rates them per source.
@@ -189,3 +200,4 @@ catalog's volume entry both wait on it.
 - **History clips its last column at a 1440 px window.**
 - **A worker's id is `hostname-pid-nanos`** (`worker::generate_worker_id`). No setting names a worker.
 - **A leader started without a worker still seeds a worker group,** which a fleet that names its own groups carries empty until someone deletes it.
+- **Motion ignores `prefers-reduced-motion`.** The fold chevron (`ChevronIcon.svelte`) and other transitions play for a reader who asks the system for less motion.

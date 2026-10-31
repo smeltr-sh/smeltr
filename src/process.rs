@@ -256,7 +256,7 @@ pub fn output_within(cmd: &mut Command, budget: Duration) -> io::Result<Outcome>
     let err = child.take_stderr();
     // Through the fallible builder: a panicking spawn would unwind past the child, and dropping it is what ends
     // the tree, but a caller that asked for output and got a panic has no error to act on.
-    let (reading_out, reading_err) = drains(out, err)?;
+    let reading = Drains::start(out, err)?;
 
     // Exit alone is not the end: a grandchild holding an output pipe leaves a read outstanding after the child has
     // gone, and the budget covers that wait too.
@@ -266,7 +266,7 @@ pub fn output_within(cmd: &mut Command, budget: Duration) -> io::Result<Outcome>
         // The drains are asked first and the child only once they are done, and the child is asked without being
         // reaped: the process id the group is named by is held only while it is unreaped, so the kill below has a
         // live process or a zombie to aim at rather than an id the system has handed to somebody else.
-        if reading_out.is_finished() && reading_err.is_finished() && child.ended()? {
+        if reading.finished() && child.ended()? {
             ended = true;
             break;
         }
@@ -283,7 +283,7 @@ pub fn output_within(cmd: &mut Command, budget: Duration) -> io::Result<Outcome>
         // own: this is only reached once both drains reported themselves finished.
         child.kill_tree()?;
         return match child.reap_within(KILL_CONFIRM)? {
-            Some(status) => Ok(Outcome::Exited(collect(status, reading_out, reading_err))),
+            Some(status) => Ok(Outcome::Exited(reading.collect(status))),
             None => Err(unconfirmed()),
         };
     }
@@ -294,14 +294,14 @@ pub fn output_within(cmd: &mut Command, budget: Duration) -> io::Result<Outcome>
     // above uses, for the same reason. A tree that will not confirm leaves the reads outstanding and is reported
     // rather than joined.
     let deadline = Instant::now() + KILL_CONFIRM;
-    while !(reading_out.is_finished() && reading_err.is_finished()) {
+    while !(reading.finished()) {
         if Instant::now() >= deadline {
             return Err(unconfirmed());
         }
         std::thread::sleep(POLL);
     }
     match child.reap_within(deadline.saturating_duration_since(Instant::now()))? {
-        Some(status) => Ok(Outcome::Killed(collect(status, reading_out, reading_err))),
+        Some(status) => Ok(Outcome::Killed(reading.collect(status))),
         None => Err(unconfirmed()),
     }
 }
@@ -311,20 +311,38 @@ fn unconfirmed() -> io::Error {
     io::Error::other("a killed process tree would not end, so the command's exit could not be confirmed")
 }
 
-/// A reader for each pipe, or neither.
-#[allow(clippy::type_complexity)]
-fn drains(
-    out: Option<ChildStdout>,
-    err: Option<ChildStderr>,
-) -> io::Result<(std::thread::JoinHandle<Vec<u8>>, std::thread::JoinHandle<Vec<u8>>)> {
-    let reading_out = std::thread::Builder::new()
-        .name("smeltr-cmd-stdout".to_string())
-        .spawn(move || drain(out))?;
-    // If this one cannot start, the first ends on its own once the child is dropped and its pipe closes.
-    let reading_err = std::thread::Builder::new()
-        .name("smeltr-cmd-stderr".to_string())
-        .spawn(move || drain(err))?;
-    Ok((reading_out, reading_err))
+/// A thread reading each of a child's output pipes to its end.
+struct Drains {
+    out: std::thread::JoinHandle<Vec<u8>>,
+    err: std::thread::JoinHandle<Vec<u8>>,
+}
+
+impl Drains {
+    /// A reader for each pipe, or neither.
+    fn start(out: Option<ChildStdout>, err: Option<ChildStderr>) -> io::Result<Drains> {
+        let out = std::thread::Builder::new()
+            .name("smeltr-cmd-stdout".to_string())
+            .spawn(move || drain(out))?;
+        // If this one cannot start, the first ends on its own once the child is dropped and its pipe closes.
+        let err = std::thread::Builder::new()
+            .name("smeltr-cmd-stderr".to_string())
+            .spawn(move || drain(err))?;
+        Ok(Drains { out, err })
+    }
+
+    /// Both pipes read to their end.
+    fn finished(&self) -> bool {
+        self.out.is_finished() && self.err.is_finished()
+    }
+
+    /// What the child wrote, with the status it ended with.
+    fn collect(self, status: ExitStatus) -> Output {
+        Output {
+            status,
+            stdout: self.out.join().unwrap_or_default(),
+            stderr: self.err.join().unwrap_or_default(),
+        }
+    }
 }
 
 fn drain<R: io::Read>(stream: Option<R>) -> Vec<u8> {
@@ -333,14 +351,6 @@ fn drain<R: io::Read>(stream: Option<R>) -> Vec<u8> {
         let _ = io::Read::read_to_end(&mut stream, &mut read);
     }
     read
-}
-
-fn collect(status: ExitStatus, out: std::thread::JoinHandle<Vec<u8>>, err: std::thread::JoinHandle<Vec<u8>>) -> Output {
-    Output {
-        status,
-        stdout: out.join().unwrap_or_default(),
-        stderr: err.join().unwrap_or_default(),
-    }
 }
 
 #[cfg(windows)]
@@ -495,7 +505,8 @@ mod tests {
     fn a_quiet_grandchild_does_not_outlive_a_finished_command() {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("sleep 30 >/dev/null 2>&1 & echo $! ; exit 0");
-        let outcome = output_within(&mut cmd, budget()).expect("sh spawns");
+        // Room for the shell to start and exit on a loaded machine: the test is about the grandchild, not the budget.
+        let outcome = output_within(&mut cmd, Duration::from_secs(5)).expect("sh spawns");
         let Outcome::Exited(output) = outcome else {
             panic!("a command that exited was reported as killed");
         };

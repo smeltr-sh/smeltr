@@ -53,7 +53,7 @@ use crate::core::column::DataType;
 use crate::format::json_scan::{Next, Reader};
 use crate::plan::topology::{
     AssumedRole, AzureAccess, AzureCredential, AzureStore, Cloud, Compression, GcsAccess, GcsStore, HeldSecrets,
-    Identity, ObjectFormat, ObjectsDestinationConfig, Records, S3Access, S3Store,
+    ObjectFormat, ObjectsDestinationConfig, Records, S3Access, S3Store, Tls,
 };
 
 /// The placeholders a configured prefix may hold, each filled from the write time.
@@ -253,7 +253,7 @@ pub fn destination(
             let format: Arc<dyn FileFormat> = match config.format {
                 ObjectFormat::Avro => Arc::new(AvroFormat::new(schemas, config.compression)?),
                 ObjectFormat::Csv => Arc::new(CsvFormat::new(schemas, config.compression)),
-                _ => Arc::new(ParquetFormat::new(schemas, config.compression)),
+                _ => Arc::new(ParquetFormat::new(schemas, config.compression.into())),
             };
             (format, Some(part_of))
         }
@@ -267,6 +267,7 @@ pub fn destination(
         }),
         commit_interval: config.file_interval,
         max_file_bytes: config.max_object_bytes,
+        take_bytes: crate::io::files::TAKE_BYTES,
         buffer_bytes: config.buffer_bytes,
         stall_after: config.stall_after,
         attributes: attributes(
@@ -357,7 +358,7 @@ pub fn store(
     runtime: &tokio::runtime::Runtime,
 ) -> Result<Arc<dyn ObjectStore>, IoError> {
     let connector = Connector {
-        tls: tls(config.identity.as_deref(), secrets)?,
+        tls: client_config(config.tls.as_ref(), secrets)?,
     };
     let retry = object_store::RetryConfig {
         retry_timeout: config.stall_after,
@@ -369,7 +370,7 @@ pub fn store(
         Cloud::S3(s3) => self::s3(s3, connector, retry, secrets),
         Cloud::Gcs(gcs) => self::gcs(gcs, connector, retry, secrets),
         Cloud::Azure(azure) => self::azure(azure, connector, retry, secrets),
-        // Over SSH, so no connector: load refuses an identity on it.
+        // Over SSH, so no connector: load refuses TLS settings on it.
         Cloud::Sftp(sftp) => Ok(Arc::new(super::sftp::Sftp::new(sftp, "", false, secrets)?)),
     }
 }
@@ -403,13 +404,13 @@ pub(crate) fn s3_bucket(
     access: &S3Access,
     bucket: &str,
     grant: Option<CatalogGrant>,
-    identity: Option<&Identity>,
+    tls: Option<&Tls>,
     stall_after: Duration,
     secrets: &HeldSecrets,
     runtime: &tokio::runtime::Runtime,
 ) -> Result<Arc<dyn ObjectStore>, IoError> {
     let connector = Connector {
-        tls: tls(identity, secrets)?,
+        tls: client_config(tls, secrets)?,
     };
     let retry = object_store::RetryConfig {
         retry_timeout: stall_after,
@@ -461,15 +462,15 @@ pub struct Aws {
 }
 
 impl Aws {
-    /// AWS as `access` and `identity` say to reach it. A credential this worker cannot obtain is an error here.
+    /// AWS as `access` and `tls` say to reach it. A credential this worker cannot obtain is an error here.
     pub fn new(
         access: &S3Access,
-        identity: Option<&Identity>,
+        tls: Option<&Tls>,
         secrets: &HeldSecrets,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<Aws, IoError> {
         let connector = Connector {
-            tls: tls(identity, secrets)?,
+            tls: client_config(tls, secrets)?,
         };
         let _entered = runtime.enter();
         Aws::with_connector(access, connector, object_store::RetryConfig::default(), secrets)
@@ -720,16 +721,16 @@ pub struct Gcp {
 }
 
 impl Gcp {
-    /// Google Cloud as `access` and `identity` say to reach it. A credential this worker cannot obtain is an error
+    /// Google Cloud as `access` and `tls` say to reach it. A credential this worker cannot obtain is an error
     /// here.
     pub fn new(
         access: &GcsAccess,
-        identity: Option<&Identity>,
+        tls: Option<&Tls>,
         secrets: &HeldSecrets,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<Gcp, IoError> {
         let connector = Connector {
-            tls: tls(identity, secrets)?,
+            tls: client_config(tls, secrets)?,
         };
         let _entered = runtime.enter();
         Gcp::with_connector(access, connector, object_store::RetryConfig::default(), secrets)
@@ -872,16 +873,16 @@ pub struct Azure {
 }
 
 impl Azure {
-    /// The account as `access` and `identity` say to reach it. A credential this worker cannot obtain is an error
+    /// The account as `access` and `tls` say to reach it. A credential this worker cannot obtain is an error
     /// here.
     pub fn new(
         access: &AzureAccess,
-        identity: Option<&Identity>,
+        tls: Option<&Tls>,
         secrets: &HeldSecrets,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<Azure, IoError> {
         let connector = Connector {
-            tls: tls(identity, secrets)?,
+            tls: client_config(tls, secrets)?,
         };
         let _entered = runtime.enter();
         Azure::with_connector(access, connector, object_store::RetryConfig::default(), secrets)
@@ -1040,7 +1041,7 @@ fn aws_domain(region: &str) -> &'static str {
 }
 
 /// The client the store and the AssumeRole call go through: this process's TLS, so its FIPS provider and the
-/// identity's authorities, and the environment's proxy, which never covers loopback.
+/// connector's authorities, and the environment's proxy, which never covers loopback.
 #[derive(Clone, Debug)]
 pub struct Connector {
     tls: rustls::ClientConfig,
@@ -1063,21 +1064,21 @@ impl HttpConnector for Connector {
     }
 }
 
-/// What the client presents and trusts (`io::trust`). Without an identity, no certificate.
-pub(crate) fn tls(identity: Option<&Identity>, secrets: &HeldSecrets) -> Result<rustls::ClientConfig, IoError> {
+/// What the client presents and trusts (`io::trust`). Speaking no TLS of its own, no certificate.
+pub(crate) fn client_config(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<rustls::ClientConfig, IoError> {
     let builder = rustls::ClientConfig::builder_with_provider(crate::crypto::in_use())
         .with_safe_default_protocol_versions()
         .map_err(|e| IoError::transient(format!("object store: {e}")))?
-        .with_root_certificates(super::trust::store(identity)?);
-    let Some(identity) = identity else {
+        .with_root_certificates(super::trust::store(tls)?);
+    let Some(tls) = tls else {
         return Ok(builder.with_no_client_auth());
     };
-    let Some(presented) = super::trust::presented(identity, secrets)? else {
+    let Some(presented) = super::trust::presented(tls, secrets)? else {
         return Ok(builder.with_no_client_auth());
     };
     builder
         .with_client_auth_cert(presented.chain, presented.key)
-        .map_err(|e| IoError::transient(format!("the identity {:?}: its certificate and key: {e}", identity.id)))
+        .map_err(|e| IoError::transient(format!("{}: its certificate and key: {e}", tls.of)))
 }
 
 /// How long before they expire storage credentials are renewed, an assumed role's or what a table's catalog vends: a
@@ -1271,7 +1272,7 @@ mod tests {
             version: 1,
         };
         let connector = Connector {
-            tls: tls(None, &secrets).unwrap(),
+            tls: client_config(None, &secrets).unwrap(),
         };
         (secrets, secret, connector)
     }
@@ -1365,7 +1366,7 @@ mod tests {
         let runtime = runtime().unwrap();
         let get = |allow_http| {
             let client = Connector {
-                tls: tls(None, &HeldSecrets::default()).unwrap(),
+                tls: client_config(None, &HeldSecrets::default()).unwrap(),
             }
             .connect(&ClientOptions::new().with_allow_http(allow_http))
             .unwrap();

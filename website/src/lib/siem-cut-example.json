@@ -1,0 +1,336 @@
+{
+  "steps": [
+    {
+      "type": "parser",
+      "id": "fields",
+      "filter": null,
+      "disabled": false,
+      "input": "_raw",
+      "kind": {
+        "type": "csv",
+        "delimiter": ",",
+        "rebuild": true
+      },
+      "declared": [
+        {
+          "name": "syslog_header",
+          "type": "str"
+        },
+        {
+          "name": "receive_time",
+          "type": "str"
+        },
+        {
+          "name": "serial",
+          "type": "str"
+        },
+        {
+          "name": "type",
+          "type": "str"
+        },
+        {
+          "name": "subtype",
+          "type": "str"
+        },
+        {
+          "name": "future_use2",
+          "type": "skip"
+        },
+        {
+          "name": "generated_time",
+          "type": "skip"
+        },
+        {
+          "name": "source_address",
+          "type": "str"
+        },
+        {
+          "name": "destination_address",
+          "type": "str"
+        },
+        {
+          "name": "nat_source_ip",
+          "type": "skip"
+        },
+        {
+          "name": "nat_destination_ip",
+          "type": "skip"
+        },
+        {
+          "name": "rule_name",
+          "type": "str"
+        },
+        {
+          "name": "source_user",
+          "type": "str"
+        },
+        {
+          "name": "destination_user",
+          "type": "skip"
+        },
+        {
+          "name": "application",
+          "type": "str"
+        },
+        {
+          "name": "virtual_system",
+          "type": "skip"
+        },
+        {
+          "name": "source_zone",
+          "type": "str"
+        },
+        {
+          "name": "destination_zone",
+          "type": "str"
+        },
+        {
+          "name": "inbound_interface",
+          "type": "skip"
+        },
+        {
+          "name": "outbound_interface",
+          "type": "skip"
+        },
+        {
+          "name": "log_action",
+          "type": "skip"
+        },
+        {
+          "name": "future_use3",
+          "type": "skip"
+        },
+        {
+          "name": "session_id",
+          "type": "skip"
+        },
+        {
+          "name": "repeat_count",
+          "type": "skip"
+        },
+        {
+          "name": "source_port",
+          "type": "str"
+        },
+        {
+          "name": "destination_port",
+          "type": "str"
+        },
+        {
+          "name": "nat_source_port",
+          "type": "skip"
+        },
+        {
+          "name": "nat_destination_port",
+          "type": "skip"
+        },
+        {
+          "name": "flags",
+          "type": "skip"
+        },
+        {
+          "name": "protocol",
+          "type": "str"
+        },
+        {
+          "name": "action",
+          "type": "str"
+        },
+        {
+          "name": "bytes",
+          "type": "skip"
+        },
+        {
+          "name": "bytes_sent",
+          "type": "str"
+        },
+        {
+          "name": "bytes_received",
+          "type": "str"
+        },
+        {
+          "name": "packets",
+          "type": "skip"
+        },
+        {
+          "name": "start_time",
+          "type": "skip"
+        },
+        {
+          "name": "elapsed_time",
+          "type": "skip"
+        },
+        {
+          "name": "category",
+          "type": "skip"
+        },
+        {
+          "name": "future_use4",
+          "type": "skip"
+        },
+        {
+          "name": "sequence_number",
+          "type": "skip"
+        },
+        {
+          "name": "action_flags",
+          "type": "skip"
+        },
+        {
+          "name": "source_location",
+          "type": "skip"
+        },
+        {
+          "name": "destination_location",
+          "type": "skip"
+        },
+        {
+          "name": "future_use5",
+          "type": "skip"
+        },
+        {
+          "name": "packets_sent",
+          "type": "skip"
+        },
+        {
+          "name": "packets_received",
+          "type": "skip"
+        },
+        {
+          "name": "session_end_reason",
+          "type": "str"
+        },
+        {
+          "name": "device_group_hierarchy_level_1",
+          "type": "skip"
+        },
+        {
+          "name": "device_group_hierarchy_level_2",
+          "type": "skip"
+        },
+        {
+          "name": "device_group_hierarchy_level_3",
+          "type": "skip"
+        },
+        {
+          "name": "device_group_hierarchy_level_4",
+          "type": "skip"
+        },
+        {
+          "name": "virtual_system_name",
+          "type": "skip"
+        },
+        {
+          "name": "device_name",
+          "type": "str"
+        },
+        {
+          "name": "action_source",
+          "type": "skip"
+        },
+        {
+          "name": "source_vm_uuid",
+          "type": "skip"
+        },
+        {
+          "name": "destination_vm_uuid",
+          "type": "skip"
+        },
+        {
+          "name": "tunnel_id",
+          "type": "skip"
+        },
+        {
+          "name": "monitor_tag",
+          "type": "skip"
+        },
+        {
+          "name": "parent_session_id",
+          "type": "skip"
+        },
+        {
+          "name": "parent_start_time",
+          "type": "skip"
+        },
+        {
+          "name": "tunnel_type",
+          "type": "skip"
+        },
+        {
+          "name": "sctp_association_id",
+          "type": "skip"
+        },
+        {
+          "name": "sctp_chunks",
+          "type": "skip"
+        },
+        {
+          "name": "sctp_chunks_sent",
+          "type": "skip"
+        },
+        {
+          "name": "sctp_chunks_received",
+          "type": "skip"
+        },
+        {
+          "name": "rule_uuid",
+          "type": "skip"
+        },
+        {
+          "name": "http2_connection",
+          "type": "skip"
+        },
+        {
+          "name": "app_flap_count",
+          "type": "skip"
+        }
+      ]
+    },
+    {
+      "type": "drop",
+      "id": "drop-dns",
+      "filter": null,
+      "disabled": false,
+      "condition": "application == \"dns-base\" && action == \"allow\""
+    }
+  ],
+  "input": [
+    "<14>Sep 27 14:20:05 pa-fra-01.acme.example 1,2026/09/27 14:20:05,013201007721,TRAFFIC,end,2562,2026/09/27 14:20:05,10.30.12.49,67.43.156.14,198.51.100.17,67.43.156.14,allow-outbound-web,acme\\rkowalski,,ms-office365-base,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:05,785687,1,56980,443,30321,443,0x400053,tcp,allow,9733,602,9131,10,2026/09/27 14:18:25,100,business-and-economy,,1135113757513894,0x8000000000000000,10.0.0.0-10.255.255.255,Bhutan,,2,8,tcp-rst-from-client,0,0,0,0,,pa-fra-01,from-policy,,,0,,0,,N/A,0,0,0,0,0f3ebdd3-102b-938b-8743-feb6d4ea65d0,0,0",
+    "<14>Sep 27 14:20:06 pa-nyc-01.acme.example 1,2026/09/27 14:20:06,013201001234,TRAFFIC,end,2562,2026/09/27 14:20:06,10.10.24.19,81.2.69.142,198.51.100.29,81.2.69.142,allow-infrastructure,acme\\tjohansson,,dns-base,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:06,916327,1,54883,53,37680,53,0x400053,udp,allow,4186,101,4085,5,2026/09/27 14:19:42,24,computer-and-internet-info,,1784923900156909,0x8000000000000000,10.0.0.0-10.255.255.255,United Kingdom,,2,3,aged-out,0,0,0,0,,pa-nyc-01,from-policy,,,0,,0,,N/A,0,0,0,0,f6cdb2f8-03e0-d681-5524-54f14fab6f3e,0,0",
+    "<14>Sep 27 14:20:10 pa-nyc-02.acme.example 1,2026/09/27 14:20:10,013201001235,TRAFFIC,end,2562,2026/09/27 14:20:10,10.11.28.129,89.160.20.128,198.51.100.12,89.160.20.128,allow-outbound-web,acme\\dmurphy,,github-base,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:10,320088,1,37230,443,28818,443,0x400053,tcp,allow,27290,665,26625,26,2026/09/27 14:19:49,21,business-and-economy,,4159229751391955,0x8000000000000000,10.0.0.0-10.255.255.255,Sweden,,2,24,tcp-fin,0,0,0,0,,pa-nyc-02,from-policy,,,0,,0,,N/A,0,0,0,0,0a62f486-d945-bbf3-e549-8256d64be5f0,0,0",
+    "<14>Sep 27 14:20:13 pa-fra-01.acme.example 1,2026/09/27 14:20:13,013201007721,TRAFFIC,end,2562,2026/09/27 14:20:13,10.30.14.114,67.43.156.14,198.51.100.19,67.43.156.14,allow-outbound-web,acme\\ikim,,ms-teams,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:13,986319,1,52737,443,33647,443,0x400053,tcp,allow,43649,3131,40518,40,2026/09/27 14:20:04,9,computer-and-internet-info,,8663064777282682,0x8000000000000000,10.0.0.0-10.255.255.255,Bhutan,,4,36,tcp-rst-from-client,0,0,0,0,,pa-fra-01,from-policy,,,0,,0,,N/A,0,0,0,0,8633abf8-8b72-3f2c-f7eb-b52024226d81,0,0",
+    "<14>Sep 27 14:20:14 pa-fra-01.acme.example 1,2026/09/27 14:20:14,013201007721,TRAFFIC,end,2562,2026/09/27 14:20:14,10.30.8.88,216.160.83.58,198.51.100.30,216.160.83.58,allow-outbound-web,acme\\clopez,,web-browsing,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:14,137355,1,39128,80,30192,80,0x400053,tcp,allow,6294,1906,4388,5,2026/09/27 14:20:07,7,computer-and-internet-info,,1106580589521616,0x8000000000000000,10.0.0.0-10.255.255.255,United States,,2,3,tcp-fin,0,0,0,0,,pa-fra-01,from-policy,,,0,,0,,N/A,0,0,0,0,b93e081b-5273-fb71-48b9-88aaafe17664,0,0",
+    "<14>Sep 27 14:20:21 pa-nyc-02.acme.example 1,2026/09/27 14:20:21,013201001235,TRAFFIC,end,2562,2026/09/27 14:20:21,10.11.30.92,89.160.20.113,198.51.100.12,89.160.20.113,allow-outbound-web,acme\\lnguyen,,slack-base,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:21,486872,1,37796,443,59102,443,0x400053,tcp,allow,6468,4962,1506,8,2026/09/27 14:20:14,7,computer-and-internet-info,,3620064592088223,0x8000000000000000,10.0.0.0-10.255.255.255,Sweden,,7,1,tcp-fin,0,0,0,0,,pa-nyc-02,from-policy,,,0,,0,,N/A,0,0,0,0,d37f05b6-bf00-b8ae-c24c-d92a8c71eebf,0,0",
+    "<14>Sep 27 14:20:28 pa-fra-01.acme.example 1,2026/09/27 14:20:28,013201007721,TRAFFIC,end,2562,2026/09/27 14:20:28,10.30.24.25,81.2.69.160,198.51.100.6,81.2.69.160,allow-outbound-web,acme\\lnguyen,,zoom-base,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:28,205310,1,40192,443,22120,443,0x400053,tcp,allow,7075,5707,1368,9,2026/09/27 14:19:43,45,computer-and-internet-info,,9893834267640876,0x8000000000000000,10.0.0.0-10.255.255.255,United Kingdom,,8,1,tcp-fin,0,0,0,0,,pa-fra-01,from-policy,,,0,,0,,N/A,0,0,0,0,c56d7e23-6826-bd57-6f0e-7c6c1fc58d83,0,0",
+    "<14>Sep 27 14:20:32 pa-fra-01.acme.example 1,2026/09/27 14:20:32,013201007721,TRAFFIC,deny,2562,2026/09/27 14:20:32,172.16.12.84,67.43.156.13,198.51.100.27,67.43.156.13,dmz-deny-default,,,ssl,vsys1,dmz,untrust,ethernet1/3,ethernet1/1,log-fwd-siem,2026/09/27 14:20:32,405604,1,49336,443,54112,443,0x400053,tcp,deny,0,0,0,1,2026/09/27 14:20:32,0,computer-and-internet-info,,9570623321090390,0x8000000000000000,172.16.0.0-172.31.255.255,Bhutan,,1,0,policy-deny,0,0,0,0,,pa-fra-01,from-policy,,,0,,0,,N/A,0,0,0,0,c7976afb-9808-0ef7-2c86-2f08881c3ae5,0,0",
+    "<14>Sep 27 14:20:50 pa-fra-01.acme.example 1,2026/09/27 14:20:50,013201007721,TRAFFIC,deny,2562,2026/09/27 14:20:50,10.30.21.10,175.16.199.24,198.51.100.6,175.16.199.24,block-high-risk-apps,acme\\eromero,,bittorrent,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:50,773469,1,42021,6881,23718,6881,0x400053,tcp,deny,0,0,0,1,2026/09/27 14:20:50,0,computer-and-internet-info,,7877732993364939,0x8000000000000000,10.0.0.0-10.255.255.255,China,,1,0,policy-deny,0,0,0,0,,pa-fra-01,from-policy,,,0,,0,,N/A,0,0,0,0,9fec7658-652c-7f84-0c46-7c017d864a72,0,0",
+    "<14>Sep 27 14:21:24 pa-fra-01.acme.example 1,2026/09/27 14:21:24,013201007721,TRAFFIC,end,2562,2026/09/27 14:21:24,10.30.38.147,216.160.83.61,198.51.100.4,216.160.83.61,allow-outbound-web,acme\\mgarcia,,salesforce-base,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:21:24,208579,1,60476,443,41911,443,0x400053,tcp,allow,5051,3269,1782,5,2026/09/27 14:21:03,21,business-and-economy,,4771830845413080,0x8000000000000000,10.0.0.0-10.255.255.255,United States,,4,1,tcp-fin,0,0,0,0,,pa-fra-01,from-policy,,,0,,0,,N/A,0,0,0,0,60d2a484-8c36-9856-7e0b-dfa9004adf3d,0,0"
+  ],
+  "recordsIn": 10,
+  "bytesIn": 5776,
+  "recordsOut": 9,
+  "bytesOut": 2419,
+  "rows": [
+    {
+      "raw": "<14>Sep 27 14:20:05 pa-fra-01.acme.example 1,2026/09/27 14:20:05,013201007721,TRAFFIC,end,2562,2026/09/27 14:20:05,10.30.12.49,67.43.156.14,198.51.100.17,67.43.156.14,allow-outbound-web,acme\\rkowalski,,ms-office365-base,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:05,785687,1,56980,443,30321,443,0x400053,tcp,allow,9733,602,9131,10,2026/09/27 14:18:25,100,business-and-economy,,1135113757513894,0x8000000000000000,10.0.0.0-10.255.255.255,Bhutan,,2,8,tcp-rst-from-client,0,0,0,0,,pa-fra-01,from-policy,,,0,,0,,N/A,0,0,0,0,0f3ebdd3-102b-938b-8743-feb6d4ea65d0,0,0",
+      "rawBytes": 591,
+      "output": "<14>Sep 27 14:20:05 pa-fra-01.acme.example 1,2026/09/27 14:20:05,013201007721,TRAFFIC,end,,,10.30.12.49,67.43.156.14,,,allow-outbound-web,acme\\rkowalski,,ms-office365-base,,trust,untrust,,,,,,,56980,443,,,,tcp,allow,,602,9131,,,,,,,,,,,,,tcp-rst-from-client,,,,,,pa-fra-01,,,,,,,,,,,,,,,",
+      "outputBytes": 287,
+      "reason": "Kept, with 20 of its 68 columns. The rest are left empty."
+    },
+    {
+      "raw": "<14>Sep 27 14:20:06 pa-nyc-01.acme.example 1,2026/09/27 14:20:06,013201001234,TRAFFIC,end,2562,2026/09/27 14:20:06,10.10.24.19,81.2.69.142,198.51.100.29,81.2.69.142,allow-infrastructure,acme\\tjohansson,,dns-base,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:06,916327,1,54883,53,37680,53,0x400053,udp,allow,4186,101,4085,5,2026/09/27 14:19:42,24,computer-and-internet-info,,1784923900156909,0x8000000000000000,10.0.0.0-10.255.255.255,United Kingdom,,2,3,aged-out,0,0,0,0,,pa-nyc-01,from-policy,,,0,,0,,N/A,0,0,0,0,f6cdb2f8-03e0-d681-5524-54f14fab6f3e,0,0",
+      "rawBytes": 582,
+      "output": null,
+      "outputBytes": 0,
+      "reason": "Dropped. An allowed DNS lookup."
+    },
+    {
+      "raw": "<14>Sep 27 14:20:50 pa-fra-01.acme.example 1,2026/09/27 14:20:50,013201007721,TRAFFIC,deny,2562,2026/09/27 14:20:50,10.30.21.10,175.16.199.24,198.51.100.6,175.16.199.24,block-high-risk-apps,acme\\eromero,,bittorrent,vsys1,trust,untrust,ethernet1/2,ethernet1/1,log-fwd-siem,2026/09/27 14:20:50,773469,1,42021,6881,23718,6881,0x400053,tcp,deny,0,0,0,1,2026/09/27 14:20:50,0,computer-and-internet-info,,7877732993364939,0x8000000000000000,10.0.0.0-10.255.255.255,China,,1,0,policy-deny,0,0,0,0,,pa-fra-01,from-policy,,,0,,0,,N/A,0,0,0,0,9fec7658-652c-7f84-0c46-7c017d864a72,0,0",
+      "rawBytes": 573,
+      "output": "<14>Sep 27 14:20:50 pa-fra-01.acme.example 1,2026/09/27 14:20:50,013201007721,TRAFFIC,deny,,,10.30.21.10,175.16.199.24,,,block-high-risk-apps,acme\\eromero,,bittorrent,,trust,untrust,,,,,,,42021,6881,,,,tcp,deny,,0,0,,,,,,,,,,,,,policy-deny,,,,,,pa-fra-01,,,,,,,,,,,,,,,",
+      "outputBytes": 269,
+      "reason": "Kept. A denied connection, with the same 20 columns."
+    }
+  ]
+}

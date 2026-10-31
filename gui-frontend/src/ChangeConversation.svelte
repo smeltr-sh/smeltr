@@ -268,9 +268,6 @@
     display: grid;
     gap: 0.75rem;
   }
-  .dim {
-    color: var(--dim);
-  }
   .mono {
     font-family: var(--mono);
   }

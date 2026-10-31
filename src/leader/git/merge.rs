@@ -76,13 +76,13 @@ pub fn bring_current(
 ) -> Result<BringCurrent, GitError> {
     check_branch_name(branch)?;
     if branch == MAIN_BRANCH {
-        return Err(GitError(format!(
+        return Err(GitError::invalid(format!(
             "{MAIN_BRANCH} is what everything else is brought current with"
         )));
     }
     let path = repo_path(data_dir);
     if !branch_exists(&path, branch)? {
-        return Err(GitError(format!("there is no branch {branch:?}")));
+        return Err(GitError::not_found(format!("there is no branch {branch:?}")));
     }
     let repo = open(&path)?;
     let work = resolve(&repo, &format!("refs/heads/{branch}"))?;
@@ -90,7 +90,7 @@ pub fn bring_current(
     if let Some(choices) = choices
         && (choices.main != main || choices.work != work)
     {
-        return Err(GitError(format!(
+        return Err(GitError::conflict(format!(
             "{MAIN_BRANCH} or this branch moved since the conflicts were shown -- bring it current again to see \
              them as they are now"
         )));
@@ -105,7 +105,7 @@ pub fn bring_current(
     // The merge is computed into the object database, so a conflict produces nothing to clean up: the branch is as
     // it was. Renames are not followed: a bundle names its files by what they hold, so a moved file is a removal and
     // an addition, which is how a conflict over one reads to its author too.
-    let failed = |e: String| GitError(format!("merging {MAIN_BRANCH} into {branch:?}: {e}"));
+    let failed = |e: String| GitError::failed(format!("merging {MAIN_BRANCH} into {branch:?}: {e}"));
     let options = repo
         .tree_merge_options()
         .map_err(|e| failed(e.to_string()))?
@@ -174,7 +174,7 @@ pub fn bring_current(
                     // Tables can share a file, and the file can come from only one side.
                     let side = found.follows.entry(named.clone()).or_insert(chosen);
                     if chosen.is_some() && side.is_some() && *side != chosen {
-                        return Err(GitError(format!(
+                        return Err(GitError::invalid(format!(
                             "the lookup tables that use {named} were given different sides -- keep the same side for each"
                         )));
                     }
@@ -218,7 +218,7 @@ pub fn bring_current(
         .map(|c| (c.path.as_str(), c.id.as_deref()))
         .collect();
     if let Some((path, id)) = picks.keys().find(|k| !listed.contains(*k)) {
-        return Err(GitError(format!(
+        return Err(GitError::conflict(format!(
             "{path}{} is not a conflict here -- bring it current again to see the conflicts as they are now",
             id.map(|id| format!(" ({id})")).unwrap_or_default()
         )));
@@ -274,7 +274,7 @@ pub fn bring_current(
         Ordered::Clock,
     )?;
     swap_ref_in(&repo, &format!("refs/heads/{branch}"), commit, Some(work)).map_err(|_| {
-        GitError(format!(
+        GitError::conflict(format!(
             "{branch:?} moved while it was being brought current -- try again"
         ))
     })?;
@@ -357,7 +357,7 @@ impl Trees {
     fn of(repo: &gix::Repository, work: gix::ObjectId, main: gix::ObjectId) -> Result<Self, GitError> {
         let bases = repo
             .merge_bases_many(work, &[main])
-            .map_err(|e| GitError(format!("this branch and {MAIN_BRANCH} share no commit: {e}")))?;
+            .map_err(|e| GitError::failed(format!("this branch and {MAIN_BRANCH} share no commit: {e}")))?;
         let base = match bases.as_slice() {
             [one] => Some(tree_at(repo, &one.to_string())?),
             _ => None,
@@ -383,10 +383,10 @@ impl Trees {
 
 /// The file at `path` in `tree`. A directory there is refused: a choice is of one file's content.
 fn entry(repo: &gix::Repository, tree: gix::ObjectId, path: &str) -> Result<Side, GitError> {
-    let failed = |e: String| GitError(format!("reading {path}: {e}"));
+    let failed = |e: String| GitError::failed(format!("reading {path}: {e}"));
     let tree = repo.find_tree(tree).map_err(|e| failed(e.to_string()))?;
     match tree.lookup_entry_by_path(path).map_err(|e| failed(e.to_string()))? {
-        Some(entry) if entry.mode().is_tree() => Err(GitError(format!(
+        Some(entry) if entry.mode().is_tree() => Err(GitError::invalid(format!(
             "{path} is a file on one side and a directory on the other; a side can be chosen only between files"
         ))),
         Some(entry) => Ok(Some((entry.mode(), entry.object_id()))),

@@ -31,8 +31,8 @@ use crate::expr::eval::eval;
 use crate::expr::ir::{Ir, flatten};
 use crate::heartbeat::{CaptureBatch, CaptureColumn, CaptureEnd, CaptureInvitation, CaptureReport, CapturedRow};
 use crate::io::SourceRecord;
-use crate::plan::plan::parse;
-use crate::plan::plan::{compile_patterns, ingest_fields};
+use crate::plan::compile::parse;
+use crate::plan::compile::{compile_patterns, ingest_fields};
 use crate::plan::resolve::{ResourceBuilder, SymbolTable, resolve};
 use crate::plan::topology::SourceMeta;
 
@@ -223,7 +223,7 @@ impl Session {
 
     /// Where this session would be shown rows a block keeps: the source it taps, or the destination it captures.
     fn held_at(&self) -> Option<HeldAt> {
-        match (self.tapped(), &self.invitation.destination) {
+        match (self.invitation.tapped(), &self.invitation.destination) {
             (Some(source), _) => Some(HeldAt::Source(source.id.clone())),
             (None, Some(destination)) => Some(HeldAt::Destination(destination.clone())),
             (None, None) => None,
@@ -243,20 +243,9 @@ impl Session {
         true
     }
 
-    /// The source this session captures, when it captures one.
-    fn source(&self) -> Option<&crate::config_file::SourceDto> {
-        self.invitation.source.as_ref()
-    }
-
-    /// The source a deployment reading it serves this session from, by tapping its records. None for a session that
-    /// reads its source itself wherever it is deployed.
-    fn tapped(&self) -> Option<&crate::config_file::SourceDto> {
-        self.source().filter(|_| !self.invitation.reads_source_itself())
-    }
-
     /// Whether this session takes the records a deployment reads from the source named `source`.
     fn reads(&self, source: &str) -> bool {
-        self.tapped().is_some_and(|s| s.id == source)
+        self.invitation.tapped().is_some_and(|s| s.id == source)
     }
 
     /// Whether this session captures the destination named `destination`.
@@ -471,7 +460,13 @@ impl Captures {
     /// else is going to produce it, and the session it belongs to may expire before a replacement could.
     pub fn set_deployed(&self, deployed: &Arc<crate::metrics::Subjects>) {
         let mut sessions = self.sessions.lock().unwrap();
-        sessions.retain(|_, s| !s.open() || !s.tapped().is_some_and(|source| deployed.sources.contains(&source.id)));
+        sessions.retain(|_, s| {
+            !s.open()
+                || !s
+                    .invitation
+                    .tapped()
+                    .is_some_and(|source| deployed.sources.contains(&source.id))
+        });
         self.recount(&sessions);
         *self.deployed.lock().unwrap() = deployed.clone();
     }
@@ -625,6 +620,13 @@ impl Captures {
     /// Whether a deployment is reading `source` right now.
     pub fn is_deployed(&self, source: &str) -> bool {
         self.deployed.lock().unwrap().sources.iter().any(|s| s == source)
+    }
+
+    /// Whether `admitted` needs no reader of its own: it names no source, so it was admitted finished, or a
+    /// deployment reading its source serves it, as one does any session that does not read its source itself.
+    pub fn served(&self, admitted: &Admitted) -> bool {
+        let invitation = &admitted.invitation;
+        invitation.source.is_none() || invitation.tapped().is_some_and(|source| self.is_deployed(&source.id))
     }
 
     /// Whether any session is watching `source`, by the name the author gave it. Checked before a batch's text is
@@ -997,7 +999,7 @@ pub fn written_columns(record: &DataType) -> Vec<CaptureColumn> {
 /// Every `__` field a pipeline's plan holds at its end, as a column with the slot that holds it: its `__source` fields
 /// and any `__destination` field it set. Not `__live`, which is true on every row a destination is sent, and not a name
 /// in `DESTINATION_COLUMNS`, which a destination capture fills with what the row was actually given.
-pub fn internal_columns(plan: &crate::plan::plan::Plan) -> Vec<(CaptureColumn, crate::core::id::SlotId)> {
+pub fn internal_columns(plan: &crate::plan::compile::Plan) -> Vec<(CaptureColumn, crate::core::id::SlotId)> {
     plan.tree
         .leaves()
         .into_iter()
@@ -1178,14 +1180,16 @@ pub fn run_cold_capture(
         // Admitted finished: `Session::new` said why.
         return;
     };
-    let source_id = source.id.clone();
-    let dto = cold_source_config(source, &session, invitation.start);
-    if dto.kind.sql().is_some() {
-        return run_sql_capture(captures, admitted, dto, registry, secrets);
+    let cold = Cold {
+        captures,
+        admitted,
+        config: cold_source_config(source, &session, invitation.start),
+    };
+    if cold.config.kind.sql().is_some() {
+        return run_sql_capture(&cold, registry, secrets);
     }
-    let encoding = dto.kind.encoding();
 
-    let kind = match source_kind_of(dto, invitation.identity.clone()) {
+    let kind = match source_kind_of(cold.config.clone()) {
         Ok(kind) => kind,
         Err(e) => {
             tracing::warn!(
@@ -1194,17 +1198,14 @@ pub fn run_cold_capture(
                 error = %e,
                 "a capture named a source this worker cannot build"
             );
-            captures.fail(admitted, e);
+            cold.fail(e);
             return;
         }
     };
     // Opened here it would take requests and answer them, with nothing delivered: the sender would drop what it
     // sent. A receiver is captured where it is deployed, from the records its reader takes.
     if matches!(kind, crate::plan::topology::SourceKind::Receiver(_)) {
-        captures.fail(
-            admitted,
-            "a receiver is captured only on a worker that runs it; deploy it, then capture again".to_string(),
-        );
+        cold.fail("a receiver is captured only on a worker that runs it; deploy it, then capture again".to_string());
         return;
     }
     let meta = kind.meta();
@@ -1216,14 +1217,12 @@ pub fn run_cold_capture(
     let mut secrets = secrets.clone();
     secrets.take(invitation.secrets.clone());
 
-    // `put_identities` proves the pair at save time, but the capture's own key arrived with this invitation, lent
-    // for this session alone -- proof from whenever the identity was last saved says nothing about whether that
-    // key still belongs to that certificate.
-    if let crate::plan::topology::SourceKind::Kafka(k) = &kind
-        && let Some(identity) = &k.identity
-        && let Some(why) = crate::plan::topology::identity_pairing_error(identity, &secrets)
+    // The capture's own certificate arrived with this invitation, lent for this session alone, so it is checked
+    // here as a deploy checks the ones its commit names.
+    if let Some(tls) = kind.tls()
+        && let Some(why) = crate::plan::topology::certificate_error(tls, &secrets)
     {
-        captures.fail(admitted, why);
+        cold.fail(why);
         return;
     }
 
@@ -1239,47 +1238,30 @@ pub fn run_cold_capture(
                 error = %e,
                 "a capture could not open its source"
             );
-            captures.fail(admitted, format!("opening the source failed: {e}"));
+            cold.fail(format!("opening the source failed: {e}"));
             return;
         }
     };
-    drive(
-        captures,
-        admitted,
-        source.as_mut(),
-        &meta,
-        encoding,
-        &metrics,
-        &source_id,
-        false,
-        |_| false,
-    );
+    drive(&cold, source.as_mut(), &meta, &metrics, None);
 }
 
-/// Poll `source` into `admitted` until the session closes or a deployment starts reading the source. A session that
-/// reads its source itself (`CaptureInvitation::reads_source_itself`) reads on whatever is deployed. An SQL Run
-/// (`sql_run`) ends once `read` says it has read all it reads, and a connection error ends it with that as the
+/// Poll `source` into `cold`'s session until the session closes or a deployment starts reading the source. A session
+/// that reads its source itself (`CaptureInvitation::reads_source_itself`) reads on whatever is deployed. An SQL Run
+/// passes `run`, and ends once `run` says it has read all it reads; a connection error ends it with that as the
 /// reason.
-#[allow(clippy::too_many_arguments)]
 fn drive<S: crate::io::Source + ?Sized>(
-    captures: &Captures,
-    admitted: &Admitted,
+    cold: &Cold,
     source: &mut S,
     meta: &SourceMeta,
-    encoding: crate::format::encoding::Encoding,
     metrics: &crate::metrics::MetricsHandle,
-    source_id: &str,
-    sql_run: bool,
-    read: impl Fn(&S) -> bool,
+    run: Option<fn(&S) -> bool>,
 ) {
-    let session = &admitted.invitation.session;
-    let itself = admitted.invitation.reads_source_itself();
+    let session = &cold.admitted.invitation.session;
     // A sample holds everything its source set, read or not.
     source.keep_headers(true);
 
-    // A deployment that starts reading the source serves the session from then on, unless the session reads the
-    // source itself.
-    while captures.open(admitted) && (itself || !captures.is_deployed(source_id)) {
+    // A deployment that starts reading the source serves the session from then on.
+    while cold.open() && !cold.served() {
         let records = match source.poll_batch(
             crate::worker::TICK_MAX_ROWS,
             crate::worker::TICK_MAX_BYTES,
@@ -1293,42 +1275,35 @@ fn drive<S: crate::io::Source + ?Sized>(
                     error = %e,
                     "a capture could not poll its source, so it ends with what it has"
                 );
-                captures.fail(admitted, format!("polling failed: {e}"));
+                cold.fail(format!("polling failed: {e}"));
                 return;
             }
         };
         // An SQL source reports a refused poll here rather than as an error, so it can try again next interval. A
         // capture shows the refusal instead of waiting out its deadline on it.
-        if let Some(why) = sql_run.then(|| source.connection_error()).flatten() {
-            captures.fail(admitted, why);
+        if let Some(why) = run.and_then(|_| source.connection_error()) {
+            cold.fail(why);
             return;
         }
         if records.is_empty() {
-            if read(source) {
-                captures.end(admitted);
+            if run.is_some_and(|read| read(source)) {
+                cold.end();
                 return;
             }
             continue;
         }
         // The decode ingest would have done, with this source's own encoding: a captured record is text, however it
         // was captured.
-        let decoded: Vec<String> = records
-            .iter()
-            .map(|r| {
-                meta.read_bytes(r)
-                    .map(|b| encoding.decode(b).text.into_owned())
-                    .unwrap_or_default()
-            })
-            .collect();
-        let text: Vec<&str> = decoded.iter().map(String::as_str).collect();
+        let decoded = crate::runtime::decode_records(&records, meta);
+        let text: Vec<&str> = decoded.text.iter().map(AsRef::as_ref).collect();
         // Labeled by the source's own name rather than a positional id, which `Subjects::resolve` leaves as it is:
         // the source may be in no deployment.
         metrics.incr(
             "smeltr_capture_records_total",
-            &[("source", source_id)],
+            &[("source", &cold.config.id)],
             records.len() as u64,
         );
-        captures.offer(admitted, &records, &text);
+        cold.offer(&records, &text);
     }
 }
 
@@ -1338,42 +1313,34 @@ fn drive<S: crate::io::Source + ?Sized>(
 /// has chosen anything.
 ///
 /// It reads from the beginning, at most the rows the capture wants a poll, and never commits.
-fn run_sql_capture(
-    captures: &Captures,
-    admitted: &Admitted,
-    dto: crate::config_file::SourceDto,
-    registry: &Arc<crate::metrics::Metrics>,
-    secrets: &crate::plan::topology::HeldSecrets,
-) {
+fn run_sql_capture(cold: &Cold, registry: &Arc<crate::metrics::Metrics>, secrets: &crate::plan::topology::HeldSecrets) {
     use crate::plan::topology::SqlDatabase;
-    let invitation = &admitted.invitation;
-    let (kind, sql) = dto.kind.sql().expect("only an SQL source is run here");
-    let query = match crate::io::sql::Query::parse(&sql.query, kind.dialect()) {
+    let invitation = &cold.admitted.invitation;
+    let (kind, sql) = cold.config.kind.sql().expect("only an SQL source is run here");
+    // A source with fields declared is loaded as a save loads it, own order and all (`source_kind_of`, below).
+    let query = match crate::io::sql::Query::parse_for_run(&sql.query, kind.dialect()) {
         Ok(query) => query,
-        Err(why) => return captures.fail(admitted, format!("the query: {why}")),
+        Err(why) => return cold.fail(format!("the query: {why}")),
     };
 
     let mut secrets = secrets.clone();
     secrets.take(invitation.secrets.clone());
-    let database =
-        crate::config_file::sql_connection(&dto, invitation.identity.as_ref()).expect("an SQL source names a database");
+    let database = crate::config_file::sql_connection(&cold.config).expect("an SQL source names a database");
     let place = database.address();
     let opened = match database {
         SqlDatabase::Postgres(connection) => crate::io::postgres::PostgresDriver::new(connection, &secrets)
-            .map(|driver| run_sql_capture_on(captures, admitted, &dto, registry, driver, query, place)),
+            .map(|driver| run_sql_capture_on(cold, registry, driver, query, place)),
         SqlDatabase::MySql(connection) => crate::io::mysql::MySqlDriver::new(connection, &secrets)
-            .map(|driver| run_sql_capture_on(captures, admitted, &dto, registry, driver, query, place)),
+            .map(|driver| run_sql_capture_on(cold, registry, driver, query, place)),
     };
     if let Err(e) = opened {
-        captures.fail(admitted, format!("opening the source failed: {e}"));
+        cold.fail(format!("opening the source failed: {e}"));
     }
 }
 
 /// `run_sql_capture` once its driver is open, `place` the database it reads.
 fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
-    captures: &Captures,
-    admitted: &Admitted,
-    dto: &crate::config_file::SourceDto,
+    cold: &Cold,
     registry: &Arc<crate::metrics::Metrics>,
     mut driver: D,
     query: crate::io::sql::Query,
@@ -1381,9 +1348,8 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
 ) {
     use crate::io::sql::Poll;
     use crate::io::sql_source::{Mode, SqlSource, SqlSourceConfig};
-    let invitation = &admitted.invitation;
-    let source_id = dto.id.clone();
-    let encoding = dto.kind.encoding();
+    let invitation = &cold.admitted.invitation;
+    let dto = &cold.config;
     let (kind, sql) = dto.kind.sql().expect("only an SQL source is run here");
     // Every mode reads what the capture wants a poll: Run shows the query's first rows, never its whole result.
     let wanted = u32::try_from(invitation.max_matches).unwrap_or(u32::MAX).max(1);
@@ -1409,7 +1375,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
     );
     let described = match crate::io::sql_source::Driver::describe(&mut driver, &whole) {
         Ok(described) => described,
-        Err(why) => return captures.fail(admitted, why),
+        Err(why) => return cold.fail(why),
     };
     let columns: Vec<crate::heartbeat::SqlColumn> = described
         .iter()
@@ -1434,7 +1400,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
             .collect();
         let meta = match kind.meta().declaring(fields.clone()) {
             Ok(meta) => meta,
-            Err(why) => return captures.fail(admitted, format!("the query's columns cannot be fields: {why}")),
+            Err(why) => return cold.fail(format!("the query's columns cannot be fields: {why}")),
         };
         let config = SqlSourceConfig {
             query,
@@ -1446,7 +1412,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         };
         (config, meta)
     } else {
-        match source_kind_of(dto.clone(), invitation.identity.clone()) {
+        match source_kind_of(dto.clone()) {
             Ok(crate::plan::topology::SourceKind::Sql(sql)) => {
                 let mut config = sql.source;
                 if let Mode::Incrementing(p) | Mode::UpdatedAt(p) = &mut config.mode {
@@ -1456,7 +1422,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
                 (config, sql.meta)
             }
             Ok(_) => unreachable!("an SQL source loads as an SQL one"),
-            Err(why) => return captures.fail(admitted, why),
+            Err(why) => return cold.fail(why),
         }
     };
     let reads_past = matches!(config.mode, Mode::Incrementing(_) | Mode::UpdatedAt(_));
@@ -1490,36 +1456,56 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         None => None,
     };
     source.read_at_most(wanted);
-    captures.describe(
-        admitted,
+    cold.describe(
         crate::heartbeat::SqlRun { columns, verdict },
         declares_none.then(|| meta.clone()),
     );
     let metrics = crate::metrics::MetricsHandle::new(registry.clone(), CAPTURE_LABEL);
-    drive(
-        captures,
-        admitted,
-        &mut source,
-        &meta,
-        encoding,
-        &metrics,
-        &source_id,
-        true,
-        SqlSource::read_once,
-    );
+    drive(cold, &mut source, &meta, &metrics, Some(SqlSource::read_once));
+}
+
+/// A session this worker reads a source of its own for, and the source as it reads it (`cold_source_config`). Built
+/// once the invitation is known to name a source, so nothing after asks again.
+struct Cold<'a> {
+    captures: &'a Captures,
+    admitted: &'a Admitted,
+    config: crate::config_file::SourceDto,
+}
+
+impl Cold<'_> {
+    fn open(&self) -> bool {
+        self.captures.open(self.admitted)
+    }
+
+    fn served(&self) -> bool {
+        self.captures.served(self.admitted)
+    }
+
+    fn offer(&self, records: &[SourceRecord], text: &[&str]) {
+        self.captures.offer(self.admitted, records, text)
+    }
+
+    fn describe(&self, run: crate::heartbeat::SqlRun, meta: Option<SourceMeta>) {
+        self.captures.describe(self.admitted, run, meta)
+    }
+
+    fn fail(&self, reason: impl Into<String>) {
+        self.captures.fail(self.admitted, reason)
+    }
+
+    fn end(&self) {
+        self.captures.end(self.admitted)
+    }
 }
 
 /// How long a cold capture waits on one poll. Short enough that a deadline is noticed promptly on a silent source.
 const POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// One source DTO as the compiler's `SourceKind`, under the identity it names.
+/// One source DTO as the compiler's `SourceKind`.
 ///
 /// Loaded as a one-source configuration rather than converted by hand, so a capture's source is validated exactly as
 /// a deployment's is and there is one conversion in the codebase rather than two.
-pub fn source_kind_of(
-    dto: crate::config_file::SourceDto,
-    identity: Option<crate::config_file::IdentityDto>,
-) -> Result<crate::plan::topology::SourceKind, String> {
+pub fn source_kind_of(dto: crate::config_file::SourceDto) -> Result<crate::plan::topology::SourceKind, String> {
     let file = crate::config_file::FileConfig {
         version: crate::config_file::CURRENT_VERSION,
         sources: vec![dto],
@@ -1528,9 +1514,9 @@ pub fn source_kind_of(
         routes: Vec::new(),
         lookup_tables: Vec::new(),
         grok_patterns: Vec::new(),
-        identities: identity.into_iter().collect(),
         on_exception: None,
         name: None,
+        schemas: vec![],
     };
     let json = serde_json::to_string(&file).map_err(|e| e.to_string())?;
     let system = crate::config_file::load_str(&json).map_err(|e| e.to_string())?;
@@ -1569,7 +1555,7 @@ mod tests {
                 brokers: "b1:9092".to_string(),
                 topics: vec!["orders".to_string()],
                 group_id: "production-group".to_string(),
-                identity: None,
+                tls: Default::default(),
                 start: Default::default(),
                 stop: None,
                 fetch_bytes: Default::default(),
@@ -1579,91 +1565,20 @@ mod tests {
         }
     }
 
-    /// The identity a capture's source names travels with the invitation, and is what the rebuilt source
-    /// presents. A worker follows `main`, so an identity it had to look up is one it would not find.
+    /// A capture's certificate is delivered fresh with the invitation, so it is checked here as a deploy checks the
+    /// ones its commit names, before the source is ever opened: a Kafka source presents it as a client.
     #[test]
-    fn a_capture_rebuilds_its_source_under_the_identity_the_invitation_carried() {
+    fn a_capture_whose_certificate_cannot_be_presented_as_a_client_is_refused() {
         let key = rcgen::KeyPair::generate().unwrap();
-        let certificate = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()])
-            .unwrap()
-            .self_signed(&key)
-            .unwrap()
-            .pem();
-        let identity = crate::config_file::IdentityDto {
-            id: "acme".to_string(),
-            description: None,
-            certificate: Some(certificate),
-            key: Some(crate::config_file::SecretRefDto::LeaderStored(
-                crate::config_file::LeaderSecretDto {
-                    secret: "acme-key".to_string(),
-                    version: 1,
-                },
-            )),
-            authorities: None,
-            trust_public: None,
-        };
+        let mut params = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        let server_only = params.self_signed(&key).unwrap().pem();
+
         let mut source = kafka_source("orders");
-        if let SourceKindDto::Kafka {
-            identity: named, props, ..
-        } = &mut source.kind
-        {
-            *named = Some("acme".to_string());
-            // The operator's, not the identity's, and refused without it: librdkafka defaults to plaintext,
-            // where nothing an identity holds is used.
-            props
-                .properties
-                .insert("security.protocol".to_string(), "SSL".to_string());
-        }
-
-        let built = source_kind_of(source.clone(), Some(identity)).expect("a source under the identity it names");
-        let crate::plan::topology::SourceKind::Kafka(kafka) = built else {
-            panic!("a Kafka source did not build as one");
-        };
-        assert_eq!(
-            kafka.identity.as_ref().map(|i| i.id.as_str()),
-            Some("acme"),
-            "the source was rebuilt without the identity it connects out under"
-        );
-
-        let without = source_kind_of(source, None).expect_err("a source naming an identity nothing declared");
-        assert!(
-            without.contains("acme"),
-            "an identity the invitation did not carry was not named as the problem: {without:?}"
-        );
-    }
-
-    /// `put_identities` proves the pair at save time, but a capture's key is delivered fresh with the invitation,
-    /// naming whatever version is current now -- which a save-time proof from earlier cannot vouch for. Checked
-    /// again here, before the source is ever opened.
-    #[test]
-    fn a_capture_whose_key_does_not_belong_to_its_certificate_is_refused() {
-        let issued_to = rcgen::KeyPair::generate().unwrap();
-        let certificate = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()])
-            .unwrap()
-            .self_signed(&issued_to)
-            .unwrap()
-            .pem();
-        let someone_elses_key = rcgen::KeyPair::generate().unwrap().serialize_pem();
-
-        let identity = crate::config_file::IdentityDto {
-            id: "acme".to_string(),
-            description: None,
-            certificate: Some(certificate),
-            key: Some(crate::config_file::SecretRefDto::LeaderStored(
-                crate::config_file::LeaderSecretDto {
-                    secret: "acme-key".to_string(),
-                    version: 1,
-                },
-            )),
-            authorities: None,
-            trust_public: None,
-        };
-        let mut source = kafka_source("orders");
-        if let SourceKindDto::Kafka {
-            identity: named, props, ..
-        } = &mut source.kind
-        {
-            *named = Some("acme".to_string());
+        if let SourceKindDto::Kafka { tls, props, .. } = &mut source.kind {
+            tls.certificate = Some("acme".to_string());
+            // The operator's, and refused without it: librdkafka defaults to plaintext, where nothing the TLS
+            // settings say is used.
             props
                 .properties
                 .insert("security.protocol".to_string(), "SSL".to_string());
@@ -1671,11 +1586,11 @@ mod tests {
 
         let mut inv = invitation("s1", 10, 1_000_000, 60);
         inv.source = Some(source);
-        inv.identity = Some(identity);
         inv.secrets = vec![crate::heartbeat::SecretDelivery {
-            name: "acme-key".to_string(),
+            name: "acme".to_string(),
             version: 1,
-            value: someone_elses_key,
+            value: key.serialize_pem(),
+            chain: Some(server_only),
         }];
 
         let captures = Captures::default();
@@ -1690,8 +1605,13 @@ mod tests {
         let reports = captures.finished("w1");
         assert_eq!(reports.len(), 1);
         match &reports[0].finished {
-            Some(CaptureEnd::Failed(reason)) => assert!(reason.contains("acme"), "{reason}"),
-            other => panic!("expected Failed to name the mismatched identity, got {other:?}"),
+            Some(CaptureEnd::Failed(reason)) => {
+                assert!(
+                    reason.contains("orders") && reason.contains("client authentication"),
+                    "{reason}"
+                )
+            }
+            other => panic!("expected Failed to name the source, got {other:?}"),
         }
     }
 
@@ -1701,7 +1621,6 @@ mod tests {
             group: "prod-west".to_string(),
             source: Some(kafka_source("orders")),
             destination: None,
-            identity: None,
             secrets: Vec::new(),
             filter: None,
             start: None,

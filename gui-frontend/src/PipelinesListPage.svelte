@@ -78,7 +78,7 @@
   async function remove(id: string, name: string) {
     const ok = await ask({
       title: 'delete pipeline',
-      body: `Delete the pipeline "${name}". This cannot be undone.`,
+      body: `Delete the pipeline "${name}".`,
       action: 'Delete',
       danger: true,
     });
@@ -230,10 +230,6 @@
     height: 7px;
     border-radius: 999px;
     background: oklch(var(--scope-l) var(--scope-c) var(--shared-h, 260));
-  }
-
-  .dim {
-    color: var(--dim);
   }
 
   .sample-banner {

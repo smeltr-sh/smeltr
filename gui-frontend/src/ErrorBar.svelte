@@ -10,6 +10,8 @@
   import { errors, pageOf } from './errors.svelte';
   import { tell } from './Confirm.svelte';
   import { keepClear } from './keepClear';
+  import StateMark from './StateMark.svelte';
+  import CrossButton from './CrossButton.svelte';
 
   let { since }: { since?: number } = $props();
 
@@ -45,7 +47,7 @@
   >
     {#each shown as entry (entry.seq)}
       <div class="entry">
-        <span class="mark" aria-hidden="true">!</span>
+        <span class="mark"><StateMark state="error" size={16} /></span>
         <!-- The alert is the messages alone, without the mark and the dismiss beside them. -->
         <ul role="alert">
           {#each entry.placed?.() ?? [] as error, i (i)}
@@ -55,7 +57,9 @@
                 onclick={(e) => {
                   e.preventDefault();
                   error.go();
-                }}><span class="where">{error.where}</span> {error.message}</a
+                }}
+                >{#if error.where}<span class="where">{error.where}</span
+                  >{' '}{/if}{error.message}</a
               >
             </li>
           {/each}
@@ -63,13 +67,7 @@
             <li>{error.message}</li>
           {/each}
         </ul>
-        <button
-          type="button"
-          class="dismiss"
-          aria-label="Dismiss"
-          title="Dismiss"
-          onclick={() => errors.dismiss(entry)}>&times;</button
-        >
+        <CrossButton label="Dismiss" onclick={() => errors.dismiss(entry)} />
       </div>
     {/each}
   </div>
@@ -111,16 +109,8 @@
 
   .mark {
     flex: none;
-    display: inline-grid;
-    place-items: center;
-    width: 1.1rem;
-    height: 1.1rem;
-    margin-top: 0.1rem;
-    border-radius: 50%;
-    background: var(--error);
-    color: var(--bg);
-    font-size: var(--text-micro);
-    font-weight: 700;
+    display: flex;
+    margin-top: 0.15rem;
   }
 
   ul {
@@ -142,16 +132,5 @@
   .where {
     font-family: var(--mono);
     font-weight: 600;
-  }
-
-  .dismiss {
-    flex: none;
-    padding: 0 0.35rem;
-    border: none;
-    background: none;
-    color: var(--dim);
-    font-size: 1.1rem;
-    line-height: 1;
-    cursor: pointer;
   }
 </style>

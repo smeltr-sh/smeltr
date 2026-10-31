@@ -20,7 +20,7 @@ model at the leader's ask where it cannot, while the conversation is kept whole.
 process is a leader or a worker; both roles compile into one binary, and
 setting a leader address is what makes a process a worker. Running both in
 one process spawns a worker that talks to its own leader over the same API an
-external one uses.
+external one uses ([api.md](api.md)).
 
 ```text
 worker                                                   leader
@@ -64,7 +64,9 @@ single-worker sources it holds, a
 certificate authority it has just minted, or an operator's directive to restart
 its deployment or shut down. A directive names no commit: what to
 run is the deployed pointer, and the worker fetches it for itself over plain git and runs
-its own group's subtree merged with `shared/`. A commit that moves nothing the
+its own group's subtree merged with `shared/`. Each answer also names the commit the
+pointer is at, as a cue: a worker that has fetched that commit already does not fetch
+again, and one whose beat went unanswered fetches on its own schedule. A commit that moves nothing the
 worker runs is not a redeploy. The leader answers that fetch with git's
 protocol, and a lookup file by its SHA-256 from its lookup store, and nothing
 else: no path a worker sends returns a file git keeps to itself or one beside
@@ -75,6 +77,13 @@ them by SHA-256; the worker fetches the files its own deployment names, checks
 each against its pointer and keeps only those. The leader keeps the newest few
 versions of each uploaded file name and whatever a branch or a running
 deployment names, so a rollback reaches as far back as that.
+
+Git itself stays compact on both sides. The leader packs its repository once
+git's own limits are passed, and drops what no ref reaches once git's grace
+has passed. A deploy-log or change marker holds the commit it names as a
+parent, so what a marker names is kept with it. A worker has no git binary
+and gains a pack per fetch, so past the same limit it writes what its fetched
+and running commits reach as one pack and removes the rest.
 
 Every exchange with the leader gives up once it has stalled for a time budget,
 the first included: the fetch of the root an enrollment code names by
@@ -259,8 +268,8 @@ before every worker that held such rows when it opened has reported. A worker
 holding them takes no other row for the capture, and reports nothing, until it
 has shown them. Once a capture
 is over at the leader, what the leader holds of it is final. What it holds,
-saved, is a **sample**: a saved sample and a test built from it are bundle
-files that travel with the configuration they belong to.
+saved, is a **sample**: a bundle file on the branch it was saved to, which
+reaches `main` with the test built from it (`config-plane.md`).
 
 ## Warnings
 
@@ -277,6 +286,12 @@ running, since a certificate in the deployed bundle runs out on a date no
 heartbeat mentions. A warning is derived on every heartbeat, never stored, and
 clears when its fact stops. The catalog is fixed: each entry names a subject,
 the fact it reads and the sentence that says what to do.
+
+An entry is a failure, a warning or a notice. A notice is a fact worth knowing
+that asks nothing of anyone, such as a worker on another release of the
+leader's major. The leader gives notices only to a reader that asks for them,
+which is the Issues page alone, so no view that judges health can count one as
+trouble.
 
 A blocked source warns by what holds it, because each releases differently:
 rows only a new config lets through, rows a destination refused, or a
@@ -344,6 +359,13 @@ flowchart TD
   load the deployment they hold, and read every message.
 - **Nothing from before the first release is upgraded.** A store with no
   record of its steps is refused, with a message to move it aside.
+- **A leader says when a newer release is out.** A release leader reads the
+  releases published on GitHub, through smeltr.sh, when it starts and once a
+  day after, unless an administrator turns that off. The highest release that is
+  no pre-release, when it is newer than the leader's, is a notice. The request
+  names the leader's release and nothing else about the install, and smeltr.sh
+  counts leaders by release from it. A look that fails raises nothing, so a
+  leader that cannot reach smeltr.sh is never noisy.
 
 ## Damaged stores
 

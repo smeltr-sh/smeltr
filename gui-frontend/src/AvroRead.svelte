@@ -60,15 +60,15 @@
 
 <script lang="ts">
   import Field from './Field.svelte';
+  import CrossButton from './CrossButton.svelte';
   import SchemaRegistryFields from './SchemaRegistryFields.svelte';
   import CaptureFlow from './CaptureFlow.svelte';
-  import { FIELD_TYPES, type IdentityDto, type SecretDto, type SourceDto } from './api';
+  import { FIELD_TYPES, type SecretDto, type SourceDto } from './api';
 
   let {
     value,
     stream,
     secrets,
-    identities,
   }: {
     /** The source itself, as the page edits it. */
     value: Read;
@@ -76,13 +76,11 @@
     stream: boolean;
     /** The secret catalog, for the registry's password. */
     secrets: SecretDto[];
-    /** Every identity the source may name, for the one a capture of it reads under. */
-    identities: IdentityDto[];
   } = $props();
 
   // A fill is a capture of the source as it stands on the page: the worker answers with the fields of the schema its
   // newest message was written with.
-  let filling = $state<{ source: SourceDto; identity?: IdentityDto } | null>(null);
+  let filling = $state<{ source: SourceDto } | null>(null);
   let filled = $state<{ worker: string; fields: number } | null>(null);
 
   function startFill() {
@@ -90,9 +88,7 @@
     const source = $state.snapshot(value) as unknown as SourceDto & Read;
     // A row not yet named is one the load refuses, and the capture builds the source as the load does.
     source.fields = source.fields?.filter((f) => f.name.trim() !== '');
-    const named = 'identity' in source ? source.identity : undefined;
-    const identity = identities.find((i) => i.id === named);
-    filling = { source, identity: identity && ($state.snapshot(identity) as IdentityDto) };
+    filling = { source };
   }
 
   function take(status: CaptureStatus): string | undefined {
@@ -112,15 +108,12 @@
       <code>avro</code>: each object is an Avro file, which holds its own schema.
     {/if}
   {/snippet}
-  {#snippet note()}Default <code>text</code>.{/snippet}
   <select
     value={value.format ?? 'text'}
     onchange={(e) => setFormat(value, e.currentTarget.value as 'text' | 'avro', stream)}
   >
     <option value="text">text</option>
-    <option value="avro"
-      >{stream ? 'avro — one Avro message per record' : 'avro — records from Avro files'}</option
-    >
+    <option value="avro">avro</option>
   </select>
 </Field>
 
@@ -129,11 +122,11 @@
     <SchemaRegistryFields registry={value.schemaRegistry} {secrets} />
   {/if}
 
-  <Field field="fields" label="Avro fields, as fields of the record" group>
+  <Field optional field="fields" label="Avro fields, as fields of the record" group>
     {#snippet help()}
       Each field to read, with a type. Name a nested field with dots, such as <code>user.id</code>.
+      Top-level fields you don't list are kept.
     {/snippet}
-    {#snippet note()}Top-level fields you don't list are kept.{/snippet}
     <div class="rows">
       {#each value.fields ?? [] as f, i (i)}
         <div class="row">
@@ -148,11 +141,11 @@
             <!-- A type the list has no name for, such as an array a fill declared, is still shown. -->
             {#if !FIELD_TYPES.includes(f.type)}<option value={f.type}>{f.type}</option>{/if}
           </select>
-          <button
-            type="button"
-            aria-label="remove field {i + 1}"
-            onclick={() => value.fields?.splice(i, 1)}>×</button
-          >
+          <CrossButton
+            removes
+            label="remove field {i + 1}"
+            onclick={() => value.fields?.splice(i, 1)}
+          />
         </div>
       {/each}
       <div class="actions">

@@ -261,20 +261,20 @@ const OPERATOR_ROUTES: &[&str] = &[
     "/api/cluster",
     "/api/map",
     "/api/map/measurements",
-    "/api/stats",
-    "/api/config",
-    "/api/pipelines",
-    "/api/sources",
-    "/api/samples",
-    "/api/tests",
+    "/api/areas/shared/stats",
+    "/api/areas/shared",
+    "/api/areas/shared/pipelines",
+    "/api/areas/shared/sources",
+    "/api/areas/shared/samples",
+    "/api/areas/shared/tests",
     "/api/branches",
-    "/api/changes",
-    "/api/history",
+    "/api/branches/work/timeline",
+    "/api/main/history",
     "/api/worker-groups",
-    "/api/users",
+    "/api/accounts",
     "/api/security-events",
-    "/api/pipeline-callers",
-    "/api/connections?kind=pipeline&id=p1",
+    "/api/areas/shared/pipeline-callers",
+    "/api/areas/shared/pipelines/p1/connections",
     "/api/settings/oidc",
 ];
 
@@ -378,7 +378,7 @@ fn choosing_a_password_opens_the_rest_of_the_api() {
     })
     .to_string();
     let status = status_of(
-        ureq::post(format!("{}/api/auth/password", leader.base))
+        ureq::put(format!("{}/api/auth/password", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &first.cookie)
             .header("x-smeltr-csrf", &first.csrf)
@@ -566,7 +566,7 @@ fn a_human_cookie_does_not_open_a_worker_route() {
     let leader = start("worker-boundary");
     let session = signed_in_and_settled(&leader);
     let status = status_of(
-        ureq::post(format!("{}/api/heartbeat", leader.base))
+        ureq::post(format!("{}/api/worker/heartbeat", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &session.cookie)
             .header("x-smeltr-csrf", &session.csrf)
@@ -577,7 +577,7 @@ fn a_human_cookie_does_not_open_a_worker_route() {
     assert_eq!(status, 401, "a browser session reached the worker protocol");
 }
 
-/// A bearer token is not a session either: the header the old gate accepted is no longer read at all.
+/// A bearer token is not a session either: one that is no account's key lets nobody in.
 #[test]
 fn a_bearer_token_is_not_a_session() {
     let leader = start("bearer");
@@ -609,11 +609,11 @@ fn signing_out_ends_the_session() {
     let leader = start("logout");
     let session = signed_in_and_settled(&leader);
     let status = status_of(
-        ureq::post(format!("{}/api/auth/logout", leader.base))
+        ureq::delete(format!("{}/api/auth/session", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &session.cookie)
             .header("x-smeltr-csrf", &session.csrf)
-            .send_empty(),
+            .call(),
         "logout",
     );
     assert_eq!(status, 200);
@@ -638,7 +638,7 @@ fn signed_in_and_settled(leader: &Leader) -> Session {
         "newPassword": chosen,
     })
     .to_string();
-    ureq::post(format!("{}/api/auth/password", leader.base))
+    ureq::put(format!("{}/api/auth/password", leader.base))
         .header("origin", &leader.origin)
         .header("cookie", &first.cookie)
         .header("x-smeltr-csrf", &first.csrf)
@@ -737,6 +737,193 @@ impl Leader {
     }
 }
 
+/// What the framework refuses before a handler runs -- a body, query or path that cannot be read, a wrong method,
+/// a path nobody serves -- is answered in the envelope at its status, its own text the one error, and uncached like
+/// every answer under `/api/`.
+#[test]
+fn a_refusal_the_framework_answers_wears_the_envelope() {
+    let leader = start("framework-refusals");
+    let op = operator(&leader);
+    let send = |method: &str, path: &str, content_type: &str, body: Vec<u8>| -> (u16, serde_json::Value) {
+        let url = format!("{}{path}", leader.base);
+        let request = ureq::http::Request::builder()
+            .method(method)
+            .uri(&url)
+            .header("origin", &leader.origin)
+            .header("cookie", &op.session.cookie)
+            .header("x-smeltr-csrf", &op.session.csrf)
+            .header("content-type", content_type)
+            .body(body)
+            .unwrap();
+        let response = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .allow_non_standard_methods(true)
+            .build()
+            .new_agent()
+            .run(request)
+            .expect("the call was answered");
+        assert_eq!(response.headers()["cache-control"], "no-store", "{method} {path}");
+        let status = response.status().as_u16();
+        (
+            status,
+            response.into_body().read_json().unwrap_or(serde_json::Value::Null),
+        )
+    };
+    let json = "application/json";
+    let groups = "/api/worker-groups?branch=work";
+    let cases = [
+        ("a body that is not JSON", ("POST", groups, json, b"{".to_vec()), 400),
+        (
+            "a body of the wrong shape",
+            ("POST", groups, json, br#"{"id": 5}"#.to_vec()),
+            422,
+        ),
+        (
+            "a body that is not said to be JSON",
+            ("POST", groups, "text/plain", b"{}".to_vec()),
+            415,
+        ),
+        // Just past axum's 2 MiB, which sign-in keeps: the leader reads up to the limit before it refuses, so no more
+        // of the body is left to send when it closes, which would break the pipe under the client.
+        (
+            "a body past the limit",
+            ("POST", "/api/auth/login", json, vec![b' '; (2 << 20) + 1]),
+            413,
+        ),
+        // A signed-in person's body is read past it, so this one is answered for its shape.
+        (
+            "a person's body past sign-in's limit",
+            (
+                "POST",
+                groups,
+                json,
+                [br#"{"id": 5}"#.as_slice(), &vec![b' '; 2 << 20]].concat(),
+            ),
+            422,
+        ),
+        (
+            "a query that does not parse",
+            ("GET", "/api/warnings?info=often", json, vec![]),
+            400,
+        ),
+        (
+            "a path that does not decode",
+            ("PATCH", "/api/accounts/%FF", json, br#"{"enabled": true}"#.to_vec()),
+            400,
+        ),
+        (
+            "a method the route does not answer",
+            ("DELETE", "/api/health", json, vec![]),
+            405,
+        ),
+    ];
+    for (what, (method, path, content_type, body), want) in cases {
+        let (status, answer) = send(method, path, content_type, body);
+        assert_eq!(status, want, "{what}: {answer}");
+        assert_eq!(answer["ok"], false, "{what}: {answer}");
+        let message = answer["errors"][0]["message"].as_str().unwrap_or_default();
+        assert!(!message.is_empty(), "{what} says why: {answer}");
+    }
+    let (status, answer) = send("GET", "/api/nothing-here", json, vec![]);
+    assert_eq!(
+        (status, &answer["ok"]),
+        (404, &serde_json::Value::Bool(false)),
+        "{answer}"
+    );
+}
+
+/// A self-signed certificate for `name` and its private key, in PEM.
+fn certificate_and_key(name: &str) -> (String, String) {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let params = rcgen::CertificateParams::new(vec![name.to_string()]).unwrap();
+    (params.self_signed(&key).unwrap().pem(), key.serialize_pem())
+}
+
+/// A connector names a certificate from the list, so a save naming one the list does not hold is refused, before a
+/// worker refuses the deploy.
+#[test]
+fn a_connector_names_only_a_certificate_the_list_holds() {
+    let leader = start("certificate-named");
+    let op = operator(&leader);
+    let (status, created) = leader.post_as(
+        &op,
+        "/api/worker-groups?branch=work",
+        serde_json::json!({ "id": "west", "name": "West" }),
+    );
+    assert_eq!(
+        (status, &created["ok"]),
+        (200, &serde_json::Value::Bool(true)),
+        "{created}"
+    );
+    let receiver = serde_json::json!([{"id": "hook", "type": "httpReceiver", "port": 9443, "certificate": "receiver",
+                                              "tokens": {"t": "HOOK_TOKEN"}}]);
+
+    let (_, refused) = leader.put_as(&op, "/api/areas/west/sources?branch=work", receiver.clone());
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(
+        refused["errors"][0]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(r#"source "hook" names the certificate "receiver", which is not in"#)),
+        "{refused}"
+    );
+
+    let (certificate, private_key) = certificate_and_key("receiver.example.com");
+    let upload = serde_json::json!({"kind": "supplied", "name": "receiver", "certificate": certificate, "privateKey": private_key});
+    let (_, listed) = leader.post_as(&op, "/api/certificates", upload);
+    assert_eq!(listed["ok"], true, "{listed}");
+    let (_, saved) = leader.put_as(&op, "/api/areas/west/sources?branch=work", receiver);
+    assert_eq!(saved["ok"], true, "{saved}");
+}
+
+/// A certificate is uploaded to the list, kept out of the secrets, replaced by a new version and deleted. A key that
+/// is not the certificate's is refused before anything is stored.
+#[test]
+fn an_administrator_keeps_certificates_in_the_list() {
+    let leader = start("certificate-list");
+    let op = operator(&leader);
+    let (certificate, private_key) = certificate_and_key("receiver.example.com");
+    let (_, other_key) = certificate_and_key("other.example.com");
+
+    let upload = |key: &str| serde_json::json!({"kind": "supplied", "name": "receiver", "certificate": certificate, "privateKey": key});
+    let (_, refused) = leader.post_as(&op, "/api/certificates", upload(&other_key));
+    assert_eq!(refused["ok"], false, "a key that is not the certificate's: {refused}");
+    let (_, created) = leader.post_as(&op, "/api/certificates", upload(&private_key));
+    assert_eq!(created["ok"], true, "{created}");
+
+    let (status, listed) = leader.get_as(&op.session, "/api/certificates");
+    assert_eq!(status, 200);
+    assert_eq!(listed["certificates"][0]["name"], "receiver");
+    assert_eq!(
+        listed["certificates"][0]["chain"][0]["subject"],
+        "rcgen self signed cert"
+    );
+    assert_eq!(listed["certificates"][0]["served"], false);
+    let (_, secrets) = leader.get_as(&op.session, "/api/secrets");
+    assert!(
+        !secrets.to_string().contains("receiver"),
+        "a certificate is not listed with the secrets: {secrets}"
+    );
+    let (_, value) = leader.post_as(&op, "/api/secrets/receiver/versions", serde_json::json!({"value": "x"}));
+    assert_eq!(
+        value["ok"], false,
+        "a certificate's value is not set as a secret's: {value}"
+    );
+    let verify = serde_json::json!({"version": 1, "candidate": private_key});
+    let (status, _) = leader.post_as(&op, "/api/secrets/receiver/verify", verify);
+    assert_eq!(status, 409, "a certificate's key is not verified as a secret's");
+
+    let (renewed, renewed_key) = certificate_and_key("receiver.example.com");
+    let body = serde_json::json!({"certificate": renewed, "privateKey": renewed_key});
+    let (_, replaced) = leader.put_as(&op, "/api/certificates/receiver", body);
+    assert_eq!(replaced["ok"], true, "{replaced}");
+    let (_, listed) = leader.get_as(&op.session, "/api/certificates");
+    assert_eq!(listed["certificates"][0]["versions"].as_array().map(Vec::len), Some(2));
+
+    assert_eq!(leader.delete_as(&op, "/api/secrets/receiver"), 200);
+    let (_, listed) = leader.get_as(&op.session, "/api/certificates");
+    assert_eq!(listed["certificates"], serde_json::json!([]));
+}
+
 /// The whole account lifecycle, from an administrator creating one to the new person using it.
 #[test]
 fn an_administrator_creates_an_account_that_can_then_sign_in() {
@@ -745,8 +932,8 @@ fn an_administrator_creates_an_account_that_can_then_sign_in() {
 
     let (status, created) = leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana Okafor" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "roles": ["administrator"], "username": "dana", "displayName": "Dana Okafor" }),
     );
     assert_eq!(status, 201, "{created}");
     let temporary = created["temporaryPassword"].as_str().expect("a temporary password");
@@ -918,10 +1105,10 @@ impl FakeModel {
         }
         let input = match asked.contains("write") {
             true => serde_json::json!({
-                "method": "PUT", "path": "/api/pipelines/p1", "query": {"scope": "shared", "branch": "agent-work"},
+                "method": "PUT", "path": "/api/areas/shared/pipelines/p1", "query": {"branch": "agent-work"},
                 "body": {"id": "p1", "name": "p1", "steps": []},
             }),
-            false => serde_json::json!({"method": "GET", "path": "/api/pipelines", "query": {"scope": "shared"}}),
+            false => serde_json::json!({"method": "GET", "path": "/api/areas/shared/pipelines"}),
         };
         serde_json::json!({
             "content": [{"type": "tool_use", "id": "tu_1", "name": "request", "input": input}],
@@ -935,7 +1122,7 @@ impl FakeModel {
 fn agents_on(leader: &Leader, op: &Operator, model: &FakeModel) {
     let (status, body) = leader.put_as(
         op,
-        "/api/settings/agents",
+        "/api/settings/agent",
         serde_json::json!({
             "enabled": true, "provider": "anthropic", "endpoint": model.base, "model": "claude-opus-5-5",
             "apiKey": MODEL_KEY,
@@ -954,10 +1141,10 @@ fn the_agent_apis_wait_until_ai_agents_are_turned_on() {
     let (status, body) = leader.put_as(
         &op,
         "/api/me/agent-permissions",
-        serde_json::json!({ "kind": "everything" }),
+        serde_json::json!({ "administrator": true, "default": "deployer" }),
     );
     assert_eq!(status, 409, "{body}");
-    assert_eq!(body["error"], "AI agents are not turned on");
+    assert_eq!(body["errors"][0]["message"], "AI agents are not turned on");
     let (status, _) = leader.get_as(&op.session, "/api/me/agent-permissions");
     assert_eq!(status, 200);
 
@@ -973,7 +1160,7 @@ fn ai_agents_turn_on_only_with_an_endpoint_that_answers() {
     let leader = start("agents-settings");
     let op = operator(&leader);
     let model = FakeModel::start();
-    let put = |body: serde_json::Value| leader.put_as(&op, "/api/settings/agents", body).1;
+    let put = |body: serde_json::Value| leader.put_as(&op, "/api/settings/agent", body).1;
 
     let body = put(serde_json::json!({
         "enabled": true, "provider": "anthropic", "endpoint": model.base, "model": "claude-opus-5-5",
@@ -997,7 +1184,7 @@ fn ai_agents_turn_on_only_with_an_endpoint_that_answers() {
     assert_eq!(body["settings"]["apiKeySet"], false);
 
     agents_on(&leader, &op, &model);
-    let (_, read) = leader.get_as(&op.session, "/api/settings/agents");
+    let (_, read) = leader.get_as(&op.session, "/api/settings/agent");
     assert_eq!(read["settings"]["apiKeySet"], true, "{read}");
     // Anthropic says how much its model holds.
     assert_eq!(read["settings"]["contextTokens"], MODEL_CONTEXT, "{read}");
@@ -1047,22 +1234,31 @@ fn a_person_sets_what_their_agent_may_use() {
     assert_eq!(status, 200);
     assert_eq!(
         permissions,
-        serde_json::json!({ "kind": "upto", "default": "viewer", "areas": {} })
+        serde_json::json!({ "ok": true, "errors": [], "administrator": false, "default": "viewer", "areas": {} })
     );
+    let (status, _) = leader.put_as(
+        &op,
+        "/api/me/agent-permissions",
+        serde_json::json!({ "administrator": true, "default": "deployer" }),
+    );
+    assert_eq!(status, 200);
+    let (_, permissions) = leader.get_as(&op.session, "/api/me/agent-permissions");
+    assert_eq!(
+        permissions,
+        serde_json::json!({ "ok": true, "errors": [], "administrator": true, "default": "deployer", "areas": {} })
+    );
+    let (status, _) = leader.put_as(
+        &op,
+        "/api/me/agent-permissions",
+        serde_json::json!({ "default": "viewer", "areas": { "../x": "editor" } }),
+    );
+    assert_eq!(status, 422);
     let (status, _) = leader.put_as(
         &op,
         "/api/me/agent-permissions",
         serde_json::json!({ "kind": "everything" }),
     );
-    assert_eq!(status, 200);
-    let (_, permissions) = leader.get_as(&op.session, "/api/me/agent-permissions");
-    assert_eq!(permissions, serde_json::json!({ "kind": "everything" }));
-    let (status, _) = leader.put_as(
-        &op,
-        "/api/me/agent-permissions",
-        serde_json::json!({ "kind": "upto", "default": "viewer", "areas": { "../x": "editor" } }),
-    );
-    assert_eq!(status, 400);
+    assert_eq!(status, 422, "the shape before the administrator role is refused");
 }
 
 /// The conversation `id` once its turn has ended.
@@ -1216,8 +1412,8 @@ fn a_username_cannot_be_taken_twice() {
     let create = |username: &str| {
         leader.post_as(
             &op,
-            "/api/users",
-            serde_json::json!({ "username": username, "displayName": "Someone" }),
+            "/api/accounts",
+            serde_json::json!({ "authSource": "local", "roles": ["administrator"], "username": username, "displayName": "Someone" }),
         )
     };
     assert_eq!(create("dana").0, 201);
@@ -1233,13 +1429,13 @@ fn a_renamed_account_keeps_its_username() {
     let op = operator(&leader);
     let (_, created) = leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "roles": ["administrator"], "username": "dana", "displayName": "Dana" }),
     );
     let id = created["userId"].as_str().unwrap();
     let (status, patched) = leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "displayName": "Dana Okafor" }),
     );
     assert_eq!(status, 200);
@@ -1254,11 +1450,11 @@ fn a_renamed_account_keeps_its_username() {
 fn the_last_administrator_cannot_disable_themselves() {
     let leader = start("last-admin");
     let op = operator(&leader);
-    let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users[0]["id"].as_str().unwrap();
+    let (_, users) = leader.get_as(&op.session, "/api/accounts");
+    let id = users["accounts"][0]["id"].as_str().unwrap();
     let (status, body) = leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "enabled": false }),
     );
     assert_eq!(status, 409, "{body}");
@@ -1271,8 +1467,8 @@ fn disabling_an_account_ends_its_session_at_once() {
     let op = operator(&leader);
     let (_, created) = leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "roles": ["administrator"], "username": "dana", "displayName": "Dana" }),
     );
     let id = created["userId"].as_str().unwrap().to_string();
     let temporary = created["temporaryPassword"].as_str().unwrap().to_string();
@@ -1280,7 +1476,7 @@ fn disabling_an_account_ends_its_session_at_once() {
     // Get them a working session first, so what is being withdrawn is real access rather than a restricted one.
     let theirs = leader.sign_in("dana", &temporary);
     let chosen = "another perfectly ordinary passphrase";
-    leader.post_as(
+    leader.put_as(
         &Operator {
             session: Session {
                 cookie: theirs.cookie.clone(),
@@ -1299,7 +1495,7 @@ fn disabling_an_account_ends_its_session_at_once() {
 
     leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "enabled": false }),
     );
     assert_eq!(
@@ -1309,7 +1505,11 @@ fn disabling_an_account_ends_its_session_at_once() {
     );
 
     // And re-enabling does not revive it: the session is gone, not suspended.
-    leader.patch_as(&op, &format!("/api/users/{id}"), serde_json::json!({ "enabled": true }));
+    leader.patch_as(
+        &op,
+        &format!("/api/accounts/{id}"),
+        serde_json::json!({ "enabled": true }),
+    );
     assert_eq!(leader.get_as(&theirs, "/api/health").0, 401, "an old session came back");
 }
 
@@ -1319,10 +1519,14 @@ fn disabling_an_account_ends_its_session_at_once() {
 fn revoking_sessions_ends_them_and_leaves_the_password_alone() {
     let leader = start("revoke");
     let op = operator(&leader);
-    let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users[0]["id"].as_str().unwrap().to_string();
+    let (_, users) = leader.get_as(&op.session, "/api/accounts");
+    let id = users["accounts"][0]["id"].as_str().unwrap().to_string();
 
-    let (status, _) = leader.post_as(&op, &format!("/api/users/{id}/revoke-sessions"), serde_json::json!({}));
+    let (status, _) = leader.post_as(
+        &op,
+        &format!("/api/accounts/{id}/revoke-sessions"),
+        serde_json::json!({}),
+    );
     assert_eq!(status, 200);
     assert_eq!(
         leader.get_as(&op.session, "/api/health").0,
@@ -1340,13 +1544,17 @@ fn resetting_a_password_ends_the_sessions_and_requires_a_new_choice() {
     let op = operator(&leader);
     let (_, created) = leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "roles": ["administrator"], "username": "dana", "displayName": "Dana" }),
     );
     let id = created["userId"].as_str().unwrap().to_string();
     let before = leader.sign_in("dana", created["temporaryPassword"].as_str().unwrap());
 
-    let (status, reset) = leader.post_as(&op, &format!("/api/users/{id}/reset-password"), serde_json::json!({}));
+    let (status, reset) = leader.post_as(
+        &op,
+        &format!("/api/accounts/{id}/reset-password"),
+        serde_json::json!({}),
+    );
     assert_eq!(status, 200, "{reset}");
     assert_eq!(reset["username"], "dana");
     // A session that survived would still be a must-change one and answer 403, so 401 is the session gone.
@@ -1397,14 +1605,14 @@ fn account_changes_are_audited_without_their_passwords() {
     let op = operator(&leader);
     leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "roles": ["administrator"], "username": "dana", "displayName": "Dana" }),
     );
 
     let (status, events) = leader.get_as(&op.session, "/api/security-events");
     assert_eq!(status, 200);
     let rendered = events.to_string();
-    let actions: Vec<&str> = events
+    let actions: Vec<&str> = events["events"]
         .as_array()
         .unwrap()
         .iter()
@@ -1428,13 +1636,14 @@ fn a_display_name_with_a_newline_is_refused() {
     let op = operator(&leader);
     let (status, _) = leader.post_as(
         &op,
-        "/api/users",
+        "/api/accounts",
         serde_json::json!({
+            "authSource": "local",
             "username": "dana",
             "displayName": "Dana\n<someone@else>",
         }),
     );
-    assert_eq!(status, 400);
+    assert_eq!(status, 422);
 }
 
 // -- attribution ------------------------------------------------------------
@@ -1452,13 +1661,13 @@ fn deploy_something(leader: &Leader, op: &Operator) {
 
     let (status, opened) = leader.post_as(
         op,
-        "/api/changes",
-        serde_json::json!({ "branch": "work", "title": "Add the West group", "description": "" }),
+        "/api/branches/work/open",
+        serde_json::json!({ "title": "Add the West group", "description": "" }),
     );
     assert_eq!(status, 200, "{opened}");
     assert_eq!(opened["ok"], serde_json::Value::Bool(true), "{opened}");
 
-    let (status, deployed) = leader.post_as(op, "/api/changes/work/deploy", serde_json::json!({}));
+    let (status, deployed) = leader.post_as(op, "/api/branches/work/deploy", serde_json::json!({}));
     assert_eq!(status, 200, "{deployed}");
     assert_eq!(deployed["ok"], serde_json::Value::Bool(true), "{deployed}");
 }
@@ -1468,17 +1677,17 @@ fn deploy_something(leader: &Leader, op: &Operator) {
 fn a_renamed_person_keeps_the_commits_they_wrote() {
     let leader = start("attribution-rename");
     let op = operator(&leader);
-    let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users[0]["id"].as_str().unwrap().to_string();
+    let (_, users) = leader.get_as(&op.session, "/api/accounts");
+    let id = users["accounts"][0]["id"].as_str().unwrap().to_string();
 
     deploy_something(&leader, &op);
     leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "displayName": "Someone Else" }),
     );
 
-    let (_, history) = leader.get_as(&op.session, "/api/history?limit=5");
+    let (_, history) = leader.get_as(&op.session, "/api/main/history?limit=5");
     let newest = &history["commits"][0];
     assert_eq!(
         newest["author"], "Administrator",
@@ -1493,7 +1702,7 @@ fn a_renamed_person_keeps_the_commits_they_wrote() {
 fn what_the_leader_did_for_itself_names_no_person() {
     let leader = start("attribution-system");
     let op = operator(&leader);
-    let (status, history) = leader.get_as(&op.session, "/api/history?limit=20");
+    let (status, history) = leader.get_as(&op.session, "/api/main/history?limit=20");
     assert_eq!(status, 200, "{history}");
     let seeded = history["commits"]
         .as_array()
@@ -1525,12 +1734,12 @@ fn a_client_cannot_name_the_author() {
     assert_eq!(status, 200, "{created}");
     leader.post_as(
         &op,
-        "/api/changes",
-        serde_json::json!({ "branch": "work", "title": "Add the West group", "description": "" }),
+        "/api/branches/work/open",
+        serde_json::json!({ "title": "Add the West group", "description": "" }),
     );
-    leader.post_as(&op, "/api/changes/work/deploy", serde_json::json!({}));
+    leader.post_as(&op, "/api/branches/work/deploy", serde_json::json!({}));
 
-    let (_, history) = leader.get_as(&op.session, "/api/history?limit=5");
+    let (_, history) = leader.get_as(&op.session, "/api/main/history?limit=5");
     let newest = &history["commits"][0];
     assert_eq!(newest["author"], "Administrator", "{history}");
     assert_ne!(newest["authorId"], "u_someone_else", "{history}");
@@ -1543,7 +1752,7 @@ fn a_client_cannot_name_the_author() {
 #[test]
 fn an_unknown_session_cookie_is_cleared_when_activity_is_reported() {
     let leader = start("stale-cookie");
-    let response = ureq::post(format!("{}/api/auth/activity", leader.base))
+    let response = ureq::post(format!("{}/api/auth/session/activity", leader.base))
         .header("origin", &leader.origin)
         .header("cookie", "smeltr_session=not-a-token-this-leader-issued")
         .config()
@@ -1560,7 +1769,7 @@ fn an_unknown_session_cookie_is_cleared_when_activity_is_reported() {
     assert!(cleared.contains("Max-Age=0"), "{cleared}");
     let body: serde_json::Value = response.into_body().read_json().expect("a JSON refusal");
     assert_eq!(body["ok"], serde_json::Value::Bool(false), "{body}");
-    assert!(body["error"].is_string(), "{body}");
+    assert!(body["errors"][0]["message"].is_string(), "{body}");
 }
 
 /// A required change is not asked for the password it replaces, and a settled session is: the first was issued
@@ -1571,7 +1780,7 @@ fn only_a_required_change_skips_the_current_password() {
     let session = signed_in_and_settled(&leader);
     let body = serde_json::json!({ "username": "admin", "newPassword": "a perfectly fine replacement" }).to_string();
     let status = status_of(
-        ureq::post(format!("{}/api/auth/password", leader.base))
+        ureq::put(format!("{}/api/auth/password", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &session.cookie)
             .header("x-smeltr-csrf", &session.csrf)
@@ -1579,7 +1788,7 @@ fn only_a_required_change_skips_the_current_password() {
             .send(&body),
         "password",
     );
-    assert_eq!(status, 400);
+    assert_eq!(status, 422);
     assert_eq!(
         leader.get_as(&session, "/api/health").0,
         200,
@@ -1627,7 +1836,7 @@ fn a_refused_sign_in_records_a_bounded_subject() {
     let (_, events) = leader.get_as(&op.session, "/api/security-events");
     let recorded = |sent: &str| {
         let head = &sent[..4];
-        events
+        events["events"]
             .as_array()
             .unwrap()
             .iter()
@@ -1651,19 +1860,19 @@ fn a_refused_sign_in_records_a_bounded_subject() {
 fn a_patch_changing_two_things_at_once_is_refused_before_anything_changes() {
     let leader = start("patch-atomic");
     let op = operator(&leader);
-    let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users[0]["id"].as_str().unwrap().to_string();
-    let was = users[0]["displayName"].as_str().unwrap().to_string();
+    let (_, users) = leader.get_as(&op.session, "/api/accounts");
+    let id = users["accounts"][0]["id"].as_str().unwrap().to_string();
+    let was = users["accounts"][0]["displayName"].as_str().unwrap().to_string();
 
     let (status, _) = leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "displayName": "Renamed", "enabled": false }),
     );
-    assert_eq!(status, 400);
+    assert_eq!(status, 422);
 
-    let (_, after) = leader.get_as(&op.session, "/api/users");
-    assert_eq!(after[0]["displayName"], was, "the rename landed anyway");
+    let (_, after) = leader.get_as(&op.session, "/api/accounts");
+    assert_eq!(after["accounts"][0]["displayName"], was, "the rename landed anyway");
 }
 
 /// An origin carrying a path or a query can never equal what a browser sends, so accepting it would leave every
@@ -1698,8 +1907,8 @@ fn a_configured_origin_that_is_not_one_refuses_to_start() {
 fn second_operator(leader: &Leader, op: &Operator, username: &str, display_name: &str) -> Operator {
     let (status, created) = leader.post_as(
         op,
-        "/api/users",
-        serde_json::json!({ "username": username, "displayName": display_name }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "roles": ["administrator"], "username": username, "displayName": display_name }),
     );
     assert_eq!(status, 201, "{created}");
     let temporary = created["temporaryPassword"].as_str().expect("a temporary password");
@@ -1711,7 +1920,7 @@ fn second_operator(leader: &Leader, op: &Operator, username: &str, display_name:
         "newPassword": chosen,
     })
     .to_string();
-    ureq::post(format!("{}/api/auth/password", leader.base))
+    ureq::put(format!("{}/api/auth/password", leader.base))
         .header("origin", &leader.origin)
         .header("cookie", &first.cookie)
         .header("x-smeltr-csrf", &first.csrf)
@@ -1740,14 +1949,14 @@ fn a_deploy_records_the_author_and_the_deployer_separately() {
     assert_eq!(status, 200, "{created}");
     let (status, opened) = leader.post_as(
         &dana,
-        "/api/changes",
-        serde_json::json!({ "branch": "work", "title": "Add the West group", "description": "" }),
+        "/api/branches/work/open",
+        serde_json::json!({ "title": "Add the West group", "description": "" }),
     );
     assert_eq!(status, 200, "{opened}");
-    let (status, deployed) = leader.post_as(&admin, "/api/changes/work/deploy", serde_json::json!({}));
+    let (status, deployed) = leader.post_as(&admin, "/api/branches/work/deploy", serde_json::json!({}));
     assert_eq!(status, 200, "{deployed}");
 
-    let (_, history) = leader.get_as(&admin.session, "/api/history?limit=5");
+    let (_, history) = leader.get_as(&admin.session, "/api/main/history?limit=5");
     let newest = &history["commits"][0];
     assert_eq!(
         newest["author"], "Dana Okafor",
@@ -1771,7 +1980,7 @@ fn deploying_your_own_change_names_you_as_both() {
     let op = operator(&leader);
     deploy_something(&leader, &op);
 
-    let (_, history) = leader.get_as(&op.session, "/api/history?limit=5");
+    let (_, history) = leader.get_as(&op.session, "/api/main/history?limit=5");
     let newest = &history["commits"][0];
     assert_eq!(newest["author"], "Administrator", "{history}");
     assert_eq!(newest["deployer"], "Administrator", "{history}");
@@ -1786,25 +1995,25 @@ fn a_display_name_git_cannot_hold_is_refused() {
     let op = operator(&leader);
     let (status, body) = leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana <Ops>" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "roles": ["administrator"], "username": "dana", "displayName": "Dana <Ops>" }),
     );
-    assert_eq!(status, 400, "{body}");
+    assert_eq!(status, 422, "{body}");
 
     // And the same name cannot arrive by renaming afterward.
     let (status, created) = leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana Okafor" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "roles": ["administrator"], "username": "dana", "displayName": "Dana Okafor" }),
     );
     assert_eq!(status, 201, "{created}");
     let id = created["userId"].as_str().expect("an id");
     let (status, renamed) = leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "displayName": "Dana <Ops>" }),
     );
-    assert_eq!(status, 400, "{renamed}");
+    assert_eq!(status, 422, "{renamed}");
 }
 
 /// Changing a password is throttled, and the caller is told how long to wait. A session is not a license to guess
@@ -1818,7 +2027,7 @@ fn a_throttled_caller_is_told_how_long_to_wait() {
 
     let mut seen = None;
     for _ in 0..14 {
-        let response = ureq::post(format!("{}/api/auth/password", leader.base))
+        let response = ureq::put(format!("{}/api/auth/password", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &session.cookie)
             .header("x-smeltr-csrf", &session.csrf)
@@ -1891,7 +2100,7 @@ fn an_idle_timeout_past_the_absolute_one_is_refused() {
         "/api/settings/sessions",
         serde_json::json!({ "idleSeconds": 86400, "absoluteSeconds": 3600 }),
     );
-    assert_eq!(status, 400, "{body}");
+    assert_eq!(status, 422, "{body}");
 
     let (_, settings) = leader.get_as(&op.session, "/api/settings/sessions");
     assert_eq!(
@@ -1899,6 +2108,459 @@ fn an_idle_timeout_past_the_absolute_one_is_refused() {
         30 * 60,
         "a refused pair changed something: {settings}"
     );
+}
+
+// -- key accounts ---------------------------------------------------------------
+
+/// `method path` with `key` and nothing a browser sends: no cookie, no `Origin`, no CSRF value.
+fn with_key(
+    leader: &Leader,
+    key: &str,
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> (u16, serde_json::Value) {
+    let request = ureq::http::Request::builder()
+        .method(method)
+        .uri(format!("{}{path}", leader.base))
+        .header("authorization", format!("Bearer {key}"))
+        .header("content-type", "application/json")
+        .body(body.map(|b| b.to_string()).unwrap_or_default())
+        .unwrap();
+    let response = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .new_agent()
+        .run(request)
+        .expect("the call was answered");
+    let status = response.status().as_u16();
+    (
+        status,
+        response.into_body().read_json().unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// A key account made by `op`, and its id.
+fn key_account(leader: &Leader, op: &Operator, mut body: serde_json::Value) -> String {
+    body["authSource"] = "key".into();
+    let (status, created) = leader.post_as(op, "/api/accounts", body);
+    assert_eq!(status, 201, "{created}");
+    created["id"].as_str().unwrap().to_string()
+}
+
+/// A new key for the account `id`, and the key's id.
+fn key_for(leader: &Leader, op: &Operator, id: &str) -> (String, String) {
+    let (status, created) = leader.post_as(
+        op,
+        &format!("/api/accounts/{id}/keys"),
+        serde_json::json!({ "label": "ci" }),
+    );
+    assert_eq!(status, 201, "{created}");
+    (
+        created["key"].as_str().unwrap().to_string(),
+        created["id"].as_str().unwrap().to_string(),
+    )
+}
+
+/// A key holds what its account's roles give, and nothing it does not.
+#[test]
+fn a_key_calls_the_api_with_what_its_accounts_roles_give() {
+    let leader = start("key-roles");
+    let op = operator(&leader);
+    let (status, body) = leader.put_as(
+        &op,
+        "/api/roles/smeltr-readers",
+        serde_json::json!({ "areas": { "shared": "viewer" } }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let id = key_account(
+        &leader,
+        &op,
+        serde_json::json!({ "displayName": "nightly export", "roles": ["smeltr-readers"] }),
+    );
+    let (key, _) = key_for(&leader, &op, &id);
+
+    let (status, body) = with_key(&leader, &key, "GET", "/api/areas/shared", None);
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = with_key(
+        &leader,
+        &key,
+        "PUT",
+        "/api/areas/shared/grok-patterns?branch=work",
+        Some(serde_json::json!([])),
+    );
+    assert_eq!(status, 403, "a viewer's key edited: {body}");
+    let (status, _) = with_key(&leader, &key, "GET", "/api/accounts", None);
+    assert_eq!(status, 403, "a viewer's key read the roster");
+
+    let (_, roster) = leader.get_as(&op.session, "/api/accounts");
+    let listed = &roster["accounts"][1];
+    assert_eq!(listed["authSource"], "key", "{roster}");
+    assert_eq!(listed["displayName"], "nightly export");
+    assert!(
+        listed["keys"][0]["lastUsedAt"].is_i64(),
+        "a used key reads as never used: {listed}"
+    );
+    assert!(!roster.to_string().contains(&key), "the roster carried a key");
+    assert!(
+        roster["accounts"][0].get("keys").is_none(),
+        "a person is listed with keys: {roster}"
+    );
+}
+
+/// An administrator's key needs no browser protection, since no browser attaches it, and what it does is its
+/// account's in the audit.
+#[test]
+fn an_administrators_key_changes_things_as_its_account() {
+    let leader = start("key-administrator");
+    let op = operator(&leader);
+    let id = key_account(
+        &leader,
+        &op,
+        serde_json::json!({ "displayName": "provisioner", "roles": ["administrator"] }),
+    );
+    let (key, _) = key_for(&leader, &op, &id);
+
+    let (status, body) = with_key(
+        &leader,
+        &key,
+        "PUT",
+        "/api/roles/smeltr-editors",
+        Some(serde_json::json!({ "areas": { "shared": "editor" } })),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (_, events) = leader.get_as(&op.session, "/api/security-events");
+    let put = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "role-put")
+        .expect("the role was audited");
+    assert_eq!(put["actor"], id.as_str());
+}
+
+/// The three answers a worker's token has, and for the same reasons: never made, revoked, and a store that could
+/// not say, which this cannot provoke.
+#[test]
+fn a_revoked_key_and_a_disabled_accounts_keys_are_refused() {
+    let leader = start("key-revoked");
+    let op = operator(&leader);
+    let id = key_account(
+        &leader,
+        &op,
+        serde_json::json!({ "displayName": "exporter", "roles": ["administrator"] }),
+    );
+    let (first, first_id) = key_for(&leader, &op, &id);
+    let (second, _) = key_for(&leader, &op, &id);
+
+    let (status, _) = with_key(&leader, &"0".repeat(64), "GET", "/api/health", None);
+    assert_eq!(status, 401, "a key never made");
+
+    assert_eq!(
+        leader.delete_as(&op, &format!("/api/accounts/{id}/keys/{first_id}")),
+        200
+    );
+    assert_eq!(
+        leader.delete_as(&op, &format!("/api/accounts/{id}/keys/{first_id}")),
+        404
+    );
+    let (status, _) = with_key(&leader, &first, "GET", "/api/health", None);
+    assert_eq!(status, 403, "a revoked key");
+    let (status, _) = with_key(&leader, &second, "GET", "/api/health", None);
+    assert_eq!(status, 200, "revoking one key revoked another");
+
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/accounts/{id}"),
+        serde_json::json!({ "enabled": false }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (status, _) = with_key(&leader, &second, "GET", "/api/health", None);
+    assert_eq!(status, 403, "a disabled account's key");
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/accounts/{id}"),
+        serde_json::json!({ "enabled": true }),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["keys"], serde_json::json!([]), "enabling brought keys back");
+    let (status, _) = with_key(&leader, &second, "GET", "/api/health", None);
+    assert_eq!(status, 403, "enabling brought a key back");
+
+    let (_, events) = leader.get_as(&op.session, "/api/security-events");
+    let actions: Vec<&str> = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["action"].as_str())
+        .collect();
+    for expected in [
+        "account-create",
+        "key-create",
+        "key-revoke",
+        "account-disable",
+        "account-enable",
+    ] {
+        assert!(actions.contains(&expected), "{expected} is not in {actions:?}");
+    }
+    assert!(!events.to_string().contains(&second), "an audit row carried a key");
+}
+
+/// A key is a sign-in like a password or a provider's: what it reaches is what its account holds, accounts and
+/// keys among them.
+#[test]
+fn an_administrators_key_manages_accounts() {
+    let leader = start("key-accounts");
+    let op = operator(&leader);
+    let id = key_account(
+        &leader,
+        &op,
+        serde_json::json!({ "displayName": "provisioner", "roles": ["administrator"] }),
+    );
+    let (key, _) = key_for(&leader, &op, &id);
+    let (status, body) = with_key(
+        &leader,
+        &key,
+        "POST",
+        "/api/accounts",
+        Some(serde_json::json!({ "authSource": "key", "displayName": "exporter" })),
+    );
+    assert_eq!(status, 201, "{body}");
+    let made = body["id"].as_str().unwrap().to_string();
+    let (status, body) = with_key(
+        &leader,
+        &key,
+        "POST",
+        &format!("/api/accounts/{made}/keys"),
+        Some(serde_json::json!({ "label": "made by a key" })),
+    );
+    assert_eq!(status, 201, "{body}");
+    let second = body["key"].as_str().unwrap().to_string();
+    let (status, body) = with_key(&leader, &second, "GET", "/api/me/agent-permissions", None);
+    assert_eq!(status, 200, "{body}");
+}
+
+/// One caller, one credential: a request carrying both a key and a session is neither's.
+#[test]
+fn a_key_and_a_session_together_are_refused() {
+    let leader = start("key-both");
+    let op = operator(&leader);
+    let id = key_account(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
+    let (key, _) = key_for(&leader, &op, &id);
+    let status = status_of(
+        ureq::get(format!("{}/api/health", leader.base))
+            .header("cookie", &op.session.cookie)
+            .header("authorization", format!("Bearer {key}"))
+            .call(),
+        "health",
+    );
+    assert_eq!(status, 400);
+}
+
+/// Model, points 3 and 7: display names may repeat, a role an account is given must exist, a change names one
+/// field, and a local account is given roles as a key account is.
+#[test]
+fn an_account_is_given_roles_that_exist_and_may_share_a_name() {
+    let leader = start("key-refusals");
+    let op = operator(&leader);
+    key_account(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
+    let (status, body) = leader.post_as(
+        &op,
+        "/api/accounts",
+        serde_json::json!({ "authSource": "key", "displayName": "exporter" }),
+    );
+    assert_eq!(status, 201, "a display name was refused for being taken: {body}");
+    let (status, body) = leader.post_as(
+        &op,
+        "/api/accounts",
+        serde_json::json!({ "authSource": "key", "displayName": "importer", "roles": ["nobody"] }),
+    );
+    assert_eq!(status, 422, "{body}");
+    let id = key_account(&leader, &op, serde_json::json!({ "displayName": "importer" }));
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/accounts/{id}"),
+        serde_json::json!({ "displayName": "renamed", "enabled": false }),
+    );
+    assert_eq!(status, 422, "{body}");
+    let (_, roster) = leader.get_as(&op.session, "/api/accounts");
+    let local = roster["accounts"][0]["id"].as_str().unwrap().to_string();
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/accounts/{local}"),
+        serde_json::json!({ "roles": ["administrator"] }),
+    );
+    assert_eq!(status, 200, "a local account was refused roles: {body}");
+}
+
+// -- the account model -------------------------------------------------------
+//
+// One test per thing the account model (`docs/architecture/security.md`, Identity and access) says must hold, named
+// for it.
+
+/// A local account made by `op` from `given` (its roles), signed in with a password of its own.
+fn local_signed_in(leader: &Leader, op: &Operator, username: &str, given: serde_json::Value) -> (String, Operator) {
+    let mut body = given;
+    body["authSource"] = "local".into();
+    body["username"] = username.into();
+    body["displayName"] = username.into();
+    let (status, created) = leader.post_as(op, "/api/accounts", body);
+    assert_eq!(status, 201, "{created}");
+    let id = created["userId"].as_str().unwrap().to_string();
+    let first = leader.sign_in(username, created["temporaryPassword"].as_str().unwrap());
+    let chosen = "another perfectly ordinary passphrase";
+    leader.put_as(
+        &Operator { session: first },
+        "/api/auth/password",
+        serde_json::json!({ "username": username, "newPassword": chosen }),
+    );
+    (
+        id,
+        Operator {
+            session: leader.sign_in(username, chosen),
+        },
+    )
+}
+
+/// Point 3: a local account holds only the roles it is given, signs in without being an administrator, and holds
+/// everything from the request after it is given the administrator role.
+#[test]
+fn a_local_account_holds_only_what_it_is_given() {
+    let leader = start("model-local");
+    let op = operator(&leader);
+    let (status, body) = leader.put_as(
+        &op,
+        "/api/roles/smeltr-readers",
+        serde_json::json!({ "areas": { "shared": "viewer" } }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (id, dana) = local_signed_in(&leader, &op, "dana", serde_json::json!({ "roles": ["smeltr-readers"] }));
+    let (_, session) = leader.get_as(&dana.session, "/api/auth/session");
+    assert_eq!(session["administrator"], false, "{session}");
+    assert_eq!(leader.get_as(&dana.session, "/api/areas/shared").0, 200);
+    let (status, _) = leader.put_as(
+        &dana,
+        "/api/areas/shared/grok-patterns?branch=work",
+        serde_json::json!([]),
+    );
+    assert_eq!(status, 403, "a viewer edited");
+    assert_eq!(
+        leader.get_as(&dana.session, "/api/accounts").0,
+        403,
+        "a viewer read the roster"
+    );
+
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/accounts/{id}"),
+        serde_json::json!({ "roles": ["smeltr-readers", "administrator"] }),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        leader.get_as(&dana.session, "/api/accounts").0,
+        200,
+        "made one, still not one"
+    );
+}
+
+/// Point 3: at least one enabled local administrator remains, so the last one's administrator role is not taken.
+#[test]
+fn the_last_local_administrator_keeps_the_role() {
+    let leader = start("model-last-admin");
+    let op = operator(&leader);
+    let (_, roster) = leader.get_as(&op.session, "/api/accounts");
+    let admin = roster["accounts"][0]["id"].as_str().unwrap().to_string();
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/accounts/{admin}"),
+        serde_json::json!({ "roles": [] }),
+    );
+    assert_eq!(status, 409, "{body}");
+}
+
+/// Point 5: a key may be made to expire in whole days, answered with when; only a key account holds one.
+#[test]
+fn a_key_is_made_to_expire_in_days_and_only_for_a_key_account() {
+    let leader = start("model-expiry");
+    let op = operator(&leader);
+    let id = key_account(
+        &leader,
+        &op,
+        serde_json::json!({ "displayName": "exporter", "roles": ["administrator"] }),
+    );
+    let (status, created) = leader.post_as(
+        &op,
+        &format!("/api/accounts/{id}/keys"),
+        serde_json::json!({ "label": "ci", "expiresInDays": 1 }),
+    );
+    assert_eq!(status, 201, "{created}");
+    assert_eq!(
+        created["expiresAt"].as_i64().unwrap() - created["createdAt"].as_i64().unwrap(),
+        86_400_000
+    );
+    let key = created["key"].as_str().unwrap();
+    assert_eq!(with_key(&leader, key, "GET", "/api/health", None).0, 200);
+    let (_, roster) = leader.get_as(&op.session, "/api/accounts");
+    assert_eq!(roster["accounts"][1]["keys"][0]["expiresAt"], created["expiresAt"]);
+
+    let (status, body) = leader.post_as(
+        &op,
+        &format!("/api/accounts/{id}/keys"),
+        serde_json::json!({ "expiresInDays": 0 }),
+    );
+    assert_eq!(status, 422, "{body}");
+    let admin = roster["accounts"][0]["id"].as_str().unwrap().to_string();
+    let (status, body) = leader.post_as(&op, &format!("/api/accounts/{admin}/keys"), serde_json::json!({}));
+    assert_eq!(status, 404, "a local account was given a key: {body}");
+}
+
+/// Points 2 and 7: a key account sets its own agent permissions as any account does, through its key.
+#[test]
+fn a_key_account_sets_its_own_agent_permissions() {
+    let leader = start("model-key-agent");
+    let op = operator(&leader);
+    let model = FakeModel::start();
+    agents_on(&leader, &op, &model);
+    let id = key_account(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
+    let (key, _) = key_for(&leader, &op, &id);
+    let (status, body) = with_key(
+        &leader,
+        &key,
+        "PUT",
+        "/api/me/agent-permissions",
+        Some(serde_json::json!({ "administrator": true, "default": "deployer" })),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (_, permissions) = with_key(&leader, &key, "GET", "/api/me/agent-permissions", None);
+    assert_eq!(permissions["administrator"], true);
+}
+
+/// Point 7: renaming and disabling are one write for every account, audited alike.
+#[test]
+fn every_account_is_renamed_and_disabled_alike() {
+    let leader = start("model-same-writes");
+    let op = operator(&leader);
+    let (local, _) = local_signed_in(&leader, &op, "dana", serde_json::json!({}));
+    let key = key_account(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
+    for id in [&local, &key] {
+        for change in [
+            serde_json::json!({ "displayName": "same" }),
+            serde_json::json!({ "enabled": false }),
+        ] {
+            let (status, body) = leader.patch_as(&op, &format!("/api/accounts/{id}"), change);
+            assert_eq!(status, 200, "{body}");
+        }
+    }
+    let (_, events) = leader.get_as(&op.session, "/api/security-events");
+    let actions = |action: &str| {
+        events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["action"] == action && (e["target"] == local.as_str() || e["target"] == key.as_str()))
+            .count()
+    };
+    assert_eq!((actions("account-rename"), actions("account-disable")), (2, 2));
 }
 
 // -- OIDC sign-in --------------------------------------------------------------
@@ -2178,7 +2840,7 @@ fn oidc_sign_in(leader: &Leader) -> (String, Option<String>) {
     (location(&returned), set_cookie(&returned, "smeltr_session"))
 }
 
-fn configure_oidc(leader: &Leader, op: &Operator, provider: &Provider, required_group: &str) -> serde_json::Value {
+fn configure_oidc(leader: &Leader, op: &Operator, provider: &Provider, admin_group: &str) -> serde_json::Value {
     let (status, body) = leader.put_as(
         op,
         "/api/settings/oidc",
@@ -2187,15 +2849,14 @@ fn configure_oidc(leader: &Leader, op: &Operator, provider: &Provider, required_
             "issuer": provider.base,
             "clientId": CLIENT_ID,
             "clientSecret": CLIENT_SECRET,
-            "requiredGroup": required_group,
         }),
     );
     assert_eq!(status, 200);
-    // The required group is also the administrators' role, so a sign-in through it holds the fleet.
+    // The administrator role, given by the group, which is also what lets a person holding it in.
     let (status, role) = leader.put_as(
         op,
-        &format!("/api/roles/{required_group}"),
-        serde_json::json!({ "administrator": true }),
+        "/api/roles/administrator",
+        serde_json::json!({ "groups": [admin_group] }),
     );
     assert_eq!(status, 200, "{role}");
     body
@@ -2257,16 +2918,16 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
     };
     let (status, body) = leader.post_as(
         &oidc_op,
-        "/api/users",
-        serde_json::json!({ "username": "grace", "displayName": "Grace" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "roles": ["administrator"], "username": "grace", "displayName": "Grace" }),
     );
     assert_eq!(status, 201, "{body}");
 
     // Signing in again is the same account, not a second one.
     let (ended, _) = oidc_sign_in(&leader);
     assert_eq!(ended, "/");
-    let (_, users) = leader.get_as(&op.session, "/api/users");
-    let oidc: Vec<_> = users
+    let (_, users) = leader.get_as(&op.session, "/api/accounts");
+    let oidc: Vec<_> = users["accounts"]
         .as_array()
         .expect("a roster")
         .iter()
@@ -2276,7 +2937,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
     assert_eq!(oidc[0]["providerLogin"], "ada@example.com", "{users}");
     let id = oidc[0]["id"].as_str().unwrap().to_string();
 
-    // Out of the required group, the provider's word is not enough.
+    // In no group a role names, the provider's word is not enough.
     provider.becomes(Person {
         groups: vec![],
         ..ada()
@@ -2287,7 +2948,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
     provider.becomes(ada());
     let (status, body) = leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "enabled": false }),
     );
     assert_eq!(status, 200, "{body}");
@@ -2295,7 +2956,11 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
     assert_eq!(oidc_sign_in(&leader), ("/?oidc=refused".to_string(), None));
 
     // Enabled again, it signs in afresh, and the session disabling ended stays ended.
-    let (status, body) = leader.patch_as(&op, &format!("/api/users/{id}"), serde_json::json!({ "enabled": true }));
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/accounts/{id}"),
+        serde_json::json!({ "enabled": true }),
+    );
     assert_eq!(status, 200, "{body}");
     let (ended, again) = oidc_sign_in(&leader);
     assert_eq!(ended, "/");
@@ -2304,7 +2969,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
 
     // Every refusal is on the record, and so is what the settings change touched.
     let (_, events) = leader.get_as(&op.session, "/api/security-events");
-    let rows = events.as_array().unwrap();
+    let rows = events["events"].as_array().unwrap();
     let refused = rows
         .iter()
         .filter(|e| e["action"] == "login" && e["outcome"] == "refused")
@@ -2315,7 +2980,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
         .find(|e| e["action"] == "oidc-change")
         .expect("an oidc-change row");
     assert_eq!(
-        change["target"], "turned on, issuer, client id, client secret, required group",
+        change["target"], "turned on, issuer, client id, client secret",
         "{events}"
     );
 
@@ -2409,7 +3074,6 @@ fn turning_oidc_off_ends_a_sign_in_under_way() {
         "/api/settings/oidc",
         serde_json::json!({
             "enabled": false, "issuer": provider.base, "clientId": CLIENT_ID,
-            "requiredGroup": "smeltr-admins",
         }),
     );
     assert_eq!(body["ok"], true, "{body}");
@@ -2446,23 +3110,12 @@ fn a_sign_in_started_at_an_alias_moves_to_the_configured_origin() {
 fn a_provider_that_cannot_be_read_is_refused_when_saved() {
     let leader = start("oidc-refused");
     let op = operator(&leader);
-    // A provider anyone can sign up to would otherwise make every one of its accounts an administrator.
-    let provider = Provider::start(ada());
-    let (_, body) = leader.put_as(
-        &op,
-        "/api/settings/oidc",
-        serde_json::json!({
-            "enabled": true, "issuer": provider.base, "clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET,
-        }),
-    );
-    assert_eq!(body["ok"], false, "saved with no required group: {body}");
     for issuer in ["http://127.0.0.1:1", "http://id.example.com"] {
         let (_, body) = leader.put_as(
             &op,
             "/api/settings/oidc",
             serde_json::json!({
                 "enabled": true, "issuer": issuer, "clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET,
-                "requiredGroup": "smeltr-admins",
             }),
         );
         assert_eq!(body["ok"], false, "{issuer}: {body}");
@@ -2477,7 +3130,7 @@ fn a_provider_that_cannot_be_read_is_refused_when_saved() {
 
 // -- what an area-restricted account may do -----------------------------------
 
-/// The group every provider account here signs in with. It lets a person in and gives them nothing: what they may
+/// The group every provider account here holds. Its role gives nothing, so it only lets a person in: what they may
 /// do comes from the other groups they hold.
 const SIGN_IN_GROUP: &str = "smeltr-users";
 
@@ -2494,11 +3147,18 @@ fn with_west_roles_and(label: &str, extra: &[(&str, &str)]) -> (Leader, Operator
     deploy_something(&leader, &op);
     let provider = Provider::start(ada());
     configure_oidc(&leader, &op, &provider, SIGN_IN_GROUP);
-    // `configure_oidc` makes its group the administrators' role; here it is only the way in.
+    // `configure_oidc` makes its group give the administrator role; here it gives a role that gives nothing.
     let roles = [
-        (SIGN_IN_GROUP, serde_json::json!({})),
-        ("smeltr-west-view", serde_json::json!({ "areas": { "west": "viewer" } })),
-        ("smeltr-west-edit", serde_json::json!({ "areas": { "west": "editor" } })),
+        ("administrator", serde_json::json!({ "groups": [] })),
+        (SIGN_IN_GROUP, serde_json::json!({ "groups": [SIGN_IN_GROUP] })),
+        (
+            "smeltr-west-view",
+            serde_json::json!({ "groups": ["smeltr-west-view"], "areas": { "west": "viewer" } }),
+        ),
+        (
+            "smeltr-west-edit",
+            serde_json::json!({ "groups": ["smeltr-west-edit"], "areas": { "west": "editor" } }),
+        ),
     ];
     for (name, role) in roles {
         let (status, body) = leader.put_as(&op, &format!("/api/roles/{name}"), role);
@@ -2548,14 +3208,14 @@ fn a_viewer_reads_their_group_and_saves_nothing() {
     let (leader, _op, provider) = with_west_roles("oidc-viewer");
     let viewer = provider_account(&leader, &provider, &["smeltr-west-view"]);
 
-    let (status, body) = leader.get_as(&viewer.session, "/api/config?scope=west");
+    let (status, body) = leader.get_as(&viewer.session, "/api/areas/west");
     assert_eq!(status, 200, "{body}");
-    let (status, body) = leader.get_as(&viewer.session, "/api/config?scope=east");
+    let (status, body) = leader.get_as(&viewer.session, "/api/areas/east");
     assert_eq!(status, 403, "read a group no role gives: {body}");
 
-    let (status, body) = leader.put_as(&viewer, "/api/sources?scope=west&branch=dana", a_source());
+    let (status, body) = leader.put_as(&viewer, "/api/areas/west/sources?branch=dana", a_source());
     assert_eq!(status, 403, "a viewer saved: {body}");
-    let (status, body) = leader.get_as(&viewer.session, "/api/users");
+    let (status, body) = leader.get_as(&viewer.session, "/api/accounts");
     assert_eq!(status, 403, "a viewer read the roster: {body}");
 }
 
@@ -2565,25 +3225,25 @@ fn an_editor_saves_in_their_group_and_does_not_deploy() {
     let (leader, _op, provider) = with_west_roles("oidc-editor");
     let editor = provider_account(&leader, &provider, &["smeltr-west-edit"]);
 
-    let (status, body) = leader.put_as(&editor, "/api/sources?scope=west&branch=dana", a_source());
+    let (status, body) = leader.put_as(&editor, "/api/areas/west/sources?branch=dana", a_source());
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["ok"], true, "{body}");
-    let (status, body) = leader.put_as(&editor, "/api/sources?scope=east&branch=dana", a_source());
+    let (status, body) = leader.put_as(&editor, "/api/areas/east/sources?branch=dana", a_source());
     assert_eq!(status, 403, "saved in a group no role gives: {body}");
 
     let (status, body) = leader.post_as(
         &editor,
-        "/api/changes",
-        serde_json::json!({ "branch": "dana", "title": "A storefront source", "description": "" }),
+        "/api/branches/dana/open",
+        serde_json::json!({ "title": "A storefront source", "description": "" }),
     );
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["ok"], true, "{body}");
 
-    let (status, body) = leader.post_as(&editor, "/api/changes/dana/deploy", serde_json::json!({}));
+    let (status, body) = leader.post_as(&editor, "/api/branches/dana/deploy", serde_json::json!({}));
     assert_eq!(status, 403, "an editor deployed a change: {body}");
-    let (status, body) = leader.post_as(&editor, "/api/deploy", serde_json::json!({}));
+    let (status, body) = leader.post_as(&editor, "/api/main/deploy", serde_json::json!({}));
     assert_eq!(status, 403, "an editor deployed a commit: {body}");
-    let (status, body) = leader.get_as(&editor.session, "/api/users");
+    let (status, body) = leader.get_as(&editor.session, "/api/accounts");
     assert_eq!(status, 403, "an editor read the roster: {body}");
 }
 
@@ -2609,16 +3269,16 @@ fn signed_in(leader: &Leader, session: &Session) -> bool {
 fn a_group_change_at_the_provider_reaches_a_signed_in_person() {
     let (leader, _op, provider) = with_west_roles_and("oidc-refresh-groups", &[QUICK_REFRESH]);
     let dana_now = provider_account(&leader, &provider, &["smeltr-west-view"]);
-    assert_eq!(leader.get_as(&dana_now.session, "/api/config?scope=west").0, 200);
+    assert_eq!(leader.get_as(&dana_now.session, "/api/areas/west").0, 200);
 
     provider.becomes(dana(&[]));
     eventually("the viewer role going", || {
-        leader.get_as(&dana_now.session, "/api/config?scope=west").0 == 403
+        leader.get_as(&dana_now.session, "/api/areas/west").0 == 403
     });
     provider.becomes(dana(&["smeltr-west-edit"]));
     eventually("the editor role arriving", || {
         leader
-            .put_as(&dana_now, "/api/sources?scope=west&branch=dana", a_source())
+            .put_as(&dana_now, "/api/areas/west/sources?branch=dana", a_source())
             .0
             == 200
     });
@@ -2639,19 +3299,28 @@ fn a_refused_refresh_ends_the_session() {
     eventually("the session ending", || !signed_in(&leader, &dana_now.session));
 }
 
-/// Leaving the group the leader requires at sign-in ends a session as surely as never holding it.
+/// Leaving every group a role names ends a session as surely as never holding one, and leaving only some does not.
 #[test]
-fn losing_the_required_group_ends_the_session() {
-    let (leader, _op, provider) = with_west_roles_and("oidc-refresh-required", &[QUICK_REFRESH]);
+fn losing_every_group_a_role_names_ends_the_session() {
+    let (leader, _op, provider) = with_west_roles_and("oidc-refresh-roles", &[QUICK_REFRESH]);
     let dana_now = provider_account(&leader, &provider, &["smeltr-west-view"]);
 
-    let mut outside = dana(&["smeltr-west-view"]);
-    outside.groups.retain(|g| g != SIGN_IN_GROUP);
+    let mut fewer = dana(&["smeltr-west-view"]);
+    fewer.groups.retain(|g| g != SIGN_IN_GROUP);
+    provider.becomes(fewer);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert!(
+        signed_in(&leader, &dana_now.session),
+        "a role's group was still held and the session ended"
+    );
+
+    let mut outside = dana(&[]);
+    outside.groups = vec!["everyone".to_string()];
     provider.becomes(outside);
     eventually("the session ending", || !signed_in(&leader, &dana_now.session));
 }
 
-/// The way in is not a role: a person whose groups no role names signs in and is refused every operator route.
+/// A role that gives nothing lets a person in and nothing more: they are refused every operator route.
 #[test]
 fn an_account_holding_no_role_reaches_no_operator_route() {
     let (leader, _op, provider) = with_west_roles("oidc-no-role");
@@ -2663,7 +3332,7 @@ fn an_account_holding_no_role_reaches_no_operator_route() {
         let (status, body) = leader.get_as(&nobody.session, route);
         assert_eq!(status, 403, "{route} answered someone holding nothing: {body}");
     }
-    let (status, body) = leader.put_as(&nobody, "/api/sources?scope=west&branch=dana", a_source());
+    let (status, body) = leader.put_as(&nobody, "/api/areas/west/sources?branch=dana", a_source());
     assert_eq!(status, 403, "{body}");
 }
 
@@ -2721,10 +3390,10 @@ fn keycloak_sign_in(leader: &Leader, username: &str) -> (String, Option<String>)
 }
 
 /// The contract with a real provider: Keycloak's discovery, keys, login and token endpoint, and the groups claim its
-/// group membership mapper writes. A member of the required group signs in; somebody outside it does not.
+/// group membership mapper writes. A member of a role's group signs in; somebody outside it does not.
 #[test]
-fn live_keycloak_signs_in_only_the_required_group() {
-    let Some(issuer) = crate::live::keycloak("live_keycloak_signs_in_only_the_required_group") else {
+fn live_keycloak_signs_in_only_a_role_s_group() {
+    let Some(issuer) = crate::live::keycloak("live_keycloak_signs_in_only_a_role_s_group") else {
         return;
     };
     let leader = start("oidc-keycloak");
@@ -2734,10 +3403,15 @@ fn live_keycloak_signs_in_only_the_required_group() {
         "/api/settings/oidc",
         serde_json::json!({
             "enabled": true, "issuer": issuer, "clientId": "smeltr", "clientSecret": KEYCLOAK_SECRET,
-            "requiredGroup": "smeltr-admins",
         }),
     );
     assert_eq!((status, body["ok"].clone()), (200, serde_json::json!(true)), "{body}");
+    let (status, role) = leader.put_as(
+        &op,
+        "/api/roles/administrator",
+        serde_json::json!({ "groups": ["smeltr-admins"] }),
+    );
+    assert_eq!(status, 200, "{role}");
 
     let (ended, cookie) = keycloak_sign_in(&leader, "ada");
     assert_eq!(ended, "/");
@@ -2829,10 +3503,15 @@ fn live_keycloak_refreshes_and_ends_sessions() {
         "/api/settings/oidc",
         serde_json::json!({
             "enabled": true, "issuer": issuer, "clientId": "smeltr", "clientSecret": KEYCLOAK_SECRET,
-            "requiredGroup": "smeltr-admins",
         }),
     );
     assert_eq!((status, body["ok"].clone()), (200, serde_json::json!(true)), "{body}");
+    let (status, role) = leader.put_as(
+        &op,
+        "/api/roles/administrator",
+        serde_json::json!({ "groups": ["smeltr-admins"] }),
+    );
+    assert_eq!(status, 200, "{role}");
     let (bearer, admin) = keycloak_admin(&issuer);
     let cleo = KeycloakUser::make(&bearer, &admin, "cleo");
     let group = keycloak_id(&bearer, &format!("{admin}/groups?search=smeltr-admins&exact=true"));
@@ -2857,7 +3536,7 @@ fn live_keycloak_refreshes_and_ends_sessions() {
         .call()
         .unwrap();
     assert_eq!(removed.status(), 204);
-    eventually("leaving the required group ending the session", || {
+    eventually("leaving the role's group ending the session", || {
         !signed_in(&leader, &first)
     });
     let added = ureq::put(&membership)

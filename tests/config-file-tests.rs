@@ -2,8 +2,6 @@
 //! library's own tests cover load and save; this covers the last mile,
 //! that `load_str`'s output compiles and runs against real `_raw` bytes.
 
-use crate::certs;
-
 use smeltr::config_file::{load_bundle_dir, load_str};
 use smeltr::core::batch::{Batch, RAW_SLOTS, SLOT_LIVE, SLOT_RAW, raw_layout};
 
@@ -15,9 +13,9 @@ use smeltr::core::column::{Column, DataType, StrBuilder, VarType};
 use smeltr::core::ctx::Ctx;
 use smeltr::core::error::ErrorSink;
 use smeltr::core::error::ExceptionKind;
+use smeltr::plan::compile::compile;
 use smeltr::plan::config::{Answer, Payload};
 use smeltr::plan::output::run_to_json;
-use smeltr::plan::plan::compile;
 use smeltr::plan::topology::{DocIdPolicy, route_masks};
 
 fn join_errors(e: &[smeltr::plan::config::CompileError]) -> String {
@@ -323,14 +321,7 @@ fn a_previewed_record_names_its_source() {
     let source = &system.topology.sources[0];
 
     let records = sample_records(&[("t", "{}")]);
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        source.id,
-        &source.name,
-        &records,
-        budget(),
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, source, &records, budget());
     let doc = &rows[0].through[0].documents[0];
     assert!(doc.document.contains(r#""from":"s/kafka""#), "{}", doc.document);
 }
@@ -349,17 +340,10 @@ fn a_routing_field_set_before_a_parser_survives_it() {
     let compiled = system
         .compile_topology()
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
-    let source = system.topology.sources[0].id;
+    let source = &system.topology.sources[0];
 
     let records = sample_records(&[("t", r#"{"a":1}"#)]);
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        source,
-        "orders",
-        &records,
-        budget(),
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, source, &records, budget());
     let doc = &rows[0].through[0].documents[0];
     assert_eq!(
         doc.destination.get("topic").map(String::as_str),
@@ -972,6 +956,7 @@ fn a_routes_failure_setting_loads() {
         id: "p".into(),
         name: "p".into(),
         steps: Vec::new(),
+        produces: vec![],
     })
     .unwrap();
     assert_eq!(written, r#"{"id":"p","name":"p","steps":[]}"#);
@@ -1186,22 +1171,22 @@ fn an_answer_a_delivery_kind_cannot_carry_out_is_refused() {
         (
             "Unmatched",
             r#""ignore""#,
-            "the group answers Unmatched with ignore, but a Unmatched row has no route",
+            "the group answers Unmatched with ignore, but an Unmatched row has no route",
         ),
         (
             "Unmatched",
             r#""tag""#,
-            "the group answers Unmatched with tag, but a Unmatched row has no route",
+            "the group answers Unmatched with tag, but an Unmatched row has no route",
         ),
         (
             "Unprocessable",
             r#""ignore""#,
-            "answers Unprocessable with ignore, but a Unprocessable row has no record",
+            "answers Unprocessable with ignore, but an Unprocessable row has no record",
         ),
         (
             "Unprocessable",
             r#""tag""#,
-            "answers Unprocessable with tag, but a Unprocessable row has no record",
+            "answers Unprocessable with tag, but an Unprocessable row has no record",
         ),
         (
             "Refused",
@@ -1230,6 +1215,15 @@ fn an_answer_a_delivery_kind_cannot_carry_out_is_refused() {
     let err = load_str(&own).expect_err("a destination tagging").to_string();
     assert!(
         err.contains(r#"destination "main" answers Refused with tag, but a Refused row has no destination"#),
+        "{err}"
+    );
+
+    // A route is named as the Routes page names it, not by its minted id.
+    let err = load_str(&cfg_with_route(r#","exceptions":{"kinds":{"Unmatched":"tag"}}"#))
+        .expect_err("a route tagging")
+        .to_string();
+    assert!(
+        err.contains("route s \u{2192} p answers Unmatched with tag, but an Unmatched row has no route"),
         "{err}"
     );
 
@@ -1289,7 +1283,7 @@ fn a_deliver_condition_is_compiled_against_the_pipelines_output() {
     let Err(errs) = compile(EMPTY_PIPELINE, "nosuch > 3") else {
         panic!("an unknown field must not compile")
     };
-    assert!(errs[0].message.contains("deliver rule"), "{}", errs[0].message);
+    assert_eq!((errs[0].route, errs[0].rule), (Some(0), Some(0)), "{}", errs[0].message);
     let Err(errs) = compile(sets_severity, "severity") else {
         panic!("a non-Bool must not compile")
     };
@@ -1620,10 +1614,11 @@ fn a_missing_credential_environment_variable_is_refused_at_construction() {
             zone_urls: Default::default(),
             sniff: None,
             default_index: "logs".into(),
-            identity: None,
+            tls: None,
             auth: Some(smeltr::plan::topology::SecretRef::WorkerLocal(
                 "SMELTR_ES_AUTH_DEFINITELY_NOT_SET".into(),
             )),
+            basic: None,
             doc_id: Default::default(),
             id_field: None,
             in_flight: 4,
@@ -1655,17 +1650,10 @@ fn a_route_delivers_to_every_one_of_many_destinations() {
     let compiled = system
         .compile_topology()
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
-    let source = system.topology.sources[0].id;
+    let source = &system.topology.sources[0];
 
     let records = sample_records(&[("t", "{}")]);
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        source,
-        "orders",
-        &records,
-        budget(),
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, source, &records, budget());
     let mut every: Vec<u32> = system.topology.destinations.iter().map(|d| d.id).collect();
     every.sort_unstable();
     assert_eq!(rows[0].through[0].documents[0].destinations, every);
@@ -2221,17 +2209,10 @@ fn a_route_preview_says_where_each_record_would_go() {
     let compiled = system
         .compile_topology()
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
-    let source = system.topology.sources[0].id;
+    let source = &system.topology.sources[0];
 
     let records = sample_records(&[("orders", r#"{"total":250}"#), ("other", r#"{"total":40}"#)]);
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        source,
-        "orders",
-        &records,
-        budget(),
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, source, &records, budget());
     assert_eq!(rows.len(), 2);
 
     // On `orders`, so the first route matches -- and it is not final, so the catch-all sees the row too.
@@ -2277,14 +2258,7 @@ fn a_route_preview_reports_each_routes_exceptions_and_answer() {
             .find(|d| d.name == "kafka-audit")
             .unwrap()
             .id;
-        let rows = smeltr::runtime::preview_routes(
-            &compiled,
-            &system.topology.destinations,
-            system.topology.sources[0].id,
-            "orders",
-            &records,
-            budget(),
-        );
+        let rows = smeltr::runtime::preview_routes(&compiled, &system.topology.sources[0], &records, budget());
         (rows, audit)
     };
 
@@ -2335,7 +2309,7 @@ fn a_record_that_asks_past_the_preview_budget_is_refused_and_the_rest_still_prev
     let compiled = system
         .compile_topology()
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
-    let source = system.topology.sources[0].id;
+    let source = &system.topology.sources[0];
 
     // One record carrying an array that unrolls to a column far larger than the ceiling it is previewed under.
     let big = format!(
@@ -2344,14 +2318,7 @@ fn a_record_that_asks_past_the_preview_budget_is_refused_and_the_rest_still_prev
     );
     let records = sample_records(&[("orders", big.as_str()), ("orders", r#"{"items":[9]}"#)]);
     let tight = smeltr::core::buffer::MemoryBudget::new(64 * 1024);
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        source,
-        "orders",
-        &records,
-        tight,
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, source, &records, tight);
 
     assert_eq!(rows.len(), 2, "one entry per input record");
     let refused = rows[0].refused.as_deref().expect("the big record was refused");
@@ -2391,18 +2358,11 @@ fn a_pipeline_that_unrolls_attributes_every_document_to_the_record_it_came_from(
     let compiled = system
         .compile_topology()
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
-    let source = system.topology.sources[0].id;
+    let source = &system.topology.sources[0];
 
     // Two records with different fan-out, so a positional mapping would both overrun and misattribute.
     let records = sample_records(&[("orders", r#"{"items":[1,2,3]}"#), ("orders", r#"{"items":[9]}"#)]);
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        source,
-        "orders",
-        &records,
-        budget(),
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, source, &records, budget());
 
     assert_eq!(rows.len(), 2, "one entry per input record, whatever the pipeline did");
     assert_eq!(rows[0].through.len(), 1, "one route kept it");
@@ -2428,17 +2388,13 @@ fn a_record_no_route_matches_is_distinguishable_from_a_dropped_one() {
         .compile_topology()
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
     // A source no route names: nothing can match.
-    let unrouted = smeltr::core::id::SourceId::MAX;
+    let unrouted = smeltr::plan::topology::SourceConfig {
+        id: smeltr::core::id::SourceId::MAX,
+        ..system.topology.sources[0].clone()
+    };
     let records = sample_records(&[("orders", r#"{"total":250}"#)]);
 
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        unrouted,
-        "orders",
-        &records,
-        budget(),
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, &unrouted, &records, budget());
     assert_eq!(rows.len(), 1);
     assert!(rows[0].matched.is_empty(), "no route selected it");
     assert!(rows[0].through.is_empty());
@@ -2474,9 +2430,43 @@ fn a_skip_column_holds_its_position_without_producing_a_field() {
     );
 }
 
-/// `"skip"` names a column to leave out, so it means nothing on a parser without columns, nor nested inside a struct.
+/// A step that rebuilds its input writes it back without what it skips: a CSV column left empty, a key-value pair left
+/// out. A skipped key makes no field.
 #[test]
-fn skip_is_only_a_csv_column_type() {
+fn a_rebuilding_step_writes_its_input_back_without_what_it_skips() {
+    let json = r#"{
+      "version": 1,
+      "pipelines": [
+        { "id": "c", "name": "c", "steps": [
+          { "id": "fields", "type": "parser", "input": "_raw",
+            "kind": { "type": "csv", "delimiter": ",", "rebuild": true },
+            "declared": [
+              { "name": "host", "type": "str" },
+              { "name": "unwanted", "type": "skip" },
+              { "name": "zone", "type": "str" }
+            ] } ] },
+        { "id": "k", "name": "k", "steps": [
+          { "id": "pairs", "type": "parser", "input": "_raw",
+            "kind": { "type": "keyValue", "pairSep": " ", "kvSep": "=", "rebuild": true },
+            "declared": [
+              { "name": "host", "type": "str" },
+              { "name": "unwanted", "type": "skip" }
+            ] } ] }
+      ]
+    }"#;
+    let system = load_str(json).unwrap_or_else(|e| panic!("load failed: {e}"));
+    let rows = run_pipeline(&system.pipelines[0], &["web01,secret,dmz"]);
+    assert_eq!(rows[0]["_raw"], "web01,,dmz", "{}", rows[0]);
+    let rows = run_pipeline(&system.pipelines[1], &["host=web01 unwanted=secret zone=dmz"]);
+    assert_eq!(rows[0]["_raw"], "host=web01 zone=dmz", "{}", rows[0]);
+    assert!(rows[0].get("unwanted").is_none(), "{}", rows[0]);
+    assert_eq!(rows[0]["zone"], "dmz", "{}", rows[0]);
+}
+
+/// `"skip"` names a column or a key to leave out, so it means nothing on a parser without either, nor nested inside a
+/// struct.
+#[test]
+fn skip_is_only_a_csv_or_key_value_type() {
     let on_grok = r#"{
       "version": 1,
       "pipelines": [{ "id": "p", "name": "p", "steps": [
@@ -2625,7 +2615,7 @@ fn a_minimal_http_destination_loads_with_the_defaults() {
     assert_eq!(h.payload, smeltr::plan::config::Payload::Record);
     assert_eq!(h.compression, Compression::None);
     assert!(h.headers.is_empty() && h.credentials.is_empty());
-    assert_eq!(h.max_request_bytes, 1024 * 1024);
+    assert_eq!(h.max_request_bytes, 4 * 1024 * 1024);
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     assert_eq!(
         system.topology.destinations[0].kind.placement(),
@@ -2808,7 +2798,7 @@ fn a_minimal_iceberg_destination_loads_with_the_defaults() {
     assert!(matches!(c.sign_in, CatalogSignIn::None));
     assert_eq!(c.namespace, vec!["logs".to_string(), "web".to_string()]);
     assert_eq!(c.table, "access");
-    assert!(c.partition_by.is_empty() && c.storage.is_none() && c.identity.is_none());
+    assert!(c.partition_by.is_empty() && c.storage.is_none() && c.tls.is_none());
     assert_eq!(c.compression, Compression::Zstd);
     assert_eq!(c.in_flight, 4);
     assert_eq!(c.max_object_bytes, 64 * 1024 * 1024);
@@ -3379,7 +3369,7 @@ fn a_minimal_s3_sqs_source_loads_with_the_defaults() {
     assert_eq!(queue_url, "https://sqs.us-east-1.amazonaws.com/123456789012/logs");
     assert_eq!(o.framing, Framing::Lines);
     assert_eq!(o.visibility, std::time::Duration::from_secs(60));
-    assert!(access.access_key.is_none() && access.role.is_none() && o.identity.is_none());
+    assert!(access.access_key.is_none() && access.role.is_none() && o.tls.is_none());
     assert!(system.topology.named_secrets.is_empty());
 }
 
@@ -3391,12 +3381,8 @@ fn an_s3_sqs_source_loads_with_every_field() {
         r#","region":"eu-west-1","endpoint":"https://s3.internal","authEndpoint":"https://sts.internal",
            "accessKeyId":"AWS_KEY_ID","secretAccessKey":{"secret":"aws-secret","version":2},
            "roleArn":"arn:aws:iam::123456789012:role/reader","externalId":"x-1",
-           "identity":"acme","framing":"object","encoding":"windows-1252","visibilitySecs":300"#,
+           "certificate":"acme","framing":"object","encoding":"windows-1252","visibilitySecs":300"#,
     );
-    let authority = certs::Authority::new("s3-sqs-test");
-    let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-    file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-    let json = file.to_string();
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let o = object_source(&system);
@@ -3405,7 +3391,7 @@ fn an_s3_sqs_source_loads_with_every_field() {
     assert_eq!(access.endpoint.as_deref(), Some("https://s3.internal"));
     assert_eq!(access.auth_endpoint.as_deref(), Some("https://sts.internal"));
     assert_eq!(access.role.as_ref().unwrap().external_id.as_deref(), Some("x-1"));
-    assert_eq!(o.identity.as_ref().unwrap().id, "acme");
+    assert_eq!(o.tls.as_ref().unwrap().certificate.as_deref(), Some("acme"));
     assert_eq!(o.framing, Framing::Object);
     assert_eq!(o.visibility, std::time::Duration::from_secs(300));
     let named: Vec<String> = system.topology.named_secrets.iter().map(|n| n.what.clone()).collect();
@@ -3423,26 +3409,15 @@ fn an_s3_sqs_queue_url_loads_trimmed() {
     assert_eq!(queue_url, "https://sqs.us-east-1.amazonaws.com/123456789012/logs");
 }
 
-/// An identity is refused on an object source whose every address is plain HTTP, where nothing it holds is used,
+/// A certificate is refused on an object source whose every address is plain HTTP, where nothing it holds is used,
 /// and kept while any one of them negotiates TLS.
 #[test]
-fn an_identity_on_an_object_source_reached_over_plain_http_only_is_refused() {
-    let authority = certs::Authority::new("object-source-identity-test");
-    let with_identity = |json: String| {
-        let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-        file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-        file.to_string()
-    };
-    let plain = with_identity(
-        r#"{"version":1,"sources":[{"id":"q","type":"s3Sqs","queueUrl":"http://localhost:4566/000000000000/logs",
-            "endpoint":"http://localhost:4566","identity":"acme"}]}"#
-            .to_string(),
-    );
-    let why = r#"source "q" names the identity "acme" and is reached over "http://localhost:4566/000000000000/logs""#;
-    assert!(refused_at(&plain, "queueUrl", why), "{}", refusal(&plain));
-    let one_tls = with_identity(s3_sqs_config(
-        r#","endpoint":"http://localhost:4566","identity":"acme""#,
-    ));
+fn a_certificate_on_an_object_source_reached_over_plain_http_only_is_refused() {
+    let plain = r#"{"version":1,"sources":[{"id":"q","type":"s3Sqs","queueUrl":"http://localhost:4566/000000000000/logs",
+            "endpoint":"http://localhost:4566","certificate":"acme"}]}"#;
+    let why = r#"source "q" sets TLS and is reached over "http://localhost:4566/000000000000/logs""#;
+    assert!(refused_at(plain, "queueUrl", why), "{}", refusal(plain));
+    let one_tls = s3_sqs_config(r#","endpoint":"http://localhost:4566","certificate":"acme""#);
     assert!(refusal(&one_tls).is_empty(), "{}", refusal(&one_tls));
 }
 
@@ -3503,8 +3478,8 @@ fn an_s3_sqs_source_with_bad_settings_is_refused() {
     assert!(e.contains("externalId or authEndpoint and no roleArn"), "{e}");
     let e = refusal(&s3_sqs_config(r#","authEndpoint":"https://sts.internal""#));
     assert!(e.contains("externalId or authEndpoint and no roleArn"), "{e}");
-    let e = refusal(&s3_sqs_config(r#","identity":"nobody""#));
-    assert!(e.contains("does not declare"), "{e}");
+    let e = refusal(&s3_sqs_config(r#","certificate":" ""#));
+    assert!(e.contains("blank name"), "{e}");
     let e = refusal(&s3_sqs_config(r#","encoding":"klingon""#));
     assert!(e.contains("not a name smeltr knows"), "{e}");
     for secs in ["0", "43201"] {
@@ -3596,7 +3571,7 @@ fn a_minimal_s3_list_source_loads_with_the_defaults() {
     assert_eq!(*start, ListStart::Everything);
     assert_eq!(*after_commit, AfterCommit::Keep);
     assert_eq!(o.framing, Framing::Lines);
-    assert!(access.access_key.is_none() && access.role.is_none() && o.identity.is_none());
+    assert!(access.access_key.is_none() && access.role.is_none() && o.tls.is_none());
     assert!(system.topology.named_secrets.is_empty());
     assert_eq!(
         system.topology.sources[0].kind.meta(),
@@ -3616,13 +3591,9 @@ fn an_s3_list_source_loads_with_every_field() {
         r#","prefix":"app/","region":"eu-west-1","endpoint":"https://s3.internal","authEndpoint":"https://sts.internal",
            "accessKeyId":"AWS_KEY_ID","secretAccessKey":{"secret":"aws-secret","version":2},
            "roleArn":"arn:aws:iam::123456789012:role/reader","externalId":"x-1",
-           "identity":"acme","framing":"object","encoding":"windows-1252","pollIntervalSecs":300,
+           "certificate":"acme","framing":"object","encoding":"windows-1252","pollIntervalSecs":300,
            "afterCommit":"move","movePrefix":"done/""#,
     );
-    let authority = certs::Authority::new("s3-list-test");
-    let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-    file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-    let json = file.to_string();
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let o = object_source(&system);
@@ -3649,7 +3620,7 @@ fn an_s3_list_source_loads_with_every_field() {
             prefix: "done/".to_string()
         }
     );
-    assert_eq!(o.identity.as_ref().unwrap().id, "acme");
+    assert_eq!(o.tls.as_ref().unwrap().certificate.as_deref(), Some("acme"));
     assert_eq!(o.framing, Framing::Object);
     let named: Vec<String> = system.topology.named_secrets.iter().map(|n| n.what.clone()).collect();
     assert_eq!(named.len(), 2, "{named:?}");
@@ -3810,8 +3781,8 @@ fn an_s3_list_source_with_bad_access_identity_or_encoding_is_refused() {
     assert!(e.contains("externalId or authEndpoint and no roleArn"), "{e}");
     let e = refusal(&s3_list_config(r#","region":" ""#));
     assert!(e.contains("has an empty region"), "{e}");
-    let e = refusal(&s3_list_config(r#","identity":"nobody""#));
-    assert!(e.contains("does not declare"), "{e}");
+    let e = refusal(&s3_list_config(r#","certificate":" ""#));
+    assert!(e.contains("blank name"), "{e}");
     let e = refusal(&s3_list_config(r#","encoding":"klingon""#));
     assert!(e.contains("not a name smeltr knows"), "{e}");
     let e = refusal(&s3_list_config(r#","endpoint":"http://minio.internal:9000""#));
@@ -3877,7 +3848,7 @@ fn a_minimal_gcs_list_source_loads_with_the_defaults() {
     assert_eq!(*start, ListStart::Everything);
     assert_eq!(*after_commit, AfterCommit::Keep);
     assert_eq!(o.framing, Framing::Lines);
-    assert!(access.endpoint.is_none() && access.service_account_key.is_none() && o.identity.is_none());
+    assert!(access.endpoint.is_none() && access.service_account_key.is_none() && o.tls.is_none());
     assert!(system.topology.named_secrets.is_empty());
     assert_eq!(system.topology.sources[0].kind.meta(), SourceMeta::GCS_LIST);
     assert_eq!(
@@ -3893,13 +3864,9 @@ fn a_gcs_list_source_loads_with_every_field() {
     let json = gcs_list_config(
         r#","prefix":"app/","endpoint":"https://storage.example.com",
            "serviceAccountKey":{"secret":"gcs-key","version":2},
-           "identity":"acme","framing":"object","encoding":"windows-1252","pollIntervalSecs":300,
+           "certificate":"acme","framing":"object","encoding":"windows-1252","pollIntervalSecs":300,
            "afterCommit":"move","movePrefix":"done/""#,
     );
-    let authority = certs::Authority::new("gcs-list-test");
-    let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-    file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-    let json = file.to_string();
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let o = object_source(&system);
@@ -3924,7 +3891,7 @@ fn a_gcs_list_source_loads_with_every_field() {
             prefix: "done/".to_string()
         }
     );
-    assert_eq!(o.identity.as_ref().unwrap().id, "acme");
+    assert_eq!(o.tls.as_ref().unwrap().certificate.as_deref(), Some("acme"));
     assert_eq!(o.framing, Framing::Object);
     assert_eq!(
         system.topology.sources[0].kind.single_worker().as_deref(),
@@ -3976,7 +3943,7 @@ fn a_minimal_azure_blob_list_source_loads_with_the_defaults() {
     assert_eq!(*start, ListStart::Everything);
     assert_eq!(*after_commit, AfterCommit::Keep);
     assert_eq!(o.framing, Framing::Lines);
-    assert!(access.credential.is_none() && access.endpoint.is_none() && o.identity.is_none());
+    assert!(access.credential.is_none() && access.endpoint.is_none() && o.tls.is_none());
     assert!(system.topology.named_secrets.is_empty());
     assert_eq!(system.topology.sources[0].kind.meta(), SourceMeta::AZURE_BLOB_LIST);
     assert_eq!(
@@ -3995,13 +3962,9 @@ fn an_azure_blob_list_source_loads_with_every_field() {
         r#","prefix":"app/","endpoint":"https://acme.blob.core.usgovcloudapi.net",
            "authEndpoint":"https://login.microsoftonline.us",
            "tenantId":"t","clientId":"c","clientSecret":{"secret":"azure-secret","version":2},
-           "identity":"acme","framing":"escapedLines","encoding":"windows-1252","pollIntervalSecs":300,
+           "certificate":"acme","framing":"escapedLines","encoding":"windows-1252","pollIntervalSecs":300,
            "start":"new""#,
     );
-    let authority = certs::Authority::new("azure-list-test");
-    let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-    file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-    let json = file.to_string();
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let o = object_source(&system);
@@ -4028,7 +3991,7 @@ fn an_azure_blob_list_source_loads_with_every_field() {
     assert_eq!(*poll_interval, std::time::Duration::from_secs(300));
     assert_eq!(*start, ListStart::New);
     assert_eq!(*after_commit, AfterCommit::Keep);
-    assert_eq!(o.identity.as_ref().unwrap().id, "acme");
+    assert_eq!(o.tls.as_ref().unwrap().certificate.as_deref(), Some("acme"));
     assert_eq!(o.framing, Framing::EscapedLines);
     assert_eq!(
         system.topology.sources[0].kind.single_worker().as_deref(),
@@ -4112,7 +4075,7 @@ fn a_minimal_sftp_source_loads_with_the_defaults() {
     assert_eq!(*start, ListStart::Everything);
     assert_eq!(*after_commit, AfterCommit::Keep);
     assert_eq!(o.framing, Framing::Lines);
-    assert!(o.identity.is_none());
+    assert!(o.tls.is_none());
     let named: Vec<String> = system.topology.named_secrets.iter().map(|n| n.what.clone()).collect();
     assert_eq!(named, [r#"source "l": password"#]);
     assert_eq!(system.topology.sources[0].kind.meta(), SourceMeta::SFTP);
@@ -4287,10 +4250,10 @@ fn an_sftp_destination_loads_as_an_object_store() {
     assert_eq!(named, [r#"destination "lake": privateKey"#]);
 }
 
-/// An SFTP server has no storage classes, is trusted by its host key, not a TLS identity, and needs time to sign in.
+/// An SFTP server has no storage classes, is trusted by its host key, not a TLS certificate, and needs time to sign in.
 #[test]
-fn an_sftp_destination_takes_no_storage_class_or_identity_or_short_stall() {
-    for extra in [r#","storageClass":"STANDARD""#, r#","identity":"client""#] {
+fn an_sftp_destination_takes_no_storage_class_or_certificate_or_short_stall() {
+    for extra in [r#","storageClass":"STANDARD""#, r#","certificate":"client""#] {
         let e = serde_json::from_str::<smeltr::config_file::FileConfig>(&sftp_destination_config(extra)).unwrap_err();
         assert!(e.to_string().contains("unknown field"), "{extra}: {e}");
     }
@@ -4345,7 +4308,7 @@ fn a_minimal_azure_blob_queue_source_loads_with_the_defaults() {
     let (queue_url, access, max_deliveries) = storage_queue_of(o);
     assert_eq!(queue_url, "https://acme.queue.core.windows.net/blob-events");
     assert_eq!(access.account, "acme");
-    assert!(access.credential.is_none() && access.endpoint.is_none() && o.identity.is_none());
+    assert!(access.credential.is_none() && access.endpoint.is_none() && o.tls.is_none());
     assert_eq!(max_deliveries, 5);
     assert_eq!(o.framing, Framing::Lines);
     assert_eq!(o.visibility, std::time::Duration::from_secs(60));
@@ -4360,12 +4323,8 @@ fn an_azure_blob_queue_source_loads_with_every_field() {
     let json = azure_queue_config(
         r#","endpoint":"https://acme.blob.core.usgovcloudapi.net","authEndpoint":"https://login.microsoftonline.us",
            "tenantId":"t","clientId":"c","clientSecret":{"secret":"azure-secret","version":2},
-           "identity":"acme","framing":"escapedLines","encoding":"windows-1252","visibilitySecs":300,"maxDeliveries":2"#,
+           "certificate":"acme","framing":"escapedLines","encoding":"windows-1252","visibilitySecs":300,"maxDeliveries":2"#,
     );
-    let authority = certs::Authority::new("azure-queue-test");
-    let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-    file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-    let json = file.to_string();
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let o = object_source(&system);
@@ -4380,7 +4339,7 @@ fn an_azure_blob_queue_source_loads_with_every_field() {
     );
     assert!(matches!(&access.credential, Some(AzureCredential::ClientSecret { client_id, .. }) if client_id == "c"));
     assert_eq!(max_deliveries, 2);
-    assert_eq!(o.identity.as_ref().unwrap().id, "acme");
+    assert_eq!(o.tls.as_ref().unwrap().certificate.as_deref(), Some("acme"));
     assert_eq!(o.framing, Framing::EscapedLines);
     assert_eq!(o.visibility, std::time::Duration::from_secs(300));
     let named: Vec<String> = system.topology.named_secrets.iter().map(|n| n.what.clone()).collect();
@@ -4399,8 +4358,8 @@ fn an_azure_blob_queue_source_with_bad_settings_is_refused() {
         r#","authEndpoint":"https://login.microsoftonline.us""#,
     ));
     assert!(e.contains("authEndpoint and no clientSecret"), "{e}");
-    let e = refusal(&azure_queue_config(r#","identity":"nobody""#));
-    assert!(e.contains("does not declare"), "{e}");
+    let e = refusal(&azure_queue_config(r#","certificate":" ""#));
+    assert!(e.contains("blank name"), "{e}");
     for n in ["0", "1001"] {
         let e = refusal(&azure_queue_config(&format!(r#","maxDeliveries":{n}"#)));
         assert!(e.contains("maxDeliveries must be between 1 and 1000"), "{e}");
@@ -4475,7 +4434,7 @@ fn a_minimal_gcs_pubsub_source_loads_with_the_defaults() {
     let (subscription, endpoint, access) = pubsub_of(o);
     assert_eq!(subscription, "projects/acme/subscriptions/gcs-events");
     assert!(endpoint.is_none() && access.endpoint.is_none() && access.service_account_key.is_none());
-    assert!(o.identity.is_none());
+    assert!(o.tls.is_none());
     assert_eq!(o.framing, Framing::Lines);
     assert_eq!(o.visibility, std::time::Duration::from_secs(60));
     assert_eq!(system.topology.sources[0].kind.meta(), SourceMeta::GCS_PUB_SUB);
@@ -4489,12 +4448,8 @@ fn a_gcs_pubsub_source_loads_with_every_field() {
     let json = gcs_pubsub_config(
         r#","pubsubEndpoint":"https://pubsub.example.com","endpoint":"https://storage.example.com",
            "serviceAccountKey":{"secret":"gcs-key","version":2},
-           "identity":"acme","framing":"object","encoding":"windows-1252","visibilitySecs":600"#,
+           "certificate":"acme","framing":"object","encoding":"windows-1252","visibilitySecs":600"#,
     );
-    let authority = certs::Authority::new("gcs-pubsub-test");
-    let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-    file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-    let json = file.to_string();
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let o = object_source(&system);
@@ -4502,7 +4457,7 @@ fn a_gcs_pubsub_source_loads_with_every_field() {
     assert_eq!(endpoint, Some("https://pubsub.example.com"));
     assert_eq!(access.endpoint.as_deref(), Some("https://storage.example.com"));
     assert!(access.service_account_key.is_some());
-    assert_eq!(o.identity.as_ref().unwrap().id, "acme");
+    assert_eq!(o.tls.as_ref().unwrap().certificate.as_deref(), Some("acme"));
     assert_eq!(o.framing, Framing::Object);
     assert_eq!(o.visibility, std::time::Duration::from_secs(600));
     let named: Vec<String> = system.topology.named_secrets.iter().map(|n| n.what.clone()).collect();
@@ -4528,8 +4483,8 @@ fn a_gcs_pubsub_source_with_bad_settings_is_refused() {
     assert!(e.contains("empty pubsubEndpoint"), "{e}");
     let e = refusal(&gcs_pubsub_config(r#","endpoint":"""#));
     assert!(e.contains("empty endpoint"), "{e}");
-    let e = refusal(&gcs_pubsub_config(r#","identity":"nobody""#));
-    assert!(e.contains("does not declare"), "{e}");
+    let e = refusal(&gcs_pubsub_config(r#","certificate":" ""#));
+    assert!(e.contains("blank name"), "{e}");
     for unknown in [r#","bucket":"logs""#, r#","maxDeliveries":3"#] {
         let e = serde_json::from_str::<smeltr::config_file::FileConfig>(&gcs_pubsub_config(unknown)).unwrap_err();
         assert!(e.to_string().contains("unknown field"), "{e}");
@@ -4698,7 +4653,7 @@ fn an_event_hubs_source_loads_as_a_kafka_source_signed_in_with_its_connection_st
     assert_eq!(k.topics, ["insights-logs"]);
     assert_eq!(k.group_id, "smeltr");
     assert_eq!(k.start, StartPosition::Earliest);
-    assert!(k.stop.is_none() && k.identity.is_none());
+    assert!(k.stop.is_none() && k.tls.is_none());
     assert_eq!(k.service, KafkaService::EventHubs);
     let mut literal = k.props.literal.clone();
     literal.sort();
@@ -4786,7 +4741,7 @@ fn an_event_hubs_destination_loads_as_a_kafka_destination_signed_in_with_its_con
         assert_eq!(k.default_topic, "alerts");
         assert_eq!(k.compression, Compression::Gzip);
         assert_eq!(k.service, KafkaService::EventHubs);
-        assert!(k.identity.is_none());
+        assert!(k.tls.is_none());
         let source = event_hubs_kafka(&event_hubs_config(namespace, ""));
         assert_eq!(k.props.literal, source.props.literal, "{namespace}");
         let used = k.props.literal.iter().find(|(key, _)| key == "security.protocol");
@@ -5020,8 +4975,8 @@ fn a_minimal_http_api_source_loads_with_the_defaults() {
     let kind = &system.topology.sources[0].kind;
     let SourceKind::Api(a) = kind else { unreachable!() };
     assert_eq!(a.poll_interval, std::time::Duration::from_secs(60));
-    assert!(a.identity.is_none());
-    assert_eq!(kind.meta(), SourceMeta::HTTP_API);
+    assert!(a.tls.is_none());
+    assert_eq!(kind.meta(), SourceMeta::HTTP_API.with_encoding(kind.encoding()));
     assert_eq!(
         kind.single_worker().as_deref(),
         Some("https://api.example/v1/status"),
@@ -5128,10 +5083,10 @@ fn an_http_api_source_with_bad_settings_is_refused() {
         ),
         (at, r#","sinceOverlapSecs":10"#, "sinceOverlapSecs", "no sinceParam"),
         (at, r#","start":"new""#, "start", "no sinceParam"),
-        (at, r#","identity":"nobody""#, "identity", "nobody"),
+        (at, r#","certificate":" ""#, "certificate", "blank name"),
         (
             "http://127.0.0.1/events",
-            r#","identity":"nobody""#,
+            r#","certificate":"acme""#,
             "url",
             "does not negotiate TLS",
         ),
@@ -5205,7 +5160,7 @@ fn an_okta_source_loads_with_the_defaults() {
     assert_eq!(o.org, "https://acme.okta.com");
     assert_eq!(o.start, ListStart::Everything);
     assert_eq!(*poll_interval, std::time::Duration::from_secs(60));
-    assert_eq!(kind.meta(), SourceMeta::OKTA_LOGS);
+    assert_eq!(kind.meta(), SourceMeta::OKTA_LOGS.with_encoding(kind.encoding()));
     assert_eq!(
         kind.single_worker().as_deref(),
         Some("okta:https://acme.okta.com/api/v1/logs")
@@ -5228,10 +5183,10 @@ fn an_okta_source_with_bad_settings_is_refused() {
         ("https://acme.okta.com/api/v1/logs", "", "org", "give its address alone"),
         ("https://acme.okta.com?x=1", "", "org", "give its address alone"),
         (at, r#","pollIntervalSecs":0"#, "pollIntervalSecs", "at least 1"),
-        (at, r#","identity":"nobody""#, "identity", "nobody"),
+        (at, r#","certificate":" ""#, "certificate", "blank name"),
         (
             "http://127.0.0.1:8080",
-            r#","identity":"nobody""#,
+            r#","certificate":"acme""#,
             "org",
             "does not negotiate TLS",
         ),
@@ -5430,29 +5385,21 @@ fn an_http_receiver_with_a_bad_address_path_or_size_is_refused() {
     assert!(e.contains("a path starts with /"), "a route pattern is not a path: {e}");
 }
 
-/// A receiver whose identity's certificate is limited to `purpose`.
-fn http_receiver_serving(purpose: rcgen::ExtendedKeyUsagePurpose) -> String {
-    let key = rcgen::KeyPair::generate().unwrap();
-    let mut params = rcgen::CertificateParams::new(vec!["receiver".to_string()]).unwrap();
-    params.extended_key_usages = vec![purpose];
-    let certificate = serde_json::to_string(&params.self_signed(&key).unwrap().pem()).unwrap();
-    format!(
-        r#"{{"version":1,
-            "identities":[{{"id":"served","certificate":{certificate},"key":"RECEIVER_KEY"}}],
-            "sources":[{{"id":"hook","type":"httpReceiver","port":8088,"identity":"served"{RECEIVER_TOKEN}}}]}}"#
-    )
-}
-
-/// A receiver presents its certificate as a server's, so an ordinary server certificate serves, and one limited to
-/// client authentication is refused.
+/// A receiver presents its certificate as a server's, which is what a worker holds that certificate to.
 #[test]
-fn an_http_receiver_serves_a_server_certificate_and_not_a_client_one() {
-    assert_eq!(
-        refusal(&http_receiver_serving(rcgen::ExtendedKeyUsagePurpose::ServerAuth)),
-        ""
+fn an_http_receiver_presents_its_certificate_as_a_server() {
+    let json = format!(
+        r#"{{"version":1,
+            "sources":[{{"id":"hook","type":"httpReceiver","port":8088,"certificate":"served"{RECEIVER_TOKEN}}}]}}"#
     );
-    let e = refusal(&http_receiver_serving(rcgen::ExtendedKeyUsagePurpose::ClientAuth));
-    assert!(e.contains("server authentication"), "{e}");
+    assert_eq!(refusal(&json), "");
+    let system = load_str(&json).expect("must load");
+    let tls = system.topology.sources[0].kind.tls().expect("a certificate");
+    assert_eq!(tls.side, smeltr::io::trust::Side::Server, "{tls:?}");
+    assert!(
+        !tls.trust_public,
+        "a receiver verifies senders against its authorities alone"
+    );
 }
 
 /// Every worker binds every receiver, so two on one port would fail on all of them.
@@ -5512,11 +5459,11 @@ fn otlp_receivers_of_different_signals_share_a_port() {
     );
     let e = refusal(&sources(&[
         otlp("a", "", ""),
-        otlp("b", r#","signal":"traces""#, r#","identity":"elsewhere""#),
+        otlp("b", r#","signal":"traces""#, r#","certificate":"elsewhere""#),
     ]));
     assert!(
         e.contains(
-            r#"source "b" shares port 4318 with source "a", which serves it; give it the same identity certificate"#
+            r#"source "b" shares port 4318 with source "a", which serves it; give both the same certificate and trusted authorities"#
         ),
         "{e}"
     );
@@ -5680,26 +5627,33 @@ fn a_hec_receiver_that_admits_anyone_is_refused() {
     assert!(e.contains("listens on port 0"), "{e}");
 }
 
-/// A receiver presents its identity's certificate, so one without a certificate has nothing to serve.
+/// A receiver presents its certificate, so one with authorities and no certificate has nothing to serve.
 #[test]
-fn an_http_receiver_whose_identity_holds_no_certificate_is_refused() {
+fn an_http_receiver_with_authorities_and_no_certificate_is_refused() {
     let json = r#"{"version":1,
-        "identities":[{"id":"senders","authorities":"-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n"}],
-        "sources":[{"id":"hook","type":"httpReceiver","port":8088,"identity":"senders"}]}"#;
-    let e = refusal(json);
-    assert!(e.contains("holds no certificate"), "{e}");
+        "sources":[{"id":"hook","type":"httpReceiver","port":8088,
+            "trustedAuthorities":"-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n"}]}"#;
+    assert!(
+        refused_at(json, "certificate", "names no certificate"),
+        "{}",
+        refusal(json)
+    );
 }
 
-/// An S2S receiver of `extra` on port 9997, beside the identity `s2s-tls` holding authorities and a certificate.
+/// The TLS settings of an S2S receiver that presents the certificate `s2s-tls` and admits a forwarder whose
+/// certificate chains to its authorities, which `s2s_receiver_config` fills in.
+const S2S_TLS: &str = r#","certificate":"s2s-tls","trustedAuthorities":"@authorities""#;
+
+/// An S2S receiver of `extra` on port 9997, with [`S2S_TLS`]'s authorities filled in.
 fn s2s_receiver_config(extra: &str) -> String {
     let key = rcgen::KeyPair::generate().unwrap();
     let params = rcgen::CertificateParams::new(vec!["indexer".to_string()]).unwrap();
     let pem = serde_json::to_string(&params.self_signed(&key).unwrap().pem()).unwrap();
     format!(
         r#"{{"version":1,
-            "identities":[{{"id":"s2s-tls","certificate":{pem},"key":"S2S_KEY","authorities":{pem}}}],
             "sources":[{{"id":"forwarders","type":"s2sReceiver","port":9997{extra}}}]}}"#
     )
+    .replace(r#""@authorities""#, &pem)
 }
 
 const S2S_TOKEN: &str = r#","tokens":{"uf-fleet":"S2S_TOKEN"}"#;
@@ -5727,7 +5681,7 @@ fn a_minimal_s2s_receiver_loads() {
         r.tokens,
         [("uf-fleet".to_string(), SecretRef::WorkerLocal("S2S_TOKEN".into()))]
     );
-    assert!(r.identity.is_none());
+    assert!(r.tls.is_none());
     assert_eq!(kind.meta(), SourceMeta::S2S_RECEIVER.with_encoding(kind.encoding()));
     assert_eq!(
         kind.listens().map(|l| (l.transport, l.address)),
@@ -5740,11 +5694,11 @@ fn a_minimal_s2s_receiver_loads() {
 fn a_full_s2s_receiver_loads_and_writes_back_as_it_was_given() {
     use smeltr::plan::topology::{Receiver, SourceKind};
 
-    let json = s2s_receiver_config(
-        r#","identity":"s2s-tls","maxRequestBytes":2048,
-           "tokens":{"uf-fleet":"S2S_TOKEN","hf":{"secret":"heavy","version":2}},
-           "sourcetypes":{"java:app":{"lineBreaker":"([\\r\\n]+)\\d{4}-"},"xml":{"lineBreaker":"</event>(\\s*)"}}"#,
-    );
+    let json = s2s_receiver_config(&format!(
+        r#"{S2S_TLS},"maxRequestBytes":2048,
+           "tokens":{{"uf-fleet":"S2S_TOKEN","hf":{{"secret":"heavy","version":2}}}},
+           "sourcetypes":{{"java:app":{{"lineBreaker":"([\\r\\n]+)\\d{{4}}-"}},"xml":{{"lineBreaker":"</event>(\\s*)"}}}}"#
+    ));
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
@@ -5760,7 +5714,7 @@ fn a_full_s2s_receiver_loads_and_writes_back_as_it_was_given() {
     assert_eq!(r.listen, "[::]:9997".parse().unwrap());
     assert_eq!(r.max_request_bytes, 2048);
     assert_eq!(r.tokens.len(), 2);
-    assert_eq!(r.identity.as_ref().unwrap().id, "s2s-tls");
+    assert_eq!(r.tls.as_ref().unwrap().certificate.as_deref(), Some("s2s-tls"));
 
     let file: smeltr::config_file::FileConfig = serde_json::from_str(&json).unwrap();
     let written = &serde_json::to_value(&file).unwrap()["sources"][0];
@@ -5794,8 +5748,8 @@ fn an_s2s_sourcetype_without_a_line_breaker_or_with_the_default_is_an_event_per_
     assert_eq!(written, &given);
 }
 
-/// An S2S receiver is held to what every receiver is, and admits a forwarder whose certificate its identity's
-/// authorities vouch for without a token.
+/// An S2S receiver is held to what every receiver is, and admits a forwarder whose certificate its authorities
+/// vouch for without a token.
 #[test]
 fn an_s2s_receiver_is_held_to_what_every_receiver_is() {
     let e = refusal(r#"{"version":1,"sources":[{"id":"forwarders","type":"s2sReceiver","port":0}]}"#);
@@ -5812,11 +5766,11 @@ fn an_s2s_receiver_is_held_to_what_every_receiver_is() {
         "blank name"
     ));
     assert!(refused_at(
-        &s2s_receiver_config(&format!(r#"{S2S_TOKEN},"identity":"elsewhere""#)),
-        "identity",
-        "elsewhere"
+        &s2s_receiver_config(&format!(r#"{S2S_TOKEN},"certificate":" ""#)),
+        "certificate",
+        "blank name"
     ));
-    assert_eq!(refusal(&s2s_receiver_config(r#","identity":"s2s-tls""#)), "");
+    assert_eq!(refusal(&s2s_receiver_config(S2S_TLS)), "");
     let json = format!(
         r#"{{"version":1,"sources":[
             {{"id":"hec","type":"hecReceiver","port":9997{HEC_TOKEN}}},
@@ -5846,7 +5800,7 @@ fn an_s2s_sourcetype_with_a_bad_line_breaker_or_name_is_refused() {
         ),
     ] {
         let json = with(&format!(r#"{{"java:app":{{"lineBreaker":{breaker}}}}}"#));
-        let why = format!(r#"source "forwarders"'s sourcetype "java:app" {why}"#);
+        let why = format!(r#"source forwarders's sourcetype "java:app" {why}"#);
         assert!(refused_at(&json, "sourcetypes", &why), "{breaker}: {}", refusal(&json));
     }
     let json = with(r#"{" ":{"lineBreaker":"(\\n)"}}"#);
@@ -5889,7 +5843,7 @@ fn a_hec_receiver_takes_a_line_breaker_by_sourcetype() {
         .collect();
     assert_eq!(rules, [("app:xml", r"</event>(\s*)")]);
     let json = with(r#"{"app:xml":{"lineBreaker":"\\n"}}"#);
-    let why = r#"source "hec"'s sourcetype "app:xml" ends an event where "\n" matches, which has no capture group"#;
+    let why = r#"source hec's sourcetype "app:xml" ends an event where "\n" matches, which has no capture group"#;
     assert!(refused_at(&json, "sourcetypes", why), "{}", refusal(&json));
 }
 
@@ -5913,7 +5867,7 @@ fn a_minimal_syslog_receiver_loads() {
     let networks: Vec<String> = syslog.allow_from.iter().map(|n| n.to_string()).collect();
     assert_eq!(networks, ["10.0.0.0/8", "192.0.2.7/32"]);
     assert_eq!(r.listen, "[::]:1514".parse().unwrap());
-    assert!(r.tokens.is_empty() && r.identity.is_none());
+    assert!(r.tokens.is_empty() && r.tls.is_none());
     assert_eq!(kind.meta(), SourceMeta::SYSLOG_RECEIVER.with_encoding(kind.encoding()));
     assert_eq!(
         kind.listens().map(|l| (l.transport, l.address)),
@@ -5926,8 +5880,8 @@ fn a_minimal_syslog_receiver_loads() {
     assert_eq!(written, &given, "a syslog receiver writes back as it was given");
 }
 
-/// A syslog receiver carries no token, so it admits senders by their network or by a certificate its identity's
-/// authorities vouch for, and is held to what every receiver's listener is.
+/// A syslog receiver carries no token, so it admits senders by their network or by a certificate its authorities
+/// vouch for, and is held to what every receiver's listener is.
 #[test]
 fn a_syslog_receiver_admits_by_network_or_certificate() {
     let syslog = |extra: &str| {
@@ -5953,7 +5907,7 @@ fn a_syslog_receiver_admits_by_network_or_certificate() {
         e.to_string().contains("unknown field `tokens`"),
         "a syslog receiver takes no token: {e}"
     );
-    let vouched = s2s_receiver_config(r#","identity":"s2s-tls""#).replace(
+    let vouched = s2s_receiver_config(S2S_TLS).replace(
         r#""type":"s2sReceiver","port":9997"#,
         r#""type":"syslogReceiver","port":6514"#,
     );
@@ -6072,23 +6026,23 @@ fn a_syslog_receiver_takes_udp() {
     assert!(tcp.get("transport").is_none(), "TCP is written as absent: {tcp}");
 }
 
-/// Over UDP a syslog receiver serves no TLS, so it takes no identity, and only its networks can admit a sender.
+/// Over UDP a syslog receiver serves no TLS, so it takes no certificate, and only its networks can admit a sender.
 #[test]
 fn a_udp_syslog_receiver_admits_only_by_network() {
     let vouched = |extra: &str| {
-        s2s_receiver_config(&format!(r#","identity":"s2s-tls","transport":"udp"{extra}"#)).replace(
+        s2s_receiver_config(&format!(r#"{S2S_TLS},"transport":"udp"{extra}"#)).replace(
             r#""type":"s2sReceiver","port":9997"#,
             r#""type":"syslogReceiver","port":6514"#,
         )
     };
-    assert!(refused_at(&vouched(""), "identity", "takes UDP"));
+    assert!(refused_at(&vouched(""), "certificate", "takes UDP"));
     assert!(
         refused_at(&vouched(""), "allowFrom", "admits anyone who can reach its port"),
-        "an identity's authorities admit no one over UDP: {}",
+        "a receiver's authorities admit no one over UDP: {}",
         refusal(&vouched(""))
     );
     let with_networks = vouched(r#","allowFrom":["10.0.0.0/8"]"#);
-    assert!(refused_at(&with_networks, "identity", "takes UDP"));
+    assert!(refused_at(&with_networks, "certificate", "takes UDP"));
     assert!(
         !refused_at(&with_networks, "allowFrom", ""),
         "{}",
@@ -6159,7 +6113,10 @@ fn a_postgres_source_loads_with_the_defaults() {
     };
     assert_eq!(connection.host, "db.internal");
     assert_eq!(connection.port, 5432);
-    assert!(matches!(connection.tls, smeltr::io::sql_source::Tls::Require));
+    assert!(matches!(
+        connection.encrypted,
+        smeltr::io::sql_source::Encrypted::Require
+    ));
     assert_eq!(
         sql.source.mode,
         Mode::Incrementing(Position {
@@ -6404,14 +6361,14 @@ fn a_postgres_source_with_bad_settings_is_refused() {
             "at least 1",
         ),
         (
-            postgres_config(EVENTS, BY_TIME, r#","identity":"nobody""#),
-            "identity",
-            "nobody",
+            postgres_config(EVENTS, BY_TIME, r#","certificate":" ""#),
+            "certificate",
+            "blank name",
         ),
         (
-            postgres_config(EVENTS, BY_TIME, r#","identity":"nobody","tls":"disable""#),
-            "identity",
-            "turns TLS off",
+            postgres_config(EVENTS, BY_TIME, r#","certificate":"acme","tls":"disable""#),
+            "certificate",
+            "turns it off",
         ),
     ];
     for (json, field, says) in refused {

@@ -63,7 +63,6 @@ export class Validation {
       res.errors,
       () =>
         this.placed.map((e) => ({
-          where: e.item.id,
           message: e.message,
           go: () => void this.focus(e),
         })),

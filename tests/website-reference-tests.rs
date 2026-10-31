@@ -14,9 +14,9 @@ use smeltr::expr::inline::PRELUDE_FUNCTIONS;
 use smeltr::ops::objectops::ObjectOp;
 use smeltr::ops::stdfuncs;
 use smeltr::ops::{BinOp, UnOp};
+use smeltr::plan::compile::compile;
 use smeltr::plan::config::PipelineConfig;
 use smeltr::plan::output::{run_to_json, run_to_json_marked};
-use smeltr::plan::plan::compile;
 use smeltr::plan::topology::{Placement, SourceMeta};
 
 use crate::harness;
@@ -854,16 +854,40 @@ struct StepExample {
 }
 
 fn run_step_example(ex: &StepExample) -> Result<Vec<serde_json::Value>, String> {
-    let mut steps = ex.steps.clone();
+    let rows = run_steps(
+        &ex.steps,
+        &ex.pipelines,
+        &ex.lookup_tables,
+        ex.on_exception.as_deref(),
+        &ex.input,
+    )?;
+    Ok(rows
+        .into_iter()
+        .map(|mut row| {
+            row.as_object_mut().unwrap().remove("_raw");
+            row
+        })
+        .collect())
+}
+
+/// `steps`, loaded as a saved pipeline and run over `input` as the GUI preview runs them, give these records,
+/// `_raw` included. See [`StepExample`] for how the input is read and when records may fail.
+fn run_steps(
+    steps: &[serde_json::Value],
+    pipelines: &[serde_json::Value],
+    lookup_tables: &[serde_json::Value],
+    on_exception: Option<&str>,
+    input: &[serde_json::Value],
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut steps = steps.to_vec();
     if steps.first().is_none_or(|s| s["type"] != "parser") {
         let parse = serde_json::json!({ "id": "parse", "type": "parser", "input": "_raw", "kind": { "type": "json" } });
         steps.insert(0, parse);
     }
     let example = serde_json::json!({ "id": "example", "name": "example", "steps": steps });
-    let mut pipelines = vec![example];
-    pipelines.extend(ex.pipelines.iter().cloned());
-    let mut file = serde_json::json!({ "version": 1, "pipelines": pipelines, "lookupTables": ex.lookup_tables });
-    if let Some(answer) = &ex.on_exception {
+    let all: Vec<_> = std::iter::once(example).chain(pipelines.iter().cloned()).collect();
+    let mut file = serde_json::json!({ "version": 1, "pipelines": all, "lookupTables": lookup_tables });
+    if let Some(answer) = on_exception {
         // Delivery stays at its default: a row in the preview is neither unmatched, unprocessable nor refused.
         let categories: serde_json::Map<_, _> = ["parse", "math", "limits", "encoding"]
             .into_iter()
@@ -874,8 +898,7 @@ fn run_step_example(ex: &StepExample) -> Result<Vec<serde_json::Value>, String> 
     let system = smeltr::config_file::load_str(&file.to_string()).map_err(|e| e.to_string())?;
     let plan = compile(&system.pipelines[0], &SourceMeta::KAFKA)
         .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))?;
-    let texts: Vec<String> = ex
-        .input
+    let texts: Vec<String> = input
         .iter()
         .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
         .collect();
@@ -889,17 +912,13 @@ fn run_step_example(ex: &StepExample) -> Result<Vec<serde_json::Value>, String> 
         run_to_json_marked(&plan, &system.topology.on_exception, &mut batch, &mut ctx, false, None)
             .iter()
             .filter_map(|row| row.json.as_deref())
-            .map(|row| {
-                let mut out: serde_json::Value = serde_json::from_slice(row).unwrap();
-                out.as_object_mut().unwrap().remove("_raw");
-                out
-            })
+            .map(|row| serde_json::from_slice(row).unwrap())
             .collect()
     };
     batch.reclaim(&mut pool);
     match errors.entries() {
         [] => Ok(rows),
-        _ if ex.on_exception.is_some() => Ok(rows),
+        _ if on_exception.is_some() => Ok(rows),
         failed => Err(format!("records failed: {failed:?}")),
     }
 }
@@ -925,6 +944,170 @@ fn every_step_example_gives_what_the_page_shows() {
                 "{} `{name}`",
                 path.display()
             );
+        }
+    }
+}
+
+/// The Cut SIEM costs page's example (`website/src/lib/siem-cut-example.json`): its steps, run over its input, give
+/// the totals and the rows the page shows. A record's bytes are its `_raw`'s, which is what a text destination sends.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SiemCutExample {
+    steps: Vec<serde_json::Value>,
+    input: Vec<String>,
+    records_in: usize,
+    bytes_in: usize,
+    records_out: usize,
+    bytes_out: usize,
+    rows: Vec<SiemCutRow>,
+}
+
+/// A row as the page shows it. Its `reason` is prose, so it is not read.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SiemCutRow {
+    raw: String,
+    raw_bytes: usize,
+    /// The line sent, or none for a dropped record.
+    output: Option<String>,
+    output_bytes: usize,
+}
+
+#[test]
+fn the_siem_cut_example_is_what_its_steps_give() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("website/src/lib/siem-cut-example.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let ex: SiemCutExample = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    // One record a run, so each line's output is known to be its own.
+    let sent: std::collections::BTreeMap<&str, Option<String>> = ex
+        .input
+        .iter()
+        .map(|line| {
+            let rows = run_steps(&ex.steps, &[], &[], None, &[serde_json::json!(line)])
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let out = match rows.as_slice() {
+                [] => None,
+                [row] => Some(row["_raw"].as_str().expect("_raw is a string").to_string()),
+                more => panic!("{}: one line gave {} records", path.display(), more.len()),
+            };
+            (line.as_str(), out)
+        })
+        .collect();
+    let kept: Vec<&String> = sent.values().flatten().collect();
+    assert_eq!(
+        (ex.records_in, ex.bytes_in, ex.records_out, ex.bytes_out),
+        (
+            ex.input.len(),
+            ex.input.iter().map(String::len).sum(),
+            kept.len(),
+            kept.iter().map(|l| l.len()).sum()
+        ),
+        "{}: records and bytes in, records and bytes out",
+        path.display()
+    );
+    for row in &ex.rows {
+        let out = sent
+            .get(row.raw.as_str())
+            .unwrap_or_else(|| panic!("{}: a row's line is not in the input", path.display()));
+        assert_eq!(&row.output, out, "{}: a row's output", path.display());
+        assert_eq!(
+            (row.raw_bytes, row.output_bytes),
+            (row.raw.len(), out.as_ref().map_or(0, String::len)),
+            "{}: a row's bytes",
+            path.display()
+        );
+    }
+}
+
+/// The One schema page's example (`website/src/lib/one-schema-example.json`): each source's line, run through that
+/// source's pipeline, gives every field the page shows for it.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OneSchemaExample {
+    /// Each source's pipeline, by the name the rows use.
+    pipelines: std::collections::BTreeMap<String, Vec<serde_json::Value>>,
+    panos: String,
+    fortigate: String,
+    rows: Vec<OneSchemaRow>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OneSchemaRow {
+    field: String,
+    panos: serde_json::Value,
+    fortigate: serde_json::Value,
+}
+
+/// The home page's flow (`website/src/lib/home-flow-example.json`), run through the One schema example's pipelines:
+/// each line gives the fields the page shows, and one shown as dropped gives no record. Its vendor and reason are
+/// prose, so they are not read.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HomeFlowExample {
+    rows: Vec<HomeFlowRow>,
+}
+
+#[derive(serde::Deserialize)]
+struct HomeFlowRow {
+    pipeline: String,
+    raw: String,
+    output: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+}
+
+fn one_schema_example() -> OneSchemaExample {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("website/src/lib/one-schema-example.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The record `line` gives through the example's pipeline `name`, or none when the pipeline drops it.
+fn one_schema_record(ex: &OneSchemaExample, name: &str, line: &str) -> Option<serde_json::Value> {
+    let steps = ex.pipelines.get(name).unwrap_or_else(|| panic!("no pipeline `{name}`"));
+    let mut rows =
+        run_steps(steps, &[], &[], None, &[serde_json::json!(line)]).unwrap_or_else(|e| panic!("`{name}`: {e}"));
+    assert!(rows.len() <= 1, "`{name}`: one line gave {} records", rows.len());
+    rows.pop()
+}
+
+/// A dotted ECS name's value in a record, which nests it.
+fn ecs_field<'a>(record: &'a serde_json::Value, field: &str) -> &'a serde_json::Value {
+    record
+        .pointer(&format!("/{}", field.replace('.', "/")))
+        .unwrap_or(&serde_json::Value::Null)
+}
+
+#[test]
+fn the_one_schema_example_is_what_its_pipelines_give() {
+    let ex = one_schema_example();
+    for (name, line) in [("panos", &ex.panos), ("fortigate", &ex.fortigate)] {
+        let record = one_schema_record(&ex, name, line).unwrap_or_else(|| panic!("`{name}` drops its line"));
+        for row in &ex.rows {
+            let shown = if name == "panos" { &row.panos } else { &row.fortigate };
+            assert_eq!(ecs_field(&record, &row.field), shown, "`{name}` {}", row.field);
+        }
+    }
+}
+
+#[test]
+fn the_home_flow_is_what_the_one_schema_pipelines_give() {
+    let ex = one_schema_example();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("website/src/lib/home-flow-example.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let flow: HomeFlowExample = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    for row in &flow.rows {
+        let record = one_schema_record(&ex, &row.pipeline, &row.raw);
+        match (&row.output, record) {
+            (None, None) => {}
+            (Some(fields), Some(record)) => {
+                for (field, shown) in fields {
+                    assert_eq!(ecs_field(&record, field), shown, "`{}` {field}", row.pipeline);
+                }
+            }
+            (shown, record) => panic!(
+                "`{}`: the page shows {shown:?}, the pipeline gives {record:?}",
+                row.pipeline
+            ),
         }
     }
 }
@@ -1459,7 +1642,7 @@ fn check_connectors<T: serde::de::DeserializeOwned + serde::Serialize>(
             );
             assert!(!r.what.is_empty(), "{ctx}: no description");
             // Each example reads, and the leader refuses nothing of it that it does not already refuse of the
-            // first. A refusal that quotes the example, such as of an identity the bundle does not declare, is
+            // first. A refusal that quotes the example, such as of a certificate the leader does not hold, is
             // compared as if it quoted the first.
             for e in &r.examples {
                 let mut with = full.clone();
@@ -1634,18 +1817,8 @@ fn every_connector_example_loads() {
         } else {
             continue;
         };
-        // An example naming an identity is shown beside one the page declares, here a certificate made for it.
-        let identities: Vec<_> = (example.get("identity").and_then(|i| i.as_str()))
-            .map(|id| {
-                let key = rcgen::KeyPair::generate().unwrap();
-                let params = rcgen::CertificateParams::new(vec!["workers.example.com".to_string()]).unwrap();
-                serde_json::json!({ "id": id, "certificate": params.self_signed(&key).unwrap().pem(), "key": "TLS_KEY" })
-            })
-            .into_iter()
-            .collect();
-        let file =
-            serde_json::from_value(serde_json::json!({ "version": 1, "identities": identities, section: [example] }))
-                .unwrap_or_else(|e| panic!("{name} does not load: {e}"));
+        let file = serde_json::from_value(serde_json::json!({ "version": 1, section: [example] }))
+            .unwrap_or_else(|e| panic!("{name} does not load: {e}"));
         let errors = smeltr::config_file::validation_errors(file);
         assert!(errors.is_empty(), "{name} is refused: {errors:?}");
     }
@@ -1712,6 +1885,7 @@ fn every_startup_example_is_read() {
         ("worker.listen_address", || c::worker_listen_address().to_string()),
         ("worker.leader.url", || format!("{:?}", c::leader_url())),
         ("worker.leader.ca", || format!("{:?}", c::leader_ca_path())),
+        ("worker.leader.trust_public", || c::leader_trust_public().to_string()),
         ("worker.storage.state_dir", || {
             c::worker_state_dir().display().to_string()
         }),
@@ -1870,6 +2044,7 @@ fn the_startup_settings_match_the_engine() {
         ("worker.listen_address", some(c::worker_listen_address().to_string())),
         ("worker.leader.url", c::leader_url()),
         ("worker.leader.ca", c::leader_ca_path()),
+        ("worker.leader.trust_public", some(c::leader_trust_public().to_string())),
         ("worker.storage.state_dir", path(c::worker_state_dir())),
         // The table words it as the available cores.
         (

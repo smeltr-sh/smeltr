@@ -95,7 +95,7 @@ pub enum Verdict {
 /// Whether a database connection is encrypted. `Require` also verifies the server's certificate and name: rustls has
 /// no mode that encrypts without verifying.
 #[derive(Clone, Debug)]
-pub enum Tls {
+pub enum Encrypted {
     Disable,
     Require,
 }

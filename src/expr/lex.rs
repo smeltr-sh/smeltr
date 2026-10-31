@@ -300,18 +300,18 @@ impl<'a> Lexer<'a> {
         }
 
         let text = &self.text[start..self.pos];
+        // `$.keys(` calls `keys` on the record, so its receiver `$` stays; any other `$.a` is the name `a`.
+        let name = match text.strip_prefix("$.") {
+            Some(method) if self.peek() == Some(b'(') && !method.contains('.') => text,
+            _ => crate::plan::tree::under_record(text),
+        };
         let kw = KEYWORDS.iter().find(|(word, _)| *word == text).map(|&(_, k)| k);
         Ok(match kw {
             Some(k) => {
                 let ends = matches!(k, Keyword::True | Keyword::False | Keyword::Null);
                 self.emit(Token::Keyword(k), start, ends)
             }
-            // `$` is the root object, so `$.a` is the name `a`.
-            None => self.emit(
-                Token::Ident(text.strip_prefix("$.").unwrap_or(text).to_string()),
-                start,
-                true,
-            ),
+            None => self.emit(Token::Ident(name.to_string()), start, true),
         })
     }
 

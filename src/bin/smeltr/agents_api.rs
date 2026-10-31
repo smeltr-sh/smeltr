@@ -12,13 +12,13 @@ use axum::response::{IntoResponse, Response};
 
 use smeltr::config_file::{SHARED_DIR, group_subtree};
 use smeltr::leader::access::{AgentPermissions, ByAgent};
-use smeltr::leader::envelope::{ApiError, Envelope};
+use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::model::{self, Provider, Settings};
 use smeltr::leader::store::Actor;
 use smeltr::leader::{accounts, blocking};
 
+use crate::accounts_api::store_call;
 use crate::gate::{Auth, refuse};
-use crate::users_api::{no_store, store_call};
 
 /// Why an agent is refused a change to what it may do: only a person sets that.
 const OWN_PERMISSIONS: &str = "an agent cannot change its own permissions";
@@ -37,7 +37,7 @@ pub async fn refused_while_off(auth: &Auth) -> Option<Response> {
 pub async fn get_permissions(State(auth): State<Auth>, actor: Extension<Actor>) -> Response {
     let store = auth.store.clone();
     match store_call(move || store.agent_permissions_of(&actor.id)).await {
-        Ok(permissions) => no_store(permissions),
+        Ok(permissions) => Envelope::ok(permissions).into_response(),
         Err(response) => *response,
     }
 }
@@ -55,11 +55,13 @@ pub async fn put_permissions(
     if let Some(refused) = refused_while_off(&auth).await {
         return refused;
     }
-    if let AgentPermissions::Upto { areas, .. } = &permissions
-        && let Some(area) = areas.keys().find(|a| *a != SHARED_DIR && group_subtree(a).is_err())
+    if let Some(area) = permissions
+        .areas
+        .keys()
+        .find(|a| *a != SHARED_DIR && group_subtree(a).is_err())
     {
         return refuse(
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNPROCESSABLE_ENTITY,
             &format!("{area:?} is neither {SHARED_DIR} nor a worker group id"),
         );
     }
@@ -67,7 +69,7 @@ pub async fn put_permissions(
     let store = auth.store.clone();
     let (user_id, written) = (actor.id.clone(), permissions.clone());
     match store_call(move || store.put_agent_permissions(&user_id, &written, &event)).await {
-        Ok(Ok(())) => no_store(permissions),
+        Ok(Ok(())) => Envelope::ok(permissions).into_response(),
         Ok(Err(e)) => refuse(StatusCode::NOT_FOUND, &e.to_string()),
         Err(response) => *response,
     }
@@ -117,12 +119,11 @@ const MOST_KEY: usize = 4096;
 /// The most days a conversation may be kept: ten years.
 const MOST_KEEP_DAYS: u32 = 3650;
 
-async fn answer(auth: &Auth, error: Option<String>) -> Json<Envelope<AgentSettings>> {
+/// The settings as stored, with `refused` beside them when a write was: the form shows what to correct.
+async fn answer(auth: &Auth, refused: Option<Refusal>) -> Envelope<AgentSettings> {
     let store = auth.store.clone();
-    let read = blocking(move || Settings::read(store.as_ref()))
-        .await
-        .map_err(|e| e.to_string());
-    Json(match read {
+    let read = blocking(move || Settings::read(store.as_ref())).await;
+    match read {
         Ok(settings) => Envelope::with(
             AgentSettings {
                 settings: Some(SettingsDto {
@@ -135,18 +136,19 @@ async fn answer(auth: &Auth, error: Option<String>) -> Json<Envelope<AgentSettin
                     context_tokens: settings.context,
                 }),
             },
-            error.into_iter().map(ApiError::new).collect(),
+            refused.as_ref().map_or(StatusCode::OK, |r| r.status),
+            refused.map(|r| r.errors).unwrap_or_default(),
         ),
-        Err(e) => Envelope::failed_one(e),
-    })
+        Err(e) => Envelope::refused(e),
+    }
 }
 
-/// `GET /api/settings/agents`.
-pub async fn get_settings(State(auth): State<Auth>) -> Json<Envelope<AgentSettings>> {
+/// `GET /api/settings/agent`.
+pub async fn get_settings(State(auth): State<Auth>) -> Envelope<AgentSettings> {
     answer(&auth, None).await
 }
 
-/// `PUT /api/settings/agents`. Recorded with who set it and what changed, in the transaction that sets it; the API
+/// `PUT /api/settings/agent`. Recorded with who set it and what changed, in the transaction that sets it; the API
 /// key is sealed before it is stored.
 ///
 /// Turning AI agents on asks the endpoint for a short answer first, so a key, model or URL that cannot work is
@@ -159,24 +161,34 @@ pub async fn put_settings(
     write_settings(&auth, &actor, request).await.into_response()
 }
 
-async fn write_settings(auth: &Auth, actor: &Actor, request: PutSettings) -> Json<Envelope<AgentSettings>> {
+async fn write_settings(auth: &Auth, actor: &Actor, request: PutSettings) -> Envelope<AgentSettings> {
     let endpoint = request.endpoint.trim().to_string();
     let model_name = request.model.trim().to_string();
     if !endpoint.is_empty()
         && let Err(e) = model::check_endpoint(&endpoint)
     {
-        return answer(auth, Some(e)).await;
+        return answer(auth, Some(Refusal::invalid(e))).await;
     }
     if model_name.len() > MOST_MODEL {
-        return answer(auth, Some(format!("a model is at most {MOST_MODEL} bytes"))).await;
+        return answer(
+            auth,
+            Some(Refusal::invalid(format!("a model is at most {MOST_MODEL} bytes"))),
+        )
+        .await;
     }
     if request.api_key.as_ref().is_some_and(|k| k.len() > MOST_KEY) {
-        return answer(auth, Some(format!("an API key is at most {MOST_KEY} bytes"))).await;
+        return answer(
+            auth,
+            Some(Refusal::invalid(format!("an API key is at most {MOST_KEY} bytes"))),
+        )
+        .await;
     }
     if request.keep_days.is_some_and(|d| d == 0 || d > MOST_KEEP_DAYS) {
         return answer(
             auth,
-            Some(format!("conversations are kept from 1 to {MOST_KEEP_DAYS} days")),
+            Some(Refusal::invalid(format!(
+                "conversations are kept from 1 to {MOST_KEEP_DAYS} days"
+            ))),
         )
         .await;
     }
@@ -187,11 +199,11 @@ async fn write_settings(auth: &Auth, actor: &Actor, request: PutSettings) -> Jso
     {
         return answer(
             auth,
-            Some(format!(
+            Some(Refusal::invalid(format!(
                 "a context window is from {} to {} tokens",
                 model::CONTEXT_RANGE.start(),
                 model::CONTEXT_RANGE.end()
-            )),
+            ))),
         )
         .await;
     }
@@ -200,7 +212,7 @@ async fn write_settings(auth: &Auth, actor: &Actor, request: PutSettings) -> Jso
     let store = auth.store.clone();
     let was = match blocking(move || Settings::read(store.as_ref())).await {
         Ok(was) => was,
-        Err(e) => return answer(auth, Some(e.to_string())).await,
+        Err(e) => return answer(auth, Some(e.into())).await,
     };
     // A key belongs to the service it was issued by: another provider or endpoint forgets it unless a new one is
     // given.
@@ -227,7 +239,10 @@ async fn write_settings(auth: &Auth, actor: &Actor, request: PutSettings) -> Jso
         if !missing.is_empty() {
             return answer(
                 auth,
-                Some(format!("Turning AI agents on needs: {}.", missing.join(", "))),
+                Some(Refusal::invalid(format!(
+                    "Turning AI agents on needs: {}.",
+                    missing.join(", ")
+                ))),
             )
             .await;
         }
@@ -242,7 +257,7 @@ async fn write_settings(auth: &Auth, actor: &Actor, request: PutSettings) -> Jso
             context = said;
         }
         if let Err(e) = model::check(asked).await {
-            return answer(auth, Some(e)).await;
+            return answer(auth, Some(Refusal::invalid(e))).await;
         }
     }
 
@@ -285,5 +300,5 @@ async fn write_settings(auth: &Auth, actor: &Actor, request: PutSettings) -> Jso
     })
     .await;
     drop(one_at_a_time);
-    answer(auth, written.err().map(|e| e.to_string())).await
+    answer(auth, written.err().map(Refusal::from)).await
 }

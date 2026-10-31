@@ -17,7 +17,7 @@ use super::pipelined::{self, Pool};
 use super::{BatchCompletion, BatchId, Destination, Dispatched, IoError, OwnedRecord, Rejection};
 use crate::core::id::DestId;
 use crate::metrics::MetricsHandle;
-use crate::plan::topology::{HeldSecrets, Identity};
+use crate::plan::topology::{HeldSecrets, Tls};
 
 /// Total time one `flush` may spend, retries included.
 const DEFAULT_STALL_AFTER: Duration = Duration::from_secs(30);
@@ -177,7 +177,8 @@ pub trait Protocol: Clone + Send + 'static {
 
     /// The order a batch's items must reach the service in, when it has one. `Some` holds a batch's items until all
     /// are admitted and sorts each group by it before cutting requests, so no request carries an item that sorts
-    /// before one already sent. `None` posts a request as soon as it fills.
+    /// before one already sent. A pool sends a batch's requests side by side, so a destination whose protocol has an
+    /// order has none. `None` cuts a request as soon as it fills.
     fn order(&self) -> Option<Order<Self::Item>> {
         None
     }
@@ -222,9 +223,6 @@ pub struct HttpDestination<P: Protocol, T: Transport> {
     stall_after: Duration,
     /// Present once the destination has senders; without it `deliver` posts each batch and waits.
     pool: Option<Pool<HttpSender<P, T>>>,
-    /// Completions taken out of the pool by a barrier `flush`, held for the next `poll_completions`; dropping them
-    /// would leave those batches uncommitted.
-    drained: Vec<BatchCompletion>,
     throttle: Option<Throttle>,
 }
 
@@ -256,7 +254,6 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
             max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
             stall_after: DEFAULT_STALL_AFTER,
             pool: None,
-            drained: Vec::new(),
             throttle: None,
         }
     }
@@ -297,6 +294,10 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
         if senders.is_empty() {
             return self;
         }
+        debug_assert!(
+            self.protocol.order().is_none(),
+            "a pool sends a batch's requests out of order"
+        );
         self.pool = Some(Pool::new(
             senders
                 .into_iter()
@@ -312,31 +313,24 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
         self
     }
 
-    /// Sorts `group` by `order`, then posts it on this thread in requests within `max_request_bytes`, all but the
-    /// last, which stays in `group`.
-    fn post_ordered(
-        &mut self,
-        rows: &[OwnedRecord],
-        group: &mut Group<P::Item>,
-        order: Order<P::Item>,
-    ) -> Result<Vec<Rejection>, IoError> {
+    /// Sorts `group` by `order`, then cuts it into requests within `max_request_bytes`: all but the last go to
+    /// `full`, the last stays in `group`.
+    fn cut_ordered(&self, group: &mut Group<P::Item>, order: Order<P::Item>, full: &mut Vec<Group<P::Item>>) {
         let mut sorted: Vec<(P::Item, usize)> = std::mem::take(&mut group.pending)
             .into_iter()
             .zip(std::mem::take(&mut group.sent_index))
             .collect();
         sorted.sort_by(|a, b| order(&a.0, &b.0));
-        let mut refused = Vec::new();
         group.bytes = 0;
         for (item, index) in sorted {
             let size = self.protocol.size(&item);
             if self.overflows(group, size) {
-                refused.extend(self.post(rows, group)?);
+                full.push(group.cut());
             }
             group.bytes += size;
             group.pending.push(item);
             group.sent_index.push(index);
         }
-        Ok(refused)
     }
 
     /// Whether `group` must go before an item of `size` joins it: a request stays within `max_request_bytes`, and an
@@ -347,20 +341,12 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
 
     /// One round on this thread, with retries, against `group`: the refusals, each carrying its row out of `rows`.
     fn post(&mut self, rows: &[OwnedRecord], group: &mut Group<P::Item>) -> Result<Vec<Rejection>, IoError> {
-        let mut throttled = false;
-        let mut waited = Duration::ZERO;
         group.bytes = 0;
-        let delivered = deliver(
-            &self.protocol,
-            &mut self.transport,
-            group,
-            self.stall_after,
-            Instant::now() + self.stall_after,
-            &mut throttled,
-            &mut waited,
-        );
-        Throttle::note(&self.throttle, waited);
-        let mut refused = delivered?;
+        let mut round = Round::new(self.stall_after);
+        let delivered = deliver(&self.protocol, &mut self.transport, group, &mut round);
+        Throttle::note(&self.throttle, round.waited);
+        delivered?;
+        let mut refused = round.rejections;
         for r in &mut refused {
             r.record = rows.get(r.doc).cloned();
         }
@@ -368,17 +354,41 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
     }
 }
 
+/// One request's round, its retries and halves included: its bounds, and what it has learned so far.
+struct Round {
+    /// How `deadline` was set, for the error.
+    stall_after: Duration,
+    /// Bounds the whole round, not one attempt.
+    deadline: Instant,
+    /// The service asked to be sent less.
+    throttled: bool,
+    /// Every backoff a throttled answer cost, whether or not the round lands.
+    waited: Duration,
+    /// Refusals, as they are answered, so a failure keeps those already seen.
+    rejections: Vec<Rejection>,
+}
+
+impl Round {
+    fn new(stall_after: Duration) -> Round {
+        Round {
+            stall_after,
+            deadline: Instant::now() + stall_after,
+            throttled: false,
+            waited: Duration::ZERO,
+            rejections: Vec::new(),
+        }
+    }
+}
+
 /// `group` delivered as two halves, for a request the service would not take whole or an answer the worker could not
-/// hold whole. A group of one item has no halves: `None`, for the caller to refuse that item.
+/// hold whole. A group of one item has no halves: `None`, for the caller to refuse that item. On a failure `group`
+/// holds what of both halves did not land.
 fn in_halves<P: Protocol, T: Transport>(
     protocol: &P,
     transport: &mut T,
     group: &mut Group<P::Item>,
-    stall_after: Duration,
-    deadline: Instant,
-    throttled: &mut bool,
-    waited: &mut Duration,
-) -> Option<Result<Vec<Rejection>, IoError>> {
+    round: &mut Round,
+) -> Option<Result<(), IoError>> {
     if group.pending.len() < 2 {
         return None;
     }
@@ -390,34 +400,26 @@ fn in_halves<P: Protocol, T: Transport>(
         sent_index: group.sent_index.split_off(half),
         bytes: 0,
     };
-    let mut rejections = match deliver(protocol, transport, group, stall_after, deadline, throttled, waited) {
-        Ok(rejections) => rejections,
-        Err(e) => return Some(Err(e)),
-    };
-    match deliver(protocol, transport, &mut tail, stall_after, deadline, throttled, waited) {
-        Ok(more) => rejections.extend(more),
-        Err(e) => return Some(Err(e)),
-    }
-    Some(Ok(rejections))
+    let delivered =
+        deliver(protocol, transport, group, round).and_then(|()| deliver(protocol, transport, &mut tail, round));
+    group.pending.append(&mut tail.pending);
+    group.sent_index.append(&mut tail.sent_index);
+    Some(delivered)
 }
 
 /// One round, with retries, against `group`. Free because [`HttpSender`] runs it on a pool thread with its own
-/// transport. `deadline` bounds the whole thing, not one attempt; `stall_after` is how it was set, for the error.
-/// `waited` gains every backoff a throttled answer cost, whether or not the round lands.
+/// transport. On a failure `group` holds exactly what did not land.
 fn deliver<P: Protocol, T: Transport>(
     protocol: &P,
     transport: &mut T,
     group: &mut Group<P::Item>,
-    stall_after: Duration,
-    deadline: Instant,
-    throttled: &mut bool,
-    waited: &mut Duration,
-) -> Result<Vec<Rejection>, IoError> {
+    round: &mut Round,
+) -> Result<(), IoError> {
+    let deadline = round.deadline;
     let mut backoff = INITIAL_BACKOFF;
-    let mut rejections = Vec::new();
     loop {
         if group.pending.is_empty() {
-            return Ok(rejections);
+            return Ok(());
         }
         let budget = deadline.saturating_duration_since(Instant::now());
         if budget.is_zero() {
@@ -425,7 +427,7 @@ fn deliver<P: Protocol, T: Transport>(
                 "{}: {} document(s) still undelivered after {:?}",
                 protocol.name(),
                 group.pending.len(),
-                stall_after
+                round.stall_after
             )));
         }
 
@@ -437,12 +439,11 @@ fn deliver<P: Protocol, T: Transport>(
         let response = match transport.post(&group.route, &protocol.body(&group.pending), budget) {
             Ok(response) => response,
             Err(e) if e.is_oversized() => {
-                if let Some(halves) = in_halves(protocol, transport, group, stall_after, deadline, throttled, waited) {
-                    rejections.extend(halves?);
-                    return Ok(rejections);
+                if let Some(halves) = in_halves(protocol, transport, group, round) {
+                    return halves;
                 }
                 // One document whose answer alone is past the bound: refused, since asking again reads the same answer.
-                rejections.push(Rejection {
+                round.rejections.push(Rejection {
                     doc: group.sent_index[0],
                     reason: format!(
                         "{}: the answer to one document was larger than {} MiB",
@@ -453,21 +454,20 @@ fn deliver<P: Protocol, T: Transport>(
                 });
                 group.pending.clear();
                 group.sent_index.clear();
-                return Ok(rejections);
+                return Ok(());
             }
             Err(e) => return Err(named(e)),
         };
         let mut outcome = protocol.read(&response, &group.pending)?;
         if let Some(why) = outcome.split.take() {
-            if let Some(halves) = in_halves(protocol, transport, group, stall_after, deadline, throttled, waited) {
-                rejections.extend(halves?);
-                return Ok(rejections);
+            if let Some(halves) = in_halves(protocol, transport, group, round) {
+                return halves;
             }
             outcome.permanent.push((0, why));
         }
         if outcome.permanent.len() + outcome.retryable.len() < group.pending.len() {
-            *throttled |= protocol
-                .confirm(&response, transport, deadline, waited)
+            round.throttled |= protocol
+                .confirm(&response, transport, deadline, &mut round.waited)
                 .map_err(named)?;
         }
 
@@ -475,7 +475,7 @@ fn deliver<P: Protocol, T: Transport>(
         // flush would leave the whole batch uncommitted behind it. It comes back as a rejection, for the destination's
         // answer to `Refused` to decide.
         for (i, why) in &outcome.permanent {
-            rejections.push(Rejection {
+            round.rejections.push(Rejection {
                 doc: group.sent_index[*i],
                 reason: format!("{} refused it: {why}", protocol.name()),
                 record: None,
@@ -484,7 +484,7 @@ fn deliver<P: Protocol, T: Transport>(
         if outcome.retryable.is_empty() {
             group.pending.clear();
             group.sent_index.clear();
-            return Ok(rejections);
+            return Ok(());
         }
         // Only the ones that failed; resending the rest would duplicate them.
         let keep: Vec<P::Item> = outcome.retryable.iter().map(|&i| group.pending[i].clone()).collect();
@@ -496,7 +496,7 @@ fn deliver<P: Protocol, T: Transport>(
         if !outcome.throttled {
             continue;
         }
-        *throttled = true;
+        round.throttled = true;
 
         // The service's own `Retry-After`, where longer than the backoff, and never past the deadline.
         let nap = response
@@ -507,7 +507,7 @@ fn deliver<P: Protocol, T: Transport>(
             continue;
         }
         std::thread::sleep(nap);
-        *waited += nap;
+        round.waited += nap;
         backoff = (backoff * 2).min(Duration::from_secs(5));
     }
 }
@@ -524,9 +524,17 @@ struct Group<I> {
     bytes: usize,
 }
 
-/// One batch's worth of items, owned, on its way to a pool thread.
-struct HttpJob<I> {
-    groups: Vec<Group<I>>,
+impl<I> Group<I> {
+    /// What this group holds, as a request of its own; the group is left empty, to fill again.
+    fn cut(&mut self) -> Group<I> {
+        Group {
+            route: self.route.clone(),
+            part: self.part,
+            pending: std::mem::take(&mut self.pending),
+            sent_index: std::mem::take(&mut self.sent_index),
+            bytes: std::mem::take(&mut self.bytes),
+        }
+    }
 }
 
 /// A [`pipelined::Sender`] doing what the synchronous path does, on its own thread with its own transport.
@@ -538,34 +546,27 @@ struct HttpSender<P: Protocol, T: Transport> {
 }
 
 impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
-    type Job = HttpJob<P::Item>;
+    /// One request.
+    type Job = Group<P::Item>;
 
-    fn send_one(&mut self, job: HttpJob<P::Item>) -> Result<pipelined::Delivered, IoError> {
-        let mut throttled = false;
-        let mut waited = Duration::ZERO;
-        let mut rejections = Vec::new();
-        // Each route bounded on its own, as `post` bounds it: a route that lands is progress, so many healthy ones in
-        // a row never add up to a stall.
-        let delivered = job.groups.into_iter().try_for_each(|mut group| {
-            rejections.extend(deliver(
-                &self.protocol,
-                &mut self.transport,
-                &mut group,
-                self.stall_after,
-                Instant::now() + self.stall_after,
-                &mut throttled,
-                &mut waited,
-            )?);
-            Ok(())
-        });
-        Throttle::note(&self.throttle, waited);
-        delivered.map(|()| pipelined::Delivered { rejections, throttled })
+    fn send_one(&mut self, mut group: Group<P::Item>) -> pipelined::Delivered {
+        let mut round = Round::new(self.stall_after);
+        let delivered = deliver(&self.protocol, &mut self.transport, &mut group, &mut round);
+        Throttle::note(&self.throttle, round.waited);
+        pipelined::Delivered {
+            rejections: round.rejections,
+            throttled: round.throttled,
+            undelivered: delivered.err().map(|error| super::Undelivered {
+                error,
+                rows: group.sent_index,
+            }),
+        }
     }
 }
 
 impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
-    /// Rows are grouped by route. A group that would pass `max_request_bytes` is posted in rounds on this thread, all
-    /// but the last; the last of every group goes to the pool together, or is posted here too when there is none.
+    /// Rows are grouped by route and cut into requests within `max_request_bytes`. Every request goes to the pool, each
+    /// to a sender of its own, and the batch completes when the last is answered; without a pool, each is posted here.
     fn deliver(
         &mut self,
         batch: BatchId,
@@ -574,6 +575,7 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
         let mut refused = Vec::new();
         let order = self.protocol.order();
         let mut groups: Vec<Group<P::Item>> = Vec::new();
+        let mut full: Vec<Group<P::Item>> = Vec::new();
         // Each route's groups, by part, so neither a batch spanning many routes nor a part per row is searched once
         // per row.
         let mut by_route: HashMap<String, HashMap<usize, usize>> = HashMap::new();
@@ -611,7 +613,7 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
             };
             let size = self.protocol.size(&item);
             if order.is_none() && self.overflows(&groups[at], size) {
-                refused.extend(self.post(&rows, &mut groups[at])?);
+                full.push(groups[at].cut());
             }
             let group = &mut groups[at];
             group.bytes += size;
@@ -620,42 +622,45 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
         }
         if let Some(order) = order {
             for group in &mut groups {
-                refused.extend(self.post_ordered(&rows, group, order)?);
+                self.cut_ordered(group, order, &mut full);
             }
         }
-        groups.retain(|g| !g.pending.is_empty());
-        let Some(pool) = &mut self.pool else {
-            for group in &mut groups {
+        full.extend(groups.into_iter().filter(|g| !g.pending.is_empty()));
+        // A batch with nothing to send is done: no answer will come for it.
+        let Some(pool) = self.pool.as_mut().filter(|_| !full.is_empty()) else {
+            for group in &mut full {
                 refused.extend(self.post(&rows, group)?);
             }
             return Ok((Dispatched::Complete, refused));
         };
-        pool.submit(batch, HttpJob { groups })?;
+        pool.submit(batch, full)?;
         Ok((Dispatched::InFlight, refused))
     }
 
-    /// Wait for every batch the pool holds. `flush` cannot return the completions, so they are held for the next
+    /// Wait for every batch the pool holds. `flush` cannot return the completions, so the pool holds them for the next
     /// `poll_completions`.
     fn flush(&mut self) -> Result<(), IoError> {
-        if let Some(pool) = &mut self.pool {
-            let done = pool.drain()?;
-            self.drained.extend(done);
+        match &mut self.pool {
+            Some(pool) => pool.drain(),
+            None => Ok(()),
         }
-        Ok(())
     }
 
-    /// What the pool's AIMD loop currently allows. A destination delivering one batch at a time has no loop and no
-    /// figure to report.
+    /// Requests the pool has open. A destination delivering one batch at a time has no pool and no figure to report.
     fn concurrency(&mut self) -> Option<usize> {
-        self.pool.as_ref().map(|p| p.limit())
+        self.pool.as_ref().map(|p| p.outstanding())
+    }
+
+    fn lend_senders(&mut self, lend: crate::io::Lend) {
+        if let Some(pool) = &mut self.pool {
+            pool.lend_senders(lend);
+        }
     }
 
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
-        // What a barrier saw land is reported before the pool is asked: a failure there would otherwise take it back.
-        let drained = std::mem::take(&mut self.drained);
         match &mut self.pool {
-            Some(pool) if drained.is_empty() => pool.poll(),
-            _ => Ok(drained),
+            Some(pool) => pool.poll(),
+            None => Ok(Vec::new()),
         }
     }
 }
@@ -900,26 +905,42 @@ pub fn credential(
     Ok(value)
 }
 
+/// The `Authorization` value signing in as `user` with the password the credential `what` names `password` holds,
+/// refused as `credential` refuses one.
+pub fn basic(
+    what: &str,
+    name: &str,
+    user: &str,
+    password: &crate::plan::topology::SecretRef,
+    secrets: &HeldSecrets,
+) -> Result<String, IoError> {
+    Ok(basic_authorization(user, &credential(what, name, password, secrets)?))
+}
+
+/// The `Authorization` value signing in as `user` with `password` (RFC 7617).
+pub fn basic_authorization(user: &str, password: &str) -> String {
+    format!(
+        "Basic {}",
+        crate::format::bytes_text::BytesForm::Base64.text(format!("{user}:{password}").as_bytes())
+    )
+}
+
 /// How a client's transports connect: the certificate they present, and the roots they verify the service against
-/// (`io::trust`). Without an identity, no certificate.
+/// (`io::trust`). Speaking no TLS of its own, no certificate.
 ///
 /// A credential this worker cannot obtain is an error here, never a connection that silently falls back to
 /// presenting nothing.
-pub fn agent_config(identity: Option<&Identity>, secrets: &HeldSecrets) -> Result<ureq::config::Config, IoError> {
+pub fn agent_config(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<ureq::config::Config, IoError> {
     Ok(ureq::Agent::config_builder()
-        .tls_config(tls_config(identity, secrets)?)
+        .tls_config(tls_config(tls, secrets)?)
         .build())
 }
 
 /// `agent_config`'s TLS alone, for a caller that sets the rest of the agent itself.
-pub fn tls_config(identity: Option<&Identity>, secrets: &HeldSecrets) -> Result<ureq::tls::TlsConfig, IoError> {
-    let tls = ureq::tls::TlsConfig::builder().root_certs(super::trust::ureq_roots(identity)?);
-    let Some(presented) = identity
-        .map(|i| super::trust::presented(i, secrets))
-        .transpose()?
-        .flatten()
-    else {
-        return Ok(tls.build());
+pub fn tls_config(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<ureq::tls::TlsConfig, IoError> {
+    let config = ureq::tls::TlsConfig::builder().root_certs(super::trust::ureq_roots(tls)?);
+    let Some(presented) = tls.map(|t| super::trust::presented(t, secrets)).transpose()?.flatten() else {
+        return Ok(config.build());
     };
     let chain: Vec<_> = (presented.chain.iter())
         .map(|der| ureq::tls::Certificate::from_der(der.as_ref()).to_owned())
@@ -927,7 +948,7 @@ pub fn tls_config(identity: Option<&Identity>, secrets: &HeldSecrets) -> Result<
     let key = ureq::tls::PrivateKey::from_pem(presented.key_pem.as_bytes())
         .map_err(|e| IoError::transient(format!("a private key ureq cannot read: {e}")))?
         .to_owned();
-    Ok(tls
+    Ok(config
         .client_cert(Some(ureq::tls::ClientCert::new_with_certs(&chain, key)))
         .build())
 }

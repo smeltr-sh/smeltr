@@ -9,8 +9,10 @@
   listing two rows of hex and leaving it to be worked out.
 -->
 <script lang="ts">
+  import StateMark from './StateMark.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
+  import InlineSaveBar from './InlineSaveBar.svelte';
   import {
     abandonRotation,
     AUTHORITY_URL,
@@ -18,9 +20,9 @@
     cutOverRotation,
     getCertificates,
     putCertificate,
-    reissueCertificate,
+    OWN_CERTIFICATE,
+    setRotationDeadline,
     refused,
-    withdrawCertificate,
     ROTATION_WAIT_HOURS,
     AUTHORITY_VALIDITY_DAYS,
     ACME_DIRECTORIES,
@@ -28,23 +30,35 @@
     putAcme,
     orderAcme,
     type AcmeChallenge,
+    type AcmeDnsProvider,
     type AcmeDto,
     type AcmeSettings,
     type AccountRefusal,
     type CertificateSource,
     type CertificatesDto,
     type DescribedCertificate,
+    type RotationDto,
   } from './api';
   import { ask } from './Confirm.svelte';
   import Help from './Help.svelte';
   import Panel from './Panel.svelte';
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import Collapsible from './Collapsible.svelte';
   import Segmented from './Segmented.svelte';
   import Advanced from './Advanced.svelte';
   import PasswordField from './PasswordField.svelte';
+  import LeaderSecretField from './LeaderSecretField.svelte';
   import TokenListInput from './TokenListInput.svelte';
-  import { expiry } from './time';
+  import CertificatePicker from './CertificatePicker.svelte';
+  import {
+    countdown,
+    expiringSoon,
+    expiry,
+    fromLocalInput,
+    localDateTime,
+    toLocalInput,
+  } from './time';
   import { NOT_IN_DEMO } from './access';
 
   let certificates = $state<CertificatesDto | null>(null);
@@ -66,9 +80,30 @@
   $effect(() => {
     source = inForce;
   });
-  let certificate = $state('');
-  let privateKey = $state('');
-  let authority = $state('');
+  /** The certificate from the list to serve. */
+  let chosen = $state<string | undefined>(undefined);
+  /** The deadline as the switch's picker holds it, local time, while somebody is changing it. */
+  let cutOverBy = $state('');
+  // Follows the deadline in force when it moves, and only then: the page re-reads it every few seconds, which
+  // must not undo a change somebody is making.
+  const deadlineInForce = $derived(certificates?.rotation?.deadlineMillis ?? null);
+  $effect(() => {
+    if (deadlineInForce !== null) cutOverBy = toLocalInput(deadlineInForce);
+  });
+  function deadlineDirty(rotation: RotationDto): boolean {
+    return cutOverBy !== toLocalInput(rotation.deadlineMillis);
+  }
+  /** Why the picked deadline cannot be saved, or ''. */
+  function deadlineProblem(rotation: RotationDto): string {
+    const picked = fromLocalInput(cutOverBy);
+    if (!deadlineDirty(rotation) || picked === undefined) return '';
+    if (picked <= now) return 'That time has passed. To cut over now, use Cut over now.';
+    if (picked > rotation.latestDeadlineMillis)
+      return `The latest it can wait is ${localDateTime(rotation.latestDeadlineMillis)}, 10 minutes before a certificate expires.`;
+    return '';
+  }
+  /** Ticks while a rotation is open, for the countdown. */
+  let now = $state(Date.now());
 
   /** The ACME settings as the leader holds them, and the form over them. */
   let acme = $state<AcmeDto | null>(null);
@@ -83,6 +118,9 @@
   let acmeAuthority = $state('');
   let eabKeyId = $state('');
   let eabHmac = $state('');
+  let dnsProvider = $state<AcmeDnsProvider>('cloudflare');
+  let cloudflareToken = $state('');
+  let replacingToken = $state(false);
   const directory = $derived(preset === OTHER ? directoryUrl.trim() : preset);
   const terms = $derived(ACME_DIRECTORIES.find((d) => d.value === preset)?.terms ?? null);
   /** What an order needs, as the leader will ask for it. */
@@ -116,6 +154,9 @@
     acmeAuthority = stored.authority;
     eabKeyId = stored.eabKeyId;
     eabHmac = '';
+    dnsProvider = stored.dnsProvider;
+    cloudflareToken = '';
+    replacingToken = false;
   }
 
   function acmeSettings(): AcmeSettings {
@@ -131,6 +172,8 @@
       // Typed, it replaces the stored key; left empty, the stored key is kept, unless its id went, which is
       // what removes both.
       eabHmac: eabHmac !== '' ? eabHmac : keyId === '' && acme?.eabHmacSet ? '' : null,
+      dnsProvider,
+      cloudflareToken: cloudflareToken !== '' ? cloudflareToken : null,
     };
   }
 
@@ -146,6 +189,7 @@
     Promise.all([getCertificates(), getAcme()])
       .then(([c, a]) => {
         certificates = c;
+        chosen = c.entry ?? undefined;
         showAcme(a);
       })
       .catch((e) => {
@@ -175,6 +219,8 @@
   const newRoot = $derived(inForce === 'acme' && switching?.source === 'acme');
   // Read inside the card's title snippet, where the page's null check does not reach.
   const supplied = $derived(certificates?.supplied ?? false);
+  /** Another entry is chosen, served or not: a start that cannot serve it presents the leader's own meanwhile. */
+  const choseAnother = $derived(!!certificates?.entry && certificates.entry !== OWN_CERTIFICATE);
 
   $effect(() => {
     if (!rotationOpen) return;
@@ -187,12 +233,11 @@
     }, ROTATION_POLL_MS);
     return () => clearInterval(id);
   });
-
-  const DAY = 24 * 60 * 60 * 1000;
-
-  function expiringSoon(cert: DescribedCertificate): boolean {
-    return cert.notAfterMillis - Date.now() < 30 * DAY;
-  }
+  $effect(() => {
+    if (!rotationOpen) return;
+    const id = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
 
   function on(millis: number): string {
     return new Date(millis).toLocaleDateString(undefined, {
@@ -245,16 +290,43 @@
     }
   }
 
-  /** A change to what is served: takes the certificates it answers with, and the upload form is spent. */
+  /** What a supplied certificate has to cover, as the leader checks it (`tls::check_supplied`): the names the worker
+   * inside this leader and this browser reach it by, or failing both, one of its names. */
+  function mustCover(
+    c: CertificatesDto,
+    hostname: string,
+  ): { names: string; loopback: string | null } {
+    const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    const browser = c.names.find((n) => n.toLowerCase() === host);
+    const worker = c.workerName;
+    if (!worker && !browser)
+      return { names: `It must cover one of ${listed(c.names, 'or')}.`, loopback: null };
+    const roles =
+      worker && browser && worker.toLowerCase() === browser.toLowerCase()
+        ? [`${worker} (used by the worker inside this leader and by your browser)`]
+        : [
+            ...(worker ? [`${worker} (used by the worker inside this leader)`] : []),
+            ...(browser ? [`${browser} (used by your browser)`] : []),
+          ];
+    const loopback = worker && ['localhost', '127.0.0.1', '::1'].includes(worker.toLowerCase());
+    return { names: `It must cover ${roles.join(' and ')}.`, loopback: loopback ? worker : null };
+  }
+
+  /** `a`, `a or b`, `a, b or c`. */
+  function listed(names: string[], word: string): string {
+    return names.length < 2
+      ? names.join('')
+      : `${names.slice(0, -1).join(', ')} ${word} ${names[names.length - 1]}`;
+  }
+
+  /** A change to what is served: takes the certificates it answers with, and the choice is spent. */
   function act(
     call: () => Promise<CertificatesDto | AccountRefusal>,
     done: string | ((c: CertificatesDto) => string),
   ) {
     return attempt(call, (c) => {
       certificates = c;
-      certificate = '';
-      privateKey = '';
-      authority = '';
+      chosen = c.entry ?? undefined;
       return typeof done === 'string' ? done : done(c);
     });
   }
@@ -328,6 +400,67 @@
   </div>
 {/snippet}
 
+{#snippet progress(rotation: RotationDto)}
+  {@const holding = rotation.workers.filter((w) => w.holdsIncoming).length}
+  {@const problem = deadlineProblem(rotation)}
+  <form
+    class="setting"
+    onsubmit={(e) => {
+      e.preventDefault();
+      const picked = fromLocalInput(cutOverBy);
+      if (picked !== undefined) rotationAct(() => setRotationDeadline(picked), '');
+    }}
+  >
+    <p class="deadline">
+      Cuts over as soon as every worker holds the incoming authority, or at
+      <input
+        class="when"
+        type="datetime-local"
+        aria-label="Cut over by"
+        bind:value={cutOverBy}
+        min={toLocalInput(now)}
+        max={toLocalInput(rotation.latestDeadlineMillis)}
+      />, whichever comes first.
+    </p>
+    <p class="countdown">
+      Cutover in <strong>{countdown(rotation.deadlineMillis, now)}</strong>
+      <span class="dim">· started {localDateTime(rotation.startedMillis)}</span>
+    </p>
+    {#if problem}
+      <InlineError>{problem}</InlineError>
+    {/if}
+    <InlineSaveBar
+      dirty={deadlineDirty(rotation)}
+      label="Save"
+      disabled={rotationBusy || !!problem}
+      ondiscard={() => (cutOverBy = toLocalInput(rotation.deadlineMillis))}
+    />
+  </form>
+
+  <div class="setting">
+    <h3>Workers <span class="dim">· {holding} of {rotation.workers.length} hold it</span></h3>
+    <ul class="workers">
+      {#each rotation.workers as worker (worker.id)}
+        <li>
+          <span class="mono">{worker.id}</span>
+          {#if worker.holdsIncoming}
+            <span class="holds"><StateMark state="ok" /> holds it</span>
+          {:else}
+            <span class="dim">waiting</span>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+    {#if rotation.notFollowing.length > 0}
+      <p class="dim">
+        Not waited for: {rotation.notFollowing.join(', ')}. These workers verify this leader by an
+        authority their operator gave them and take none from here, so the operator gives them the
+        incoming one.
+      </p>
+    {/if}
+  </div>
+{/snippet}
+
 {#snippet status(error: string, done: string)}
   {#if error}
     <!-- The error bar says why. -->
@@ -365,6 +498,11 @@
         is not what clients are being served. Restart the leader to serve it.
       </InlineError>
     {/if}
+    {#if certificates.unserved}
+      <InlineError>
+        {certificates.unserved}
+      </InlineError>
+    {/if}
     <Panel>
       {#snippet title()}
         Current authority
@@ -388,12 +526,13 @@
           {#if inForce === 'acme'}
             Ordered from the certificate authority the ACME settings name, and ordered again by this
             leader two thirds of the way through its life.
-          {:else if supplied}
-            Uploaded by an administrator, so this leader issues none of its own while it is in
-            force.
+          {:else if supplied && certificates?.entry}
+            Serves the certificate "{certificates.entry}" from
+            <a href="#/admin/certificates">Admin → Certificates</a>. Replace it there to renew it.
           {:else}
-            What this leader serves, signed by the current authority and issued afresh at every
-            start.
+            Serves the certificate "{OWN_CERTIFICATE}" from
+            <a href="#/admin/certificates">Admin → Certificates</a>. This leader issued it under the
+            current authority and renews it on its own.
           {/if}
         </Help>
       {/snippet}
@@ -431,18 +570,7 @@
           {@render who(switching.incoming, `expires ${on(switching.incoming.notAfterMillis)}`)}
         </div>
 
-        <div class="setting">
-          <p>
-            Started {on(switching.startedMillis)} · automatic cutover {on(switching.deadlineMillis)}
-          </p>
-          {#if switching.notFollowing.length > 0}
-            <p class="dim">
-              Not waited for: {switching.notFollowing.join(', ')}. These workers verify this leader
-              by an authority their operator gave them and take none from here, so the operator
-              gives them the incoming one.
-            </p>
-          {/if}
-        </div>
+        {@render progress(switching)}
 
         <div class="setting actions">
           <p class="critical">
@@ -488,37 +616,27 @@
       {/if}
 
       {#if source === 'own' && !switching}
-        <div class="setting actions">
-          {@render status(formError, message)}
-          <div class="buttons">
-            {#if certificates.supplied}
-              <button
-                class="primary"
-                type="button"
-                disabled={busy}
-                onclick={() =>
-                  act(() => withdrawCertificate(), switched('back to this leader’s own authority'))}
-              >
-                Switch to Leader issued
-              </button>
-            {:else}
-              <button
-                type="button"
-                disabled={busy}
-                onclick={async () => {
-                  const ok = await ask({
-                    title: 'issue certificate',
-                    body: 'This leader serves a new certificate under the current authority.',
-                    action: 'Issue a new one',
-                  });
-                  if (ok) act(() => reissueCertificate(), 'a new certificate is in force');
-                }}
-              >
-                Issue a new one
-              </button>
+        {#if choseAnother || formError || message}
+          <div class="setting actions">
+            {@render status(formError, message)}
+            {#if choseAnother}
+              <div class="buttons">
+                <button
+                  class="primary"
+                  type="button"
+                  disabled={busy}
+                  onclick={() =>
+                    act(
+                      () => putCertificate(OWN_CERTIFICATE),
+                      switched('back to this leader’s own authority'),
+                    )}
+                >
+                  Switch to Leader issued
+                </button>
+              </div>
             {/if}
           </div>
-        </div>
+        {/if}
         {#if certificates.rotation}
           <div class="setting">
             <h3>
@@ -537,13 +655,7 @@
             )}
           </div>
 
-          <div class="setting">
-            <p>
-              Started {on(certificates.rotation.startedMillis)} · automatic cutover {on(
-                certificates.rotation.deadlineMillis,
-              )}
-            </p>
-          </div>
+          {@render progress(certificates.rotation)}
 
           <div class="setting actions">
             <p class="critical">
@@ -579,12 +691,12 @@
           </div>
 
           {@render status(rotationError, rotationMessage)}
-        {:else if !certificates.supplied}
+        {:else if !choseAnother}
           <div class="setting">
             <Collapsible open={!!rotationError || !!rotationMessage}>
               {#snippet summary()}Rotate authority{/snippet}
               <div class="rotation-settings">
-                <Field label="Authority lifetime" note="A new authority defaults to 10 years.">
+                <Field label="Authority lifetime">
                   <select bind:value={authorityValidityDays}>
                     {#each AUTHORITY_VALIDITY_DAYS as days}
                       <option value={days}>{days / 365} {days === 365 ? 'year' : 'years'}</option>
@@ -631,15 +743,18 @@
         {/if}
       {:else if source === 'upload'}
         <div class="setting">
-          <Field label="Certificate" note="PEM, carrying {certificates.served.names.join(' and ')}">
-            <textarea bind:value={certificate} rows="4" spellcheck="false"></textarea>
-          </Field>
-          <Field label="Private key" note="PEM">
-            <textarea bind:value={privateKey} rows="4" spellcheck="false"></textarea>
-          </Field>
-          <Field label="Authority" note="PEM, the authority that signed the certificate">
-            <textarea bind:value={authority} rows="4" spellcheck="false"></textarea>
-          </Field>
+          <CertificatePicker bind:value={chosen} note={coverNote} usableAs="server" />
+          {#snippet coverNote()}
+            {@const cover = mustCover(certificates!, location.hostname)}
+            {cover.names}
+            {#if cover.loopback}
+              Public authorities don't issue certificates for {cover.loopback}. To use a public
+              certificate, see
+              <a href="https://smeltr.sh/docs/certificates#names" target="_blank" rel="noopener"
+                >Names a certificate must cover</a
+              >.
+            {/if}
+          {/snippet}
           {#if switching}
             <p class="dim">
               A switch to {switchingTo} is open. When it cuts over, it replaces this certificate.
@@ -650,11 +765,11 @@
             <button
               class="primary"
               type="button"
-              disabled={busy || !certificate || !privateKey || !authority}
+              disabled={busy || !chosen}
               onclick={() =>
                 act(
-                  () => putCertificate(certificate, privateKey, authority),
-                  switched('this leader is serving the certificate you supplied'),
+                  () => putCertificate(chosen!),
+                  switched(`this leader is serving the certificate "${chosen}"`),
                 )}
             >
               Serve this certificate
@@ -678,18 +793,23 @@
             </select>
           </Field>
           {#if preset === OTHER}
-            <Field label="Directory URL" note="https://, as the authority publishes it">
+            <Field
+              required
+              label="Directory URL"
+              help="Where your certificate authority publishes its ACME directory. It starts with https://."
+            >
               <input type="url" bind:value={directoryUrl} spellcheck="false" />
             </Field>
           {/if}
           <Field
+            required
             label="Names"
             group
-            note="What the certificate carries, and where the authority reaches this leader."
+            help="Press Enter or type a comma after each name. A wildcard such as *.example.com needs DNS-01, and DNS-01 cannot prove an IP address."
           >
-            <TokenListInput bind:values={nameList} placeholder="leader.example.com" />
+            <TokenListInput bind:values={nameList} placeholder="leader.example.com" required />
           </Field>
-          <Field label="Contact email">
+          <Field optional label="Contact email">
             {#snippet help()}Where the certificate authority sends notices about this account.{/snippet}
             <input type="email" bind:value={contact} />
           </Field>
@@ -706,31 +826,65 @@
           </label>
           <Advanced modified={advancedChanged}>
             <div class="acme-advanced">
+              <div class="challenge-group">
+                <Field
+                  label="Challenge"
+                  note={challenge === 'http-01' && acme.httpPort !== 80
+                    ? `Forward port 80 to port ${acme.httpPort} on this leader; the authority checks there.`
+                    : undefined}
+                >
+                  {#snippet help()}How the certificate authority checks this leader holds the names.{/snippet}
+                  <select bind:value={challenge}>
+                    <option value="tls-alpn-01">TLS-ALPN-01</option>
+                    <option value="http-01">HTTP-01</option>
+                    <option value="dns-01">DNS-01</option>
+                  </select>
+                </Field>
+                {#if challenge === 'dns-01'}
+                  <Nested>
+                    <Field label="DNS provider">
+                      <select bind:value={dnsProvider}>
+                        <option value="cloudflare">Cloudflare</option>
+                      </select>
+                    </Field>
+                    <Field required label="API token">
+                      {#snippet help()}
+                        It must be able to read the zones that hold the names and edit their DNS
+                        records: <a
+                          href="https://developers.cloudflare.com/fundamentals/api/get-started/create-token/"
+                          target="_blank"
+                          rel="noreferrer">Cloudflare's Create API token</a
+                        >.
+                      {/snippet}
+                      <LeaderSecretField
+                        bind:value={cloudflareToken}
+                        bind:replacing={replacingToken}
+                        stored={acme.cloudflareTokenSet}
+                        ariaLabel="API token"
+                      />
+                    </Field>
+                  </Nested>
+                {/if}
+              </div>
               <Field
-                label="Challenge"
-                note={challenge === 'http-01'
-                  ? `The authority asks on port 80; this leader answers on port ${acme.httpPort}.`
-                  : undefined}
-              >
-                {#snippet help()}How the certificate authority checks this leader holds the names.{/snippet}
-                <select bind:value={challenge}>
-                  <option value="tls-alpn-01">TLS-ALPN-01</option>
-                  <option value="http-01">HTTP-01</option>
-                </select>
-              </Field>
-              <Field
+                optional
                 label="Authority"
-                note="Optional. PEM, the root a private authority issues under, where the platform does not trust it."
+                help="The root certificate of a private authority, as PEM, if this leader doesn't already trust it. Leave it empty for a public authority."
               >
                 <textarea bind:value={acmeAuthority} rows="4" spellcheck="false"></textarea>
               </Field>
               <Field
+                optional
                 label="EAB key ID"
-                note="Optional. External account binding, for an authority that requires an account with it."
+                help="Your certificate authority gives it for external account binding. Leave it empty if it gave you none."
               >
                 <input bind:value={eabKeyId} spellcheck="false" />
               </Field>
-              <Field label="EAB HMAC key" note="Optional. Stored encrypted and never shown again.">
+              <Field
+                optional
+                label="EAB HMAC key"
+                help="Your certificate authority gives it with the EAB key ID. It is stored encrypted and never shown again."
+              >
                 <PasswordField
                   bind:value={eabHmac}
                   ariaLabel="EAB HMAC key"
@@ -739,7 +893,12 @@
               </Field>
             </div>
           </Advanced>
-          {#if inForce !== 'acme'}
+          {#if inForce !== 'acme' && challenge === 'dns-01'}
+            <p class="critical">
+              The zones that hold {nameList.join(', ') || 'the names above'} must be in this Cloudflare
+              account.
+            </p>
+          {:else if inForce !== 'acme'}
             <p class="critical">
               Port {challenge === 'tls-alpn-01' ? 443 : 80} on {nameList.join(', ') ||
                 'the names above'} must reach this leader.
@@ -847,8 +1006,31 @@
     color: var(--dim);
   }
 
-  .dim {
-    color: var(--dim);
+  .when {
+    width: auto;
+    margin: 0 0.25rem;
+  }
+
+  .countdown strong {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .workers {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.3rem;
+  }
+
+  .workers li {
+    display: flex;
+    justify-content: space-between;
+    max-width: 32rem;
+  }
+
+  .holds {
+    color: var(--added);
   }
 
   .soon {
@@ -887,6 +1069,11 @@
   }
 
   .acme-advanced {
+    display: grid;
+    gap: 0.85rem;
+  }
+
+  .challenge-group {
     display: grid;
     gap: 0.85rem;
   }

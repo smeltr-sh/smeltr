@@ -182,6 +182,7 @@ fn a_kv_step_with_escapes_reads_an_escaped_pair_separator() {
     });
     let step = FunctionKind::Parser {
         input: "_raw".into(),
+        into: "$".into(),
         kind,
         declared: Vec::new(),
     };
@@ -223,5 +224,60 @@ fn cef_reads_the_header_and_the_extension() {
     assert_eq!(parsed(&rows[1])["version"], "0", "a cut record keeps what it read");
     assert!(env.errors.entries().iter().all(|a| a.kind == ExceptionKind::Unparsable));
     assert_eq!(env.errors.error_rows(), [1]);
+    b.reclaim(&mut env.pool);
+}
+
+/// A skipped key makes no field, declared or not, and a step that rebuilds its input leaves its pair out of the line,
+/// every other pair as it was written.
+#[test]
+fn a_rebuilding_step_leaves_each_skipped_pair_out() {
+    use smeltr::plan::config::{FunctionKind, KvConfig, ParserKind};
+    let kind = ParserKind::KeyValue(KvConfig {
+        skip: vec!["devid".into(), "tz".into()],
+        rebuild: true,
+        ..KvConfig::default()
+    });
+    let step = FunctionKind::Parser {
+        input: "_raw".into(),
+        into: "$".into(),
+        kind,
+        declared: Vec::new(),
+    };
+    let plan = compile_ok(vec![func(0, step)]);
+    let mut env = Env::new();
+    let mut b = Batch::new(&plan.slot_layout, 3, 0);
+    seed_raw(
+        &mut env,
+        &mut b,
+        &[
+            r#"date=2026-09-27 devid="FG1" app="Microsoft Teams" tz="+0000""#,
+            "tz=1  a=b",
+            "a=b",
+        ],
+    );
+
+    let rows = env.run(&plan, &mut b);
+    assert_eq!(
+        parsed(&rows[0]),
+        parsed(br#"{"_raw":"date=2026-09-27 app=\"Microsoft Teams\"","date":"2026-09-27","app":"Microsoft Teams"}"#)
+    );
+    assert_eq!(parsed(&rows[1]), parsed(br#"{"_raw":"a=b","a":"b"}"#));
+    assert_eq!(parsed(&rows[2]), parsed(br#"{"_raw":"a=b","a":"b"}"#));
+    b.reclaim(&mut env.pool);
+}
+
+/// `kv()` reads past a key its `skip` names, under `nextKey` too.
+#[test]
+fn kv_skip_makes_no_field() {
+    let plan = compile_ok(vec![code(
+        0,
+        r#"Object.assign($, kv(_raw, {skip: ["b"], nextKey: false}));"#,
+    )]);
+    let mut env = Env::new();
+    let mut b = Batch::new(&plan.slot_layout, 1, 0);
+    seed_raw(&mut env, &mut b, &["a=1 b=2 c=3"]);
+
+    let rows = env.run(&plan, &mut b);
+    assert_eq!(parsed(&rows[0]), parsed(br#"{"_raw":"a=1 b=2 c=3","a":"1","c":"3"}"#));
     b.reclaim(&mut env.pool);
 }

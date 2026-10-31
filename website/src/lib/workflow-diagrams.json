@@ -470,9 +470,9 @@
     ]
   },
   "single": {
-    "title": "Standalone: leader and worker in one process",
-    "description": "An administrator connects to the leader. One Smeltr binary runs the leader and one worker together in a single process, shown as joined cards. Sources send records through the worker to destinations.",
-    "caption": "One binary, one process: the leader and one worker run together. The administrator uses the leader; the worker reads from sources, filters records, and delivers them to destinations.",
+    "title": "Standalone: leader and worker on one host",
+    "description": "An administrator connects to the leader. One Smeltr service runs the leader and one worker together, shown as joined cards. Sources send records through the worker to destinations.",
+    "caption": "One binary, one service: the leader and one worker run together. The administrator uses the leader; the worker reads from sources, filters records, and delivers them to destinations.",
     "layouts": [
       {
         "width": 900,
@@ -527,7 +527,7 @@
             "y": 110,
             "w": 280,
             "h": 240,
-            "label": "One process"
+            "label": "One service"
           }
         ]
       },
@@ -593,7 +593,7 @@
   "kubernetes": {
     "title": "Smeltr on Kubernetes",
     "description": "An administrator reaches the ingress over HTTPS. The ingress forwards through a private ClusterIP Service to one leader pod. Workers fetch main and report status through the ingress and connect directly to sources and destinations. The leader and each worker have persistent storage.",
-    "caption": "Dashed arrows show workers fetching main and reporting status through the ingress HTTPS address. The ingress forwards to the leader through a private ClusterIP Service. Dotted lines connect processes to persistent volumes: keep leader data and its sealing key on separate volumes, and give each worker its own state volume. Back up the volumes. Sources and destinations may be inside or outside the cluster.",
+    "caption": "Dashed arrows show workers fetching main and reporting status through the ingress HTTPS address. The ingress forwards to the leader through a private ClusterIP Service. Dotted lines connect processes to persistent volumes: keep leader data and its secrets encryption key on separate volumes, and give each worker its own state volume. Back up the volumes. Sources and destinations may be inside or outside the cluster.",
     "layouts": [
       {
         "width": 900,
@@ -995,6 +995,176 @@
             "y": 125,
             "text": "fetch"
           }
+        ]
+      }
+    ]
+  },
+  "siem": {
+    "title": "Two routes from one source",
+    "description": "Source records take two routes. One drops and trims records, then sends them to the SIEM. The other sends every record, unchanged, to object storage.",
+    "caption": "One source can feed both: every route whose condition matches runs.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 330,
+        "nodes": [
+          {
+            "x": 20,
+            "y": 130,
+            "w": 200,
+            "title": "Source records",
+            "detail": ["Everything sent"]
+          },
+          {
+            "x": 310,
+            "y": 30,
+            "w": 240,
+            "title": "Drop & trim",
+            "detail": ["Only what you search"]
+          },
+          {
+            "x": 650,
+            "y": 30,
+            "w": 230,
+            "title": "SIEM",
+            "detail": ["Smaller volume"]
+          },
+          {
+            "x": 650,
+            "y": 230,
+            "w": 230,
+            "title": "Object storage",
+            "detail": ["Full copy"]
+          }
+        ],
+        "paths": ["M220 170H260V70H300", "M550 70H640", "M260 170V270H640"],
+        "labels": []
+      },
+      {
+        "width": 360,
+        "height": 380,
+        "nodes": [
+          {
+            "x": 80,
+            "y": 10,
+            "w": 200,
+            "title": "Source records",
+            "detail": ["Everything sent"]
+          },
+          {
+            "x": 10,
+            "y": 140,
+            "w": 160,
+            "title": "Drop & trim",
+            "detail": ["What you search"]
+          },
+          {
+            "x": 10,
+            "y": 280,
+            "w": 160,
+            "title": "SIEM",
+            "detail": ["Smaller volume"]
+          },
+          {
+            "x": 190,
+            "y": 280,
+            "w": 160,
+            "title": "Object storage",
+            "detail": ["Full copy"]
+          }
+        ],
+        "paths": ["M180 90V110H90V130", "M90 220V270", "M180 110H270V270"],
+        "labels": []
+      }
+    ]
+  },
+  "schemas": {
+    "title": "How schemas work",
+    "description": "A schema comes in from ECS, OCSF, a CSV or a JSON Schema. Smeltr checks a pipeline's records against it in the editor and in review. It can also be exported as an Elasticsearch mapping.",
+    "caption": "A schema comes in from a standard or a file. Smeltr checks a pipeline's records against it while you edit and in review. A mismatch is a finding, and never blocks a deploy. If you send to Elasticsearch, you can also export it as an index mapping.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 300,
+        "nodes": [
+          {
+            "x": 20,
+            "y": 20,
+            "w": 220,
+            "title": "ECS · OCSF · CSV",
+            "detail": ["or a JSON Schema"]
+          },
+          {
+            "x": 340,
+            "y": 20,
+            "w": 220,
+            "title": "Schema",
+            "detail": ["Fields · types · required"]
+          },
+          {
+            "x": 660,
+            "y": 20,
+            "w": 220,
+            "title": "Elasticsearch",
+            "detail": ["Optional index mapping"]
+          },
+          {
+            "x": 180,
+            "y": 200,
+            "w": 220,
+            "title": "Pipeline editor",
+            "detail": ["Marks missing fields"]
+          },
+          { "x": 500, "y": 200, "w": 220, "title": "Review", "detail": ["Lists findings"] }
+        ],
+        "paths": ["M240 60H330", "M400 100V150H290V190", "M500 100V150H610V190"],
+        "controlPaths": ["M560 60H650"],
+        "labels": [
+          { "x": 285, "y": 48, "text": "Read" },
+          { "x": 605, "y": 48, "text": "Export" },
+          { "x": 450, "y": 140, "text": "Checks" }
+        ]
+      },
+      {
+        "width": 360,
+        "height": 650,
+        "nodes": [
+          {
+            "x": 60,
+            "y": 10,
+            "w": 240,
+            "title": "ECS · OCSF · CSV",
+            "detail": ["or a JSON Schema"]
+          },
+          {
+            "x": 60,
+            "y": 150,
+            "w": 240,
+            "title": "Schema",
+            "detail": ["Fields · types · required"]
+          },
+          {
+            "x": 60,
+            "y": 290,
+            "w": 240,
+            "title": "Pipeline editor",
+            "detail": ["Marks missing fields"]
+          },
+          { "x": 60, "y": 410, "w": 240, "title": "Review", "detail": ["Lists findings"] },
+          {
+            "x": 60,
+            "y": 560,
+            "w": 240,
+            "title": "Elasticsearch",
+            "detail": ["Optional index mapping"]
+          }
+        ],
+        "paths": ["M180 90V140", "M180 230V280", "M300 190H335V450H310"],
+        "controlPaths": ["M60 190H25V520H120V550"],
+        "labels": [
+          { "x": 220, "y": 118, "text": "Read" },
+          { "x": 222, "y": 258, "text": "Checks" },
+          { "x": 160, "y": 540, "text": "Export" }
         ]
       }
     ]

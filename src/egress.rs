@@ -16,6 +16,8 @@
 //! refusal is usually on the destination's side, which tells nobody when it is done. Each refusal goes back with its
 //! document, so a reader whose destination sends refusals to a DLQ has what to send.
 
+pub mod pacing;
+
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -29,6 +31,7 @@ use crate::handoff::Ready;
 use crate::io::{BatchCompletion, BatchId, Destination, Dispatched, HeldRefusal, IoError, OwnedRecord, Rejection};
 use crate::metrics::MetricsHandle;
 use crate::worker::capture::{Captures, HeldAt};
+use pacing::{Completion, Pacer};
 
 /// Which reader a unit came from, and where its completion goes.
 type ReaderId = u64;
@@ -37,12 +40,12 @@ type ReaderId = u64;
 struct Owed {
     rejections: Vec<Rejection>,
     unit: Unit,
+    /// What the pacing model is told when it is acknowledged, once the queue is paced.
+    paced: Option<Completion>,
 }
 
 /// One reader's batch, as far as one destination is concerned. Owned rows: they cross a thread boundary.
 struct Unit {
-    /// Acceptance order across every reader; a re-send keeps it.
-    seq: u64,
     reader: ReaderId,
     batch: BatchId,
     rows: Vec<OwnedRecord>,
@@ -50,15 +53,18 @@ struct Unit {
     /// Set on the rows of a batch this destination refused and keeps, being sent again. Boxed: a unit is offered by
     /// value, and most units are never held.
     held: Option<Box<Held>>,
+    /// Refusals of the batch's other rows, which are not sent again, reported with the batch once it completes: the
+    /// ones a held unit's transport kept no document for, and the ones answered before part of the batch failed.
+    carried: Vec<Rejection>,
+    /// Set once the unit failed to land: the wait before this attempt, doubling up to [`RETRY_MAX`]. The destination
+    /// is not recovered while any unit has one.
+    retry: Option<Duration>,
 }
 
 /// What is known of a batch whose refusals are being sent again.
 struct Held {
     /// The wait before this attempt; the next one waits twice as long, up to `HELD_RETRY_MAX`.
     backoff: Duration,
-    /// Refusals that are not held -- ones whose document the transport kept none of -- reported with the batch once it
-    /// completes.
-    carried: Vec<Rejection>,
     /// Why the destination refused each of the unit's rows, in row order.
     why: Vec<String>,
     /// The capture admissions the rows have been shown to: a capture at this destination sees them once.
@@ -86,15 +92,26 @@ struct QueueState {
     bytes: usize,
     /// What of `bytes` is above the reserve, and so borrowed from the [`QueuePool`].
     borrowed: usize,
-    next_seq: u64,
+    /// Borrowed besides, for the senders the destination spawned past those it started with
+    /// ([`Egress::charging_senders`]). Held while the destination lives: a spawned sender is kept.
+    senders: usize,
     closed: bool,
 }
 
 struct Queue {
     state: Mutex<QueueState>,
     /// Bytes this destination may hold -- queued, and sent but unacknowledged -- before an offer is refused. Shared
-    /// across readers.
-    budget: usize,
+    /// across readers. The pacing model's target and one batch ready behind it once the queue is paced
+    /// ([`Egress::paced`], `Pacing::queue_bytes`).
+    budget: AtomicUsize,
+    /// The budget it was started with: the most a paced queue that borrows from no pool may hold.
+    most: usize,
+    /// The least a paced queue's budget is, one batch, once the queue is paced.
+    paced: OnceLock<usize>,
+    /// A source asked for room this queue did not have, since the last pop. The pacing model's mark that the link,
+    /// not the source, bounded what the next unit's sample measures: at steady state the queue is often empty with
+    /// everything in flight, so a backlog alone would read a full link as a quiet source.
+    pressed: AtomicBool,
     /// Signaled when a unit arrives, or on close.
     work: Condvar,
     /// The transform pool's wake-up, signaled when bytes are freed: a lane parked on this queue is the pool's to run
@@ -104,6 +121,9 @@ struct Queue {
     holds_refusals: AtomicBool,
     /// Where bytes above a reserve come from, when this queue borrows. See [`Egress::borrowing`].
     lend: OnceLock<Lend>,
+    /// What one sender the destination spawns holds, when the queue's pool pays for them. See
+    /// [`Egress::charging_senders`].
+    sender_bytes: OnceLock<usize>,
     /// The captures told this destination is sent to here. See [`Egress::with_captures`].
     captures: OnceLock<Arc<crate::worker::capture::Captures>>,
 }
@@ -114,9 +134,49 @@ struct Queue {
 /// A queue holds its reserve whatever the others do, so each can always move. Above it, it takes from here what its
 /// own budget still allows, and gives back as the destination acknowledges. A stalled destination holds at most its
 /// budget, so the rest keep what remains.
+///
+/// Lending is first come, first served while the pool has room. Once a queue is refused, the pool is contended, and
+/// for the next [`WANTING_FOR`] each queue may borrow only up to an equal share: the limit over the queues holding or
+/// wanting. Nothing is taken back -- a queue above its share stops borrowing and drains as its destination
+/// acknowledges -- so the shares settle in about a round trip.
 pub struct QueuePool {
     limit: usize,
     lent: AtomicUsize,
+    fair: Mutex<Fair>,
+}
+
+/// Who holds and who was refused, for the share rule.
+#[derive(Default)]
+struct Fair {
+    next: u64,
+    holding: HashSet<u64>,
+    wanting: HashMap<u64, Instant>,
+}
+
+/// How long a refusal keeps the pool contended.
+const WANTING_FOR: Duration = Duration::from_secs(1);
+
+impl Fair {
+    fn prune(&mut self, now: Instant) {
+        self.wanting
+            .retain(|_, at| now.saturating_duration_since(*at) < WANTING_FOR);
+    }
+
+    /// The pool bytes `who` may hold while others want room: an equal share among everyone holding or wanting.
+    fn share(&self, who: u64, limit: usize) -> usize {
+        let contenders = self
+            .holding
+            .iter()
+            .chain(self.wanting.keys())
+            .collect::<HashSet<_>>()
+            .len();
+        let contenders = contenders + usize::from(!self.holding.contains(&who) && !self.wanting.contains_key(&who));
+        limit / contenders.max(1)
+    }
+
+    fn others_wanting(&self, who: u64) -> bool {
+        self.wanting.keys().any(|k| *k != who)
+    }
 }
 
 impl QueuePool {
@@ -124,7 +184,26 @@ impl QueuePool {
         Arc::new(QueuePool {
             limit,
             lent: AtomicUsize::new(0),
+            fair: Mutex::new(Fair::default()),
         })
+    }
+
+    /// A name for one queue that borrows here.
+    pub(crate) fn lender(&self) -> u64 {
+        let mut f = self.fair.lock().unwrap();
+        f.next += 1;
+        f.next
+    }
+
+    /// The pool bytes `who` may hold right now: the whole pool while nobody else wants room, its share otherwise.
+    pub(crate) fn share(&self, who: u64) -> usize {
+        let mut f = self.fair.lock().unwrap();
+        f.prune(Instant::now());
+        if f.others_wanting(who) {
+            f.share(who, self.limit)
+        } else {
+            self.limit
+        }
     }
 
     /// The most it lends.
@@ -137,29 +216,40 @@ impl QueuePool {
         self.lent.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn fits(&self, bytes: usize) -> bool {
-        self.lent() + bytes <= self.limit
+    /// Whether `who`, holding `held` pool bytes, could take `bytes` more now.
+    pub(crate) fn fits(&self, who: u64, held: usize, bytes: usize) -> bool {
+        let mut f = self.fair.lock().unwrap();
+        f.prune(Instant::now());
+        self.allowed(&f, who, held, bytes)
     }
 
-    /// Lends `bytes` if they fit, or anyway when `forced`.
-    pub(crate) fn take(&self, bytes: usize, forced: bool) -> bool {
-        let mut lent = self.lent();
-        loop {
-            if !forced && lent + bytes > self.limit {
-                return false;
-            }
-            match self
-                .lent
-                .compare_exchange_weak(lent, lent + bytes, Ordering::Relaxed, Ordering::Relaxed)
-            {
-                Ok(_) => return true,
-                Err(now) => lent = now,
-            }
+    fn allowed(&self, f: &Fair, who: u64, held: usize, bytes: usize) -> bool {
+        self.lent() + bytes <= self.limit && (!f.others_wanting(who) || held + bytes <= f.share(who, self.limit))
+    }
+
+    /// Lends `bytes` more to `who`, holding `held`, if they fit, or anyway when `forced`. A refusal marks `who` as
+    /// wanting, which holds every queue to its share for a while.
+    pub(crate) fn take(&self, who: u64, held: usize, bytes: usize, forced: bool) -> bool {
+        let now = Instant::now();
+        let mut f = self.fair.lock().unwrap();
+        f.prune(now);
+        if !forced && !self.allowed(&f, who, held, bytes) {
+            f.wanting.insert(who, now);
+            return false;
         }
+        self.lent.fetch_add(bytes, Ordering::Relaxed);
+        if held + bytes > 0 {
+            f.holding.insert(who);
+        }
+        true
     }
 
-    pub(crate) fn give(&self, bytes: usize) {
+    /// `who` gives `bytes` back, holding `held` after.
+    pub(crate) fn give(&self, who: u64, held: usize, bytes: usize) {
         self.lent.fetch_sub(bytes, Ordering::Relaxed);
+        if held == 0 {
+            self.fair.lock().unwrap().holding.remove(&who);
+        }
     }
 }
 
@@ -167,6 +257,8 @@ impl QueuePool {
 /// holds stands for.
 struct Lend {
     pool: Arc<QueuePool>,
+    /// This queue's name in the pool.
+    id: u64,
     reserve: usize,
     charge: usize,
 }
@@ -188,11 +280,15 @@ impl Queue {
     fn new(budget: usize) -> Self {
         Queue {
             state: Mutex::new(QueueState::default()),
-            budget,
+            budget: AtomicUsize::new(budget),
+            most: budget,
+            paced: OnceLock::new(),
+            pressed: AtomicBool::new(false),
             work: Condvar::new(),
             pool: Mutex::new(None),
             holds_refusals: AtomicBool::new(false),
             lend: OnceLock::new(),
+            sender_bytes: OnceLock::new(),
             captures: OnceLock::new(),
         }
     }
@@ -202,13 +298,65 @@ impl Queue {
     /// reaches the refusal that says so.
     fn has_room(&self, bytes: usize) -> bool {
         let st = self.state.lock().unwrap();
-        st.closed
+        let room = st.closed
             || st.bytes == 0
-            || (st.bytes + bytes <= self.budget
-                && self
-                    .lend
-                    .get()
-                    .is_none_or(|l| l.pool.fits(l.borrowed(st.bytes + bytes) - st.borrowed)))
+            || (st.bytes + bytes <= self.budget()
+                && self.lend.get().is_none_or(|l| {
+                    l.pool.fits(
+                        l.id,
+                        st.borrowed + st.senders,
+                        l.borrowed(st.bytes + bytes) - st.borrowed,
+                    )
+                }));
+        if !room {
+            self.pressed.store(true, Ordering::Relaxed);
+        }
+        room
+    }
+
+    /// Whether the source is pressing on this queue: it was refused room since the last pop. Units waiting behind
+    /// the one popped are not enough: they wait on this thread, with the budget not yet full, and a sample taken
+    /// then says how fast this thread hands batches over, not how fast the link carries them. Consumed: the mark is
+    /// the next unit's.
+    fn pressing(&self) -> bool {
+        self.pressed.swap(false, Ordering::Relaxed)
+    }
+
+    /// The most a paced budget may be: the queue bytes whose borrowing fits this queue's share of the pool, less
+    /// what its senders borrow, plus the reserve, which is its own. Without a pool, the budget it was started with.
+    fn share(&self) -> usize {
+        match self.lend.get() {
+            Some(l) => {
+                let senders = self.state.lock().unwrap().senders;
+                l.reserve
+                    .saturating_add(l.pool.share(l.id).saturating_sub(senders) / l.charge)
+            }
+            None => self.most,
+        }
+    }
+
+    /// Borrow what one more sender holds, if the pool lends it: the destination asks before it spawns one past
+    /// those it started with. Refused, the sender is not spawned and the pool is contended, as for a unit.
+    fn take_sender(&self) -> bool {
+        let (Some(lend), Some(&bytes)) = (self.lend.get(), self.sender_bytes.get()) else {
+            return true;
+        };
+        let mut st = self.state.lock().unwrap();
+        if !lend.pool.take(lend.id, st.borrowed + st.senders, bytes, false) {
+            return false;
+        }
+        st.senders += bytes;
+        true
+    }
+
+    /// Bytes this queue may hold now.
+    fn budget(&self) -> usize {
+        self.budget.load(Ordering::Relaxed)
+    }
+
+    /// The pacing model moved: the queue holds no more than `bytes` from here, draining to it if above.
+    fn set_budget(&self, bytes: usize) {
+        self.budget.store(bytes, Ordering::Relaxed);
     }
 
     /// What this destination is holding against [`Queue::budget`]: queued, plus sent and not yet acknowledged. The
@@ -224,20 +372,22 @@ impl Queue {
         if st.closed {
             return Err(Refused::Closed);
         }
-        if st.bytes > 0 && st.bytes + unit.bytes > self.budget {
+        if st.bytes > 0 && st.bytes + unit.bytes > self.budget() {
+            self.pressed.store(true, Ordering::Relaxed);
             return Err(Refused::NoRoom(unit));
         }
         if let Some(lend) = self.lend.get() {
             let borrowed = lend.borrowed(st.bytes + unit.bytes);
-            if !lend.pool.take(borrowed - st.borrowed, st.bytes == 0) {
+            if !lend
+                .pool
+                .take(lend.id, st.borrowed + st.senders, borrowed - st.borrowed, st.bytes == 0)
+            {
+                self.pressed.store(true, Ordering::Relaxed);
                 return Err(Refused::NoRoom(unit));
             }
             st.borrowed = borrowed;
         }
         st.bytes += unit.bytes;
-        let mut unit = unit;
-        unit.seq = st.next_seq;
-        st.next_seq += 1;
         st.units.push_back(unit);
         drop(st);
         self.work.notify_one();
@@ -248,14 +398,14 @@ impl Queue {
     fn pop(&self, timeout: Duration) -> Popped {
         let mut st = self.state.lock().unwrap();
         if let Some(u) = st.units.pop_front() {
-            return Popped::Work(u);
+            return Popped::Work(u, self.pressing());
         }
         if st.closed {
             return Popped::Closed;
         }
         let (mut st, _) = self.work.wait_timeout(st, timeout).unwrap();
         if let Some(u) = st.units.pop_front() {
-            return Popped::Work(u);
+            return Popped::Work(u, self.pressing());
         }
         if st.closed {
             return Popped::Closed;
@@ -279,7 +429,7 @@ impl Queue {
         st.bytes = st.bytes.saturating_sub(bytes);
         if let Some(lend) = self.lend.get() {
             let borrowed = lend.borrowed(st.bytes);
-            lend.pool.give(st.borrowed - borrowed);
+            lend.pool.give(lend.id, borrowed + st.senders, st.borrowed - borrowed);
             st.borrowed = borrowed;
         }
         drop(st);
@@ -293,7 +443,14 @@ impl Queue {
     }
 
     fn close(&self) {
-        self.state.lock().unwrap().closed = true;
+        let mut st = self.state.lock().unwrap();
+        st.closed = true;
+        // The destination and its senders end with the queue.
+        if let Some(lend) = self.lend.get() {
+            lend.pool.give(lend.id, st.borrowed, st.senders);
+            st.senders = 0;
+        }
+        drop(st);
         self.work.notify_all();
         if let Some(pool) = self.pool.lock().unwrap().as_ref() {
             pool.signal_all();
@@ -302,7 +459,8 @@ impl Queue {
 }
 
 enum Popped {
-    Work(Unit),
+    /// A unit, and whether the source was pressing on the queue: refused room since the last.
+    Work(Unit, bool),
     Idle,
     Closed,
 }
@@ -386,11 +544,30 @@ impl Egress {
     /// borrowing from one pool must wake the same transform pool ([`Egress::with_pool`]): room one gives back may be
     /// what another's lane waits on.
     pub fn borrowing(self, pool: Arc<QueuePool>, reserve: usize, charge: usize) -> Egress {
+        let id = pool.lender();
         let _ = self.queue.lend.set(Lend {
             pool,
+            id,
             reserve,
             charge: charge.max(1),
         });
+        self
+    }
+
+    /// Let the pacing model ([`pacing`]) set this queue's budget, from `floor` bytes, one batch, up to the queue's
+    /// share of the pool it borrows from, or without a pool up to the budget it was started with. The budget is
+    /// released only as batches are acknowledged, so it bounds what the destination has in flight too.
+    pub fn paced(self, floor: usize) -> Egress {
+        self.queue.set_budget(floor.max(1));
+        let _ = self.queue.paced.set(floor.max(1));
+        self
+    }
+
+    /// Have each sender the destination spawns past those it started with borrow `bytes` from the pool this queue
+    /// borrows from, held for as long as the destination lives. The pacing target is then held to what the pool
+    /// lends besides, so the senders and the bytes they carry share one share. Without a pool, nothing is charged.
+    pub fn charging_senders(self, bytes: usize) -> Egress {
+        let _ = self.queue.sender_bytes.set(bytes);
         self
     }
 
@@ -449,7 +626,7 @@ fn stall_log_due(stalled: Option<Instant>) -> bool {
 /// The egress thread. Owns the client for its whole life.
 fn run(
     mut destination: Box<dyn Destination>,
-    queue: &Queue,
+    queue: &Arc<Queue>,
     returns: &Returns,
     metrics: &MetricsHandle,
     id: DestId,
@@ -458,10 +635,8 @@ fn run(
     // The destination's own batch ids, mapped back to the reader's.
     let mut owner: HashMap<BatchId, Owed> = HashMap::new();
     let mut next_local: BatchId = 0;
-    // Units to send again, oldest first.
-    let mut redo: VecDeque<Unit> = VecDeque::new();
-    // Refused rows kept to send again, each with when.
-    let mut waiting: Vec<(Instant, Unit)> = Vec::new();
+    // Units to send again, each with when: ones that failed to land, and refused rows kept.
+    let mut again: Vec<(Instant, Unit)> = Vec::new();
     let mut backoff = RETRY_MIN;
     // When the stall was last logged; `None` while the destination is healthy.
     let mut stalled: Option<Instant> = None;
@@ -478,8 +653,19 @@ fn run(
     let mut open_reported: Option<usize> = None;
     // Held while any are kept, so a capture at this destination waits to be shown them.
     let mut holding: Option<crate::worker::capture::Holding> = None;
+    // The pacing model, once the queue is paced. Its target is the queue's budget, and so what is in flight.
+    let mut pacer: Option<Pacer> = None;
 
     loop {
+        if pacer.is_none()
+            && let Some(&floor) = queue.paced.get()
+        {
+            if queue.sender_bytes.get().is_some() {
+                let queue = queue.clone();
+                destination.lend_senders(Box::new(move || queue.take_sender()));
+            }
+            pacer = Some(Pacer::new(floor, queue, metrics, id));
+        }
         // Here, not only where the queue is polled: a unit that keeps failing is re-sent forever without asking for new
         // work.
         if queue.is_closed() {
@@ -489,38 +675,57 @@ fn run(
         // At the top, so the passes that `continue` on a delivery failure report it too. Those are the passes a full
         // queue is most worth seeing.
         note_queue(metrics, id, queue, &mut held_reported, &mut held_reported_at);
-        // A re-send before anything new: it is older.
+        // A re-send that is due before anything new: it is older.
         let now = Instant::now();
-        let next = match redo.pop_front() {
-            Some(u) => Some(u),
-            None => match waiting.iter().position(|(at, _)| *at <= now) {
-                Some(i) => Some(waiting.swap_remove(i).1),
-                None => match queue.pop(POLL_INTERVAL) {
-                    Popped::Closed => break,
-                    Popped::Idle => None,
-                    Popped::Work(u) => Some(u),
-                },
+        let mut pressing = true;
+        let next = match again.iter().position(|(at, _)| *at <= now) {
+            Some(i) => Some(again.swap_remove(i).1),
+            None => match queue.pop(POLL_INTERVAL) {
+                Popped::Closed => break,
+                Popped::Idle => None,
+                Popped::Work(u, pressed) => {
+                    pressing = pressed;
+                    Some(u)
+                }
             },
         };
 
         if let Some(unit) = next {
             let local = next_local;
             next_local += 1;
+            // A re-send is never the source's doing: it counts as the link's.
+            let app_limited = !pressing;
             // Borrowed: the unit is kept until acknowledged, to send again or to hand a refused row back.
-            match destination.deliver(local, Cow::Borrowed(&unit.rows)) {
+            let delivered = destination.deliver(local, Cow::Borrowed(&unit.rows));
+            // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
+            // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight.
+            let taken = matches!(delivered, Ok((Dispatched::Complete | Dispatched::InFlight, _)));
+            let paced = pacer
+                .as_mut()
+                .filter(|_| taken)
+                .map(|p| p.dispatched(unit.bytes, app_limited));
+            match delivered {
                 Err(e) => {
                     note_stall(metrics, id, name, &e, &mut stalled);
                     cut_off = false;
-                    // Everything sent and unacknowledged is suspect too.
-                    take_back(&mut owner, &mut redo, unit);
+                    // This unit alone: the ones in flight are answered for by `poll_completions`.
+                    again.push(failed(unit));
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
                     continue;
                 }
                 // Nothing will report it later, so report it now.
                 Ok((Dispatched::Complete, rejections)) => {
-                    clear_stall(metrics, id, name, &mut stalled, &mut backoff);
-                    finish(queue, returns, metrics, id, unit, rejections, &mut waiting);
+                    // The destination is up, if not yet for every unit.
+                    if failing(&owner, &again) {
+                        backoff = RETRY_MIN;
+                    } else {
+                        clear_stall(metrics, id, name, &mut stalled, &mut backoff);
+                    }
+                    if let (Some(p), Some(c)) = (&mut pacer, paced) {
+                        p.completed(queue, c);
+                    }
+                    finish(queue, returns, metrics, id, unit, rejections, &mut again);
                 }
                 // Refusals seen at hand-over wait for the acknowledgment, so one completion carries every refusal
                 // against a batch. Handed to the transport is not delivered: `Dispatched::InFlight` means only that, so
@@ -528,7 +733,14 @@ fn run(
                 // every batch off this way -- `poll_completions` is what tells the two apart, once the batch either
                 // lands or times out.
                 Ok((Dispatched::InFlight, rejections)) => {
-                    owner.insert(local, Owed { rejections, unit });
+                    owner.insert(
+                        local,
+                        Owed {
+                            rejections,
+                            unit,
+                            paced,
+                        },
+                    );
                 }
                 // A transport's own queue is not this queue: a client that will not take a batch is a delivery
                 // failure here, retried like any other.
@@ -536,7 +748,7 @@ fn run(
                     let e = IoError::transient("destination client would not take the batch");
                     note_stall(metrics, id, name, &e, &mut stalled);
                     cut_off = false;
-                    take_back(&mut owner, &mut redo, unit);
+                    again.push(failed(unit));
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
                     continue;
@@ -547,19 +759,56 @@ fn run(
         // Every pass, idle or not -- see `POLL_INTERVAL`.
         match destination.poll_completions() {
             Ok(done) => {
+                // A batch that landed beside one that failed does not clear the stall, nor does it wait on the failed
+                // one: that waits its own `retry`. The destination recovers once every unit that failed has landed.
+                let (mut failures, mut landed) = (false, false);
                 for c in done {
                     let Some(mut owed) = owner.remove(&c.batch) else {
                         continue;
                     };
                     owed.rejections.extend(c.rejections);
-                    clear_stall(metrics, id, name, &mut stalled, &mut backoff);
-                    finish(queue, returns, metrics, id, owed.unit, owed.rejections, &mut waiting);
+                    if let Some(undelivered) = c.undelivered.filter(|u| !u.rows.is_empty()) {
+                        note_stall(metrics, id, name, &undelivered.error, &mut stalled);
+                        failures = true;
+                        let rest = remainder(queue, metrics, id, owed.unit, owed.rejections, &undelivered.rows);
+                        if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
+                            p.abandoned(paced, paced.bytes.saturating_sub(rest.bytes));
+                        }
+                        again.push(failed(rest));
+                        continue;
+                    }
+                    landed = true;
+                    if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
+                        p.completed(
+                            queue,
+                            Completion {
+                                throttled: c.throttled,
+                                ..paced
+                            },
+                        );
+                    }
+                    finish(queue, returns, metrics, id, owed.unit, owed.rejections, &mut again);
+                }
+                if failures {
+                    cut_off = false;
+                }
+                if landed {
+                    // The destination is up, if not yet for every unit.
+                    if failures || failing(&owner, &again) {
+                        backoff = RETRY_MIN;
+                    } else {
+                        clear_stall(metrics, id, name, &mut stalled, &mut backoff);
+                    }
+                } else if failures {
+                    // Nothing landed: the destination is down as a whole, so it backs off as a whole.
+                    queue.sleep_unless_closed(backoff);
+                    backoff = (backoff * 2).min(RETRY_MAX);
                 }
             }
             Err(e) => {
                 note_stall(metrics, id, name, &e, &mut stalled);
                 cut_off = false;
-                take_back_all(&mut owner, &mut redo);
+                take_back_all(&mut owner, &mut again, &mut pacer);
                 queue.sleep_unless_closed(backoff);
                 backoff = (backoff * 2).min(RETRY_MAX);
             }
@@ -577,7 +826,7 @@ fn run(
         note_concurrency(metrics, id, destination.concurrency(), &mut reported);
         note_open(metrics, id, destination.open_bytes(), &mut open_reported);
         if queue.holds_refusals.load(Ordering::Relaxed) {
-            note_kept(metrics, id, &owner, &redo, &waiting, &mut kept_reported);
+            note_kept(metrics, id, &owner, &again, &mut kept_reported);
         }
         if let Some(captures) = queue.captures.get() {
             let keeps = kept_reported.is_some_and(|kept| kept > 0);
@@ -586,11 +835,10 @@ fn run(
                 holding = Some(captures.holding(HeldAt::Destination(name.to_string())));
             }
             if keeps {
-                let units = waiting
+                let units = again
                     .iter_mut()
                     .map(|(_, u)| u)
-                    .chain(owner.values_mut().map(|o| &mut o.unit))
-                    .chain(redo.iter_mut());
+                    .chain(owner.values_mut().map(|o| &mut o.unit));
                 show_held(captures, name, units);
             } else {
                 holding = None;
@@ -599,8 +847,7 @@ fn run(
     }
 
     // Rows nobody will deliver. None of it was committed, so it is redelivered when the deployment comes back.
-    redo.extend(waiting.into_iter().map(|(_, u)| u));
-    abandon(returns, &mut owner, &mut redo);
+    abandon(returns, &owner, &again);
 }
 
 /// A unit the destination has answered for. Each refusal gets its document back. A destination set to block keeps the
@@ -613,7 +860,7 @@ fn finish(
     id: DestId,
     mut unit: Unit,
     mut rejections: Vec<Rejection>,
-    waiting: &mut Vec<(Instant, Unit)>,
+    again: &mut Vec<(Instant, Unit)>,
 ) {
     // Refused, not delivered: a rejection is the destination answering, not the row arriving.
     let mut refused = vec![false; unit.rows.len()];
@@ -640,9 +887,10 @@ fn finish(
             r.record = unit.rows.get_mut(r.doc).map(std::mem::take);
         }
     }
-    let (backoff, mut carried, shown) = match unit.held.take() {
-        Some(h) => ((h.backoff * 2).min(HELD_RETRY_MAX), h.carried, h.shown),
-        None => (HELD_RETRY_MIN, Vec::new(), HashSet::new()),
+    let mut carried = std::mem::take(&mut unit.carried);
+    let (backoff, shown) = match unit.held.take() {
+        Some(h) => ((h.backoff * 2).min(HELD_RETRY_MAX), h.shown),
+        None => (HELD_RETRY_MIN, HashSet::new()),
     };
     let holds = queue.holds_refusals.load(Ordering::Relaxed);
     let (kept, passed): (Vec<Rejection>, Vec<Rejection>) =
@@ -655,6 +903,8 @@ fn finish(
             Report::Done(BatchCompletion {
                 batch: unit.batch,
                 rejections: carried,
+                throttled: false,
+                undelivered: None,
             }),
         );
         queue.release(unit.bytes);
@@ -679,26 +929,22 @@ fn finish(
             rejections: refusals,
         }),
     );
-    waiting.push((
+    again.push((
         Instant::now() + backoff,
         Unit {
-            seq: unit.seq,
             reader: unit.reader,
             batch: unit.batch,
             rows,
             bytes,
-            held: Some(Box::new(Held {
-                backoff,
-                carried,
-                why,
-                shown,
-            })),
+            held: Some(Box::new(Held { backoff, why, shown })),
+            carried,
+            retry: None,
         },
     ));
 }
 
-/// Show each capture at this destination the rows it refused and keeps, once per capture: waiting, or being sent
-/// again.
+/// Show each capture at this destination the rows it refused and keeps, once per capture: waiting to be sent again, or
+/// sent.
 fn show_held<'a>(captures: &Captures, name: &str, units: impl Iterator<Item = &'a mut Unit>) {
     for unit in units {
         if let Some(held) = &mut unit.held {
@@ -707,24 +953,80 @@ fn show_held<'a>(captures: &Captures, name: &str, units: impl Iterator<Item = &'
     }
 }
 
-/// Take every sent-but-unacknowledged batch back for re-sending, plus the one that just failed, in acceptance order.
-fn take_back(owner: &mut HashMap<BatchId, Owed>, redo: &mut VecDeque<Unit>, failed: Unit) {
-    redo.push_front(failed);
-    take_back_all(owner, redo);
+/// What of `unit` did not land, as a unit of its own to send again: the rows `undelivered` names, in the batch's order.
+/// The rows that landed are counted delivered and their bytes go back to the queue; the refusals answered so far are
+/// carried, with their documents, to the batch's completion.
+fn remainder(
+    queue: &Queue,
+    metrics: &MetricsHandle,
+    id: DestId,
+    mut unit: Unit,
+    rejections: Vec<Rejection>,
+    undelivered: &[usize],
+) -> Unit {
+    // In the batch's order: each of its requests named its own.
+    let mut kept: Vec<usize> = undelivered.to_vec();
+    kept.sort_unstable();
+    let mut landed = vec![true; unit.rows.len()];
+    for &i in kept.iter().chain(rejections.iter().map(|r| &r.doc)) {
+        if let Some(at) = landed.get_mut(i) {
+            *at = false;
+        }
+    }
+    let (count, bytes) = unit
+        .rows
+        .iter()
+        .zip(&landed)
+        .filter(|(_, landed)| **landed)
+        .fold((0u64, 0u64), |(n, b), (row, _)| (n + 1, b + row.sent_bytes() as u64));
+    note_delivered(metrics, id, count, bytes);
+    for mut r in rejections {
+        if r.record.is_none() {
+            r.record = unit.rows.get_mut(r.doc).map(std::mem::take);
+        }
+        unit.carried.push(r);
+    }
+    let rows: Vec<OwnedRecord> = kept
+        .iter()
+        .filter_map(|&i| unit.rows.get_mut(i).map(std::mem::take))
+        .collect();
+    if let Some(held) = &mut unit.held {
+        held.why = kept.iter().filter_map(|&i| held.why.get(i).cloned()).collect();
+    }
+    let bytes = crate::io::held_bytes(&rows);
+    queue.release(unit.bytes.saturating_sub(bytes));
+    Unit { rows, bytes, ..unit }
 }
 
-fn take_back_all(owner: &mut HashMap<BatchId, Owed>, redo: &mut VecDeque<Unit>) {
-    let mut all: Vec<Unit> = owner.drain().map(|(_, o)| o.unit).chain(redo.drain(..)).collect();
-    all.sort_by_key(|u| u.seq);
-    redo.extend(all);
+/// `unit`, which failed to land, to be sent again once its own wait is over. Each failure doubles the wait.
+fn failed(mut unit: Unit) -> (Instant, Unit) {
+    let retry = unit.retry.map_or(RETRY_MIN, |r| (r * 2).min(RETRY_MAX));
+    unit.retry = Some(retry);
+    (Instant::now() + retry, unit)
+}
+
+/// Whether a unit that failed to land is still out or waiting to be sent again.
+fn failing(owner: &HashMap<BatchId, Owed>, again: &[(Instant, Unit)]) -> bool {
+    owner.values().any(|o| o.unit.retry.is_some()) || again.iter().any(|(_, u)| u.retry.is_some())
+}
+
+/// Take every sent-but-unacknowledged batch back to be sent again. The pacing model is told of each, so it no longer
+/// counts it in flight.
+fn take_back_all(owner: &mut HashMap<BatchId, Owed>, again: &mut Vec<(Instant, Unit)>, pacer: &mut Option<Pacer>) {
+    for (_, o) in owner.drain() {
+        if let (Some(p), Some(paced)) = (pacer.as_mut(), o.paced) {
+            p.abandoned(paced, 0);
+        }
+        again.push(failed(o.unit));
+    }
 }
 
 /// Tell each reader with work outstanding that it will not be delivered.
-fn abandon(returns: &Returns, owner: &mut HashMap<BatchId, Owed>, redo: &mut VecDeque<Unit>) {
+fn abandon(returns: &Returns, owner: &HashMap<BatchId, Owed>, again: &[(Instant, Unit)]) {
     let mut readers: Vec<ReaderId> = owner
         .values()
         .map(|o| o.unit.reader)
-        .chain(redo.iter().map(|u| u.reader))
+        .chain(again.iter().map(|(_, u)| u.reader))
         .collect();
     readers.sort_unstable();
     readers.dedup();
@@ -784,7 +1086,7 @@ fn note_cut_off(
     }
 }
 
-/// Report what the destination's own loop currently allows outstanding. This thread owns the client, so it is the only
+/// Report the requests the destination has open. This thread owns the client, so it is the only
 /// writer of `smeltr_destination_in_flight`. A destination that reports no figure leaves the series absent rather than
 /// publishing a zero, which would read as a stalled destination.
 fn note_concurrency(metrics: &MetricsHandle, id: DestId, now: Option<usize>, reported: &mut Option<usize>) {
@@ -816,14 +1118,13 @@ fn note_open(metrics: &MetricsHandle, id: DestId, now: Option<usize>, reported: 
     );
 }
 
-/// Publish how many rows the destination refused and keeps, wherever each is: waiting, or being sent again. The leader
-/// reads it to know which workers a capture at this destination has held rows to wait for.
+/// Publish how many rows the destination refused and keeps, wherever each is: waiting to be sent again, or sent. The
+/// leader reads it to know which workers a capture at this destination has held rows to wait for.
 fn note_kept(
     metrics: &MetricsHandle,
     id: DestId,
     owner: &HashMap<BatchId, Owed>,
-    redo: &VecDeque<Unit>,
-    waiting: &[(Instant, Unit)],
+    again: &[(Instant, Unit)],
     reported: &mut Option<u64>,
 ) {
     // A DLQ's carrier stands for its riders too: each is a row of its own.
@@ -831,9 +1132,7 @@ fn note_kept(
         Some(_) => u.rows.iter().map(OwnedRecord::rows).sum(),
         None => 0,
     };
-    let kept = waiting.iter().map(|(_, u)| held(u)).sum::<u64>()
-        + owner.values().map(|o| held(&o.unit)).sum::<u64>()
-        + redo.iter().map(held).sum::<u64>();
+    let kept = again.iter().map(|(_, u)| held(u)).sum::<u64>() + owner.values().map(|o| held(&o.unit)).sum::<u64>();
     if *reported == Some(kept) {
         return;
     }
@@ -878,14 +1177,15 @@ fn note_queue(metrics: &MetricsHandle, id: DestId, queue: &Queue, last: &mut Opt
 /// State what this queue may hold. Reported beside the fill because a fill alone says nothing: 6 MB is most of a
 /// Kafka queue and a rounding error against a destination that states a larger one.
 ///
-/// Written once, at [`Egress::start`]. The bound never moves, and every beat carries it on regardless: a gauge
-/// reports its current value whether or not it was written since (`Metrics::peek_delta`).
+/// Written at [`Egress::start`], and again each time the pacing model moves a paced queue's budget. Every beat
+/// carries it on between: a gauge reports its current value whether or not it was written since
+/// (`Metrics::peek_delta`).
 fn note_queue_budget(metrics: &MetricsHandle, id: DestId, queue: &Queue) {
     let label = id.to_string();
     metrics.gauge(
         "smeltr_destination_queue_budget_bytes",
         &[("destination", label.as_str())],
-        queue.budget as f64,
+        queue.budget() as f64,
     );
 }
 
@@ -982,13 +1282,13 @@ impl Destination for EgressHandle {
         }
         let rows = rows.into_owned();
         let unit = Unit {
-            // Assigned under the queue's lock.
-            seq: 0,
             reader: self.reader,
             batch,
             bytes: crate::io::held_bytes(&rows),
             rows,
             held: None,
+            carried: Vec::new(),
+            retry: None,
         };
         let dispatched = match self.queue.offer(unit) {
             Ok(()) => {
@@ -1067,12 +1367,13 @@ mod tests {
 
     fn unit(bytes: usize) -> Unit {
         Unit {
-            seq: 0,
             reader: 0,
             batch: 0,
             rows: Vec::new(),
             bytes,
             held: None,
+            carried: Vec::new(),
+            retry: None,
         }
     }
 
@@ -1080,6 +1381,7 @@ mod tests {
         let queue = Queue::new(budget);
         let _ = queue.lend.set(Lend {
             pool: pool.clone(),
+            id: pool.lender(),
             reserve,
             charge,
         });
@@ -1111,6 +1413,112 @@ mod tests {
         assert_eq!(pool.lent(), 10);
         assert!(other.offer(unit(12)).is_ok());
         assert_eq!(pool.lent(), 20);
+    }
+
+    /// Once a queue is refused, each may borrow only up to an equal share; a queue above its share stops borrowing
+    /// and the one refused gets room as the other drains.
+    #[test]
+    fn a_contended_pool_holds_each_queue_to_an_equal_share() {
+        let pool = QueuePool::new(20);
+        let greedy = borrowing(100, &pool, 0, 1);
+        let other = borrowing(100, &pool, 0, 1);
+        assert!(greedy.offer(unit(16)).is_ok(), "nobody else wants it yet");
+        assert!(other.offer(unit(1)).is_ok());
+        assert!(
+            matches!(other.offer(unit(6)), Err(Refused::NoRoom(_))),
+            "the pool has 3 left"
+        );
+        assert!(!greedy.has_room(1), "contended: greedy is above its share of 10");
+        assert!(matches!(greedy.offer(unit(1)), Err(Refused::NoRoom(_))));
+        assert_eq!(pool.share(greedy.lend.get().unwrap().id), 10);
+        greedy.release(10);
+        assert_eq!(pool.lent(), 7);
+        assert!(other.offer(unit(6)).is_ok(), "the other takes what was given back");
+        assert!(
+            greedy.offer(unit(4)).is_ok(),
+            "the other got its room, so the pool is uncontended again"
+        );
+        assert!(
+            matches!(other.offer(unit(10)), Err(Refused::NoRoom(_))),
+            "the other wants more than is left"
+        );
+        assert!(
+            matches!(greedy.offer(unit(1)), Err(Refused::NoRoom(_))),
+            "so greedy, at its share, gets no more"
+        );
+    }
+
+    #[test]
+    fn a_paced_queue_holds_what_its_budget_says_and_moves_with_it() {
+        let queue = Queue::new(100);
+        let _ = queue.paced.set(4);
+        queue.set_budget(4);
+        assert!(queue.offer(unit(4)).is_ok());
+        assert!(!queue.has_room(1), "one batch is the budget");
+        queue.set_budget(12);
+        assert!(queue.has_room(8));
+        assert!(queue.offer(unit(8)).is_ok());
+        queue.set_budget(4);
+        assert!(!queue.has_room(1), "above the budget: it drains to it");
+        queue.release(8);
+        assert!(!queue.has_room(1), "4 held is the budget");
+        queue.release(4);
+        assert!(queue.has_room(4));
+    }
+
+    #[test]
+    fn a_paced_queue_that_borrows_from_no_pool_grows_up_to_the_budget_it_started_with() {
+        let queue = Queue::new(100);
+        let _ = queue.paced.set(4);
+        queue.set_budget(4);
+        assert_eq!(queue.share(), 100, "its stated buffer, or its kind's default");
+    }
+
+    #[test]
+    fn a_refusal_marks_the_next_unit_as_pressed_and_a_quiet_source_does_not() {
+        let queue = Queue::new(4);
+        let pressed = |p| match p {
+            Popped::Work(_, pressed) => pressed,
+            _ => panic!("a unit was queued"),
+        };
+        // A quiet source: one unit, nothing refused, nothing behind it.
+        assert!(queue.offer(unit(4)).is_ok());
+        assert!(!pressed(queue.pop(Duration::ZERO)));
+        // Everything in flight, the queue empty, and the source asks for room it does not get: the link is full.
+        assert!(!queue.has_room(1));
+        assert!(queue.offer(unit(4)).is_err());
+        queue.release(4);
+        assert!(queue.offer(unit(4)).is_ok());
+        assert!(pressed(queue.pop(Duration::ZERO)), "a refusal marks the next unit");
+        // The mark is consumed: the one after is quiet again.
+        queue.release(4);
+        assert!(queue.offer(unit(4)).is_ok());
+        assert!(!pressed(queue.pop(Duration::ZERO)));
+        // A backlog under the budget does not: the queue had room.
+        queue.release(4);
+        assert!(queue.offer(unit(2)).is_ok());
+        assert!(queue.offer(unit(2)).is_ok());
+        assert!(!pressed(queue.pop(Duration::ZERO)));
+    }
+
+    #[test]
+    fn a_spawned_sender_borrows_from_the_pool_and_narrows_the_share() {
+        let pool = QueuePool::new(16);
+        let queue = borrowing(100, &pool, 4, 1);
+        let _ = queue.sender_bytes.set(6);
+        assert_eq!(queue.share(), 20);
+        assert!(queue.take_sender());
+        assert!(queue.take_sender());
+        assert_eq!(pool.lent(), 12);
+        assert_eq!(queue.share(), 4 + 4, "what the senders hold is not the queue's to hold");
+        assert!(!queue.take_sender(), "the pool lends no further");
+        assert!(queue.offer(unit(4)).is_ok(), "the reserve is the queue's own");
+        assert!(queue.offer(unit(4)).is_ok(), "the pool's rest is the queue's");
+        assert!(!queue.has_room(1));
+        queue.close();
+        assert_eq!(pool.lent(), 4, "the senders end with the queue");
+        queue.release(8);
+        assert_eq!(pool.lent(), 0);
     }
 
     #[test]

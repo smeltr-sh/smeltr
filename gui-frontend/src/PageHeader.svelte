@@ -35,6 +35,8 @@
     flex-wrap: wrap;
     row-gap: 0.5rem;
     gap: 0.75rem;
+    /* A button's height, so what follows the row sits in the same place whether a page has buttons or not. */
+    min-height: 1.875rem;
     margin-bottom: 1rem;
   }
 

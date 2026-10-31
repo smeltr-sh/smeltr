@@ -6,14 +6,16 @@
   The branch bar unfolds into this, so it renders on the bar's tint.
 -->
 <script lang="ts">
+  import StateMark from './StateMark.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import Locked from './Locked.svelte';
   import {
+    SHARED_SCOPE,
     SAVED_EVENT,
     branchDiff,
     configAt,
-    listUsers,
+    listAccounts,
     openChange,
     runTests,
     type BranchDto,
@@ -59,11 +61,19 @@
     const scopes = [...new Set(entry.touches.map(scopeOf))].sort();
     const pairs = await Promise.all(
       scopes.map(async (scope) => {
-        const [before, after] = await Promise.all([
+        const inGroup = scope !== SHARED_SCOPE;
+        const [before, after, sharedBefore, sharedAfter] = await Promise.all([
           configAt('main', scope),
           configAt(entry.name, scope),
+          inGroup ? configAt('main', SHARED_SCOPE) : null,
+          inGroup ? configAt(entry.name, SHARED_SCOPE) : null,
         ]);
-        return { scope, before: before.config, after: after.config };
+        // A group's routes are counted after `shared/`'s (`routeName`).
+        const shared =
+          sharedBefore?.config && sharedAfter?.config
+            ? { before: sharedBefore.config, after: sharedAfter.config }
+            : undefined;
+        return { scope, before: before.config, after: after.config, ...(shared && { shared }) };
       }),
     );
     return pairs.filter((pair): pair is ScopeChange => !!pair.before && !!pair.after);
@@ -119,7 +129,8 @@
 
   async function loadReviewers() {
     try {
-      reviewers = (await listUsers())
+      // Any account that could approve, however it signs in: a key account approves through the API.
+      reviewers = (await listAccounts())
         .filter(
           (u) =>
             u.enabled && deployBlocker(entry.touches, u.access) === '' && u.id !== session().userId,
@@ -214,7 +225,9 @@
         {#if tests.total === 0}
           <span class="dim">no tests reach this change</span>
         {:else if tests.passed === tests.total}
-          <span class="pass">&#10003; {tests.passed} of {count(tests.total, 'test')} pass</span>
+          <span class="pass"
+            ><StateMark state="ok" /> {tests.passed} of {count(tests.total, 'test')} pass</span
+          >
         {:else}
           {#if tests.failed}
             <span class="fail">{tests.failed} of {count(tests.total, 'test')} fail</span>
@@ -308,10 +321,6 @@
 
   .files {
     margin-left: auto;
-  }
-
-  .dim {
-    color: var(--dim);
   }
 
   .pass,

@@ -8,17 +8,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::Response;
-use axum::routing::{delete, get, post};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post, put};
 
+use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::resolver::Resolver;
 use smeltr::leader::store::Actor;
-use smeltr::leader::{accounts, acme, blocking, tls};
+use smeltr::leader::{CertificateRequest, NewCertificate, accounts, acme, blocking, tls};
 
 use crate::gate::{Auth, refuse};
-use crate::users_api::no_store;
 
 /// The live TLS material: where it lives, what is serving it, and what a certificate written here must carry.
 pub struct Tls {
@@ -45,24 +45,28 @@ pub struct Certificates {
     /// `None` where this leader serves plain HTTP, behind a proxy that terminates TLS. The routes stay registered
     /// so the page can say so: a tab that answers "there is nothing here, and why" beats one that 404s.
     tls: Option<Arc<Tls>>,
+    /// What stores a certificate in the list, whether or not this leader serves TLS.
+    leader: smeltr::leader::AppState,
 }
 
 /// The certificates routes, gated like every other operator surface. `None` where this leader serves plain HTTP:
 /// there is no certificate to show and nothing a worker would verify.
-pub fn router(auth: Auth, tls: Option<Arc<Tls>>) -> axum::Router {
+pub fn router(auth: Auth, tls: Option<Arc<Tls>>, leader: smeltr::leader::AppState) -> axum::Router {
     let state = Certificates {
         auth: auth.clone(),
         tls,
+        leader,
     };
     axum::Router::new()
-        .route("/api/settings/certificates", get(show).put(install))
-        .route("/api/settings/certificates/reissue", post(reissue))
-        .route("/api/settings/certificates/supplied", delete(uninstall))
+        .route("/api/settings/tls", get(show).put(install))
+        .route("/api/certificates", get(list).post(create))
+        .route("/api/certificates/:name", put(replace))
         .route(
-            "/api/settings/certificates/rotation",
+            "/api/settings/tls/rotation",
             post(begin_rotation).delete(abandon_rotation),
         )
-        .route("/api/settings/certificates/rotation/cutover", post(cut_over))
+        .route("/api/settings/tls/rotation/cutover", post(cut_over))
+        .route("/api/settings/tls/rotation/deadline", put(move_deadline))
         .route_layer(axum::middleware::from_fn_with_state(
             auth,
             crate::gate::require_principal,
@@ -80,14 +84,23 @@ struct CertificatesDto {
     authority: Option<tls::Described>,
     /// What a client is shown.
     served: Option<tls::Described>,
-    /// Whether an operator supplied what is being served. False means this leader's own authority signed it, and
-    /// reissuing is free; true means replacing it is theirs to do.
+    /// Whether an operator supplied what is being served. False means it is this leader's own entry, which it
+    /// renews itself; true means replacing it is theirs to do.
     supplied: bool,
     /// Where it came from: this leader's own authority, an upload, or an order from a certificate authority.
     source: acme::Source,
+    /// The list entry an upload was copied from, where one is recorded.
+    entry: Option<String>,
+    /// The names this leader answers to. A supplied certificate covers at least one.
+    names: Vec<String>,
+    /// The name the worker inside this leader reaches it by, where one runs. A supplied certificate covers it.
+    worker_name: Option<String>,
     /// Set when a certificate reached the disk and the socket refused it. Everything above is then what `dir`
     /// holds rather than what a client is shown, and only a restart closes the gap.
     restart_required: bool,
+    /// Set while the list entry above is not what clients are shown: a start could not serve it, and serves this
+    /// leader's own certificate until one is served again (`tls::unserved`). Says why, and what to do.
+    unserved: Option<String>,
     /// The authority this leader is rotating to, while it is doing so. Workers are being given it beside the one
     /// above; nothing is signed under it until they have.
     rotation: Option<RotationDto>,
@@ -102,6 +115,8 @@ struct RotationDto {
     started_millis: i64,
     /// When this leader signs under it whatever the fleet holds.
     deadline_millis: i64,
+    /// The latest the deadline can move to.
+    latest_deadline_millis: i64,
     /// What the cutover puts in force.
     installs: tls::Installs,
     /// Where that comes from.
@@ -110,9 +125,18 @@ struct RotationDto {
     /// cutover does not wait for them, and they keep working only while what they hold vouches for what is
     /// served.
     not_following: Vec<String>,
+    /// Each worker the cutover waits for.
+    workers: Vec<RotationWorkerDto>,
 }
 
-fn read(tls: Option<&Arc<Tls>>) -> Result<CertificatesDto, String> {
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RotationWorkerDto {
+    id: String,
+    holds_incoming: bool,
+}
+
+async fn read(tls: Option<&Arc<Tls>>) -> Result<CertificatesDto, String> {
     let Some(serving) = tls else {
         return Ok(CertificatesDto {
             serving_tls: false,
@@ -120,11 +144,26 @@ fn read(tls: Option<&Arc<Tls>>) -> Result<CertificatesDto, String> {
             served: None,
             supplied: false,
             source: acme::Source::Own,
+            entry: None,
+            names: Vec::new(),
+            worker_name: None,
             restart_required: false,
+            unserved: None,
             rotation: None,
         });
     };
-    let (materials, served) = tls::in_force(&serving.dir)?;
+    let materials = tls::current(&serving.dir)?;
+    let served = materials.served;
+    let rotation = tls::rotation(&serving.dir)?;
+    let unserved = tls::unserved(&serving.dir);
+    let workers = match &rotation {
+        Some(state) => smeltr::leader::rotation_workers(&serving.leader, &state.incoming)
+            .await?
+            .into_iter()
+            .map(|(id, holds_incoming)| RotationWorkerDto { id, holds_incoming })
+            .collect(),
+        None => Vec::new(),
+    };
     Ok(CertificatesDto {
         serving_tls: true,
         // The root that authenticates this leader, of however many the file holds. Showing the first would give an
@@ -134,16 +173,22 @@ fn read(tls: Option<&Arc<Tls>>) -> Result<CertificatesDto, String> {
         served: Some(tls::describe(&served, "the certificate")?),
         supplied: materials.supplied,
         source: acme::source(&serving.dir)?,
-        restart_required: !tls::socket_has_what_is_on_disk(&serving.dir),
-        rotation: tls::rotation(&serving.dir)?
+        entry: tls::served(&serving.dir)?.map(|entry| entry.name),
+        names: serving.names.clone(),
+        worker_name: serving.from_inside.clone(),
+        restart_required: !tls::socket_has_what_is_on_disk(&serving.dir) && unserved.is_none(),
+        unserved,
+        rotation: rotation
             .map(|state| {
                 Ok::<_, String>(RotationDto {
                     incoming: tls::describe(state.incoming_pem.as_bytes(), "the incoming authority")?,
                     started_millis: state.started_millis,
                     deadline_millis: state.deadline_millis,
+                    latest_deadline_millis: tls::latest_deadline(&serving.dir, &state)?,
                     installs: state.installs,
-                    source: acme::incoming(&serving.dir, &state)?,
+                    source: acme::incoming(&state),
                     not_following: serving.leader.registry.not_taking_authority(),
+                    workers,
                 })
             })
             .transpose()?,
@@ -165,20 +210,20 @@ pub(crate) fn serving_tls(tls: Option<&Arc<Tls>>) -> Result<Arc<Tls>, Box<Respon
     })
 }
 
-/// `GET /api/settings/certificates`: what is in force, read off the files rather than remembered.
+/// `GET /api/settings/tls`: what is in force, read off the files rather than remembered.
 async fn show(State(state): State<Certificates>) -> Response {
     // Before reading, so a rotation whose deadline has passed is over by the time this answers rather than one
     // refresh later. Cheap where nothing is rotating, which is almost always.
     if let Some(serving) = &state.tls {
         smeltr::leader::cut_over_if_due(&serving.leader, smeltr::leader::warnings::now_millis()).await;
     }
-    answer(&state)
+    answer(&state).await
 }
 
 /// What is in force, as every route here answers with.
-fn answer(state: &Certificates) -> Response {
-    match read(state.tls.as_ref()) {
-        Ok(dto) => no_store(dto),
+async fn answer(state: &Certificates) -> Response {
+    match read(state.tls.as_ref()).await {
+        Ok(dto) => Envelope::ok(dto).into_response(),
         Err(e) => refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
     }
 }
@@ -214,14 +259,12 @@ pub(crate) fn must_serve(serving: &Tls, headers: &axum::http::HeaderMap) -> Vec<
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InstallRequest {
-    /// The certificate to serve, with any intermediates after it, PEM.
+    /// The name of the certificate in the list to serve. Its chain ends with its root where the platform does not
+    /// hold that root.
     certificate: String,
-    private_key: String,
-    /// What a worker must trust to verify `certificate`.
-    authority: String,
 }
 
-/// `PUT /api/settings/certificates`: serve a certificate an operator already has.
+/// `PUT /api/settings/tls`: serve a certificate from the list.
 async fn install(
     State(state): State<Certificates>,
     actor: axum::Extension<Actor>,
@@ -232,181 +275,217 @@ async fn install(
         Ok(serving) => serving,
         Err(response) => return *response,
     };
-    // Held across the whole of it. Two administrators uploading at once would otherwise interleave their writes,
-    // read back each other's certificate, and record it under the wrong name -- and they share one staging
-    // directory besides.
+    // Held across the whole of it. Two administrators choosing at once would otherwise interleave their checks and
+    // writes, and record one certificate against the other's choice.
     let _ordered = state.auth.settings_writes.lock().await;
+    match serve_newest(&state, &actor, &serving, &headers, &request.certificate).await {
+        Ok(()) => answer(&state).await,
+        Err(refusal) => refusal.into_response(),
+    }
+}
 
-    // Everything the upload has to satisfy, before a byte is written, so a refusal leaves this leader serving
-    // exactly what it served before.
-    let chain = request.certificate.as_bytes();
-    let key = request.private_key.as_bytes();
-    let ca = request.authority.as_bytes();
-    let required = must_serve(&serving, &headers);
-    if let Err(e) = tls::check_supplied(chain, key, ca, &serving.names, &required) {
-        return refuse(StatusCode::BAD_REQUEST, &e);
+/// A certificate that has passed everything serving it requires.
+struct Checked {
+    /// The root a worker is given for it, PEM.
+    ca: String,
+    required: Vec<String>,
+    /// Whether it is under another root than the one every worker verifies by.
+    rotates: bool,
+    fingerprint: String,
+}
+
+/// Everything serving `certificate` has to satisfy, before a byte is written, so a refusal leaves this leader
+/// serving exactly what it served before.
+fn checked(serving: &Tls, headers: &axum::http::HeaderMap, certificate: &str, key: &str) -> Result<Checked, Refusal> {
+    let (chain, ca) = match tls::split_root(certificate.as_bytes(), b"") {
+        Ok(Some(found)) => found,
+        Ok(None) => {
+            return Err(Refusal::invalid(
+                "the certificate's root is missing. End the chain with the root that issued it.",
+            ));
+        }
+        Err(e) => return Err(Refusal::invalid(e)),
+    };
+    let key = key.as_bytes().to_vec();
+    let required = must_serve(serving, headers);
+    if let Err(e) = tls::check_supplied(&chain, &key, ca.as_bytes(), &serving.names, &required) {
+        return Err(Refusal::invalid(e));
     }
     // A certificate under the root every worker already verifies by is served at once. One under another root
     // reaches the fleet the way a new authority does: published first, served once the fleet holds it.
-    let rotates = match tls::supplying_changes_root(&serving.dir, chain, ca) {
-        Ok(rotates) => rotates,
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
+    let rotates = tls::supplying_changes_root(&serving.dir, &chain, ca.as_bytes()).map_err(Refusal::unavailable)?;
     // One rotation at a time: an upload that would begin one over an open rotation is refused, where a renewal
     // changes no root and is served whatever is open.
     if rotates && let Err(e) = tls::rotation_may_begin(&serving.dir, tls::Installs::Supplied) {
-        return refused(&e);
+        return Err(e.into());
     }
-    // Recorded before anything is served, against what the upload itself says it is: an audit row that cannot be
-    // written stops the change rather than trailing it.
-    let fingerprint = match tls::describe(chain, "the certificate") {
-        Ok(described) => described.fingerprint,
-        Err(e) => return refuse(StatusCode::BAD_REQUEST, &e),
+    let fingerprint = tls::describe(&chain, "the certificate")
+        .map_err(Refusal::invalid)?
+        .fingerprint;
+    Ok(Checked {
+        ca,
+        required,
+        rotates,
+        fingerprint,
+    })
+}
+
+/// Serves the newest version of the list entry `name`, at once under the root in force, else as the rotation a
+/// certificate under another root begins. Under the settings lock.
+async fn serve_newest(
+    state: &Certificates,
+    actor: &Actor,
+    serving: &Arc<Tls>,
+    headers: &axum::http::HeaderMap,
+    name: &str,
+) -> Result<(), Refusal> {
+    let unavailable = |e: String| Refusal::unavailable(e);
+    let store = state.auth.store.clone();
+    let wanted = name.to_string();
+    let (version, certificate, key) = blocking(move || smeltr::leader::newest_certificate(store.as_ref(), &wanted))
+        .await
+        .map_err(|e| unavailable(e.to_string()))?
+        .ok_or_else(|| Refusal::not_found(format!("there is no certificate named {name:?}")))?;
+    let Checked {
+        ca,
+        required,
+        rotates,
+        fingerprint,
+    } = checked(serving, headers, &certificate, &key)?;
+    let entry = tls::Entry {
+        name: name.to_string(),
+        version,
+        ca,
     };
+    // Recorded before anything is served, against what the certificate itself says it is: an audit row that cannot
+    // be written stops the change rather than trailing it.
+    //
     // A switch is recorded as the rotation it begins, against the root it rotates to: the certificate is served
     // only once the fleet holds that root, and the row for serving it would otherwise be written weeks early, or
     // for a switch that is then abandoned.
     let subject = if rotates {
-        match root_in_force(&serving.dir) {
-            Ok(root) => ("authority-rotation-begun", root),
-            Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-        }
+        (
+            "authority-rotation-begun",
+            root_in_force(&serving.dir).map_err(unavailable)?,
+        )
     } else {
         ("certificate-supplied", fingerprint)
     };
-    if let Err(e) = record(&state.auth, &actor, subject.0, &subject.1).await {
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
-    }
+    record(&state.auth, actor, subject.0, &subject.1)
+        .await
+        .map_err(unavailable)?;
 
     if rotates {
         let now_ms = smeltr::leader::warnings::now_millis();
-        let begun = tls::begin_supplied_rotation(&serving.dir, chain, key, ca, &serving.names, &required, now_ms);
-        if let Err(e) = begun {
-            return refuse(StatusCode::CONFLICT, &e);
-        }
-        // The socket is untouched: what is served has not moved, and the file that did is the one `/api/authority`
+        // The socket is untouched: what is served has not moved, and the intent that did is what `/api/worker/authority`
         // and the heartbeat read afresh. A fleet with nobody in it to wait for cuts over on the next read.
-        return answer(&state);
+        tls::begin_supplied_rotation(&serving.dir, &entry, &serving.names, &required, now_ms)
+            .map_err(Refusal::conflict)?;
+        return Ok(());
     }
-    if let Err(e) = tls::install(&serving.dir, chain, key, ca, &serving.names, &required) {
-        return refuse(StatusCode::BAD_REQUEST, &e);
-    }
-    serve_what_is_on_disk(&state, &serving).await
+    tls::serve(&serving.dir, &entry, &serving.names, &required).map_err(Refusal::invalid)?;
+    reload_socket(serving).map_err(unavailable)
 }
 
-/// `DELETE /api/settings/certificates/supplied`: go back to this leader's own authority.
-async fn uninstall(State(state): State<Certificates>, actor: axum::Extension<Actor>) -> Response {
-    let serving = match serving(&state) {
-        Ok(serving) => serving,
-        Err(response) => return *response,
+/// Keeps what this leader issues and orders up to date, for as long as it runs. Each hour, and at once after the
+/// encryption key is regenerated ([`smeltr::leader::RENEW_NOW`]), it renews each certificate it issued that is due,
+/// serving the new version where it serves that one, then orders over ACME where that is due.
+/// A new version reaches the workers presenting it on their next heartbeat (`leader::heartbeat`).
+pub async fn keep_renewed(auth: Auth, serving: Arc<Tls>, leader: smeltr::leader::AppState) {
+    let state = Certificates {
+        auth: auth.clone(),
+        tls: Some(serving.clone()),
+        leader,
     };
-    let _ordered = state.auth.settings_writes.lock().await;
-
-    // Read under the lock, and before anything is minted or recorded. Without it a second withdrawal reissues the
-    // leader's own certificate and writes a row saying a certificate was withdrawn, neither of which was asked
-    // for and neither of which happened.
-    if let Err(e) = tls::rotation_may_begin(&serving.dir, tls::Installs::Own) {
-        return refused(&e);
-    }
-
-    // Minted while the supplied set is still in force. The certificate beneath has been sitting unused for as
-    // long as that one was serving, and the names this leader answers to may have changed meanwhile; one that
-    // cannot be minted has to be found out before the thing it would replace is gone.
-    let own = match tls::ensure_own(&serving.dir, serving.names.clone(), serving.validity) {
-        Ok(own) => own,
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
-    let fingerprint = match fingerprint_of(&own.server_cert_path) {
-        Ok(fingerprint) => fingerprint,
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
-    // A supplied certificate under this leader's own authority is withdrawn at once: every worker verifies by
-    // that root already. Under another root the leader's own goes out to the fleet first, and the supplied set
-    // keeps serving until the fleet holds it.
-    let rotates = match tls::withdrawing_changes_root(&serving.dir) {
-        Ok(rotates) => rotates,
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
-    // As a rotation, against the leader's own root, when the supplied set keeps serving until the fleet holds it;
-    // the withdrawal itself is recorded only where it happens now.
-    let subject = if rotates {
-        match root_in_force(&serving.dir) {
-            Ok(root) => ("authority-rotation-begun", root),
-            Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(crate::acme_api::RENEWAL_TICK) => {}
+            _ = smeltr::leader::RENEW_NOW.notified() => {}
         }
-    } else {
-        ("certificate-withdrawn", fingerprint)
-    };
-    if let Err(e) = record(&state.auth, &actor, subject.0, &subject.1).await {
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
+        renew_issued(&state, &serving).await;
+        crate::acme_api::renew_if_due(&auth, &serving).await;
     }
-
-    if rotates {
-        let now_ms = smeltr::leader::warnings::now_millis();
-        if let Err(e) = tls::begin_own_rotation(&serving.dir, now_ms) {
-            return refuse(StatusCode::CONFLICT, &e);
-        }
-        return answer(&state);
-    }
-    if let Err(e) = tls::uninstall(&serving.dir) {
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
-    }
-    serve_what_is_on_disk(&state, &serving).await
 }
 
-/// `POST /api/settings/certificates/reissue`: a new certificate from this leader's own authority.
-///
-/// What a restart would do, without the restart. Every worker already trusts the authority, so nothing outside
-/// this process is involved.
-async fn reissue(State(state): State<Certificates>, actor: axum::Extension<Actor>) -> Response {
-    let serving = match serving(&state) {
-        Ok(serving) => serving,
-        Err(response) => return *response,
+/// One pass of [`keep_renewed`] over the certificates this leader issued.
+async fn renew_issued(state: &Certificates, serving: &Arc<Tls>) {
+    let _ordered = state.auth.settings_writes.lock().await;
+    let now_ms = smeltr::leader::warnings::now_millis();
+    let tried = match smeltr::leader::renew_issued(&state.leader, now_ms).await {
+        Ok(tried) => tried,
+        Err(e) => {
+            tracing::warn!(target: "leader.certificate_renewal_failed", error = %e, "could not read the certificates to renew");
+            return;
+        }
+    };
+    let served = smeltr::leader::served_names(&serving.dir).unwrap_or_default();
+    for (name, outcome) in tried {
+        let outcome = match outcome {
+            Ok(()) if served.contains(&name) => {
+                (serve_newest(state, &Actor::system(), serving, &axum::http::HeaderMap::new(), &name).await)
+                    .map_err(|refusal| refusal.message())
+            }
+            outcome => outcome,
+        };
+        match outcome {
+            Ok(()) => {
+                tracing::info!(target: "leader.certificate_renewed", certificate = %name, "renewed a certificate this leader issued")
+            }
+            Err(e) => tracing::warn!(
+                target: "leader.certificate_renewal_failed",
+                certificate = %name,
+                error = %e,
+                "could not renew a certificate this leader issued"
+            ),
+        }
+    }
+}
+
+/// `GET /api/certificates`: the certificates in the list.
+async fn list(State(state): State<Certificates>) -> Response {
+    smeltr::leader::list_certificates(State(state.leader))
+        .await
+        .into_response()
+}
+
+/// `POST /api/certificates`: a certificate supplied with its key, or one this leader issues.
+async fn create(State(state): State<Certificates>, request: Json<NewCertificate>) -> Response {
+    smeltr::leader::create_certificate(State(state.leader), request)
+        .await
+        .into_response()
+}
+
+/// `PUT /api/certificates/:name`: a new version of a certificate in the list. Where the leader serves it, the new
+/// version has to be one it can serve, and it is served once stored.
+async fn replace(
+    State(state): State<Certificates>,
+    actor: axum::Extension<Actor>,
+    headers: axum::http::HeaderMap,
+    Path(name): Path<String>,
+    Json(request): Json<CertificateRequest>,
+) -> Response {
+    let store =
+        |request| smeltr::leader::replace_certificate(State(state.leader.clone()), Path(name.clone()), Json(request));
+    let Some(serving) = state.tls.clone() else {
+        return store(request).await.into_response();
     };
     let _ordered = state.auth.settings_writes.lock().await;
-    // Read under the lock. An upload landing between the check and the reissue would have its certificate replaced
-    // by this leader's own, and the operator would never be told.
-    match tls::current(&serving.dir) {
-        Ok(materials) if materials.supplied => {
-            return refuse(
-                StatusCode::CONFLICT,
-                "this leader is serving a certificate you supplied. Withdraw it first, or upload a new one.",
-            );
-        }
-        Ok(_) => {}
+    match smeltr::leader::served_names(&serving.dir) {
+        Ok(served) if served.contains(&name) => {}
+        Ok(_) => return store(request).await.into_response(),
         Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
     }
-
-    // `ensure_own` issues on every call, so this is exactly what the next start would have done. The disk changes
-    // before the audit row here alone, because minting the leader's own certificate is what every start does
-    // anyway: there is no previous state to preserve and nothing to roll back to.
-    let own = match tls::ensure_own(&serving.dir, serving.names.clone(), serving.validity) {
-        Ok(own) => own,
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
-    if own.authority_created {
-        // The authority's files were gone, so this reissue minted a new one. Every worker is pinned to the old
-        // one and none of them will verify this leader again until they are given the new `ca.pem`.
-        tracing::warn!(
-            target: "leader.tls_authority_created",
-            path = %serving.dir.join(tls::CA_CERT).display(),
-            "a reissue found no certificate authority on disk and created one: every worker is pinned to the one \
-             that is gone, and has to be given this file before it can reach this leader again"
-        );
+    if let Err(refusal) = checked(&serving, &headers, &request.certificate, &request.private_key) {
+        return refusal.into_response();
     }
-    let fingerprint = match fingerprint_of(&own.server_cert_path) {
-        Ok(fingerprint) => fingerprint,
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
-    let what = if own.authority_created {
-        "certificate-authority-created"
-    } else {
-        "certificate-reissued"
-    };
-    if let Err(e) = record(&state.auth, &actor, what, &fingerprint).await {
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
+    let stored = store(request).await;
+    if !stored.succeeded() {
+        return stored.into_response();
     }
-    serve_what_is_on_disk(&state, &serving).await
+    if let Err(refusal) = serve_newest(&state, &actor, &serving, &headers, &name).await {
+        return refusal.into_response();
+    }
+    stored.into_response()
 }
 
 /// The audit row for a certificate change, written while the change is still undone: a row that did not land,
@@ -417,11 +496,6 @@ pub(crate) async fn record(auth: &Auth, actor: &Actor, what: &str, subject: &str
     let store = auth.store.clone();
     let recorded = blocking(move || store.record_security_event(&event)).await;
     recorded.map_err(|e| format!("the audit row did not land, so nothing was changed: {e}"))
-}
-
-fn fingerprint_of(path: &std::path::Path) -> Result<String, String> {
-    let pem = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(tls::describe(&pem, "the certificate")?.fingerprint)
 }
 
 /// Swaps in whatever `tls/` now holds, and says what is in force.
@@ -449,19 +523,13 @@ const MOST_WAIT_HOURS: i64 = 14 * 24;
 const MIN_AUTHORITY_VALIDITY_DAYS: i64 = 1;
 const MAX_AUTHORITY_VALIDITY_DAYS: i64 = 100 * 365;
 
-/// `POST /api/settings/certificates/rotation`: mint the incoming authority and start the overlap.
+/// `POST /api/settings/tls/rotation`: mint the incoming authority and start the overlap.
 ///
 /// Nothing a client sees changes here. The certificate this leader serves keeps its authority until the fleet has
 /// had the new one long enough, which is what the wait is.
 /// A refusal answered with the status that says whether asking again could change it.
-///
-/// A conflict is the leader's state and wants an operator to do something else first; an unreadable file wants
-/// nothing from them, and a client watching this leader has to be able to tell the two apart.
-fn refused(why: &tls::Refused) -> Response {
-    match why {
-        tls::Refused::Conflict(message) => refuse(StatusCode::CONFLICT, message),
-        tls::Refused::Unavailable(message) => refuse(StatusCode::SERVICE_UNAVAILABLE, message),
-    }
+fn refused(why: tls::Refused) -> Response {
+    Refusal::from(why).into_response()
 }
 
 async fn begin_rotation(
@@ -476,7 +544,7 @@ async fn begin_rotation(
     let _ordered = state.auth.settings_writes.lock().await;
     if !(1..=MOST_WAIT_HOURS).contains(&req.wait_hours) {
         return refuse(
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNPROCESSABLE_ENTITY,
             &format!(
                 "a rotation waits between an hour and {} days for the fleet.",
                 MOST_WAIT_HOURS / 24
@@ -488,7 +556,7 @@ async fn begin_rotation(
         Some(days) if !(MIN_AUTHORITY_VALIDITY_DAYS..=MAX_AUTHORITY_VALIDITY_DAYS).contains(&days)
     ) {
         return refuse(
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNPROCESSABLE_ENTITY,
             "an incoming authority must be valid for between one day and one hundred years.",
         );
     }
@@ -496,7 +564,7 @@ async fn begin_rotation(
     // under the lock that makes the answer binding; this is only about not recording a rotation that never began.
     // Asked through the same function rather than restated here, because a copy of the list drifted once already.
     if let Err(e) = tls::rotation_may_begin(&serving.dir, tls::Installs::NextKey) {
-        return refused(&e);
+        return refused(e);
     }
     let current = match root_in_force(&serving.dir) {
         Ok(root) => root,
@@ -514,14 +582,14 @@ async fn begin_rotation(
         .map(|days| std::time::Duration::from_secs(days as u64 * 24 * 60 * 60))
         .unwrap_or(serving.validity);
     match tls::begin_rotation(&serving.dir, authority_validity, deadline, now_ms) {
-        // The socket is untouched: what is served has not moved, and the file that did is the one `/api/authority`
+        // The socket is untouched: what is served has not moved, and the file that did is the one `/api/worker/authority`
         // and the heartbeat read afresh.
-        Ok(_) => answer(&state),
+        Ok(_) => answer(&state).await,
         Err(e) => refuse(StatusCode::CONFLICT, &e),
     }
 }
 
-/// `POST /api/settings/certificates/rotation/cutover`: sign under the incoming authority now.
+/// `POST /api/settings/tls/rotation/cutover`: sign under the incoming authority now.
 ///
 /// The operator's answer to a worker that is not coming back. Every worker without the incoming root stops
 /// verifying this leader at this moment, which is why it is a button and not a timer.
@@ -545,7 +613,7 @@ async fn cut_over(State(state): State<Certificates>, actor: axum::Extension<Acto
     // an incoming root with no life left is a refusal, and the log recording it as a cutover would be the one
     // account of what this leader did saying the opposite.
     if let Err(e) = tls::cut_over_is_possible(&serving.dir) {
-        return refused(&e);
+        return refused(e);
     }
     if let Err(e) = record(&state.auth, &actor, "authority-cut-over", &incoming).await {
         return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
@@ -559,7 +627,38 @@ async fn cut_over(State(state): State<Certificates>, actor: axum::Extension<Acto
     serve_what_is_on_disk(&state, &serving).await
 }
 
-/// `DELETE /api/settings/certificates/rotation`: drop the incoming authority and keep serving what is served.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeadlineRequest {
+    deadline_millis: i64,
+}
+
+/// `PUT /api/settings/tls/rotation/deadline`: move when the open rotation cuts over without the fleet.
+async fn move_deadline(
+    State(state): State<Certificates>,
+    actor: axum::Extension<Actor>,
+    Json(req): Json<DeadlineRequest>,
+) -> Response {
+    let serving = match serving(&state) {
+        Ok(serving) => serving,
+        Err(response) => return *response,
+    };
+    let _ordered = state.auth.settings_writes.lock().await;
+    let now_ms = smeltr::leader::warnings::now_millis();
+    let incoming = match tls::deadline_may_move(&serving.dir, req.deadline_millis, now_ms) {
+        Ok(rotation) => rotation.incoming,
+        Err(e) => return refused(e),
+    };
+    if let Err(e) = record(&state.auth, &actor, "authority-cutover-moved", &incoming).await {
+        return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
+    }
+    if let Err(e) = tls::set_deadline(&serving.dir, req.deadline_millis, now_ms) {
+        return refused(e);
+    }
+    answer(&state).await
+}
+
+/// `DELETE /api/settings/tls/rotation`: drop the incoming authority and keep serving what is served.
 async fn abandon_rotation(State(state): State<Certificates>, actor: axum::Extension<Actor>) -> Response {
     let serving = match serving(&state) {
         Ok(serving) => serving,
@@ -584,12 +683,9 @@ async fn abandon_rotation(State(state): State<Certificates>, actor: axum::Extens
         Ok(rotation) => rotation,
         Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
     }) else {
-        return answer(&state);
+        return answer(&state).await;
     };
-    let ordered = match acme::incoming(&serving.dir, &rotation) {
-        Ok(incoming) => incoming == acme::Source::Acme,
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
+    let ordered = acme::incoming(&rotation) == acme::Source::Acme;
     if let Err(e) = record(&state.auth, &actor, "authority-rotation-abandoned", &rotation.incoming).await {
         return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
     }
@@ -597,27 +693,27 @@ async fn abandon_rotation(State(state): State<Certificates>, actor: axum::Extens
     // heartbeat's deadline runs. Between the check above and here, that cutover can finish this very rotation --
     // and an abandonment reported for it would be the audit log describing the opposite of what happened.
     if let Err(e) = tls::abandon_rotation(&serving.dir, &rotation.incoming) {
-        return refused(&e);
+        return refused(e);
     }
     if ordered && let Err(e) = acme::abandoned(&serving.dir) {
         return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
     }
-    answer(&state)
+    answer(&state).await
 }
 
 /// The root this leader signs under now, which is what a rotation's audit row names: the authority being left.
 /// Of however many the bundle holds, because after a rotation or two it leads with one kept for the workers still
 /// verifying by it, and a row naming that one names the wrong authority.
 pub(crate) fn root_in_force(dir: &std::path::Path) -> Result<String, String> {
-    let (materials, served) = tls::in_force(dir)?;
-    Ok(tls::signing_root(&materials.ca_pem, &served)?.fingerprint)
+    let materials = tls::current(dir)?;
+    Ok(tls::signing_root(&materials.ca_pem, &materials.served)?.fingerprint)
 }
 
 async fn serve_what_is_on_disk(state: &Certificates, serving: &Arc<Tls>) -> Response {
     if let Err(e) = reload_socket(serving) {
         return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
     }
-    answer(state)
+    answer(state).await
 }
 
 /// Makes the socket present whatever `tls/` now holds.
@@ -627,24 +723,21 @@ async fn serve_what_is_on_disk(state: &Certificates, serving: &Arc<Tls>) -> Resp
 pub(crate) fn reload_socket(serving: &Tls) -> Result<(), String> {
     // The state of the disk this reload is for, taken with the files themselves. A replacement landing while the
     // reload below runs leaves the socket on this one, which is what says the two have parted.
-    let (generation, materials) = tls::to_serve(&serving.dir)?;
-    serving
-        .resolver
-        .reload(&materials.server_cert_path, &materials.server_key_path)
-        .map_err(|e| {
-            // Nothing recorded: the socket still presents whatever it had. From now on every read says so, because
-            // the disk has moved past it -- a page or a downloaded `ca.pem` taken at face value would describe a
-            // certificate nothing is being shown.
-            format!("the certificate is on disk and this leader is still serving the previous one: {e}")
-        })?;
+    let (generation, chain, key) = tls::to_serve(&serving.dir)?;
+    serving.resolver.reload(&chain, &key).map_err(|e| {
+        // Nothing recorded: the socket still presents whatever it had. From now on every read says so, because
+        // the disk has moved past it -- a page or a downloaded `ca.pem` taken at face value would describe a
+        // certificate nothing is being shown.
+        format!("the certificate is on disk and this leader is still serving the previous one: {e}")
+    })?;
     tls::socket_took(&serving.dir, generation);
     Ok(())
 }
 
 /// What is in force, for a route outside this module that changed it.
-pub(crate) fn answer_in_force(serving: &Arc<Tls>) -> Response {
-    match read(Some(serving)) {
-        Ok(dto) => no_store(dto),
+pub(crate) async fn answer_in_force(serving: &Arc<Tls>) -> Response {
+    match read(Some(serving)).await {
+        Ok(dto) => Envelope::ok(dto).into_response(),
         Err(e) => refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
     }
 }

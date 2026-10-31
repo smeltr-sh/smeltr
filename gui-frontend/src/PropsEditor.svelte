@@ -25,6 +25,7 @@
 
 <script lang="ts" generics="K extends string">
   import Field from './Field.svelte';
+  import CrossButton from './CrossButton.svelte';
   import { untrack, type Snippet } from 'svelte';
   import SecretRefInput from './SecretRefInput.svelte';
   import { editable } from './access';
@@ -111,15 +112,14 @@
 {/snippet}
 
 {#snippet remove(drop: () => void)}
-  {#if !readOnly}<button
-      type="button"
-      class="compact"
-      title="remove"
+  {#if !readOnly}<CrossButton
+      removes
+      label="remove"
       onclick={() => {
         drop();
         sync();
-      }}>&#10005;</button
-    >{/if}
+      }}
+    />{/if}
 {/snippet}
 
 {#snippet refused(reason: string | undefined)}
@@ -168,7 +168,7 @@
 {/snippet}
 
 <div class="props">
-  <Field field={literalKey} label={labels.literal} group help={literalHelp}>
+  <Field optional field={literalKey} label={labels.literal} group help={literalHelp}>
     {@render literalTable()}
     {#if !readOnly}
       <button type="button" class="add-small" onclick={() => literal.push({ key: '', val: '' })}
@@ -177,7 +177,7 @@
     {/if}
   </Field>
 
-  <Field field="credentials" label={labels.credentials} group help={credentialsHelp}>
+  <Field optional field="credentials" label={labels.credentials} group help={credentialsHelp}>
     {@render credentialTable()}
     {#if !readOnly}
       <button

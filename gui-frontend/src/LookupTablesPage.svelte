@@ -1,6 +1,6 @@
 <!--
-  Lookup tables page: `lookup-tables.json`, read through `GET /api/config`
-  and written with `PUT /api/lookup-tables`, plus the raw-JSON page. A
+  Lookup tables page: `lookup-tables.json`, read through `GET /api/areas/:area`
+  and written with `PUT /api/areas/:area/lookups`, plus the raw-JSON page. A
   table is a CSV or MMDB upload, or a small table authored by hand, shared
   by id across every `lookup` step. Every table sits in the list; the one
   chosen opens beside it.
@@ -436,15 +436,8 @@
               <button type="button" onclick={() => removeTable(sel)}>Remove</button>
             {/if}
           </div>
-          <div class="tabs" role="tablist">
-            {#each tabs as name (name)}
-              <button
-                type="button"
-                role="tab"
-                aria-selected={name === shownTab}
-                onclick={() => (tab = name)}>{name}</button
-              >
-            {/each}
+          <div class="tabs">
+            <SecondaryTabs {tabs} active={shownTab} onselect={(t) => (tab = t)} ariaLabel="Table" />
           </div>
 
           {@const cells =
@@ -567,11 +560,11 @@
       {#if adding?.draft}
         {@const draft = adding.draft}
         <div class="form-body">
-          <Field label="id" error={idProblem(draft.id, takenIds())}>
+          <Field required label="id" error={idProblem(draft.id, takenIds())}>
             <input type="text" bind:value={draft.id} />
           </Field>
           {#if draft.type === 'csv'}
-            <Field label="delimiter">
+            <Field optional label="delimiter">
               <input type="text" maxlength="1" size="2" bind:value={draft.delimiter} />
             </Field>
           {/if}
@@ -639,11 +632,11 @@
   }
 
   button.item:hover {
-    background: color-mix(in oklch, var(--ink) 6%, var(--panel));
+    background: color-mix(in oklab, var(--ink) 6%, var(--panel));
   }
 
   .item.on {
-    background: color-mix(in oklch, var(--ink) 10%, var(--panel));
+    background: color-mix(in oklab, var(--ink) 10%, var(--panel));
     border-left-color: var(--ink);
   }
 
@@ -733,26 +726,7 @@
 
   /* A secondary tab row (STYLE_GUIDE.md), held in the page rather than the hash. */
   .tabs {
-    display: flex;
-    gap: 1rem;
     margin-bottom: 0.9rem;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .tabs button {
-    background: none;
-    padding: 0.35rem 0;
-    border-width: 0 0 3px;
-    border-radius: 0;
-    border-color: transparent;
-    color: var(--dim);
-    font-size: var(--text-body);
-  }
-
-  .tabs button[aria-selected='true'] {
-    color: var(--ink);
-    font-weight: 600;
-    border-color: var(--accent);
   }
 
   .facts :is(th, td) {

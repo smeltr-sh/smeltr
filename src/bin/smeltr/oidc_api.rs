@@ -30,20 +30,20 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use smeltr::leader::envelope::{ApiError, Envelope};
-use smeltr::leader::oidc::{self, Jwks, Provider, RefreshFailure, Refusal};
+use smeltr::leader::access::{Role, given_by};
+use smeltr::leader::envelope::{Envelope, Refusal};
+use smeltr::leader::oidc::{self, Jwks, Provider, RefreshFailure};
 use smeltr::leader::sessions::{Due, Grant};
 use smeltr::leader::store::{Actor, OidcSignIn, Store, StoreError};
 use smeltr::leader::{accounts, blocking};
 
-use crate::gate::{Auth, refuse};
+use crate::gate::{Auth, store_unavailable};
 
 pub const ENABLED_KEY: &str = "oidc.enabled";
 pub const ISSUER_KEY: &str = "oidc.issuer";
 pub const CLIENT_ID_KEY: &str = "oidc.client_id";
-pub const SECRET_KEY: &str = "oidc.client_secret";
+pub const SECRET_KEY: &str = smeltr::leader::oidc::CLIENT_SECRET_KEY;
 pub const GROUPS_CLAIM_KEY: &str = "oidc.groups_claim";
-pub const REQUIRED_GROUP_KEY: &str = "oidc.required_group";
 
 /// The claim groups are read from where nobody has said. What Okta, Keycloak and Entra ID send by that name.
 pub const DEFAULT_GROUPS_CLAIM: &str = "groups";
@@ -77,9 +77,6 @@ pub struct Settings {
     pub client_id: String,
     pub client_secret: Option<String>,
     pub groups_claim: String,
-    /// The group a person must hold to sign in. Required: a provider anyone can sign up to would otherwise let
-    /// every one of its accounts in here.
-    pub required_group: String,
 }
 
 impl Settings {
@@ -93,7 +90,6 @@ impl Settings {
                 .setting(GROUPS_CLAIM_KEY)?
                 .filter(|claim| !claim.is_empty())
                 .unwrap_or_else(|| DEFAULT_GROUPS_CLAIM.to_string()),
-            required_group: store.setting(REQUIRED_GROUP_KEY)?.unwrap_or_default(),
         })
     }
 }
@@ -233,8 +229,8 @@ impl Oidc {
     ) -> Result<oidc::Claims, Unverified> {
         match oidc::verify_id_token(token, &known.jwks, expect, groups_claim) {
             Ok(claims) => return Ok(claims),
-            Err(Refusal::UnknownKey) => {}
-            Err(Refusal::Invalid(why)) => return Err(Unverified::Refused(why)),
+            Err(oidc::Refusal::UnknownKey) => {}
+            Err(oidc::Refusal::Invalid(why)) => return Err(Unverified::Refused(why)),
         }
         let jwks = oidc::fetch_jwks(&known.client, &known.provider.jwks_uri)
             .await
@@ -245,8 +241,10 @@ impl Oidc {
         }
         checked.map_err(|refusal| {
             Unverified::Refused(match refusal {
-                Refusal::UnknownKey => "the ID token was signed with a key the provider does not publish".to_string(),
-                Refusal::Invalid(why) => why,
+                oidc::Refusal::UnknownKey => {
+                    "the ID token was signed with a key the provider does not publish".to_string()
+                }
+                oidc::Refusal::Invalid(why) => why,
             })
         })
     }
@@ -363,7 +361,6 @@ fn see_other(location: &str) -> Response {
     if let Ok(location) = HeaderValue::from_str(location) {
         headers.insert(header::LOCATION, location);
     }
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
@@ -381,8 +378,7 @@ async fn usable(auth: &Auth) -> Result<Option<Settings>, StoreError> {
         let complete = settings.enabled
             && !settings.issuer.is_empty()
             && !settings.client_id.is_empty()
-            && settings.client_secret.is_some()
-            && !settings.required_group.is_empty();
+            && settings.client_secret.is_some();
         Ok(complete.then_some(settings))
     })
     .await
@@ -399,16 +395,13 @@ pub struct OfferedDto {
 /// before anyone is signed in. Says nothing about which provider.
 pub async fn offered(State(auth): State<Auth>) -> Response {
     match usable(&auth).await {
-        Ok(settings) => (
-            [(header::CACHE_CONTROL, "no-store")],
-            Json(OfferedDto {
-                offered: settings.is_some(),
-            }),
-        )
-            .into_response(),
+        Ok(settings) => Envelope::ok(OfferedDto {
+            offered: settings.is_some(),
+        })
+        .into_response(),
         Err(e) => {
             tracing::error!(target: "leader.identity_unavailable", error = %e, "the OIDC settings could not be read");
-            refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable")
+            store_unavailable()
         }
     }
 }
@@ -556,8 +549,24 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
             return refused(&settings.issuer);
         }
     };
-    if !admitted(&settings, &claims.groups) {
-        tracing::warn!(target: "leader.sign_in_refused", subject = %bounded(&claims.subject), "an OIDC sign-in lacks the required group");
+    let store = auth.store.clone();
+    let roles = match blocking(move || store.list_roles()).await {
+        Ok(roles) => roles,
+        Err(e) => {
+            tracing::error!(target: "leader.identity_unavailable", error = %e, "the roles could not be read");
+            return back_to_gui(&auth, Ended::Unavailable, Some(state));
+        }
+    };
+    if !admitted(&roles, &claims.groups) {
+        // The groups as the provider sent them: the one place an administrator sees the names a role's groups must
+        // match before anybody has been let in.
+        tracing::warn!(
+            target: "leader.sign_in_refused",
+            subject = %bounded(&claims.subject),
+            login = %fit_login(&claims).unwrap_or_default(),
+            groups = %bounded(&claims.groups.join(", ")),
+            "an OIDC sign-in is in no group that has a role"
+        );
         return refused(&claims.subject);
     }
 
@@ -610,7 +619,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
     }
     accounts::record(
         auth.store.as_ref(),
-        &Actor::person(&user.id, &user.display_name),
+        &Actor::account(&user.id, &user.display_name),
         "login",
         &user.id,
         "ok",
@@ -652,6 +661,14 @@ pub async fn refresh_due(auth: &Auth, every: Duration) {
             return retry_all(due);
         }
     };
+    let store = auth.store.clone();
+    let roles = match blocking(move || store.list_roles()).await {
+        Ok(roles) => roles,
+        Err(e) => {
+            tracing::error!(target: "leader.identity_unavailable", error = %e, "the roles could not be read");
+            return retry_all(due);
+        }
+    };
     let mut due = due.into_iter();
     while let Some(d) = due.next() {
         // A grant from a provider no longer configured is one this leader cannot spend.
@@ -668,7 +685,7 @@ pub async fn refresh_due(auth: &Auth, every: Duration) {
         )
         .await;
         match refreshed {
-            Ok(refreshed) => refreshed_one(auth, &settings, &known, d, refreshed).await,
+            Ok(refreshed) => refreshed_one(auth, &settings, &roles, &known, d, refreshed).await,
             Err(RefreshFailure::Refused(why)) => end_session(auth, &d, &why),
             Err(RefreshFailure::Unavailable(why)) => {
                 // Every grant goes to the same provider, so the rest would wait out the same failure in turn.
@@ -681,7 +698,14 @@ pub async fn refresh_due(auth: &Auth, every: Duration) {
 }
 
 /// Believe what a refresh answered for `d`'s session, or end it.
-async fn refreshed_one(auth: &Auth, settings: &Settings, known: &Known, d: Due, refreshed: oidc::Refreshed) {
+async fn refreshed_one(
+    auth: &Auth,
+    settings: &Settings,
+    roles: &[Role],
+    known: &Known,
+    d: Due,
+    refreshed: oidc::Refreshed,
+) {
     let Some(token) = refreshed.id_token else {
         // Nothing new said of the person; the grant still stands.
         auth.sessions.renewed(&d.key, refreshed.refresh_token, Instant::now());
@@ -704,8 +728,8 @@ async fn refreshed_one(auth: &Auth, settings: &Settings, known: &Known, d: Due, 
             return auth.sessions.renewed(&d.key, refreshed.refresh_token, Instant::now());
         }
     };
-    if !admitted(settings, &claims.groups) {
-        return end_session(auth, &d, "it no longer holds the required group");
+    if !admitted(roles, &claims.groups) {
+        return end_session(auth, &d, "it is no longer in any group that has a role");
     }
     let store = auth.store.clone();
     let user_id = d.user_id.clone();
@@ -740,9 +764,10 @@ fn end_session(auth: &Auth, d: &Due, why: &str) {
     }
 }
 
-/// Whether `groups` lets a person in under `settings`. An empty required group admits nobody.
-fn admitted(settings: &Settings, groups: &[String]) -> bool {
-    !settings.required_group.is_empty() && groups.contains(&settings.required_group)
+/// Whether `groups` lets a person in: one of them gives a role. A person given no role would hold nothing, and a
+/// provider anyone can sign up to would otherwise let every one of its accounts in.
+fn admitted(roles: &[Role], groups: &[String]) -> bool {
+    !given_by(roles, groups).is_empty()
 }
 
 /// A name the provider sent, made one a git author line can hold: what git cannot hold becomes a space, as
@@ -822,7 +847,6 @@ pub struct SettingsDto {
     /// Whether a client secret is stored. The secret itself is never sent back.
     client_secret_set: bool,
     groups_claim: String,
-    required_group: String,
     /// What to register with the provider as the sign-in redirect.
     redirect_uri: String,
 }
@@ -842,16 +866,13 @@ pub struct PutSettings {
     client_secret: Option<String>,
     #[serde(default)]
     groups_claim: String,
-    #[serde(default)]
-    required_group: String,
 }
 
-async fn answer(auth: &Auth, error: Option<String>) -> Json<Envelope<OidcSettings>> {
+/// The settings as stored, with `refused` beside them when a write was: the form shows what to correct.
+async fn answer(auth: &Auth, refused: Option<Refusal>) -> Envelope<OidcSettings> {
     let store = auth.store.clone();
-    let read = blocking(move || Settings::read(store.as_ref()))
-        .await
-        .map_err(|e| e.to_string());
-    Json(match read {
+    let read = blocking(move || Settings::read(store.as_ref())).await;
+    match read {
         Ok(settings) => Envelope::with(
             OidcSettings {
                 settings: Some(SettingsDto {
@@ -860,22 +881,22 @@ async fn answer(auth: &Auth, error: Option<String>) -> Json<Envelope<OidcSetting
                     client_id: settings.client_id,
                     client_secret_set: settings.client_secret.is_some(),
                     groups_claim: settings.groups_claim,
-                    required_group: settings.required_group,
                     redirect_uri: redirect_uri(auth),
                 }),
             },
-            error.into_iter().map(ApiError::new).collect(),
+            refused.as_ref().map_or(StatusCode::OK, |r| r.status),
+            refused.map(|r| r.errors).unwrap_or_default(),
         ),
-        Err(e) => Envelope::failed_one(e),
-    })
+        Err(e) => Envelope::refused(e),
+    }
 }
 
 /// `GET /api/settings/oidc`.
-pub async fn get_settings(State(auth): State<Auth>) -> Json<Envelope<OidcSettings>> {
+pub async fn get_settings(State(auth): State<Auth>) -> Envelope<OidcSettings> {
     answer(&auth, None).await
 }
 
-/// The most a client id, claim name or group name may be. Far beyond any provider's, and short enough to show.
+/// The most a client id or claim name may be. Far beyond any provider's, and short enough to show.
 const MOST_TEXT: usize = 256;
 
 /// `PUT /api/settings/oidc`. Recorded with who set it and what changed, in the transaction that sets it; the client
@@ -891,35 +912,37 @@ pub async fn put_settings(
     write_settings(&auth, actor, request).await.into_response()
 }
 
-async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json<Envelope<OidcSettings>> {
+async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Envelope<OidcSettings> {
     let issuer = request.issuer.trim().to_string();
     let client_id = request.client_id.trim().to_string();
     let groups_claim = request.groups_claim.trim().to_string();
-    let required_group = request.required_group.trim().to_string();
     if !issuer.is_empty()
         && let Err(e) = oidc::check_issuer(&issuer)
     {
-        return answer(auth, Some(e)).await;
+        return answer(auth, Some(Refusal::invalid(e))).await;
     }
-    if [&client_id, &groups_claim, &required_group]
-        .iter()
-        .any(|text| text.len() > MOST_TEXT)
-    {
+    if [&client_id, &groups_claim].iter().any(|text| text.len() > MOST_TEXT) {
         return answer(
             auth,
-            Some(format!("a client id, claim or group is at most {MOST_TEXT} bytes")),
+            Some(Refusal::invalid(format!(
+                "a client id or claim is at most {MOST_TEXT} bytes"
+            ))),
         )
         .await;
     }
     if request.client_secret.as_ref().is_some_and(|s| s.len() > 4096) {
-        return answer(auth, Some("a client secret is at most 4096 bytes".to_string())).await;
+        return answer(
+            auth,
+            Some(Refusal::invalid("a client secret is at most 4096 bytes".to_string())),
+        )
+        .await;
     }
 
     let one_at_a_time = auth.settings_writes.lock().await;
     let store = auth.store.clone();
     let was = match blocking(move || Settings::read(store.as_ref())).await {
         Ok(was) => was,
-        Err(e) => return answer(auth, Some(e.to_string())).await,
+        Err(e) => return answer(auth, Some(e.into())).await,
     };
     // A secret is for the client it was issued to: another issuer or client id forgets it unless a new one is given.
     let secret = match request.client_secret {
@@ -931,15 +954,23 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json
         None => was.client_secret.is_some(),
     };
     if request.enabled {
-        if issuer.is_empty() || client_id.is_empty() || !will_hold_secret || required_group.is_empty() {
+        if issuer.is_empty() || client_id.is_empty() || !will_hold_secret {
             return answer(
                 auth,
-                Some("OIDC needs an issuer, a client id, a client secret and a required group".to_string()),
+                Some(Refusal::invalid(
+                    "OIDC needs an issuer, a client id and a client secret".to_string(),
+                )),
             )
             .await;
         }
         if let Err(e) = read_provider(&issuer).await {
-            return answer(auth, Some(format!("the provider at {issuer} could not be read: {e}"))).await;
+            return answer(
+                auth,
+                Some(Refusal::invalid(format!(
+                    "the provider at {issuer} could not be read: {e}"
+                ))),
+            )
+            .await;
         }
     }
 
@@ -959,7 +990,6 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json
         (client_id != was.client_id, "client id"),
         (secret_moved, "client secret"),
         (claim_now != was.groups_claim, "groups claim"),
-        (required_group != was.required_group, "required group"),
     ]
     .into_iter()
     .filter_map(|(moved, name)| moved.then_some(name))
@@ -976,7 +1006,6 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json
             (ISSUER_KEY, issuer),
             (CLIENT_ID_KEY, client_id),
             (GROUPS_CLAIM_KEY, groups_claim),
-            (REQUIRED_GROUP_KEY, required_group),
         ];
         if let Some(secret) = secret {
             let stored = if secret.is_empty() {
@@ -990,7 +1019,7 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json
     })
     .await;
     drop(one_at_a_time);
-    let error = written.err().map(|e| e.to_string());
+    let error = written.err().map(Refusal::from);
     auth.oidc.forget();
     answer(auth, error).await
 }
@@ -999,29 +1028,37 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json
 mod tests {
     use super::*;
 
-    fn settings(required_group: &str) -> Settings {
-        Settings {
-            enabled: true,
-            issuer: "https://id.example.com".to_string(),
-            client_id: "smeltr".to_string(),
-            client_secret: Some("s".to_string()),
-            groups_claim: DEFAULT_GROUPS_CLAIM.to_string(),
-            required_group: required_group.to_string(),
+    fn role(name: &str) -> Role {
+        Role {
+            name: name.to_string(),
+            groups: vec![name.to_string()],
+            areas: Default::default(),
         }
     }
 
     #[test]
-    fn no_required_group_admits_nobody() {
-        assert!(!admitted(&settings(""), &[]));
-        assert!(!admitted(&settings(""), &[String::new()]));
+    fn no_role_admits_nobody() {
+        assert!(!admitted(&[], &[]));
+        assert!(!admitted(&[], &["smeltr-admins".to_string()]));
     }
 
     #[test]
-    fn a_required_group_must_be_held_exactly() {
-        let held = vec!["smeltr-admins".to_string()];
-        assert!(admitted(&settings("smeltr-admins"), &held));
-        assert!(!admitted(&settings("smeltr-admin"), &held));
-        assert!(!admitted(&settings("smeltr-admins"), &[]));
+    fn a_role_admits_whoever_holds_its_group_exactly() {
+        let roles = [role("/smeltr-admins"), role("smeltr-apps")];
+        assert!(admitted(&roles, &["/smeltr-admins".to_string()]));
+        assert!(admitted(&roles, &["other".to_string(), "smeltr-apps".to_string()]));
+        assert!(!admitted(&roles, &["smeltr-admins".to_string()]));
+        assert!(!admitted(&roles, &[]));
+    }
+
+    /// A role is given by its groups, never by its name: a role with no group admits nobody.
+    #[test]
+    fn a_roles_name_admits_nobody() {
+        let mut admins = role("administrator");
+        admins.groups.clear();
+        assert!(!admitted(&[admins.clone()], &["administrator".to_string()]));
+        admins.groups.push("smeltr-admins".to_string());
+        assert!(admitted(&[admins], &["smeltr-admins".to_string()]));
     }
 
     /// A newline would end a commit's author line, and angle brackets would end its name. Both become a space, so

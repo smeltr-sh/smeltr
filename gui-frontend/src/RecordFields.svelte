@@ -1,26 +1,45 @@
 <!--
   One record, as the preview draws it (`recordDiff.ts`). Nesting is indent and
-  a longer name rather than braces; what a step did to a field is a character
-  in the gutter and a color on the field's name, so the values themselves
-  stay plain text at one left edge. A type sits at the right of the name
-  column, which is fixed and mostly empty, so values keep their width.
+  a longer name rather than braces. What the steps did is a bar beside each run
+  of lines they changed, from the depth where the run starts and in the color
+  of what they did, so names and values stay plain text. The name column is as
+  wide as the record's longest name, up to a cap past which a name wraps at its dots, and
+  the types sit in a column beside it.
+
+  What the step removed waits on one folded line at the end, so a rename
+  reads as its new name alone.
+
+  A run's sign is the step that last touched its lines, or +, ~ or − where no
+  step is named, shown where the run starts and where that step changes
+  (`runMarks`). Held, a field's sign lists every step that touched it, and
+  each jumps to its step.
 
   Structs and arrays draw a page at a time, and one too big for what is left
-  of its page starts folded (`recordLines`). Filtered to what changed, the
-  tree is dropped and each field states its whole path: at four or five lines
-  an outline costs more than it explains.
+  of its page starts folded (`recordLines`). With full paths the tree is
+  dropped and each field states its whole path (`pathLines`). Either way it
+  can be filtered to what changed.
 -->
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { formatDiffValue } from './diff';
+  import { stepName, type Step } from './pipeline';
+  import StepGlyph from './StepGlyph.svelte';
+  import Clamped from './Clamped.svelte';
+  import { float } from './float';
   import {
-    changedLines,
     changeFitsInline,
     diffTree,
+    leafLines,
+    PAGE_LINES,
+    pathLines,
     recordLines,
+    runMarks,
     splitPath,
-    valueFitsUnclamped,
+    withoutRemoved,
     type Declared,
+    type RecordLine,
+    type RunMark,
   } from './recordDiff';
 
   let {
@@ -29,7 +48,10 @@
     keep,
     declared,
     changedOnly = false,
+    fullPaths = false,
     showTypes = true,
+    touched,
+    onjump,
   }: {
     before: unknown;
     after: unknown;
@@ -38,20 +60,75 @@
     /** Whether a field the grid draws as one cell is drawn here. */
     keep?: (path: string) => boolean;
     changedOnly?: boolean;
+    /** Each field by its whole path, rather than nested. */
+    fullPaths?: boolean;
     showTypes?: boolean;
+    /** The steps that touched a field on this record, in the order they ran,
+     * each with its number in the step list. Without it no step is shown. */
+    touched?: (path: string) => { step: Step; number: number }[];
+    onjump?: (step: Step) => void;
   } = $props();
 
-  let tree = $derived(diffTree(before, after, keep, declared));
+  let split = $derived(withoutRemoved(diffTree(before, after, keep, declared)));
+  let tree = $derived(split.tree);
+  let removedOpen = $state(false);
+  // Opened, a page at a time like the rest of the record.
+  let removedPages = $state(0);
+  let removedAll = $derived(removedOpen ? leafLines(split.removed) : []);
+  let removed = $derived(removedAll.slice(0, PAGE_LINES * (1 + removedPages)));
 
   // The reader's choices, by a struct's or an array's path: open or folded,
   // and how many pages past the first it draws.
+  // The field whose steps are listed, while the pointer or focus is on its glyph or the list. Leaving
+  // waits a moment, so the pointer can cross the gap between the two.
+  let byOpen = $state<string | null>(null);
+  let byAnchor: HTMLElement | undefined;
+  let byClosing: ReturnType<typeof setTimeout> | undefined;
+  function showBy(path: string, at: HTMLElement) {
+    clearTimeout(byClosing);
+    byAnchor = at;
+    byOpen = path;
+  }
+  function hideBy() {
+    clearTimeout(byClosing);
+    byClosing = setTimeout(() => (byOpen = null), 150);
+  }
+  $effect(() => () => clearTimeout(byClosing));
+
   let folds = $state(new SvelteMap<string, boolean>());
   let pages = $state(new SvelteMap<string, number>());
 
   let lines = $derived.by(() => {
     const choices = { open: (p: string) => folds.get(p), pages: (p: string) => pages.get(p) };
-    return changedOnly ? changedLines(tree, choices) : recordLines(tree, choices);
+    return fullPaths
+      ? pathLines(tree, choices, changedOnly)
+      : recordLines(tree, choices, changedOnly);
   });
+
+  // In characters: the column is monospace, and a name's length is its width.
+  const INDENT_CH = 2;
+  // Ahead of every name, its sign and then a group's chevron, so names at one depth line up.
+  const LEAD_CH = 4;
+  const NAME_CH = 34;
+  const nameWidth = (l: RecordLine) =>
+    l.kind === 'more' ? 0 : l.depth * INDENT_CH + LEAD_CH + l.label.length;
+
+  type Touched = { step: Step; number: number };
+  const stepOf = (path: string) => touched?.(path).at(-1) ?? null;
+  const same = (a: Touched | null, b: Touched | null) => a?.step.id === b?.step.id;
+  let marks = $derived(runMarks(lines, stepOf, same));
+  let removedMarks = $derived(runMarks(removed, stepOf, same));
+  let nameCh = $derived(
+    Math.min(NAME_CH, Math.max(0, ...lines.map(nameWidth), ...removed.map(nameWidth))),
+  );
+  let typeCh = $derived(
+    showTypes
+      ? Math.max(
+          0,
+          ...[...lines, ...removed].map((l) => (l.kind === 'more' ? 0 : (l.type?.length ?? 0))),
+        )
+      : 0,
+  );
 
   const GLYPH = { added: '+', changed: '~', removed: '−', unchanged: '' } as const;
 
@@ -77,23 +154,144 @@
   const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
 </script>
 
-{#if lines.length === 0}
+{#snippet name(label: string)}
+  <!-- A long name breaks after a dot, where its parts already divide. -->
+  {#each label.split('.') as part, k}{#if k > 0}.<wbr />{/if}{part}{/each}
+{/snippet}
+
+{#snippet more(depth: number, shown: number, total: number, onmore: () => void)}
+  <div class="line">
+    <span class="dim" style:margin-left={`${depth * INDENT_CH + LEAD_CH}ch`}
+      >{shown} of {total} shown ·&nbsp;</span
+    ><button type="button" class="more" onclick={onmore}>show more</button>
+  </div>
+{/snippet}
+
+{#snippet run(mark: RunMark<Touched>)}
+  {#if mark.state !== 'unchanged'}<span
+      class="bar state-{mark.state}"
+      style:left={`${mark.depth * INDENT_CH}ch`}
+    ></span>{/if}
+{/snippet}
+
+<!-- A run's sign: its step, or +, ~ or − where no one step is named. A field's lists, held, every
+     step that touched it; a group's is inside the group's own button, so it only names its step. -->
+{#snippet sign(mark: RunMark<Touched>, field: string | null)}
+  <span class="sign state-{mark.state}">
+    {#if mark.sign && mark.step && field !== null}
+      {@const by = touched?.(field) ?? []}
+      <span
+        class="by"
+        role="group"
+        onpointerenter={(e) => showBy(field, e.currentTarget)}
+        onpointerleave={hideBy}
+        onfocusin={(e) => showBy(field, e.currentTarget)}
+        onfocusout={hideBy}
+      >
+        <button
+          type="button"
+          class="by-glyph"
+          aria-label={stepName(mark.step.step, mark.step.number)}
+          onclick={() => onjump?.(mark.step!.step)}><StepGlyph type={mark.step.step.type} /></button
+        >
+        {#if byOpen === field}
+          <span
+            class="by-list"
+            popover="manual"
+            {@attach float(() => byAnchor?.getBoundingClientRect())}
+          >
+            {#each by as t (t.step.id)}
+              <button type="button" onclick={() => onjump?.(t.step)}
+                ><StepGlyph type={t.step.type} /> {stepName(t.step, t.number)}</button
+              >
+            {/each}
+          </span>
+        {/if}
+      </span>
+    {:else if mark.sign && mark.step}
+      <span title={stepName(mark.step.step, mark.step.number)}
+        ><StepGlyph type={mark.step.step.type} /></span
+      >
+    {:else if mark.sign}{GLYPH[mark.state]}{/if}
+  </span>
+{/snippet}
+
+{#snippet field(line: Extract<RecordLine, { kind: 'field' }>, mark: RunMark<Touched>)}
+  {@const inline = line.state === 'changed' && changeFitsInline(line.before, line.after)}
+  {@const body = formatDiffValue(line.state === 'removed' ? line.before : line.after)}
+  <div class="line state-{line.state}" class:run-start={mark.start}>
+    {@render run(mark)}
+    <span class="key">
+      <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}>
+        {@render sign(mark, line.path)}<span class="chevron"></span>
+        {#if fullPaths}
+          {@const parts = splitPath(line.label)}
+          <span class="path-prefix">{@render name(parts.prefix)}</span>{parts.leaf}
+        {:else}
+          {@render name(line.label)}
+        {/if}
+      </span>
+      {#if showTypes}<span class="type">{line.type ?? ''}</span>{/if}
+    </span>
+    {#if inline}
+      <span class="value">
+        <span class="gone">{formatDiffValue(line.before)}</span>
+        <span class="arrow">&rarr;</span>{formatDiffValue(line.after)}
+      </span>
+    {:else}
+      <Clamped
+        text={body}
+        open={opened.has(line.path)}
+        ontoggle={() => toggleLong(line.path)}
+        label={line.path}
+        gone={line.state === 'removed'}
+      />
+    {/if}
+  </div>
+  {#if line.state === 'changed' && !inline}
+    <!-- The old value did not fit beside the new one, so it keeps the
+         line it would have taken: a dotted rule saying something is held
+         back, which opens it. -->
+    {@const open = revealed.has(line.path)}
+    <button
+      type="button"
+      class="held"
+      aria-expanded={open}
+      aria-label={`${open ? 'hide' : 'show'} the previous value of ${line.path}`}
+      onclick={() => toggleHeld(line.path)}
+    >
+      {#if open}
+        <span class="value gone">{formatDiffValue(line.before)}</span>
+      {:else}
+        <span class="held-rule"></span>
+      {/if}
+    </button>
+  {/if}
+{/snippet}
+
+{#if lines.length === 0 && split.removed.length === 0}
   <span class="dim">no change at this step</span>
 {:else}
-  <div class="fields">
-    {#each lines as line (line.kind + line.path + line.depth)}
+  <!-- A character's slack, so a name that just fits does not wrap on a rounding. -->
+  <div class="fields" style:--name-w={`${nameCh + 1}ch`} style:--type-w={`${typeCh}ch`}>
+    {#each lines as line, i (line.kind + line.path + line.depth)}
+      {@const mark = marks[i]}
       {#if line.kind === 'group'}
         <button
           type="button"
-          class="group"
-          style={`padding-left: ${line.depth * 14}px`}
+          class:run-start={mark.start}
+          class="line group"
           aria-expanded={line.open}
           onclick={() => folds.set(line.path, !line.open)}
         >
-          <span class="group-name" style={`width: calc(13.2rem - ${line.depth * 14}px)`}>
-            <span class="chevron">{line.open ? '▾︎' : '▸︎'}</span>
-            <span class="name">{line.label}</span>
-            {#if showTypes && line.type !== null}<span class="type">{line.type}</span>{/if}
+          {@render run(mark)}
+          <span class="key">
+            <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}
+              >{@render sign(mark, null)}<span class="chevron"
+                ><ChevronIcon open={line.open} /></span
+              >{@render name(line.label)}</span
+            >
+            {#if showTypes}<span class="type">{line.type ?? ''}</span>{/if}
           </span>
           <span class="group-marks">
             {#if line.branch === 'array'}
@@ -113,75 +311,32 @@
         </button>
       {:else if line.kind === 'more'}
         {@const path = line.path}
-        <div class="line">
-          <span class="gutter"></span>
-          <span class="dim" style={`margin-left: ${line.depth * 14}px`}
-            >{line.shown} of {line.total} shown ·&nbsp;</span
-          ><button
-            type="button"
-            class="more"
-            onclick={() => pages.set(path, (pages.get(path) ?? 0) + 1)}>show more</button
-          >
-        </div>
+        {@render more(line.depth, line.shown, line.total, () =>
+          pages.set(path, (pages.get(path) ?? 0) + 1),
+        )}
       {:else}
-        {@const inline = line.state === 'changed' && changeFitsInline(line.before, line.after)}
-        {@const body = formatDiffValue(line.state === 'removed' ? line.before : line.after)}
-        {@const opens = !inline && !valueFitsUnclamped(body)}
-        <div class="line state-{line.state}" class:open={opens && opened.has(line.path)}>
-          <span class="gutter">{GLYPH[line.state]}</span>
-          <span class="key" style={`padding-left: ${line.depth * 14}px`}>
-            <span class="name">
-              {#if changedOnly}
-                {@const name = splitPath(line.label)}
-                <span class="path-prefix">{name.prefix}</span>{name.leaf}
-              {:else}
-                {line.label}
-              {/if}
-            </span>
-            {#if showTypes && line.type !== null}<span class="type">{line.type}</span>{/if}
-          </span>
-          {#if line.state === 'changed' && inline}
-            <span class="value">
-              <span class="gone">{formatDiffValue(line.before)}</span>
-              <span class="arrow">&rarr;</span>{formatDiffValue(line.after)}
-            </span>
-          {:else}
-            {@const open = opened.has(line.path)}
-            <span class="value" class:gone={line.state === 'removed'} class:clamped={opens && !open}
-              >{body}</span
-            >
-            {#if opens}
-              <button
-                type="button"
-                class="more"
-                aria-expanded={open}
-                aria-label={`${open ? 'collapse' : 'expand'} the value of ${line.path}`}
-                onclick={() => toggleLong(line.path)}>{open ? 'less' : 'more'}</button
-              >
-            {/if}
-          {/if}
-        </div>
-        {#if line.state === 'changed' && !inline}
-          <!-- The old value did not fit beside the new one, so it keeps the
-               line it would have taken: a dotted rule saying something is held
-               back, which opens it. -->
-          {@const open = revealed.has(line.path)}
-          <button
-            type="button"
-            class="held"
-            aria-expanded={open}
-            aria-label={`${open ? 'hide' : 'show'} the previous value of ${line.path}`}
-            onclick={() => toggleHeld(line.path)}
-          >
-            {#if open}
-              <span class="value gone">{formatDiffValue(line.before)}</span>
-            {:else}
-              <span class="held-rule"></span>
-            {/if}
-          </button>
-        {/if}
+        {@render field(line, mark)}
       {/if}
     {/each}
+    {#if split.removed.length > 0}
+      <button
+        type="button"
+        class="line group removed-fold"
+        aria-expanded={removedOpen}
+        onclick={() => (removedOpen = !removedOpen)}
+      >
+        <span class="sign"></span><span class="chevron"><ChevronIcon open={removedOpen} /></span>
+        <span class="removed-names"
+          >{split.removed.length} removed: {split.removed.map((n) => n.path).join(', ')}</span
+        >
+      </button>
+      {#each removed as line, i (line.kind + line.path)}
+        {#if line.kind === 'field'}{@render field(line, removedMarks[i])}{/if}
+      {/each}
+      {#if removed.length < removedAll.length}
+        {@render more(0, removed.length, removedAll.length, () => removedPages++)}
+      {/if}
+    {/if}
   </div>
 {/if}
 
@@ -192,18 +347,38 @@
   }
 
   .fields {
+    --key-w: calc(var(--name-w) + var(--type-w) + 0.6rem);
     font-family: var(--mono);
     font-size: var(--text-note);
     line-height: 1.75;
-    padding: 0.2rem 0 0.3rem;
+    padding: 0.2rem 0 0.3rem 0.5rem;
+  }
+
+  /* A wrapped value makes the row as tall as it needs; the sign and the name
+     stay on its first line rather than centering against it. */
+  .line {
+    position: relative;
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+
+  /* Runs apart by a gap, so two in a row read as two. */
+  .run-start {
+    margin-top: 0.3rem;
+  }
+
+  .bar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    margin-left: -0.45rem;
+    background: currentColor;
   }
 
   .group {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
     width: 100%;
-    margin-left: 1.05rem;
     border: none;
     background: none;
     padding: 0;
@@ -219,118 +394,104 @@
     color: var(--ink);
   }
 
-  /* A fixed column, like the mark gutter beside a field: the label does not
-     shift with whether a group happens to be open. */
-  .chevron {
-    display: inline-block;
-    width: 0.75rem;
-    color: var(--dim);
-  }
-
   .group-marks {
     display: flex;
     gap: 0.5rem;
-    margin-left: 0.6rem;
     font-weight: 400;
   }
 
-  /* A wrapped value makes the row as tall as it needs; the mark and the name
-     stay on its first line rather than centering against it. */
-  .line {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-  }
-
-  /* Opened, the value drops below its name and takes the whole width: a raw
-     line beside a 13rem key would be set in a ribbon. The control stays up on
-     the name's line. */
-  .line.open {
-    flex-wrap: wrap;
-  }
-
-  .line.open .value {
-    order: 1;
-    flex-basis: 100%;
-    margin-left: 1.25rem;
-  }
-
-  /* The gutter is a fixed column at the far left: the mark never moves with
-     the depth of the field it belongs to. */
-  .gutter {
-    flex-shrink: 0;
-    width: 0.75rem;
-    text-align: center;
+  .sign,
+  .chevron {
+    display: inline-block;
+    width: 2ch;
     color: var(--dim);
+  }
+
+  /* The step that last touched the field, in the color of what it did, and on hover every step that did. */
+  .by-glyph {
+    border: 0;
+    background: none;
+    padding: 0;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .by-glyph:hover {
+    color: var(--ink);
+  }
+
+  .by-list {
+    display: flex;
+    flex-direction: column;
+    padding: 0.25rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    white-space: nowrap;
+  }
+
+  .by-list button {
+    border: 0;
+    background: none;
+    padding: 0.1rem 0.4rem;
+    text-align: left;
+    font: inherit;
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .by-list button:hover {
+    background: color-mix(in srgb, var(--ink) 10%, var(--panel));
   }
 
   .key {
     display: flex;
     flex-shrink: 0;
-    box-sizing: border-box;
-    width: 13rem;
+    width: var(--key-w);
     color: var(--dim);
   }
 
-  /* A long name gives way before the type does: the type is short, and says
-     what the value beside it is. */
-  .name {
-    flex: 1 1 0;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .group .key {
+    color: var(--ink);
   }
 
-  /* At the right of the name column, so types line up down the record
-     without taking width from the values. */
+  .name {
+    box-sizing: border-box;
+    flex-shrink: 0;
+    width: var(--name-w);
+    overflow-wrap: anywhere;
+  }
+
   .type {
     flex-shrink: 0;
+    width: var(--type-w);
     margin-left: 0.6rem;
     color: var(--dim);
     font-weight: 400;
   }
 
-  /* As wide as a field's gutter and name together, so a group's type lines up
-     with its fields'. */
-  .group-name {
-    display: flex;
-    flex-shrink: 0;
-    align-items: center;
-    gap: 0.4rem;
-  }
-
-  /* Every value starts here, whatever its key's depth. Wrapped rather than
-     clipped: a value the panel is too narrow for is still one someone has to
-     read, and the field cannot be scrolled sideways. */
+  /* Wrapped rather than clipped: a value the panel is too narrow for is still
+     one someone has to read, and the field cannot be scrolled sideways. */
   .value {
     min-width: 0;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
   }
 
-  /* Two lines is enough to recognize a value by; past that it is opened
-     deliberately, so one long field cannot push the rest of the record off
-     the panel. */
-  .clamped {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-
   .more {
     flex-shrink: 0;
-    align-self: flex-start;
     border: none;
     background: none;
     padding: 0;
     font: inherit;
-    color: var(--ink);
+    color: var(--accent);
+    cursor: pointer;
+  }
+
+  .more:hover {
     text-decoration: underline;
     text-underline-offset: 2px;
-    cursor: pointer;
   }
 
   .gone {
@@ -348,22 +509,22 @@
     padding: 0 0.3rem;
   }
 
-  .state-added .gutter,
-  .state-added .key {
+  .sign.state-added,
+  .bar.state-added {
     color: var(--added);
   }
 
-  .state-changed .gutter,
-  .state-changed .key {
+  .sign.state-changed,
+  .bar.state-changed {
     color: var(--changed);
   }
 
-  .state-removed .gutter,
-  .state-removed .key {
+  .sign.state-removed,
+  .bar.state-removed {
     color: var(--removed);
   }
 
-  .state-removed .key {
+  .state-removed .name {
     text-decoration: line-through;
   }
 
@@ -371,12 +532,29 @@
     opacity: 0.7;
   }
 
+  /* What the step removed, named on one line until asked for. */
+  .removed-fold {
+    font-weight: 400;
+    color: var(--dim);
+  }
+
+  .removed-fold .chevron {
+    color: var(--removed);
+  }
+
+  .removed-names {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   /* Sits under the value it belongs to, and is as wide as the line so the
      rule is a target rather than a hairline to hit. */
   .held {
     display: flex;
     width: 100%;
-    padding: 0 0 0 14.25rem;
+    padding: 0 0 0 calc(0.5rem + var(--key-w));
     border: none;
     background: none;
     font: inherit;

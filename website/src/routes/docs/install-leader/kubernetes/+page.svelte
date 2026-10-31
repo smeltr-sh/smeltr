@@ -66,8 +66,10 @@
     filesystem. Smeltr writes only to its volumes, so nothing else needs to be writable.
   </p>
   <p>
-    The leader makes its data directory and the sealing key's directory private to itself, and only
-    a directory's owner can do that. A volume's root belongs to root whatever <code>fsGroup</code>
+    The leader makes its data directory and the secrets encryption key's directory private to
+    itself, and only a directory's owner can do that. A volume's root belongs to root whatever <code
+      >fsGroup</code
+    >
     says, so <code>data_dir</code> and <code>key</code> name directories inside their volumes, which the
     leader creates on first start.
   </p>

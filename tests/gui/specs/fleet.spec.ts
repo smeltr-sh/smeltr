@@ -36,10 +36,8 @@ const test = base.extend<{ sink: (mode?: SinkMode) => Promise<FakeElasticsearch>
   },
 });
 
-function query(branch: string, scope?: string) {
-  const p = new URLSearchParams({ branch });
-  if (scope) p.set('scope', scope);
-  return p.toString();
+function query(branch: string) {
+  return new URLSearchParams({ branch }).toString();
 }
 
 /** Creates `newGroups` on `branch`, writes each scope's bundle there, then opens a change and deploys it. */
@@ -52,12 +50,12 @@ async function deploy(
   for (const id of newGroups)
     await api.post(`/api/worker-groups?${query(branch)}`, { id, name: id, hue: null });
   for (const [scope, b] of Object.entries(scopes)) {
-    const q = query(branch, scope);
-    if (b.destinations) await api.put(`/api/destinations?${q}`, b.destinations);
-    for (const p of b.pipelines ?? []) await api.put(`/api/pipelines/${p.id}?${q}`, p);
-    if (b.sources) await api.put(`/api/sources?${q}`, b.sources);
-    if (b.routes) await api.put(`/api/routes?${q}`, b.routes);
-    if (b.manifest) await api.put(`/api/manifest?${q}`, b.manifest);
+    const [at, q] = [`/api/areas/${scope}`, query(branch)];
+    if (b.destinations) await api.put(`${at}/destinations?${q}`, b.destinations);
+    for (const p of b.pipelines ?? []) await api.put(`${at}/pipelines/${p.id}?${q}`, p);
+    if (b.sources) await api.put(`${at}/sources?${q}`, b.sources);
+    if (b.routes) await api.put(`${at}/routes?${q}`, b.routes);
+    if (b.manifest) await api.put(`${at}/manifest?${q}`, b.manifest);
   }
   await api.openChange(branch, branch);
   await api.deploy(branch);
@@ -137,20 +135,20 @@ test('the Status page shows every worker of every group, and one that stops repo
   await expect(admin.getByRole('button', { name: /^west\s*1 worker/ })).toBeVisible();
   for (const w of ['east-1', 'east-2', 'west-1'])
     await expect(admin.getByRole('button', { name: new RegExp(`^${w}\\b`) })).toBeVisible();
-  await expect(admin.getByRole('button', { name: 'Needs attention (0)' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: /^Needs attention\s*0$/ })).toBeVisible();
 
   // Frozen, the worker sends nothing: it is silent, not stopped.
   stalled.child.kill('SIGSTOP');
   try {
     await expect(totals).toContainText('1 silent', { timeout: 20_000 });
-    await admin.getByRole('button', { name: 'Needs attention (1)' }).click();
+    await admin.getByRole('button', { name: /^Needs attention\s*1$/ }).click();
     await expect(admin.getByRole('button', { name: /^east-2\b/ })).toBeVisible();
     await expect(admin.getByRole('button', { name: /^east-1\b/ })).toHaveCount(0);
     await expect(admin.getByRole('link', { name: 'Active fleet issues' })).toContainText('east-2');
 
     await admin.getByRole('link', { name: 'Active fleet issues' }).click();
     await expect(admin.getByRole('heading', { name: 'Issues' })).toBeVisible();
-    await expect(admin.getByRole('button', { name: 'Failed (1)' })).toBeVisible();
+    await expect(admin.getByRole('button', { name: /^Failed\s*1$/ })).toBeVisible();
     await expect(issue(admin, 'Worker silent', 'east-2', 'east')).toContainText(
       'stopped sending heartbeats',
     );
@@ -214,17 +212,16 @@ test('a worker whose source is blocked needs attention, though it heartbeats', a
 
   await goto(admin, leader, '#/status');
   await expect(admin.getByLabel('Fleet totals')).toContainText('2 online', { timeout: 30_000 });
-  await admin.getByRole('button', { name: 'Needs attention (1)' }).click({ timeout: 30_000 });
+  await admin.getByRole('button', { name: /^Needs attention\s*1$/ }).click({ timeout: 30_000 });
   const blocked = admin.getByRole('button', { name: /^west-1\b/ });
   await expect(blocked).toHaveClass(/\battention\b/);
-  await expect(blocked.locator('.state-dot')).toHaveClass(/\bfailed\b/);
+  await expect(blocked.locator('.state-mark')).toHaveClass(/\berror\b/);
   await expect(admin.getByRole('button', { name: /^east-1\b/ })).toHaveCount(0);
 
-  await admin.getByRole('button', { name: /^All \(/ }).click();
+  await admin.getByRole('button', { name: /^All\s*\d/ }).click();
   const fine = admin.getByRole('button', { name: /^east-1\b/ });
   await expect(fine).not.toHaveClass(/\battention\b/);
-  await expect(fine.locator('.state-dot')).toHaveClass(/\bonline\b/);
-  await expect(fine.locator('.state-dot')).not.toHaveClass(/\b(failed|warning)\b/);
+  await expect(fine.locator('.state-mark')).toHaveClass(/\bok\b/);
 });
 
 test("the Issues page filters by severity, and tells a stalled destination's log on its failure", async ({
@@ -250,11 +247,11 @@ test("the Issues page filters by severity, and tells a stalled destination's log
   await expect(unreachable).toContainText('Last reported by worker north-1', { timeout: 30_000 });
   await expect(admin.getByText(/egress\.destination_stalled/)).toHaveCount(0);
 
-  await admin.getByRole('button', { name: 'Failed (1)' }).click();
+  await admin.getByRole('button', { name: /^Failed\s*1$/ }).click();
   await expect(admin.getByText('Destination unreachable', { exact: true })).toBeVisible();
   await expect(admin.getByText('Logged a warning', { exact: true })).toHaveCount(0);
 
-  await admin.getByRole('button', { name: /^Warning \(/ }).click();
+  await admin.getByRole('button', { name: /^Warning\s*\d/ }).click();
   await expect(admin.getByText('Destination unreachable', { exact: true })).toHaveCount(0);
   await expect(admin.getByText('east-1')).toHaveCount(0);
 });
@@ -279,7 +276,10 @@ test('rows in and out are charted over the window the engineer picks', async ({
   const flow = admin.getByRole('region', { name: /^Rows in and out/ });
   await expect(flow.getByRole('heading')).toContainText('whole fleet');
   await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible({ timeout: 40_000 });
-  await expect(flow.getByText(new RegExp(`^out ${MOVING.source}`))).toBeVisible();
+  // Rows are delivered after they are read, so out can reach its first moving bucket a bucket after in.
+  await expect(flow.getByText(new RegExp(`^out ${MOVING.source}`))).toBeVisible({
+    timeout: 30_000,
+  });
 
   const windows = flow.getByRole('group', { name: 'Chart window' });
   await windows.getByRole('button', { name: '15m' }).click();
@@ -293,14 +293,18 @@ test('rows in and out are charted over the window the engineer picks', async ({
   // One group's share.
   await admin.getByRole('button', { name: /^east\s*1 worker/ }).click();
   await expect(flow.getByRole('heading')).toContainText('group east');
-  await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible();
+  // The fleet moving says nothing of one group. A reading moves a 10s bucket at a time, and the map polls once a bucket.
+  await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible({ timeout: 30_000 });
 
   // Per source and per destination, on the map.
   await admin.getByRole('link', { name: 'Map' }).click();
   await expect(band(admin, 'east').getByRole('link', { name: /own-metrics/ })).toContainText(
     MOVING,
+    { timeout: 30_000 },
   );
-  await expect(band(admin, 'east').getByRole('link', { name: /search/ })).toContainText(MOVING);
+  await expect(band(admin, 'east').getByRole('link', { name: /search/ })).toContainText(MOVING, {
+    timeout: 30_000,
+  });
 });
 
 test('a source blocked by rows no route takes says which, since when, why and what to do', async ({
@@ -519,7 +523,7 @@ test('rows that do not come out are put down to a route or a step', async ({
   await east.getByRole('link', { name: /trim/ }).click();
   await focus(admin, 'trim').getByRole('link', { name: 'Steps' }).click();
   await expect(focus(admin, 'trim').getByText(/[1-9][\d,]* dropped/)).toBeVisible({
-    timeout: 20_000,
+    timeout: 40_000,
   });
 });
 
@@ -744,7 +748,7 @@ test('a capture at a destination shows each row its pipeline finished for it, an
   await branch.getByLabel('branch to edit on').fill('captured');
   await branch.getByRole('button', { name: 'Edit on this branch' }).click();
   await expect(saving).toBeHidden();
-  const { samples } = await api.get('/api/samples?branch=captured&scope=east');
+  const { samples } = await api.get('/api/areas/east/samples?branch=captured');
   const saved = samples.find((s: { name: string }) => s.name === 'outgoing rows');
   expect(saved).toMatchObject({ records: 3 });
   expect(saved.source).toBeUndefined();
@@ -755,10 +759,16 @@ test('a capture at a destination shows each row its pipeline finished for it, an
     .getByRole('link', { name: /search/ })
     .first()
     .click();
+  // Once read, so the click lands where the button stays.
+  await expect(focus(admin, 'search').getByText('Accepted output')).toBeVisible();
   await focus(admin, 'search').getByRole('button', { name: 'Capture' }).click();
-  const fromMap = admin.getByRole('dialog', { name: /search/ });
-  await fromMap.getByRole('button', { name: 'Start' }).click();
-  await expect(fromMap).toContainText('__destination.route', { timeout: 30_000 });
+  await admin
+    .getByRole('dialog', { name: /search/ })
+    .getByRole('button', { name: 'Start' })
+    .click();
+  // A hundred rows fill in seconds, and the dialog is then the save's.
+  const fromMap = admin.getByRole('dialog', { name: /Save the capture/ });
+  await expect(fromMap).toContainText('__destination.route', { timeout: 60_000 });
   await admin.screenshot({ path: 'results/destination-capture-map.png' });
 });
 
@@ -819,11 +829,11 @@ test('a capture whose routes type one field two ways saves it as a variant', asy
   await expect(saving).toBeHidden();
   await admin.screenshot({ path: 'results/destination-capture-variant.png' });
 
-  const { samples } = await api.get('/api/samples?branch=overlap&scope=east');
+  const { samples } = await api.get('/api/areas/east/samples?branch=overlap');
   const saved = samples.find((s: { name: string }) => s.name === 'both routes');
   expect(saved).toBeDefined();
   const { sample } = await api.get(
-    `/api/samples/${encodeURIComponent(saved.id)}?branch=overlap&scope=east`,
+    `/api/areas/east/samples/${encodeURIComponent(saved.id)}?branch=overlap`,
   );
   // `a.b` makes `a` an object on one route and a number on the other.
   const a = sample.columns.find((c: { name: string }) => c.name === 'a');

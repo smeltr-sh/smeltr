@@ -156,7 +156,7 @@ pub fn open(config: &ObjectSourceConfig, secrets: &HeldSecrets) -> Result<Box<dy
             access.region = access
                 .region
                 .or_else(|| crate::io::sqs::region(queue_url).map(str::to_string));
-            let aws = crate::io::objects::Aws::new(&access, config.identity.as_deref(), secrets, &runtime)?;
+            let aws = crate::io::objects::Aws::new(&access, config.tls.as_ref(), secrets, &runtime)?;
             let queue = crate::io::sqs::Sqs::new(queue_url, aws.clone(), runtime.clone())?;
             let stores = move |bucket: &str| {
                 let _entered = entered.enter();
@@ -171,20 +171,20 @@ pub fn open(config: &ObjectSourceConfig, secrets: &HeldSecrets) -> Result<Box<dy
             start,
             after_commit,
         } => {
-            let identity = config.identity.as_deref();
+            let tls = config.tls.as_ref();
             let (store, bucket) = match place {
                 ListPlace::S3 { bucket, access } => {
-                    let aws = crate::io::objects::Aws::new(access, identity, secrets, &runtime)?;
+                    let aws = crate::io::objects::Aws::new(access, tls, secrets, &runtime)?;
                     let _entered = runtime.enter();
                     (aws.bucket(bucket)?, bucket)
                 }
                 ListPlace::Gcs(g) => {
-                    let gcp = crate::io::objects::Gcp::new(&g.access, identity, secrets, &runtime)?;
+                    let gcp = crate::io::objects::Gcp::new(&g.access, tls, secrets, &runtime)?;
                     let _entered = runtime.enter();
                     (gcp.bucket(&g.bucket)?, &g.bucket)
                 }
                 ListPlace::Azure(a) => {
-                    let azure = crate::io::objects::Azure::new(&a.access, identity, secrets, &runtime)?;
+                    let azure = crate::io::objects::Azure::new(&a.access, tls, secrets, &runtime)?;
                     let _entered = runtime.enter();
                     (azure.container(&a.container)?, &a.container)
                 }
@@ -220,7 +220,7 @@ pub fn open(config: &ObjectSourceConfig, secrets: &HeldSecrets) -> Result<Box<dy
             access,
             max_deliveries,
         } => {
-            let azure = crate::io::objects::Azure::new(access, config.identity.as_deref(), secrets, &runtime)?;
+            let azure = crate::io::objects::Azure::new(access, config.tls.as_ref(), secrets, &runtime)?;
             let queue = crate::io::storage_queue::StorageQueue::new(
                 queue_url,
                 access,
@@ -239,7 +239,7 @@ pub fn open(config: &ObjectSourceConfig, secrets: &HeldSecrets) -> Result<Box<dy
             endpoint,
             access,
         } => {
-            let gcp = crate::io::objects::Gcp::new(access, config.identity.as_deref(), secrets, &runtime)?;
+            let gcp = crate::io::objects::Gcp::new(access, config.tls.as_ref(), secrets, &runtime)?;
             let queue =
                 crate::io::pubsub::PubSub::new(subscription, endpoint.as_deref(), gcp.clone(), runtime.clone())?;
             let stores = move |bucket: &str| {
@@ -258,11 +258,7 @@ pub fn open(config: &ObjectSourceConfig, secrets: &HeldSecrets) -> Result<Box<dy
         MAX_RECORD_BYTES,
     )?;
     Ok(Box::new(match &config.avro {
-        Some(avro) => source.reading_avro(crate::io::avro::AvroReader::new(
-            avro,
-            config.identity.as_deref(),
-            secrets,
-        )?),
+        Some(avro) => source.reading_avro(crate::io::avro::AvroReader::new(avro, config.tls.as_ref(), secrets)?),
         None => source,
     }))
 }

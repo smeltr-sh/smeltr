@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-const ON = '?branch=work&scope=shared';
+const ON = '?branch=work';
 
 /** Captures three records in the open capture dialog and saves them as the sample `name`. */
 async function captureThree(page: Page, name: string) {
@@ -33,7 +33,7 @@ test('A1: a sample that does not load is listed on the Samples page and can be d
   api,
   leader,
 }) => {
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/old${ON}`, {
     id: 'old',
     name: 'old',
     records: [{ a: 1 }],
@@ -85,8 +85,8 @@ test('A1: a pasted sample is saved under its name and is there to come back to',
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Paste' }).click();
   await dialog.getByLabel('Name').fill('orders, an ordinary hour');
-  await dialog.getByLabel('Source it stands for').fill('orders-west');
-  await dialog.getByLabel('Records').fill('{"id":1,"total":20}\n{"id":2,"total":35}\n');
+  await dialog.getByLabel(/^Source it stands for/).fill('orders-west');
+  await dialog.getByLabel(/^Records/).fill('{"id":1,"total":20}\n{"id":2,"total":35}\n');
   await expect(dialog.getByText('2 records')).toBeVisible();
   await dialog.getByRole('button', { name: 'Save sample' }).click();
   await expect(dialog).toBeHidden();
@@ -111,7 +111,7 @@ test('A1: an uploaded file becomes a sample, one record per line', async ({
   await admin.getByRole('button', { name: 'Add sample' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Upload' }).click();
-  await dialog.getByLabel('File').setInputFiles(file);
+  await dialog.getByLabel(/^File/).setInputFiles(file);
   await expect(dialog.getByLabel('Name')).toHaveValue('checkout');
   await expect(dialog.getByText('3 records')).toBeVisible();
   await dialog.getByRole('button', { name: 'Save sample' }).click();
@@ -129,7 +129,9 @@ test("A1: a capture from smeltr's own metrics source, read by a worker, is saved
   api,
   fleet,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'own-metrics', type: 'metrics', bucketSeconds: 1 }]);
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+  ]);
   await fleet.startWorker(leader, api, 'default', 'w1');
 
   await goto(admin, leader, '#/build');
@@ -154,14 +156,16 @@ test('A1: a route card turns at a second destination, takes conditions on its li
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'own-metrics', type: 'metrics', bucketSeconds: 10 }]);
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 10 },
+  ]);
   for (const id of ['p', 'q'])
-    await api.put(`/api/pipelines/${id}${ON}`, {
+    await api.put(`/api/areas/shared/pipelines/${id}${ON}`, {
       id,
       name: id,
       steps: [{ type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' }, declared: [] }],
     });
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
     { id: 'es-b', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'b' },
   ]);
@@ -198,8 +202,10 @@ test('A1: a route card turns at a second destination, takes conditions on its li
   await admin.locator('.menu').getByRole('button', { name: 'es-a' }).click();
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect.poll(async () => (await api.get(`/api/config${ON}`)).config.routes.length).toBe(2);
-  const config = await api.get(`/api/config${ON}`);
+  await expect
+    .poll(async () => (await api.get(`/api/areas/shared${ON}`)).config.routes.length)
+    .toBe(2);
+  const config = await api.get(`/api/areas/shared${ON}`);
   expect(config.config.routes).toEqual([
     expect.objectContaining({
       source: 'own-metrics',
@@ -222,16 +228,16 @@ test('A1: one route of a card moves to another source and opens on its card', as
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
     { id: 'm1', type: 'metrics', bucketSeconds: 10 },
     { id: 'm2', type: 'metrics', bucketSeconds: 10 },
   ]);
   for (const id of ['p', 'q'])
-    await api.put(`/api/pipelines/${id}${ON}`, { id, name: id, steps: [] });
-  await api.put(`/api/destinations${ON}`, [
+    await api.put(`/api/areas/shared/pipelines/${id}${ON}`, { id, name: id, steps: [] });
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
   ]);
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     { id: 'r1', source: 'm1', condition: null, pipeline: 'p', deliver: [{ to: ['es-a'] }] },
     { id: 'r2', source: 'm1', condition: null, pipeline: 'q', deliver: [{ to: ['es-a'] }] },
   ]);
@@ -252,7 +258,9 @@ test('A1: one route of a card moves to another source and opens on its card', as
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect
     .poll(async () =>
-      (await api.get(`/api/config${ON}`)).config.routes.map((r: { source: string }) => r.source),
+      (await api.get(`/api/areas/shared${ON}`)).config.routes.map(
+        (r: { source: string }) => r.source,
+      ),
     )
     .toEqual(['m1', 'm2']);
 });
@@ -262,13 +270,15 @@ test('A1: a destination keeps its place when a condition is added on its line, a
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
-  await api.put(`/api/pipelines/p${ON}`, { id: 'p', name: 'p', steps: [] });
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'm1', type: 'metrics', bucketSeconds: 10 },
+  ]);
+  await api.put(`/api/areas/shared/pipelines/p${ON}`, { id: 'p', name: 'p', steps: [] });
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
     { id: 'es-b', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'b' },
   ]);
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     { id: 'r1', source: 'm1', condition: null, pipeline: 'p', deliver: [{ to: ['es-a', 'es-b'] }] },
   ]);
   await goto(admin, leader, '#/build/routes');
@@ -293,7 +303,7 @@ test('A1: a destination keeps its place when a condition is added on its line, a
   // The order is the rules' order, so it is saved with the route.
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect
-    .poll(async () => (await api.get(`/api/config${ON}`)).config.routes[0].deliver)
+    .poll(async () => (await api.get(`/api/areas/shared${ON}`)).config.routes[0].deliver)
     .toEqual([{ to: ['es-b'] }, { when: '_raw == "x"', to: ['es-a'] }]);
 });
 
@@ -302,14 +312,16 @@ test('A1: a destination two pipelines send to has a pill under each, and a pipel
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'm1', type: 'metrics', bucketSeconds: 10 },
+  ]);
   for (const id of ['p', 'q'])
-    await api.put(`/api/pipelines/${id}${ON}`, { id, name: id, steps: [] });
-  await api.put(`/api/destinations${ON}`, [
+    await api.put(`/api/areas/shared/pipelines/${id}${ON}`, { id, name: id, steps: [] });
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
     { id: 'es-b', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'b' },
   ]);
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     { id: 'r1', source: 'm1', condition: null, pipeline: 'p', deliver: [{ to: ['es-a'] }] },
     { id: 'r2', source: 'm1', condition: null, pipeline: 'q', deliver: [{ to: ['es-b', 'es-a'] }] },
   ]);
@@ -333,13 +345,15 @@ test("A1: a condition's suggestions show over the destinations below it", async 
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
-  await api.put(`/api/pipelines/p${ON}`, { id: 'p', name: 'p', steps: [] });
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'm1', type: 'metrics', bucketSeconds: 10 },
+  ]);
+  await api.put(`/api/areas/shared/pipelines/p${ON}`, { id: 'p', name: 'p', steps: [] });
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
     { id: 'es-b', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'b' },
   ]);
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     { id: 'r1', source: 'm1', condition: null, pipeline: 'p', deliver: [{ to: ['es-a', 'es-b'] }] },
   ]);
   await goto(admin, leader, '#/build/routes');
@@ -364,12 +378,14 @@ test("A1: a destination two of one pipeline's lines reach has a pill for each", 
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
-  await api.put(`/api/pipelines/p${ON}`, { id: 'p', name: 'p', steps: [] });
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'm1', type: 'metrics', bucketSeconds: 10 },
+  ]);
+  await api.put(`/api/areas/shared/pipelines/p${ON}`, { id: 'p', name: 'p', steps: [] });
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
   ]);
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     {
       id: 'r1',
       source: 'm1',
@@ -393,7 +409,7 @@ test("A1: a destination two of one pipeline's lines reach has a pill for each", 
   await expect.poll(() => card.locator('.pill .name').allTextContents()).toEqual(['es-a']);
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect
-    .poll(async () => (await api.get(`/api/config${ON}`)).config.routes[0].deliver)
+    .poll(async () => (await api.get(`/api/areas/shared${ON}`)).config.routes[0].deliver)
     .toEqual([{ to: ['es-a'] }, { when: '_raw == "x"', to: [] }]);
 });
 
@@ -416,7 +432,7 @@ test('A1: a route is started before anything else is saved, its source made from
   await expect(admin.getByRole('dialog')).toBeHidden();
   await expect(source).toHaveValue('metrics-1');
   // Saved there and then, as a destination made from the card is.
-  const config = await api.get(`/api/config${ON}`);
+  const config = await api.get(`/api/areas/shared${ON}`);
   expect(config.config.sources).toContainEqual(
     expect.objectContaining({ id: 'metrics-1', type: 'metrics' }),
   );
@@ -438,9 +454,11 @@ for (const [what, proposal, note] of [
   ],
 ] as const) {
   test(`A1: a capture whose records ${what} says so`, async ({ admin, leader, api, fleet }) => {
-    await api.put(`/api/sources${ON}`, [{ id: 'own-metrics', type: 'metrics', bucketSeconds: 1 }]);
+    await api.put(`/api/areas/shared/sources${ON}`, [
+      { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+    ]);
     await fleet.startWorker(leader, api, 'default', 'w1');
-    await admin.route('**/api/onboard/propose', (r) => r.fulfill({ json: proposal }));
+    await admin.route('**/api/preview/onboard', (r) => r.fulfill({ json: proposal }));
     await goto(admin, leader, '#/build/routes');
     await admin.getByRole('button', { name: '+ Add route' }).click();
     await admin
@@ -462,13 +480,15 @@ test('A1: a source with no route is routed from the map, its pipeline made from 
   fleet,
 }) => {
   // Deployed, so a worker runs it and reports the rows no route takes.
-  await api.put(`/api/sources?branch=arrive&scope=shared`, [
+  await api.put(`/api/areas/shared/sources?branch=arrive`, [
     { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
   ]);
   await api.openChange('arrive', 'Read own metrics');
   await api.deploy('arrive');
   // The browser's branch, from what is deployed.
-  await api.put(`/api/sources${ON}`, [{ id: 'own-metrics', type: 'metrics', bucketSeconds: 2 }]);
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 2 },
+  ]);
   await fleet.startWorker(leader, api, 'default', 'w1');
 
   // Once the worker reports rows no route takes, the map draws the source, and its panel lists the stream they
@@ -521,7 +541,7 @@ test('A1: a source with no route is routed from the map, its pipeline made from 
   // none of the stream's rows untaken.
   await expect(admin).toHaveURL(/#\/map/);
 
-  const config = await api.get(`/api/config${ON}`);
+  const config = await api.get(`/api/areas/shared${ON}`);
   // Both ids are minted; the pipeline is named for the source.
   const made = config.config.pipelines.find(
     (p: { name: string }) => p.name === 'own-metrics-parse',
@@ -551,7 +571,7 @@ test('A1: a capture of a Kafka source starts where it is asked to', async ({
   api,
   fleet,
 }) => {
-  await api.put(`/api/sources${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
     { id: 'orders', type: 'kafka', brokers: '127.0.0.1:9', topics: ['orders'], groupId: 'orders' },
   ]);
   await fleet.startWorker(leader, api, 'default', 'w1');
@@ -588,8 +608,8 @@ test('A1: a capture from the pipeline page can target a destination', async ({
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'storefront', type: 'logs' }]);
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [{ id: 'storefront', type: 'logs' }]);
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-web', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'web' },
   ]);
 
@@ -620,12 +640,12 @@ async function jsonPipeline(
   declared: { name: string; type: string }[],
   sample: { id: string; name: string; source?: string; records: string[] },
 ) {
-  await api.put(`/api/pipelines/${id}${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/${id}${ON}`, {
     id,
     name: id,
     steps: [{ type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' }, declared }],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/${encodeURIComponent(sample.id)}${ON}`, {
     id: sample.id,
     name: sample.name,
     source: sample.source,
@@ -653,7 +673,7 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
     offset,
     bytes: btoa(raw),
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/busy-hour${ON}`, {
     id: 'busy-hour',
     name: 'orders, a busy hour',
     source: 'orders-west',
@@ -662,10 +682,13 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
       { name: '__source.topic', type: 'str' },
       { name: '__source.partition', type: 'i64' },
       { name: '__source.offset', type: 'i64' },
+      { name: '__source.bytes', type: 'bytes' },
+      { name: '__source.name', type: 'str' },
+      { name: '__source.type', type: 'str' },
     ],
     records: ORDERS.map((raw, i) => ({ _raw: raw, __source: read(i, 100 + i, raw) })),
   });
-  await api.put(`/api/tests${ON}`, {
+  await api.put(`/api/areas/shared/tests/orders-parse${ON}`, {
     id: 'orders-parse',
     name: 'orders parse',
     pipeline: 'orders',
@@ -681,11 +704,19 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
     .getByRole('button', { name: 'Edit' })
     .click();
   const records = admin.getByRole('group', { name: 'Records' });
-  await expect(records.getByRole('cell', { name: /Read from/ })).toContainText(
-    'partition · offset',
-  );
-  await expect(records.getByRole('row', { name: /coupon.*SPRING.*0 · 100/ })).toBeVisible();
+  // Where each record was read from is a column per field, typed as the capture recorded it.
+  await expect(records.getByRole('cell', { name: /^__source\.offset/ })).toContainText('i64');
+  await expect(records.getByRole('row', { name: /coupon.*SPRING.*orders 0 100/ })).toBeVisible();
   await expect(admin.getByText('Re-lock after saving: orders parse')).toBeVisible();
+
+  // An expression filters the records as saved.
+  const find = records.getByRole('combobox', { name: 'Search records' });
+  const ticks = records.getByRole('checkbox', { name: /^Select record \d/ });
+  await find.fill('__source.offset > 100');
+  await expect(records.getByRole('button', { name: 'ƒ expression' })).toBeVisible();
+  await expect(ticks).toHaveCount(2);
+  await find.fill('');
+  await expect(ticks).toHaveCount(3);
 
   // Keep the first and last, fix the last, and paste one more.
   await records.getByRole('checkbox', { name: 'Select record 1' }).check();
@@ -695,6 +726,15 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
   await expect(records.getByRole('textbox')).toHaveCount(0);
   await records.getByRole('button', { name: 'Keep only selected' }).click();
   await expect(records.getByRole('checkbox', { name: 'Select record 2' })).toHaveCount(0);
+  // Once the draft differs from what is saved, an expression waits on the save and keeps every record.
+  await find.fill('__source.offset > 100');
+  await expect(
+    records.getByText(
+      'Not applied: an expression filters the saved sample, and you have unsaved changes.',
+    ),
+  ).toBeVisible();
+  await expect(ticks).toHaveCount(2);
+  await find.fill('');
   await records.getByRole('cell', { name: /"id":3/ }).click();
   await records.getByRole('textbox', { name: '_raw, record 3' }).fill('{"id":3,"total":13}');
   // Enter settles the cell; it does not save the sample.
@@ -708,7 +748,7 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
     '3',
   );
 
-  const saved = (await api.get(`/api/samples/busy-hour${ON}`)).sample;
+  const saved = (await api.get(`/api/areas/shared/samples/busy-hour${ON}`)).sample;
   expect(saved.records).toEqual([
     { _raw: ORDERS[0], __source: read(0, 100, ORDERS[0]) },
     // The bytes a byte record is read from are the edited text.
@@ -724,7 +764,7 @@ test('A1: a SQL sample is edited a column at a time, and a value fixed to its ty
   api,
 }) => {
   const db = { name: 'billing-db', type: 'postgres', database: 'billing' };
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/invoices${ON}`, {
     id: 'invoices',
     name: 'invoices',
     source: 'billing-db',
@@ -746,7 +786,7 @@ test('A1: a SQL sample is edited a column at a time, and a value fixed to its ty
     .click();
   const records = admin.getByRole('group', { name: 'Records' });
   await expect(records.getByRole('cell', { name: /^amount/ })).toContainText('f64');
-  await expect(records.getByRole('cell', { name: /Read from/ })).toHaveCount(0);
+  await expect(records.getByRole('cell', { name: /^__source\.database/ })).toContainText('str');
   await records.getByRole('cell', { name: 'n/a' }).click();
   const amount = records.getByRole('textbox', { name: 'amount, record 1' });
   await expect(amount).toHaveAttribute('aria-invalid', 'true');
@@ -757,7 +797,7 @@ test('A1: a SQL sample is edited a column at a time, and a value fixed to its ty
   await admin.getByRole('button', { name: 'Save sample' }).click();
   await expect(records).toBeHidden();
 
-  const saved = (await api.get(`/api/samples/invoices${ON}`)).sample;
+  const saved = (await api.get(`/api/areas/shared/samples/invoices${ON}`)).sample;
   expect(saved.records[0]).toEqual({ invoice_id: 1, amount: 20, __source: db });
 });
 
@@ -770,13 +810,15 @@ test('A2: the parser proposes its declared fields from a sample, and the analyst
   await jsonPipeline(api, 'orders', [], { id: 'orders-sample', name: 'orders', records: ORDERS });
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
-  await admin.getByRole('button', { name: /_raw as JSON/ }).click();
+  // The sample in the URL is chosen once the samples have loaded; Suggest fields before then has none to read.
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await admin.getByRole('button', { name: /^Parser _raw as JSON/ }).click();
   await admin.getByRole('button', { name: 'Suggest fields' }).click();
 
   // Suggested in the step's own card: the sample stays where it was.
   const suggested = admin.getByRole('group', { name: 'Suggested fields' });
   await expect(suggested).toContainText('Suggested from orders, 3 rows');
-  await expect(admin.getByRole('button', { name: '← Back' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText('orders');
   await expect(suggested.getByRole('group', { name: 'id' }).getByRole('combobox')).toHaveValue(
     'i64',
   );
@@ -794,13 +836,59 @@ test('A2: the parser proposes its declared fields from a sample, and the analyst
   await suggested.getByRole('button', { name: 'Add all' }).click();
   await expect(suggested.getByRole('group')).toHaveCount(0);
   await suggested.getByRole('button', { name: 'Done' }).click();
-  await expect(admin.getByRole('button', { name: /_raw as JSON \(3 declared\)/ })).toBeVisible();
+  await expect(
+    admin.getByRole('button', { name: /^Parser _raw as JSON \(3 declared\)/ }),
+  ).toBeVisible();
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Saved.')).toBeVisible();
-  const saved = await api.get(`/api/pipelines/orders${ON}`);
+  const saved = await api.get(`/api/areas/shared/pipelines/orders${ON}`);
   const names = saved.pipeline.steps[0].declared.map((f: { name: string }) => f.name);
   expect(names.sort()).toEqual(['discount', 'id', 'total']);
+});
+
+// A2, where the parsed fields go: under one object the analyst names, declared and suggested by their own names.
+test('A2: a parser writes into the object it names, and its fields are suggested and declared under it', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await jsonPipeline(api, 'orders', [{ name: 'id', type: 'i64' }], {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ORDERS,
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await admin.getByRole('button', { name: /^Parser _raw as JSON/ }).click();
+  await admin.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
+  const into = admin.getByRole('textbox', { name: 'write into' });
+  await expect(into).toHaveValue('$');
+  await into.fill('order');
+  await expect(
+    admin.getByRole('button', { name: /^Parser _raw as JSON into order \(1 declared\)/ }),
+  ).toBeVisible();
+
+  // The parse's own keys, not where they land: `id` is declared already, and `total` lands at `order.total`.
+  await admin.getByRole('button', { name: 'Suggest fields' }).click();
+  const suggested = admin.getByRole('group', { name: 'Suggested fields' });
+  await expect(suggested.getByRole('group', { name: 'total' })).toBeVisible();
+  await expect(suggested.getByRole('group', { name: 'id' })).toHaveCount(0);
+  await suggested
+    .getByRole('group', { name: 'coupon' })
+    .getByRole('button', { name: 'Add' })
+    .click();
+  await suggested.getByRole('button', { name: 'Done' }).click();
+
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Saved.')).toBeVisible();
+  const step = (await api.get(`/api/areas/shared/pipelines/orders${ON}`)).pipeline.steps[0];
+  expect(step.into).toBe('order');
+  expect(step.declared.map((f: { name: string }) => f.name).sort()).toEqual(['coupon', 'id']);
+  // What arrives: the parsed keys under `order`, declared or not.
+  await expect(admin.getByRole('table').first()).toContainText('order.total');
+  await admin.screenshot({ path: 'results/write-into.png', fullPage: true });
 });
 
 // A3, where the sample is thin.
@@ -812,7 +900,8 @@ test('A3: the proposal says which fields some rows lack and where rows disagree 
   await jsonPipeline(api, 'orders', [], { id: 'orders-sample', name: 'orders', records: ORDERS });
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
-  await admin.getByRole('button', { name: /_raw as JSON/ }).click();
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await admin.getByRole('button', { name: /^Parser _raw as JSON/ }).click();
   await admin.getByRole('button', { name: 'Suggest fields' }).click();
 
   const suggested = admin.getByRole('group', { name: 'Suggested fields' });
@@ -824,8 +913,9 @@ test('A3: the proposal says which fields some rows lack and where rows disagree 
 });
 
 // A2, choosing what to run over. The editor opens on no sample, still compiling the steps, and the samples a test
-// of this pipeline locks are marked. The output is searched by keyword, or filtered by an expression.
-test('A2: a sample is picked from a table, its output searched by keyword or expression, and Back puts it away', async ({
+// of this pipeline locks come first in the Sample menu, marked. The output is searched by keyword, or filtered by an
+// expression.
+test('A2: a sample is picked from the Sample menu, its output searched by keyword or expression', async ({
   admin,
   leader,
   api,
@@ -835,8 +925,12 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
     name: 'orders',
     records: ORDERS,
   });
-  await api.put(`/api/samples${ON}`, { id: 'other', name: 'other', records: [{ _raw: '{}' }] });
-  await api.put(`/api/tests${ON}`, {
+  await api.put(`/api/areas/shared/samples/other${ON}`, {
+    id: 'other',
+    name: 'other',
+    records: [{ _raw: '{}' }],
+  });
+  await api.put(`/api/areas/shared/tests/orders-parse${ON}`, {
     id: 'orders-parse',
     name: 'orders parse',
     pipeline: 'orders',
@@ -847,18 +941,21 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
   });
 
   await goto(admin, leader, '#/build/pipelines/orders');
-  const picker = admin.getByRole('table').filter({ hasText: 'Captured' });
-  // The locked sample first, though `other` sorts before it by name.
-  await expect(picker.getByRole('row').nth(1)).toContainText('orders');
-  await expect(picker.getByTitle('Locked by the test orders parse')).toBeVisible();
-  // No sample, but the steps compiled: the dictionary is there.
-  await admin.getByRole('tab', { name: /Data dictionary/ }).click();
-  await expect(admin.getByRole('cell', { name: 'total', exact: true })).toBeVisible();
-  await admin.getByRole('tab', { name: /Output/ }).click();
+  const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
+  // No sample, but the steps compiled: the Fields menu lists what they declare.
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  const fields = admin.getByRole('group', { name: 'Fields' });
+  await expect(fields.getByText('total', { exact: true })).toBeVisible();
+  await admin.keyboard.press('Escape');
 
-  await picker.getByRole('button', { name: 'orders', exact: true }).click();
-  await expect(admin.getByRole('tab', { name: /Output/ })).toContainText('3');
-  const search = admin.getByRole('searchbox', { name: 'Search the output' });
+  // The locked sample first, though `other` sorts before it by name.
+  await sampleMenu.click();
+  const saved = admin.getByRole('listbox', { name: 'Saved samples' });
+  await expect(saved.getByRole('option').first()).toContainText('orders');
+  await expect(saved.getByTitle('Locked by the test orders parse')).toBeVisible();
+  await saved.getByRole('option', { name: /\borders 3 records$/ }).click();
+  await expect(sampleMenu).toContainText('3 records');
+  const search = admin.getByRole('combobox', { name: 'Search the output' });
   await search.fill('SPRING');
   await expect(admin.getByText('2 of 3 rows')).toBeVisible();
   await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
@@ -868,18 +965,96 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
   // One that does not compile to a Bool is a keyword.
   await search.fill('total +');
   await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
+  // Read as an expression on asking, it keeps no rows and says why, until it is fixed.
+  await admin.getByRole('button', { name: 'keyword', exact: true }).click();
+  await expect(admin.getByRole('alert')).toBeVisible();
+  await expect(admin.getByText('0 of 3 rows')).toBeVisible();
+  await search.fill('total > 15');
+  await expect(admin.getByText('2 of 3 rows')).toBeVisible();
+  await expect(admin.getByRole('alert')).toBeHidden();
+  // And an expression is searched for as text on asking.
+  await admin.getByRole('button', { name: 'ƒ expression' }).click();
+  await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
+  await expect(admin.getByText('0 of 3 rows')).toBeVisible();
+  await search.fill('');
+  // Left with an expression in it, the box offers it again, under the kinds of row a chip keeps.
+  await search.fill('total > 15');
+  await expect(admin.getByText('ƒ expression')).toBeVisible();
+  await search.blur();
+  await search.fill('');
+  const offered = admin.getByRole('listbox', { name: 'Suggestions' });
+  await expect(offered.getByRole('option', { name: 'total > 15' })).toBeVisible();
+  await offered.getByRole('option', { name: /Changed by a step/ }).click();
+  await expect(admin.getByRole('button', { name: 'remove changed' })).toBeVisible();
+  await expect(admin.getByText('3 of 3 rows')).toBeVisible();
   await admin.screenshot({ path: 'results/sample-pane-search.png', fullPage: true });
 
-  await admin.getByRole('button', { name: '← Back' }).click();
-  await expect(picker).toBeVisible();
-  await expect(admin.getByRole('tab', { name: /Output/ })).not.toContainText('3');
+  // Another sample, from the menu: the locked one first, and the search starts over.
+  await sampleMenu.click();
+  await saved.getByRole('option', { name: /^other/ }).click();
+  await expect(sampleMenu).toContainText('1 record');
+  await expect(search).toHaveValue('');
+});
+
+// A2, records the workspace has no sample for yet: pasted, or captured from a source the pipeline is fed by, from the
+// Sample menu. Either is saved and is what the workspace runs over.
+test('A2: a sample pasted or captured from the Sample menu is saved and run', async ({
+  admin,
+  leader,
+  api,
+  fleet,
+}) => {
+  await jsonPipeline(api, 'orders', [{ name: 'total', type: 'f64' }], {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ORDERS,
+  });
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+  ]);
+  await api.put(`/api/areas/shared/destinations${ON}`, [
+    { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
+  ]);
+  await api.put(`/api/areas/shared/routes${ON}`, [
+    {
+      id: 'r1',
+      source: 'own-metrics',
+      condition: null,
+      pipeline: 'orders',
+      deliver: [{ to: ['es-a'] }],
+    },
+  ]);
+  await fleet.startWorker(leader, api, 'default', 'w1');
+
+  await goto(admin, leader, '#/build/pipelines/orders');
+  const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
+  await sampleMenu.click();
+  await admin.getByRole('button', { name: 'Paste or file' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Paste' }).click();
+  await dialog.getByLabel('Name').fill('two orders');
+  await dialog.getByLabel(/^Records/).fill('{"id":7,"total":1}\n{"id":8,"total":2}\n');
+  await dialog.getByRole('button', { name: 'Save sample' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(sampleMenu).toContainText('two orders');
+  await expect(sampleMenu).toContainText('2 records');
+
+  await sampleMenu.click();
+  await admin.getByRole('tab', { name: /^Capture/ }).click();
+  await admin
+    .getByRole('listbox', { name: 'Sources' })
+    .getByRole('option', { name: /own-metrics/ })
+    .click();
+  await captureThree(admin, 'metrics now');
+  await expect(sampleMenu).toContainText('metrics now');
+  await expect(sampleMenu).toContainText('3 records');
 });
 
 /** A source, destinations and a `web` pipeline routed from one to them: every record to `es-web`, a server error
  * to `kafka-alerts` too. `es-dlq` is there for an exception answer to name. */
 async function webRoutes(api: Api, sampleRecords: string[]) {
-  await api.put(`/api/sources${ON}`, [{ id: 'storefront', type: 'logs' }]);
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [{ id: 'storefront', type: 'logs' }]);
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-web', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'web' },
     { id: 'kafka-alerts', type: 'kafka', brokers: '127.0.0.1:9', defaultTopic: 'alerts' },
     { id: 'es-dlq', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'dlq' },
@@ -890,7 +1065,7 @@ async function webRoutes(api: Api, sampleRecords: string[]) {
     source: 'storefront',
     records: sampleRecords,
   });
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     {
       id: 'web',
       source: 'storefront',
@@ -902,6 +1077,58 @@ async function webRoutes(api: Api, sampleRecords: string[]) {
 }
 
 // A4, the whole trip.
+// The default shows the fields most records hold, so it moves with the sample. A field the reader
+// chose stays as they chose it.
+test('A2: a field shown from the Fields menu stays shown on a sample that would have hidden it', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/areas/shared/pipelines/wide${ON}`, {
+    id: 'wide',
+    name: 'wide',
+    steps: [{ type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' } }],
+  });
+  // 55 fields. In `few`, f50 to f54 are in one record of three, so the 50 shown by default leave
+  // them out; in `many`, f0 to f4 are, so f52 is in the default there.
+  const record = (rare: (i: number) => boolean, i: number) =>
+    Object.fromEntries(
+      Array.from({ length: 55 }, (_, f) => [`f${f}`, f]).filter(
+        ([, f]) => !rare(f as number) || i === 0,
+      ),
+    );
+  for (const [id, rare] of [
+    ['few', (f: number) => f >= 50],
+    ['many', (f: number) => f < 5],
+  ] as const)
+    await api.put(`/api/areas/shared/samples/${encodeURIComponent(id)}${ON}`, {
+      id,
+      name: id,
+      records: [0, 1, 2].map((i) => ({ _raw: JSON.stringify(record(rare, i)) })),
+    });
+
+  const grid = admin.getByRole('table');
+  const head = grid.getByRole('button', { name: /^f52\b/ });
+  await goto(admin, leader, '#/build/pipelines/wide/for/few');
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await expect(head).toHaveCount(0);
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  await admin.getByRole('searchbox', { name: 'Find a field' }).fill('f52');
+  await admin.getByRole('group', { name: 'Fields' }).getByRole('checkbox').check();
+  await admin.keyboard.press('Escape');
+  await expect(head).toHaveCount(1);
+
+  const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
+  await sampleMenu.click();
+  await admin
+    .getByRole('listbox', { name: 'Saved samples' })
+    .getByRole('option', { name: /^many/ })
+    .click();
+  await expect(sampleMenu).toContainText('many');
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await expect(head).toHaveCount(1);
+});
+
 test('A4: a route preview shows each output row, the route it matched and the destinations it reaches', async ({
   admin,
   leader,
@@ -919,23 +1146,23 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await expect(admin.getByRole('button', { name: '1 kafka-alerts' })).toBeVisible();
 
   const table = admin.getByRole('table');
-  const ok = table.getByRole('row', { name: /^0 web/ });
+  const ok = table.getByRole('row', { name: /^0 storefront → web/ });
   await expect(ok).toContainText('es-web');
   await expect(ok).not.toContainText('kafka-alerts');
   await expect(ok).toContainText('"status":200');
-  const failed = table.getByRole('row', { name: /^1 web/ });
+  const failed = table.getByRole('row', { name: /^1 storefront → web/ });
   await expect(failed).toContainText('es-web, kafka-alerts');
   await expect(failed).toContainText('"status":503');
 });
 
-// A4, the whole trip. A step that does not compile says why once, on the step; the box above the sample only
-// names it, and takes the author there.
-test('A4: a compile error is written once, on its step, and the box above the sample jumps to it', async ({
+// A4, the whole trip. A step that does not compile says why once, on the step; the error chip above the records
+// lists it and takes the author there, and the records stand after the last step that compiles.
+test('A4: a compile error is written once, on its step, and the error chip jumps to it', async ({
   admin,
   leader,
   api,
 }) => {
-  await api.put(`/api/pipelines/orders${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
     id: 'orders',
     name: 'orders',
     steps: [
@@ -943,7 +1170,7 @@ test('A4: a compile error is written once, on its step, and the box above the sa
       { type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'x = 1;' },
     ],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
     id: 'orders-sample',
     name: 'orders',
     records: ORDERS.map((raw) => ({ _raw: raw })),
@@ -951,35 +1178,158 @@ test('A4: a compile error is written once, on its step, and the box above the sa
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
-  await admin.getByRole('button', { name: /line\(s\) of code/ }).click();
+  await admin
+    .locator('.card-head')
+    .getByRole('button', { name: /line\(s\) of code/ })
+    .click();
   const body = admin.locator('textarea').last();
   await body.fill('x = ipVersion();');
 
   const message = '`ipVersion` takes 1 argument, found 0';
-  await expect(admin.getByText('compile failed')).toBeVisible();
+  const failed = admin.getByRole('button', { name: /Compile failed · 1/ });
+  await expect(failed).toBeVisible();
   // Focus is where the field's popup used to repeat it.
   await body.focus();
   await expect(admin.getByText(message, { exact: true })).toHaveCount(1);
-  // The sample from before stays under the box.
-  await expect(admin.getByText('Showing the sample from before this.')).toBeVisible();
+  // The records stand where the pipeline still compiles: after the parser.
+  await expect(admin.getByLabel('Paused')).toHaveText('◉ After step 1 · PARSER');
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
 
-  await admin.getByRole('button', { name: /1 line\(s\) of code Jump/ }).click();
+  await failed.click();
+  await admin.getByRole('button', { name: /takes 1 argument, found 0 Jump/ }).click();
   await expect(body).toBeInViewport();
 });
 
+// ◎ pauses the records after a step: the steps after it are dimmed, a record a later step drops is back, and ✕
+// shows the whole pipeline again.
+test('◎ pauses the records after a step', async ({ admin, leader, api }) => {
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [
+      { type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' }, declared: [] },
+      {
+        type: 'drop',
+        id: 'no-coupon',
+        filter: 'true',
+        disabled: false,
+        condition: 'coupon == null',
+      },
+    ],
+  });
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ORDERS.map((raw) => ({ _raw: raw })),
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  const grid = admin.getByRole('table');
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  const dropped = grid.getByRole('row', { name: /^row 1 / });
+  await expect(dropped).toHaveClass(/dropped/);
+
+  // A closed step's controls arrive on its head's hover, as a pointer brings them.
+  const pause = admin.getByRole('button', { name: 'Pause the records after this step' }).first();
+  await pause
+    .locator('xpath=ancestor::div[contains(@class, "card-head")][1]')
+    .hover({ position: { x: 4, y: 4 } });
+  await pause.click();
+  const paused = admin.getByLabel('Paused');
+  await expect(paused).toHaveText(/◉ After step 1 · PARSER/);
+  await expect(dropped).not.toHaveClass(/dropped/);
+  await expect(admin.locator('#step-no-coupon')).toHaveClass(/not-run/);
+
+  await paused.getByRole('button', { name: 'Show the whole pipeline' }).click();
+  await expect(paused).toBeHidden();
+  await expect(dropped).toHaveClass(/dropped/);
+});
+
+// A3, which step did it. Once typing settles, a field carries the sign of the step that last touched it, held it
+// lists every step that did and jumps to one, an exception names its step, and a step's dropped and failed counts
+// filter the records to those it dropped or failed.
+test('A3: a field names the steps that touched it, a step card counts what it dropped, a column its type', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/areas/shared/pipelines/web${ON}`, {
+    id: 'web',
+    name: 'web',
+    steps: [
+      {
+        type: 'parser',
+        id: 'body',
+        input: '_raw',
+        kind: { type: 'json' },
+        declared: [
+          { name: 'status', type: 'i64' },
+          { name: 'path', type: 'str' },
+        ],
+      },
+      { type: 'drop', id: 'health', condition: 'path == "/health"' },
+      { type: 'code', id: 'calc', body: 'path = "web" + path;' },
+    ],
+  });
+  await api.put(`/api/areas/shared/samples/web${ON}`, {
+    id: 'web',
+    name: 'web hour',
+    records: [
+      { _raw: '{"status": 200, "path": "/a"}' },
+      { _raw: '{"status": "oops", "path": "/b"}' },
+      { _raw: '{"status": 200, "path": "/health"}' },
+    ],
+  });
+
+  await goto(admin, leader, '#/build/pipelines/web/for/web');
+  const grid = admin.getByRole('table');
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  // The failing row opens first, and its exception names the parser.
+  await admin.getByRole('button', { name: 'Step 1 · Parser · _raw as JSON (2 declared)' }).click();
+  await expect(admin.locator('#step-body')).toBeInViewport();
+
+  // `path` was set by the parser and then by the code step: the sign is the last's, and the list has both.
+  const record = grid.getByRole('row', { name: /^record 1/ });
+  const last = record.getByRole('button', { name: /^Step 3 · Code/ });
+  await expect(last).toBeVisible();
+  await last.hover();
+  const list = last.locator('xpath=following-sibling::span[1]');
+  await expect(list.getByRole('button', { name: /^Step 1 · Parser/ })).toBeVisible();
+  await expect(list.getByRole('button', { name: /^Step 3 · Code/ })).toBeVisible();
+  // The sign takes you to its step, open.
+  await record.locator('button.by-glyph[aria-label^="Step 3 · Code"]').click();
+  await expect(admin.locator('#step-calc .card-head [aria-expanded]').first()).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+  await expect(admin.locator('#step-calc')).toBeInViewport();
+
+  await admin.locator('#step-health').getByRole('button', { name: '−1 dropped' }).click();
+  await expect(admin.getByRole('button', { name: 'remove dropped by health' })).toBeVisible();
+  await expect(admin.getByText('1 of 3 rows')).toBeVisible();
+  await expect(grid.getByRole('row', { name: /^row 2 / })).toBeVisible();
+
+  // A column's head names its type, until types are hidden.
+  const head = grid.getByRole('button', { name: /^status\b/ });
+  await expect(head).toHaveText(/^status: i64/);
+  await admin.getByRole('button', { name: 'View', exact: true }).click();
+  await admin.getByRole('switch', { name: 'Types' }).uncheck();
+  await expect(head).not.toContainText('i64');
+});
+
 // A4, the whole trip. A refused save's errors stay on the steps until the next save; a preview error after it is
-// still written somewhere, in the box above the sample.
+// still written somewhere, in the error chip above the records.
 test('A4: after a refused save, a new compile error is still shown', async ({
   admin,
   leader,
   api,
 }) => {
-  await api.put(`/api/pipelines/orders${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
     id: 'orders',
     name: 'orders',
     steps: [{ type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'x = 1;' }],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
     id: 'orders-sample',
     name: 'orders',
     records: ORDERS.map((raw) => ({ _raw: raw })),
@@ -987,19 +1337,83 @@ test('A4: after a refused save, a new compile error is still shown', async ({
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
-  await admin.getByRole('button', { name: /line\(s\) of code/ }).click();
+  await admin
+    .locator('.card-head')
+    .getByRole('button', { name: /line\(s\) of code/ })
+    .click();
   const body = admin.locator('textarea').last();
   await body.fill('x = ipVersion();');
-  await expect(admin.getByText('compile failed')).toBeVisible();
+  await expect(admin.getByRole('button', { name: /Compile failed · 1/ })).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(
     admin.locator('.error-bar').getByRole('link', { name: /line\(s\) of code/ }),
   ).toBeVisible();
 
   await body.fill('x = ipVersion(1, 2);');
+  await admin.getByRole('button', { name: /Compile failed · 1/ }).click();
   await expect(
     admin.getByText('`ipVersion` takes 1 argument, found 2', { exact: true }),
   ).toBeVisible();
+});
+
+// A4. Leaving a code field lays its code out, and what compiles but is likely a mistake is said on its step.
+test('A4: a code field is laid out when it is left, and a warning is written on its step', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [{ type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'x = 1;' }],
+  });
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ORDERS.map((raw) => ({ _raw: raw })),
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await admin
+    .locator('.card-head')
+    .getByRole('button', { name: /line\(s\) of code/ })
+    .click();
+  const body = admin.locator('textarea').last();
+  await body.fill('let n=1\nif(_raw!=""){x=1}else{x=2}');
+  await body.blur();
+
+  await expect(body).toHaveValue('let n = 1;\nif (_raw != "") {\n  x = 1;\n} else {\n  x = 2;\n}');
+  await expect(admin.getByText('the local `n` is never read', { exact: true })).toBeVisible();
+});
+
+// A4, the whole trip. Save pressed straight from a code field saves the field as it is laid out, however slowly the
+// layout comes back.
+test('A4: a save pressed from a code field saves its layout', async ({ admin, leader, api }) => {
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [{ type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'x = 1;' }],
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders');
+  await admin
+    .locator('.card-head')
+    .getByRole('button', { name: /line\(s\) of code/ })
+    .click();
+  const body = admin.locator('textarea').last();
+  await body.fill('x=2');
+  await admin.route('**/api/preview/format', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await route.continue();
+  });
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+
+  await expect(admin.getByText('Saved.')).toBeVisible();
+  await expect(body).toHaveValue('x = 2;');
+  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden();
+  const saved = (await api.get(`/api/areas/shared/pipelines/orders${ON}`)).pipeline;
+  expect(saved.steps[0].body).toBe('x = 2;');
 });
 
 // A6, samples become tests.
@@ -1032,7 +1446,7 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await admin.getByRole('button', { name: 'Add step' }).click();
   await admin.getByRole('dialog').getByRole('button', { name: 'Drop', exact: true }).click();
-  await admin.getByLabel('drop when this is true').fill('id == 2');
+  await admin.getByLabel(/^drop when this is true/).fill('id == 2');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Saved.')).toBeVisible();
 
@@ -1056,22 +1470,27 @@ test('A8: while authoring, a row that fails to parse is shown failing, with why'
   });
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
-  const grid = admin.getByRole('table').filter({ hasText: 'row' }).last();
-  await expect(grid.getByRole('row')).toHaveCount(4, { timeout: 15_000 });
+  const grid = admin.getByRole('table').filter({ hasText: '#' }).last();
+  // Three rows, and the first that failed opened.
+  await expect(grid.getByRole('row')).toHaveCount(5, { timeout: 15_000 });
+  await expect(admin.getByRole('button', { name: 'row 1', exact: true })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
 
   // The grid carries each exception in the row itself, and an opened row unfolds it.
   await expect(grid.getByRole('cell', { name: /"kind":"UnparsableField"/ })).toBeVisible();
   await expect(grid.getByRole('cell', { name: /"kind":"Unparsable"/ })).toBeVisible();
-  await admin.getByRole('button', { name: 'row 1', exact: true }).click();
-  // Beside the row's number, and as the unfolded exception's message.
-  await expect(
-    admin.getByText('_raw.id is "two", which could not parse as i64 in id', { exact: true }),
-  ).toHaveCount(2);
+  // Under the row's head, after the step that raised it, and as the unfolded exception's message.
+  const why = (message: string) => async () => {
+    await expect(admin.getByText(message, { exact: true })).toHaveCount(1);
+    await expect(grid.locator('.exception', { hasText: message })).toHaveText(
+      /^\s*Step \d+ · Parser · .*: /,
+    );
+  };
+  await why('_raw.id is "two", which could not parse as i64 in id')();
   await admin.getByRole('button', { name: 'row 2', exact: true }).click();
-  // Beside the row's number, and as the unfolded exception's message.
-  await expect(
-    admin.getByText('_raw is "not json", which json could not parse', { exact: true }),
-  ).toHaveCount(2);
+  await why('_raw is "not json", which json could not parse')();
 });
 
 // A8, bad rows go somewhere.
@@ -1095,27 +1514,27 @@ test('A8: a route sends its unparseable rows where the analyst says, and the pre
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.routes[0].exceptions).toEqual({
     categories: { parse: { deliver: ['es-dlq'] } },
   });
 
   await admin.getByRole('link', { name: 'Route a sample' }).click();
   await admin.getByRole('link', { name: 'Where these records would go' }).click();
-  const bad = admin.getByRole('table').getByRole('row', { name: /^1 web/ });
+  const bad = admin.getByRole('table').getByRole('row', { name: /^1 storefront → web/ });
   await expect(bad).toContainText('Unparsable');
   await expect(bad).toContainText('deliver');
   await expect(bad).toContainText('es-dlq');
   await expect(bad).not.toContainText('es-web');
-  await expect(admin.getByRole('table').getByRole('row', { name: /^0 web/ })).toContainText(
-    'es-web',
-  );
+  await expect(
+    admin.getByRole('table').getByRole('row', { name: /^0 storefront → web/ }),
+  ).toContainText('es-web');
 });
 
 /** A pipeline that parses `store` and looks it up in `table` by `keyColumn`, writing `valueColumn` as `region`, and
  * a sample of three stores. */
 async function storesPipeline(api: Api, table: string, keyColumn: string, valueColumn: string) {
-  await api.put(`/api/pipelines/stores${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/stores${ON}`, {
     id: 'stores',
     name: 'stores',
     steps: [
@@ -1138,7 +1557,7 @@ async function storesPipeline(api: Api, table: string, keyColumn: string, valueC
       },
     ],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/stores-sample${ON}`, {
     id: 'stores-sample',
     name: 'sales',
     records: ['{"store":"s1"}', '{"store":"s2"}', '{"store":"s9"}'].map((raw) => ({ _raw: raw })),
@@ -1181,7 +1600,7 @@ test('A9: a lookup table typed in by hand enriches the records of a pipeline tha
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.lookupTables).toEqual([
     {
       id: 'regions',
@@ -1223,10 +1642,10 @@ test('a grok pattern added on its page is named by a grok step in a pipeline', a
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.grokPatterns).toEqual([{ id: 'STORE', pattern: 'store-%{INT:store}' }]);
 
-  await api.put(`/api/pipelines/stores${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/stores${ON}`, {
     id: 'stores',
     name: 'stores',
     steps: [
@@ -1239,7 +1658,7 @@ test('a grok pattern added on its page is named by a grok step in a pipeline', a
       },
     ],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/stores-sample${ON}`, {
     id: 'stores-sample',
     name: 'sales',
     records: [{ _raw: 'store-7' }],
@@ -1276,7 +1695,7 @@ test('A9: an uploaded CSV lookup table enriches the records of a pipeline that n
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.lookupTables).toMatchObject([
     { id: 'store-regions', type: 'csv', headers: ['store', 'region'] },
   ]);
@@ -1346,7 +1765,7 @@ test("A10: a Kafka source's group id is blank under Advanced, reading as its wor
     await dialog.getByRole('button', { name: 'Kafka', exact: true }).click();
     const field = dialog.getByRole('textbox', { name: 'group id' });
     await expect(field).toBeHidden();
-    await dialog.getByRole('button', { name: /^Advanced/ }).click();
+    await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
     await expect(field).toHaveValue('');
     await dialog.getByRole('button', { name: 'About group id' }).click();
     await admin.screenshot({ path: test.info().outputPath(`kafka-group-id-${scope}.png`) });
@@ -1362,24 +1781,36 @@ test('E8: a Kafka source is moved to now by changing its start, and the page say
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
     { id: 'orders', type: 'kafka', brokers: '127.0.0.1:9', topics: ['orders'] },
   ]);
   await goto(admin, leader, '#/build/sources');
   await expect(admin.getByRole('heading', { name: 'Sources' })).toBeVisible();
   await admin.getByRole('button', { name: /^orders\b/ }).click();
-  await expect(admin.getByText('Deploying this moves the source.')).toHaveCount(0);
+  await expect(
+    admin.getByText(
+      'Deploying this moves the source to the new position, so records are skipped or read again.',
+    ),
+  ).toHaveCount(0);
   const asked = Date.now();
   await admin.getByRole('combobox', { name: /^start at/ }).selectOption('timestamp');
-  await expect(admin.getByText('Deploying this moves the source.')).toBeVisible();
+  await expect(
+    admin.getByText(
+      'Deploying this moves the source to the new position, so records are skipped or read again.',
+    ),
+  ).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   const [source] = saved.config.sources;
   expect(source.start.type).toBe('timestamp');
   expect(source.start.millis).toBeGreaterThanOrEqual(asked);
-  await expect(admin.getByText('Deploying this moves the source.')).toHaveCount(0);
+  await expect(
+    admin.getByText(
+      'Deploying this moves the source to the new position, so records are skipped or read again.',
+    ),
+  ).toHaveCount(0);
 });
 
 test('A10: an S3 source that lists its bucket is added from its form and saved as the leader accepts it', async ({
@@ -1405,7 +1836,7 @@ test('A10: an S3 source that lists its bucket is added from its form and saved a
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     {
       id: 'landing',
@@ -1458,7 +1889,7 @@ test('A10: an Okta source is added from its form as a service app and saved as t
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     {
       id: 'okta-audit',
@@ -1624,7 +2055,7 @@ test('A10: HTTP, HEC, OTLP, Prometheus and Elasticsearch receivers are added fro
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     {
       id: 'otel-logs',
@@ -1667,7 +2098,7 @@ test('A10: HTTP, HEC, OTLP, Prometheus and Elasticsearch receivers are added fro
 
 // A10, sources and destinations from a form. S2S and syslog receivers are not reached over HTTP: their rows say a
 // port alone. A syslog sender carries no token, so its form edits the networks it admits. Over UDP it serves no TLS,
-// so the form offers no identity.
+// so the form offers no certificate.
 test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edits the networks it admits and its transport', async ({
   admin,
   leader,
@@ -1686,7 +2117,7 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
     tokens: { uf: { secret: 'forwarder-token', version: 1 } },
     sourcetypes: { java_app: { lineBreaker: '([\\r\\n]+)\\d{4}-' } },
   };
-  await api.put(`/api/sources${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
     s2s,
     { id: 'firewalls', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
   ]);
@@ -1718,9 +2149,9 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
   const draft = admin.locator('.chip-draft');
   await draft.fill('192.168.0.0/16');
   await draft.press('Enter');
-  await admin.getByRole('button', { name: /^Advanced/ }).click();
-  const identity = admin.getByRole('combobox', { name: /^identity/ });
-  await expect(identity).toBeVisible();
+  await admin.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
+  const certificate = admin.getByRole('combobox', { name: /^server certificate/ });
+  await expect(certificate).toBeVisible();
   const lineBreaker = admin.getByRole('textbox', { name: 'line breaker' });
   await lineBreaker.fill('(\\x00)');
   await admin.getByRole('button', { name: 'About line breaker' }).click();
@@ -1730,15 +2161,15 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
     fullPage: true,
   });
   await admin.keyboard.press('Escape');
-  // UDP frames nothing, so choosing it drops the line breaker with the identity.
+  // UDP frames nothing, so choosing it drops the line breaker with the certificate.
   await admin.getByRole('combobox', { name: /^transport/ }).selectOption('udp');
-  await expect(identity).toBeHidden();
+  await expect(certificate).toBeHidden();
   await expect(lineBreaker).toBeHidden();
   await expect(admin.getByRole('textbox', { name: /^request size/ })).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     s2s,
     {
@@ -1788,7 +2219,7 @@ test('A10: an HTTP API source is added from its form, reading an array and askin
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     {
       id: 'events',
@@ -1844,7 +2275,7 @@ test('A10: an HTTP API source signs in as an app through its issuer and is saved
   await dialog
     .getByRole('textbox', { name: /^issuer/ })
     .fill('https://login.example.com/realms/acme');
-  await dialog.getByRole('button', { name: /^Advanced/ }).click();
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   await dialog.getByRole('textbox', { name: /^scope/ }).fill('read:events');
   await dialog.screenshot({ path: test.info().outputPath('http-api-sign-in-form.png') });
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
@@ -1852,7 +2283,7 @@ test('A10: an HTTP API source signs in as an app through its issuer and is saved
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     {
       id: 'events',
@@ -1894,7 +2325,7 @@ test('A10: an HTTP API source POSTs a JSON body and is saved as the leader accep
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     {
       id: 'telemetry',
@@ -1940,7 +2371,7 @@ test('A10: an SFTP destination is added from its form and saved as the leader ac
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'drop-box',
@@ -1957,6 +2388,53 @@ test('A10: an SFTP destination is added from its form and saved as the leader ac
   await expect(admin.getByRole('button', { name: /^drop-box\b/ })).toContainText(
     'sftp.example.com',
   );
+});
+
+// A10, sources and destinations from a form. An Elasticsearch destination signs in with a username and password in
+// place of an API key, and choosing it clears the other.
+test('A10: an Elasticsearch destination signs in with a username and password', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.post('/api/secrets', {
+    name: 'es-password',
+    custody: 'leader-stored',
+    description: 'the writer',
+    value: 'changeme',
+  });
+
+  await goto(admin, leader, '#/build/destinations');
+  await admin.getByRole('button', { name: '+ Add destination' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  await dialog.getByRole('textbox', { name: /^id/ }).fill('search');
+  await dialog.getByRole('textbox', { name: 'url' }).fill('https://es.example.com:9200');
+  await dialog.getByRole('textbox', { name: 'default index' }).fill('logs');
+  const credential = dialog.getByRole('combobox', { name: /^credential/ });
+  await expect(credential).toHaveValue('none');
+  await credential.selectOption('apiKey');
+  await expect(dialog.getByRole('combobox', { name: 'API key source' })).toBeVisible();
+  await credential.selectOption('basic');
+  await expect(dialog.getByRole('combobox', { name: 'API key source' })).toBeHidden();
+  await dialog.getByRole('textbox', { name: /^username/ }).fill('smeltr_writer');
+  await dialog.getByRole('combobox', { name: 'password source' }).selectOption('es-password');
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+
+  const saved = await api.get(`/api/areas/shared${ON}`);
+  expect(saved.config.destinations).toEqual([
+    {
+      id: 'search',
+      type: 'elasticsearch',
+      url: 'https://es.example.com:9200',
+      defaultIndex: 'logs',
+      username: 'smeltr_writer',
+      password: { secret: 'es-password', version: 1 },
+    },
+  ]);
 });
 
 // A10, sources and destinations from a form. A Delta table's root is checked as it is typed; its partition columns
@@ -1987,7 +2465,7 @@ test('A10: a Delta destination is added from its form and saved as the leader ac
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     { id: 'lake-web', type: 'delta', location: 's3://lake/tables/web', partitionBy: ['host'] },
   ]);
@@ -2052,7 +2530,7 @@ test('A10: a Unity Catalog Delta destination is added from its form and saved as
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'lake-uc',
@@ -2113,7 +2591,7 @@ test('A10: an Event Hubs destination is added from its form and saved as the lea
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'alerts-hub',
@@ -2180,7 +2658,7 @@ test('A10: an Event Hubs destination signs in as a service principal or the host
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  let saved = await api.get(`/api/config${ON}`);
+  let saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'alerts-hub',
@@ -2208,7 +2686,7 @@ test('A10: an Event Hubs destination signs in as a service principal or the host
   await admin.screenshot({ path: test.info().outputPath('event-hubs-user-assigned-identity.png') });
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
-  saved = await api.get(`/api/config${ON}`);
+  saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'alerts-hub',
@@ -2225,7 +2703,7 @@ test('A10: an Event Hubs destination signs in as a service principal or the host
   await admin.screenshot({ path: test.info().outputPath('event-hubs-managed-identity.png') });
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
-  saved = await api.get(`/api/config${ON}`);
+  saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     { id: 'alerts-hub', type: 'eventHubs', namespace: 'acme-logs', defaultEventHub: 'alerts' },
   ]);
@@ -2272,7 +2750,7 @@ test('A10: an HTTP destination is added from its form, its secret header as a cr
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'intake',
@@ -2317,7 +2795,7 @@ test('A10: an HTTP destination batches text or bytes as a JSON array of strings'
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'archive',
@@ -2364,7 +2842,7 @@ test('A10: a Prometheus remote_write destination is added from its form, its Aut
     .getByRole('combobox', { name: /source$/ })
     .last()
     .selectOption('prom-write-token');
-  await dialog.getByRole('button', { name: /^Advanced/ }).click();
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   // One request at a time keeps each series in order, so there is no concurrency to set.
   await expect(dialog.getByRole('spinbutton', { name: /^starting concurrency/ })).toHaveCount(0);
   await dialog.screenshot({ path: test.info().outputPath('prometheus-destination-form.png') });
@@ -2373,7 +2851,7 @@ test('A10: a Prometheus remote_write destination is added from its form, its Aut
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'prom-out',
@@ -2432,7 +2910,7 @@ test('A10: a Log Analytics workspace destination is added from its form, signed 
   await dialog
     .getByRole('combobox', { name: 'client secret source' })
     .selectOption('law-principal');
-  await dialog.getByRole('button', { name: /^Advanced/ }).click();
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   await expect(dialog.getByRole('textbox', { name: /^auth endpoint/ })).toBeVisible();
   await dialog.screenshot({ path: test.info().outputPath('log-analytics-destination-form.png') });
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
@@ -2440,7 +2918,7 @@ test('A10: a Log Analytics workspace destination is added from its form, signed 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'law',
@@ -2474,7 +2952,7 @@ test('A10: an Elasticsearch destination sends from each zone to its own address,
   await dialog.getByRole('textbox', { name: /^id/ }).fill('logs');
   await dialog.getByRole('textbox', { name: /^url/ }).fill('https://es.internal:9200');
   await dialog.getByRole('textbox', { name: /^default index/ }).fill('logs');
-  await dialog.getByRole('button', { name: /^Advanced/ }).click();
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
 
   const zones = dialog.getByRole('textbox', { name: 'zone', exact: true });
   const urls = dialog.getByRole('textbox', { name: 'zone URL', exact: true });
@@ -2500,7 +2978,7 @@ test('A10: an Elasticsearch destination sends from each zone to its own address,
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'logs',
@@ -2557,7 +3035,7 @@ test('A10: an S3 destination writes unmodified source bytes, which an S3 source 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toMatchObject([
     { id: 'archive', type: 's3', format: 'bytes', newlines: 'refuse' },
   ]);
@@ -2575,7 +3053,7 @@ test('A10: the Sources page names the worker that holds a listing source', async
   fleet,
 }) => {
   const branch = 'listing';
-  await api.put(`/api/sources?branch=${branch}&scope=shared`, [
+  await api.put(`/api/areas/shared/sources?branch=${branch}`, [
     {
       id: 'landing',
       type: 's3List',

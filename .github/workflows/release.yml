@@ -65,7 +65,6 @@ jobs:
             smeltr-sbom.cdx.json
             smeltr-linux.tar.gz
             smeltr-image.tar.gz
-            SHA256SUMS
 
   windows:
     needs: guard
@@ -94,7 +93,6 @@ jobs:
           name: windows
           path: |
             smeltr-windows.zip
-            SHA256SUMS
 
   # Nothing is published until every archive is built: the image and the draft go out together.
   publish:
@@ -158,10 +156,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cat linux/SHA256SUMS windows/SHA256SUMS | tr -d '\r' > SHA256SUMS
+          # The release lists what most people download; the image archive and the reports go in one zip beside them.
+          zip -j smeltr-extras.zip linux/smeltr-image.tar.gz linux/smeltr-sbom.cdx.json linux/smeltr-stig.html linux/smeltr-cves.txt
           prerelease=
           case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease \
             --title "${GITHUB_REF_NAME#v}" --notes "" \
-            linux/smeltr-linux.tar.gz linux/smeltr-image.tar.gz linux/smeltr-stig.html linux/smeltr-cves.txt linux/smeltr-sbom.cdx.json \
-            windows/smeltr-windows.zip SHA256SUMS
+            linux/smeltr-linux.tar.gz windows/smeltr-windows.zip smeltr-extras.zip

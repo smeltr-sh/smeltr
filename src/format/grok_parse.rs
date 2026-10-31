@@ -7,7 +7,7 @@ use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, DataType};
 use crate::format::grok_scan::{Group, Matcher};
 use crate::format::spread::{self, Scanner, Spread};
-use crate::plan::plan::Output;
+use crate::plan::compile::Output;
 use crate::plan::tree;
 
 /// A parse of `ParserKind::Grok`: a row parses where a candidate pattern matches it. The matcher is compiled once at
@@ -82,10 +82,10 @@ mod tests {
     use crate::core::ctx::Ctx;
     use crate::core::error::ErrorSink;
     use crate::core::error::ExceptionKind;
+    use crate::plan::compile::{Call, Op, Plan, compile};
     use crate::plan::config::{
         DeclaredField, FunctionConfig, FunctionKind, GrokConfig, ParserKind, PipelineConfig, Step,
     };
-    use crate::plan::plan::{Call, Op, Plan, compile};
 
     fn compile_pipeline(config: GrokConfig, declared: &[(&str, DataType)]) -> Plan {
         let p = PipelineConfig {
@@ -95,6 +95,7 @@ mod tests {
                 0,
                 FunctionKind::Parser {
                     input: "_raw".into(),
+                    into: tree::ROOT.to_string(),
                     kind: ParserKind::Grok(config),
                     declared: declared
                         .iter()

@@ -31,8 +31,8 @@
 
   <h2 id="example">Example</h2>
   <p>
-    Authorizes with the worker-host variable <code>ELASTIC_AUTH</code>, which holds the complete
-    Authorization header. Replace the URL and index.
+    Authorizes with the worker-host variable <code>ELASTIC_AUTH</code>, which holds the API key.
+    Replace the URL and index.
   </p>
   <pre><code>{@html highlight(json(examples.elasticDestination))}</code></pre>
 
@@ -42,13 +42,13 @@
       Prepare the target index or data stream and its mappings, or let the account create them.
     </li>
     <li>
-      Give an account permission to write there, and put its complete Authorization header, such as <code
-        >ApiKey &lt;encoded-key&gt;</code
-      >, in a <a href="/docs/secrets">credential</a>.
+      Give an account permission to write there, and put its API key in a
+      <a href="/docs/secrets">credential</a>.
     </li>
     <li>
-      Select a <a href="/docs/secrets#identities">connection identity</a> for a private CA or a client
-      certificate.
+      For a private CA or a client certificate, fill in the <a href="/docs/certificates#connectors"
+        >TLS settings</a
+      >.
     </li>
   </ul>
 
@@ -102,8 +102,7 @@
   <dl>
     <dt><strong>401 or 403</strong></dt>
     <dd>
-      Check the full Authorization header, that each worker has the secret, and permissions on the
-      target index.
+      Check the API key, that each worker has the secret, and permissions on the target index.
     </dd>
     <dt><strong>Documents are refused</strong></dt>
     <dd>

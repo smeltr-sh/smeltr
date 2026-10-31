@@ -1,18 +1,23 @@
 import { describe, expect, it } from 'vitest';
+import { isInternal } from './api';
 import {
-  cellOf,
-  changedLines,
+  pathLines,
+  runMarks,
   changeFitsInline,
-  columnsFor,
   countStates,
   declaredRecord,
   diffRecords,
   diffTree,
+  fieldAt,
+  leafLines,
+  leafMap,
   parseDeclared,
+  typeAt,
+  pathsOf,
   PAGE_LINES,
   recordLines,
   splitPath,
-  valueFitsUnclamped,
+  withoutRemoved,
   type FieldLeaf,
   type RecordLine,
 } from './recordDiff';
@@ -92,6 +97,18 @@ describe('diffTree', () => {
       state: 'added',
       after: 'L',
     });
+  });
+
+  it('names the type declared at a path', () => {
+    const declared = declaredRecord([
+      ['hits', 'array<{host: str, "a.b": i64, ...}>'],
+      ['url.path', 'str'],
+    ]);
+    expect(typeAt(declared, 'url.path')).toBe('str');
+    expect(typeAt(declared, 'url')).toBe('struct');
+    expect(typeAt(declared, 'hits[0]["a.b"]')).toBe('i64');
+    expect(typeAt(declared, 'loose')).toBe('undeclared');
+    expect(typeAt(null, 'url.path')).toBeNull();
   });
 
   it('names each value by the type its side declares', () => {
@@ -177,7 +194,7 @@ describe('diffTree', () => {
   });
 
   it('drops a field it is told not to keep, and a struct left empty', () => {
-    const root = diffTree(null, { __source: { a: 1 }, x: 1 }, (p) => !p.startsWith('__'));
+    const root = diffTree(null, { __source: { a: 1 }, x: 1 }, (p) => !isInternal(p));
     expect(root.children.map((c) => c.key)).toEqual(['x']);
   });
 });
@@ -187,6 +204,20 @@ describe('recordLines', () => {
     const lines = recordLines(diffTree(null, { destination: { ip: 'a', nat: { ip: 'b' } } }));
     expect(shape(lines)).toEqual(['destination', '  ip', '  nat.ip']);
     expect(shape(recordLines(diffTree(null, { a: { b: { c: 1 } } })))).toEqual(['a.b.c']);
+  });
+
+  it('leaves out what holds no change, when asked, and keeps the tree', () => {
+    const tree = diffTree(
+      { source: { ip: 'a', port: 1 }, host: 'h' },
+      { source: { ip: 'a', port: 2, geo: { city: 'c', country: 'SE' } }, host: 'h' },
+    );
+    expect(shape(recordLines(tree, {}, true))).toEqual([
+      'source',
+      '  geo',
+      '    city',
+      '    country',
+      '  port',
+    ]);
   });
 
   it('joins a key in brackets without a dot', () => {
@@ -275,17 +306,26 @@ describe('recordLines', () => {
   });
 });
 
-describe('changedLines', () => {
+describe('pathLines', () => {
   it('lists every changed field by its whole path, folded or not', () => {
-    const lines = changedLines(diffTree({ a: { b: 1, c: [1, 2] } }, { a: { b: 1, c: [1, 3] } }));
+    const lines = pathLines(
+      diffTree({ a: { b: 1, c: [1, 2] } }, { a: { b: 1, c: [1, 3] } }),
+      {},
+      true,
+    );
     expect(lines.map((l) => l.kind === 'field' && [l.label, l.state])).toEqual([
       ['a.c[1]', 'changed'],
     ]);
   });
 
+  it('lists every field by its whole path, changed or not', () => {
+    const lines = pathLines(diffTree({ a: { b: 1, c: [1, 2] } }, { a: { b: 1, c: [1, 3] } }));
+    expect(lines.map((l) => l.kind === 'field' && l.label)).toEqual(['a.b', 'a.c[0]', 'a.c[1]']);
+  });
+
   it('draws a page at a time', () => {
     const tags = Array.from({ length: 100 }, (_, i) => i);
-    const lines = changedLines(diffTree(null, { tags }));
+    const lines = pathLines(diffTree(null, { tags }), {}, true);
     expect(lines.at(-1)).toEqual({ kind: 'more', path: '', depth: 0, shown: 40, total: 100 });
   });
 });
@@ -308,51 +348,59 @@ describe('changeFitsInline', () => {
   });
 });
 
-describe('valueFitsUnclamped', () => {
-  it('draws an ordinary field whole and clamps a raw line', () => {
-    expect(valueFitsUnclamped('allow-web-outbound')).toBe(true);
-    expect(valueFitsUnclamped('10.1.152.64')).toBe(true);
-    expect(
-      valueFitsUnclamped(
-        '<14>Nov 4 00:47:17 fw-PNT-02 1,2026/11/04 00:47:17,001801003286,TRAFFIC,end,2561,' +
-          '2026/11/04 00:47:17,10.1.152.64,203.0.234.250,198.51.100.46,allow-web-outbound',
-      ),
-    ).toBe(false);
-  });
-
-  it('measures a non-string by the text it draws as', () => {
-    expect(valueFitsUnclamped(1234567)).toBe(true);
-    expect(valueFitsUnclamped({ a: 'x'.repeat(200) })).toBe(false);
-  });
-
-  it('takes the budget as an argument', () => {
-    expect(valueFitsUnclamped('abcdef', 6)).toBe(true);
-    expect(valueFitsUnclamped('abcdef', 5)).toBe(false);
+describe('fieldAt', () => {
+  it('reads one field from each side, and says nothing where neither has it', () => {
+    const before = leafMap({ a: { b: 1 }, c: 'x', d: [1] });
+    const after = leafMap({ a: { b: 2 }, d: [1], e: true });
+    expect(fieldAt(before, after, 'a.b')).toEqual({
+      path: 'a.b',
+      state: 'changed',
+      before: 1,
+      after: 2,
+    });
+    expect(fieldAt(before, after, 'c')).toEqual({ path: 'c', state: 'removed', before: 'x' });
+    expect(fieldAt(before, after, 'd')?.state).toBe('unchanged');
+    expect(fieldAt(before, after, 'e')).toEqual({ path: 'e', state: 'added', after: true });
+    expect(fieldAt(before, after, 'missing')).toBeUndefined();
   });
 });
 
-describe('columnsFor', () => {
-  it('is every field any row has, alphabetically', () => {
-    const cols = columnsFor([
-      [leaf('network.bytes', 'added'), leaf('@timestamp', 'added')],
-      [leaf('destination.ip', 'added'), leaf('@timestamp', 'added')],
-    ]);
-    expect(cols.map((c) => c.path)).toEqual(['@timestamp', 'destination.ip', 'network.bytes']);
+describe('pathsOf', () => {
+  it('is every path any record has, alphabetically', () => {
+    expect(
+      pathsOf([
+        leafMap({ network: { bytes: 1 }, '@timestamp': 2 }),
+        leafMap({ destination: { ip: 3 } }),
+      ]),
+    ).toEqual(['@timestamp', 'destination.ip', 'network.bytes']);
+    expect(pathsOf([])).toEqual([]);
   });
+});
 
-  it('carries a state only where every row that has the field agrees', () => {
-    const cols = columnsFor([
-      [leaf('a', 'changed'), leaf('b', 'added')],
-      [leaf('a', 'changed'), leaf('b', 'unchanged')],
+describe('withoutRemoved', () => {
+  it('lifts what a step removed out of its structs, a removed struct whole', () => {
+    const { tree, removed } = withoutRemoved(
+      diffTree(
+        { _raw: 'x', srcip: '1', old: { a: 1, b: 2 }, keep: { gone: 1, here: 2 }, list: [1, 2] },
+        { source: { ip: '1' }, keep: { here: 2 }, list: [1] },
+      ),
+    );
+    expect(removed.map((n) => n.path)).toEqual(['_raw', 'keep.gone', 'old', 'srcip']);
+    expect(leafLines(removed).map((l) => l.kind === 'field' && l.label)).toEqual([
+      '_raw',
+      'keep.gone',
+      'old.a',
+      'old.b',
+      'srcip',
     ]);
-    expect(cols).toEqual([
-      { path: 'a', state: 'changed' },
-      { path: 'b', state: null },
+    // An array keeps the element it lost, where it was.
+    expect(leafLines([tree]).map((l) => l.kind === 'field' && `${l.label} ${l.state}`)).toEqual([
+      'keep.here unchanged',
+      'list[0] unchanged',
+      'list[1] removed',
+      'source.ip added',
     ]);
-  });
-
-  it('has no columns for no rows', () => {
-    expect(columnsFor([])).toEqual([]);
+    expect(tree.marks).toEqual({ added: 1, changed: 0, removed: 1 });
   });
 });
 
@@ -375,14 +423,6 @@ describe('splitPath', () => {
   });
 });
 
-describe('cellOf', () => {
-  it('finds a field by path, and says nothing when the row lacks it', () => {
-    const row = [leaf('a.b', 'added'), leaf('c', 'removed')];
-    expect(cellOf(row, 'a.b')).toEqual({ path: 'a.b', state: 'added' });
-    expect(cellOf(row, 'missing')).toBeUndefined();
-  });
-});
-
 describe('countStates', () => {
   it('counts what a step did, ignoring what it left alone', () => {
     expect(
@@ -394,5 +434,68 @@ describe('countStates', () => {
         leaf('e', 'unchanged'),
       ]),
     ).toEqual({ added: 1, changed: 2, removed: 1 });
+  });
+});
+
+describe('runMarks', () => {
+  const marks = (before: unknown, after: unknown, steps: Record<string, string> = {}) => {
+    const lines = recordLines(diffTree(before, after));
+    return runMarks(
+      lines,
+      (p) => steps[p] ?? null,
+      (a, b) => a === b,
+    ).map((m, i) => {
+      const l = lines[i];
+      const name = l.kind === 'more' ? 'more' : l.label;
+      return `${name} ${m.state}${m.start ? ' start' : ''} @${m.depth}${m.sign ? ` sign:${m.step}` : ''}`;
+    });
+  };
+
+  it('runs a new struct as one bar, signed once, from its own depth', () => {
+    expect(
+      marks(
+        { a: 1 },
+        { a: 1, http: { method: 'GET', status: 200 } },
+        {
+          'http.method': 'p',
+          'http.status': 'p',
+        },
+      ),
+    ).toEqual([
+      'a unchanged @0',
+      'http added start @0 sign:p',
+      'method added @0',
+      'status added @0',
+    ]);
+  });
+
+  it('signs again where the step changes within a run', () => {
+    expect(marks({}, { a: 1, b: 2, c: 3 }, { a: 'p', b: 'e', c: 'e' })).toEqual([
+      'a added start @0 sign:p',
+      'b added @0 sign:e',
+      'c added @0',
+    ]);
+  });
+
+  it('runs a folded struct as changed when what is in it differs, with no one step', () => {
+    const lines = recordLines(diffTree({ s: { a: 1 } }, { s: { a: 2, b: 1 } }), {
+      open: () => false,
+    });
+    const steps: Record<string, string> = { 's.a': 'e', 's.b': 'p' };
+    expect(
+      runMarks(
+        lines,
+        (p) => steps[p] ?? null,
+        (a, b) => a === b,
+      ),
+    ).toEqual([{ state: 'changed', step: null, start: true, depth: 0, sign: true }]);
+  });
+
+  it('starts a run inside an unchanged struct at the depth of the change', () => {
+    expect(marks({ s: { ip: 1, port: 1 } }, { s: { ip: 1, port: 2 } }, { 's.port': 'e' })).toEqual([
+      's unchanged @0',
+      'ip unchanged @1',
+      'port changed start @1 sign:e',
+    ]);
   });
 });

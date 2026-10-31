@@ -29,7 +29,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
 use super::store::StoreError;
 
@@ -145,6 +145,8 @@ pub struct HeartbeatRows<'a> {
     pub worker_id: &'a str,
     pub threads: &'a [LatestRow<'a>],
     pub points: &'a [SeriesPoint<'a>],
+    /// What the beat gathered beside `points`, and which window of the worker's life they are.
+    pub window: Window<'a>,
     /// The worker process's own settings, which ride beside each report rather than inside it.
     pub stop_after_unreachable_secs: Option<u64>,
     pub commit: Option<&'a str>,
@@ -408,6 +410,8 @@ pub(crate) const STEPS: &[&str] = &[
      );
      CREATE INDEX fact_history_subject ON fact_history (subject, ended_ms);
      CREATE INDEX fact_history_ended ON fact_history (ended_ms);",
+    // 10 -- the last window recorded from each worker, which numbers a beat's points and its streams.
+    "ALTER TABLE stream_windows RENAME TO windows;",
 ];
 
 /// [`RegistryStore::series_since`] on a connection the caller holds.
@@ -549,7 +553,8 @@ pub struct RegistryStore {
     /// Every method here answers a `Result`, and this lock is the only way any of them could panic instead; a
     /// caller already has the error path. A panic under the lock is reported where it happened, and poisoning is
     /// only its aftermath: refusing to work afterward would turn one bug into a leader that has permanently
-    /// stopped answering `/api/health`, `/api/warnings`, `/api/flow` and `/api/stats`, none of which it touched.
+    /// stopped answering `/api/health`, `/api/warnings`, `/api/flow` and `/api/areas/:area/stats`, none of which it
+    /// touched.
     /// Recovery is sound because a `Transaction` rolls back as it drops, so what comes back is consistent.
     conn: Mutex<Connection>,
     /// When [`RegistryStore::maybe_maintain`] should next actually run `maintain` -- epoch milliseconds. Rollup and
@@ -636,7 +641,7 @@ fn set_aside(path: &Path) -> Result<std::path::PathBuf, StoreError> {
         match std::fs::rename(&from, &to) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !sidecar.is_empty() => {}
-            Err(e) => return Err(StoreError(format!("setting aside {}: {e}", from.display()))),
+            Err(e) => return Err(StoreError::failed(format!("setting aside {}: {e}", from.display()))),
         }
     }
     Ok(kept)
@@ -667,7 +672,7 @@ impl RegistryStore {
         // `auto_vacuum` first: it is fixed once page 1 is written, and the switch to WAL writes it. Asked for
         // after the switch, it is refused without a word and `incremental_vacuum` reclaims nothing.
         conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-        super::steps::upgrade_sqlite(&mut conn, "registry.db", STEPS).map_err(StoreError)?;
+        super::steps::upgrade_sqlite(&mut conn, "registry.db", STEPS).map_err(StoreError::failed)?;
         Ok(RegistryStore {
             conn: Mutex::new(conn),
             next_maintenance_due_ms: AtomicI64::new(0),
@@ -710,7 +715,7 @@ impl RegistryStore {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(FORGET_WORKER_ROWS, params![worker_id])?;
         // Its last window, which only that worker's next beat would be checked against.
-        conn.execute("DELETE FROM stream_windows WHERE worker_id = ?1", params![worker_id])?;
+        conn.execute("DELETE FROM windows WHERE worker_id = ?1", params![worker_id])?;
         Ok(())
     }
 
@@ -854,16 +859,27 @@ impl RegistryStore {
         Ok(())
     }
 
-    /// One heartbeat's durable mirror, in one transaction: each thread's latest state and every point its samples
-    /// fold into.
+    /// One heartbeat's durable mirror, in one transaction: each thread's latest state, and every point its samples
+    /// fold into and its streams, unless its window is one already recorded. A beat sent again because its answer
+    /// was lost carries fresh state and a window this holds: the state is written and the window is not counted
+    /// twice.
     ///
     /// One transaction rather than one per row. A commit is what costs -- the statements inside it are a few
     /// microseconds each -- so a fleet's write load is its heartbeat rate, not its sample rate. It is also the
-    /// truthful unit: a half-written heartbeat is a claim about a window that never held.
+    /// truthful unit: a half-written heartbeat is a claim about a window that never held. An error is the whole
+    /// beat unwritten, which the worker sends again under the same window.
+    ///
+    /// Streams that will not write are the exception, left out and said: they fail on what they hold, so the same
+    /// window sent again would fail again, and the worker could never be heard.
     pub fn record_heartbeat(&self, beat: &HeartbeatRows<'_>) -> Result<(), StoreError> {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let tx = conn.transaction()?;
+        let mut tx = conn.transaction()?;
+        let unseen;
         {
+            unseen = match beat.window.seq {
+                Some(seq) => claim_window(&tx, beat.worker_id, beat.window.boot_id, seq)?,
+                None => true,
+            };
             // Cached on the connection, not compiled per beat: the same three statements run for every heartbeat
             // this leader will ever take.
             if beat.stopped_at_ms.is_some() {
@@ -901,8 +917,39 @@ impl RegistryStore {
                     beat.release
                 ])?;
             }
-            for point in beat.points {
-                write_point(&tx, point, beat.now_ms)?;
+            if unseen {
+                for point in beat.points {
+                    write_point(&tx, point, beat.now_ms)?;
+                }
+            }
+        }
+        if unseen && let Some(streams) = &beat.window.streams {
+            let apart = tx.savepoint()?;
+            match write_streams(&apart, streams, beat.now_ms) {
+                Ok(()) => apart.commit()?,
+                // The store's own trouble, not the streams': the window goes again.
+                Err(e)
+                    if matches!(
+                        e.sqlite_error_code(),
+                        Some(
+                            ErrorCode::DatabaseBusy
+                                | ErrorCode::DatabaseLocked
+                                | ErrorCode::DiskFull
+                                | ErrorCode::SystemIoFailure
+                        )
+                    ) =>
+                {
+                    return Err(e.into());
+                }
+                // Dropped, the savepoint rolls back.
+                Err(e) => tracing::warn!(
+                    target: "series.streams_not_recorded",
+                    subject = %beat.worker_id,
+                    group = %streams.group_id,
+                    error = %e,
+                    "a heartbeat's streams could not be recorded, so its window is missing from what the group's \
+                     streams counted; the rest of the heartbeat was recorded"
+                ),
             }
         }
         tx.commit()?;
@@ -1310,13 +1357,40 @@ pub struct StoredStreamKey {
     pub recent: bool,
 }
 
-/// Which window of one worker process's life a stream report is ([`crate::heartbeat::HeartbeatRequest`]'s
-/// `streams_window`), so a window sent twice is recorded once.
-#[derive(Debug, Clone, Copy)]
-pub struct StreamWindow<'a> {
-    pub worker_id: &'a str,
+/// What one beat gathered beyond its points, and which window of one worker process's life it is
+/// ([`crate::heartbeat::HeartbeatRequest`]'s `streams_window`), so a window sent twice is recorded once.
+#[derive(Default)]
+pub struct Window<'a> {
     pub boot_id: u64,
-    pub seq: u64,
+    /// None from a worker too old to number its beats, whose every beat is recorded.
+    pub seq: Option<u64>,
+    pub streams: Option<Streams<'a>>,
+}
+
+/// One beat's streams, and whose they are.
+pub struct Streams<'a> {
+    pub group_id: &'a str,
+    pub report: &'a crate::heartbeat::StreamReport,
+    /// Whether the report comes from the commit its group is deployed at.
+    pub deployed: bool,
+}
+
+/// Whether window `seq` of `boot_id` is one `worker_id` has not had recorded, and if so, records that it now has. A
+/// window is recorded when its boot is new or its number is past the last one recorded.
+fn claim_window(tx: &Connection, worker_id: &str, boot_id: u64, seq: u64) -> rusqlite::Result<bool> {
+    let last: Option<(i64, i64)> = tx
+        .prepare_cached("SELECT boot_id, seq FROM windows WHERE worker_id = ?1")?
+        .query_row(params![worker_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()?;
+    if last.is_some_and(|(last_boot, last_seq)| last_boot == boot_id as i64 && last_seq >= seq as i64) {
+        return Ok(false);
+    }
+    tx.prepare_cached(
+        "INSERT INTO windows (worker_id, boot_id, seq) VALUES (?1, ?2, ?3) \
+         ON CONFLICT (worker_id) DO UPDATE SET boot_id = excluded.boot_id, seq = excluded.seq",
+    )?
+    .execute(params![worker_id, boot_id as i64, seq as i64])?;
+    Ok(true)
 }
 
 /// Everything the leader has accumulated of the fleet's streams.
@@ -1328,234 +1402,240 @@ pub struct StoredStreams {
 }
 
 impl RegistryStore {
-    /// Add one heartbeat's `report`, seen at `now_ms`, to what `group_id` has accumulated, unless it is a `window`
-    /// already recorded: every count summed, the first and last seen times widened to take it in, and a field's type
-    /// taken from the newest report. Beats of one group commit in whatever order they reach the lock, so an older one can follow a newer. The wire's caps hold here too: a field or key the table already holds the cap of is counted as
-    /// dropped rather than added, so the tables grow with the configuration and never with the traffic.
-    ///
-    /// `deployed` is whether the report comes from the commit its group is deployed at. A step whose declarations
-    /// differ from those held starts its counts over from such a report, and is left out of any other: during a
-    /// rollout the workers still on the old commit neither restart the new counts nor add to them.
+    /// One beat's streams, recorded as [`RegistryStore::record_heartbeat`] records them but without the rest of a
+    /// beat.
+    #[cfg(test)]
     pub fn record_streams(
         &self,
         group_id: &str,
         report: &crate::heartbeat::StreamReport,
-        window: Option<StreamWindow>,
         deployed: bool,
         now_ms: i64,
     ) -> Result<(), StoreError> {
-        if report.is_empty() {
-            return Ok(());
-        }
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction()?;
-        if let Some(w) = window {
-            let last: Option<(i64, i64)> = tx
-                .query_row(
-                    "SELECT boot_id, seq FROM stream_windows WHERE worker_id = ?1",
-                    params![w.worker_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            if last.is_some_and(|(boot, seq)| boot == w.boot_id as i64 && seq >= w.seq as i64) {
-                return Ok(());
-            }
-            tx.execute(
-                "INSERT INTO stream_windows (worker_id, boot_id, seq) VALUES (?1, ?2, ?3) \
-                 ON CONFLICT (worker_id) DO UPDATE SET boot_id = excluded.boot_id, seq = excluded.seq",
-                params![w.worker_id, w.boot_id as i64, w.seq as i64],
-            )?;
-        }
-        for shape in &report.parsers {
-            let at = params![group_id, shape.source, shape.route, shape.pipeline, shape.step];
-            // A step reports every field it declares, present or not, with its type. One whose declarations differ
-            // from what is held runs another pipeline than the one counted.
-            let held_declared: std::collections::BTreeSet<(String, String)> = tx
-                .prepare(
-                    "SELECT field, suggested FROM stream_fields WHERE group_id = ?1 AND source = ?2 AND route = ?3 \
-                         AND pipeline = ?4 AND step = ?5 AND declared = 1",
-                )?
-                .query_map(at, |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<Result<_, _>>()?;
-            let declared: std::collections::BTreeSet<(String, String)> = shape
-                .fields
-                .iter()
-                .filter(|f| f.declared)
-                .map(|f| (f.name.clone(), f.suggested.clone()))
-                .collect();
-            if held_declared != declared {
-                let held: bool = tx.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM stream_parsers WHERE group_id = ?1 AND source = ?2 AND route = ?3 \
-                         AND pipeline = ?4 AND step = ?5)",
-                    at,
-                    |row| row.get(0),
-                )?;
-                if held && !deployed {
-                    continue;
-                }
-                tx.execute(
-                    "DELETE FROM stream_fields WHERE group_id = ?1 AND source = ?2 AND route = ?3 \
-                         AND pipeline = ?4 AND step = ?5",
-                    at,
-                )?;
-                tx.execute(
-                    "DELETE FROM stream_parsers WHERE group_id = ?1 AND source = ?2 AND route = ?3 \
-                         AND pipeline = ?4 AND step = ?5",
-                    at,
-                )?;
-            }
-            let held: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM stream_fields \
-                 WHERE group_id = ?1 AND source = ?2 AND route = ?3 AND pipeline = ?4 AND step = ?5",
+        write_streams(
+            &tx,
+            &Streams {
+                group_id,
+                report,
+                deployed,
+            },
+            now_ms,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+/// Add one beat's `report`, seen at `now_ms`, to what `group_id` has accumulated: every count summed, the
+/// first and last seen times widened to take it in, and a field's type taken from the newest report. Beats of
+/// one group commit in whatever order they reach the lock, so an older one can follow a newer. The wire's caps
+/// hold here too: a field or key the table already holds the cap of is counted as dropped rather than added, so
+/// the tables grow with the configuration and never with the traffic.
+///
+/// `deployed` is whether the report comes from the commit its group is deployed at. A step whose declarations
+/// differ from those held starts its counts over from such a report, and is left out of any other: during a
+/// rollout the workers still on the old commit neither restart the new counts nor add to them.
+fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlite::Result<()> {
+    let Streams {
+        group_id,
+        report,
+        deployed,
+    } = *streams;
+    if report.is_empty() {
+        return Ok(());
+    }
+    for shape in &report.parsers {
+        let at = params![group_id, shape.source, shape.route, shape.pipeline, shape.step];
+        // A step reports every field it declares, present or not, with its type. One whose declarations differ
+        // from what is held runs another pipeline than the one counted.
+        let held_declared: std::collections::BTreeSet<(String, String)> = tx
+            .prepare(
+                "SELECT field, suggested FROM stream_fields WHERE group_id = ?1 AND source = ?2 AND route = ?3 \
+                     AND pipeline = ?4 AND step = ?5 AND declared = 1",
+            )?
+            .query_map(at, |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let declared: std::collections::BTreeSet<(String, String)> = shape
+            .fields
+            .iter()
+            .filter(|f| f.declared)
+            .map(|f| (f.name.clone(), f.suggested.clone()))
+            .collect();
+        if held_declared != declared {
+            let held: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM stream_parsers WHERE group_id = ?1 AND source = ?2 AND route = ?3 \
+                     AND pipeline = ?4 AND step = ?5)",
                 at,
                 |row| row.get(0),
             )?;
-            let mut room = crate::heartbeat::STREAM_FIELDS_PER_PARSER.saturating_sub(held as usize);
-            let mut dropped = shape.fields_dropped as i64;
-            for field in &shape.fields {
-                let known: bool = tx.query_row(
-                    "SELECT COUNT(*) FROM stream_fields \
-                     WHERE group_id = ?1 AND source = ?2 AND route = ?3 AND pipeline = ?4 AND step = ?5 AND field = ?6",
-                    params![
-                        group_id,
-                        shape.source,
-                        shape.route,
-                        shape.pipeline,
-                        shape.step,
-                        field.name
-                    ],
-                    |row| row.get::<_, i64>(0).map(|n| n > 0),
-                )?;
-                // A declaration is bounded by the config, so it takes a row past the cap: drift reads it.
-                if !known && !field.declared {
-                    if room == 0 {
-                        dropped += field.present as i64;
-                        continue;
-                    }
-                    room -= 1;
-                }
-                tx.execute(
-                    "INSERT INTO stream_fields (group_id, source, route, pipeline, step, field, declared, suggested, \
-                         present, bools, ints, floats, strings, arrays, objects, failed, times, first_seen_ms, last_seen_ms, \
-                         present_last_ms, failed_last_ms, failing_since_ms) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?18, ?17, ?17, \
-                         CASE WHEN ?9 > 0 THEN ?17 END, CASE WHEN ?16 > 0 THEN ?17 END, CASE WHEN ?16 > 0 THEN ?17 END) \
-                     ON CONFLICT (group_id, source, route, pipeline, step, field) DO UPDATE SET \
-                         declared = CASE WHEN excluded.last_seen_ms >= last_seen_ms THEN excluded.declared ELSE declared END, \
-                         suggested = CASE WHEN excluded.last_seen_ms >= last_seen_ms THEN excluded.suggested ELSE suggested END, \
-                         present = present + excluded.present, bools = bools + excluded.bools, \
-                         ints = ints + excluded.ints, floats = floats + excluded.floats, \
-                         strings = strings + excluded.strings, arrays = arrays + excluded.arrays, \
-                         objects = objects + excluded.objects, failed = failed + excluded.failed, \
-                         times = times + excluded.times, \
-                         present_last_ms = CASE WHEN excluded.present > 0 THEN MAX(COALESCE(present_last_ms, 0), ?17) \
-                             ELSE present_last_ms END, \
-                         failing_since_ms = CASE WHEN excluded.failed = 0 THEN failing_since_ms \
-                             WHEN failed_last_ms IS NULL OR ?17 - failed_last_ms > ?19 THEN ?17 \
-                             ELSE failing_since_ms END, \
-                         failed_last_ms = CASE WHEN excluded.failed > 0 THEN MAX(COALESCE(failed_last_ms, 0), ?17) \
-                             ELSE failed_last_ms END, \
-                         first_seen_ms = MIN(first_seen_ms, excluded.first_seen_ms), \
-                     last_seen_ms = MAX(last_seen_ms, excluded.last_seen_ms)",
-                    params![
-                        group_id,
-                        shape.source,
-                        shape.route,
-                        shape.pipeline,
-                        shape.step,
-                        field.name,
-                        field.declared,
-                        field.suggested,
-                        field.present as i64,
-                        field.bools as i64,
-                        field.ints as i64,
-                        field.floats as i64,
-                        field.strings as i64,
-                        field.arrays as i64,
-                        field.objects as i64,
-                        field.failed as i64,
-                        now_ms,
-                        field.times as i64,
-                        DRIFT_WINDOW.as_millis() as i64,
-                    ],
-                )?;
+            if held && !deployed {
+                continue;
             }
             tx.execute(
-                "INSERT INTO stream_parsers (group_id, source, route, pipeline, step, rows, fields_dropped, \
-                     first_seen_ms, last_seen_ms, read_last_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, CASE WHEN ?6 > 0 THEN ?8 END) \
-                 ON CONFLICT (group_id, source, route, pipeline, step) DO UPDATE SET \
-                     rows = rows + excluded.rows, fields_dropped = fields_dropped + excluded.fields_dropped, \
-                     read_last_ms = CASE WHEN excluded.rows > 0 THEN MAX(COALESCE(read_last_ms, 0), ?8) \
-                         ELSE read_last_ms END, \
-                     first_seen_ms = MIN(first_seen_ms, excluded.first_seen_ms), \
-                     last_seen_ms = MAX(last_seen_ms, excluded.last_seen_ms)",
+                "DELETE FROM stream_fields WHERE group_id = ?1 AND source = ?2 AND route = ?3 \
+                     AND pipeline = ?4 AND step = ?5",
+                at,
+            )?;
+            tx.execute(
+                "DELETE FROM stream_parsers WHERE group_id = ?1 AND source = ?2 AND route = ?3 \
+                     AND pipeline = ?4 AND step = ?5",
+                at,
+            )?;
+        }
+        let held: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM stream_fields \
+             WHERE group_id = ?1 AND source = ?2 AND route = ?3 AND pipeline = ?4 AND step = ?5",
+            at,
+            |row| row.get(0),
+        )?;
+        let mut room = crate::heartbeat::STREAM_FIELDS_PER_PARSER.saturating_sub(held as usize);
+        let mut dropped = shape.fields_dropped as i64;
+        for field in &shape.fields {
+            let known: bool = tx.query_row(
+                "SELECT COUNT(*) FROM stream_fields \
+                 WHERE group_id = ?1 AND source = ?2 AND route = ?3 AND pipeline = ?4 AND step = ?5 AND field = ?6",
                 params![
                     group_id,
                     shape.source,
                     shape.route,
                     shape.pipeline,
                     shape.step,
-                    shape.rows as i64,
-                    dropped,
-                    now_ms
+                    field.name
                 ],
+                |row| row.get::<_, i64>(0).map(|n| n > 0),
             )?;
-        }
-        for streams in &report.unmatched {
-            let held: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM stream_keys WHERE group_id = ?1 AND source = ?2",
-                params![group_id, streams.source],
-                |row| row.get(0),
-            )?;
-            let mut room = crate::heartbeat::STREAM_KEYS_PER_SOURCE.saturating_sub(held as usize);
-            let mut dropped = streams.keys_dropped as i64;
-            for key in &streams.keys {
-                let known: bool = tx.query_row(
-                    "SELECT COUNT(*) FROM stream_keys WHERE group_id = ?1 AND source = ?2 AND key = ?3",
-                    params![group_id, streams.source, key.key],
-                    |row| row.get::<_, i64>(0).map(|n| n > 0),
-                )?;
-                if !known {
-                    if room == 0 {
-                        dropped += key.rows as i64;
-                        continue;
-                    }
-                    room -= 1;
+            // A declaration is bounded by the config, so it takes a row past the cap: drift reads it.
+            if !known && !field.declared {
+                if room == 0 {
+                    dropped += field.present as i64;
+                    continue;
                 }
-                tx.execute(
-                    "INSERT INTO stream_keys (group_id, source, key, rows, first_seen_ms, last_seen_ms) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?5) \
-                     ON CONFLICT (group_id, source, key) DO UPDATE SET \
-                         rows = rows + excluded.rows, first_seen_ms = MIN(first_seen_ms, excluded.first_seen_ms), \
-                     last_seen_ms = MAX(last_seen_ms, excluded.last_seen_ms)",
-                    params![group_id, streams.source, key.key, key.rows as i64, now_ms],
-                )?;
+                room -= 1;
             }
             tx.execute(
-                "INSERT INTO stream_unmatched (group_id, source, rows, keys_dropped, first_seen_ms, last_seen_ms, \
-                     unrouted_since_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5) \
-                 ON CONFLICT (group_id, source) DO UPDATE SET \
-                     rows = rows + excluded.rows, keys_dropped = keys_dropped + excluded.keys_dropped, \
-                     unrouted_since_ms = CASE WHEN unrouted_since_ms IS NULL OR ?5 - last_seen_ms > ?6 THEN ?5 \
-                         ELSE unrouted_since_ms END, \
+                "INSERT INTO stream_fields (group_id, source, route, pipeline, step, field, declared, suggested, \
+                     present, bools, ints, floats, strings, arrays, objects, failed, times, first_seen_ms, last_seen_ms, \
+                     present_last_ms, failed_last_ms, failing_since_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?18, ?17, ?17, \
+                     CASE WHEN ?9 > 0 THEN ?17 END, CASE WHEN ?16 > 0 THEN ?17 END, CASE WHEN ?16 > 0 THEN ?17 END) \
+                 ON CONFLICT (group_id, source, route, pipeline, step, field) DO UPDATE SET \
+                     declared = CASE WHEN excluded.last_seen_ms >= last_seen_ms THEN excluded.declared ELSE declared END, \
+                     suggested = CASE WHEN excluded.last_seen_ms >= last_seen_ms THEN excluded.suggested ELSE suggested END, \
+                     present = present + excluded.present, bools = bools + excluded.bools, \
+                     ints = ints + excluded.ints, floats = floats + excluded.floats, \
+                     strings = strings + excluded.strings, arrays = arrays + excluded.arrays, \
+                     objects = objects + excluded.objects, failed = failed + excluded.failed, \
+                     times = times + excluded.times, \
+                     present_last_ms = CASE WHEN excluded.present > 0 THEN MAX(COALESCE(present_last_ms, 0), ?17) \
+                         ELSE present_last_ms END, \
+                     failing_since_ms = CASE WHEN excluded.failed = 0 THEN failing_since_ms \
+                         WHEN failed_last_ms IS NULL OR ?17 - failed_last_ms > ?19 THEN ?17 \
+                         ELSE failing_since_ms END, \
+                     failed_last_ms = CASE WHEN excluded.failed > 0 THEN MAX(COALESCE(failed_last_ms, 0), ?17) \
+                         ELSE failed_last_ms END, \
                      first_seen_ms = MIN(first_seen_ms, excluded.first_seen_ms), \
-                     last_seen_ms = MAX(last_seen_ms, excluded.last_seen_ms)",
+                 last_seen_ms = MAX(last_seen_ms, excluded.last_seen_ms)",
                 params![
                     group_id,
-                    streams.source,
-                    streams.rows as i64,
-                    dropped,
+                    shape.source,
+                    shape.route,
+                    shape.pipeline,
+                    shape.step,
+                    field.name,
+                    field.declared,
+                    field.suggested,
+                    field.present as i64,
+                    field.bools as i64,
+                    field.ints as i64,
+                    field.floats as i64,
+                    field.strings as i64,
+                    field.arrays as i64,
+                    field.objects as i64,
+                    field.failed as i64,
                     now_ms,
-                    DRIFT_WINDOW.as_millis() as i64
+                    field.times as i64,
+                    DRIFT_WINDOW.as_millis() as i64,
                 ],
             )?;
         }
-        tx.commit()?;
-        Ok(())
+        tx.execute(
+            "INSERT INTO stream_parsers (group_id, source, route, pipeline, step, rows, fields_dropped, \
+                 first_seen_ms, last_seen_ms, read_last_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, CASE WHEN ?6 > 0 THEN ?8 END) \
+             ON CONFLICT (group_id, source, route, pipeline, step) DO UPDATE SET \
+                 rows = rows + excluded.rows, fields_dropped = fields_dropped + excluded.fields_dropped, \
+                 read_last_ms = CASE WHEN excluded.rows > 0 THEN MAX(COALESCE(read_last_ms, 0), ?8) \
+                     ELSE read_last_ms END, \
+                 first_seen_ms = MIN(first_seen_ms, excluded.first_seen_ms), \
+                 last_seen_ms = MAX(last_seen_ms, excluded.last_seen_ms)",
+            params![
+                group_id,
+                shape.source,
+                shape.route,
+                shape.pipeline,
+                shape.step,
+                shape.rows as i64,
+                dropped,
+                now_ms
+            ],
+        )?;
     }
+    for streams in &report.unmatched {
+        let held: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM stream_keys WHERE group_id = ?1 AND source = ?2",
+            params![group_id, streams.source],
+            |row| row.get(0),
+        )?;
+        let mut room = crate::heartbeat::STREAM_KEYS_PER_SOURCE.saturating_sub(held as usize);
+        let mut dropped = streams.keys_dropped as i64;
+        for key in &streams.keys {
+            let known: bool = tx.query_row(
+                "SELECT COUNT(*) FROM stream_keys WHERE group_id = ?1 AND source = ?2 AND key = ?3",
+                params![group_id, streams.source, key.key],
+                |row| row.get::<_, i64>(0).map(|n| n > 0),
+            )?;
+            if !known {
+                if room == 0 {
+                    dropped += key.rows as i64;
+                    continue;
+                }
+                room -= 1;
+            }
+            tx.execute(
+                "INSERT INTO stream_keys (group_id, source, key, rows, first_seen_ms, last_seen_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5) \
+                 ON CONFLICT (group_id, source, key) DO UPDATE SET \
+                     rows = rows + excluded.rows, first_seen_ms = MIN(first_seen_ms, excluded.first_seen_ms), \
+                 last_seen_ms = MAX(last_seen_ms, excluded.last_seen_ms)",
+                params![group_id, streams.source, key.key, key.rows as i64, now_ms],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO stream_unmatched (group_id, source, rows, keys_dropped, first_seen_ms, last_seen_ms, \
+                 unrouted_since_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5) \
+             ON CONFLICT (group_id, source) DO UPDATE SET \
+                 rows = rows + excluded.rows, keys_dropped = keys_dropped + excluded.keys_dropped, \
+                 unrouted_since_ms = CASE WHEN unrouted_since_ms IS NULL OR ?5 - last_seen_ms > ?6 THEN ?5 \
+                     ELSE unrouted_since_ms END, \
+                 first_seen_ms = MIN(first_seen_ms, excluded.first_seen_ms), \
+                 last_seen_ms = MAX(last_seen_ms, excluded.last_seen_ms)",
+            params![
+                group_id,
+                streams.source,
+                streams.rows as i64,
+                dropped,
+                now_ms,
+                DRIFT_WINDOW.as_millis() as i64
+            ],
+        )?;
+    }
+    Ok(())
+}
 
+impl RegistryStore {
     /// Everything accumulated of every group's streams, each shape with its fields and each source with its keys,
     /// in key order.
     pub fn streams(&self) -> Result<StoredStreams, StoreError> {
@@ -1838,7 +1918,7 @@ mod tests {
         let mut seen = Vec::new();
         for (present, failed, at) in windows {
             store
-                .record_streams("prod", &declared_window(present, failed), None, true, at)
+                .record_streams("prod", &declared_window(present, failed), true, at)
                 .unwrap();
             let f = store.declared_fields().unwrap().remove(0);
             seen.push((f.read_last_ms, f.present_last_ms, f.failed_last_ms, f.failing_since_ms));
@@ -1865,15 +1945,15 @@ mod tests {
     fn a_step_reads_only_the_rows_it_parsed_and_declares_only_what_it_reports() {
         let store = memory_store();
         store
-            .record_streams("prod", &declared_window(10, 0), None, true, 1_000)
+            .record_streams("prod", &declared_window(10, 0), true, 1_000)
             .unwrap();
         let mut guarded = declared_window(0, 0);
         guarded.parsers[0].rows = 0;
-        store.record_streams("prod", &guarded, None, true, 2_000).unwrap();
+        store.record_streams("prod", &guarded, true, 2_000).unwrap();
         assert_eq!(store.declared_fields().unwrap()[0].read_last_ms, Some(1_000));
         let mut undeclared = declared_window(0, 0);
         undeclared.parsers[0].fields.clear();
-        store.record_streams("prod", &undeclared, None, true, 3_000).unwrap();
+        store.record_streams("prod", &undeclared, true, 3_000).unwrap();
         assert!(store.declared_fields().unwrap().is_empty());
     }
 
@@ -1883,15 +1963,15 @@ mod tests {
         let store = memory_store();
         let rows = |store: &RegistryStore| store.streams().unwrap().parsers[0].rows;
         store
-            .record_streams("prod", &declared_window(10, 0), None, true, 1_000)
+            .record_streams("prod", &declared_window(10, 0), true, 1_000)
             .unwrap();
         store
-            .record_streams("prod", &declared_window(10, 0), None, true, 2_000)
+            .record_streams("prod", &declared_window(10, 0), true, 2_000)
             .unwrap();
         assert_eq!(rows(&store), 20);
         let mut retyped = declared_window(10, 0);
         retyped.parsers[0].fields[0].suggested = "str".into();
-        store.record_streams("prod", &retyped, None, true, 3_000).unwrap();
+        store.record_streams("prod", &retyped, true, 3_000).unwrap();
         assert_eq!(rows(&store), 10);
         assert_eq!(store.streams().unwrap().parsers[0].first_seen_ms, 3_000);
     }
@@ -1904,14 +1984,14 @@ mod tests {
         let rows = |store: &RegistryStore| store.streams().unwrap().parsers[0].rows;
         let mut older = declared_window(10, 0);
         older.parsers[0].fields[0].suggested = "str".into();
-        store.record_streams("prod", &older, None, false, 1_000).unwrap();
+        store.record_streams("prod", &older, false, 1_000).unwrap();
         assert_eq!(rows(&store), 10);
         store
-            .record_streams("prod", &declared_window(10, 0), None, true, 2_000)
+            .record_streams("prod", &declared_window(10, 0), true, 2_000)
             .unwrap();
-        store.record_streams("prod", &older, None, false, 3_000).unwrap();
+        store.record_streams("prod", &older, false, 3_000).unwrap();
         store
-            .record_streams("prod", &declared_window(10, 0), None, false, 4_000)
+            .record_streams("prod", &declared_window(10, 0), false, 4_000)
             .unwrap();
         assert_eq!(rows(&store), 20);
     }
@@ -1921,12 +2001,12 @@ mod tests {
     fn a_stream_unseen_for_the_last_window_is_forgotten() {
         let store = memory_store();
         store
-            .record_streams("prod", &stream_report(&["old"], &["k1"]), None, true, 1_000)
+            .record_streams("prod", &stream_report(&["old"], &["k1"]), true, 1_000)
             .unwrap();
         let later = 2_000 + Tier::OneHour.retention_ms();
         let mut newer = stream_report(&["new"], &[]);
         newer.unmatched.clear();
-        store.record_streams("prod", &newer, None, true, later).unwrap();
+        store.record_streams("prod", &newer, true, later).unwrap();
         store.maintain(later).unwrap();
         let streams = store.streams().unwrap();
         let fields: Vec<_> = streams.parsers[0].fields.iter().map(|f| f.name.as_str()).collect();
@@ -1939,7 +2019,7 @@ mod tests {
     fn a_removed_source_takes_its_streams_with_it() {
         let store = memory_store();
         store
-            .record_streams("prod", &stream_report(&["a"], &["k1"]), None, true, 1_000)
+            .record_streams("prod", &stream_report(&["a"], &["k1"]), true, 1_000)
             .unwrap();
         let kept = [("prod".to_string(), "orders".to_string())].into();
         store.forget_streams_except(&kept).unwrap();
@@ -1959,13 +2039,13 @@ mod tests {
     fn streams_accumulate_across_heartbeats() {
         let store = memory_store();
         store
-            .record_streams("prod", &stream_report(&["a", "b"], &["k1"]), None, true, 1_000)
+            .record_streams("prod", &stream_report(&["a", "b"], &["k1"]), true, 1_000)
             .unwrap();
         store
-            .record_streams("prod", &stream_report(&["b", "c"], &["k1", "k2"]), None, true, 2_000)
+            .record_streams("prod", &stream_report(&["b", "c"], &["k1", "k2"]), true, 2_000)
             .unwrap();
         store
-            .record_streams("staging", &stream_report(&["a"], &[]), None, true, 3_000)
+            .record_streams("staging", &stream_report(&["a"], &[]), true, 3_000)
             .unwrap();
 
         let streams = store.streams().unwrap();
@@ -1998,9 +2078,9 @@ mod tests {
         let store = memory_store();
         let mut newer = stream_report(&["a"], &["k1"]);
         newer.parsers[0].fields[0].suggested = "i64".into();
-        store.record_streams("prod", &newer, None, true, 2_000).unwrap();
+        store.record_streams("prod", &newer, true, 2_000).unwrap();
         store
-            .record_streams("prod", &stream_report(&["a"], &["k1"]), None, true, 1_000)
+            .record_streams("prod", &stream_report(&["a"], &["k1"]), true, 1_000)
             .unwrap();
 
         let streams = store.streams().unwrap();
@@ -2014,33 +2094,130 @@ mod tests {
         assert_eq!((hec.keys[0].first_seen_ms, hec.keys[0].last_seen_ms), (1_000, 2_000));
     }
 
-    /// A window sent again, because its beat's answer was lost, is counted once; the next one, or the first of a
-    /// new life, is counted.
+    /// A window sent again, because its beat's answer was lost, is counted once -- its points and its streams --
+    /// while the state it rides with is written; the next one, or the first of a new life, is counted.
     #[test]
     fn a_window_is_recorded_once() {
         let store = memory_store();
-        let window = |boot_id, seq| {
-            Some(StreamWindow {
-                worker_id: "w1",
-                boot_id,
-                seq,
-            })
-        };
         let report = stream_report(&["a"], &["k1"]);
-        store
-            .record_streams("prod", &report, window(7, 1), true, 1_000)
-            .unwrap();
-        store
-            .record_streams("prod", &report, window(7, 1), true, 1_000)
-            .unwrap();
-        assert_eq!(store.streams().unwrap().parsers[0].rows, 10, "the repeat was recorded");
-        store
-            .record_streams("prod", &report, window(7, 2), true, 2_000)
-            .unwrap();
-        store
-            .record_streams("prod", &report, window(8, 1), true, 3_000)
-            .unwrap();
+        let beat = |boot_id, seq, report_json: &str, now_ms| {
+            let points = [SeriesPoint {
+                metric: "smeltr_rows_polled_total",
+                subject_key: "src".to_string(),
+                counter: true,
+                value: 5.0,
+            }];
+            store
+                .record_heartbeat(&HeartbeatRows {
+                    worker_id: "w1",
+                    threads: &[LatestRow {
+                        thread_id: "t1",
+                        report_json: report_json.to_string(),
+                    }],
+                    points: &points,
+                    window: Window {
+                        boot_id,
+                        seq: Some(seq),
+                        streams: Some(Streams {
+                            group_id: "prod",
+                            report: &report,
+                            deployed: true,
+                        }),
+                    },
+                    stop_after_unreachable_secs: None,
+                    commit: None,
+                    smeltr_version: "",
+                    release: None,
+                    supervising_json: None,
+                    authority_expires_millis: None,
+                    stopped_at_ms: None,
+                    now_ms,
+                })
+                .unwrap();
+        };
+        let polled = || {
+            store
+                .points("smeltr_rows_polled_total", "src", Tier::TenSeconds)
+                .unwrap()
+        };
+        beat(7, 1, r#"{"a":1}"#, 1_000);
+        beat(7, 1, r#"{"a":2}"#, 1_000);
+        assert_eq!(polled(), vec![(0, 5.0)], "the repeat's points were not counted");
+        assert_eq!(
+            store.streams().unwrap().parsers[0].rows,
+            10,
+            "the repeat's streams were not counted"
+        );
+        assert_eq!(
+            store.load_latest_state().unwrap()[0].report_json,
+            r#"{"a":2}"#,
+            "the repeat's state was written"
+        );
+        beat(7, 2, r#"{"a":3}"#, 2_000);
+        beat(8, 1, r#"{"a":4}"#, 3_000);
+        assert_eq!(polled(), vec![(0, 15.0)]);
         assert_eq!(store.streams().unwrap().parsers[0].rows, 30);
+    }
+
+    /// Streams that will not write are left out, wholly, and the rest of the beat is recorded: they fail on what
+    /// they hold, so refusing the beat would refuse the same window every time it came again.
+    #[test]
+    fn streams_that_will_not_write_leave_the_rest_of_the_beat_recorded() {
+        let store = memory_store();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER refused BEFORE INSERT ON stream_fields BEGIN SELECT RAISE(ABORT, 'refused'); END",
+            )
+            .unwrap();
+        let report = stream_report(&["a"], &["k1"]);
+        let points = [SeriesPoint {
+            metric: "smeltr_rows_polled_total",
+            subject_key: "src".to_string(),
+            counter: true,
+            value: 5.0,
+        }];
+        store
+            .record_heartbeat(&HeartbeatRows {
+                worker_id: "w1",
+                threads: &[LatestRow {
+                    thread_id: "t1",
+                    report_json: r#"{"a":1}"#.to_string(),
+                }],
+                points: &points,
+                window: Window {
+                    boot_id: 7,
+                    seq: Some(1),
+                    streams: Some(Streams {
+                        group_id: "prod",
+                        report: &report,
+                        deployed: true,
+                    }),
+                },
+                stop_after_unreachable_secs: None,
+                commit: None,
+                smeltr_version: "",
+                release: None,
+                supervising_json: None,
+                authority_expires_millis: None,
+                stopped_at_ms: None,
+                now_ms: 1_000,
+            })
+            .expect("a beat whose streams will not write is still recorded");
+
+        assert!(
+            store.streams().unwrap().parsers.is_empty(),
+            "half of the streams were written"
+        );
+        assert_eq!(
+            store
+                .points("smeltr_rows_polled_total", "src", Tier::TenSeconds)
+                .unwrap(),
+            vec![(0, 5.0)]
+        );
+        assert_eq!(store.load_latest_state().unwrap()[0].report_json, r#"{"a":1}"#);
     }
 
     /// The tables grow with the configuration, never the traffic: a name past the cap is counted, not kept.
@@ -2052,10 +2229,10 @@ mod tests {
             .collect();
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         store
-            .record_streams("prod", &stream_report(&many, &[]), None, true, 1)
+            .record_streams("prod", &stream_report(&many, &[]), true, 1)
             .unwrap();
         store
-            .record_streams("prod", &stream_report(&["one-more", "f0"], &[]), None, true, 2)
+            .record_streams("prod", &stream_report(&["one-more", "f0"], &[]), true, 2)
             .unwrap();
 
         let streams = store.streams().unwrap();
@@ -2206,35 +2383,39 @@ mod tests {
         let levels = ["warn".to_string(), "error".to_string()];
         let mut rows = store.latest_log_by_site(&levels, 100, 1_000).unwrap();
         rows.sort_by(|a, b| (&a.worker_id, &a.site).cmp(&(&b.worker_id, &b.site)));
-        #[allow(clippy::type_complexity)]
-        let read: Vec<(&str, &str, Option<&str>, &str, &str, i64, i64)> = rows
-            .iter()
-            .map(|r| {
-                (
-                    r.worker_id.as_str(),
-                    r.site.as_str(),
-                    r.group_id.as_deref(),
-                    r.level.as_str(),
-                    r.message.as_str(),
-                    r.at_ms,
-                    r.first_ms,
-                )
-            })
-            .collect();
         assert_eq!(
-            read,
+            rows,
             vec![
-                ("w-1", "worker.fetch_failed", Some("east"), "error", "latest", 300, 100),
-                (
-                    "w-1",
-                    "worker.heartbeat_failed",
-                    Some("west"),
-                    "warn",
-                    "other site",
-                    200,
-                    200
-                ),
-                ("w-2", "worker.fetch_failed", None, "warn", "another worker", 250, 250),
+                LoggedSite {
+                    worker_id: "w-1".to_string(),
+                    site: "worker.fetch_failed".to_string(),
+                    group_id: Some("east".to_string()),
+                    level: "error".to_string(),
+                    message: "latest".to_string(),
+                    fields_json: "[]".to_string(),
+                    at_ms: 300,
+                    first_ms: 100,
+                },
+                LoggedSite {
+                    worker_id: "w-1".to_string(),
+                    site: "worker.heartbeat_failed".to_string(),
+                    group_id: Some("west".to_string()),
+                    level: "warn".to_string(),
+                    message: "other site".to_string(),
+                    fields_json: "[]".to_string(),
+                    at_ms: 200,
+                    first_ms: 200,
+                },
+                LoggedSite {
+                    worker_id: "w-2".to_string(),
+                    site: "worker.fetch_failed".to_string(),
+                    group_id: None,
+                    level: "warn".to_string(),
+                    message: "another worker".to_string(),
+                    fields_json: "[]".to_string(),
+                    at_ms: 250,
+                    first_ms: 250,
+                },
             ]
         );
         assert!(store.latest_log_by_site(&[], 0, 1_000).unwrap().is_empty());
@@ -2564,6 +2745,7 @@ mod tests {
             worker_id: "w1",
             threads: &threads,
             points: &points,
+            window: Window::default(),
             stop_after_unreachable_secs: Some(300),
             commit: Some("c0ffee"),
             smeltr_version: "2026.9.20+main.c0ffee",
@@ -2620,6 +2802,7 @@ mod tests {
                     worker_id: "w1",
                     threads: &[],
                     points: &points,
+                    window: Window::default(),
                     stop_after_unreachable_secs: None,
                     commit: None,
                     smeltr_version: "",
@@ -2966,6 +3149,7 @@ mod tests {
                     report_json: report_json.to_string(),
                 }],
                 points: &[],
+                window: Window::default(),
                 stop_after_unreachable_secs,
                 commit,
                 smeltr_version: "",
@@ -3187,6 +3371,28 @@ mod tests {
             store.points("smeltr_rows_polled_total", "k", Tier::TenSeconds).unwrap(),
             vec![(0, 3.0)]
         );
+        cleanup(&path);
+    }
+
+    /// Step 10 renames the table of windows, and the windows a file already recorded are still recorded once.
+    #[test]
+    fn a_file_from_step_9_keeps_the_windows_it_recorded() {
+        let path = temp_path("step-9");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            super::super::steps::upgrade_sqlite(&mut conn, "registry.db", &STEPS[..9]).unwrap();
+            conn.execute(
+                "INSERT INTO stream_windows (worker_id, boot_id, seq) VALUES ('w1', 7, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        assert!(!super::super::steps::is_additive(STEPS[9]), "a rename is breaking");
+        let store = RegistryStore::open(&path).unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert!(!claim_window(&conn, "w1", 7, 1).unwrap());
+        assert!(claim_window(&conn, "w1", 7, 2).unwrap());
+        drop(conn);
         cleanup(&path);
     }
 

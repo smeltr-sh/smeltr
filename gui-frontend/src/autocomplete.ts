@@ -2,6 +2,7 @@
 // is being typed, and which functions match it, in what order.
 
 import type { StdFuncEntry } from './stdlib';
+import type { DotAnswer } from './api';
 
 export interface CurrentWord {
   word: string;
@@ -70,7 +71,8 @@ function usageBonus(uses: number): number {
  * often the bundle calls a name (`usage`) adds a little. Grok macro names are
  * typed directly and their descriptions are prose, so `matchDescription` is off
  * there, or "row" and "with" would surface half the catalog. An empty `word`
- * is the whole list in its own order: the browse-everything case. */
+ * matches every name, so the whole list ranks the same way: shorter and more
+ * used first. */
 export function rankedSuggestions(
   entries: StdFuncEntry[],
   word: string,
@@ -79,7 +81,6 @@ export function rankedSuggestions(
     usage = new Map(),
   }: { matchDescription?: boolean; usage?: ReadonlyMap<string, number> } = {},
 ): StdFuncEntry[] {
-  if (word.length === 0) return entries;
   const lower = word.toLowerCase();
   // A description match ranks below every name match, whatever its use.
   const scored: { f: StdFuncEntry; byName: boolean; score: number }[] = [];
@@ -94,6 +95,61 @@ export function rankedSuggestions(
   return scored
     .sort((a, b) => Number(b.byName) - Number(a.byName) || b.score - a.score)
     .map(({ f }) => f);
+}
+
+/** What a `.` follows, as the engine answered (`afterDot`), or `unknown` before it has. */
+export type Member = { kind: 'unknown' } | ({ kind: 'typed' } & DotAnswer);
+
+/** The most types a warning names before it names only the mismatch: a longer list wraps in a narrow list. */
+const MOST_TYPES_NAMED = 3;
+
+/** Why a function does not take `type`: the types it works on, as the engine spells its first parameter. */
+function misfitWarning(takes: string, type: string): string {
+  const types = takes.split('/');
+  if (types.length > MOST_TYPES_NAMED) return `doesn't work on ${type}`;
+  // A kind of value reads as a plural; a type's name reads as it is spelled.
+  const named =
+    types.length === 1 && (takes === 'object' || takes === 'array') ? `${takes}s` : takes;
+  return `works on ${named}, not ${type}`;
+}
+
+/** What may follow a dot, best first: an object's fields, then the functions that take what is before the dot, then
+ * every other function, each with a warning naming what it takes. Within each, as `rankedSuggestions` orders them.
+ * Only a function written on a value (`value.sign()`) can follow a dot. Where `member` is unknown, every such
+ * function, as they rank. */
+export function memberSuggestions(
+  member: Member,
+  functions: StdFuncEntry[],
+  word: string,
+  usage: ReadonlyMap<string, number> = new Map(),
+): StdFuncEntry[] {
+  const methods = rankedSuggestions(
+    functions.filter((f) => /^\w+\.\w+\(/.test(f.signature)),
+    word,
+    { usage },
+  );
+  if (member.kind === 'unknown' || member.ty === undefined) return methods;
+  const fields = rankedSuggestions(
+    member.fields.map(([name, type]) => ({
+      name,
+      signature: `${name}: ${type.startsWith('{') ? 'object' : type}`,
+      description: '',
+      field: true,
+    })),
+    word,
+    { matchDescription: false },
+  );
+  // An object's type is spelled whole (`{path: str, ...}`); a warning names it by its kind.
+  const type = member.ty.startsWith('{') ? 'object' : member.ty;
+  const byName = new Map(member.methods.map((m) => [m.name, m]));
+  const fit: StdFuncEntry[] = [];
+  const misfit: StdFuncEntry[] = [];
+  for (const f of methods) {
+    const m = byName.get(f.name);
+    if (!m || m.fits) fit.push(f);
+    else misfit.push({ ...f, warning: misfitWarning(m.takes, type) });
+  }
+  return [...fields, ...fit, ...misfit];
 }
 
 /** True once an unclosed `%{` precedes `cursorPos` with no `:` since -- the

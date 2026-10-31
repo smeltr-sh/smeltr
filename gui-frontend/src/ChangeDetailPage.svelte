@@ -17,6 +17,7 @@
     retitleChange,
     leaveBranch,
     listTests,
+    branchSchemaFindings,
     runTests,
     errorText,
     scopedKey,
@@ -27,6 +28,7 @@
     type MergeConflicts,
     type MergeSide,
     type ChangeDto,
+    type SchemaFindingDto,
     type ScopedImpact,
     type TestResult,
     type TestSummary,
@@ -36,6 +38,7 @@
   import { ago, count, shortCommit, pathSummary } from './time';
   import { nameOf, pipelineNamesAt, type PipelineNames } from './pipelineNames';
   import SectionShell from './SectionShell.svelte';
+  import SecondaryTabs from './SecondaryTabs.svelte';
   import PageHeader from './PageHeader.svelte';
   import PencilIcon from './PencilIcon.svelte';
   import { ask } from './Confirm.svelte';
@@ -44,6 +47,7 @@
   import PushState from './PushState.svelte';
   import ChangeConversation from './ChangeConversation.svelte';
   import ChangeTests from './ChangeTests.svelte';
+  import ChangeSchemas from './ChangeSchemas.svelte';
   import ChangeDock from './ChangeDock.svelte';
   import ChangeObjects from './ChangeObjects.svelte';
   import { scopeOf, type ObjectChange } from './objectChanges';
@@ -83,7 +87,8 @@
   let deploying = $state(false);
 
   /** Which part of the change the left column shows. */
-  let tab = $state<'conversation' | 'saves' | 'tests'>('conversation');
+  const TABS = ['conversation', 'saves', 'tests', 'schemas'] as const;
+  let tab = $state<(typeof TABS)[number]>('conversation');
   let dockHeight = $state(0);
 
   let events = $state<TimelineEvent[]>([]);
@@ -173,7 +178,7 @@
   /** What a reader calls pipeline `id` of `scope`: its name from the configs, or from the scope's
    * `Impact.pipelineNames`, which also names one the change reaches in a scope it does not touch. */
   function pipelineName(scope: string, id: string): string {
-    const reached = touchedByScope.find((si) => si.scope === scope)?.pipelineNames ?? {};
+    const reached = touchedByScope.find((si) => si.area === scope)?.pipelineNames ?? {};
     return nameOf({ ...reached, ...namesByScope.get(scope) }, id);
   }
 
@@ -197,11 +202,29 @@
     const named = [
       ...Object.entries(namesByScope.get(scope) ?? {}),
       ...touchedByScope
-        .filter((si) => si.scope === scope)
+        .filter((si) => si.area === scope)
         .flatMap((si) => Object.entries(si.pipelineNames ?? {})),
     ];
     const hit = named.find(([id]) => slugify(id) === file[2]);
     return hit === undefined ? undefined : `pipeline ${hit[1]}`;
+  }
+
+  let schemaFindings = $state<SchemaFindingDto[]>([]);
+  let schemasLoading = $state(true);
+  let schemasError = $state('');
+
+  async function loadSchemaFindings() {
+    schemasLoading = true;
+    schemasError = '';
+    try {
+      const res = await branchSchemaFindings(branch);
+      if (!res.ok) schemasError = errorText(res.errors);
+      else schemaFindings = res.findings;
+    } catch (e) {
+      schemasError = unreported(e);
+    } finally {
+      schemasLoading = false;
+    }
   }
 
   async function loadTests() {
@@ -218,7 +241,7 @@
       }
       touchedByScope = runRes.touched ?? [];
       testResults = runRes.results;
-      testSummaryByKey = new Map(listRes.tests.map((t) => [scopedKey(t.scope, t.id), t]));
+      testSummaryByKey = new Map(listRes.tests.map((t) => [scopedKey(t.area, t.id), t]));
     } catch (e) {
       testsError = unreported(e);
     } finally {
@@ -253,6 +276,7 @@
       loadTimeline();
       void loadNames(found.touches);
       loadTests();
+      loadSchemaFindings();
     } catch (e) {
       loadFailed = true;
       reported(e);
@@ -270,6 +294,7 @@
       if (!found?.change) return load();
       loaded = { branch: found, change: found.change };
       loadTests();
+      loadSchemaFindings();
     } catch (e) {
       loadFailed = true;
       reported(e);
@@ -342,8 +367,9 @@
     if (!loaded || deployDisabledReason !== '') return;
     const ok = await ask({
       title: heldAt ? 'approve' : 'approve & deploy',
-      body:
-        `Approve ${heldAt ? '' : 'and deploy '}"${loaded.change.title}". This squash-merges the change onto main` +
+      body: `Approve ${heldAt ? '' : 'and deploy '}"${loaded.change.title}".`,
+      help:
+        'This squash-merges the change onto main' +
         (remote ? `, pushes it to the remote's main ` : ' ') +
         `and deletes the branch ${branch}` +
         (heldAt
@@ -398,7 +424,7 @@
               <Locked refusedInDemo>
                 <button
                   type="button"
-                  class="pencil"
+                  class="icon pencil"
                   onclick={startRename}
                   aria-label="Rename this change"
                   title="Rename"
@@ -473,29 +499,22 @@
             </div>
           {/if}
 
-          <div class="subtabs" role="tablist" aria-label="Change">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'conversation'}
-              onclick={() => (tab = 'conversation')}>Conversation</button
-            >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'saves'}
-              onclick={() => (tab = 'saves')}
-              >Saves <span class="pill">{timelineLoading ? '…' : saves.length}</span></button
-            >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'tests'}
-              onclick={() => (tab = 'tests')}
-              >Tests <span class="pill"
-                >{testsLoading ? '…' : `${tally.passed}/${tally.total}`}</span
-              ></button
-            >
+          <div class="subtabs">
+            <SecondaryTabs tabs={TABS} active={tab} onselect={(t) => (tab = t)} ariaLabel="Change">
+              {#snippet label(t)}
+                {#if t === 'conversation'}Conversation
+                {:else if t === 'saves'}Saves <span class="pill"
+                    >{timelineLoading ? '…' : saves.length}</span
+                  >
+                {:else if t === 'tests'}Tests <span class="pill"
+                    >{testsLoading ? '…' : `${tally.passed}/${tally.total}`}</span
+                  >
+                {:else}Schemas <span class="pill"
+                    >{schemasLoading ? '…' : schemaFindings.length}</span
+                  >
+                {/if}
+              {/snippet}
+            </SecondaryTabs>
           </div>
 
           <div role="tabpanel">
@@ -528,6 +547,13 @@
                   {/each}
                 </ul>
               {/if}
+            {:else if tab === 'schemas'}
+              <ChangeSchemas
+                findings={schemaFindings}
+                loading={schemasLoading}
+                error={schemasError}
+                {pipelineName}
+              />
             {:else}
               <ChangeTests
                 {branch}
@@ -545,6 +571,7 @@
         <div class="right">
           {#if mergeConflicts}
             <ConflictChoices
+              {branch}
               conflicts={mergeConflicts}
               busy={bringingCurrent}
               onapply={(sides) => confirmBringCurrent(sides)}
@@ -585,7 +612,9 @@
         reviews={reviewState}
         tests={tally}
         {testsLoading}
+        schemaFindings={schemasLoading ? undefined : schemaFindings.length}
         behind={loaded.branch.behind}
+        leftOut={loaded.branch.leftOut?.length ?? 0}
         {bringingCurrent}
         bringCurrentDisabled={bringingCurrent || mergeConflicts !== null}
         onbringcurrent={() => confirmBringCurrent()}
@@ -607,9 +636,6 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--dim);
-  }
-  .dim {
     color: var(--dim);
   }
   .mono {
@@ -664,22 +690,6 @@
      glyph has none of. */
   .pencil {
     align-self: center;
-    display: inline-flex;
-    border: 0;
-    background: none;
-    color: var(--dim);
-    padding: 0.15rem;
-    cursor: pointer;
-  }
-
-  .pencil:hover {
-    color: var(--ink);
-  }
-
-  .pencil:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-    border-radius: var(--radius);
   }
 
   /* The change and what was said about it on the left, what it does on the right. */
@@ -718,30 +728,8 @@
     color: var(--dim);
   }
 
-  /* The left column's own sections, drawn as Lookup tables draws its tabs. */
   .subtabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1.2rem;
     margin: 1rem 0 0.9rem;
-    border-bottom: 1px solid var(--border);
-  }
-  .subtabs button {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    background: none;
-    padding: 0.35rem 0;
-    border-width: 0 0 3px;
-    border-radius: 0;
-    border-color: transparent;
-    color: var(--dim);
-    font-size: var(--text-body);
-  }
-  .subtabs button[aria-selected='true'] {
-    color: var(--ink);
-    font-weight: 600;
-    border-color: var(--accent);
   }
   .pill {
     padding: 0 0.4rem;

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  expiringSoon,
   ago,
   clockTime,
   count,
+  countdown,
   dateTime,
   isPipelinePath,
   pathSummary,
@@ -35,6 +37,19 @@ describe('dateTime', () => {
   it('names the month and day, then the local clock', () => {
     expect(dateTime(new Date(2024, 9, 17, 22, 40).getTime() / 1000)).toBe('Oct 17, 22:40');
     expect(dateTime(new Date(2024, 0, 3, 8, 5).getTime() / 1000)).toBe('Jan 3, 08:05');
+  });
+});
+
+describe('countdown', () => {
+  it('ticks to the second, with days once there is a day left', () => {
+    expect(countdown(NOW + 59_000, NOW)).toBe('00:00:59');
+    expect(countdown(NOW + (6 * 3600 + 22 * 60 + 51) * 1000, NOW)).toBe('06:22:51');
+    expect(countdown(NOW + (86_400 + 6 * 3600 + 22 * 60 + 51) * 1000, NOW)).toBe('1 day 06:22:51');
+    expect(countdown(NOW + 2 * 86_400_000, NOW)).toBe('2 days 00:00:00');
+  });
+
+  it('stops at zero once the moment passes', () => {
+    expect(countdown(NOW - 5_000, NOW)).toBe('00:00:00');
   });
 });
 
@@ -128,6 +143,15 @@ describe('isPipelinePath', () => {
     expect(isPipelinePath('pipelines/pipeline-x7k2m9q1.json')).toBe(true);
     expect(isPipelinePath('groups/west/sources.json')).toBe(false);
     expect(isPipelinePath('groups/west/pipelines/notes.txt')).toBe(false);
+  });
+});
+
+describe('expiringSoon', () => {
+  const DAY = 86_400_000;
+  it('gives a certificate the last tenth of its life', () => {
+    const cert = { notBeforeMillis: 0, notAfterMillis: 90 * DAY };
+    expect(expiringSoon(cert, 80 * DAY)).toBe(false);
+    expect(expiringSoon(cert, 81 * DAY)).toBe(true);
   });
 });
 

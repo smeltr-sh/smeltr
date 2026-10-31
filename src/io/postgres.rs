@@ -12,7 +12,6 @@
 use std::error::Error as StdError;
 use std::fmt::{self, Write as _};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::Arc;
 
 use tokio_postgres::config::SslMode;
 // What `to_sql` writes into. tokio-postgres re-exports the `bytes` type here for its own `to_sql_checked!`.
@@ -25,14 +24,14 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 use super::IoError;
 use super::sql::{Dialect, Statement, quote};
 use super::sql_source::{
-    CALL_TIMEOUT, CONNECT_TIMEOUT, Connection, Described, Driver, FULL_SCAN_ROWS, Failure, MAX_RESULT_BYTES, Rows,
-    STATEMENT_MARGIN, Shell, Tls, Verdict, held, too_large,
+    CALL_TIMEOUT, CONNECT_TIMEOUT, Connection, Described, Driver, Encrypted, FULL_SCAN_ROWS, Failure, MAX_RESULT_BYTES,
+    Rows, STATEMENT_MARGIN, Shell, Verdict, held, too_large,
 };
 use super::values::Value;
 use crate::core::column::DataType;
 use crate::core::variant;
 use crate::ops::civil::MICROS_PER_DAY;
-use crate::plan::topology::{HeldSecrets, Identity, SecretRef};
+use crate::plan::topology::{HeldSecrets, SecretRef, Tls};
 
 type BoxError = Box<dyn StdError + Sync + Send>;
 
@@ -49,16 +48,16 @@ pub struct PostgresConnection {
     pub database: String,
     pub user: String,
     pub password: Option<SecretRef>,
-    pub tls: Tls,
-    /// The certificate presented and the authorities trusted, under `Tls::Require`.
-    pub identity: Option<Arc<Identity>>,
+    pub encrypted: Encrypted,
+    /// The TLS it speaks, under `Encrypted::Require`.
+    pub tls: Option<Tls>,
 }
 
 pub struct PostgresDriver {
     shell: Shell<Client>,
 }
 
-/// What `connect` takes: the config, password resolved, and the TLS it connects under (`None` under `Tls::Disable`).
+/// What `connect` takes: the config, password resolved, and the TLS it connects under (`None` under `Encrypted::Disable`).
 #[derive(Clone)]
 pub struct Opening {
     config: Config,
@@ -92,14 +91,14 @@ impl PostgresDriver {
         if let Some(reference) = &connection.password {
             config.password(super::held(secrets, reference, "the PostgreSQL source", "password")?);
         }
-        let tls = match connection.tls {
-            Tls::Disable => {
+        let tls = match connection.encrypted {
+            Encrypted::Disable => {
                 config.ssl_mode(SslMode::Disable);
                 None
             }
-            Tls::Require => {
+            Encrypted::Require => {
                 config.ssl_mode(SslMode::Require);
-                Some(super::objects::tls(connection.identity.as_deref(), secrets)?)
+                Some(super::objects::client_config(connection.tls.as_ref(), secrets)?)
             }
         };
         Ok(PostgresDriver {

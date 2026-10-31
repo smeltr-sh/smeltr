@@ -15,7 +15,10 @@ use base64::Engine as _;
 
 use crate::io::OwnedRecord;
 use crate::io::files::{Partition, Partitioner};
-use crate::io::iceberg::metadata::{Literal, PartitionSpec, Primitive, Schema, Transform, Type};
+use arrow_schema::{DataType as Arrow, Schema as ArrowSchema};
+
+use super::schema::{primitive_arrow, write_default};
+use crate::io::iceberg::metadata::{Literal, NestedField, PartitionSpec, Primitive, Schema, Transform, Type};
 use crate::io::table::{Kind, column_at, iso_date, read, url_encode};
 use crate::ops::civil::{MICROS_PER_DAY, civil_from_days, valid_date_days};
 
@@ -73,22 +76,20 @@ pub fn partition_name(transform: &Transform, path: &[String]) -> String {
     }
 }
 
-/// The type `transform` makes of a `source` value. Err when the spec does not define the pair, or when it is one this
-/// writer has no `Literal` for (`float`, `timestamp` without zone).
+/// The type `transform` makes of a `source` value. Err when the spec does not define the pair.
 pub fn result_type(transform: &Transform, source: &Primitive) -> Result<Primitive, String> {
     use Primitive as P;
     let supported = match transform {
-        Transform::Identity => matches!(
-            source,
-            P::Boolean | P::Int | P::Long | P::Double | P::Date | P::Timestamptz | P::String | P::Binary
-        ),
-        Transform::Year | Transform::Month | Transform::Day => matches!(source, P::Date | P::Timestamptz),
-        Transform::Hour => matches!(source, P::Timestamptz),
+        Transform::Identity => !matches!(source, P::Other(_)),
+        Transform::Year | Transform::Month | Transform::Day => {
+            matches!(source, P::Date | P::Timestamp | P::Timestamptz)
+        }
+        Transform::Hour => matches!(source, P::Timestamp | P::Timestamptz),
         Transform::Bucket(n) => {
             *n > 0
                 && matches!(
                     source,
-                    P::Int | P::Long | P::Date | P::Timestamptz | P::String | P::Binary
+                    P::Int | P::Long | P::Date | P::Timestamp | P::Timestamptz | P::String | P::Binary
                 )
         }
         Transform::Truncate(w) => *w > 0 && matches!(source, P::Int | P::Long | P::String | P::Binary),
@@ -121,13 +122,13 @@ pub fn apply(transform: &Transform, value: &Literal) -> Option<Literal> {
         }
         Transform::Day => Some(Literal::Date(i32::try_from(days_of(value)?).ok()?)),
         Transform::Hour => match value {
-            Literal::Timestamptz(us) => Some(Literal::Int(i32::try_from(us.div_euclid(MICROS_PER_HOUR)).ok()?)),
+            Literal::Micros(us) => Some(Literal::Int(i32::try_from(us.div_euclid(MICROS_PER_HOUR)).ok()?)),
             _ => None,
         },
         Transform::Bucket(n) if *n > 0 => {
             let hash = match value {
                 Literal::Int(v) | Literal::Date(v) => murmur3_x86_32(&(*v as i64).to_le_bytes()),
-                Literal::Long(v) | Literal::Timestamptz(v) => murmur3_x86_32(&v.to_le_bytes()),
+                Literal::Long(v) | Literal::Micros(v) => murmur3_x86_32(&v.to_le_bytes()),
                 Literal::String(s) => murmur3_x86_32(s.as_bytes()),
                 Literal::Binary(b) => murmur3_x86_32(b),
                 _ => return None,
@@ -155,7 +156,7 @@ pub fn apply(transform: &Transform, value: &Literal) -> Option<Literal> {
 fn days_of(value: &Literal) -> Option<i64> {
     match value {
         Literal::Date(d) => Some(*d as i64),
-        Literal::Timestamptz(us) => Some(us.div_euclid(MICROS_PER_DAY)),
+        Literal::Micros(us) => Some(us.div_euclid(MICROS_PER_DAY)),
         _ => None,
     }
 }
@@ -184,10 +185,11 @@ pub fn murmur3_x86_32(data: &[u8]) -> i32 {
     h as i32
 }
 
-/// A partition value as it reads in a data file's path, escaped as Java's URLEncoder escapes it, as Iceberg's own
-/// writer does: `2026-10-10` for a day, `2026-10-10-13` for an hour, `null` for null. A string or a binary's Base64
-/// that reads `null` escapes its first letter, so that `literal_of` can tell it from null.
-pub fn path_text(value: Option<&Literal>, transform: &Transform) -> String {
+/// A partition value of the `result` type `transform` makes, as it reads in a data file's path, escaped as Java's
+/// URLEncoder escapes it, as Iceberg's own writer does: `2026-10-10` for a day, `2026-10-10-13` for an hour, `null`
+/// for null. A string or a binary's Base64 that reads `null` escapes its first letter, so that `literal_of` can tell
+/// it from null.
+pub fn path_text(value: Option<&Literal>, result: &Primitive, transform: &Transform) -> String {
     let Some(value) = value else {
         return NULL.to_string();
     };
@@ -205,13 +207,15 @@ pub fn path_text(value: Option<&Literal>, transform: &Transform) -> String {
         (Literal::Boolean(b), _) => b.to_string(),
         (Literal::Int(v), _) => v.to_string(),
         (Literal::Long(v), _) => v.to_string(),
+        (Literal::Double(v), _) if *result == Primitive::Float => java_float(*v as f32),
         (Literal::Double(v), _) => java_double(*v),
         (Literal::Date(d), _) => iso_date(*d as i64),
-        (Literal::Timestamptz(us), _) => {
+        (Literal::Micros(us), _) => {
             let (day, time) = (us.div_euclid(MICROS_PER_DAY), us.rem_euclid(MICROS_PER_DAY));
             let secs = time / 1_000_000;
+            let zone = if *result == Primitive::Timestamp { "" } else { "+00:00" };
             format!(
-                "{}T{:02}:{:02}:{:02}.{:06}+00:00",
+                "{}T{:02}:{:02}:{:02}.{:06}{zone}",
                 iso_date(day),
                 secs / 3600,
                 secs / 60 % 60,
@@ -262,12 +266,17 @@ pub fn literal_of(result: &Primitive, transform: &Transform, text: &str) -> Resu
         (Primitive::Boolean, _) => Literal::Boolean(human.parse().map_err(|_| bad())?),
         (Primitive::Int, _) => Literal::Int(human.parse().map_err(|_| bad())?),
         (Primitive::Long, _) => Literal::Long(human.parse().map_err(|_| bad())?),
+        (Primitive::Float, _) => Literal::Double(human.parse::<f32>().map_err(|_| bad())? as f64),
         (Primitive::Double, _) => Literal::Double(human.parse().map_err(|_| bad())?),
         (Primitive::Date, _) => {
             let days = parse_date(&human).ok_or_else(bad)?;
             Literal::Date(i32::try_from(days).map_err(|_| bad())?)
         }
-        (Primitive::Timestamptz, _) => Literal::Timestamptz(parse_timestamptz(&human).ok_or_else(bad)?),
+        (Primitive::Timestamp, _) => Literal::Micros(parse_timestamp(&human).ok_or_else(bad)?),
+        (Primitive::Timestamptz, _) => {
+            let time = human.strip_suffix("+00:00").or_else(|| human.strip_suffix('Z'));
+            Literal::Micros(time.and_then(parse_timestamp).ok_or_else(bad)?)
+        }
         (Primitive::String, _) => Literal::String(human),
         (Primitive::Binary, _) => Literal::Binary(
             base64::engine::general_purpose::STANDARD
@@ -282,6 +291,16 @@ pub fn literal_of(result: &Primitive, transform: &Transform, text: &str) -> Resu
 /// Java's `Double.toString`, which Iceberg writes a double's partition value with: plain from 10⁻³ up to 10⁷,
 /// `1.0E10` beyond.
 fn java_double(v: f64) -> String {
+    java_number(v, format!("{v:?}"), format!("{v:e}"))
+}
+
+/// Java's `Float.toString`, as `java_double` for a float: the fewest digits that read back as `v`.
+fn java_float(v: f32) -> String {
+    java_number(v as f64, format!("{v:?}"), format!("{v:e}"))
+}
+
+/// `v` as Java writes it, from its shortest digits as `{:?}` and `{:e}` write them.
+fn java_number(v: f64, plain: String, sci: String) -> String {
     if v.is_nan() {
         return "NaN".to_string();
     }
@@ -290,9 +309,8 @@ fn java_double(v: f64) -> String {
     }
     let magnitude = v.abs();
     if magnitude == 0.0 || (1e-3..1e7).contains(&magnitude) {
-        return format!("{v:?}");
+        return plain;
     }
-    let sci = format!("{v:e}");
     let (mantissa, exponent) = sci.split_once('e').expect("{:e} writes an exponent");
     let dot = if mantissa.contains('.') { "" } else { ".0" };
     format!("{mantissa}{dot}E{exponent}")
@@ -342,17 +360,16 @@ fn signed_parts(s: &str, want: usize) -> Option<Vec<i64>> {
     Some(parts)
 }
 
-fn parse_date(s: &str) -> Option<i64> {
+pub(super) fn parse_date(s: &str) -> Option<i64> {
     let [y, m, d] = signed_parts(s, 3)?[..] else {
         return None;
     };
     date_days(y, m, d)
 }
 
-/// Microseconds of `2026-10-10T13:05:09.000123+00:00`; the fraction may have up to six digits, or be left out.
-fn parse_timestamptz(s: &str) -> Option<i64> {
+/// Microseconds of `2026-10-10T13:05:09.000123`; the fraction may have up to six digits, or be left out.
+pub(super) fn parse_timestamp(s: &str) -> Option<i64> {
     let (date, time) = s.split_once('T')?;
-    let time = time.strip_suffix("+00:00").or_else(|| time.strip_suffix('Z'))?;
     let (hms, fraction) = time.split_once('.').unwrap_or((time, ""));
     let [h, m, sec] = hms
         .split(':')
@@ -378,9 +395,11 @@ pub struct TablePartitioner {
 struct SpecField {
     /// The partition field's name.
     name: String,
-    /// The source column's names from the record's root, and its type. `None` for void, which reads no source: its
-    /// column may since have been dropped.
-    source: Option<(Vec<String>, Kind)>,
+    /// The source column's names from the record's root, its type, and the type the transform makes of it. `None` for
+    /// void, which reads no source: its column may since have been dropped.
+    source: Option<(Vec<String>, Kind, Primitive)>,
+    /// The source's value in a row whose record lacks its names from the `k`th on, for each `k`.
+    lacked: Vec<Option<Literal>>,
     transform: Transform,
 }
 
@@ -396,6 +415,7 @@ impl TablePartitioner {
                     return Ok(SpecField {
                         name: field.name.clone(),
                         source: None,
+                        lacked: Vec::new(),
                         transform: Transform::Void,
                     });
                 }
@@ -412,12 +432,14 @@ impl TablePartitioner {
                         source.join(".")
                     ));
                 };
-                result_type(&field.transform, source_type)
+                let result = result_type(&field.transform, source_type)
                     .map_err(|e| format!("the partition field {}: {e}", field.name))?;
                 let kind = source_type.kind().expect("result_type refuses Other");
+                let lacked = lacked_values(&schema.fields, &source, &kind)?;
                 Ok(SpecField {
                     name: field.name.clone(),
-                    source: Some((source, kind)),
+                    source: Some((source, kind, result)),
+                    lacked,
                     transform: field.transform.clone(),
                 })
             })
@@ -426,10 +448,48 @@ impl TablePartitioner {
     }
 }
 
+/// What a row whose record lacks `names` from the `k`th on holds at them, for each `k`: the leaf's write default where
+/// every struct from the `k`th on takes a struct by default, null otherwise.
+fn lacked_values(fields: &[NestedField], names: &[String], kind: &Kind) -> Result<Vec<Option<Literal>>, String> {
+    let mut path: Vec<&NestedField> = Vec::with_capacity(names.len());
+    for name in names {
+        let fields = match path.last().map(|f| &f.field_type) {
+            Some(Type::Struct(s)) => &s.fields,
+            _ => fields,
+        };
+        path.push(fields.iter().find(|f| f.name == *name).expect("a source's path"));
+    }
+    let (leaf, structs) = path.split_last().expect("a source has a name");
+    let Type::Primitive(p) = &leaf.field_type else {
+        unreachable!("a source is a primitive")
+    };
+    let arrow = primitive_arrow(p).expect("a primitive of a kind");
+    let value = read(&write_default(leaf, &arrow, &names.join("."))?, 0, kind, names)?;
+    let defaulted = |f: &&NestedField| f.other.get("write-default").is_some_and(|d| !d.is_null());
+    Ok((0..names.len())
+        .map(|k| structs[k..].iter().all(defaulted).then(|| value.clone()).flatten())
+        .collect())
+}
+
+/// The first of `names` that `schema`, a row's, lacks along them.
+fn lacked_from(schema: &ArrowSchema, names: &[String]) -> Option<usize> {
+    let mut fields = schema.fields();
+    for (k, name) in names.iter().enumerate() {
+        let Some((_, field)) = fields.find(name) else {
+            return Some(k);
+        };
+        match field.data_type() {
+            Arrow::Struct(children) => fields = children,
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// The names leading to column `id` among `fields`, and its type. Err when it is inside a list, which has no one
 /// value per row.
 fn source_path<'s>(
-    fields: &'s [crate::io::iceberg::metadata::NestedField],
+    fields: &'s [NestedField],
     id: i32,
     at: &mut Vec<String>,
 ) -> Result<Option<(Vec<String>, &'s Type)>, String> {
@@ -467,18 +527,23 @@ impl Partitioner for TablePartitioner {
         let mut path = Vec::with_capacity(self.fields.len());
         let mut values = Vec::with_capacity(self.fields.len());
         for field in &self.fields {
-            let value = match &field.source {
-                None => None,
-                Some((source, source_type)) => {
-                    let column = column_at(batch, source, at)?;
-                    column
-                        .map(|c| read(&c, at, source_type, source))
-                        .transpose()?
-                        .flatten()
-                        .and_then(|v| apply(&field.transform, &v))
+            let text = match &field.source {
+                None => NULL.to_string(),
+                Some((source, source_type, result)) => {
+                    let value = match lacked_from(batch.schema_ref(), source) {
+                        None => (column_at(batch, source, at)?)
+                            .map(|c| read(&c, at, source_type, source))
+                            .transpose()?
+                            .flatten(),
+                        // Where the record lacks the source, the file holds its default, under structs a row holds.
+                        Some(k) => (k == 0 || column_at(batch, &source[..k], at)?.is_some_and(|p| p.is_valid(at)))
+                            .then(|| field.lacked[k].clone())
+                            .flatten(),
+                    };
+                    let value = value.and_then(|v| apply(&field.transform, &v));
+                    path_text(value.as_ref(), result, &field.transform)
                 }
             };
-            let text = path_text(value.as_ref(), &field.transform);
             path.push(format!("{}={text}", url_encode(&field.name)));
             values.push((field.name.clone(), text));
         }
@@ -494,7 +559,7 @@ mod tests {
     use crate::core::buffer::BufferPool;
     use crate::core::column::{Column, DataType, StrBuilder, VarType};
     use crate::format::record::RecordView;
-    use crate::io::iceberg::metadata::{ListType, NestedField, PartitionField, StructType};
+    use crate::io::iceberg::metadata::{ListType, PartitionField, StructType};
     use crate::io::parquet::{self, Chunk, Columns};
 
     /// 2017-11-16T22:31:08 UTC, the spec's appendix time.
@@ -551,7 +616,7 @@ mod tests {
     fn a_bucket_masks_the_sign_and_takes_the_remainder() {
         let hash = -2_047_944_441i32;
         assert_eq!(
-            apply(&Transform::Bucket(16), &Literal::Timestamptz(SPEC_TIME)),
+            apply(&Transform::Bucket(16), &Literal::Micros(SPEC_TIME)),
             Some(Literal::Int((hash & i32::MAX) % 16))
         );
         assert_eq!(
@@ -563,7 +628,7 @@ mod tests {
 
     #[test]
     fn time_transforms_count_from_1970() {
-        let t = Literal::Timestamptz(SPEC_TIME);
+        let t = Literal::Micros(SPEC_TIME);
         assert_eq!(apply(&Transform::Year, &t), Some(Literal::Int(47)));
         assert_eq!(apply(&Transform::Month, &t), Some(Literal::Int(47 * 12 + 10)));
         assert_eq!(apply(&Transform::Day, &t), Some(Literal::Date(17_486)));
@@ -574,7 +639,7 @@ mod tests {
         assert_eq!(apply(&Transform::Day, &d), Some(d.clone()));
         assert_eq!(apply(&Transform::Hour, &d), None);
         // Before 1970 counts down, a whole unit at a time.
-        let before = Literal::Timestamptz(-1);
+        let before = Literal::Micros(-1);
         assert_eq!(apply(&Transform::Year, &before), Some(Literal::Int(-1)));
         assert_eq!(apply(&Transform::Month, &before), Some(Literal::Int(-1)));
         assert_eq!(apply(&Transform::Day, &before), Some(Literal::Date(-1)));
@@ -619,13 +684,16 @@ mod tests {
         assert_eq!(ok(Transform::Bucket(8), P::String), P::Int);
         assert_eq!(ok(Transform::Truncate(8), P::Long), P::Long);
         assert_eq!(ok(Transform::Void, P::Double), P::Double);
+        assert_eq!(ok(Transform::Identity, P::Float), P::Float);
+        assert_eq!(ok(Transform::Day, P::Timestamp), P::Date);
+        assert_eq!(ok(Transform::Bucket(8), P::Timestamp), P::Int);
         for (t, s) in [
             (Transform::Hour, P::Date),
             (Transform::Bucket(8), P::Double),
+            (Transform::Bucket(8), P::Float),
             (Transform::Bucket(0), P::Long),
             (Transform::Truncate(4), P::Boolean),
-            (Transform::Identity, P::Float),
-            (Transform::Day, P::Timestamp),
+            (Transform::Truncate(4), P::Timestamp),
             (Transform::Other("zorder".into()), P::Long),
             (Transform::Identity, P::Other("decimal(9,2)".into())),
         ] {
@@ -662,16 +730,34 @@ mod tests {
                 "-2.5E-7",
             ),
             (
+                Some(Literal::Double(0.1f32 as f64)),
+                P::Float,
+                Transform::Identity,
+                "0.1",
+            ),
+            (
+                Some(Literal::Double(1e10f32 as f64)),
+                P::Float,
+                Transform::Identity,
+                "1.0E10",
+            ),
+            (
                 Some(Literal::Date(-719_528)),
                 P::Date,
                 Transform::Identity,
                 "0000-01-01",
             ),
             (
-                Some(Literal::Timestamptz(at_13)),
+                Some(Literal::Micros(at_13)),
                 P::Timestamptz,
                 Transform::Identity,
                 "2026-10-10T13%3A05%3A09.000123%2B00%3A00",
+            ),
+            (
+                Some(Literal::Micros(at_13)),
+                P::Timestamp,
+                Transform::Identity,
+                "2026-10-10T13%3A05%3A09.000123",
             ),
             (
                 Some(Literal::String("a b/ü=1".into())),
@@ -700,7 +786,11 @@ mod tests {
             (None, P::String, Transform::Identity, "null"),
             (None, P::Int, Transform::Void, "null"),
         ] {
-            assert_eq!(path_text(value.as_ref(), &transform), text, "{value:?} by {transform}");
+            assert_eq!(
+                path_text(value.as_ref(), &result, &transform),
+                text,
+                "{value:?} by {transform}"
+            );
             assert_eq!(literal_of(&result, &transform, text), Ok(value), "{text}");
         }
     }
@@ -714,14 +804,11 @@ mod tests {
                 (Transform::Year, apply(&Transform::Year, &Literal::Date(days))),
                 (
                     Transform::Hour,
-                    apply(
-                        &Transform::Hour,
-                        &Literal::Timestamptz(days as i64 * MICROS_PER_DAY + 7),
-                    ),
+                    apply(&Transform::Hour, &Literal::Micros(days as i64 * MICROS_PER_DAY + 7)),
                 ),
                 (
                     Transform::Identity,
-                    Some(Literal::Timestamptz(days as i64 * MICROS_PER_DAY - 1)),
+                    Some(Literal::Micros(days as i64 * MICROS_PER_DAY - 1)),
                 ),
             ] {
                 let source = match transform {
@@ -729,7 +816,7 @@ mod tests {
                     _ => Primitive::Date,
                 };
                 let result = result_type(&transform, &source).unwrap();
-                let text = path_text(value.as_ref(), &transform);
+                let text = path_text(value.as_ref(), &result, &transform);
                 assert_eq!(literal_of(&result, &transform, &text), Ok(value), "{text}");
             }
         }
@@ -744,6 +831,8 @@ mod tests {
             (P::Int, Transform::Hour, "2026-10-10-24"),
             (P::Int, Transform::Year, "twenty"),
             (P::Timestamptz, Transform::Identity, "2026-10-10T13:05:09.1234567+00:00"),
+            (P::Timestamptz, Transform::Identity, "2026-10-10T13:05:09.123456"),
+            (P::Timestamp, Transform::Identity, "2026-10-10T13:05:09.123456+00:00"),
             (P::String, Transform::Identity, "%zz"),
             (P::Other("uuid".into()), Transform::Identity, "x"),
         ] {
@@ -758,6 +847,7 @@ mod tests {
             required: false,
             field_type,
             doc: None,
+            other: Default::default(),
         }
     }
 
@@ -801,6 +891,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, (name, transform, source_id))| PartitionField {
+                    source_ids: None,
                     name: name.to_string(),
                     transform: transform.clone(),
                     source_id: *source_id,
@@ -924,6 +1015,61 @@ mod tests {
         let rows = rows();
         let by_ratio = TablePartitioner::new(&spec(&[("ratio", Transform::Identity, 9)]), &table_schema()).unwrap();
         assert_eq!(by_ratio.partition(&rows[0]).unwrap().path, ["ratio=null"]);
+    }
+
+    #[test]
+    fn a_column_the_record_does_not_write_partitions_by_its_write_default() {
+        let default = |mut f: NestedField, value: serde_json::Value| {
+            f.other.insert("write-default".into(), value);
+            f
+        };
+        let p = Type::Primitive;
+        let mut schema = table_schema();
+        schema.fields[5] = default(field(9, "ratio", p(Primitive::Double)), serde_json::json!(0.5));
+        let Type::Struct(ctx) = &mut schema.fields[3].field_type else {
+            panic!("ctx is a struct")
+        };
+        ctx.fields.push(default(
+            field(10, "zone", p(Primitive::String)),
+            serde_json::json!("z1"),
+        ));
+        let child = |id, name| default(field(id, name, p(Primitive::String)), serde_json::json!("nl"));
+        schema.fields.extend([
+            default(
+                field(
+                    11,
+                    "geo",
+                    Type::Struct(StructType {
+                        fields: vec![child(12, "cc")],
+                    }),
+                ),
+                serde_json::json!({}),
+            ),
+            field(
+                13,
+                "none",
+                Type::Struct(StructType {
+                    fields: vec![child(14, "cc")],
+                }),
+            ),
+        ]);
+        let partitioner = TablePartitioner::new(
+            &spec(&[
+                ("ratio", Transform::Identity, 9),
+                ("zone", Transform::Identity, 10),
+                ("cc", Transform::Identity, 12),
+                ("none_cc", Transform::Identity, 14),
+            ]),
+            &schema,
+        )
+        .unwrap();
+        let rows = rows();
+        assert_eq!(
+            partitioner.partition(&rows[0]).unwrap().path,
+            ["ratio=0.5", "zone=z1", "cc=nl", "none_cc=null"]
+        );
+        // The third row's ctx is null, and so is the zone in it.
+        assert_eq!(partitioner.partition(&rows[2]).unwrap().path[1], "zone=null");
     }
 
     #[test]

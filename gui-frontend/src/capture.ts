@@ -7,7 +7,6 @@ import type {
   CaptureBatch,
   CaptureStatus,
   CaptureWorkerDto,
-  IdentityDto,
   SourceDto,
   StartPosition,
   startCapture,
@@ -92,10 +91,9 @@ export function progressText(status: CaptureStatus): string {
   return `${held} so far ${from}.`;
 }
 
-/** What a capture reads. A source travels as the author has it, with the identity it names,
- * since a worker follows main and may never have seen either. A destination is named: it is
- * one the group's workers already run. */
-export type CaptureTarget = { source: SourceDto; identity?: IdentityDto } | { destination: string };
+/** What a capture reads. A source travels as the author has it, since a worker follows main and
+ * may never have seen it. A destination is named: it is one the group's workers already run. */
+export type CaptureTarget = { source: SourceDto } | { destination: string };
 
 /** Where a capture taps: at a source, or at a destination. */
 export type CaptureAt = 'source' | 'destination';
@@ -122,7 +120,6 @@ export function captureRequest(
   return {
     group: ask.group,
     source: target.source,
-    identity: target.identity,
     filter,
     start: ask.start,
     ...bounds,

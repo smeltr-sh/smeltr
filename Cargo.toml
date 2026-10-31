@@ -28,7 +28,7 @@ serde_json = { version = "1", features = ["raw_value"] }
 # `registeredDomain`'s public suffixes, compiled in, so two workers built from one commit read a host alike.
 psl = "2"
 # `lookup::mmdb` and `lookup::cidr`.
-maxminddb = "0.30.3"
+maxminddb = "0.32.0"
 ipnetwork = "0.21.1"
 # Integers in the JSON writer. `write!` costs a formatter per number; a document carries a dozen or more.
 itoa = "1"
@@ -36,6 +36,10 @@ itoa = "1"
 zmij = "1"
 # A bytes value's one text spelling, wherever one is written as text.
 base64 = "0.23"
+
+# ECS's `ecs_flat.yml`, read as a schema (`schema::ecs`). yaml-rust2 because it is pure Rust and maintained;
+# serde_yaml is archived.
+yaml-rust2 = { version = "0.13.0", default-features = false }
 
 # The startup file. TOML because a human hand-edits it and comments matter.
 toml = "1"
@@ -69,14 +73,17 @@ rdkafka = { version = "0.39", features = ["cmake-build", "ssl-vendored", "libz-s
 # custom certificate authority, which a worker fetching from a leader that signs its own certificate must have.
 # Serving the repository stays on system git (leader/git.rs) -- framing the smart-HTTP protocol by hand is a
 # second implementation of something git already ships.
-gix = { version = "0.88", default-features = false, features = [
+gix = { version = "0.90", default-features = false, features = [
     "sha1",
     "merge",
     "revision",
-    "max-performance-safe",
+    "max-performance",
     "auto-chain-error",
     "blocking-http-transport-curl-rustls",
 ] }
+# The worker's merge of its clone's packs writes one pack in-process (`generate`), as `gix` itself cannot. The same
+# version `gix` builds, so no crate is added.
+gix-pack = { version = "0.77", default-features = false, features = ["generate"] }
 # Pinned to rustls and to vendoring: `curl-sys` links a system libcurl when `pkg-config` finds one, which would make
 # what a worker's fetch is built against a fact about the build host rather than about smeltr. `static-curl` builds
 # curl's own vendored source instead, the same shape `rdkafka`'s `curl-static` feature already commits this build to.
@@ -118,6 +125,9 @@ axum-server = { version = "0.8.0", default-features = false, features = ["tls-ru
 # through the same AWS-LC module as everything else; its HTTP goes through the reqwest below rather than its own
 # hyper, so what it trusts is what every other client of this process trusts.
 instant-acme = { version = "0.8.5", default-features = false, features = ["fips"] }
+# Asks a zone's own nameservers whether a DNS-01 record is there yet (`leader::acme_dns`), before the authority is
+# told to look. The system's resolver finds those nameservers; nothing else here speaks DNS.
+hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
 bytes = "1"
 # Named for the timer the leader's listener hands hyper: without one, hyper's header-read timeout is no timeout.
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "server-auto"] }
@@ -129,13 +139,15 @@ rustls = { version = "0.23.43", default-features = false, features = ["aws_lc_rs
 
 #For ctrl-c clean exit from the leader
 object_store = { version = "0.14", default-features = false, features = ["aws", "azure", "gcp"] }
-russh = { version = "0.64", default-features = false, features = ["aws-lc-rs", "rsa"] }
+russh = { version = "0.65", default-features = false, features = ["aws-lc-rs", "rsa"] }
 russh-sftp = "3.0"
 futures-util = "0.3"
 async-trait = "0.1"
 http = "1"
 # The leader's AI agent sends its calls through the leader's own router, as a service. Already built for axum.
 tower-service = "0.3"
+# The leader gzips what it answers and inflates what it is sent gzipped. Already in the tree under `reqwest`.
+tower-http = { version = "0.6", default-features = false, features = ["compression-gzip", "decompression-gzip"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 zstd = { version = "0.14", default-features = false }
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame"] }
@@ -179,7 +191,7 @@ md-5 = "0.11.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
 tracing-log = "0.2.0"
-parquet = { version = "60", default-features = false, features = ["arrow", "zstd", "lz4", "snap", "flate2-rust_backend"] }
+parquet = { version = "60", default-features = false, features = ["arrow", "arrow_canonical_extension_types", "zstd", "lz4", "snap", "flate2-rust_backend"] }
 arrow-array = "60"
 arrow-schema = "60"
 arrow-buffer = "60"
@@ -223,14 +235,17 @@ libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 # `Win32_System_Diagnostics_ToolHelp`, `Win32_System_ProcessStatus`, `Win32_System_SystemInformation`
 # and `Win32_Storage_FileSystem` are this worker's process tree, its memory footprint, the host's
 # total, and the free space under its state directory (`resources.rs`) -- none is a process-tree-ending mechanism like the rest of this list,
-# but they cost no new crate either.
+# but they cost no new crate either. `Win32_System_Services` and `Win32_System_Console` run `smeltr` as a Windows
+# service that logs to a file (`service.rs`).
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_ProcessStatus",
+    "Win32_System_Services",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
