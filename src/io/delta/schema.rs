@@ -13,10 +13,12 @@
 
 use std::sync::Arc;
 
+use arrow_array::{Array, ArrayRef};
 use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use serde_json::{Map, Value, json};
 
+use super::default::{self, CURRENT_DEFAULT};
 use super::log::uuid;
 use crate::core::column::DataType;
 use crate::io::parquet::{at, columns, narrows, variant_group};
@@ -353,6 +355,54 @@ fn with_id(field: Field, id: Option<i64>) -> Field {
     field.with_metadata(metadata)
 }
 
+/// A top-level column the record does not write, which takes its default in every row of the files.
+#[derive(Clone, Debug)]
+pub struct Defaulted {
+    /// The column's name in the table.
+    pub name: String,
+    /// The column as the files carry it.
+    pub field: Field,
+    pub kind: Kind,
+    /// One row of `field`'s type.
+    pub value: ArrayRef,
+}
+
+impl PartialEq for Defaulted {
+    fn eq(&self, other: &Defaulted) -> bool {
+        (self.name == other.name && self.field == other.field && self.kind == other.kind)
+            && self.value.to_data() == other.value.to_data()
+    }
+}
+
+/// Each of `schema`'s top-level columns `arrow` does not hold that has a default this writer reads, in the table's
+/// order.
+pub fn defaulted(arrow: &ArrowSchema, schema: &StructType) -> Vec<Defaulted> {
+    (schema.fields.iter())
+        .filter(|f| arrow.field_with_name(&f.name).is_err())
+        .filter_map(|f| {
+            let (kind, value) = default_of(f)?;
+            let field = Field::new(f.physical_name(), default::arrow(&kind), true);
+            Some(Defaulted {
+                name: f.name.clone(),
+                field: with_id(field, f.column_id()),
+                kind,
+                value,
+            })
+        })
+        .collect()
+}
+
+/// `field`'s default, where it is a literal of its primitive type (`default::value`).
+fn default_of(field: &StructField) -> Option<(Kind, ArrayRef)> {
+    let sql = field.metadata.get(CURRENT_DEFAULT)?.as_str()?;
+    let Type::Primitive(p) = &field.data_type else {
+        return None;
+    };
+    let kind = kind(p)?;
+    let value = default::value(sql, &kind)?;
+    Some((kind, value))
+}
+
 /// The Parquet type a column of the primitive the log names `p` is written as, where it is narrower than any record
 /// type.
 pub fn narrow(p: &str) -> Option<Arrow> {
@@ -550,7 +600,8 @@ fn iceberg_widens(from: &str, to: &str) -> bool {
 }
 
 /// The first column, at any depth, whose metadata asks of a writer what this one does not do: compute a generated
-/// value or a default, check an invariant, or generate an identity below the top level. The message names the column
+/// value or a default other than a literal of a top-level column's type, check an invariant, or generate an identity
+/// below the top level. The message names the column
 /// and what it carries.
 pub fn refused_column(schema: &StructType) -> Option<String> {
     if all_void(&schema.fields) {
@@ -581,11 +632,11 @@ fn refused_in(fields: &[StructField], path: &str) -> Option<String> {
     let nested = !path.is_empty();
     fields.iter().find_map(|f| {
         let path = at(path, &f.name);
-        let key = f.metadata.keys().find(|k| {
-            matches!(
-                k.as_str(),
-                "delta.generationExpression" | "CURRENT_DEFAULT" | "delta.invariants"
-            ) || (nested && k.starts_with("delta.identity."))
+        let key = f.metadata.keys().find(|k| match k.as_str() {
+            // Spark gives a default only to a top-level column.
+            CURRENT_DEFAULT => nested || default_of(f).is_none(),
+            "delta.generationExpression" | "delta.invariants" => true,
+            k => nested && k.starts_with("delta.identity."),
         });
         match key {
             Some(key) => Some(format!(
@@ -749,10 +800,11 @@ impl Ids {
         for field in table {
             let path = at(path, &field.name);
             // Every column is written nullable, and a column the record does not write is null in its rows, but for an
-            // identity column, whose values the writer generates.
+            // identity column, whose values the writer generates, and a column that takes its default.
             let written = columns.iter().any(|(name, _)| *name == field.name);
             let generated = top && !written && field.metadata.keys().any(|k| k.starts_with("delta.identity."));
-            if !field.nullable && !generated {
+            let defaulted = top && !written && default_of(field).is_some_and(|(_, v)| v.is_valid(0));
+            if !field.nullable && !generated && !defaulted {
                 return Err(format!(
                     "the table's column {path} is not nullable, and the record may leave it null"
                 ));
@@ -1651,6 +1703,69 @@ mod tests {
             s.fields[0].metadata.insert(key.into(), json!("x"));
             assert!(refused_column(&s).unwrap().contains(key));
         }
+    }
+
+    #[test]
+    fn a_top_level_columns_literal_default_is_honoured_and_any_other_refused() {
+        let with_default = |t: Type, sql: &str| {
+            let mut field = plain("a", t);
+            field.metadata.insert(CURRENT_DEFAULT.into(), json!(sql));
+            field
+        };
+        let refused = |field: StructField| refused_column(&StructType { fields: vec![field] });
+        assert_eq!(refused(with_default(prim("long"), "42")), None);
+        assert_eq!(refused(with_default(prim("date"), "DATE '2024-02-29'")), None);
+        for field in [
+            with_default(prim("long"), "1 + 1"),
+            with_default(prim("long"), "'42'"),
+            with_default(prim("decimal(10,2)"), "1.5"),
+            with_default(strukt(&[plain("b", prim("long"))]), "NULL"),
+            plain("s", strukt(&[with_default(prim("long"), "42")])),
+        ] {
+            let why = refused(field).expect("refused");
+            assert!(
+                why.ends_with("carries CURRENT_DEFAULT, which this writer cannot honour"),
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_column_the_record_does_not_write_takes_its_default_as_the_files_carry_it() {
+        let mut table = table_schema(&record(), None, Mapping::name(0), None, Variants::Json)
+            .unwrap()
+            .schema;
+        let mut n = plain("n", prim("short"));
+        n.nullable = false;
+        n.metadata.insert(CURRENT_DEFAULT.into(), json!("7S"));
+        n.metadata.insert(COLUMN_ID.into(), json!(99));
+        n.metadata.insert(PHYSICAL_NAME.into(), json!("col-n"));
+        table.fields.push(n);
+        // A column the record writes keeps no default of its own.
+        table.fields[0]
+            .metadata
+            .insert(CURRENT_DEFAULT.into(), json!("TIMESTAMP '2024-01-01 00:00:00Z'"));
+
+        // Not nullable, but every row takes a value.
+        table_schema(&record(), Some(&table), Mapping::name(99), None, Variants::Json).unwrap();
+        let arrow = crate::io::parquet::Schema::new(&record()).unwrap().arrow().clone();
+        let defaulted = defaulted(&arrow, &table);
+        assert_eq!(defaulted.len(), 1);
+        let n = &defaulted[0];
+        assert_eq!((n.name.as_str(), n.field.name().as_str()), ("n", "col-n"));
+        assert_eq!(n.field.data_type(), &Arrow::Int16);
+        assert_eq!(n.field.metadata()[PARQUET_FIELD_ID_META_KEY], "99");
+        assert_eq!(n.value.as_ref(), &arrow_array::Int16Array::from(vec![7]) as &dyn Array);
+
+        // A null default leaves a column that is not nullable null.
+        let last = table.fields.len() - 1;
+        table.fields[last]
+            .metadata
+            .insert(CURRENT_DEFAULT.into(), json!("NULL"));
+        assert_eq!(
+            table_schema(&record(), Some(&table), Mapping::name(99), None, Variants::Json).unwrap_err(),
+            "the table's column n is not nullable, and the record may leave it null"
+        );
     }
 
     #[test]

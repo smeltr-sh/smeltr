@@ -19,8 +19,10 @@ use arrow_schema::{DataType as Arrow, Schema as ArrowSchema};
 
 use super::schema::{primitive_arrow, write_default};
 use crate::io::iceberg::metadata::{Literal, NestedField, PartitionSpec, Primitive, Schema, Transform, Type};
-use crate::io::table::{Kind, column_at, iso_date, read, url_encode};
-use crate::ops::civil::{MICROS_PER_DAY, civil_from_days, valid_date_days};
+use crate::io::table::{
+    Kind, column_at, date_days, iso_date, parse_date, parse_timestamp, read, signed_parts, url_encode,
+};
+use crate::ops::civil::{MICROS_PER_DAY, civil_from_days};
 
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
 
@@ -333,58 +335,6 @@ fn url_decode(s: &str) -> Option<String> {
         i += 1;
     }
     String::from_utf8(out).ok()
-}
-
-/// `valid_date_days` for parts read as signed numbers; None for a negative or oversized one.
-fn date_days(y: i64, m: i64, d: i64) -> Option<i64> {
-    valid_date_days(y, u32::try_from(m).ok()?, u32::try_from(d).ok()?)
-}
-
-/// `want` numbers joined by `-`, the first of which may carry a sign.
-fn signed_parts(s: &str, want: usize) -> Option<Vec<i64>> {
-    let (negative, body) = match s.as_bytes().first()? {
-        b'-' => (true, &s[1..]),
-        b'+' => (false, &s[1..]),
-        _ => (false, s),
-    };
-    let mut parts = body
-        .split('-')
-        .map(|p| (!p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())).then(|| p.parse().ok())?)
-        .collect::<Option<Vec<i64>>>()?;
-    if parts.len() != want {
-        return None;
-    }
-    if negative {
-        parts[0] = -parts[0];
-    }
-    Some(parts)
-}
-
-pub(super) fn parse_date(s: &str) -> Option<i64> {
-    let [y, m, d] = signed_parts(s, 3)?[..] else {
-        return None;
-    };
-    date_days(y, m, d)
-}
-
-/// Microseconds of `2026-10-10T13:05:09.000123`; the fraction may have up to six digits, or be left out.
-pub(super) fn parse_timestamp(s: &str) -> Option<i64> {
-    let (date, time) = s.split_once('T')?;
-    let (hms, fraction) = time.split_once('.').unwrap_or((time, ""));
-    let [h, m, sec] = hms
-        .split(':')
-        .map(|p| (p.len() == 2).then(|| p.parse::<i64>().ok())?)
-        .collect::<Option<Vec<_>>>()?[..]
-    else {
-        return None;
-    };
-    if h > 23 || m > 59 || sec > 59 || fraction.len() > 6 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let micros = format!("{fraction:0<6}").parse::<i64>().ok()?;
-    let day = parse_date(date)?;
-    day.checked_mul(MICROS_PER_DAY)?
-        .checked_add(((h * 60 + m) * 60 + sec) * 1_000_000 + micros)
 }
 
 /// Partitions rows by a table's spec: one path segment per spec field, in the spec's order.

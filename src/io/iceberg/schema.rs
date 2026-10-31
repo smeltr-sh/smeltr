@@ -25,10 +25,9 @@ use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use parquet::basic::LogicalType;
 
 use super::metadata::{ListType, NestedField, Primitive, Schema, StructTag, StructType, Type, VARIANT_VERSION};
-use super::transform::{parse_date, parse_timestamp};
 use crate::core::column::DataType;
 use crate::io::parquet::{WriteDefault, at, columns, narrows, variant_group};
-use crate::io::table::Kind;
+use crate::io::table::{Kind, parse_date, parse_timestamp, unhex};
 
 /// The table's schema for a record, and whether it differs from the table's current one.
 #[derive(Clone, Debug, PartialEq)]
@@ -284,15 +283,6 @@ fn parse_timestamp_ns(s: &str) -> Option<i64> {
     (fraction.len() <= 9 && fraction.bytes().all(|b| b.is_ascii_digit())).then_some(())?;
     let nanos: i64 = format!("{fraction:0<9}").parse().ok()?;
     parse_timestamp(seconds)?.checked_mul(1000)?.checked_add(nanos)
-}
-
-/// The bytes of `s`, two hex digits for each.
-fn unhex(s: &str) -> Option<Vec<u8>> {
-    (s.len().is_multiple_of(2) && s.is_ascii()).then_some(())?;
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
 }
 
 /// `14.20` as the unscaled value of a decimal of `precision` and `scale`: its digits after the point at most `scale`.
