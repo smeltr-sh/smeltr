@@ -57,6 +57,43 @@ pub fn split_line_into<'d>(line: &'d [u8], c: &CsvConfig, trusted_utf8: bool, fi
     }
 }
 
+/// `line` with the text of each column `blank` names taken out, its delimiters and every other byte kept, so each
+/// column after a blank one keeps its place. A blank quoted column loses its quotes. `None` where `line` does not
+/// split whole, which leaves nothing safe to cut.
+pub fn blank_columns(line: &[u8], c: &CsvConfig, blank: impl Fn(usize) -> bool) -> Option<Vec<u8>> {
+    let record = trim_trailing_newline(line);
+    let mut out = Vec::with_capacity(line.len());
+    let mut whole = true;
+    let (mut i, mut kept, mut column) = (0, 0, 0);
+    loop {
+        if c.squeeze {
+            while record.get(i) == Some(&c.delimiter) {
+                i += 1;
+            }
+            if i == record.len() && column > 0 {
+                break;
+            }
+        }
+        let (_, next) = scan_field(record, i, c, false, &mut whole)?;
+        // The column runs to the delimiter after it, or to the record's end.
+        let end = next.map_or(record.len(), |n| n - 1);
+        if blank(column) {
+            out.extend_from_slice(&record[kept..i]);
+            kept = end;
+        }
+        column += 1;
+        match next {
+            Some(n) => i = n,
+            None => break,
+        }
+    }
+    if !whole {
+        return None;
+    }
+    out.extend_from_slice(&line[kept..]);
+    Some(out)
+}
+
 fn trim_trailing_newline(line: &[u8]) -> &[u8] {
     if let Some(stripped) = line.strip_suffix(b"\r\n") {
         stripped

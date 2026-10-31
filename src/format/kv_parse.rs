@@ -33,6 +33,9 @@ impl Scanner for Kv<'_> {
         let bytes = spread::row_bytes(input, row)?;
         // A record that is not whole keeps the pairs read before it broke off.
         let whole = kv_scan::split_pairs(bytes, self.0, pairs);
+        if !self.0.skip.is_empty() {
+            pairs.retain(|p| !self.0.skip.iter().any(|k| k == p.key));
+        }
         lay(row, pairs, spread, pool);
         Some(whole)
     }

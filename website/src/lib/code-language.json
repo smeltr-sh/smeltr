@@ -105,7 +105,7 @@
     },
     {
       "name": "kv",
-      "signature": "kv(text, {pairSep, kvSep, quote, escapes, nextKey, splitDots, formats})",
+      "signature": "kv(text, {pairSep, kvSep, quote, escapes, nextKey, skip, splitDots, formats})",
       "summary": "An object of the `key=value` pairs in `text`. Every value is a `str`.",
       "options": [
         {
@@ -132,6 +132,11 @@
           "name": "nextKey",
           "holds": "Whether an unquoted value runs to the `pairSep` before the next key: in `level=info debug x=1`, `level` is `info debug`. Off, a value ends at the first `pairSep` and `debug` is a bare key, `debug=true`.",
           "default": "`true`"
+        },
+        {
+          "name": "skip",
+          "holds": "Keys that make no field.",
+          "default": "none"
         },
         {
           "name": "splitDots",

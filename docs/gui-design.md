@@ -434,7 +434,10 @@ leaves only the type to choose. Grok's fields follow the pattern as it is
 edited, in capture order. A name that survives keeps the type chosen for
 it. A new name starts as `str`. A name the pattern lost goes with it. A
 column CSV should drop is typed `skip`, which keeps the columns after it
-aligned without inventing a field.
+aligned without inventing a field. A key-value key typed `skip` makes no
+field either. Under Advanced, **rebuild the line** writes the field the
+parser reads back with each skipped column left empty, or each skipped pair
+left out, and says how many.
 
 ## Lists
 
