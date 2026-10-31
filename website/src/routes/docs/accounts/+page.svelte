@@ -3,7 +3,7 @@
   const sections = [
     { id: 'accounts', title: 'Add an account' },
     { id: 'keys', title: 'Call the API with a key' },
-    { id: 'manage', title: 'Find, change, disable or sign out' },
+    { id: 'manage', title: 'Find, change, disable, delete or sign out' },
     { id: 'sessions', title: 'Change session lifetimes' },
     { id: 'recovery', title: 'Recover access when nobody can sign in' },
     { id: 'oidc', title: 'Sign in through single sign-on' },
@@ -72,12 +72,12 @@
     expired key is refused. <strong>Revoke</strong> stops a key from its next request. A key account holds
     any number of keys, so make the new one before you revoke the old.
   </p>
-  <h2 id="manage">Find, change, disable or sign out</h2>
+  <h2 id="manage">Find, change, disable, delete or sign out</h2>
   <p>
     Search Accounts by display name, username or the provider's login, or choose
     <strong>Password</strong>, <strong>SSO</strong> or <strong>Key</strong> to list only local, OIDC
-    or key accounts. Then choose <strong>Manage</strong> on the account's row. It offers what that kind
-    of account has.
+    or key accounts, and <strong>Enabled</strong> or <strong>Disabled</strong> to list only those.
+    Then choose <strong>Manage</strong> on the account's row. It offers what that kind of account has.
   </p>
   <ul>
     <li><strong>Rename:</strong> change the display name only. Every account.</li>
@@ -100,11 +100,17 @@
     <li>
       <strong>Enable account:</strong> allow new sign-ins without restoring old sessions or keys.
     </li>
+    <li>
+      <strong>Delete account:</strong> remove a disabled account for good, with its sign-in, roles and
+      keys. Its past changes keep its name. Its username, or its provider login, is then free, and a new
+      account that takes it starts fresh. The admin account is never deleted, because recovery from the
+      host restores it. This cannot be undone.
+    </li>
   </ul>
   <p>
-    Smeltr asks you to confirm before it resets a password or disables an account. Your own row has
-    no Reset password: a local account uses Change password in the account menu at the top right,
-    which shows your name. An OIDC account changes its password at the provider.
+    Smeltr asks you to confirm before it resets a password, or disables or deletes an account. Your
+    own row has no Reset password: a local account uses Change password in the account menu at the
+    top right, which shows your name. An OIDC account changes its password at the provider.
   </p>
   <h2 id="sessions">Change session lifetimes</h2>
   <ol>

@@ -569,6 +569,12 @@ pub const CATALOG: &[Route] = &[
         body: "{ displayName?: string, enabled?: boolean, roles?: string[] } (exactly one)",
     },
     Route {
+        method: "DELETE",
+        path: "/api/accounts/:id",
+        what: "Delete a disabled account for good, with its password, provider identity, roles, keys and conversations; its username and provider identity are then free for a new account. Refused for an enabled account and for admin. No query.",
+        body: "",
+    },
+    Route {
         method: "POST",
         path: "/api/accounts/:id/reset-password",
         what: "Give a local account a new temporary password (returned) and end its sessions. No query.",

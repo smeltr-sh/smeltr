@@ -218,6 +218,13 @@ What a key reaches is what its account holds, as a session reaches what
 its person holds. What a key account does is recorded as its own: by its id in
 the audit, and in git under its display name and its id.
 
+A disabled account may be deleted, irrevocably. Its password, provider
+identity, roles, keys and conversations go with it, and its id and name stay
+behind it as a tombstone, so the audit and git still answer for what it did.
+Its username and its provider identity are released: whoever takes either is a
+new account under a new id, and nothing the deleted one held hangs off that
+id. The account recovery restores is never deleted.
+
 A disable, a password reset or a revocation that lands while a sign-in is
 checking the password refuses that sign-in. Changing a
 password, one's own or by an admin's reset, ends every session the account

@@ -101,7 +101,9 @@ pub fn account_error(e: AccountError) -> Response {
         | AccountError::HeldByProvider
         | AccountError::Disabled => StatusCode::CONFLICT,
         AccountError::NoSuchUser => StatusCode::NOT_FOUND,
-        AccountError::WrongAuthSource | AccountError::Superseded => StatusCode::CONFLICT,
+        AccountError::WrongAuthSource | AccountError::Superseded | AccountError::Enabled | AccountError::Recovery => {
+            StatusCode::CONFLICT
+        }
     };
     refuse(status, &e.to_string())
 }
@@ -440,6 +442,25 @@ pub async fn revoke_sessions(
     }
     let ended = auth.sessions.remove_all_for(&id);
     Envelope::ok(serde_json::json!({ "ended": ended })).into_response()
+}
+
+/// `DELETE /api/accounts/:id`: delete a disabled account for good (`Store::delete_user`).
+pub async fn delete_account(
+    State(auth): State<Auth>,
+    actor: axum::Extension<Actor>,
+    Path(id): Path<String>,
+) -> Response {
+    let event = accounts::event_for(&actor, "delete", &id, "ok");
+    let store = auth.store.clone();
+    let target = id.clone();
+    match store_call(move || store.delete_user(&target, &event)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return account_error(e),
+        Err(response) => return *response,
+    }
+    // A disabled account holds no session; this is for one issued in the instant before it was disabled.
+    auth.sessions.remove_all_for(&id);
+    Envelope::ok(serde_json::json!({})).into_response()
 }
 
 /// `GET /api/security-events`: what has happened to accounts, newest first.

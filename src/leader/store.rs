@@ -378,6 +378,10 @@ pub enum AccountError {
     /// The account moved on since the caller read it: disabled, or its generation bumped by a reset or a
     /// revocation.
     Superseded,
+    /// Only a disabled account is deleted.
+    Enabled,
+    /// The account recovery restores, the way back in from the host.
+    Recovery,
 }
 
 impl std::fmt::Display for AccountError {
@@ -393,6 +397,11 @@ impl std::fmt::Display for AccountError {
             AccountError::Disabled => write!(f, "that account is disabled"),
             AccountError::WrongAuthSource => write!(f, "that account does not sign in with a password"),
             AccountError::Superseded => write!(f, "that account changed since it was read"),
+            AccountError::Enabled => write!(f, "disable the account before deleting it"),
+            AccountError::Recovery => write!(
+                f,
+                "the admin account is never deleted, because recovery from the host restores it"
+            ),
         }
     }
 }
@@ -953,6 +962,13 @@ pub trait Store: Send + Sync {
         enabled: bool,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
+
+    /// Delete a disabled account for good. Its password, provider identity, roles, keys and conversations go with
+    /// it, so its username and provider identity are free for a new account, which gets a new id and reaches
+    /// nothing this one held. What stays is its id and name in `deleted_accounts`, beside the security events that
+    /// name it. Refused for an enabled account and for [`super::accounts::BOOTSTRAP_USERNAME`], the account
+    /// recovery restores.
+    fn delete_user(&self, user_id: &str, event: &SecurityEvent) -> Result<Result<(), AccountError>, StoreError>;
 
     /// Rename an account. Display names may repeat: the id tells accounts apart.
     fn set_display_name(&self, user_id: &str, display_name: &str) -> Result<Result<(), AccountError>, StoreError>;

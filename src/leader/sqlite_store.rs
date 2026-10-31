@@ -397,6 +397,16 @@ pub(crate) const STEPS: &[&str] = &[
          revoked_at   INTEGER,
          FOREIGN KEY (user_id, auth_source) REFERENCES users (id, auth_source)
      );",
+    // 15 -- an account deleted for good (`Store::delete_user`). Additive: an older build finds the account gone, as
+    // it is.
+    "-- What is left of a deleted account: its id and the name it had, so the security events that name the id stay
+     -- answerable. Its username and its provider identity are released with it.
+     CREATE TABLE deleted_accounts (
+         id           TEXT PRIMARY KEY,
+         auth_source  TEXT NOT NULL,
+         display_name TEXT NOT NULL,
+         deleted_at   INTEGER NOT NULL
+     );",
 ];
 
 fn conversation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRecord> {
@@ -1796,6 +1806,57 @@ impl Store for SqliteStore {
                 rusqlite::params![user_id, event.at],
             )?;
         }
+        insert_event(&tx, event)?;
+        tx.commit()?;
+        Ok(Ok(()))
+    }
+
+    fn delete_user(&self, user_id: &str, event: &SecurityEvent) -> Result<Result<(), AccountError>, StoreError> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let found: Option<(String, String, bool)> = tx
+            .query_row(
+                "SELECT auth_source, display_name, enabled != 0 FROM users WHERE id = ?1",
+                (user_id,),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((auth_source, display_name, enabled)) = found else {
+            return Ok(Err(AccountError::NoSuchUser));
+        };
+        if enabled {
+            return Ok(Err(AccountError::Enabled));
+        }
+        let username: Option<String> = tx
+            .query_row(
+                "SELECT username FROM local_credentials WHERE user_id = ?1",
+                (user_id,),
+                |row| row.get(0),
+            )
+            .optional()?;
+        if username.as_deref() == Some(super::accounts::BOOTSTRAP_USERNAME) {
+            return Ok(Err(AccountError::Recovery));
+        }
+        tx.execute(
+            "INSERT INTO deleted_accounts (id, auth_source, display_name, deleted_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![user_id, auth_source, display_name, event.at],
+        )?;
+        // Everything that grants anything goes with the row, so nothing is left for a later account to reach.
+        tx.execute(
+            "DELETE FROM agent_turns WHERE conversation_id IN (SELECT id FROM agent_conversations WHERE user_id = ?1)",
+            (user_id,),
+        )?;
+        for table in [
+            "agent_conversations",
+            "agent_permissions",
+            "account_roles",
+            "api_keys",
+            "oidc_identities",
+            "local_credentials",
+        ] {
+            tx.execute(&format!("DELETE FROM {table} WHERE user_id = ?1"), (user_id,))?;
+        }
+        tx.execute("DELETE FROM users WHERE id = ?1", (user_id,))?;
         insert_event(&tx, event)?;
         tx.commit()?;
         Ok(Ok(()))
@@ -5023,6 +5084,107 @@ mod tests {
         assert!(s.get_user("i_1").unwrap().unwrap().enabled);
         assert!(s.api_keys_of("i_1").unwrap().is_empty());
         assert!(s.api_key_by_hash("hash-1").unwrap().unwrap().revoked);
+    }
+
+    // -- deleting -----------------------------------------------------------------
+
+    fn ev(action: &str) -> SecurityEvent {
+        crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), action, "", "ok")
+    }
+
+    /// A deleted account frees its username and its provider identity, and whoever takes either is a new account
+    /// holding nothing of the old one's.
+    #[test]
+    fn a_deleted_account_releases_its_username_and_identity_to_a_new_account() {
+        let s = store();
+        s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
+        s.create_local_user(
+            new_user("u_2", "bob"),
+            &[ADMINISTRATOR.to_string()],
+            &ev("account-create"),
+        )
+        .unwrap()
+        .unwrap();
+        s.oidc_sign_in(sign_in("https://idp", "sub", &[], "u_a", NOW), &created("u_a"))
+            .unwrap();
+        for id in ["u_2", "u_a"] {
+            s.set_user_enabled(id, false, &ev("account-disable")).unwrap().unwrap();
+            s.delete_user(id, &ev("delete")).unwrap().unwrap();
+            assert!(s.get_user(id).unwrap().is_none());
+        }
+        assert_eq!(s.list_users().unwrap().len(), 1);
+
+        s.create_local_user(new_user("u_3", "bob"), &[], &ev("account-create"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.local_credential_by_username("bob").unwrap().unwrap().user_id, "u_3");
+        assert!(
+            s.given_roles("u_3").unwrap().is_empty(),
+            "the new bob inherited the old one's roles"
+        );
+        let back = s
+            .oidc_sign_in(sign_in("https://idp", "sub", &[], "u_b", NOW + 1), &created("u_b"))
+            .unwrap();
+        assert_eq!(back.id, "u_b");
+        assert!(back.enabled);
+
+        let kept: Vec<String> = {
+            let conn = s.conn.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT display_name FROM deleted_accounts ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert_eq!(kept.len(), 2);
+    }
+
+    /// A key it held is gone with it, so the token is refused as one nobody issued.
+    #[test]
+    fn a_deleted_key_accounts_keys_go_with_it() {
+        let s = store();
+        s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
+        new_key_account(&s, "i_1", &[]);
+        s.create_api_key("i_1", new_key("k_1", "hash-1", None), &key_account_event("key-create"))
+            .unwrap()
+            .unwrap();
+        s.set_user_enabled("i_1", false, &key_account_event("account-disable"))
+            .unwrap()
+            .unwrap();
+        s.delete_user("i_1", &ev("delete")).unwrap().unwrap();
+        assert!(s.api_key_by_hash("hash-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn only_a_disabled_account_other_than_admin_is_deleted() {
+        let s = store();
+        s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
+        s.create_local_user(
+            new_user("u_2", "bob"),
+            &[ADMINISTRATOR.to_string()],
+            &ev("account-create"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(s.delete_user("u_2", &ev("delete")).unwrap(), Err(AccountError::Enabled));
+        s.set_user_enabled("u_1", false, &ev("account-disable"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            s.delete_user("u_1", &ev("delete")).unwrap(),
+            Err(AccountError::Recovery)
+        );
+        assert_eq!(
+            s.delete_user("u_none", &ev("delete")).unwrap(),
+            Err(AccountError::NoSuchUser)
+        );
+    }
+
+    #[test]
+    fn the_deleted_accounts_step_is_additive() {
+        assert!(super::super::steps::is_additive(STEPS[14]));
     }
 
     // -- agents -----------------------------------------------------------------

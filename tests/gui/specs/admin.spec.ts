@@ -606,6 +606,36 @@ test('a key account made under Accounts calls with its key until the key is revo
   expect(await withKey(leader, key, 'GET', '/api/areas/shared')).toBe(403);
 });
 
+test('a disabled account deleted under Accounts is gone, and its key with it', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  const made = await api.post('/api/accounts', { authSource: 'key', displayName: 'old export' });
+  const { key } = await api.post(`/api/accounts/${made.id}/keys`, { label: 'ci' });
+  await api.post('/api/accounts', { authSource: 'key', displayName: 'nightly export' });
+  await api.call('PATCH', `/api/accounts/${made.id}`, { enabled: false });
+  await openAdmin(admin, 'Accounts');
+
+  const state = admin.getByRole('group', { name: 'Filter accounts by state' });
+  await state.getByRole('button', { name: /^Disabled/ }).click();
+  await expect(admin.getByRole('row').filter({ hasText: 'nightly export' })).toHaveCount(0);
+  const row = admin.getByRole('row').filter({ hasText: 'old export' });
+  await row.getByRole('button', { name: 'Manage' }).click();
+  await admin.getByRole('button', { name: 'Delete account' }).click();
+  const confirm = admin.getByRole('dialog', { name: 'delete account' });
+  await expect(confirm).toContainText('This cannot be undone.');
+  await confirm.getByRole('button', { name: 'Delete account' }).click();
+  await expect(admin.getByRole('status')).toHaveText('account deleted');
+  await expect(row).toHaveCount(0);
+
+  await state.getByRole('button', { name: /^All/ }).click();
+  await expect(admin.getByRole('row').filter({ hasText: 'nightly export' })).toBeVisible();
+  const { accounts } = await api.get('/api/accounts');
+  expect(accounts.some((a: { id: string }) => a.id === made.id)).toBe(false);
+  expect(await withKey(leader, key, 'GET', '/api/areas/shared')).toBe(401);
+});
+
 test('a person sets what their agent may use from their name', async ({ admin, api }) => {
   // P8
   await agentsOn(api);

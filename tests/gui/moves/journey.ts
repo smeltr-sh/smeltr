@@ -2273,6 +2273,7 @@ const addAccount: Move = {
 
 const disableAccount: Move = {
   name: 'disable-account',
+  leadsTo: ['delete-account'],
   weight: (w) => ([...w.accounts.values()].some((e) => e) ? 1 : 0),
   run: async (j) => {
     const { page, rng, world } = j;
@@ -2290,6 +2291,34 @@ const disableAccount: Move = {
     const users: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
     expect(users.find((u) => u.username === username)?.enabled).toBe(false);
     return `disable ${username}`;
+  },
+};
+
+/** A disabled account deleted, found under the Disabled chip. */
+const deleteAccount: Move = {
+  name: 'delete-account',
+  weight: (w) => ([...w.accounts.values()].some((e) => !e) ? 1 : 0),
+  run: async (j) => {
+    const { page, rng, world } = j;
+    const username = rng.pick([...world.accounts].filter(([, e]) => !e).map(([u]) => u));
+    await openAdmin(page, 'Accounts');
+    await page
+      .getByRole('group', { name: 'Filter accounts by state' })
+      .getByRole('button', { name: /^Disabled/ })
+      .click();
+    const row = page.getByRole('row').filter({ hasText: username });
+    await row.getByRole('button', { name: 'Manage' }).click();
+    await page.getByRole('button', { name: 'Delete account' }).click();
+    await page
+      .getByRole('dialog', { name: 'delete account' })
+      .getByRole('button', { name: 'Delete account' })
+      .click();
+    await expect(page.getByRole('status')).toHaveText('account deleted');
+    await expect(page.getByRole('row').filter({ hasText: username })).toHaveCount(0);
+    world.accounts.delete(username);
+    const users: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
+    expect(users.some((u) => u.username === username)).toBe(false);
+    return `delete ${username}`;
   },
 };
 
@@ -3198,6 +3227,7 @@ export const MOVES: readonly Move[] = [
   enrollInGroup,
   addAccount,
   disableAccount,
+  deleteAccount,
   addRole,
   roleGroups,
   addKeyAccount,
