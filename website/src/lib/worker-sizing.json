@@ -1,26 +1,36 @@
 {
   "parts": [
     {
+      "id": "processes",
+      "part": "Processes",
+      "least": "300 MiB",
+      "each": "worker",
+      "what": "Its supervisor and the runtime running the deployment: their code, threads and allocator."
+    },
+    {
       "id": "transform",
       "part": "Columnar budget",
-      "bytes": "1 GiB",
+      "least": "64 MiB",
+      "most": "128 MiB per transform thread",
       "each": "worker running any source",
-      "what": "Memory every transform thread shares while it runs a batch. `SMELTR_MEMORY_BUDGET_BYTES` changes it. A batch that needs more is split and run in parts, which costs time."
+      "what": "Batches while transform runs them. A batch that needs more is split and run in parts, which costs time. `SMELTR_MEMORY_BUDGET_BYTES` fixes it."
     },
     {
       "id": "lanes",
       "part": "Lanes",
-      "bytes": "4 MiB",
+      "least": "512 KiB",
+      "most": "4 MiB",
       "each": "source, and again per transform thread",
-      "what": "One batch per slot: about 20 MiB for one source on four threads, about 80 MiB for ten sources on sixteen."
+      "what": "One batch waiting for a transform thread. A batch is 4 MiB, cut smaller only when the lanes and queues would take more than half the memory."
     },
     {
       "id": "kafka",
       "part": "Fetch queue",
       "kinds": ["kafka", "eventHubs"],
-      "bytes": "64 MiB",
-      "each": "source, plus half of it per broker in the cluster",
-      "what": "`fetchBytes`. A fetch already asked of each broker still lands once the queue is full. The warning counts only the brokers named in `brokers`."
+      "least": "4 MiB",
+      "most": "512 MiB",
+      "each": "source, plus as much again and half of it per broker in `brokers` for its client",
+      "what": "Records fetched and not yet in a batch. `fetchBytes` fixes it."
     },
     {
       "id": "receiver",
@@ -34,9 +44,10 @@
         "prometheusReceiver",
         "elasticReceiver"
       ],
-      "bytes": "128 MiB",
+      "least": "one request",
+      "most": "64 MiB",
       "each": "source",
-      "what": "Twice the receiver's inbox: bodies being read, and bodies admitted."
+      "what": "Bodies being read and bodies admitted."
     },
     {
       "id": "objectRecord",
@@ -50,7 +61,7 @@
         "azureBlobQueue",
         "gcsPubSub"
       ],
-      "bytes": "64 MiB",
+      "least": "64 MiB",
       "each": "source",
       "what": "The largest record it reads from an object."
     },
@@ -58,21 +69,21 @@
       "id": "apiAnswer",
       "part": "Answer",
       "kinds": ["httpApi", "oktaLogs"],
-      "bytes": "256 MiB",
+      "least": "512 MiB",
       "each": "source",
-      "what": "The largest answer it takes. A whole answer is held while it is cut into records."
+      "what": "Twice the largest answer it takes: a whole answer is held while it is cut into records."
     },
     {
       "id": "sqlResult",
       "part": "Result",
       "kinds": ["postgres", "mysql"],
-      "bytes": "256 MiB",
+      "least": "256 MiB",
       "each": "source",
       "what": "The largest result one poll takes. A whole result is held while it is handed out; a larger one fails the poll."
     },
     {
       "id": "buffer",
-      "part": "Buffer",
+      "part": "Queue",
       "kinds": [
         "kafka",
         "eventHubs",
@@ -82,17 +93,27 @@
         "logAnalytics",
         "prometheus"
       ],
-      "bytes": "64 MiB",
+      "least": "one batch",
+      "most": "what is left",
       "each": "destination",
-      "what": "`bufferBytes`. Elasticsearch, Splunk HEC, HTTP, Log Analytics workspace and Prometheus take one request's size instead when that is larger. A Kafka destination's covers its client's own queue too."
+      "what": "Rows sent and not yet acknowledged. Kafka holds twice its queue, for its client's own copy. `bufferBytes` fixes it."
+    },
+    {
+      "id": "senders",
+      "part": "Senders",
+      "kinds": ["elasticsearch", "splunkHec", "http", "logAnalytics"],
+      "least": "6 MiB",
+      "each": "request it starts sending at once, `inFlight`",
+      "what": "Each request on its way, with its connection."
     },
     {
       "id": "objectBuffer",
-      "part": "Buffer and open files",
+      "part": "Queue and open files",
       "kinds": ["s3", "gcs", "azureBlob", "sftp", "iceberg", "delta"],
-      "bytes": "512 MiB",
+      "least": "two batches",
+      "most": "what is left",
       "each": "destination",
-      "what": "`bufferBytes` for rows not yet in the bucket, and as much again for the open files encoding and uploading them."
+      "what": "Rows not yet in the bucket, and as much again for the open files encoding and uploading them. `bufferBytes` fixes the queue."
     }
   ]
 }

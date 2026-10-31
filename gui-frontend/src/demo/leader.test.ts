@@ -188,6 +188,17 @@ describe('DemoLeader', () => {
     expect((none.body as { tests: unknown[] }).tests).toEqual([]);
   });
 
+  it('asks the service for the schema releases it carries', async () => {
+    const asked: string[] = [];
+    vi.stubGlobal('fetch', async (url: string) => {
+      asked.push(url);
+      return new Response(JSON.stringify({ ok: true, errors: [] }));
+    });
+    const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
+    await leader.answer('GET', at('/api/preview/schema-standards'), null);
+    expect(asked).toEqual(['http://service/schemas/standards']);
+  });
+
   it("asks the service for an object's connections over the groups that run it", async () => {
     const asked: Record<string, unknown>[] = [];
     vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
