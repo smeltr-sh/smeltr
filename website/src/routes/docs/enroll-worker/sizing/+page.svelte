@@ -54,7 +54,7 @@
 
   <h2 id="memory">Memory</h2>
   <p>
-    A worker uses 90% of its container's memory limit, or of the host's memory when it has none;
+    A worker uses 90% of its container's memory limit or host memory;
     <code>worker.runtime.memory</code> sets the amount instead. It sets aside the least each part below
     needs, and the parts with room to grow share the rest, so a worker with more memory holds more in
     flight with no change to its configuration. A destination's queue grows as its traffic asks, so a
