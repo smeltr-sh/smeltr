@@ -397,11 +397,6 @@
         <!-- The form saves itself. -->
       {:else if section === 'roles'}
         <button class="primary" type="button" onclick={startNaming}>+ Add role</button>
-        <button
-          type="button"
-          onclick={() => (location.hash = toHash({ levels: [], site: 'leader.sign_in_refused' }))}
-          >Refused sign-ins</button
-        >
       {:else}
         <button
           class="primary"
@@ -415,6 +410,12 @@
           + Add account
         </button>
       {/if}
+      <!-- Password and SSO sign-ins are both refused into it, so it belongs to every tab. -->
+      <button
+        type="button"
+        onclick={() => (location.hash = toHash({ levels: [], site: 'leader.sign_in_refused' }))}
+        >Refused sign-ins</button
+      >
     {/snippet}
     {#snippet help()}
       <p>

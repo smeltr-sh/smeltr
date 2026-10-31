@@ -178,8 +178,8 @@
     <strong>Sign in with username</strong> beside it for local accounts. The first time somebody
     signs in through the provider, Smeltr creates their account. Accounts lists them with SSO as
     their sign-in, and the email or username the provider gives them under their name. To sign in, a
-    person must belong to at least one group that gives a role. <strong>Refused sign-ins</strong> on the
-    Roles tab lists everyone turned away, with the groups the provider sent.
+    person must belong to at least one group that gives a role. <strong>Refused sign-ins</strong>,
+    at the top of Admin → Accounts, lists everyone turned away, with the groups the provider sent.
   </p>
   <p>
     The provider owns an OIDC account's password, so it has no Reset password. To stop somebody
