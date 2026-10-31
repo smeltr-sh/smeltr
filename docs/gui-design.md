@@ -436,16 +436,16 @@ it. A new name starts as `str`. A name the pattern lost goes with it. A
 column CSV should drop is typed `skip`, which keeps the columns after it
 aligned without inventing a field.
 
-A Remove step shows the record before it as a tree, from the data
-dictionary of a preview of the steps ahead of it, as the step diff runs one:
+A Remove step shows the record before it as a tree, from the data dictionary
+of a preview of the steps ahead of it, the same preview the step diff runs:
 the fields the compiler types, and with a sample the keys only its rows know.
 Each field and object is ticked while it is kept. Unticking an object removes
 everything under it, so its fields show struck through with their ticks
 locked, and the step names the object alone. Its search, Remove all and Keep
 all act on what the search shows, as the Fields menu's Select all does, and a
 match keeps the objects above it. A name that matches no field can still be
-removed, from a link under the search box. The step's head counts the names
-it holds; the list counts the fields they remove.
+removed, from a link under the search box. The step's head counts the names it
+holds; the list counts the fields they remove.
 
 ## Lists
 

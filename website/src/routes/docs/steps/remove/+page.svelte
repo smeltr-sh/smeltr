@@ -50,15 +50,11 @@
     <strong>Find a field</strong> narrows the list, and <strong>Remove all</strong> and
     <strong>Keep all</strong> act on the fields it shows. With a sample, the list also holds the
     keys its records have that a JSON or key-value parser read without declaring. To remove any
-    other name, type it and choose <strong>Remove &lt;name&gt;</strong> under the search box. A name that
-    is not a field at that point is an error.
+    other name, type it and choose <strong>Remove &lt;name&gt;</strong> under the search box.
   </p>
 
   <h2 id="how-it-works">How it works</h2>
-  <p>
-    With no filter, later steps cannot read a removed field, and a step that does fails to compile.
-    A later step can write the name again.
-  </p>
+  <p>A later step can write a removed name again.</p>
 
   <h3 id="objects">Objects</h3>
   <p>
