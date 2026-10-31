@@ -3701,8 +3701,11 @@ mod tests {
         for dir in std::fs::read_dir(repo.join("objects")).unwrap().flatten() {
             if dir.file_name().len() == 2 {
                 for object in std::fs::read_dir(dir.path()).unwrap().flatten() {
+                    // gix writes objects read-only. Their owner may set the time on a read-only handle, and Windows
+                    // needs a writable one.
                     std::fs::File::options()
-                        .write(true)
+                        .read(true)
+                        .write(cfg!(windows))
                         .open(object.path())
                         .unwrap()
                         .set_modified(weeks_ago)
@@ -3768,7 +3771,10 @@ mod tests {
             .write_blob(b"{\"damaged\": false}")
             .unwrap()
             .to_string();
-        std::fs::write(repo.join("objects").join(&blob[..2]).join(&blob[2..]), b"not zlib").unwrap();
+        let object = repo.join("objects").join(&blob[..2]).join(&blob[2..]);
+        // Replaced, not rewritten: gix writes objects read-only.
+        std::fs::remove_file(&object).unwrap();
+        std::fs::write(&object, b"not zlib").unwrap();
         let damage = check_repo(&repo).unwrap_err().to_string();
         assert!(
             damage.contains("does not read back whole") && damage.contains(&blob),
