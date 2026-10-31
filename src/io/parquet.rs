@@ -33,9 +33,12 @@ use arrow_array::{
 };
 use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema, TimeUnit};
-use parquet::arrow::ArrowWriter;
+use parquet::arrow::arrow_writer::ArrowWriterOptions;
+use parquet::arrow::{ArrowSchemaConverter, ArrowWriter};
+use parquet::basic::LogicalType;
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::properties::WriterProperties;
+use parquet::schema::types::{SchemaDescriptor, Type as ParquetType, TypePtr};
 
 use crate::core::bits;
 use crate::core::buffer::BufferPool;
@@ -61,6 +64,8 @@ pub struct Schema {
     narrowed: bool,
     /// What each of `written`'s root fields takes where the record does not write it; null for one beyond.
     defaults: Arc<[WriteDefault]>,
+    /// The Parquet logical type of each column of `written` Arrow has none for, by its field id.
+    annotations: Arc<[(i32, LogicalType)]>,
     /// Columns the destination computes, written after the record's own.
     computed: Vec<Arc<dyn Computed>>,
     /// The record's columns that hold a partition's values, each by the partition field's name and its index.
@@ -169,6 +174,7 @@ impl Schema {
             written: None,
             narrowed: false,
             defaults: Arc::new([]),
+            annotations: Arc::new([]),
             computed: Vec::new(),
             partition_columns: Vec::new(),
         })
@@ -194,6 +200,15 @@ impl Schema {
     pub fn with_defaults(self, defaults: Vec<WriteDefault>) -> Schema {
         Schema {
             defaults: defaults.into(),
+            ..self
+        }
+    }
+
+    /// This schema, its files' column of each field id in `annotations` written as that Parquet logical type: one
+    /// Arrow has none for, such as a geometry, or a variant's group.
+    pub fn with_annotations(self, annotations: Vec<(i32, LogicalType)>) -> Schema {
+        Schema {
+            annotations: annotations.into(),
             ..self
         }
     }
@@ -581,6 +596,49 @@ pub struct FileWriter {
     nulled: Vec<usize>,
 }
 
+/// `node` with each node whose field id `annotations` names taking its logical type.
+fn annotate(node: &TypePtr, annotations: &[(i32, LogicalType)]) -> TypePtr {
+    let info = node.get_basic_info();
+    let named = (info.has_id())
+        .then(|| annotations.iter().find(|(id, _)| *id == info.id()))
+        .flatten();
+    let (logical, converted) = match named {
+        Some((_, logical)) => (Some(logical.clone()), parquet::basic::ConvertedType::NONE),
+        None => (info.logical_type_ref().cloned(), info.converted_type()),
+    };
+    let id = info.has_id().then(|| info.id());
+    let built = match node.as_ref() {
+        ParquetType::GroupType { fields, .. } => {
+            let fields = fields.iter().map(|f| annotate(f, annotations)).collect();
+            let builder = ParquetType::group_type_builder(info.name())
+                .with_fields(fields)
+                .with_logical_type(logical)
+                .with_converted_type(converted)
+                .with_id(id);
+            match info.has_repetition() {
+                true => builder.with_repetition(info.repetition()).build(),
+                false => builder.build(),
+            }
+        }
+        ParquetType::PrimitiveType {
+            physical_type,
+            type_length,
+            scale,
+            precision,
+            ..
+        } => ParquetType::primitive_type_builder(info.name(), *physical_type)
+            .with_repetition(info.repetition())
+            .with_logical_type(logical)
+            .with_converted_type(converted)
+            .with_length(*type_length)
+            .with_precision(*precision)
+            .with_scale(*scale)
+            .with_id(id)
+            .build(),
+    };
+    Arc::new(built.expect("the converter's own node, its logical type one Parquet allows there"))
+}
+
 /// What the Parquet writer writes into, shared with the `FileWriter` that drains it.
 #[derive(Clone, Default)]
 struct Sink(Arc<Mutex<Vec<u8>>>);
@@ -672,7 +730,7 @@ impl FileWriter {
             written: schema.written.clone(),
             defaults: schema.defaults.clone(),
             computed: schema.computed.clone(),
-            ..FileWriter::on(file, options)
+            ..FileWriter::annotated(file, options, &schema.annotations)
         }
     }
 
@@ -689,10 +747,24 @@ impl FileWriter {
     }
 
     fn on(schema: Arc<ArrowSchema>, options: &WriteOptions) -> FileWriter {
+        FileWriter::annotated(schema, options, &[])
+    }
+
+    fn annotated(schema: Arc<ArrowSchema>, options: &WriteOptions, annotations: &[(i32, LogicalType)]) -> FileWriter {
         let props = options.properties();
         let sink = Sink::default();
+        let mut writer_options = ArrowWriterOptions::new();
+        if !annotations.is_empty() {
+            let converted = (ArrowSchemaConverter::new().with_coerce_types(props.coerce_types()))
+                .convert(&schema)
+                .expect("a writable schema");
+            let root = annotate(&converted.root_schema_ptr(), annotations);
+            writer_options = writer_options.with_parquet_schema(SchemaDescriptor::new(root));
+        }
         // Writing to memory fails only on a schema Parquet cannot hold, and `Schema::new` refuses those.
-        let writer = ArrowWriter::try_new(sink.clone(), schema.clone(), Some(props)).expect("a writable schema");
+        let writer =
+            ArrowWriter::try_new_with_options(sink.clone(), schema.clone(), writer_options.with_properties(props))
+                .expect("a writable schema");
         FileWriter {
             writer,
             sink,
@@ -1636,6 +1708,98 @@ mod tests {
         assert_eq!(o.column(1).null_count(), 2, "o.b");
         for (column, name) in batch.columns().iter().zip(names).skip(1) {
             assert_eq!(column.null_count(), 2, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_table_column_of_a_version_3_type_is_written_as_the_spec_has_parquet_hold_it() {
+        use crate::io::iceberg::metadata::{NestedField, Primitive, StructType, Type};
+        use crate::io::iceberg::schema::{parquet_annotations, table_schema, with_field_ids};
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use parquet::basic::{EdgeInterpolationAlgorithm, LogicalType, TimeUnit as Unit};
+
+        let record = st(&[("a", DataType::I64)], false);
+        let schema = Schema::new(&record).unwrap();
+        let mut table = table_schema(&record, None, 0).unwrap().schema;
+        let field = |id: i32, name: &str, ty: &str| NestedField {
+            id,
+            name: name.into(),
+            required: false,
+            field_type: Type::Primitive(Primitive::Other(ty.into())),
+            doc: None,
+            other: Default::default(),
+        };
+        table.fields.extend([
+            field(2, "ns", "timestamp_ns"),
+            field(3, "nstz", "timestamptz_ns"),
+            field(4, "geom", "geometry(srid:4326)"),
+            field(5, "geog", "geography(OGC:CRS84, karney)"),
+            field(6, "plain", "geometry"),
+            field(7, "v", "variant"),
+            field(8, "gone", "unknown"),
+            NestedField {
+                field_type: Type::Struct(StructType {
+                    fields: vec![field(10, "gone", "unknown"), field(11, "v", "variant")],
+                }),
+                ..field(9, "s", "")
+            },
+        ]);
+        let (written, defaults) = with_field_ids(schema.arrow(), &table).unwrap();
+        let labelled = (schema.clone().with_written(written).with_defaults(defaults))
+            .with_annotations(parquet_annotations(&table));
+
+        let batch = RecordBatch::try_new(schema.arrow().clone(), vec![Arc::new(Int64Array::from(vec![1, 2]))]).unwrap();
+        let chunk = Arc::new(Chunk::new(batch, Vec::new()));
+        let rows: Vec<Columns> = (0..2)
+            .map(|row| Columns {
+                chunk: chunk.clone(),
+                row,
+            })
+            .collect();
+        let mut w = FileWriter::open(&labelled, &Compression::None.into());
+        w.write(&rows);
+        let (file, _) = w.finish();
+
+        let builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(file)).unwrap();
+        let root = builder.metadata().file_metadata().schema_descr().root_schema();
+        let fields: Vec<(&str, Option<LogicalType>)> = (root.get_fields().iter())
+            .map(|f| (f.name(), f.get_basic_info().logical_type_ref().cloned()))
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                ("a", None),
+                ("ns", Some(LogicalType::timestamp(false, Unit::NANOS))),
+                ("nstz", Some(LogicalType::timestamp(true, Unit::NANOS))),
+                ("geom", Some(LogicalType::geometry(Some("srid:4326".into())))),
+                (
+                    "geog",
+                    Some(LogicalType::geography(
+                        Some("OGC:CRS84".into()),
+                        Some(EdgeInterpolationAlgorithm::KARNEY)
+                    ))
+                ),
+                ("plain", Some(LogicalType::geometry(None))),
+                ("v", Some(LogicalType::variant(Some(1)))),
+                ("s", None),
+            ],
+            "an unknown column is not stored"
+        );
+        let v = &root.get_fields()[6];
+        let parts: Vec<(&str, bool)> = (v.get_fields().iter())
+            .map(|f| (f.name(), f.get_basic_info().has_id()))
+            .collect();
+        assert_eq!(parts, [("metadata", false), ("value", false)]);
+        let s = &root.get_fields()[7];
+        assert_eq!(s.get_fields().len(), 1);
+        assert_eq!(
+            s.get_fields()[0].get_basic_info().logical_type_ref(),
+            Some(&LogicalType::variant(Some(1)))
+        );
+
+        let read: Vec<RecordBatch> = builder.build().unwrap().map(Result::unwrap).collect();
+        for column in read[0].columns().iter().skip(1) {
+            assert_eq!(column.null_count(), 2);
         }
     }
 

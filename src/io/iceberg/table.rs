@@ -33,7 +33,7 @@ use super::metadata::{
     FIRST_PARTITION_ID, FORMAT_VERSION, MAIN, NestedField, PartitionField, PartitionSpec, Primitive,
     ROW_LINEAGE_VERSION, Schema, Snapshot, SnapshotRef, TableMetadata, Transform, Type,
 };
-use super::schema::{table_schema, with_field_ids};
+use super::schema::{parquet_annotations, table_schema, with_field_ids};
 use super::transform::{TablePartitioner, literal_of, partition_name, partition_term, result_type};
 use crate::core::column::DataType;
 use crate::io::IoError;
@@ -116,7 +116,8 @@ fn assemble(
     let file_schema = parquet::Schema::new(record).map_err(refused)?;
     let (written, defaults) = with_field_ids(file_schema.arrow(), &committer.schema).map_err(refused)?;
     let settings = WriteSettings::of(&committer.metadata.properties, config);
-    let file_schema = file_schema.with_written(written).with_defaults(defaults);
+    let file_schema = (file_schema.with_written(written).with_defaults(defaults))
+        .with_annotations(parquet_annotations(&committer.schema));
     let format = ParquetFormat::new(vec![file_schema], settings.options);
     let files = FileConfig {
         format: Arc::new(format),
