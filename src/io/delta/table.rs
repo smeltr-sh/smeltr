@@ -423,8 +423,16 @@ impl DeltaCommitter {
             // Before the record's columns are committed: a table this writer refuses keeps its log as it was.
             let identities = identity::columns(&current)?;
             let generated = generated(&identities, &arrow, &snapshot.metadata.partition_columns)?;
-            let evolution =
-                schema::table_schema(record, Some(&current), mapping(&snapshot.metadata)?, widens(&snapshot))?;
+            let mapping = mapping(&snapshot.metadata)?;
+            let evolution = schema::table_schema(record, Some(&current), mapping, widens(&snapshot))?;
+            if evolution.mapping != mapping && snapshot.metadata.property("delta.columnMapping.maxColumnId").is_none() {
+                // An id above the schema's may still be in the files of a column another writer dropped.
+                return Err(
+                    "the table maps columns and has no delta.columnMapping.maxColumnId, so the record's new columns \
+                     can take no id"
+                        .to_string(),
+                );
+            }
             if let Some(why) = schema::refused_column(&evolution.schema) {
                 return Err(why);
             }
@@ -713,7 +721,7 @@ fn mapping(metadata: &Metadata) -> Result<Mapping, String> {
         "none" => Ok(Mapping::None),
         // A writer writes both alike: physical names, and each column's id as its field id. Only readers differ.
         "name" | "id" => {
-            // A table some writer left without its highest id has every id it gave in its schema.
+            // Without its highest id, a table is written only as long as no new column needs one; see `open`.
             let max_column_id = match metadata
                 .property("delta.columnMapping.maxColumnId")
                 .and_then(|v| v.parse().ok())
@@ -1840,7 +1848,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mapped_table_without_its_highest_id_gives_a_new_column_the_next_id_above_its_schemas() {
+    fn a_mapped_table_without_its_highest_id_takes_a_record_that_adds_no_column() {
         let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
         let mapped = schema::table_schema(&record, None, Mapping::Name { max_column_id: 0 }, None)
             .unwrap()
@@ -1854,17 +1862,15 @@ mod tests {
                 m["configuration"] = json!({"delta.columnMapping.mode": "name"});
             }
         });
-        let grown = st(&[("host", DataType::Str), ("n", DataType::I64), ("msg", DataType::Str)]);
 
-        let committer = table.open(&grown, &["host"]).unwrap();
-
+        let committer = table.open(&record, &["host"]).unwrap();
         let ids: Vec<Option<&str>> = (committer.written.fields().iter())
             .map(|f| f.metadata().get(PARQUET_FIELD_ID_META_KEY).map(String::as_str))
             .collect();
-        assert_eq!(ids, [Some("1"), Some("2"), Some("3")]);
-        let actions = table.commit(1).unwrap();
-        let metadata = action(&actions, "metaData");
-        assert_eq!(metadata["configuration"]["delta.columnMapping.maxColumnId"], "3");
+        assert_eq!(ids, [Some("1"), Some("2")]);
+        let grown = st(&[("host", DataType::Str), ("n", DataType::I64), ("msg", DataType::Str)]);
+        let why = table.refused(&grown, &["host"]);
+        assert!(why.contains("has no delta.columnMapping.maxColumnId"), "{why}");
     }
 
     #[test]

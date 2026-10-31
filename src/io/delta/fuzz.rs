@@ -114,6 +114,7 @@ const COVERED: &[&str] = &[
     "mapping id",
     "field ids checked",
     "mapping name without maxColumnId",
+    "mapping without maxColumnId written",
     "mapping unsupported",
     "check constraint",
     "checkpointInterval",
@@ -1240,11 +1241,21 @@ impl Run {
         // A restart writes the batches again in files of their own.
         self.pending = None;
         let before = self.latest();
+        let no_max = self.load().is_ok_and(|s| {
+            matches!(s.metadata.property("delta.columnMapping.mode"), Some("name" | "id"))
+                && s.metadata.property("delta.columnMapping.maxColumnId").is_none()
+        });
         let by: Vec<&str> = self.partition_by.iter().map(String::as_str).collect();
         let opened = self.table.open(&self.record, &by);
         self.harvest()?;
         match opened {
+            Ok(_) if no_max && self.latest() != before => {
+                Err("the writer gave a new column an id in a table without maxColumnId".to_string())
+            }
             Ok(committer) => {
+                if no_max {
+                    reach("mapping without maxColumnId written");
+                }
                 kept_narrow(&committer)?;
                 field_ids(&committer.schema.fields, committer.written.fields())?;
                 self.committer = Some(committer);
