@@ -439,8 +439,8 @@ aligned without inventing a field.
 A Remove step lists every field the record holds where the step starts, as
 the compiler types it, ticked while it is kept, and a chip for each field it
 removes. Its search, Remove all and Keep all act on what the search shows, as
-the Fields menu's Select all does. A name the search finds nowhere in the list
-is removed from the search box.
+the Fields menu's Select all does. A name that matches no field can still be
+removed, from a link under the search box.
 
 ## Lists
 

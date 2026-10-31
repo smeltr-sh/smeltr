@@ -3157,8 +3157,8 @@ impl Compiler<'_> {
 
     /// `delete(name)`: the reverse of a declaration (Language). At the top level the name leaves the tree,
     /// and its key leaves the unclaimed fields of the object it is in. Inside an `if` or a loop a bound name is a
-    /// compile error, as its declaration would be there, unless `moved`: `move` clears it on the rows selected; a
-    /// key an open object may hold is taken out on the rows selected.
+    /// compile error, as its declaration would be there, unless `clears`: a step's delete, `move`'s or a Remove's,
+    /// clears it on the rows selected; a key an open object may hold is taken out on the rows selected.
     fn delete(&mut self, name: &str, clears: bool, here: Here) {
         let Here { guard, id } = here;
         if name == tree::ROOT {

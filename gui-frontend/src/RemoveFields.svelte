@@ -1,7 +1,7 @@
 <!--
   A Remove step's fields: a chip for each it removes, and every field the record holds where the step starts, ticked
   while it is kept. Remove all and Keep all act on what the search shows, as the Fields menu's Select all does. A name
-  the search finds nowhere in the list is removed from the search box.
+  that matches no field can still be removed, from a link under the search box.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
@@ -76,12 +76,14 @@
   <input type="search" bind:value={query} placeholder="Find a field" aria-label="Find a field" />
   {#if !readOnly}
     <div class="actions">
-      <button type="button" disabled={!matches.length} onclick={() => set(matches, true)}
-        >Remove all{typed ? ` ${matches.length}` : ''}</button
-      >
-      <button type="button" disabled={!matches.length} onclick={() => set(matches, false)}
-        >Keep all{typed ? ` ${matches.length}` : ''}</button
-      >
+      {#if matches.length}
+        <button type="button" onclick={() => set(matches, true)}
+          >Remove all{typed ? ` ${matches.length}` : ''}</button
+        >
+        <button type="button" onclick={() => set(matches, false)}
+          >Keep all{typed ? ` ${matches.length}` : ''}</button
+        >
+      {/if}
       <span class="dim">{fields.length} of {listed.length} removed</span>
     </div>
   {/if}
