@@ -21,6 +21,7 @@
   } = $props();
 
   let picking = $state('');
+  const offered = $derived(declared.filter((d) => !ids.includes(d.id)));
 
   function add(id: string) {
     if (id && !ids.includes(id)) ids = [...ids, id];
@@ -36,16 +37,24 @@
     <a class="mono" href="#/build/schemas?open={encodeURIComponent(id)}">{id}</a>
   </RemovableChip>
 {/each}
-{#if !readOnly}
+{#if !readOnly && offered.length === 0}
+  <!-- Nothing left to choose: a schema is made on the Schemas page. -->
+  <a class="add" href="#/build/schemas">+ add schema</a>
+{:else if !readOnly}
   <select aria-label={adding} bind:value={picking} onchange={() => add(picking)}>
     <option value="">+ add schema</option>
-    {#each declared.filter((d) => !ids.includes(d.id)) as d (d.id)}
+    {#each offered as d (d.id)}
       <option value={d.id}>{d.id}</option>
     {/each}
   </select>
 {/if}
 
 <style>
+  .add {
+    color: var(--accent);
+    font-size: var(--text-note);
+  }
+
   select {
     width: auto;
     border-color: transparent;

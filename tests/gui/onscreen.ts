@@ -119,5 +119,14 @@ export async function onScreen(page: Page, mayLock: boolean): Promise<string[]> 
     return found;
   }, `${CLICKABLE}, ${TYPEABLE}, select`);
   problems.push(...covered);
+  // A choice whose only option is its blank label does nothing when chosen.
+  const empty = await page
+    .locator('select:enabled:visible')
+    .evaluateAll((ss) =>
+      (ss as HTMLSelectElement[])
+        .filter((s) => s.value === '' && ![...s.options].some((o) => o.value !== '' && !o.disabled))
+        .map((s) => `nothing to choose: <select> "${s.getAttribute('aria-label') ?? s.name}"`),
+    );
+  problems.push(...empty);
   return problems;
 }
