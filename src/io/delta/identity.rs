@@ -266,7 +266,7 @@ impl Sequences {
                     let Some(raised) = self.raised(&snapshot.metadata)? else {
                         return Ok(());
                     };
-                    match self.commit(snapshot.version + 1, raised) {
+                    match self.commit(&snapshot, raised) {
                         Ok(()) => return Ok(()),
                         Err(e) => e,
                     }
@@ -285,12 +285,10 @@ impl Sequences {
         }
     }
 
-    fn commit(&self, version: i64, raised: Raised) -> Result<(), CommitError> {
+    fn commit(&self, snapshot: &Snapshot, raised: Raised) -> Result<(), CommitError> {
+        let version = snapshot.version + 1;
         let body = [
-            line(
-                "commitInfo",
-                &json!({"timestamp": now_ms(), "operation": "CHANGE COLUMN", "engineInfo": "smeltr"}),
-            ),
+            line("commitInfo", &snapshot.commit_info(now_ms(), "CHANGE COLUMN")),
             line("metaData", &raised.metadata),
         ]
         .join("\n");

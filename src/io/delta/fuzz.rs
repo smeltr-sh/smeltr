@@ -102,6 +102,7 @@ const COVERED: &[&str] = &[
     "writer generatedColumns",
     "writer clustering",
     "writer typeWidening",
+    "writer inCommitTimestamp",
     "reader columnMapping",
     "reader deletionVectors",
     "reader v2Checkpoint",
@@ -150,6 +151,9 @@ const COVERED: &[&str] = &[
     "unhonoured delta.invariants",
     "unhonoured nested identity",
     "other identity change",
+    "in-commit timestamps enabled",
+    "in-commit timestamp ahead",
+    "in-commit timestamps checked",
     "orc",
     "fault Lost",
     "fault Dropped",
@@ -336,7 +340,7 @@ fn partitioning_refused(record: &DataType, by: &[String]) -> bool {
 }
 
 /// The writer features of tables made here: the ones the writer supports, and some it does not.
-const FEATURES: [&str; 15] = [
+const FEATURES: [&str; 16] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -352,6 +356,7 @@ const FEATURES: [&str; 15] = [
     "generatedColumns",
     "clustering",
     "typeWidening",
+    "inCommitTimestamp",
 ];
 
 const READER_FEATURES: [&str; 5] = [
@@ -1081,6 +1086,9 @@ impl Run {
                 if !features.contains(&json!("identityColumns")) && self.rng.chance(2) {
                     features.push(json!("identityColumns"));
                 }
+                if !features.contains(&json!("inCommitTimestamp")) && self.rng.chance(3) {
+                    features.push(json!("inCommitTimestamp"));
+                }
             }
         }
         let features: Vec<Value> = (actions.iter())
@@ -1096,7 +1104,7 @@ impl Run {
         if (writer == 6 || features.contains(&json!("identityColumns"))) && self.rng.chance(2) {
             refused |= identity_column(&mut self.rng, metadata, &self.record);
         }
-        if self.rng.chance(12) {
+        if self.rng.chance(8) {
             refused |= unhonoured(&mut self.rng, metadata);
         }
         // A table that knows type widening is narrowed more often: the writer must widen it if it enables widening,
@@ -1139,6 +1147,24 @@ impl Run {
         }
         if features.contains(&json!("rowTracking")) && self.rng.chance(2) {
             actions.push(row_tracking(self.rng.below(1000) as i64));
+        }
+        if features.contains(&json!("inCommitTimestamp")) && self.rng.chance(2) {
+            reach("in-commit timestamps enabled");
+            // An earlier writer's clock may run ahead of this writer's.
+            let ahead = if self.rng.chance(3) {
+                reach("in-commit timestamp ahead");
+                1_000_000_000
+            } else {
+                0
+            };
+            for action in &mut actions {
+                if let Some(m) = action.get_mut("metaData") {
+                    m["configuration"]["delta.enableInCommitTimestamps"] = json!("true");
+                }
+                if let Some(info) = action.get_mut("commitInfo") {
+                    info["inCommitTimestamp"] = json!(now_ms() + ahead);
+                }
+            }
         }
         self.put(0, &actions);
         // Another writer's commit could make a table the writer must refuse one it may write.
@@ -1440,6 +1466,11 @@ impl Run {
         let mut schema = StructType::parse(&metadata.schema_string)?;
         let rng = &mut self.rng;
         let mut lines = vec![json!({"commitInfo": {"operation": "WRITE", "engineInfo": OTHER}})];
+        if snapshot.in_commit_timestamps() {
+            let now = now_ms();
+            lines[0]["commitInfo"]["inCommitTimestamp"] =
+                json!(snapshot.in_commit_timestamp.map_or(now, |t| now.max(t + 1)));
+        }
         // A column another writer may widen: one not partitioning a table that knows type widening.
         let knows = (snapshot.protocol.writer_features.iter().flatten()).any(|f| f == "typeWidening");
         let widenable = schema.fields.iter().position(|f| {
@@ -1853,6 +1884,38 @@ impl Run {
         Ok(())
     }
 
+    /// Each commit to a table that keeps in-commit timestamps opens with a `commitInfo` whose timestamp is later than
+    /// the commit's before it.
+    fn check_in_commit_timestamps(&self) -> Result<(), String> {
+        let (mut enabled, mut last) = (false, None);
+        for (version, bytes) in &self.history {
+            let actions: Vec<Value> = (std::str::from_utf8(bytes).unwrap().lines())
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            if let Some(m) = actions.iter().find_map(|a| a.get("metaData")) {
+                enabled = m["configuration"]["delta.enableInCommitTimestamps"] == "true";
+            }
+            let timestamp = actions
+                .first()
+                .and_then(|a| a["commitInfo"]["inCommitTimestamp"].as_i64());
+            if enabled {
+                let Some(t) = timestamp else {
+                    return Err(format!("commit {version} opens with no inCommitTimestamp: {actions:?}"));
+                };
+                if last.is_some_and(|l| t <= l) {
+                    return Err(format!(
+                        "commit {version}'s inCommitTimestamp {t} is not after {last:?}"
+                    ));
+                }
+                if actions[0]["commitInfo"]["engineInfo"] == "smeltr" {
+                    reach("in-commit timestamps checked");
+                }
+            }
+            last = timestamp;
+        }
+        Ok(())
+    }
+
     /// Every identity value a commit adds is on its column's grid, within the mark the commit leaves, and no other
     /// row's, and this writer's files hold one for each column the record does not write. This writer's commits never
     /// lower a mark.
@@ -1973,6 +2036,7 @@ impl Run {
         self.check_row_ids()?;
         self.check_type_changes()?;
         self.check_identity()?;
+        self.check_in_commit_timestamps()?;
         let replayed = self.replay(latest)?;
         let loaded = Replay {
             protocol: Some(serde_json::to_value(&snapshot.protocol).unwrap()),
