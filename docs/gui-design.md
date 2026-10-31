@@ -437,9 +437,9 @@ column CSV should drop is typed `skip`, which keeps the columns after it
 aligned without inventing a field.
 
 A Remove step lists the fields declared before it, as the compiler types
-them, each ticked while it is kept, and a chip for each field it removes. Its search, Remove all and Keep all act on what the search shows, as
-the Fields menu's Select all does. A name that matches no field can still be
-removed, from a link under the search box.
+them, each ticked while it is kept. Its search, Remove all and Keep all act on
+what the search shows, as the Fields menu's Select all does. A name that
+matches no field can still be removed, from a link under the search box.
 
 ## Lists
 
