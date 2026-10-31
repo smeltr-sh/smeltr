@@ -9,8 +9,8 @@ use crate::core::ctx::Ctx;
 use crate::format::{csv_scan, kv_scan};
 use crate::plan::config::{CsvConfig, KvConfig};
 
-/// `csvRebuild(text, headers, delimiter, quote, escape, squeeze)`: `text` with each column whose header is `null` left
-/// empty. `escape` is `""` where a quote is doubled.
+/// `csvRebuild(text, headers, delimiter, quote, escape, squeeze, trim)`: `text` with each column whose header is `null`
+/// left empty. `escape` is `""` where a quote is doubled.
 pub fn csv_rebuild(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     rebuild(ctx, ins, |args, row, text| {
         let config = CsvConfig {
@@ -18,6 +18,7 @@ pub fn csv_rebuild(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             quote: args.byte(3, row)?,
             escape: args.maybe_byte(4, row)?,
             squeeze: args.flag(5, row)?,
+            trim: args.flag(6, row)?,
             ..CsvConfig::default()
         };
         let skipped = args.elements(1, row, |valid, _| !valid)?;

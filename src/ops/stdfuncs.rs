@@ -474,7 +474,7 @@ stdfuncs! {
     Sha1        "sha1"        = some(hashops::sha1);           [Data] => (Str);
     Sha256      "sha256"      = some(hashops::sha256);         [Data] => (Str);
     Sha512      "sha512"      = some(hashops::sha512);         [Data] => (Str);
-    CsvRebuild  "csvRebuild"  = some(rebuildops::csv_rebuild); [Str, Array, Str, Str, Str, Bool] => (Str);
+    CsvRebuild  "csvRebuild"  = some(rebuildops::csv_rebuild); [Str, Array, Str, Str, Str, Bool, Bool] => (Str);
     KvRebuild   "kvRebuild"   = some(rebuildops::kv_rebuild);  [Str, Array, Str, Str, Str, Bool, Bool] => (Str);
     UrlDecode   "urlDecode"   = some(webops::url_decode);      [Str] => (Str);
     HtmlStrip   "htmlStrip"   = some(webops::html_strip);      [Str] => (Str);

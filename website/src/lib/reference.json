@@ -2873,15 +2873,15 @@
       "functions": [
         {
           "name": "csvRebuild",
-          "signature": "text.csvRebuild(headers, delimiter, quote, escape, squeeze)",
+          "signature": "text.csvRebuild(headers, delimiter, quote, escape, squeeze, trim)",
           "summary": "The CSV record `text` with each column whose header is `null` left empty, so every column after it keeps its place. The other arguments are `csv()`'s options: `escape` is `\"\"` where a quote is doubled, and under `squeeze` a run of delimiters is one.",
           "examples": [
             {
-              "expr": "\"200,secret,web01\".csvRebuild([\"status\", null, \"host\"], \",\", \"\\\"\", \"\", false)",
+              "expr": "\"200,secret,web01\".csvRebuild([\"status\", null, \"host\"], \",\", \"\\\"\", \"\", false, false)",
               "result": "\"200,,web01\""
             },
             {
-              "expr": "\"a,\\\"b,c\\\",d\".csvRebuild([\"a\", null, \"d\"], \",\", \"\\\"\", \"\", false)",
+              "expr": "\"a,\\\"b,c\\\",d\".csvRebuild([\"a\", null, \"d\"], \",\", \"\\\"\", \"\", false, false)",
               "result": "\"a,,d\"",
               "note": "a quoted column goes with its quotes"
             }

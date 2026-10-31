@@ -1943,7 +1943,7 @@ impl Writer<'_> {
                 // What `plan::lower` writes after a parse that rebuilds its input and skips something.
                 match (p.rebuild && p.skip, p.kind) {
                     (true, Parser::Csv) => out.push_str(&format!(
-                        "{input} = csvRebuild({input}, [{headers}], \",\", \"\\\"\", \"\", false); "
+                        "{input} = csvRebuild({input}, [{headers}], \",\", \"\\\"\", \"\", false, false); "
                     )),
                     (true, Parser::Kv) => out.push_str(&format!(
                         "{input} = kvRebuild({input}, [\"sk\"], \" \", \"=\", \"\\\"\", false, true); "
