@@ -991,8 +991,8 @@ fn stats(
     let named: Option<Vec<String>> = metadata
         .property("delta.dataSkippingStatsColumns")
         .map(|v| v.split(',').map(|c| c.trim().to_string()).collect());
+    let indexed = indexed_columns(schema, &metadata.partition_columns, indexed);
     let (mut nulls, mut mins, mut maxes) = (Map::new(), Map::new(), Map::new());
-    let mut leaves = 0usize;
     let descr = file.file_metadata().schema_descr();
     for i in 0..descr.num_columns() {
         let parts = descr.column(i).path().parts().to_vec();
@@ -1007,9 +1007,8 @@ fn stats(
             Some(named) => named
                 .iter()
                 .any(|n| *n == names.join(".") || names.join(".").starts_with(&format!("{n}."))),
-            None => leaves < indexed,
+            None => indexed.contains(&names),
         } || clustering.contains(&parts);
-        leaves += 1;
         if !taken {
             continue;
         }
@@ -1033,6 +1032,35 @@ fn stats(
         "maxValues": maxes,
         "nullCount": nulls,
     })
+}
+
+/// The first `n` columns of the table's, by logical names, as Delta counts them for stats: in the schema's order, a
+/// struct's fields one by one and any other column, an array or a map too, as one; a partition column, whose value is
+/// in the add's partition values, not at all.
+fn indexed_columns(schema: &StructType, partition_columns: &[String], n: usize) -> Vec<Vec<String>> {
+    fn walk(fields: &[StructField], path: &[String], left: &mut usize, out: &mut Vec<Vec<String>>) {
+        for field in fields {
+            if *left == 0 {
+                return;
+            }
+            let path = [path, std::slice::from_ref(&field.name)].concat();
+            match &field.data_type {
+                Type::Struct(s) => walk(&s.fields, &path, left, out),
+                _ => {
+                    *left -= 1;
+                    out.push(path);
+                }
+            }
+        }
+    }
+    let data: Vec<StructField> = (schema.fields.iter())
+        .filter(|f| !partition_columns.contains(&f.name))
+        .cloned()
+        .collect();
+    let mut out = Vec::new();
+    let mut left = n;
+    walk(&data, &[], &mut left, &mut out);
+    out
 }
 
 /// The table column at physical path `parts`: its logical names, and its kind when it takes bounds. None when it is
@@ -2479,6 +2507,27 @@ mod tests {
             got["minValues"],
             json!({p("ts"): "2017-11-16T22:31:08.000Z", p("host"): "a".repeat(32)})
         );
+    }
+
+    #[test]
+    fn the_indexed_columns_are_the_tables_first_whatever_the_files_order() {
+        let (mut schema, file) = stats_file();
+        let p = |schema: &StructType, name| physical(schema, name);
+        // The table's first column is one the file holds last, and its second one the file does not hold.
+        let n = schema.fields.remove(3);
+        schema.fields.insert(0, n);
+        schema.fields.insert(
+            1,
+            StructField {
+                name: "absent".into(),
+                data_type: Type::Primitive("long".into()),
+                nullable: true,
+                metadata: Map::new(),
+            },
+        );
+        let meta = metadata(&schema, &[("delta.dataSkippingNumIndexedCols", "3")], &[]);
+        let got = stats(&file, &schema, &meta, &[], 2);
+        assert_eq!(got["nullCount"], json!({p(&schema, "n"): 1, p(&schema, "ts"): 0}));
     }
 
     #[test]
