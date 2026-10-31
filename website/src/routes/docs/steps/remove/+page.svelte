@@ -33,6 +33,10 @@
   </p>
 
   <h2 id="example">Example</h2>
+  <p>
+    The parser declares the record's fields, so the step's list shows them, beside
+    <code>_raw</code>, the text the parser read.
+  </p>
   <StepExample example={examples.basic} />
   <p>The step does not name <code>user</code> or <code>status</code>, so they pass through.</p>
 
@@ -65,6 +69,7 @@
   </p>
   <p>The parser declares <code>level</code> and <code>trace</code> as <code>str</code>.</p>
   <StepExample example={examples.filtered} />
+  <p>A null field is left out of the JSON shown.</p>
 
   <h3 id="edges">Missing fields</h3>
   <p>A record without the field passes the step unchanged:</p>
