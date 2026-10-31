@@ -262,7 +262,7 @@ fn open(
         .find(|f| f.source_ids.as_ref().is_some_and(|ids| ids.len() > 1))
     {
         return Err(refused(format!(
-            "its partition field {} is a transform of several columns, which this writer does not write",
+            "its partition field {} is a transform of several columns, and only a transform of one column is written",
             field.name
         )));
     }

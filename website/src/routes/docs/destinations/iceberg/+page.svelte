@@ -72,7 +72,7 @@
     <li>
       A table that exists is of
       <a href="https://iceberg.apache.org/spec/#format-versioning">format version</a> 2 or 3 and not encrypted.
-      A table the destination creates is of version 2.
+      A table the destination creates is of format version 2.
     </li>
     <li>
       Give the principal the destination signs in to the catalog as permission to load and update
@@ -307,10 +307,16 @@
       <strong>the table's column … has a write default, and the record does not write it</strong>
     </dt>
     <dd>
-      A row that leaves the column out takes its write default, which the destination does not
-      write. Write the field from the pipeline, or drop the column's write default.
+      The table expects a writer to fill this column with its write default when a row leaves it
+      out, and the destination does not. Write the field from the pipeline, or drop the column's
+      write default.
     </dd>
-    <dt><strong>its partition field … is a transform of several columns …</strong></dt>
+    <dt>
+      <strong
+        >its partition field … is a transform of several columns, and only a transform of one column
+        is written</strong
+      >
+    </dt>
     <dd>Write to a table whose partition fields each transform one column.</dd>
     <dt><strong>it is encrypted, and an encrypted table is not written</strong></dt>
     <dd>Write to a table that is not encrypted.</dd>
