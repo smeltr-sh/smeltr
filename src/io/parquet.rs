@@ -1502,9 +1502,17 @@ mod tests {
             false,
         );
         let schema = Schema::new(&record).unwrap();
-        let table = table_schema(&record, None, Mapping::Name { max_column_id: 0 }, None)
-            .unwrap()
-            .schema;
+        let table = table_schema(
+            &record,
+            None,
+            Mapping::Name {
+                max_column_id: 0,
+                iceberg: false,
+            },
+            None,
+        )
+        .unwrap()
+        .schema;
         let written = physical(schema.arrow(), &table);
         let labelled = schema.clone().with_written(written.clone());
 

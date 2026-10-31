@@ -71,29 +71,15 @@ export async function onScreen(page: Page, mayLock: boolean): Promise<string[]> 
       const x = r.left + r.width / 2;
       const y = r.top + r.height / 2;
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
-      // Past the edge of a box that clips it. One that scrolls has scrolled it away, and a person scrolls to it, past
-      // any box round that one; one that does not has cut it off, where no one reaches it. The clip is the box's
-      // padding edge, inside its border.
-      const scrolls = (overflow: string) => overflow === 'auto' || overflow === 'scroll';
-      let [scrolledX, scrolledY] = [false, false];
-      let cut: Element | undefined;
-      for (let a = e.parentElement; a && !cut; a = a.parentElement) {
+      // Scrolled out of a panel that clips it: not on screen, so nothing covers it.
+      let clipped = false;
+      for (let a = e.parentElement; a; a = a.parentElement) {
         const o = getComputedStyle(a);
         if (o.overflowX === 'visible' && o.overflowY === 'visible') continue;
         const b = a.getBoundingClientRect();
-        const left = b.left + a.clientLeft;
-        const top = b.top + a.clientTop;
-        const outX = !scrolledX && (x < left || x > left + a.clientWidth);
-        const outY = !scrolledY && (y < top || y > top + a.clientHeight);
-        if ((outX && !scrolls(o.overflowX)) || (outY && !scrolls(o.overflowY))) cut = a;
-        scrolledX ||= outX;
-        scrolledY ||= outY;
+        if (x < b.left || x > b.right || y < b.top || y > b.bottom) clipped = true;
       }
-      if (cut) {
-        found.push(`cut off: ${name(e)} is past the edge of ${name(cut)}`);
-        continue;
-      }
-      if (scrolledX || scrolledY) continue;
+      if (clipped) continue;
       const hit = document.elementFromPoint(x, y);
       if (!hit || e === hit || e.contains(hit)) continue;
       const labels = (e as HTMLInputElement).labels;
@@ -114,10 +100,10 @@ export async function onScreen(page: Page, mayLock: boolean): Promise<string[]> 
         }
         if (floating) continue;
       }
-      found.push(`covered: ${name(e)} is under ${name(hit)}`);
+      found.push(`${name(e)} is under ${name(hit)}`);
     }
     return found;
   }, `${CLICKABLE}, ${TYPEABLE}, select`);
-  problems.push(...covered);
+  problems.push(...covered.map((c) => `covered: ${c}`));
   return problems;
 }

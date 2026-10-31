@@ -25,6 +25,7 @@ use crate::io::table::Kind;
 const PHYSICAL_NAME: &str = "delta.columnMapping.physicalName";
 const COLUMN_ID: &str = "delta.columnMapping.id";
 const TYPE_CHANGES: &str = "delta.typeChanges";
+const NESTED_IDS: &str = "delta.columnMapping.nested.ids";
 
 /// Spark's JSON struct: the table's schema, or a struct column's type.
 #[derive(Clone, Debug, PartialEq)]
@@ -213,7 +214,12 @@ fn parse_field(value: &Value) -> Result<StructField, String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mapping {
     None,
-    Name { max_column_id: i64 },
+    /// `iceberg` when the table is IcebergCompatV2: each new array's element, and map's key and value, takes an id
+    /// under `delta.columnMapping.nested.ids` too, and a column widens only as Iceberg lets it.
+    Name {
+        max_column_id: i64,
+        iceberg: bool,
+    },
 }
 
 /// The table's schema for a record, and whether it differs from the table's current one.
@@ -230,7 +236,7 @@ pub struct Evolution {
 }
 
 /// The schema a table must have for `record` to be written to it. With no `current` schema the table is new, and the
-/// caller passes `Mapping::None`, or `Mapping::Name { max_column_id: 0 }` to map it. Under `Name` each new column,
+/// caller passes `Mapping::None`, or `Mapping::Name { max_column_id: 0, iceberg: false }` to map it. Under `Name` each new column,
 /// nested ones too, takes the next id above `max_column_id` and a fresh physical name; under `None` it takes no
 /// metadata. When the table lets its columns widen, `widen` names its partition columns, and every other column it
 /// holds narrower than the record types is widened to the record's type where the protocol allows, the change
@@ -282,31 +288,38 @@ fn mapped(field: &Field, table: &[StructField]) -> Field {
     let Some(t) = table.iter().find(|t| t.name == *field.name()) else {
         return field.clone();
     };
-    let mut metadata = field.metadata().clone();
-    if let Some(id) = t.column_id() {
-        metadata.insert(PARQUET_FIELD_ID_META_KEY.to_string(), id.to_string());
-    }
-    field
-        .clone()
-        .with_name(t.physical_name())
-        .with_data_type(mapped_type(field.data_type(), &t.data_type))
-        .with_metadata(metadata)
+    let id = t.column_id();
+    let nested = t.metadata.get(NESTED_IDS).and_then(Value::as_object);
+    let data_type = mapped_type(field.data_type(), &t.data_type, nested, t.physical_name());
+    with_id(field.clone().with_name(t.physical_name()).with_data_type(data_type), id)
 }
 
-fn mapped_type(arrow: &Arrow, table: &Type) -> Arrow {
+/// `table`'s type for `arrow`'s, with each list's element carrying its id in `nested`, the ids of the nearest struct
+/// field's arrays, under the key `key` and `.element`.
+fn mapped_type(arrow: &Arrow, table: &Type, nested: Option<&Map<String, Value>>, key: &str) -> Arrow {
     match (arrow, table) {
         (Arrow::Struct(fields), Type::Struct(s)) => {
             Arrow::Struct(fields.iter().map(|f| mapped(f, &s.fields)).collect())
         }
-        (Arrow::List(element), Type::Array { element: t, .. }) => Arrow::List(Arc::new(
-            element
-                .as_ref()
-                .clone()
-                .with_data_type(mapped_type(element.data_type(), t)),
-        )),
+        (Arrow::List(element), Type::Array { element: t, .. }) => {
+            let key = format!("{key}.element");
+            let id = nested.and_then(|ids| ids.get(&key)).and_then(Value::as_i64);
+            let data_type = mapped_type(element.data_type(), t, nested, &key);
+            Arrow::List(Arc::new(with_id(
+                element.as_ref().clone().with_data_type(data_type),
+                id,
+            )))
+        }
         (other, Type::Primitive(p)) => narrow(p).unwrap_or_else(|| other.clone()),
         (other, _) => other.clone(),
     }
+}
+
+fn with_id(field: Field, id: Option<i64>) -> Field {
+    let Some(id) = id else { return field };
+    let mut metadata = field.metadata().clone();
+    metadata.insert(PARQUET_FIELD_ID_META_KEY.to_string(), id.to_string());
+    field.with_metadata(metadata)
 }
 
 /// The Parquet type a column of the primitive the log names `p` is written as, where it is narrower than any record
@@ -409,6 +422,100 @@ fn widens(from: &Type, to: &Type) -> bool {
         ) => a == b && widens(k1, k2) && widens(v1, v2),
         _ => false,
     }
+}
+
+/// The keys `delta.columnMapping.nested.ids` gives the arrays and maps in `t`, the type of the struct field whose
+/// physical name is `key`. A struct's own fields key theirs under their own names.
+fn nested_keys(t: &Type, key: &str, out: &mut Vec<String>) {
+    let mut at = |suffix: &str, t: &Type| {
+        let key = format!("{key}.{suffix}");
+        out.push(key.clone());
+        nested_keys(t, &key, out);
+    };
+    match t {
+        Type::Array { element, .. } => at("element", element),
+        Type::Map { key: k, value, .. } => {
+            at("key", k);
+            at("value", value);
+        }
+        Type::Primitive(_) | Type::Struct(_) => {}
+    }
+}
+
+/// Every struct field in `fields`, at any depth.
+fn struct_fields<'a>(fields: &'a [StructField], out: &mut Vec<&'a StructField>) {
+    fn of<'a>(t: &'a Type, out: &mut Vec<&'a StructField>) {
+        match t {
+            Type::Primitive(_) => {}
+            Type::Struct(s) => struct_fields(&s.fields, out),
+            Type::Array { element, .. } => of(element, out),
+            Type::Map { key, value, .. } => {
+                of(key, out);
+                of(value, out);
+            }
+        }
+    }
+    for f in fields {
+        out.push(f);
+        of(&f.data_type, out);
+    }
+}
+
+/// The largest id `delta.columnMapping.nested.ids` gives in `schema`; 0 when it gives none.
+pub fn max_nested_id(schema: &StructType) -> i64 {
+    let mut fields = Vec::new();
+    struct_fields(&schema.fields, &mut fields);
+    (fields.iter())
+        .filter_map(|f| f.metadata.get(NESTED_IDS).and_then(Value::as_object))
+        .flat_map(|ids| ids.values().filter_map(Value::as_i64))
+        .max()
+        .unwrap_or(0)
+}
+
+/// What keeps `schema` from an IcebergCompatV2 table this writer writes: an array's element, or a map's key or value,
+/// without its id, or a type change Iceberg does not make. The message names the column.
+pub fn not_iceberg(schema: &StructType) -> Option<String> {
+    let mut fields = Vec::new();
+    struct_fields(&schema.fields, &mut fields);
+    fields.into_iter().find_map(|f| {
+        let mut keys = Vec::new();
+        nested_keys(&f.data_type, f.physical_name(), &mut keys);
+        let ids = f.metadata.get(NESTED_IDS).and_then(Value::as_object);
+        let missing = keys
+            .iter()
+            .find(|k| !ids.is_some_and(|ids| ids.get(*k).is_some_and(Value::is_i64)));
+        if let Some(key) = missing {
+            return Some(format!(
+                "the table is IcebergCompatV2, and its column {} gives {key} no id in {NESTED_IDS}",
+                f.name
+            ));
+        }
+        let changes = f.metadata.get(TYPE_CHANGES).and_then(Value::as_array);
+        let change = changes.into_iter().flatten().find(|c| {
+            let (from, to) = (c["fromType"].as_str(), c["toType"].as_str());
+            !from.zip(to).is_some_and(|(from, to)| iceberg_widens(from, to))
+        })?;
+        Some(format!(
+            "the table is IcebergCompatV2, and its column {} changed type as Iceberg does not: {change}",
+            f.name
+        ))
+    })
+}
+
+/// Whether Iceberg's schema evolution changes primitive `from` to `to`: an integer to a wider one, a float to a double,
+/// a decimal to one of more precision and the same scale. Iceberg holds a `byte` or `short` as an int.
+fn iceberg_widens(from: &str, to: &str) -> bool {
+    let integers = ["byte", "short", "integer", "long"];
+    let rank = |t: &str| integers.iter().position(|i| *i == t);
+    let decimal = |t: &str| {
+        let (p, s) = t.strip_prefix("decimal(")?.strip_suffix(')')?.split_once(',')?;
+        Some((p.trim().parse::<u32>().ok()?, s.trim().parse::<u32>().ok()?))
+    };
+    rank(from).zip(rank(to)).is_some_and(|(from, to)| from < to)
+        || (from, to) == ("float", "double")
+        || decimal(from)
+            .zip(decimal(to))
+            .is_some_and(|((p1, s1), (p2, s2))| p1 < p2 && s1 == s2)
 }
 
 /// The first column, at any depth, whose metadata asks of a writer what this one does not do: compute a generated
@@ -530,7 +637,7 @@ impl Ids {
     fn new_field(&mut self, name: &str) -> Result<StructField, String> {
         self.changed = true;
         let mut metadata = Map::new();
-        if let Mapping::Name { max_column_id } = &mut self.mapping {
+        if let Mapping::Name { max_column_id, .. } = &mut self.mapping {
             *max_column_id += 1;
             metadata.insert(COLUMN_ID.to_string(), json!(*max_column_id));
             metadata.insert(PHYSICAL_NAME.to_string(), json!(format!("col-{}", uuid())));
@@ -544,6 +651,30 @@ impl Ids {
         })
     }
 
+    /// Gives each array's element in the new `field`'s type its id under `delta.columnMapping.nested.ids`, after the
+    /// ids of the struct fields within, when the table is IcebergCompatV2.
+    fn nest(&mut self, field: &mut StructField) {
+        let Mapping::Name {
+            max_column_id,
+            iceberg: true,
+        } = &mut self.mapping
+        else {
+            return;
+        };
+        let mut keys = Vec::new();
+        nested_keys(&field.data_type, field.physical_name(), &mut keys);
+        if keys.is_empty() {
+            return;
+        }
+        let ids = keys.into_iter().map(|key| {
+            *max_column_id += 1;
+            (key, json!(*max_column_id))
+        });
+        field
+            .metadata
+            .insert(NESTED_IDS.to_string(), Value::Object(ids.collect()));
+    }
+
     /// New fields for `columns`. A struct's fields take their ids before any field's children do.
     fn fresh_fields(&mut self, columns: &[(String, DataType)], path: &str) -> Result<Vec<StructField>, String> {
         let mut fields = columns
@@ -552,6 +683,7 @@ impl Ids {
             .collect::<Result<Vec<_>, _>>()?;
         for (field, (name, t)) in fields.iter_mut().zip(columns) {
             field.data_type = self.fresh_type(t, &at(path, name))?;
+            self.nest(field);
         }
         unique(&fields, path)?;
         Ok(fields)
@@ -622,6 +754,7 @@ impl Ids {
             if !table.iter().any(|f| f.name == *name) {
                 let mut field = self.new_field(name)?;
                 field.data_type = self.fresh_type(t, &at(path, name))?;
+                self.nest(&mut field);
                 fields.push(field);
             }
         }
@@ -636,7 +769,8 @@ impl Ids {
             (Type::Primitive(p), t)
                 if self.widen.is_some() && !matches!(t, DataType::Array(_) | DataType::Struct(..)) =>
             {
-                match widened(p, t) {
+                let iceberg = matches!(self.mapping, Mapping::Name { iceberg: true, .. });
+                match widened(p, t).filter(|to| !iceberg || iceberg_widens(p, to)) {
                     Some(to) => {
                         let mut change = json!({"fromType": p, "toType": to});
                         if !within.is_empty() {
@@ -837,9 +971,24 @@ mod tests {
 
     #[test]
     fn a_new_table_takes_the_record_with_ids_a_level_at_a_time() {
-        let e = table_schema(&record(), None, Mapping::Name { max_column_id: 0 }, None).unwrap();
+        let e = table_schema(
+            &record(),
+            None,
+            Mapping::Name {
+                max_column_id: 0,
+                iceberg: false,
+            },
+            None,
+        )
+        .unwrap();
         assert!(e.changed);
-        assert_eq!(e.mapping, Mapping::Name { max_column_id: 9 });
+        assert_eq!(
+            e.mapping,
+            Mapping::Name {
+                max_column_id: 9,
+                iceberg: false
+            }
+        );
         let mut got = Vec::new();
         ids(&e.schema.fields, "", &mut got);
         let want: Vec<(String, Option<i64>)> = [
@@ -904,7 +1053,16 @@ mod tests {
 
     #[test]
     fn the_same_record_changes_nothing() {
-        let first = table_schema(&record(), None, Mapping::Name { max_column_id: 0 }, None).unwrap();
+        let first = table_schema(
+            &record(),
+            None,
+            Mapping::Name {
+                max_column_id: 0,
+                iceberg: false,
+            },
+            None,
+        )
+        .unwrap();
         let again = table_schema(&record(), Some(&first.schema), first.mapping, None).unwrap();
         assert!(!again.changed);
         assert_eq!(again.mapping, first.mapping);
@@ -936,9 +1094,17 @@ mod tests {
 
     #[test]
     fn a_new_nested_field_is_added_with_a_new_id_and_a_column_not_written_is_kept() {
-        let mut table = table_schema(&record(), None, Mapping::Name { max_column_id: 0 }, None)
-            .unwrap()
-            .schema;
+        let mut table = table_schema(
+            &record(),
+            None,
+            Mapping::Name {
+                max_column_id: 0,
+                iceberg: false,
+            },
+            None,
+        )
+        .unwrap()
+        .schema;
         table.fields.push(StructField {
             metadata: json!({COLUMN_ID: 20, PHYSICAL_NAME: "col-gone"})
                 .as_object()
@@ -946,9 +1112,24 @@ mod tests {
                 .clone(),
             ..plain("gone", prim("integer"))
         });
-        let e = table_schema(&grown(), Some(&table), Mapping::Name { max_column_id: 20 }, None).unwrap();
+        let e = table_schema(
+            &grown(),
+            Some(&table),
+            Mapping::Name {
+                max_column_id: 20,
+                iceberg: false,
+            },
+            None,
+        )
+        .unwrap();
         assert!(e.changed);
-        assert_eq!(e.mapping, Mapping::Name { max_column_id: 23 });
+        assert_eq!(
+            e.mapping,
+            Mapping::Name {
+                max_column_id: 23,
+                iceberg: false
+            }
+        );
         let http = inner(&field(&e.schema, "http").data_type);
         let peer = field(http, "peer");
         assert_eq!(peer.column_id(), Some(21));
@@ -1175,20 +1356,159 @@ mod tests {
             ],
             false,
         );
-        let schema = table_schema(&empty, None, Mapping::Name { max_column_id: 0 }, None)
-            .unwrap()
-            .schema;
+        let schema = table_schema(
+            &empty,
+            None,
+            Mapping::Name {
+                max_column_id: 0,
+                iceberg: false,
+            },
+            None,
+        )
+        .unwrap()
+        .schema;
         let names: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["a"]);
+    }
+
+    #[test]
+    fn an_iceberg_table_gives_each_arrays_element_an_id_and_its_files_carry_it() {
+        let iceberg = Mapping::Name {
+            max_column_id: 0,
+            iceberg: true,
+        };
+        let e = table_schema(&record(), None, iceberg, None).unwrap();
+        assert_eq!(
+            e.mapping,
+            Mapping::Name {
+                max_column_id: 11,
+                iceberg: true
+            }
+        );
+        let http = field(&e.schema, "http");
+        assert!(
+            !http.metadata.contains_key(NESTED_IDS),
+            "a struct's own fields key their arrays"
+        );
+        let hdrs = field(inner(&http.data_type), "hdrs");
+        let tags = field(&e.schema, "tags");
+        assert_eq!(
+            hdrs.metadata[NESTED_IDS],
+            json!({format!("{}.element", hdrs.physical_name()): 8})
+        );
+        assert_eq!(
+            tags.metadata[NESTED_IDS],
+            json!({format!("{}.element", tags.physical_name()): 11})
+        );
+        assert_eq!(max_nested_id(&e.schema), 11);
+        assert_eq!(not_iceberg(&e.schema), None);
+
+        let arrow = physical(crate::io::parquet::Schema::new(&record()).unwrap().arrow(), &e.schema);
+        let element_id = |f: &Field| match f.data_type() {
+            Arrow::List(element) => element.metadata().get(PARQUET_FIELD_ID_META_KEY).cloned(),
+            other => panic!("{other} is no list"),
+        };
+        let Arrow::Struct(http) = arrow.field_with_name(http.physical_name()).unwrap().data_type() else {
+            panic!("http is a struct")
+        };
+        assert_eq!(element_id(&http[1]), Some("8".to_string()));
+        assert_eq!(
+            element_id(arrow.field_with_name(tags.physical_name()).unwrap()),
+            Some("11".to_string())
+        );
+        // And the Parquet file carries them, its list's element node with each.
+        let mut writer = parquet::arrow::ArrowWriter::try_new(Vec::new(), arrow.clone(), None).unwrap();
+        writer.write(&arrow_array::RecordBatch::new_empty(arrow)).unwrap();
+        let file = bytes::Bytes::from(writer.into_inner().unwrap());
+        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        fn node_ids(t: &parquet::schema::types::Type, out: &mut Vec<i32>) {
+            if t.get_basic_info().has_id() {
+                out.push(t.get_basic_info().id());
+            }
+            if t.is_group() {
+                t.get_fields().iter().for_each(|f| node_ids(f, out));
+            }
+        }
+        let mut got = Vec::new();
+        node_ids(reader.parquet_schema().root_schema(), &mut got);
+        got.sort();
+        assert_eq!(got, (1..=11).collect::<Vec<_>>());
+
+        let mut table = e.schema.clone();
+        let tags = table.fields.iter_mut().find(|f| f.name == "tags").unwrap();
+        tags.metadata.remove(NESTED_IDS);
+        let why = not_iceberg(&table).unwrap();
+        assert!(
+            why.contains("its column tags gives") && why.contains(".element no id"),
+            "{why}"
+        );
+        let grown = st(&[("tags", arr(arr(DataType::I64)))], false);
+        let e = table_schema(&grown, None, iceberg, None).unwrap();
+        let tags = field(&e.schema, "tags");
+        let key = |k: &str| format!("{}{k}", tags.physical_name());
+        assert_eq!(
+            tags.metadata[NESTED_IDS],
+            json!({key(".element"): 2, key(".element.element"): 3})
+        );
+    }
+
+    #[test]
+    fn an_iceberg_table_changes_types_only_as_iceberg_does() {
+        let table = StructType {
+            fields: vec![plain("i", prim("integer")), plain("d", prim("date"))],
+        };
+        let iceberg = Mapping::Name {
+            max_column_id: 0,
+            iceberg: true,
+        };
+        let int = st(&[("i", DataType::I64)], false);
+        let widened = table_schema(&int, Some(&table), iceberg, Some(&[])).unwrap();
+        assert_eq!(field(&widened.schema, "i").data_type, prim("long"));
+        assert_eq!(not_iceberg(&widened.schema), None);
+        let date = st(&[("d", DataType::DateTime)], false);
+        let mapped = Mapping::Name {
+            max_column_id: 0,
+            iceberg: false,
+        };
+        let ntz = table_schema(&date, Some(&table), mapped, Some(&[])).unwrap();
+        assert_eq!(field(&ntz.schema, "d").data_type, prim("timestamp_ntz"));
+        let why = not_iceberg(&ntz.schema).unwrap();
+        assert!(why.contains("its column d changed type"), "{why}");
+        let kept = table_schema(&date, Some(&table), iceberg, Some(&[])).unwrap();
+        assert!(
+            !kept.changed,
+            "an Iceberg table keeps its date column, written as a date"
+        );
+
+        for (from, to, widens) in [
+            ("byte", "integer", true),
+            ("short", "long", true),
+            ("float", "double", true),
+            ("decimal(10,2)", "decimal(12,2)", true),
+            ("decimal(10,2)", "decimal(12,3)", false),
+            ("integer", "double", false),
+            ("long", "integer", false),
+            ("date", "timestamp_ntz", false),
+        ] {
+            assert_eq!(iceberg_widens(from, to), widens, "{from} to {to}");
+        }
     }
 
     #[test]
     fn the_arrow_schema_names_each_field_physically_with_its_id() {
         let record = record();
         let parquet = crate::io::parquet::Schema::new(&record).unwrap();
-        let table = table_schema(&record, None, Mapping::Name { max_column_id: 0 }, None)
-            .unwrap()
-            .schema;
+        let table = table_schema(
+            &record,
+            None,
+            Mapping::Name {
+                max_column_id: 0,
+                iceberg: false,
+            },
+            None,
+        )
+        .unwrap()
+        .schema;
         let arrow = physical(parquet.arrow(), &table);
         let id = |f: &Field| {
             f.metadata()
@@ -1238,9 +1558,17 @@ mod tests {
 
     #[test]
     fn a_partition_column_is_a_top_level_primitive() {
-        let mut schema = table_schema(&record(), None, Mapping::Name { max_column_id: 0 }, None)
-            .unwrap()
-            .schema;
+        let mut schema = table_schema(
+            &record(),
+            None,
+            Mapping::Name {
+                max_column_id: 0,
+                iceberg: false,
+            },
+            None,
+        )
+        .unwrap()
+        .schema;
         schema.fields.push(plain("day", prim("date")));
         schema.fields.push(plain("d", prim("decimal(10,2)")));
         schema.fields.push(plain("i", prim("short")));

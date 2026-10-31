@@ -102,7 +102,8 @@
           <code>deletionVectors</code>, <code>vacuumProtocolCheck</code>,
           <code>timestampNtz</code>, <code>clustering</code>, <code>rowTracking</code>,
           <code>typeWidening</code>, <code>identityColumns</code>,
-          <code>inCommitTimestamp</code> and <code>materializePartitionColumns</code>;
+          <code>inCommitTimestamp</code>, <code>materializePartitionColumns</code> and
+          <code>icebergCompatV2</code>;
         </li>
         <li>its files are Parquet;</li>
         <li>
@@ -110,6 +111,11 @@
           not at all;
         </li>
         <li>it sets no check constraint;</li>
+        <li>
+          if it sets <code>delta.enableIcebergCompatV2</code>, it maps columns, does not enable
+          deletion vectors, gives every array's element an id in
+          <code>delta.columnMapping.nested.ids</code>, and records only type changes Iceberg makes;
+        </li>
         <li>
           no column is generated, has a default or carries an invariant, and every column is
           nullable, as is every array's element, except an
@@ -270,6 +276,11 @@
     struct whose names differ only in case. A partition column is a top-level column of a primitive
     type other than <code>bytes</code>.
   </p>
+  <p>
+    In a table that sets <code>delta.enableIcebergCompatV2</code> to <code>true</code>, each new
+    array's element also takes an id in <code>delta.columnMapping.nested.ids</code>, and the files
+    carry it, as an Iceberg reader of the table needs.
+  </p>
 
   <h3 id="identity-columns">Identity columns</h3>
   <p>
@@ -370,6 +381,22 @@
     <dd>
       The writer that mapped the table's columns did not record the highest column id it gave, so
       the destination cannot give a new column an id of its own. Write to another table.
+    </dd>
+    <dt>
+      <strong>the table is IcebergCompatV2 and maps no columns …</strong> or
+      <strong>… enables deletion vectors …</strong>
+    </dt>
+    <dd>
+      The table breaks a rule of IcebergCompatV2, so an Iceberg reader could not read what the
+      destination adds. Write to another table.
+    </dd>
+    <dt>
+      <strong>the table is IcebergCompatV2, and its column … gives … no id …</strong> or
+      <strong>… changed type as Iceberg does not …</strong>
+    </dt>
+    <dd>
+      Another writer left an array's element without its id, or changed a column's type in a way
+      Iceberg does not. Write to another table.
     </dd>
     <dt><strong>the table has the check constraint …</strong></dt>
     <dd>
