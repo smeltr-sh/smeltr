@@ -609,13 +609,39 @@ fn a_rebuilding_step_that_skips_nothing_keeps_the_line() {
     b.reclaim(&mut env.pool);
 }
 
+/// Under `trim` a quote after spaces still opens a quoted column, so the rebuilt line leaves empty the column the
+/// parse skipped, delimiters inside its quotes and all.
+#[test]
+fn a_rebuilding_trimmed_step_leaves_a_quoted_column_empty_whole() {
+    let config = CsvConfig {
+        headers: vec![Some("a".into()), None, Some("c".into())],
+        trim: true,
+        rebuild: true,
+        ..CsvConfig::default()
+    };
+    let step = FunctionKind::Parser {
+        input: "_raw".into(),
+        into: "$".into(),
+        kind: ParserKind::Csv(config),
+        declared: Vec::new(),
+    };
+    let plan = compile_ok(vec![func(0, step)]);
+    let mut env = Env::new();
+    let mut b = Batch::new(&plan.slot_layout, 1, 0);
+    seed_raw(&mut env, &mut b, &[r#"1, "x,y", 3"#]);
+
+    let rows = env.run(&plan, &mut b);
+    assert_eq!(parsed(&rows[0]), parsed(br#"{"_raw":"1,, 3","a":"1","c":"3"}"#));
+    b.reclaim(&mut env.pool);
+}
+
 /// `csvRebuild` is a function code may call: a squeezed run of delimiters is one, so the column it blanks is the
 /// one `csv()` reads, and a line that does not split whole comes back as it was.
 #[test]
 fn csv_rebuild_blanks_what_csv_skips() {
     let plan = compile_ok(vec![code(
         0,
-        r#"_raw = csvRebuild(_raw, ["a", null, "c"], " ", "\"", "", true);"#,
+        r#"_raw = csvRebuild(_raw, ["a", null, "c"], " ", "\"", "", true, false);"#,
     )]);
     let mut env = Env::new();
     let mut b = Batch::new(&plan.slot_layout, 2, 0);

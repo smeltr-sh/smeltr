@@ -65,7 +65,7 @@
   ],
   "csvRebuild": [
     {
-      "params": "(str, array of scalars, str, str, str, bool)",
+      "params": "(str, array of scalars, str, str, str, bool, bool)",
       "result": "str"
     }
   ],

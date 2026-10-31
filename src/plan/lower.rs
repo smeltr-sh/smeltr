@@ -207,6 +207,7 @@ fn rebuild(input: &str, kind: &ParserKind) -> Option<Stmt> {
                 byte(c.quote),
                 escape,
                 boolean(c.squeeze),
+                boolean(c.trim),
             ];
             call("csvRebuild", args)
         }
