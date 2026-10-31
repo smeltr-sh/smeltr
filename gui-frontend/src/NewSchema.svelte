@@ -356,13 +356,16 @@
 </script>
 
 {#snippet ecsRequirementsHelp()}
-  ECS requires @timestamp and ecs.version, and recommends its core fields. Elastic Security requires five fields:
-  @timestamp, ecs.version, event.kind, event.category and event.type. It recommends the other fields it uses
-  to display data and run its prebuilt detection rules, such as host.name, process.name and source.ip. Its <a
-    href="https://www.elastic.co/guide/en/security/current/siem-field-reference.html"
-    target="_blank"
-    rel="noreferrer">field reference</a
-  > lists them.
+  <span class="option"><strong>ECS</strong> requires @timestamp and ecs.version, and recommends its core fields.</span>
+  <span class="option"
+    ><strong>Elastic Security</strong> requires five fields: @timestamp, ecs.version, event.kind, event.category and
+    event.type. It recommends the other fields it uses to display data and run its prebuilt detection rules, such as
+    host.name, process.name and source.ip. Its <a
+      href="https://www.elastic.co/guide/en/security/current/siem-field-reference.html"
+      target="_blank"
+      rel="noreferrer">field reference</a
+    > lists them.</span
+  >
 {/snippet}
 
 {#snippet link(href: string)}
@@ -605,6 +608,15 @@
 </NewObject>
 
 <style>
+  /* Each choice's explanation on its own line, led by its name. */
+  .option {
+    display: block;
+  }
+
+  .option + .option {
+    margin-top: 0.4rem;
+  }
+
   textarea {
     width: 100%;
     box-sizing: border-box;
