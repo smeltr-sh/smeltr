@@ -19,7 +19,7 @@ use serde_json::{Map, Value, json};
 
 use super::log::uuid;
 use crate::core::column::DataType;
-use crate::io::parquet::{at, columns, narrows};
+use crate::io::parquet::{at, columns, narrows, variant_group};
 use crate::io::table::Kind;
 
 const PHYSICAL_NAME: &str = "delta.columnMapping.physicalName";
@@ -340,10 +340,7 @@ fn mapped_type(arrow: &Arrow, table: &Type, nested: Option<&Map<String, Value>>,
             )))
         }
         // A variant, which the record writes as JSON text (`parquet::Schema::with_written`).
-        (Arrow::Utf8, Type::Primitive(p)) if p == VARIANT => Arrow::Struct(Fields::from(vec![
-            Field::new("metadata", Arrow::Binary, false),
-            Field::new("value", Arrow::Binary, false),
-        ])),
+        (Arrow::Utf8, Type::Primitive(p)) if p == VARIANT => variant_group(),
         (other, Type::Primitive(p)) => narrow(p).unwrap_or_else(|| other.clone()),
         (other, _) => other.clone(),
     }

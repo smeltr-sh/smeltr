@@ -1727,7 +1727,7 @@ impl DestinationKind {
 
     /// Whether this destination may hold a variant as Parquet's variant, and so reads its bytes (`parquet::Schema`).
     pub fn holds_native_variants(&self) -> bool {
-        matches!(self, DestinationKind::Iceberg(_))
+        matches!(self, DestinationKind::Iceberg(_) | DestinationKind::Delta(_))
     }
 
     /// Which field of the row this destination reads the document identity from, if it does. `None` means it relies on
