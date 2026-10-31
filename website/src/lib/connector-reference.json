@@ -3833,7 +3833,7 @@
           },
           {
             "value": "native",
-            "what": "Writes Parquet's own `variant` type, each value of its own type."
+            "what": "Writes Parquet's own `variant` type. Each value keeps its type, except a duration, which is its count of microseconds."
           }
         ]
       },
