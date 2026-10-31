@@ -56,6 +56,39 @@ test('a schema opens to its fields, and the search narrows them', async ({
   await admin.screenshot({ path: 'results/schemas-fields.png' });
 });
 
+test('a long schema shows its first 100 fields until Show all, which a search keeps', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const fields = Array.from({ length: 150 }, (_, i) => ({
+    field: `${i < 120 ? 'alpha' : 'beta'}.f${i}`,
+    type: 'str',
+  }));
+  await api.put(`${SHARED}/schemas${ON}`, [{ id: 'long', fields }]);
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: 'long fields' }).click();
+  const rows = admin.locator('table.fields tbody tr');
+  const search = admin.getByRole('searchbox', { name: 'Search schemas' });
+  await expect(rows).toHaveCount(100);
+  await expect(admin.getByText('100 of 150 fields shown', { exact: true })).toBeVisible();
+  await search.fill('beta');
+  await expect(rows).toHaveCount(30);
+  await expect(admin.getByText('30 fields of 150 hold “beta”.')).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Show all' })).toBeHidden();
+  await search.fill('alpha');
+  await expect(rows).toHaveCount(100);
+  await expect(
+    admin.getByText('100 of the 120 fields that hold “alpha” shown', { exact: true }),
+  ).toBeVisible();
+  await admin.getByRole('button', { name: 'Show all' }).click();
+  await expect(rows).toHaveCount(120);
+  await expect(admin.getByText('120 fields of 150 hold “alpha”.')).toBeVisible();
+  await search.fill('');
+  await expect(rows).toHaveCount(150);
+  await expect(admin.getByRole('button', { name: 'Show all' })).toBeHidden();
+});
+
 test('a schema exports as JSON Schema and as an Elasticsearch mapping', async ({
   admin,
   leader,
