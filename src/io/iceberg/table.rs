@@ -236,6 +236,15 @@ fn open(
     let table = &loaded.metadata;
     let refused = |why: String| IoError::transient(format!("iceberg table {}: {why}", config.table));
     // Version 3 adds row lineage, which every snapshot must then carry; writing it is left for later.
+    // A version 1 table upgrades in place, no file rewritten.
+    if table.format_version == 1 {
+        return Err(refused(format!(
+            "it is of format version 1, and only version {FORMAT_VERSION} is written; upgrade it in place in Spark \
+             with ALTER TABLE {}.{} SET TBLPROPERTIES ('format-version'='{FORMAT_VERSION}')",
+            config.namespace.join("."),
+            config.table
+        )));
+    }
     if table.format_version != FORMAT_VERSION {
         return Err(refused(format!(
             "it is of format version {}, and only version {FORMAT_VERSION} is written",
@@ -1541,6 +1550,16 @@ mod tests {
             panic!("a version 3 table must be refused");
         };
         assert!(e.message.contains("format version 3"), "{e}");
+
+        fake.lock().unwrap().table.as_mut().unwrap().format_version = 1;
+        let Err(e) = open(&mut client(&url), &config, &record) else {
+            panic!("a version 1 table must be refused");
+        };
+        assert!(
+            e.message
+                .contains("in Spark with ALTER TABLE ns.t SET TBLPROPERTIES ('format-version'='2')"),
+            "{e}"
+        );
 
         let mut fake = fake.lock().unwrap();
         let table = fake.table.as_mut().unwrap();
