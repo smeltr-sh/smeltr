@@ -9,13 +9,15 @@
         "source.ip": "172.16.12.84",
         "destination.ip": "67.43.156.13",
         "destination.port": 443
-      }
+      },
+      "pipeline": "panos"
     },
     {
       "vendor": "FortiGate",
       "raw": "date=2026-09-27 time=14:20:19 devname=\"FGT-DUB-01\" devid=\"FG100FTK20001234\" eventtime=1790518819729427448 tz=\"+0000\" logid=\"0000000013\" type=\"traffic\" subtype=\"forward\" level=\"notice\" vd=\"root\" srcip=10.60.18.5 srcport=58127 srcintf=\"internal\" srcintfrole=\"lan\" dstip=175.16.199.60 dstport=123 dstintf=\"wan1\" dstintfrole=\"wan\" srccountry=\"Reserved\" dstcountry=\"China\" sessionid=65850372 proto=17 action=\"accept\" policyid=12 policytype=\"policy\" policyname=\"LAN-to-Internet\" service=\"NTP\" trandisp=\"snat\" transip=198.51.100.41 transport=38873 app=\"NTP\" appcat=\"Network.Service\" apprisk=\"low\" duration=32 sentbyte=4870 rcvdbyte=6018 sentpkt=6 rcvdpkt=5 user=\"dmurphy\"",
       "output": null,
-      "reason": "NTP, dropped"
+      "reason": "NTP, dropped",
+      "pipeline": "fortigate"
     },
     {
       "vendor": "FortiGate",
@@ -26,7 +28,8 @@
         "source.ip": "10.70.22.31",
         "destination.ip": "175.16.199.60",
         "destination.port": 443
-      }
+      },
+      "pipeline": "fortigate"
     }
   ]
 }

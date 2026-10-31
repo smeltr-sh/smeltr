@@ -1,4 +1,455 @@
 {
+  "pipelines": {
+    "panos": [
+      {
+        "type": "parser",
+        "id": "fields",
+        "input": "_raw",
+        "kind": {
+          "type": "csv",
+          "delimiter": ","
+        },
+        "declared": [
+          {
+            "name": "syslog_header",
+            "type": "str"
+          },
+          {
+            "name": "receive_time",
+            "type": "str"
+          },
+          {
+            "name": "serial",
+            "type": "str"
+          },
+          {
+            "name": "type",
+            "type": "str"
+          },
+          {
+            "name": "subtype",
+            "type": "str"
+          },
+          {
+            "name": "future_use2",
+            "type": "str"
+          },
+          {
+            "name": "generated_time",
+            "type": "str"
+          },
+          {
+            "name": "source_address",
+            "type": "str"
+          },
+          {
+            "name": "destination_address",
+            "type": "str"
+          },
+          {
+            "name": "nat_source_ip",
+            "type": "str"
+          },
+          {
+            "name": "nat_destination_ip",
+            "type": "str"
+          },
+          {
+            "name": "rule_name",
+            "type": "str"
+          },
+          {
+            "name": "source_user",
+            "type": "str"
+          },
+          {
+            "name": "destination_user",
+            "type": "str"
+          },
+          {
+            "name": "application",
+            "type": "str"
+          },
+          {
+            "name": "virtual_system",
+            "type": "str"
+          },
+          {
+            "name": "source_zone",
+            "type": "str"
+          },
+          {
+            "name": "destination_zone",
+            "type": "str"
+          },
+          {
+            "name": "inbound_interface",
+            "type": "str"
+          },
+          {
+            "name": "outbound_interface",
+            "type": "str"
+          },
+          {
+            "name": "log_action",
+            "type": "str"
+          },
+          {
+            "name": "future_use3",
+            "type": "str"
+          },
+          {
+            "name": "session_id",
+            "type": "str"
+          },
+          {
+            "name": "repeat_count",
+            "type": "str"
+          },
+          {
+            "name": "source_port",
+            "type": "str"
+          },
+          {
+            "name": "destination_port",
+            "type": "str"
+          },
+          {
+            "name": "nat_source_port",
+            "type": "str"
+          },
+          {
+            "name": "nat_destination_port",
+            "type": "str"
+          },
+          {
+            "name": "flags",
+            "type": "str"
+          },
+          {
+            "name": "protocol",
+            "type": "str"
+          },
+          {
+            "name": "action",
+            "type": "str"
+          },
+          {
+            "name": "bytes",
+            "type": "str"
+          },
+          {
+            "name": "bytes_sent",
+            "type": "str"
+          },
+          {
+            "name": "bytes_received",
+            "type": "str"
+          },
+          {
+            "name": "packets",
+            "type": "str"
+          },
+          {
+            "name": "start_time",
+            "type": "str"
+          },
+          {
+            "name": "elapsed_time",
+            "type": "str"
+          },
+          {
+            "name": "category",
+            "type": "str"
+          },
+          {
+            "name": "future_use4",
+            "type": "str"
+          },
+          {
+            "name": "sequence_number",
+            "type": "str"
+          },
+          {
+            "name": "action_flags",
+            "type": "str"
+          },
+          {
+            "name": "source_location",
+            "type": "str"
+          },
+          {
+            "name": "destination_location",
+            "type": "str"
+          },
+          {
+            "name": "future_use5",
+            "type": "str"
+          },
+          {
+            "name": "packets_sent",
+            "type": "str"
+          },
+          {
+            "name": "packets_received",
+            "type": "str"
+          },
+          {
+            "name": "session_end_reason",
+            "type": "str"
+          },
+          {
+            "name": "device_group_hierarchy_level_1",
+            "type": "str"
+          },
+          {
+            "name": "device_group_hierarchy_level_2",
+            "type": "str"
+          },
+          {
+            "name": "device_group_hierarchy_level_3",
+            "type": "str"
+          },
+          {
+            "name": "device_group_hierarchy_level_4",
+            "type": "str"
+          },
+          {
+            "name": "virtual_system_name",
+            "type": "str"
+          },
+          {
+            "name": "device_name",
+            "type": "str"
+          },
+          {
+            "name": "action_source",
+            "type": "str"
+          },
+          {
+            "name": "source_vm_uuid",
+            "type": "str"
+          },
+          {
+            "name": "destination_vm_uuid",
+            "type": "str"
+          },
+          {
+            "name": "tunnel_id",
+            "type": "str"
+          },
+          {
+            "name": "monitor_tag",
+            "type": "str"
+          },
+          {
+            "name": "parent_session_id",
+            "type": "str"
+          },
+          {
+            "name": "parent_start_time",
+            "type": "str"
+          },
+          {
+            "name": "tunnel_type",
+            "type": "str"
+          },
+          {
+            "name": "sctp_association_id",
+            "type": "str"
+          },
+          {
+            "name": "sctp_chunks",
+            "type": "str"
+          },
+          {
+            "name": "sctp_chunks_sent",
+            "type": "str"
+          },
+          {
+            "name": "sctp_chunks_received",
+            "type": "str"
+          },
+          {
+            "name": "rule_uuid",
+            "type": "str"
+          },
+          {
+            "name": "http2_connection",
+            "type": "str"
+          },
+          {
+            "name": "app_flap_count",
+            "type": "str"
+          }
+        ]
+      },
+      {
+        "id": "to-ecs",
+        "type": "eval",
+        "assignments": [
+          {
+            "target": "@timestamp",
+            "expr": "receive_time.parseTime()"
+          },
+          {
+            "target": "observer.vendor",
+            "expr": "\"Palo Alto Networks\""
+          },
+          {
+            "target": "observer.name",
+            "expr": "device_name"
+          },
+          {
+            "target": "source.ip",
+            "expr": "source_address"
+          },
+          {
+            "target": "source.port",
+            "expr": "source_port.parseInt()"
+          },
+          {
+            "target": "destination.ip",
+            "expr": "destination_address"
+          },
+          {
+            "target": "destination.port",
+            "expr": "destination_port.parseInt()"
+          },
+          {
+            "target": "network.transport",
+            "expr": "protocol"
+          },
+          {
+            "target": "event.action",
+            "expr": "action"
+          },
+          {
+            "target": "event.outcome",
+            "expr": "action == \"allow\" ? \"success\" : \"failure\""
+          },
+          {
+            "target": "rule.name",
+            "expr": "rule_name"
+          }
+        ]
+      }
+    ],
+    "fortigate": [
+      {
+        "id": "pairs",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "keyValue",
+          "pairSep": " ",
+          "kvSep": "=",
+          "quote": "\""
+        },
+        "declared": [
+          {
+            "name": "date",
+            "type": "str"
+          },
+          {
+            "name": "time",
+            "type": "str"
+          },
+          {
+            "name": "devname",
+            "type": "str"
+          },
+          {
+            "name": "srcip",
+            "type": "str"
+          },
+          {
+            "name": "srcport",
+            "type": "i64"
+          },
+          {
+            "name": "dstip",
+            "type": "str"
+          },
+          {
+            "name": "dstport",
+            "type": "i64"
+          },
+          {
+            "name": "proto",
+            "type": "str"
+          },
+          {
+            "name": "action",
+            "type": "str"
+          },
+          {
+            "name": "policyname",
+            "type": "str"
+          },
+          {
+            "name": "app",
+            "type": "str"
+          }
+        ]
+      },
+      {
+        "id": "drop-ntp",
+        "type": "drop",
+        "condition": "app == \"NTP\""
+      },
+      {
+        "id": "to-ecs",
+        "type": "eval",
+        "assignments": [
+          {
+            "target": "@timestamp",
+            "expr": "`${date} ${time}`.parseTime()"
+          },
+          {
+            "target": "observer.vendor",
+            "expr": "\"Fortinet\""
+          },
+          {
+            "target": "observer.name",
+            "expr": "devname"
+          },
+          {
+            "target": "source.ip",
+            "expr": "srcip"
+          },
+          {
+            "target": "source.port",
+            "expr": "srcport"
+          },
+          {
+            "target": "destination.ip",
+            "expr": "dstip"
+          },
+          {
+            "target": "destination.port",
+            "expr": "dstport"
+          },
+          {
+            "target": "network.transport",
+            "expr": "{\"6\": \"tcp\", \"17\": \"udp\", \"1\": \"icmp\"}[proto] ?? proto"
+          },
+          {
+            "target": "event.action",
+            "expr": "action == \"accept\" ? \"allow\" : action"
+          },
+          {
+            "target": "event.outcome",
+            "expr": "action == \"accept\" ? \"success\" : \"failure\""
+          },
+          {
+            "target": "rule.name",
+            "expr": "policyname"
+          }
+        ]
+      }
+    ]
+  },
   "panos": "<14>Sep 27 14:20:32 pa-fra-01.acme.example 1,2026/09/27 14:20:32,013201007721,TRAFFIC,deny,2562,2026/09/27 14:20:32,172.16.12.84,67.43.156.13,198.51.100.27,67.43.156.13,dmz-deny-default,,,ssl,vsys1,dmz,untrust,ethernet1/3,ethernet1/1,log-fwd-siem,2026/09/27 14:20:32,405604,1,49336,443,54112,443,0x400053,tcp,deny,0,0,0,1,2026/09/27 14:20:32,0,computer-and-internet-info,,9570623321090390,0x8000000000000000,172.16.0.0-172.31.255.255,Bhutan,,1,0,policy-deny,0,0,0,0,,pa-fra-01,from-policy,,,0,,0,,N/A,0,0,0,0,c7976afb-9808-0ef7-2c86-2f08881c3ae5,0,0",
   "fortigate": "date=2026-09-27 time=14:20:09 devname=\"FGT-TOR-01\" devid=\"FG100FTK20005678\" eventtime=1790518809462776889 tz=\"+0000\" logid=\"0000000013\" type=\"traffic\" subtype=\"forward\" level=\"notice\" vd=\"root\" srcip=10.70.22.31 srcport=59556 srcintf=\"internal\" srcintfrole=\"lan\" dstip=175.16.199.60 dstport=443 dstintf=\"wan1\" dstintfrole=\"wan\" srccountry=\"Reserved\" dstcountry=\"China\" sessionid=12873423 proto=6 action=\"deny\" policyid=0 policytype=\"policy\" policyname=\"implicit-deny\" service=\"HTTPS\" trandisp=\"snat\" transip=198.51.100.43 transport=21281 app=\"Google.Services\" appcat=\"General.Interest\" apprisk=\"medium\" duration=0 sentbyte=0 rcvdbyte=0 sentpkt=1 rcvdpkt=0",
   "rows": [
