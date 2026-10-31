@@ -3894,6 +3894,8 @@ mod tests {
                            "namespace": "logs", "table": "t" }"#;
         let objects = r#"{ "id": "out", "type": "s3", "bucket": "b", "format": "parquet" }"#;
         assert_eq!(columnar(iceberg), [true]);
+        let delta = r#"{ "id": "out", "type": "delta", "location": "s3://lake/t" }"#;
+        assert_eq!(columnar(delta), [true]);
         assert_eq!(columnar(objects), [false]);
     }
 
