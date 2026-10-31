@@ -531,11 +531,13 @@ fn max_file_bytes_closes_a_file_early_even_within_a_batch_and_the_next_commit_ca
     let schema = raw_schema();
     let mut c = config(&schema, Arc::new(Unpartitioned));
     c.max_file_bytes = 1;
+    c.commit_interval = LONG;
     let mut t = table(c, &[]);
     let first = rows(&schema, &["first", "second"]);
     let second = rows(&schema, &["third"]);
     assert!(t.deliver(1, &first).is_empty());
     assert!(t.deliver(2, &second).is_empty());
+    t.d.flush().unwrap();
     assert_eq!(t.completed(2), vec![1, 2]);
 
     let commits = t.commits();
@@ -690,7 +692,9 @@ fn flush_commits_at_once_and_the_completions_come_from_the_next_poll() {
 #[test]
 fn the_sixty_fifth_partition_closes_the_least_recently_written_file_and_both_are_committed() {
     let schema = raw_schema();
-    let mut t = table(config(&schema, Arc::new(ByFirstChar)), &[]);
+    let mut c = config(&schema, Arc::new(ByFirstChar));
+    c.commit_interval = LONG;
+    let mut t = table(c, &[]);
     // 65 partitions: one per distinct first character. Two batches, so that the first partition's file is the least
     // recently written when the 65th opens.
     let chars: Vec<char> = ('a'..='z')
@@ -705,6 +709,7 @@ fn the_sixty_fifth_partition_closes_the_least_recently_written_file_and_both_are
     let rest = partitioned_rows(&schema, &rest_texts.iter().map(String::as_str).collect::<Vec<_>>());
     assert!(t.deliver(1, &first).is_empty());
     assert!(t.deliver(2, &rest).is_empty());
+    t.d.flush().unwrap();
     assert_eq!(t.completed(2), vec![1, 2]);
 
     let commits = t.commits();
@@ -874,9 +879,11 @@ fn a_format_other_than_parquet_writes_its_own_bytes() {
     let schema = raw_schema();
     let mut c = config(&schema, Arc::new(Unpartitioned));
     c.format = Arc::new(Lines);
+    c.commit_interval = LONG;
     let mut t = table(c, &[]);
     assert!(t.deliver(1, &rows(&schema, &["one", "two"])).is_empty());
     assert!(t.deliver(2, &rows(&schema, &["three"])).is_empty());
+    t.d.flush().unwrap();
     assert_eq!(t.completed(2), vec![1, 2]);
 
     let commits = t.commits();
