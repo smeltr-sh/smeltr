@@ -201,10 +201,7 @@
         <tr><th scope="row"><code>str</code></th><td><code>string</code></td></tr>
         <tr
           ><th scope="row"><code>variant</code></th><td
-            ><code>string</code>, the value as JSON. A column the destination adds to a table of
-            format version 3 is Iceberg's <code>variant</code> instead: each value keeps its type,
-            except a
-            <code>duration</code>, which is its count of microseconds</td
+            >JSON <code>string</code> or native <code>variant</code></td
           ></tr
         >
         <tr><th scope="row"><code>datetime</code></th><td><code>timestamptz</code></td></tr>
