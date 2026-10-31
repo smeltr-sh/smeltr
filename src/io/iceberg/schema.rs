@@ -27,7 +27,7 @@ use parquet::basic::LogicalType;
 use super::metadata::{ListType, NestedField, Primitive, Schema, StructTag, StructType, Type, VARIANT_VERSION};
 use super::transform::{parse_date, parse_timestamp};
 use crate::core::column::DataType;
-use crate::io::parquet::{WriteDefault, at, columns, narrows};
+use crate::io::parquet::{WriteDefault, at, columns, narrows, variant_group};
 use crate::io::table::Kind;
 
 /// The table's schema for a record, and whether it differs from the table's current one.
@@ -434,10 +434,7 @@ pub(super) fn primitive_arrow(p: &Primitive) -> Option<Arrow> {
             "timestamp_ns" => Arrow::Timestamp(Nanosecond, None),
             "timestamptz_ns" => Arrow::Timestamp(Nanosecond, Some("UTC".into())),
             // Parquet's VARIANT group, unshredded; its fields carry no ids.
-            "variant" => Arrow::Struct(Fields::from(vec![
-                Field::new("metadata", Arrow::Binary, false),
-                Field::new("value", Arrow::Binary, false),
-            ])),
+            "variant" => variant_group(),
             // Well-known binary, which `annotations` marks GEOMETRY or GEOGRAPHY.
             name if geo(name).is_some() => Arrow::Binary,
             name => {
