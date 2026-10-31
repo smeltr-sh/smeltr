@@ -1501,6 +1501,7 @@ mod tests {
             required: false,
             field_type,
             doc: None,
+            other: Default::default(),
         };
         let other = |name: &str| Type::Primitive(Primitive::Other(name.into()));
         let Type::Struct(o) = &mut table.fields[0].field_type else {

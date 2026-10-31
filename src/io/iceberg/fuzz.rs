@@ -16,6 +16,8 @@
 //! - a column the earlier table holds narrower, as another engine may have made it, reads back as that type, and a
 //!   row with a value it cannot hold is refused; a table partitioned by such a column takes its rows' partitions in
 //!   that type;
+//! - in a table of format version 3, every live file has row ids of its own, none shared and all below the table's
+//!   next row id;
 //! - every call for the table carries the sign-in drawn.
 //!
 //! It draws from `crate::fuzz`: a failure names its seed, `SMELTR_FUZZ_SEED=n` replays seed `n`, and the run fails
@@ -96,6 +98,8 @@ const COVERED: &[&str] = &[
     "table target file size",
     "table bloom filter",
     "evolution refused",
+    "format version 3",
+    "row ids assigned",
     "lacked str",
     "lacked decimal",
     "lacked uuid",
@@ -158,6 +162,7 @@ fn lacked_type(kind: &str, next: &mut impl FnMut() -> i32) -> Type {
                 required: false,
                 field_type: Type::Primitive(Primitive::Double),
                 doc: None,
+                other: Default::default(),
             }],
         }),
         other => unreachable!("{other} is no lacked type"),
@@ -751,6 +756,8 @@ fn check_table(
             .map_err(|e| format!("{uri}: {e}"))
     };
     let mut seen: BTreeMap<i64, usize> = BTreeMap::new();
+    // Each live file's row ids, where the table tracks row lineage: [first, end).
+    let mut row_ids: Vec<(i64, i64, String)> = Vec::new();
     if let Some(snapshot) = table.current_snapshot() {
         let list = manifest::read_manifest_list(&get(&snapshot.manifest_list)?)?;
         // Two live files of one partition from one commit: the first rolled at its size.
@@ -762,6 +769,12 @@ fn check_table(
                 }
                 if !written.insert(format!("{:?} {:?}", entry.snapshot_id, entry.partition)) {
                     reached.push("file rolled".into());
+                }
+                if table.format_version >= 3 {
+                    let first = entry
+                        .first_row_id
+                        .ok_or(format!("{} has no first row id in a version 3 table", entry.file_path))?;
+                    row_ids.push((first, first + entry.record_count, entry.file_path.clone()));
                 }
                 if !entry.file_path.starts_with("s3://bucket/wh/t/data/") {
                     return Err(format!("a data file is at {}", entry.file_path));
@@ -820,6 +833,23 @@ fn check_table(
                 }
             }
         }
+    }
+    row_ids.sort();
+    for pair in row_ids.windows(2) {
+        if pair[0].1 > pair[1].0 {
+            return Err(format!("{} and {} share row ids", pair[0].2, pair[1].2));
+        }
+    }
+    if let Some((_, end, file)) = row_ids.last()
+        && table.next_row_id.is_some_and(|next| next < *end)
+    {
+        return Err(format!(
+            "{file} holds row ids up to {end}, past the table's next row id {:?}",
+            table.next_row_id
+        ));
+    }
+    if !row_ids.is_empty() {
+        reached.push("row ids assigned".into());
     }
     for id in taken.keys() {
         match seen.get(id) {
@@ -967,6 +997,14 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
         };
         let mut catalog = client(&earlier_config, &secrets);
         open(&mut catalog, &earlier_config, &record_of(&earlier)).map_err(|e| format!("the earlier table: {e:?}"))?;
+        // As an engine of format version 3 made it, or upgraded it, its row ids already counted up to somewhere.
+        if rng.chance(2) {
+            let mut fake = fake.lock().unwrap();
+            let table = fake.table.as_mut().ok_or("the earlier table was not made")?;
+            table.format_version = 3;
+            table.next_row_id = Some(rng.below(1000) as i64);
+            reached.push("format version 3".into());
+        }
         // As another engine made it: some of its columns narrower than the record types them.
         if evolution_refused.is_none() && (earlier.iter().any(|(_, k)| *k == "datetime") || !rng.chance(4)) {
             let mut fake = fake.lock().unwrap();
@@ -1034,6 +1072,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
                 table.partition_specs.push(PartitionSpec {
                     spec_id: 1,
                     fields: vec![PartitionField {
+                        source_ids: None,
                         name: "narrowed".into(),
                         transform,
                         source_id,
@@ -1067,6 +1106,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
                 required: false,
                 field_type,
                 doc: None,
+                other: Default::default(),
             });
             lacked.push(id);
             reached.push(format!("lacked {kind}"));
@@ -1082,6 +1122,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
                     required: false,
                     field_type: Type::Primitive(Primitive::String),
                     doc: None,
+                    other: Default::default(),
                 });
                 lacked.push(id);
                 reached.push("lacked nested".into());

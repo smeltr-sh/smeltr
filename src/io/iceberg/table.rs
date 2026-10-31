@@ -30,8 +30,8 @@ use object_store::{Attributes, ObjectStore, ObjectStoreExt, PutPayload};
 use super::catalog::{Auth, Catalog, CommitFailure, Loaded, Requirement, Signer, StorageCredential, Update};
 use super::manifest::{self, DataFileEntry, ManifestFile};
 use super::metadata::{
-    FIRST_PARTITION_ID, FORMAT_VERSION, MAIN, NestedField, PartitionField, PartitionSpec, Primitive, Schema, Snapshot,
-    SnapshotRef, TableMetadata, Transform, Type,
+    FIRST_PARTITION_ID, FORMAT_VERSION, MAIN, NestedField, PartitionField, PartitionSpec, Primitive,
+    ROW_LINEAGE_VERSION, Schema, Snapshot, SnapshotRef, TableMetadata, Transform, Type,
 };
 use super::schema::{table_schema, with_field_ids};
 use super::transform::{TablePartitioner, literal_of, partition_name, partition_term, result_type};
@@ -235,25 +235,36 @@ fn open(
     };
     let table = &loaded.metadata;
     let refused = |why: String| IoError::transient(format!("iceberg table {}: {why}", config.table));
-    // Version 3 adds row lineage, which every snapshot must then carry; writing it is left for later.
     // A version 1 table upgrades in place, no file rewritten.
     if table.format_version == 1 {
         return Err(refused(format!(
-            "it is of format version 1, and only version {FORMAT_VERSION} is written; upgrade it in place in Spark \
-             with ALTER TABLE {}.{} SET TBLPROPERTIES ('format-version'='{FORMAT_VERSION}')",
+            "it is of format version 1, and versions {FORMAT_VERSION} and {ROW_LINEAGE_VERSION} are written; upgrade \
+             it in place in Spark with ALTER TABLE {}.{} SET TBLPROPERTIES ('format-version'='{FORMAT_VERSION}')",
             config.namespace.join("."),
             config.table
         )));
     }
-    if table.format_version != FORMAT_VERSION {
+    if !(FORMAT_VERSION..=ROW_LINEAGE_VERSION).contains(&table.format_version) {
         return Err(refused(format!(
-            "it is of format version {}, and only version {FORMAT_VERSION} is written",
+            "it is of format version {}, and versions {FORMAT_VERSION} and {ROW_LINEAGE_VERSION} are written",
             table.format_version
         )));
     }
     // An encrypted table's manifests carry key metadata, which this writer neither makes nor keeps.
-    if table.properties.contains_key("encryption.key-id") {
+    let keys = table.other.get("encryption-keys").and_then(|k| k.as_array());
+    if table.properties.contains_key("encryption.key-id") || keys.is_some_and(|k| !k.is_empty()) {
         return Err(refused("it is encrypted, and an encrypted table is not written".into()));
+    }
+    // A version 3 transform of several columns has no source column of its own to partition by.
+    let spec = table.spec().into_iter().flat_map(|s| &s.fields);
+    if let Some(field) = spec
+        .into_iter()
+        .find(|f| f.source_ids.as_ref().is_some_and(|ids| ids.len() > 1))
+    {
+        return Err(refused(format!(
+            "its partition field {} is a transform of several columns, and only a transform of one column is written",
+            field.name
+        )));
     }
     evolve(catalog, config, record, loaded)
 }
@@ -360,6 +371,7 @@ fn spec_of(terms: &[String], schema: &Schema) -> Result<PartitionSpec, String> {
                 name: partition_name(&transform, &path),
                 transform,
                 source_id: source,
+                source_ids: None,
                 field_id,
             })
         })
@@ -856,8 +868,16 @@ impl IcebergCommitter {
         if let Some(parent) = parent {
             manifests.extend(self.carried(parent, snapshot_id)?);
         }
-        let list =
-            manifest::write_manifest_list(snapshot_id, parent.map(|p| p.snapshot_id), sequence_number, &manifests)?;
+        // Taken from the table as loaded for this attempt: a commit made again assigns row ids again.
+        let first_row_id = self.metadata.next_row_id();
+        let added_rows = first_row_id.map(|first| manifest::assign_row_ids(&mut manifests, first));
+        let list = manifest::write_manifest_list(
+            self.metadata.format_version,
+            snapshot_id,
+            parent.map(|p| p.snapshot_id),
+            sequence_number,
+            &manifests,
+        )?;
         let list_name = format!("snap-{snapshot_id}-1-{}.avro", objects::object_id());
         self.put(&self.meta.key(&list_name), list)?;
         Ok(Snapshot {
@@ -870,6 +890,8 @@ impl IcebergCommitter {
             manifest_list: self.meta.uri(&list_name),
             summary: summary(files, &entries, parent),
             schema_id: Some(self.schema.schema_id),
+            first_row_id,
+            added_rows,
         })
     }
 
@@ -913,7 +935,7 @@ impl IcebergCommitter {
     ) -> Result<ManifestFile, String> {
         let types = partition_types(spec, &self.schema, &self.metadata.schemas)?;
         let types: Vec<Primitive> = types.into_iter().map(|(ty, _)| ty).collect();
-        let bytes = manifest::write_manifest(&self.schema, spec, &types, entries)?;
+        let bytes = manifest::write_manifest(self.metadata.format_version, &self.schema, spec, &types, entries)?;
         let length = bytes.len() as u64;
         let name = format!("{}-m0.avro", objects::object_id());
         self.put(&self.meta.key(&name), bytes)?;
@@ -1191,6 +1213,7 @@ mod tests {
                 let mut spec: PartitionSpec = serde_json::from_value(body["partition-spec"].clone()).unwrap();
                 spec.spec_id = 0;
                 let table = TableMetadata {
+                    next_row_id: None,
                     format_version: 2,
                     table_uuid: "uuid-1".into(),
                     location: "s3://bucket/wh/t".into(),
@@ -1297,6 +1320,11 @@ mod tests {
                 let snapshot: Snapshot = serde_json::from_value(update["snapshot"].clone()).unwrap();
                 assert_eq!(snapshot.sequence_number, table.last_sequence_number + 1);
                 table.last_sequence_number = snapshot.sequence_number;
+                // As a catalog does: a snapshot takes its row ids from the table's next.
+                if let Some(next) = table.next_row_id() {
+                    assert_eq!(snapshot.first_row_id, Some(next), "a snapshot's first row id");
+                    table.next_row_id = Some(next + snapshot.added_rows.expect("a version 3 snapshot's added rows"));
+                }
                 table.snapshots.push(snapshot);
             }
             "set-snapshot-ref" => {
@@ -1545,11 +1573,14 @@ mod tests {
         let record = st(&[("a", DataType::Str)]);
         committer(&url, &config, &record, &Arc::new(InMemory::new()));
 
-        fake.lock().unwrap().table.as_mut().unwrap().format_version = 3;
+        fake.lock().unwrap().table.as_mut().unwrap().format_version = 4;
         let Err(e) = open(&mut client(&url), &config, &record) else {
-            panic!("a version 3 table must be refused");
+            panic!("a version 4 table must be refused");
         };
-        assert!(e.message.contains("format version 3"), "{e}");
+        assert!(
+            e.message.contains("format version 4, and versions 2 and 3 are written"),
+            "{e}"
+        );
 
         fake.lock().unwrap().table.as_mut().unwrap().format_version = 1;
         let Err(e) = open(&mut client(&url), &config, &record) else {
@@ -1561,15 +1592,96 @@ mod tests {
             "{e}"
         );
 
-        let mut fake = fake.lock().unwrap();
-        let table = fake.table.as_mut().unwrap();
+        let mut held = fake.lock().unwrap();
+        let table = held.table.as_mut().unwrap();
         table.format_version = 2;
         table.properties.insert("encryption.key-id".into(), "k".into());
-        drop(fake);
+        drop(held);
         let Err(e) = open(&mut client(&url), &config, &record) else {
             panic!("an encrypted table must be refused");
         };
         assert!(e.message.contains("encrypted"), "{e}");
+
+        let mut held = fake.lock().unwrap();
+        let table = held.table.as_mut().unwrap();
+        table.format_version = 3;
+        table.properties.clear();
+        table.other.insert(
+            "encryption-keys".into(),
+            json!([{"key-id": "k", "encrypted-key-metadata": "AA=="}]),
+        );
+        drop(held);
+        let Err(e) = open(&mut client(&url), &config, &record) else {
+            panic!("a version 3 table with encryption keys must be refused");
+        };
+        assert!(e.message.contains("encrypted"), "{e}");
+
+        let mut held = fake.lock().unwrap();
+        let table = held.table.as_mut().unwrap();
+        table.other.clear();
+        table.partition_specs[0].fields.push(PartitionField {
+            name: "both".into(),
+            transform: Transform::Other("zorder".into()),
+            source_id: crate::io::iceberg::metadata::NO_SOURCE,
+            source_ids: Some(vec![1, 2]),
+            field_id: 1000,
+        });
+        drop(held);
+        let Err(e) = open(&mut client(&url), &config, &record) else {
+            panic!("a partition field of several columns must be refused");
+        };
+        assert!(
+            e.message
+                .contains("partition field both is a transform of several columns"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_version_3_table_takes_each_snapshot_s_row_ids_from_its_next() {
+        let fake = Arc::new(Mutex::new(Fake::default()));
+        let url = serve(fake.clone());
+        let record = st(&[("host", DataType::Str)]);
+        let store = Arc::new(InMemory::new());
+        let config = config(&url, &[]);
+        let mut committer = committer(&url, &config, &record, &store);
+        // Upgraded from version 2 after a first snapshot, which keeps no row ids.
+        committer.commit(&[file(&committer, &[], 3)]).unwrap();
+        {
+            let mut fake = fake.lock().unwrap();
+            let table = fake.table.as_mut().unwrap();
+            table.format_version = 3;
+            table.next_row_id = Some(100);
+            // So that the third commit merges the second's two manifests.
+            table
+                .properties
+                .insert("commit.manifest.min-count-to-merge".into(), "2".into());
+        }
+        let mut committer = self::committer(&url, &config, &record, &store);
+        committer
+            .commit(&[file(&committer, &[], 4), file(&committer, &[], 5)])
+            .unwrap();
+        committer.commit(&[file(&committer, &[], 6)]).unwrap();
+
+        let table = fake.lock().unwrap().table.clone().unwrap();
+        let rows: Vec<_> = table.snapshots.iter().map(|s| (s.first_row_id, s.added_rows)).collect();
+        // The second snapshot gives row ids to its own 9 rows and to the first snapshot's 3. The third gives them to
+        // its own 6, and to the manifest it merges the second's two into, whose files keep the ones they have.
+        assert_eq!(rows, [(None, None), (Some(100), Some(12)), (Some(112), Some(18))]);
+        assert_eq!(table.next_row_id, Some(130));
+        let list = manifest::read_manifest_list(&committer.get(&table.snapshots[2].manifest_list).unwrap()).unwrap();
+        assert_eq!(list.len(), 2, "the second snapshot's manifests are merged");
+
+        // Every live file's rows hold their own row ids, none shared.
+        let mut ranges: Vec<(i64, i64)> = live_files(&committer)
+            .into_iter()
+            .map(|e| {
+                let first = e.first_row_id.expect("every live file has a first row id");
+                (first, first + e.record_count)
+            })
+            .collect();
+        ranges.sort();
+        assert_eq!(ranges, [(100, 104), (104, 109), (109, 112), (112, 118)]);
     }
 
     #[test]
@@ -2011,6 +2123,7 @@ mod tests {
             required: false,
             field_type: Type::Primitive(Primitive::String),
             doc: None,
+            other: Default::default(),
         };
         let schema = |schema_id: i32, fields: Vec<NestedField>| Schema {
             kind: Default::default(),
@@ -2021,6 +2134,7 @@ mod tests {
         let earlier = schema(0, vec![column(1, "host"), column(2, "gone")]);
         let current = schema(1, vec![column(1, "host")]);
         let field = |name: &str, transform: Transform, source_id: i32| PartitionField {
+            source_ids: None,
             name: name.into(),
             transform,
             source_id,
@@ -2068,6 +2182,7 @@ mod tests {
             let mut spec = table.partition_specs[0].clone();
             spec.spec_id = 1;
             spec.fields.push(PartitionField {
+                source_ids: None,
                 name: "gone_null".into(),
                 transform: Transform::Void,
                 source_id: gone.id,

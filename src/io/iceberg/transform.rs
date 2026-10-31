@@ -796,6 +796,7 @@ mod tests {
             required: false,
             field_type,
             doc: None,
+            other: Default::default(),
         }
     }
 
@@ -839,6 +840,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, (name, transform, source_id))| PartitionField {
+                    source_ids: None,
                     name: name.to_string(),
                     transform: transform.clone(),
                     source_id: *source_id,

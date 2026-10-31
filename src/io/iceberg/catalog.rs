@@ -1014,6 +1014,7 @@ mod tests {
                 required: false,
                 field_type: Type::Primitive(Primitive::Timestamptz),
                 doc: None,
+                other: Default::default(),
             }],
         }
     }
@@ -1022,6 +1023,7 @@ mod tests {
         PartitionSpec {
             spec_id: 0,
             fields: vec![PartitionField {
+                source_ids: None,
                 name: "ts_day".into(),
                 transform: Transform::Day,
                 source_id,
@@ -1072,6 +1074,8 @@ mod tests {
 
     fn snapshot() -> Snapshot {
         Snapshot {
+            first_row_id: None,
+            added_rows: None,
             snapshot_id: 7,
             parent_snapshot_id: Some(6),
             sequence_number: 3,
