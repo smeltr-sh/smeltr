@@ -71,7 +71,7 @@
     </li>
     <li>
       A table that exists is of
-      <a href="https://iceberg.apache.org/spec/#format-versioning">format version</a> 2 and not encrypted.
+      <a href="https://iceberg.apache.org/spec/#format-versioning">format version</a> 2 or 3 and not encrypted.
       A table the destination creates is of version 2.
     </li>
     <li>
@@ -232,9 +232,11 @@
     everything they hold. A commit closes every open file, writes a manifest of the new files and a
     manifest list under the table's metadata location, merging the parent's small manifests as the
     table's
-    <code>commit.manifest.*</code> properties say, and asks the catalog to append them as the table's
-    next snapshot on top of the one it read. A batch is acknowledged once the commit holding its records
-    lands.
+    <code>commit.manifest.*</code> properties say, and asks the catalog to append them as the
+    table's next snapshot on top of the one it read. In a table of format version 3, the snapshot
+    gives its manifests row ids from the table's <code>next-row-id</code>, as the spec's
+    <a href="https://iceberg.apache.org/spec/#row-lineage">row lineage</a> asks. A batch is acknowledged
+    once the commit holding its records lands.
   </p>
   <p>
     A commit another writer beat to the table is made again at once on top of the new snapshot, up
@@ -293,14 +295,23 @@
       Every column the destination writes is optional. Make the column optional in the table, or
       send the records to a table of their own.
     </dd>
-    <dt><strong>it is of format version …, and only version 2 is written</strong></dt>
+    <dt><strong>it is of format version …, and versions 2 and 3 are written</strong></dt>
     <dd>
       Upgrade a version 1 table in place in Spark with
       <code
         >ALTER TABLE &lt;namespace&gt;.&lt;table&gt; SET TBLPROPERTIES ('format-version'='2')</code
       >, which rewrites no data file. A table of a later version is not written: write to a table of
-      format version 2.
+      format version 2 or 3.
     </dd>
+    <dt>
+      <strong>the table's column … has a write default, and the record does not write it</strong>
+    </dt>
+    <dd>
+      A row that leaves the column out takes its write default, which the destination does not
+      write. Write the field from the pipeline, or drop the column's write default.
+    </dd>
+    <dt><strong>its partition field … is a transform of several columns …</strong></dt>
+    <dd>Write to a table whose partition fields each transform one column.</dd>
     <dt><strong>it is encrypted, and an encrypted table is not written</strong></dt>
     <dd>Write to a table that is not encrypted.</dd>
     <dt>

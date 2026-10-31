@@ -25,7 +25,7 @@ use serde_json::{Value as Json, json};
 
 use crate::io::table::{self, Bound};
 
-use super::metadata::{FORMAT_VERSION, Literal, NestedField, PartitionSpec, Primitive, Schema, Transform, Type};
+use super::metadata::{Literal, NestedField, PartitionSpec, Primitive, ROW_LINEAGE_VERSION, Schema, Transform, Type};
 
 /// `commit.manifest.target-size-bytes`'s default: the size a merged manifest is packed up to.
 pub const TARGET_SIZE_BYTES: u64 = 8 * 1024 * 1024;
@@ -89,6 +89,9 @@ pub struct DataFileEntry {
     pub record_count: i64,
     pub file_size_in_bytes: i64,
     pub stats: Stats,
+    /// The row id of the file's first row; `None` for a file this snapshot adds, which inherits it from its
+    /// manifest's. A file read from a manifest has it made explicit.
+    pub first_row_id: Option<i64>,
     /// The data file's fields this writer does not make and another writer set, by name, their union's branch taken:
     /// a merge writes them back unchanged. Each is one of [`CARRIED`].
     pub carried: Vec<(String, Value)>,
@@ -124,6 +127,7 @@ impl DataFileEntry {
             record_count,
             file_size_in_bytes,
             stats,
+            first_row_id: None,
             carried: Vec::new(),
         }
     }
@@ -158,6 +162,9 @@ pub struct ManifestFile {
     pub deleted_rows_count: Option<i64>,
     /// One per partition field, in the spec's order.
     pub partitions: Vec<FieldSummary>,
+    /// The row id of the first row of the manifest's first file without one of its own; `None` until a snapshot of a
+    /// table that tracks row lineage assigns it (`assign_row_ids`).
+    pub first_row_id: Option<i64>,
 }
 
 /// The values one partition field takes across a manifest's entries. Bounds are single-value serialized.
@@ -278,9 +285,10 @@ fn truncate_binary_upper(bytes: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
-/// A manifest of data files, for a table whose current schema is `schema`, partitioned by `spec`, whose fields' values
-/// are of `types`.
+/// A manifest of data files, for a table of `format_version` whose current schema is `schema`, partitioned by `spec`,
+/// whose fields' values are of `types`.
 pub fn write_manifest(
+    format_version: u8,
     schema: &Schema,
     spec: &PartitionSpec,
     types: &[Primitive],
@@ -296,7 +304,7 @@ pub fn write_manifest(
         .collect::<Result<Vec<_>, String>>()?;
     let records = entries
         .iter()
-        .map(|entry| entry_value(entry, &names, types))
+        .map(|entry| entry_value(entry, &names, types, format_version))
         .collect::<Result<Vec<_>, String>>()?;
     let metadata = [
         ("schema", serde_json::to_string(schema).map_err(|e| e.to_string())?),
@@ -306,10 +314,10 @@ pub fn write_manifest(
             serde_json::to_string(&spec.fields).map_err(|e| e.to_string())?,
         ),
         ("partition-spec-id", spec.spec_id.to_string()),
-        ("format-version", FORMAT_VERSION.to_string()),
+        ("format-version", format_version.to_string()),
         ("content", "data".to_string()),
     ];
-    write_container(&manifest_schema(partition_fields), &metadata, records)
+    write_container(&manifest_schema(partition_fields, format_version), &metadata, records)
 }
 
 /// The list entry for a manifest this snapshot just wrote, at `path`, `length` bytes long, for a table whose current
@@ -340,6 +348,7 @@ pub fn summarize(
         added_rows_count: Some(rows_count(entries, Status::Added)),
         existing_rows_count: Some(rows_count(entries, Status::Existing)),
         deleted_rows_count: Some(rows_count(entries, Status::Deleted)),
+        first_row_id: None,
         partitions: (spec.fields.iter().enumerate())
             .map(|(i, field)| {
                 // A float's bound is 4 bytes, where a `Literal::Double` holding it would write 8.
@@ -438,9 +447,10 @@ fn literal_bytes(literal: &Literal) -> Vec<u8> {
     }
 }
 
-/// A snapshot's manifest list. A manifest whose sequence numbers are `None` gets `sequence_number`, the snapshot's. A
-/// manifest with a count still `None` is an error.
+/// A snapshot's manifest list, for a table of `format_version`. A manifest whose sequence numbers are `None` gets
+/// `sequence_number`, the snapshot's. A manifest with a count still `None` is an error.
 pub fn write_manifest_list(
+    format_version: u8,
     snapshot_id: i64,
     parent: Option<i64>,
     sequence_number: i64,
@@ -448,7 +458,7 @@ pub fn write_manifest_list(
 ) -> Result<Vec<u8>, String> {
     let records = manifests
         .iter()
-        .map(|m| manifest_file_value(m, sequence_number))
+        .map(|m| manifest_file_value(m, sequence_number, format_version))
         .collect::<Result<Vec<_>, String>>()?;
     let metadata = [
         ("snapshot-id", snapshot_id.to_string()),
@@ -457,9 +467,23 @@ pub fn write_manifest_list(
             parent.map_or_else(|| "null".to_string(), |p| p.to_string()),
         ),
         ("sequence-number", sequence_number.to_string()),
-        ("format-version", FORMAT_VERSION.to_string()),
+        ("format-version", format_version.to_string()),
     ];
-    write_container(&manifest_list_schema(), &metadata, records)
+    write_container(&manifest_list_schema(format_version), &metadata, records)
+}
+
+/// Assigns row ids from `next_row_id` on to each data manifest of a snapshot's `manifests` that has none, in order,
+/// each as many as its added and existing rows, so that every file without a row id of its own inherits one. Gives
+/// how many it assigned: the snapshot's `added-rows`. Every count must be set.
+pub fn assign_row_ids(manifests: &mut [ManifestFile], next_row_id: i64) -> i64 {
+    let mut next = next_row_id;
+    for m in manifests.iter_mut() {
+        if m.content == Content::Data && m.first_row_id.is_none() {
+            m.first_row_id = Some(next);
+            next += m.added_rows_count.unwrap_or(0) + m.existing_rows_count.unwrap_or(0);
+        }
+    }
+    next - next_row_id
 }
 
 /// A snapshot's manifests, from its manifest list.
@@ -519,14 +543,19 @@ pub fn read_manifest_list(bytes: &[u8]) -> Result<Vec<ManifestFile>, String> {
                 existing_rows_count: rows("existing_rows_count")?,
                 deleted_rows_count: rows("deleted_rows_count")?,
                 partitions,
+                first_row_id: field(r, "first_row_id")
+                    .map(|v| long(Some(v), "first_row_id"))
+                    .transpose()?,
             })
         })
         .collect()
 }
 
 /// The entries of the manifest `manifest` names, with what they inherit from it made explicit: the snapshot id of
-/// every entry that has none, and the sequence numbers of an added entry that has none.
+/// every entry that has none, the sequence numbers of an added entry that has none, and, where the manifest has a
+/// first row id, the first row id of every file that has none.
 pub fn read_manifest(bytes: &[u8], manifest: &ManifestFile) -> Result<Vec<DataFileEntry>, String> {
+    let mut next_row_id = manifest.first_row_id;
     read_container(bytes)?
         .iter()
         .map(|value| {
@@ -542,6 +571,18 @@ pub fn read_manifest(bytes: &[u8], manifest: &ManifestFile) -> Result<Vec<DataFi
                 Some(Value::Record(values)) => values.iter().map(|(_, v)| literal_of(v)).collect::<Result<_, _>>()?,
                 _ => Vec::new(),
             };
+            let record_count = long(field(file, "record_count"), "record_count")?;
+            let first_row_id = match field(file, "first_row_id")
+                .map(|v| long(Some(v), "first_row_id"))
+                .transpose()?
+            {
+                Some(own) => Some(own),
+                None => {
+                    let inherited = next_row_id;
+                    next_row_id = next_row_id.map(|n| n + record_count);
+                    inherited
+                }
+            };
             Ok(DataFileEntry {
                 status,
                 snapshot_id: optional_long("snapshot_id")?.or(Some(manifest.added_snapshot_id)),
@@ -550,7 +591,7 @@ pub fn read_manifest(bytes: &[u8], manifest: &ManifestFile) -> Result<Vec<DataFi
                 file_path: string(field(file, "file_path"), "file_path")?,
                 file_format: string(field(file, "file_format"), "file_format")?,
                 partition,
-                record_count: long(field(file, "record_count"), "record_count")?,
+                record_count,
                 file_size_in_bytes: long(field(file, "file_size_in_bytes"), "file_size_in_bytes")?,
                 stats: Stats {
                     column_sizes: int_map(field(file, "column_sizes"), |v| long(Some(v), "column_sizes"))?,
@@ -561,6 +602,7 @@ pub fn read_manifest(bytes: &[u8], manifest: &ManifestFile) -> Result<Vec<DataFi
                     lower_bounds: int_map(field(file, "lower_bounds"), |v| bytes_of(Some(v), "lower_bounds"))?,
                     upper_bounds: int_map(field(file, "upper_bounds"), |v| bytes_of(Some(v), "upper_bounds"))?,
                 },
+                first_row_id,
                 carried: CARRIED
                     .iter()
                     .filter_map(|&name| Some((name.to_string(), field(file, name)?.clone())))
@@ -687,29 +729,33 @@ fn list_type(element_id: i32, items: Json) -> Json {
     json!({"type": "array", "items": items, "element-id": element_id})
 }
 
-fn manifest_schema(partition_fields: Vec<Json>) -> Json {
-    let data_file = json!({
-        "type": "record",
-        "name": "r2",
-        "fields": [
-            required("content", 134, json!("int")),
-            required("file_path", 100, json!("string")),
-            required("file_format", 101, json!("string")),
-            required("partition", 102, json!({"type": "record", "name": "r102", "fields": partition_fields})),
-            required("record_count", 103, json!("long")),
-            required("file_size_in_bytes", 104, json!("long")),
-            optional("column_sizes", 108, int_map_type(117, 118, "long")),
-            optional("value_counts", 109, int_map_type(119, 120, "long")),
-            optional("null_value_counts", 110, int_map_type(121, 122, "long")),
-            optional("nan_value_counts", 137, int_map_type(138, 139, "long")),
-            optional("lower_bounds", 125, int_map_type(126, 127, "bytes")),
-            optional("upper_bounds", 128, int_map_type(129, 130, "bytes")),
-            optional("key_metadata", 131, json!("bytes")),
-            optional("split_offsets", 132, list_type(133, json!("long"))),
-            optional("equality_ids", 135, list_type(136, json!("int"))),
-            optional("sort_order_id", 140, json!("int")),
-        ],
-    });
+fn manifest_schema(partition_fields: Vec<Json>, format_version: u8) -> Json {
+    let mut fields = vec![
+        required("content", 134, json!("int")),
+        required("file_path", 100, json!("string")),
+        required("file_format", 101, json!("string")),
+        required(
+            "partition",
+            102,
+            json!({"type": "record", "name": "r102", "fields": partition_fields}),
+        ),
+        required("record_count", 103, json!("long")),
+        required("file_size_in_bytes", 104, json!("long")),
+        optional("column_sizes", 108, int_map_type(117, 118, "long")),
+        optional("value_counts", 109, int_map_type(119, 120, "long")),
+        optional("null_value_counts", 110, int_map_type(121, 122, "long")),
+        optional("nan_value_counts", 137, int_map_type(138, 139, "long")),
+        optional("lower_bounds", 125, int_map_type(126, 127, "bytes")),
+        optional("upper_bounds", 128, int_map_type(129, 130, "bytes")),
+        optional("key_metadata", 131, json!("bytes")),
+        optional("split_offsets", 132, list_type(133, json!("long"))),
+        optional("equality_ids", 135, list_type(136, json!("int"))),
+        optional("sort_order_id", 140, json!("int")),
+    ];
+    if format_version >= ROW_LINEAGE_VERSION {
+        fields.push(optional("first_row_id", 142, json!("long")));
+    }
+    let data_file = json!({"type": "record", "name": "r2", "fields": fields});
     json!({
         "type": "record",
         "name": "manifest_entry",
@@ -723,7 +769,7 @@ fn manifest_schema(partition_fields: Vec<Json>) -> Json {
     })
 }
 
-fn manifest_list_schema() -> Json {
+fn manifest_list_schema(format_version: u8) -> Json {
     let field_summary = json!({
         "type": "record",
         "name": "r508",
@@ -734,27 +780,27 @@ fn manifest_list_schema() -> Json {
             optional("upper_bound", 511, json!("bytes")),
         ],
     });
-    json!({
-        "type": "record",
-        "name": "manifest_file",
-        "fields": [
-            required("manifest_path", 500, json!("string")),
-            required("manifest_length", 501, json!("long")),
-            required("partition_spec_id", 502, json!("int")),
-            required("content", 517, json!("int")),
-            required("sequence_number", 515, json!("long")),
-            required("min_sequence_number", 516, json!("long")),
-            required("added_snapshot_id", 503, json!("long")),
-            required("added_files_count", 504, json!("int")),
-            required("existing_files_count", 505, json!("int")),
-            required("deleted_files_count", 506, json!("int")),
-            required("added_rows_count", 512, json!("long")),
-            required("existing_rows_count", 513, json!("long")),
-            required("deleted_rows_count", 514, json!("long")),
-            optional("partitions", 507, list_type(508, field_summary)),
-            optional("key_metadata", 519, json!("bytes")),
-        ],
-    })
+    let mut fields = vec![
+        required("manifest_path", 500, json!("string")),
+        required("manifest_length", 501, json!("long")),
+        required("partition_spec_id", 502, json!("int")),
+        required("content", 517, json!("int")),
+        required("sequence_number", 515, json!("long")),
+        required("min_sequence_number", 516, json!("long")),
+        required("added_snapshot_id", 503, json!("long")),
+        required("added_files_count", 504, json!("int")),
+        required("existing_files_count", 505, json!("int")),
+        required("deleted_files_count", 506, json!("int")),
+        required("added_rows_count", 512, json!("long")),
+        required("existing_rows_count", 513, json!("long")),
+        required("deleted_rows_count", 514, json!("long")),
+        optional("partitions", 507, list_type(508, field_summary)),
+        optional("key_metadata", 519, json!("bytes")),
+    ];
+    if format_version >= ROW_LINEAGE_VERSION {
+        fields.push(optional("first_row_id", 520, json!("long")));
+    }
+    json!({"type": "record", "name": "manifest_file", "fields": fields})
 }
 
 fn some(value: Value) -> Value {
@@ -780,7 +826,12 @@ fn int_map_value<V>(map: &BTreeMap<i32, V>, value: impl Fn(&V) -> Value) -> Valu
     ))
 }
 
-fn entry_value(entry: &DataFileEntry, names: &[String], types: &[Primitive]) -> Result<Value, String> {
+fn entry_value(
+    entry: &DataFileEntry,
+    names: &[String],
+    types: &[Primitive],
+    format_version: u8,
+) -> Result<Value, String> {
     if entry.partition.len() != types.len() {
         return Err(format!(
             "{} has {} partition values for a spec of {} fields",
@@ -801,7 +852,7 @@ fn entry_value(entry: &DataFileEntry, names: &[String], types: &[Primitive]) -> 
     let stats = &entry.stats;
     let long = |v: &i64| Value::Long(*v);
     let bytes = |v: &Vec<u8>| Value::Bytes(v.clone());
-    let data_file = Value::Record(vec![
+    let mut data_file = vec![
         ("content".into(), Value::Int(0)),
         ("file_path".into(), Value::String(entry.file_path.clone())),
         ("file_format".into(), Value::String(entry.file_format.clone())),
@@ -821,7 +872,11 @@ fn entry_value(entry: &DataFileEntry, names: &[String], types: &[Primitive]) -> 
         ("split_offsets".into(), carried(entry, "split_offsets")),
         ("equality_ids".into(), carried(entry, "equality_ids")),
         ("sort_order_id".into(), carried(entry, "sort_order_id")),
-    ]);
+    ];
+    if format_version >= ROW_LINEAGE_VERSION {
+        data_file.push(("first_row_id".into(), nullable(entry.first_row_id.map(Value::Long))));
+    }
+    let data_file = Value::Record(data_file);
     Ok(Value::Record(vec![
         ("status".into(), Value::Int(entry.status.code())),
         ("snapshot_id".into(), nullable(entry.snapshot_id.map(Value::Long))),
@@ -886,7 +941,7 @@ fn literal_of(value: &Value) -> Result<Option<Literal>, String> {
     }))
 }
 
-fn manifest_file_value(m: &ManifestFile, sequence_number: i64) -> Result<Value, String> {
+fn manifest_file_value(m: &ManifestFile, sequence_number: i64, format_version: u8) -> Result<Value, String> {
     let count =
         |value: Option<Value>, name: &str| value.ok_or_else(|| format!("{} has no {name} to list", m.manifest_path));
     let partitions = m
@@ -901,7 +956,7 @@ fn manifest_file_value(m: &ManifestFile, sequence_number: i64) -> Result<Value, 
             ])
         })
         .collect();
-    Ok(Value::Record(vec![
+    let mut fields = vec![
         ("manifest_path".into(), Value::String(m.manifest_path.clone())),
         ("manifest_length".into(), Value::Long(m.manifest_length)),
         ("partition_spec_id".into(), Value::Int(m.partition_spec_id)),
@@ -947,7 +1002,11 @@ fn manifest_file_value(m: &ManifestFile, sequence_number: i64) -> Result<Value, 
         ),
         ("partitions".into(), some(Value::Array(partitions))),
         ("key_metadata".into(), null()),
-    ]))
+    ];
+    if format_version >= ROW_LINEAGE_VERSION {
+        fields.push(("first_row_id".into(), nullable(m.first_row_id.map(Value::Long))));
+    }
+    Ok(Value::Record(fields))
 }
 
 /// An Avro object container file, deflated, whose header carries `schema` as written here: the parsed schema
@@ -1155,6 +1214,7 @@ mod tests {
 
     fn existing_entry() -> DataFileEntry {
         DataFileEntry {
+            first_row_id: None,
             status: Status::Existing,
             snapshot_id: Some(5),
             sequence_number: Some(3),
@@ -1191,7 +1251,7 @@ mod tests {
     fn a_manifest_and_its_list_read_back_with_what_they_inherit_at_commit() {
         let (schema, spec) = (table_schema(), spec());
         let entries = vec![added_entry(), existing_entry()];
-        let manifest = write_manifest(&schema, &spec, &types(), &entries).unwrap();
+        let manifest = write_manifest(2, &schema, &spec, &types(), &entries).unwrap();
         let summary = summarize(
             "s3://b/t/metadata/m0.avro".into(),
             manifest.len() as u64,
@@ -1228,7 +1288,7 @@ mod tests {
             ]
         );
 
-        let list = write_manifest_list(9, Some(5), 7, std::slice::from_ref(&summary)).unwrap();
+        let list = write_manifest_list(2, 9, Some(5), 7, std::slice::from_ref(&summary)).unwrap();
         let listed = read_manifest_list(&list).unwrap();
         assert_eq!(
             listed,
@@ -1293,7 +1353,7 @@ mod tests {
                 _ => {}
             }
         }
-        let manifest = write_manifest(&table_schema(), &spec(), &types(), &[added_entry()]).unwrap();
+        let manifest = write_manifest(2, &table_schema(), &spec(), &types(), &[added_entry()]).unwrap();
         let summary = summarize(
             "m".into(),
             manifest.len() as u64,
@@ -1302,7 +1362,7 @@ mod tests {
             9,
             &[added_entry()],
         );
-        let list = write_manifest_list(9, None, 1, &[summary]).unwrap();
+        let list = write_manifest_list(2, 9, None, 1, &[summary]).unwrap();
         for file in [&manifest, &list] {
             let schema: Json = serde_json::from_slice(&header(file)["avro.schema"]).unwrap();
             check(&schema, "");
@@ -1429,6 +1489,7 @@ mod tests {
 
     fn listed(spec_id: i32, length: i64, content: Content) -> ManifestFile {
         ManifestFile {
+            first_row_id: None,
             manifest_path: String::new(),
             manifest_length: length,
             partition_spec_id: spec_id,
@@ -1530,7 +1591,7 @@ mod tests {
             ..listed(0, 40, Content::Data)
         };
         assert_eq!(
-            write_manifest_list(9, None, 1, &[manifest]),
+            write_manifest_list(2, 9, None, 1, &[manifest]),
             Err("s3://b/t/metadata/m.avro has no existing_rows_count to list".to_string())
         );
     }
@@ -1548,7 +1609,7 @@ mod tests {
             ],
             ..existing_entry()
         };
-        let manifest = write_manifest(&schema, &spec, &types(), std::slice::from_ref(&entry)).unwrap();
+        let manifest = write_manifest(2, &schema, &spec, &types(), std::slice::from_ref(&entry)).unwrap();
         let listed = summarize(
             "m.avro".into(),
             manifest.len() as u64,

@@ -10,8 +10,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::io::table::Kind;
 pub use crate::io::table::Literal;
 
-/// The format version written.
+/// The format version a table is created at.
 pub const FORMAT_VERSION: u8 = 2;
+
+/// The first format version that tracks row lineage.
+pub const ROW_LINEAGE_VERSION: u8 = 3;
 
 /// `current-snapshot-id` of a table with no snapshot, in tables written before the key became optional.
 pub const NO_SNAPSHOT: i64 = -1;
@@ -42,11 +45,19 @@ pub struct TableMetadata {
     pub snapshots: Vec<Snapshot>,
     #[serde(default)]
     pub refs: BTreeMap<String, SnapshotRef>,
+    /// Higher than every row id assigned; the next snapshot's `first-row-id`. Format version 3 on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_row_id: Option<i64>,
     #[serde(flatten)]
     pub other: BTreeMap<String, serde_json::Value>,
 }
 
 impl TableMetadata {
+    /// The first row id a snapshot committed now takes, when the table tracks row lineage.
+    pub fn next_row_id(&self) -> Option<i64> {
+        (self.format_version >= ROW_LINEAGE_VERSION).then(|| self.next_row_id.unwrap_or(0))
+    }
+
     pub fn schema(&self) -> Option<&Schema> {
         self.schemas.iter().find(|s| s.schema_id == self.current_schema_id)
     }
@@ -128,6 +139,10 @@ pub struct NestedField {
     pub field_type: Type,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
+    /// The keys this model does not name, such as a version 3 field's defaults, kept as they came so that a schema
+    /// evolved from this one keeps them.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
 }
 
 /// A field's type.
@@ -295,8 +310,23 @@ pub struct PartitionSpec {
 pub struct PartitionField {
     pub name: String,
     pub transform: Transform,
+    /// [`NO_SOURCE`] for a version 3 field whose transform takes several columns, which `source_ids` names.
+    #[serde(default = "no_source", skip_serializing_if = "is_no_source")]
     pub source_id: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ids: Option<Vec<i32>>,
     pub field_id: i32,
+}
+
+/// The `source_id` of a partition field that has none of its own.
+pub const NO_SOURCE: i32 = -1;
+
+fn no_source() -> i32 {
+    NO_SOURCE
+}
+
+fn is_no_source(id: &i32) -> bool {
+    *id == NO_SOURCE
 }
 
 /// A partition transform, written as the spec names it: `identity`, `day`, `bucket[16]`, `truncate[4]`.
@@ -384,6 +414,11 @@ pub struct Snapshot {
     pub summary: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_id: Option<i32>,
+    /// The first row id the snapshot assigns, and how many it assigns. Format version 3 on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_row_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_rows: Option<i64>,
 }
 
 /// A branch or tag. A commit that moves one keeps its retention: a catalog replaces the whole ref.
@@ -454,6 +489,54 @@ mod tests {
         let back: serde_json::Value = serde_json::to_value(&table).unwrap();
         let came: serde_json::Value = serde_json::from_str(TABLE).unwrap();
         assert_eq!(back, came);
+    }
+
+    /// A version 3 table, with a field's defaults, a partition field of two columns, and row lineage.
+    const TABLE_3: &str = r#"{
+      "format-version": 3,
+      "table-uuid": "9c12d441-03fe-4693-9a96-a0705ddf69c1",
+      "location": "s3://bucket/warehouse/logs",
+      "last-sequence-number": 2,
+      "last-column-id": 2,
+      "current-schema-id": 0,
+      "schemas": [{"type": "struct", "schema-id": 0, "fields": [
+        {"id": 1, "name": "ts", "required": false, "type": "timestamptz"},
+        {"id": 2, "name": "env", "required": false, "type": "string", "initial-default": "prod", "write-default": "dev"}
+      ]}],
+      "default-spec-id": 0,
+      "partition-specs": [
+        {"spec-id": 0, "fields": [{"name": "ts_day", "transform": "day", "source-id": 1, "field-id": 1000}]},
+        {"spec-id": 1, "fields": [{"name": "both", "transform": "zorder", "source-ids": [1, 2], "field-id": 1001}]}
+      ],
+      "last-partition-id": 1001,
+      "properties": {},
+      "next-row-id": 120,
+      "refs": {},
+      "current-snapshot-id": 7,
+      "snapshots": [{"snapshot-id": 7, "sequence-number": 2, "timestamp-ms": 1555100955770,
+        "manifest-list": "s3://bucket/warehouse/logs/metadata/snap-7.avro", "summary": {"operation": "append"},
+        "first-row-id": 100, "added-rows": 20}]
+    }"#;
+
+    #[test]
+    fn a_version_3_table_reads_and_writes_back_with_every_key_it_came_with() {
+        let table: TableMetadata = serde_json::from_str(TABLE_3).unwrap();
+        assert_eq!(table.next_row_id(), Some(120));
+        assert_eq!(table.schema().unwrap().fields[1].other["write-default"], "dev");
+        let both = &table.partition_specs[1].fields[0];
+        assert_eq!((both.source_id, both.source_ids.clone()), (NO_SOURCE, Some(vec![1, 2])));
+        let snapshot = table.current_snapshot().unwrap();
+        assert_eq!((snapshot.first_row_id, snapshot.added_rows), (Some(100), Some(20)));
+
+        let back: serde_json::Value = serde_json::to_value(&table).unwrap();
+        let came: serde_json::Value = serde_json::from_str(TABLE_3).unwrap();
+        assert_eq!(back, came);
+        // A version 2 table tracks no row lineage, whatever it holds.
+        let two = TableMetadata {
+            format_version: 2,
+            ..table
+        };
+        assert_eq!(two.next_row_id(), None);
     }
 
     #[test]

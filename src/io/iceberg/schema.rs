@@ -232,6 +232,7 @@ impl Ids {
                 required: false,
                 field_type: self.fresh_type(t),
                 doc: None,
+                other: Default::default(),
             })
             .collect()
     }
@@ -281,6 +282,12 @@ impl Ids {
                         "the table's column {path} is required, and the record does not write it"
                     ));
                 }
+                // A row that does not name the column takes its write default, which this writer does not write.
+                None if field.other.get("write-default").is_some_and(|d| !d.is_null()) => {
+                    return Err(format!(
+                        "the table's column {path} has a write default, and the record does not write it"
+                    ));
+                }
                 // Reads as null in the rows written.
                 None => fields.push(field.clone()),
             }
@@ -294,6 +301,7 @@ impl Ids {
                     required: false,
                     field_type: self.fresh_type(t),
                     doc: None,
+                    other: Default::default(),
                 });
             }
         }
@@ -357,6 +365,7 @@ mod tests {
             required: false,
             field_type,
             doc: None,
+            other: Default::default(),
         }
     }
 
@@ -581,6 +590,35 @@ mod tests {
         assert_eq!(
             with_field_ids(parquet.arrow(), &table).unwrap_err(),
             "the table's column http.v is a timestamp_ns, a type this writer cannot write"
+        );
+    }
+
+    #[test]
+    fn a_column_with_a_write_default_the_record_does_not_write_is_refused_and_one_it_writes_keeps_it() {
+        let mut table = table_schema(&record(), None, 0).unwrap().schema;
+        let Type::Struct(http) = &mut table.fields[1].field_type else {
+            panic!("http is a struct")
+        };
+        http.fields[0]
+            .other
+            .insert("write-default".into(), serde_json::json!(200));
+        http.fields[0]
+            .other
+            .insert("initial-default".into(), serde_json::json!(0));
+        let evolved = table_schema(&record(), Some(&table), 11).unwrap().schema;
+        let Type::Struct(http) = &evolved.fields[1].field_type else {
+            panic!("http is a struct")
+        };
+        assert_eq!(
+            http.fields[0].other["write-default"], 200,
+            "a schema evolved keeps a field's defaults"
+        );
+        assert_eq!(http.fields[0].other["initial-default"], 0);
+
+        let without = st(&[("http", st(&[("hdrs", arr(DataType::Str))], false))], false);
+        assert_eq!(
+            table_schema(&without, Some(&table), 11).unwrap_err(),
+            "the table's column http.status has a write default, and the record does not write it"
         );
     }
 
