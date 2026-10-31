@@ -67,6 +67,9 @@ the GUI shows one of these four, the sign goes with it, so the shape alone tells
 four apart for a reader who cannot tell red from green; the state's color
 says it again. A dot, a stripe or a tint never carries one of them by itself.
 
+An access level has a sign, `src/LevelMark.svelte`: an eye views, a nib edits,
+a rocket deploys, a star administers.
+
 `src/stepGlyphs.ts` holds the step badges' paths, one per `StepType`; the
 badge sets the glyph before its label at the label's own text size.
 

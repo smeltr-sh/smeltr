@@ -27,7 +27,7 @@ test('W12: a fresh leader is set up, changed, reviewed and deployed from the GUI
   es,
 }) => {
   const password = 'end-to-end-password';
-  const saved = () => expect(page.getByText('Unsaved', { exact: true })).toBeHidden();
+  const saved = () => expect(page.getByText('Unsaved', { exact: true })).toHaveCount(0);
 
   // The administrator signs in with the one-time password and chooses their own.
   await page.goto(leader.url);

@@ -11,6 +11,7 @@
 <script lang="ts">
   import { reported } from './errors.svelte';
   import ChipPicker from './ChipPicker.svelte';
+  import LevelMark from './LevelMark.svelte';
   import {
     SCOPE_EVENT,
     SHARED_SCOPE,
@@ -86,13 +87,15 @@
 
 <ChipPicker bind:open={picking} kind="scope" align="left" title={scope} onopen={load}>
   {#snippet face()}
-    <span class="scope-name"
-      >{scope}{#if !administrator}&nbsp;&middot; {levelIn(scope) ?? 'no access'}{/if}</span
-    >
+    <span class="dim">Group</span>
+    <span class="scope-name">{scope}</span>{#if !administrator}{@const level =
+        levelIn(scope)}{#if level}<LevelMark {level} named={false} />{:else}<span>no access</span
+        >{/if}{/if}
     <span class="scope-dot" aria-hidden="true"></span>
   {/snippet}
 
   {#if administrator || levelIn(SHARED_SCOPE)}
+    {@const level = levelIn(SHARED_SCOPE)}
     <button
       type="button"
       class="pick"
@@ -100,16 +103,21 @@
       onclick={() => switchScope(SHARED_SCOPE)}
     >
       <span class="mono">shared</span>
-      <span class="dim">{administrator ? 'every group draws on this' : levelIn(SHARED_SCOPE)}</span>
+      <span class="dim"
+        >{#if administrator}every group draws on this{:else if level}<LevelMark
+            {level}
+          />{/if}</span
+      >
     </button>
   {/if}
   {#each offered as g (g.id)}
+    {@const level = levelIn(g.id)}
     <button type="button" class="pick" class:on={scope === g.id} onclick={() => switchScope(g.id)}>
       <span class="mono">{g.id}</span>
       <span class="dim"
-        >{administrator
-          ? `${g.name} — ${g.deployed ? 'live' : 'pending, not deployed yet'}`
-          : levelIn(g.id)}</span
+        >{#if administrator}{g.name} — {g.deployed
+            ? 'live'
+            : 'pending, not deployed yet'}{:else if level}<LevelMark {level} />{/if}</span
       >
     </button>
   {/each}

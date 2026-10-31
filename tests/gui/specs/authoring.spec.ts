@@ -1436,7 +1436,7 @@ test('A4: a save pressed from a code field saves its layout', async ({ admin, le
 
   await expect(admin.getByText('Saved.')).toBeVisible();
   await expect(body).toHaveValue('x = 2;');
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden();
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0);
   const saved = (await api.get(`/api/areas/shared/pipelines/orders${ON}`)).pipeline;
   expect(saved.steps[0].body).toBe('x = 2;');
 });
@@ -1537,7 +1537,7 @@ test('A8: a route sends its unparseable rows where the analyst says, and the pre
   await admin.getByRole('combobox', { name: 'parse: add destination' }).selectOption('es-dlq');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.routes[0].exceptions).toEqual({
@@ -1623,7 +1623,7 @@ test('A9: a lookup table typed in by hand enriches the records of a pipeline tha
   await admin.getByLabel('row 2 value').fill('east');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.lookupTables).toEqual([
@@ -1665,7 +1665,7 @@ test('a grok pattern added on its page is named by a grok step in a pipeline', a
   await admin.getByRole('textbox', { name: 'name', exact: true }).fill('STORE');
   await search.fill('');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.grokPatterns).toEqual([{ id: 'STORE', pattern: 'store-%{INT:store}' }]);
@@ -1718,7 +1718,7 @@ test('A9: an uploaded CSV lookup table enriches the records of a pipeline that n
   await expect(admin.getByLabel('row 2 region')).toHaveValue('east');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.lookupTables).toMatchObject([
@@ -1825,7 +1825,7 @@ test('E8: a Kafka source is moved to now by changing its start, and the page say
     ),
   ).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   const [source] = saved.config.sources;
@@ -1859,7 +1859,7 @@ test('A10: an S3 source that lists its bucket is added from its form and saved a
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
@@ -1912,7 +1912,7 @@ test('A10: an Okta source is added from its form as a service app and saved as t
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
@@ -2078,7 +2078,7 @@ test('A10: HTTP, HEC, OTLP, Prometheus and Elasticsearch receivers are added fro
 
   await admin.screenshot({ path: test.info().outputPath('receiver-rows.png') });
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
@@ -2192,7 +2192,7 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
   await expect(lineBreaker).toBeHidden();
   await expect(admin.getByRole('textbox', { name: /^request size/ })).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
@@ -2242,7 +2242,7 @@ test('A10: an HTTP API source is added from its form, reading an array and askin
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
@@ -2306,7 +2306,7 @@ test('A10: an HTTP API source signs in as an app through its issuer and is saved
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
@@ -2348,7 +2348,7 @@ test('A10: an HTTP API source POSTs a JSON body and is saved as the leader accep
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
@@ -2394,7 +2394,7 @@ test('A10: an SFTP destination is added from its form and saved as the leader ac
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
@@ -2447,7 +2447,7 @@ test('A10: an Elasticsearch destination signs in with a username and password', 
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
@@ -2488,7 +2488,7 @@ test('A10: a Delta destination is added from its form and saved as the leader ac
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
@@ -2553,7 +2553,7 @@ test('A10: a Unity Catalog Delta destination is added from its form and saved as
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
@@ -2614,7 +2614,7 @@ test('A10: an Event Hubs destination is added from its form and saved as the lea
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
@@ -2681,7 +2681,7 @@ test('A10: an Event Hubs destination signs in as a service principal or the host
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   let saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
@@ -2710,7 +2710,7 @@ test('A10: an Event Hubs destination signs in as a service principal or the host
     .fill('72f988bf-86f1-41af-91ab-2d7cd011db47');
   await admin.screenshot({ path: test.info().outputPath('event-hubs-user-assigned-identity.png') });
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
@@ -2727,7 +2727,7 @@ test('A10: an Event Hubs destination signs in as a service principal or the host
   await expect(admin.getByRole('textbox', { name: /^client id/ })).toBeHidden();
   await admin.screenshot({ path: test.info().outputPath('event-hubs-managed-identity.png') });
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     { id: 'alerts-hub', type: 'eventHubs', namespace: 'acme-logs', defaultEventHub: 'alerts' },
@@ -2773,7 +2773,7 @@ test('A10: an HTTP destination is added from its form, its secret header as a cr
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
@@ -2818,7 +2818,7 @@ test('A10: an HTTP destination batches text or bytes as a JSON array of strings'
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
@@ -2874,7 +2874,7 @@ test('A10: a Prometheus remote_write destination is added from its form, its Aut
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
@@ -2941,7 +2941,7 @@ test('A10: a Log Analytics workspace destination is added from its form, signed 
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
@@ -3001,7 +3001,7 @@ test('A10: an Elasticsearch destination sends from each zone to its own address,
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
@@ -3044,7 +3044,7 @@ test('A10: an S3 destination writes unmodified source bytes, which an S3 source 
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   await goto(admin, leader, '#/build/sources');
   await expect(admin.getByRole('heading', { name: 'Sources' })).toBeVisible();
@@ -3058,7 +3058,7 @@ test('A10: an S3 destination writes unmodified source bytes, which an S3 source 
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toMatchObject([
@@ -3097,7 +3097,7 @@ test('A10: a Parquet destination writes native variants, and another format drop
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
   const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toMatchObject([

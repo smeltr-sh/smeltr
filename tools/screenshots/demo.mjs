@@ -274,10 +274,13 @@ delete answers['/api/auth/session'].body.csrf;
 // What every recorded time is relative to: the demo moves them to the visitor's now.
 const recordedAt = Date.now();
 // A version names the branch that built the fleet; the public demo shows it as built from main.
+// The visitor is the fleet's first account, whose name, Administrator, would read twice beside its role.
 const recorded = JSON.stringify({ recordedAt, answers, moving, movingAt, captures });
 fs.writeFileSync(
   out,
-  recorded.replace(/(\d{4}\.\d+\.\d+\+)[A-Za-z0-9-]+\.([0-9a-f]{12})/g, '$1main.$2'),
+  recorded
+    .replace(/(\d{4}\.\d+\.\d+\+)[A-Za-z0-9-]+\.([0-9a-f]{12})/g, '$1main.$2')
+    .replaceAll('"Administrator"', '"Demo User"'),
 );
 console.log(`${Object.keys(answers).length} answers written to ${out}`);
 await browser.close();
