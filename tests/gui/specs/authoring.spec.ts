@@ -757,6 +757,31 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
   ]);
 });
 
+test('a sample of more than 100 records shows the first 100 until Show all', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/areas/shared/samples/many${ON}`, {
+    id: 'many',
+    name: 'many records',
+    columns: [{ name: '_raw', type: 'str' }],
+    records: Array.from({ length: 150 }, (_, i) => ({ _raw: `record ${i}` })),
+  });
+  await goto(admin, leader, '#/build');
+  await admin
+    .getByRole('row', { name: /many records/ })
+    .getByRole('button', { name: 'Edit' })
+    .click();
+  const records = admin.getByRole('group', { name: 'Records' });
+  const ticks = records.getByRole('checkbox', { name: /^Select record \d/ });
+  await expect(ticks).toHaveCount(100);
+  await expect(records.getByText('100 of 150 shown', { exact: true })).toBeVisible();
+  await records.getByRole('button', { name: 'Show all' }).click();
+  await expect(ticks).toHaveCount(150);
+  await expect(records.getByRole('button', { name: 'Show all' })).toBeHidden();
+});
+
 // A1, a captured value that failed its type is shown failing, and fixed in place.
 test('A1: a SQL sample is edited a column at a time, and a value fixed to its type stops failing', async ({
   admin,
