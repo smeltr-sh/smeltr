@@ -95,7 +95,9 @@ so the gate, its deadlines, disabling and revocation treat the two alike.
 Display names may repeat: an account is known by its id, which the audit and git record beside its name.
 
 A local or key account holds the roles an administrator gives it. An OIDC
-account holds the roles its provider groups give it. The built-in
+account holds the roles its provider groups give it. A removed role is taken
+off every account it was given to, so a role made later under its name gives
+nothing to anyone until it is given again. The built-in
 **administrator** role holds everything; it is never removed, and only the
 groups that give it change. At least one enabled local account holds it: it is
 the way in when the provider is down or misconfigured. An administrator makes

@@ -232,12 +232,13 @@
     on the Accounts page. Select it to start a role for that group.
   </p>
   <p>
-    A change to a role applies on each holder's next request. A change to somebody's groups at the
-    provider applies within a few minutes, while they stay signed in, when the provider issues
-    refresh tokens and its refreshes carry an ID token; otherwise at their next sign-in. A refresh
-    the provider refuses, or one that leaves them in no group that gives a role, signs them out. To
-    shut somebody out at once, disable their account in Accounts, or remove them from those groups
-    at the provider and then revoke their sessions. Accounts lists each account's roles beside its
-    name.
+    A change to a role applies on each holder's next request. <strong>Remove role</strong> takes the role
+    off every account it was given to, so a role made later under the same name starts with nobody. A
+    change to somebody's groups at the provider applies within a few minutes, while they stay signed in,
+    when the provider issues refresh tokens and its refreshes carry an ID token; otherwise at their next
+    sign-in. A refresh the provider refuses, or one that leaves them in no group that gives a role, signs
+    them out. To shut somebody out at once, disable their account in Accounts, or remove them from those
+    groups at the provider and then revoke their sessions. Accounts lists each account's roles beside
+    its name.
   </p>
 </GuideLayout>

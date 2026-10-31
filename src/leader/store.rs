@@ -1074,7 +1074,8 @@ pub trait Store: Send + Sync {
     /// Create `role`, or replace the one of that name whole, with `event` written in the same transaction.
     fn put_role(&self, role: &super::access::Role, event: &SecurityEvent) -> Result<(), StoreError>;
 
-    /// Remove the role called `name`, with `event` written in the same transaction. False when there was none.
+    /// Remove the role called `name`, and take it off every account it was given to, with `event` written in the same
+    /// transaction. False when there was none.
     fn delete_role(&self, name: &str, event: &SecurityEvent) -> Result<bool, StoreError>;
 
     /// What an operator has configured, or `None` where they have not. Absent means the default applies, which is
