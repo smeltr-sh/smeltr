@@ -1,4 +1,4 @@
-//! `just check`: the checks the files changed since origin/nightly can break, each a recipe in the justfile, run side
+//! `just check`: the checks the files changed since origin/main can break, each a recipe in the justfile, run side
 //! by side. `just check-all` runs every one and holds a merge to main, so a choice here that misses a test costs a
 //! round trip, never what reaches main.
 //!
@@ -23,13 +23,13 @@ fn main() -> ExitCode {
     let root = env::current_dir().expect("the working directory");
     let plan = match changed(&root) {
         Some(paths) if !paths.is_empty() => Tree::read(&root).plan(&paths),
-        Some(_) => Plan::all("nothing changed since origin/nightly"),
-        None => Plan::all("no merge base with origin/nightly"),
+        Some(_) => Plan::all("nothing changed since origin/main"),
+        None => Plan::all("no merge base with origin/main"),
     };
     run(&plan)
 }
 
-/// The files changed since this branch left origin/nightly, committed or not, or None without a merge base.
+/// The files changed since this branch left origin/main, committed or not, or None without a merge base.
 fn changed(root: &Path) -> Option<Vec<String>> {
     let git = |args: &[&str]| {
         let out = Command::new("git").args(args).current_dir(root).output().ok()?;
@@ -37,7 +37,7 @@ fn changed(root: &Path) -> Option<Vec<String>> {
             .success()
             .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
     };
-    let base = git(&["merge-base", "HEAD", "origin/nightly"])?;
+    let base = git(&["merge-base", "HEAD", "origin/main"])?;
     let diff = git(&["diff", "--name-only", "--no-renames", "-z", base.trim()])?;
     let new = git(&["ls-files", "--others", "--exclude-standard", "-z"])?;
     let paths: BTreeSet<String> = diff
