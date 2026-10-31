@@ -441,7 +441,7 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType, iceberg
                     iceberg,
                 },
                 None,
-                false,
+                schema::Variants::Json,
             )
             .unwrap();
             let Mapping::Name { max_column_id, .. } = mapped.mapping else {

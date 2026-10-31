@@ -30,7 +30,7 @@ use super::identity::{self, Identity, Sequences};
 use super::log::{
     Action, DomainMetadata, Format, Log, Metadata, Protocol, Snapshot, Txn, commit_name, line, now_ms, uuid,
 };
-use super::schema::{self, Mapping, StructField, StructType, Type};
+use super::schema::{self, Mapping, StructField, StructType, Type, Variants};
 use super::unity::UnityCatalog;
 use crate::core::column::DataType;
 use crate::io::files::{
@@ -633,7 +633,7 @@ fn generated(
 /// Commit 0 of a table of `record`, partitioned by `partition_by`: a plain table, which every Delta reader opens. Its
 /// files name their columns as the record does.
 fn create(record: &DataType, partition_by: &[String]) -> Result<String, String> {
-    let evolution = schema::table_schema(record, None, Mapping::None, None, false)?;
+    let evolution = schema::table_schema(record, None, Mapping::None, None, Variants::Json)?;
     for name in partition_by {
         written_partition_column(&evolution.schema, name)?;
     }
@@ -928,9 +928,12 @@ fn wall_clock(micros: i64, digits: u32, separator: char) -> String {
     )
 }
 
-/// Whether the table holds variants in Parquet's variant encoding: it has the `variantType` feature.
-fn variants(snapshot: &Snapshot) -> bool {
-    (snapshot.protocol.writer_features.iter().flatten()).any(|f| f == "variantType")
+/// How the table holds a new column of a variant: natively where it has the `variantType` feature.
+fn variants(snapshot: &Snapshot) -> Variants {
+    match (snapshot.protocol.writer_features.iter().flatten()).any(|f| f == "variantType") {
+        true => Variants::Native,
+        false => Variants::Json,
+    }
 }
 
 /// The table's partition columns when it lets a writer widen its columns, as `schema::table_schema` takes them.
@@ -1379,7 +1382,7 @@ mod tests {
     }
 
     fn new_schema(record: &DataType) -> StructType {
-        schema::table_schema(record, None, Mapping::name(0), None, false)
+        schema::table_schema(record, None, Mapping::name(0), None, Variants::Json)
             .unwrap()
             .schema
     }
@@ -1858,7 +1861,7 @@ mod tests {
     #[test]
     fn a_table_that_maps_its_columns_by_name_or_id_has_them_written_under_their_physical_names_and_ids() {
         let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
-        let mapped = schema::table_schema(&record, None, Mapping::name(0), None, false)
+        let mapped = schema::table_schema(&record, None, Mapping::name(0), None, Variants::Json)
             .unwrap()
             .schema;
         for mode in ["name", "id"] {
@@ -1889,7 +1892,7 @@ mod tests {
     #[test]
     fn a_mapped_table_without_its_highest_id_takes_a_record_that_adds_no_column() {
         let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
-        let mapped = schema::table_schema(&record, None, Mapping::name(0), None, false)
+        let mapped = schema::table_schema(&record, None, Mapping::name(0), None, Variants::Json)
             .unwrap()
             .schema;
         let table = table_with(&record, &["host"], |a| {
@@ -1931,7 +1934,7 @@ mod tests {
         let xs = DataType::Array(Box::new(DataType::I64));
         let record = st(&[("host", DataType::Str), ("xs", xs.clone())]);
         let iceberg = Mapping::iceberg(0);
-        let mapped = schema::table_schema(&record, None, iceberg, None, false)
+        let mapped = schema::table_schema(&record, None, iceberg, None, Variants::Json)
             .unwrap()
             .schema;
         let table = |schema: &StructType, configuration: Value| {
