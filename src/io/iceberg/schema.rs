@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use arrow_schema::extension::Uuid;
 use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 
@@ -76,32 +77,116 @@ pub fn table_schema(record: &DataType, current: Option<&Schema>, last_column_id:
 }
 
 /// `arrow` with every field, at any depth and a list's element too, carrying its id in `schema` under
-/// `PARQUET:field_id`, so a Parquet file written with it carries the table's field ids. Fields are matched by name;
-/// one `schema` does not name keeps no id.
-pub fn with_field_ids(arrow: &ArrowSchema, schema: &Schema) -> Arc<ArrowSchema> {
-    let fields: Fields = arrow.fields().iter().map(|f| labelled(f, &schema.fields)).collect();
-    Arc::new(ArrowSchema::new_with_metadata(fields, arrow.metadata().clone()))
+/// `PARQUET:field_id`, so a Parquet file written with it carries the table's field ids, and each struct ending with
+/// the columns of `schema` it lacks, which its rows write null: a data file holds every column. Fields are matched by
+/// name; one `schema` does not name keeps no id.
+///
+/// Err names a column the record lacks of a type this writer has no Parquet type for.
+pub fn with_field_ids(arrow: &ArrowSchema, schema: &Schema) -> Result<Arc<ArrowSchema>, String> {
+    let fields = labelled(arrow.fields(), &schema.fields, "")?;
+    Ok(Arc::new(ArrowSchema::new_with_metadata(
+        fields,
+        arrow.metadata().clone(),
+    )))
 }
 
-fn labelled(field: &Field, table: &[NestedField]) -> Field {
-    match table.iter().find(|t| t.name == *field.name()) {
-        Some(t) => with_id(field, t.id, &t.field_type),
-        None => field.clone(),
+/// `fields` as `table` names them, then `table`'s fields they lack.
+fn labelled(fields: &Fields, table: &[NestedField], path: &str) -> Result<Fields, String> {
+    let mut labelled = (fields.iter())
+        .map(|field| match table.iter().find(|t| t.name == *field.name()) {
+            Some(t) => with_id(field, t.id, &t.field_type, &at(path, &t.name)),
+            None => Ok(field.as_ref().clone()),
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    for t in table.iter().filter(|t| !fields.iter().any(|f| f.name() == &t.name)) {
+        let path = at(path, &t.name);
+        labelled.push(column(&t.name, &t.field_type, true, t.id, &path)?);
     }
+    Ok(labelled.into())
 }
 
-fn with_id(field: &Field, id: i32, ty: &Type) -> Field {
+fn with_id(field: &Field, id: i32, ty: &Type, path: &str) -> Result<Field, String> {
     let data_type = match (field.data_type(), ty) {
-        (Arrow::Struct(fields), Type::Struct(s)) => {
-            Arrow::Struct(fields.iter().map(|f| labelled(f, &s.fields)).collect())
-        }
-        (Arrow::List(element), Type::List(l)) => Arrow::List(Arc::new(with_id(element, l.element_id, &l.element))),
+        (Arrow::Struct(fields), Type::Struct(s)) => Arrow::Struct(labelled(fields, &s.fields, path)?),
+        (Arrow::List(element), Type::List(l)) => Arrow::List(Arc::new(with_id(
+            element,
+            l.element_id,
+            &l.element,
+            &format!("{path}[]"),
+        )?)),
         (other, Type::Primitive(p)) => narrow(p).unwrap_or_else(|| other.clone()),
         (other, _) => other.clone(),
     };
+    Ok(with_metadata(field.clone().with_data_type(data_type), id))
+}
+
+fn with_metadata(field: Field, id: i32) -> Field {
     let mut metadata = field.metadata().clone();
-    metadata.insert(PARQUET_FIELD_ID_META_KEY, id.to_string());
-    field.clone().with_data_type(data_type).with_metadata(metadata)
+    metadata.insert(PARQUET_FIELD_ID_META_KEY.to_string(), id.to_string());
+    field.with_metadata(metadata)
+}
+
+/// The field `name` of `ty`, with id `id`, as a column the record does not write is written: the spec's Parquet type
+/// for it, every field in it optional but a map's key.
+fn column(name: &str, ty: &Type, nullable: bool, id: i32, path: &str) -> Result<Field, String> {
+    let data_type = match ty {
+        Type::Primitive(p) => primitive_arrow(p)
+            .ok_or_else(|| format!("the table's column {path} is a {p}, a type this writer cannot write"))?,
+        Type::Struct(s) => Arrow::Struct(labelled(&Fields::empty(), &s.fields, path)?),
+        Type::List(l) => Arrow::List(Arc::new(column(
+            "element",
+            &l.element,
+            true,
+            l.element_id,
+            &format!("{path}[]"),
+        )?)),
+        Type::Map(map) => {
+            let refused = || format!("the table's column {path} is a map this writer cannot read");
+            let part = |part: &str, nullable: bool| {
+                let ty: Type = serde_json::from_value(map[part].clone()).map_err(|_| refused())?;
+                let id = map[format!("{part}-id")].as_i64().ok_or_else(refused)?;
+                column(part, &ty, nullable, id as i32, &format!("{path}.{part}"))
+            };
+            let entries = Fields::from(vec![part("key", false)?, part("value", true)?]);
+            Arrow::Map(Arc::new(Field::new("key_value", Arrow::Struct(entries), false)), false)
+        }
+    };
+    let field = Field::new(name, data_type, nullable);
+    let field = match ty {
+        // Parquet's UUID type, where a bare fixed[16] would be Iceberg's fixed.
+        Type::Primitive(Primitive::Other(t)) if t == "uuid" => field.with_extension_type(Uuid),
+        _ => field,
+    };
+    Ok(with_metadata(field, id))
+}
+
+/// The Arrow type of a column of `p`, as the spec has Parquet hold it.
+fn primitive_arrow(p: &Primitive) -> Option<Arrow> {
+    use arrow_schema::TimeUnit::Microsecond;
+    Some(match p {
+        Primitive::Boolean => Arrow::Boolean,
+        Primitive::Int => Arrow::Int32,
+        Primitive::Long => Arrow::Int64,
+        Primitive::Float => Arrow::Float32,
+        Primitive::Double => Arrow::Float64,
+        Primitive::Date => Arrow::Date32,
+        Primitive::Timestamp => Arrow::Timestamp(Microsecond, None),
+        Primitive::Timestamptz => Arrow::Timestamp(Microsecond, Some("UTC".into())),
+        Primitive::String => Arrow::Utf8,
+        Primitive::Binary => Arrow::Binary,
+        Primitive::Other(name) => match name.as_str() {
+            "time" => Arrow::Time64(Microsecond),
+            "uuid" => Arrow::FixedSizeBinary(16),
+            name => {
+                if let Some(n) = name.strip_prefix("fixed[").and_then(|n| n.strip_suffix(']')) {
+                    Arrow::FixedSizeBinary(n.parse().ok()?)
+                } else {
+                    let (p, s) = name.strip_prefix("decimal(")?.strip_suffix(')')?.split_once(',')?;
+                    Arrow::Decimal128(p.trim().parse().ok()?, s.trim().parse().ok()?)
+                }
+            }
+        },
+    })
 }
 
 /// The Parquet type a column of `p` is written as, where it is narrower than any record type.
@@ -432,7 +517,7 @@ mod tests {
             (table.fields.clone(), false)
         );
         let file = crate::io::parquet::Schema::new(&narrow).unwrap();
-        let types: Vec<_> = (with_field_ids(file.arrow(), &evolved.schema).fields().iter())
+        let types: Vec<_> = (with_field_ids(file.arrow(), &evolved.schema).unwrap().fields().iter())
             .map(|f| f.data_type().clone())
             .collect();
         assert_eq!(
@@ -481,6 +566,21 @@ mod tests {
             table_schema(&flat, Some(&table), 11)
                 .unwrap_err()
                 .starts_with("http is struct in the table")
+        );
+    }
+
+    #[test]
+    fn a_column_the_record_lacks_of_a_type_no_file_here_holds_is_refused() {
+        let mut table = table_schema(&record(), None, 0).unwrap().schema;
+        let Type::Struct(http) = &mut table.fields[1].field_type else {
+            panic!("http is a struct")
+        };
+        http.fields
+            .push(field(12, "v", prim(Primitive::Other("timestamp_ns".into()))));
+        let parquet = crate::io::parquet::Schema::new(&record()).unwrap();
+        assert_eq!(
+            with_field_ids(parquet.arrow(), &table).unwrap_err(),
+            "the table's column http.v is a timestamp_ns, a type this writer cannot write"
         );
     }
 
@@ -544,7 +644,7 @@ mod tests {
         let record = record();
         let parquet = crate::io::parquet::Schema::new(&record).unwrap();
         let table = table_schema(&record, None, 0).unwrap().schema;
-        let labelled = with_field_ids(parquet.arrow(), &table);
+        let labelled = with_field_ids(parquet.arrow(), &table).unwrap();
         assert!(labelled.contains(parquet.arrow()));
         let id = |f: &Field| {
             f.metadata()

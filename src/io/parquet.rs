@@ -160,7 +160,8 @@ impl Schema {
 
     /// This schema, its files written with `written`: the same fields, at any depth, renamed or with metadata of their
     /// own, such as Iceberg's field ids or Delta's physical names, and a leaf a table holds narrower of that type
-    /// (`narrows`).
+    /// (`narrows`). A struct may end with fields the record lacks, such as a table's columns it does not write, which
+    /// every row writes null.
     pub fn with_written(self, written: Arc<ArrowSchema>) -> Schema {
         let Some(Arrow::Struct(fields)) = narrowed(&self.root, &Arrow::Struct(written.fields().clone())) else {
             panic!("a written schema is the record's own, renamed, with metadata added or a leaf narrowed");
@@ -334,10 +335,10 @@ pub fn narrows(record: &DataType, to: &Arrow) -> bool {
 }
 
 /// `node`'s type with each leaf `written` holds narrower (`narrows`) of that type. `None` when `written` is not the
-/// node's type, renamed, with metadata added or a leaf narrowed.
+/// node's type, renamed, with metadata added, a leaf narrowed or fields ending a struct that the node lacks.
 fn narrowed(node: &Node, written: &Arrow) -> Option<Arrow> {
     match (&node.kind, written) {
-        (Kind::Struct(s), Arrow::Struct(w)) if w.len() == s.arrow.len() => {
+        (Kind::Struct(s), Arrow::Struct(w)) if w.len() >= s.arrow.len() => {
             let fields = (s.arrow.iter().zip(w).enumerate())
                 .map(|(i, (ours, w))| {
                     let t = match s.fields.get(i) {
@@ -361,12 +362,9 @@ fn narrowed(node: &Node, written: &Arrow) -> Option<Arrow> {
     }
 }
 
-/// `batch` under `schema`, which `alike` matches to its own. No value is copied.
+/// `batch` under `schema`, which `narrowed` matches to its own. No value is copied.
 fn relabel(batch: &RecordBatch, schema: &Arc<ArrowSchema>) -> RecordBatch {
-    let columns = (batch.columns().iter())
-        .zip(schema.fields())
-        .map(|(column, field)| relabelled(column, field.data_type()))
-        .collect();
+    let columns = relabelled_fields(batch.columns(), schema.fields(), batch.num_rows());
     RecordBatch::try_new(schema.clone(), columns)
         .expect("a written schema the rows' own but for names, metadata and narrowed leaves")
 }
@@ -381,10 +379,7 @@ fn relabelled(array: &ArrayRef, to: &Arrow) -> ArrayRef {
             let parent = array
                 .as_struct_opt()
                 .expect("a written schema the rows' own but for names, metadata and narrowed leaves");
-            let children = (parent.columns().iter())
-                .zip(fields)
-                .map(|(child, field)| relabelled(child, field.data_type()))
-                .collect();
+            let children = relabelled_fields(parent.columns(), fields, parent.len());
             Arc::new(StructArray::new(fields.clone(), children, parent.nulls().cloned()))
         }
         Arrow::List(field) => {
@@ -402,6 +397,16 @@ fn relabelled(array: &ArrayRef, to: &Arrow) -> ArrayRef {
         // `Schema::unfit` refused every row whose value this column cannot hold.
         to => narrow_leaf(array, to),
     }
+}
+
+/// `columns` as `fields`, and a null column of `rows` for each field after theirs.
+fn relabelled_fields(columns: &[ArrayRef], fields: &Fields, rows: usize) -> Vec<ArrayRef> {
+    (fields.iter().enumerate())
+        .map(|(i, field)| match columns.get(i) {
+            Some(column) => relabelled(column, field.data_type()),
+            None => new_null_array(field.data_type(), rows),
+        })
+        .collect()
 }
 
 /// Why value `i` of `array` cannot be written as `to`, `written`'s type for it, naming it by `path`, made only then.
@@ -1433,7 +1438,9 @@ mod tests {
         );
         let schema = Schema::new(&record).unwrap();
         let table = table_schema(&record, None, 0).unwrap().schema;
-        let labelled = schema.clone().with_written(with_field_ids(schema.arrow(), &table));
+        let labelled = schema
+            .clone()
+            .with_written(with_field_ids(schema.arrow(), &table).unwrap());
 
         let Arrow::Struct(o) = schema.arrow().field(0).data_type().clone() else {
             panic!("o is a struct")
@@ -1475,6 +1482,119 @@ mod tests {
             .collect();
         assert_eq!(leaves, [3, 4]);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_table_column_the_record_lacks_is_written_null_at_every_depth() {
+        use crate::io::iceberg::metadata::{ListType, NestedField, Primitive, StructType, Type};
+        use crate::io::iceberg::schema::{table_schema, with_field_ids};
+        use arrow_array::cast::AsArray;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use parquet::basic::LogicalType;
+
+        let record = st(&[("o", st(&[("a", DataType::I64)], false))], false);
+        let schema = Schema::new(&record).unwrap();
+        let mut table = table_schema(&record, None, 0).unwrap().schema;
+        let field = |id: i32, name: &str, field_type: Type| NestedField {
+            id,
+            name: name.into(),
+            required: false,
+            field_type,
+            doc: None,
+        };
+        let other = |name: &str| Type::Primitive(Primitive::Other(name.into()));
+        let Type::Struct(o) = &mut table.fields[0].field_type else {
+            panic!("o is a struct")
+        };
+        o.fields.push(field(3, "b", Type::Primitive(Primitive::String)));
+        table.fields.extend([
+            field(4, "d", other("decimal(10, 2)")),
+            field(5, "u", other("uuid")),
+            field(6, "f", other("fixed[4]")),
+            field(7, "t", other("time")),
+            field(
+                8,
+                "l",
+                Type::List(ListType {
+                    element_id: 9,
+                    element_required: false,
+                    element: Box::new(Type::Primitive(Primitive::Int)),
+                }),
+            ),
+            field(
+                10,
+                "m",
+                Type::Map(
+                    serde_json::json!({"type": "map", "key-id": 11, "key": "string", "value-id": 12,
+                    "value": "long", "value-required": false}),
+                ),
+            ),
+            field(
+                13,
+                "s",
+                Type::Struct(StructType {
+                    fields: vec![field(14, "x", Type::Primitive(Primitive::Timestamptz))],
+                }),
+            ),
+        ]);
+        let labelled = schema
+            .clone()
+            .with_written(with_field_ids(schema.arrow(), &table).unwrap());
+
+        let Arrow::Struct(fields) = schema.arrow().field(0).data_type().clone() else {
+            panic!("o is a struct")
+        };
+        let o: ArrayRef = Arc::new(StructArray::new(
+            fields,
+            vec![Arc::new(Int64Array::from(vec![1, 2]))],
+            None,
+        ));
+        let batch = RecordBatch::try_new(schema.arrow().clone(), vec![o]).unwrap();
+        let chunk = Arc::new(Chunk::new(batch, Vec::new()));
+        let rows: Vec<Columns> = (0..2)
+            .map(|row| Columns {
+                chunk: chunk.clone(),
+                row,
+            })
+            .collect();
+        assert!(labelled.matches(&rows[0]));
+        let mut w = FileWriter::open(&labelled, &Compression::None.into());
+        w.write(&rows);
+        let (file, _) = w.finish();
+
+        let path = std::env::temp_dir().join(format!("smeltr-parquet-{}-all-columns.parquet", std::process::id()));
+        std::fs::write(&path, &file).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&path).unwrap()).unwrap();
+        let descr = builder.metadata().file_metadata().schema_descr();
+        let leaves: Vec<(i32, Option<LogicalType>)> = (0..descr.num_columns())
+            .map(|i| {
+                let column = descr.column(i);
+                (
+                    column.self_type().get_basic_info().id(),
+                    column.logical_type_ref().cloned(),
+                )
+            })
+            .collect();
+        let ids: Vec<i32> = leaves.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [2, 3, 4, 5, 6, 7, 9, 11, 12, 14]);
+        assert_eq!(leaves[2].1, Some(LogicalType::decimal(2, 10)));
+        assert_eq!(leaves[3].1, Some(LogicalType::Uuid));
+        assert_eq!(
+            leaves[5].1,
+            Some(LogicalType::time(false, parquet::basic::TimeUnit::MICROS))
+        );
+
+        let read: Vec<RecordBatch> = builder.build().unwrap().map(Result::unwrap).collect();
+        std::fs::remove_file(&path).unwrap();
+        let batch = &read[0];
+        let names: Vec<&str> = batch.schema_ref().fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, ["o", "d", "u", "f", "t", "l", "m", "s"]);
+        let o = batch.column(0).as_struct();
+        assert_eq!(o.column(0).null_count(), 0);
+        assert_eq!(o.column(1).null_count(), 2, "o.b");
+        for (column, name) in batch.columns().iter().zip(names).skip(1) {
+            assert_eq!(column.null_count(), 2, "{name}");
+        }
     }
 
     #[test]
