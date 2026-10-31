@@ -53,7 +53,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("IP", r"(?:%{IPV4}|%{IPV6})"),
     (
         "HOSTNAME",
-        r"\b[0-9A-Za-z](?:[0-9A-Za-z-]{0,62}[0-9A-Za-z])?(?:\.[0-9A-Za-z](?:[0-9A-Za-z-]{0,62}[0-9A-Za-z])?)*\b",
+        r"\b[0-9A-Za-z_](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z_])?(?:\.[0-9A-Za-z_](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z_])?)*\b",
     ),
     // IP first, as Logstash has it: HOSTNAME also takes a dotted quad, but would stop an IPv6 address at its first `:`.
     ("IPORHOST", r"(?:%{IP}|%{HOSTNAME})"),
@@ -805,8 +805,10 @@ mod tests {
                 "a.b.example.com",
                 "1.2.3.4",
                 "xn--bcher-kva.example",
+                "a_b",
+                "_ldap._tcp.example.com",
             ],
-            &["", "-web", "web-", "a..b", "a_b", "a b", ".a", "a.b."],
+            &["", "-web", "web-", "a..b", "a b", ".a", "a.b."],
         ),
         (
             "IPORHOST",
@@ -816,8 +818,9 @@ mod tests {
                 "fe80::1%eth0",
                 "localhost",
                 "a.b.example.com",
+                "build_01.example.com",
             ],
-            &["", "-web", "a_b", "a b", "10.1.2.3:443", "a.b."],
+            &["", "-web", "a b", "10.1.2.3:443", "a.b."],
         ),
         ("USERNAME", &["alice", "a.b_c-d", "42"], &["", "a b", "a@b", "a/b"]),
         (
@@ -915,8 +918,8 @@ mod tests {
         ),
         (
             "SYSLOGHOST",
-            &["web-01", "10.1.2.3", "::1"],
-            &["", "web 01", "web_01", "-web"],
+            &["web-01", "web_01", "10.1.2.3", "::1"],
+            &["", "web 01", "-web"],
         ),
         (
             "URIPROTO",

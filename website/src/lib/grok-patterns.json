@@ -28,7 +28,7 @@
   { "name": "IP", "matches": "An IPv4 address, else an IPv6 one.", "example": "2001:db8::1" },
   {
     "name": "HOSTNAME",
-    "matches": "A dotted host name; each label is letters, digits and inner `-`.",
+    "matches": "A dotted host name; each label is letters, digits, `_` and inner `-`.",
     "example": "api.example.com"
   },
   {

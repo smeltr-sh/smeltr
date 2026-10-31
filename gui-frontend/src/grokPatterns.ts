@@ -81,13 +81,13 @@ export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
     name: 'HOSTNAME',
     signature: '%{HOSTNAME}',
     description:
-      'A DNS-style hostname or FQDN, dot-separated labels up to 63 characters each. Matches `web-01.internal.example.com`, `localhost`; not a label starting or ending with `-`, or one containing `_`. Regex: `\\b[0-9A-Za-z](?:[0-9A-Za-z-]{0,62}[0-9A-Za-z])?(?:\\.[0-9A-Za-z](?:[0-9A-Za-z-]{0,62}[0-9A-Za-z])?)*\\b`',
+      'A DNS-style hostname or FQDN, dot-separated labels up to 63 characters each of letters, digits, `_` and inner `-`. Matches `web-01.internal.example.com`, `localhost`, `build_01`; not a label starting or ending with `-`. Regex: `\\b[0-9A-Za-z_](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z_])?(?:\\.[0-9A-Za-z_](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z_])?)*\\b`',
   },
   {
     name: 'IPORHOST',
     signature: '%{IPORHOST}',
     description:
-      'A host given either as an address or by name -- a client, a server, a peer. Matches `10.0.0.1`, `2001:db8::1`, `web-01.example.com`; not a host with a `:port` or one containing `_`. Regex: `(?:%{IP}|%{HOSTNAME})`',
+      'A host given either as an address or by name -- a client, a server, a peer. Matches `10.0.0.1`, `2001:db8::1`, `web-01.example.com`; not a host with a `:port`. Regex: `(?:%{IP}|%{HOSTNAME})`',
   },
   {
     name: 'USERNAME',
@@ -201,7 +201,7 @@ export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
     name: 'SYSLOGHOST',
     signature: '%{SYSLOGHOST}',
     description:
-      'The host field of a syslog line, after its timestamp. Matches `web-01`, `10.0.0.1`; not a host containing a space or `_`. Regex: `%{IPORHOST}`',
+      'The host field of a syslog line, after its timestamp. Matches `web-01`, `10.0.0.1`; not a host containing a space. Regex: `%{IPORHOST}`',
   },
   {
     name: 'URIPROTO',
