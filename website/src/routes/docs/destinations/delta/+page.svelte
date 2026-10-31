@@ -419,9 +419,9 @@
     </dd>
     <dt><strong>the table's column … carries …, which this writer cannot honour</strong></dt>
     <dd>
-      The column is generated, carries an invariant, or is an identity column or a column with a
-      default inside a struct, or its default is not a literal, which the destination does not
-      compute or check. Write to a table without such a column.
+      The column is generated, carries an invariant, is an identity column inside a struct, or has a
+      default that is not a literal or is inside a struct. The destination honours none of these.
+      Write to a table without such a column.
     </dd>
     <dt>
       <strong
