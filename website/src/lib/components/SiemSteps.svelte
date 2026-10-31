@@ -2,8 +2,8 @@
   // Each step's card from the pipeline editor, opened, at 2x.
   const steps = [
     { id: 'parser', label: 'Parser', what: 'names the 68 columns', height: 5884 },
-    { id: 'drop', label: 'Drop', what: 'removes allowed DNS lookups', height: 224 },
-    { id: 'eval', label: 'Eval', what: 'sets 48 fields to null', height: 4068 },
+    { id: 'drop', label: 'Drop', what: 'drops allowed DNS lookups', height: 224 },
+    { id: 'remove', label: 'Remove', what: 'removes 48 fields', height: 1150 },
     { id: 'code', label: 'Code', what: 'joins the rest back into a PAN-OS line', height: 546 },
   ];
 </script>
