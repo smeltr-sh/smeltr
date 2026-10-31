@@ -43,7 +43,7 @@ use crate::io::delta::log::{FileAction, Name, file_key};
 use crate::io::parquet::{Chunk, Columns, REST};
 
 /// The seeds a run takes.
-const SEEDS: std::ops::Range<u64> = 1..1001;
+const SEEDS: std::ops::Range<u64> = 1..1201;
 
 /// What a run must reach over its seeds: every data type, protocol version and feature, table property, fault, other
 /// writer's change and commit outcome it draws.
@@ -105,11 +105,16 @@ const COVERED: &[&str] = &[
     "writer inCommitTimestamp",
     "writer materializePartitionColumns",
     "writer icebergCompatV2",
+    "writer variantType",
+    "writer variantShredding",
     "reader columnMapping",
     "reader deletionVectors",
     "reader v2Checkpoint",
     "reader timestampNtz",
     "reader typeWidening",
+    "reader variantType",
+    "variant written as variant",
+    "variant written as text",
     "mapping none",
     "mapping name",
     "mapping id",
@@ -352,7 +357,7 @@ fn partitioning_refused(record: &DataType, by: &[String]) -> bool {
 }
 
 /// The writer features of tables made here: the ones the writer supports, and some it does not.
-const FEATURES: [&str; 18] = [
+const FEATURES: [&str; 20] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -371,14 +376,17 @@ const FEATURES: [&str; 18] = [
     "inCommitTimestamp",
     "materializePartitionColumns",
     "icebergCompatV2",
+    "variantType",
+    "variantShredding",
 ];
 
-const READER_FEATURES: [&str; 5] = [
+const READER_FEATURES: [&str; 6] = [
     "columnMapping",
     "deletionVectors",
     "v2Checkpoint",
     "timestampNtz",
     "typeWidening",
+    "variantType",
 ];
 
 /// A random protocol, and whether the writer must refuse it.
@@ -433,6 +441,7 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType, iceberg
                     iceberg,
                 },
                 None,
+                false,
             )
             .unwrap();
             let Mapping::Name { max_column_id, .. } = mapped.mapping else {
@@ -809,6 +818,41 @@ fn identity_values(start: i64, step: i64, mark: Option<i64>, n: usize) -> Option
 }
 
 /// Each column the table gives an id is written with it as its field id, at any depth.
+/// Err when a top-level column the record holds a variant in is not written as the table holds it: Parquet's variant
+/// group for a `variant`, JSON text for a `string`.
+fn variants(record: &DataType, table: &[schema::StructField], written: &Fields) -> Result<(), String> {
+    let DataType::Struct(fields, _) = record else {
+        return Ok(());
+    };
+    for (name, _) in fields.iter().filter(|(_, t)| *t == DataType::Variant) {
+        let Some(column) = table.iter().find(|c| c.name == *name) else {
+            continue;
+        };
+        let Some(field) = written.iter().find(|f| f.name() == column.physical_name()) else {
+            return Err(format!("{name} is not written"));
+        };
+        let held = match &column.data_type {
+            schema::Type::Primitive(p) => p.as_str(),
+            _ => "",
+        };
+        let fits = match (held, field.data_type()) {
+            ("variant", Arrow::Struct(group)) => {
+                reach("variant written as variant");
+                group.iter().map(|f| f.name().as_str()).eq(["metadata", "value"])
+            }
+            ("string", Arrow::Utf8) => {
+                reach("variant written as text");
+                true
+            }
+            _ => false,
+        };
+        if !fits {
+            return Err(format!("{name}, a {held} column, is written as {}", field.data_type()));
+        }
+    }
+    Ok(())
+}
+
 fn field_ids(table: &[schema::StructField], written: &Fields) -> Result<(), String> {
     for column in table {
         let Some(field) = written.iter().find(|f| f.name() == column.physical_name()) else {
@@ -1395,6 +1439,7 @@ impl Run {
                     reach("mapping without maxColumnId written");
                 }
                 kept_narrow(&committer)?;
+                variants(&self.record, &committer.schema.fields, committer.written.fields())?;
                 field_ids(&committer.schema.fields, committer.written.fields())?;
                 element_ids(&committer.schema.fields, committer.written.fields())?;
                 unique_ids(&committer.schema)?;
