@@ -48,7 +48,9 @@
     it is kept. Untick a field to remove it. <strong>Find a field</strong> narrows the list, and
     <strong>Remove all</strong> and <strong>Keep all</strong> act on the fields it shows. To remove
     a field that matches nothing in the list, type its name and choose
-    <strong>Remove &lt;name&gt;</strong> under the search box.
+    <strong>Remove &lt;name&gt;</strong> under the search box. The list shows the fields the pipeline
+    declares; a field a JSON or key-value parser read without declaring it is not in it, and is removed
+    this way. A name the record cannot hold there is an error at the step.
   </p>
 
   <h2 id="how-it-works">How it works</h2>
