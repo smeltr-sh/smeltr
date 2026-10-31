@@ -553,11 +553,11 @@ test('each group runs a configuration of its own', async ({ admin, api, fleet, l
   // A source in one group does not exist in the other.
   await goto(admin, leader, '#/build/sources');
   await expect(admin.getByRole('heading', { name: 'Sources' })).toBeVisible();
-  await admin.getByRole('button', { name: 'Group shared', exact: true }).click();
+  await admin.getByRole('button', { name: 'Worker group shared', exact: true }).click();
   await admin.getByRole('button', { name: 'east east — live' }).click();
   await expect(admin.getByText('own-metrics').first()).toBeVisible();
   await expect(admin.getByText('own-logs')).toHaveCount(0);
-  await admin.getByRole('button', { name: 'Group east', exact: true }).click();
+  await admin.getByRole('button', { name: 'Worker group east', exact: true }).click();
   await admin.getByRole('button', { name: 'west west — live' }).click();
   await expect(admin.getByText('own-logs').first()).toBeVisible();
   await expect(admin.getByText('own-metrics')).toHaveCount(0);
