@@ -38,6 +38,7 @@
 
   const width = 320;
   const height = 80;
+  const markHeight = 6;
 
   let bands = $derived(Array.isArray(band) ? band : null);
   let flat = $derived(band && !Array.isArray(band) ? band : null);
@@ -102,18 +103,15 @@
       {#each marks as m (m.from + m.label)}
         {@const x1 = Math.min(xAt(m.from, times, width), width - 2)}
         {@const x2 = m.to === null ? width : xAt(m.to, times, width)}
+        <!-- A strip along the foot, so the band behind the line still reads while a warning holds. -->
         <rect
           class="mark"
           class:failed={m.failed}
           x={x1}
-          y="0"
+          y={height - markHeight}
           width={Math.max(1, x2 - x1)}
-          {height}
+          height={markHeight}
         />
-        <line class="edge" class:failed={m.failed} {x1} x2={x1} y1="0" y2={height} />
-        {#if m.to !== null}
-          <line class="edge" class:failed={m.failed} x1={x2} {x2} y1="0" y2={height} />
-        {/if}
       {/each}
     {/if}
     {#each series as s (s.label)}
@@ -174,31 +172,27 @@
     cursor: crosshair;
   }
 
+  /* Neutral, with its edges drawn, so no state's color hides it. */
   .band {
-    fill: color-mix(in oklch, var(--accent) 18%, transparent);
-    stroke: none;
-  }
-
-  .band-swatch {
-    background: color-mix(in oklch, var(--accent) 35%, transparent);
-  }
-
-  .mark {
-    fill: color-mix(in oklch, var(--warn) 12%, transparent);
-  }
-
-  .mark.failed {
-    fill: color-mix(in oklch, var(--error) 12%, transparent);
-  }
-
-  .edge {
-    stroke: var(--warn);
-    stroke-width: 1;
+    fill: color-mix(in oklch, var(--ink) 7%, transparent);
+    stroke: color-mix(in oklch, var(--ink) 55%, transparent);
+    stroke-width: 1.25;
+    stroke-dasharray: 4 3;
     vector-effect: non-scaling-stroke;
   }
 
-  .edge.failed {
-    stroke: var(--error);
+  .band-swatch {
+    background: color-mix(in oklch, var(--ink) 7%, transparent);
+    outline: 1.25px dashed color-mix(in oklch, var(--ink) 55%, transparent);
+    outline-offset: -1px;
+  }
+
+  .mark {
+    fill: color-mix(in oklch, var(--warn) 60%, transparent);
+  }
+
+  .mark.failed {
+    fill: color-mix(in oklch, var(--error) 60%, transparent);
   }
 
   .cursor {
