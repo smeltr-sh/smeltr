@@ -11,6 +11,7 @@
   field.
 -->
 <script lang="ts">
+  import ShowAll from './ShowAll.svelte';
   import InlineError from './InlineError.svelte';
   import Dialog from './Dialog.svelte';
   import {
@@ -70,6 +71,8 @@
   /** How many rows the tables show in all; the rest is a count. */
   const ROWS = 8;
   let shownRows = $derived(shown.reduce((n, b) => n + b.rows.length, 0));
+  /** Whoever asked to see every row captured, not the first few. */
+  let allRows = $state(false);
 
   function pick(worker: string) {
     only = only === worker ? null : worker;
@@ -165,7 +168,7 @@
         </p>
       {/if}
 
-      {#each firstRows(shown, ROWS) as batch, b (b)}
+      {#each firstRows(shown, allRows ? Infinity : ROWS) as batch, b (b)}
         {@const cols = filledColumns(batch)}
         <div class="table">
           <table class="rows">
@@ -193,8 +196,10 @@
           </table>
         </div>
       {/each}
-      {#if shownRows > ROWS}
-        <p class="note">{shownRows - ROWS} more</p>
+      {#if !allRows && shownRows > ROWS}
+        <p class="note">
+          <ShowAll more={shownRows - ROWS} what="row" onshowall={() => (allRows = true)} />
+        </p>
       {/if}
 
       {#if done && !use}

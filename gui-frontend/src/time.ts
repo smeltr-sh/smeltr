@@ -129,7 +129,18 @@ export function pathSummary(
   label: (path: string) => string | undefined = () => undefined,
   limit = 3,
 ): string {
-  if (paths.length === 0) return '—';
+  const { text, more } = pathParts(paths, label, limit);
+  return more > 0 ? `${text} · ${more} more` : text;
+}
+
+/** `pathSummary`'s two parts, for a page that shows the rest on a click: the objects named, and how many
+ * files it leaves out. */
+export function pathParts(
+  paths: string[],
+  label: (path: string) => string | undefined = () => undefined,
+  limit = 3,
+): { text: string; more: number } {
+  if (paths.length === 0) return { text: '—', more: 0 };
   const entries: { text: string; files: number }[] = [];
   let pipelines: { text: string; files: number } | null = null;
   for (const path of paths) {
@@ -146,6 +157,5 @@ export function pathSummary(
   }
   const shown = entries.slice(0, limit);
   const rest = entries.slice(limit).reduce((n, e) => n + e.files, 0);
-  const text = shown.map((e) => e.text).join(' · ');
-  return rest > 0 ? `${text} · ${rest} more` : text;
+  return { text: shown.map((e) => e.text).join(' · '), more: rest };
 }

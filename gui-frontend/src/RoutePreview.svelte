@@ -8,6 +8,7 @@
   delivery rules chose, and a document is what would have been sent.
 -->
 <script lang="ts">
+  import ShowAll from './ShowAll.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import { count } from './time';
@@ -43,6 +44,8 @@
   let error = $state('');
   /** The destination whose documents are open, by id. */
   let openDestination = $state<number | null>(null);
+  /** Whether the open destination shows every document, not the first fifty. */
+  let allDocuments = $state(false);
 
   async function loadSamples() {
     try {
@@ -189,7 +192,10 @@
           type="button"
           class="tile"
           class:open={openDestination === d.id}
-          onclick={() => (openDestination = openDestination === d.id ? null : d.id)}
+          onclick={() => {
+            openDestination = openDestination === d.id ? null : d.id;
+            allDocuments = false;
+          }}
         >
           <span class="count">{d.documents.length}</span>
           <span class="name mono">{d.name}</span>
@@ -220,11 +226,17 @@
               >{count(open.documents.length, 'document')}, as they would be sent</span
             >
           </div>
-          {#each open.documents.slice(0, 50) as doc}
+          {#each allDocuments ? open.documents : open.documents.slice(0, 50) as doc}
             <div class="doc mono">{doc}</div>
           {/each}
-          {#if open.documents.length > 50}
-            <div class="doc dim">{open.documents.length - 50} more</div>
+          {#if !allDocuments && open.documents.length > 50}
+            <div class="doc dim">
+              <ShowAll
+                more={open.documents.length - 50}
+                what="document"
+                onshowall={() => (allDocuments = true)}
+              />
+            </div>
           {/if}
         </div>
       {/if}

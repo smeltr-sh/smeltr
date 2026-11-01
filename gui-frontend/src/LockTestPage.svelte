@@ -10,6 +10,7 @@
   review diff holds only what really changed.
 -->
 <script lang="ts">
+  import ShowAll from './ShowAll.svelte';
   import { bareError, errors, reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import SectionShell from './SectionShell.svelte';
@@ -75,6 +76,9 @@
   let conflict = $state<SaveConflict | null>(null);
 
   const SHOWN = 5;
+  /** Whoever asked to see every sample record, or every expected row, not the first few. */
+  let allRecords = $state(false);
+  let allExpected = $state(false);
 
   /** A route preview flattened into what `expected` holds for an end-to-end test: per record, per matched
    * route, per document, packed with where it went (`endToEndDocument`) -- the same shape locking and a
@@ -287,11 +291,17 @@
           <span class="mono dim">{count(sampleRecords.length, 'row')}</span>
         </div>
         <div class="rows">
-          {#each sampleRecords.slice(0, SHOWN) as line}
+          {#each allRecords ? sampleRecords : sampleRecords.slice(0, SHOWN) as line}
             <div class="mono line">{short(line)}</div>
           {/each}
-          {#if sampleRecords.length > SHOWN}
-            <div class="mono dim line">{sampleRecords.length - SHOWN} more</div>
+          {#if !allRecords && sampleRecords.length > SHOWN}
+            <div class="dim line">
+              <ShowAll
+                more={sampleRecords.length - SHOWN}
+                what="record"
+                onshowall={() => (allRecords = true)}
+              />
+            </div>
           {/if}
         </div>
       </div>
@@ -309,13 +319,13 @@
         </div>
         <div class="rows">
           {#if pipeline}
-            {#each expected.slice(0, SHOWN) as doc}
+            {#each allExpected ? expected : expected.slice(0, SHOWN) as doc}
               <div class="mono line" class:dim={doc === null}>
                 {doc === null ? 'dropped' : short(JSON.stringify(doc))}
               </div>
             {/each}
           {:else}
-            {#each expected.slice(0, SHOWN) as entry}
+            {#each allExpected ? expected : expected.slice(0, SHOWN) as entry}
               {@const e = routed(entry)}
               <div class="e2e-entry">
                 <div class="mono line">{short(JSON.stringify(e.document))}</div>
@@ -325,8 +335,14 @@
               </div>
             {/each}
           {/if}
-          {#if expected.length > SHOWN}
-            <div class="mono dim line">{expected.length - SHOWN} more</div>
+          {#if !allExpected && expected.length > SHOWN}
+            <div class="dim line">
+              <ShowAll
+                more={expected.length - SHOWN}
+                what={pipeline ? 'row' : 'document'}
+                onshowall={() => (allExpected = true)}
+              />
+            </div>
           {/if}
         </div>
       </div>
