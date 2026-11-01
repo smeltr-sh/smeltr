@@ -53,22 +53,38 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("IP", r"(?:%{IPV4}|%{IPV6})"),
     (
         "HOSTNAME",
-        r"\b[0-9A-Za-z](?:[0-9A-Za-z-]{0,62}[0-9A-Za-z])?(?:\.[0-9A-Za-z](?:[0-9A-Za-z-]{0,62}[0-9A-Za-z])?)*\b",
+        r"\b[0-9A-Za-z_](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z_])?(?:\.[0-9A-Za-z_](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z_])?)*\b\.?",
     ),
     // IP first, as Logstash has it: HOSTNAME also takes a dotted quad, but would stop an IPv6 address at its first `:`.
     ("IPORHOST", r"(?:%{IP}|%{HOSTNAME})"),
-    ("USERNAME", r"[a-zA-Z0-9._-]+"),
+    // A Windows account too: `DOMAIN\user`, `user@domain` and a machine account's `HOST$`.
+    ("USERNAME", r"[a-zA-Z0-9._\\@$-]+"),
+    // A Windows GUID in braces, and the bare 32 digits some logs write.
     (
         "UUID",
-        r"[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}",
+        concat!(
+            r"(?:\{[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}|",
+            r"[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}|",
+            r"\b[A-Fa-f0-9]{32}\b)",
+        ),
     ),
-    ("MAC", r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"),
+    // Colons, dashes (Windows), dotted quads (Cisco), two halves (HP) or none (RADIUS, DHCP), longest first.
+    (
+        "MAC",
+        concat!(
+            r"(?:(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}|(?:[0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}|",
+            r"(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}|[0-9A-Fa-f]{6}-[0-9A-Fa-f]{6}|\b[0-9A-Fa-f]{12}\b)",
+        ),
+    ),
     ("DATA", r".*?"),
     ("GREEDYDATA", r".*"),
-    ("QUOTEDSTRING", r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"#),
+    (
+        "QUOTEDSTRING",
+        r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)"#,
+    ),
     (
         "LOGLEVEL",
-        r"(?i)(?:trace|debug|info|notice|warn(?:ing)?|err(?:or)?|crit(?:ical)?|fatal|severe|emerg(?:ency)?|alert)",
+        r"(?i)(?:trace|debug|dbg|info(?:rmation)?|inf|notice|warn(?:ing)?|wrn|err(?:or)?|crit(?:ical)?|fatal|severe|emerg(?:ency)?|alert|panic|verbose|fine(?:r|st)?)",
     ),
     (
         "MONTH",
@@ -83,14 +99,14 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("TIME", r"%{HOUR}:%{MINUTE}(?::%{SECOND})?"),
     (
         "TIMESTAMP_ISO8601",
-        r"%{YEAR}-%{MONTHNUM}-%{MONTHDAY}[T ]%{TIME}(?:Z|[+-]%{HOUR}:?%{MINUTE})?",
+        r"%{YEAR}-%{MONTHNUM}-%{MONTHDAY}[T ]%{HOUR}:?%{MINUTE}(?::?%{SECOND})?(?:Z|[+-]%{HOUR}:?%{MINUTE})?",
     ),
     ("HTTPDATE", r"%{MONTHDAY}/%{MONTH}/%{YEAR}:%{TIME} %{INT}"),
     ("SYSLOGTIMESTAMP", r"%{MONTH} +%{MONTHDAY} %{TIME}"),
     ("SYSLOGHOST", r"%{IPORHOST}"),
     ("URIPROTO", r"[A-Za-z][A-Za-z0-9+.-]*"),
-    ("URIHOST", r"(?:%{IPV4}|%{HOSTNAME})(?::%{POSINT})?"),
-    ("URIPATH", r#"[A-Za-z0-9$.+!*'(){},~:;=@#%_/-]*"#),
+    ("URIHOST", r"(?:%{IPV4}|\[%{IPV6}\]|%{HOSTNAME})(?::%{POSINT})?"),
+    ("URIPATH", r#"[A-Za-z0-9$.+!*'(){},~:;=@#%&\[\]|_/-]*"#),
     ("URIPATHPARAM", r"%{URIPATH}(?:\?\S*)?"),
     // Whole lines, each naming its fields as the Elastic Common Schema does, so a field nests where its name has dots.
     // A BSD syslog line (RFC 3164) as a relay or a file writes it, the PRI and the tag optional, its timestamp the
@@ -401,7 +417,7 @@ mod tests {
     }
 
     /// `pattern` compiled the way a grok parser compiles it.
-    fn matcher(pattern: &str) -> Matcher {
+    pub(super) fn matcher(pattern: &str) -> Matcher {
         matcher_with(pattern, &[])
     }
 
@@ -805,8 +821,11 @@ mod tests {
                 "a.b.example.com",
                 "1.2.3.4",
                 "xn--bcher-kva.example",
+                "a_b",
+                "_ldap._tcp.example.com",
+                "example.com.",
             ],
-            &["", "-web", "web-", "a..b", "a_b", "a b", ".a", "a.b."],
+            &["", "-web", "web-", "a..b", "a b", ".a", "a.b.."],
         ),
         (
             "IPORHOST",
@@ -816,30 +835,46 @@ mod tests {
                 "fe80::1%eth0",
                 "localhost",
                 "a.b.example.com",
+                "build_01.example.com",
             ],
-            &["", "-web", "a_b", "a b", "10.1.2.3:443", "a.b."],
+            &["", "-web", "a b", "10.1.2.3:443"],
         ),
-        ("USERNAME", &["alice", "a.b_c-d", "42"], &["", "a b", "a@b", "a/b"]),
+        (
+            "USERNAME",
+            &["alice", "a.b_c-d", "42", r"CORP\jdoe", "jdoe@corp.com", "WS01$"],
+            &["", "a b", "a/b", "a:b"],
+        ),
         (
             "UUID",
             &[
                 "123e4567-e89b-12d3-a456-426614174000",
                 "ABCDEF01-2345-6789-ABCD-EF0123456789",
+                "{123e4567-e89b-12d3-a456-426614174000}",
+                "123e4567e89b12d3a456426614174000",
             ],
             &[
                 "",
-                "123e4567e89b12d3a456426614174000",
+                "{123e4567-e89b-12d3-a456-426614174000",
+                "123e4567e89b12d3a45642661417400",
                 "123e4567-e89b-12d3-a456-42661417400",
                 "g23e4567-e89b-12d3-a456-426614174000",
             ],
         ),
         (
             "MAC",
-            &["00:1a:2B:3c:4D:5e", "ff:ff:ff:ff:ff:ff"],
+            &[
+                "00:1a:2B:3c:4D:5e",
+                "ff:ff:ff:ff:ff:ff",
+                "00-1a-2b-3c-4d-5e",
+                "001a.2b3c.4d5e",
+                "001a2b-3c4d5e",
+                "001a2b3c4d5e",
+            ],
             &[
                 "",
                 "00:1a:2b:3c:4d",
-                "00-1a-2b-3c-4d-5e",
+                "00:1a-2b:3c-4d:5e",
+                "001a2b3c4d5",
                 "00:1a:2b:3c:4d:5g",
                 "0:1a:2b:3c:4d:5e",
             ],
@@ -849,13 +884,30 @@ mod tests {
         ("GREEDYDATA", &["", "anything at all", "a\nb"], &[]),
         (
             "QUOTEDSTRING",
-            &[r#""""#, r#""a b""#, r#""say \"hi\"""#, "'single'", r"'it\'s'"],
+            &[r#""""#, r#""a b""#, r#""say \"hi\"""#, "'single'", r"'it\'s'", "`back`"],
             &["", "unquoted", r#""open"#, r#""a" b""#, r#""a'"#, r#""bad \"#],
         ),
         (
             "LOGLEVEL",
-            &["info", "WARN", "warning", "Error", "err", "CRITICAL", "emerg", "trace"],
-            &["", "information", "warn!", "verbose"],
+            &[
+                "info",
+                "WARN",
+                "warning",
+                "Error",
+                "err",
+                "CRITICAL",
+                "emerg",
+                "trace",
+                "Information",
+                "inf",
+                "verbose",
+                "panic",
+                "dbg",
+                "wrn",
+                "fine",
+                "FINEST",
+            ],
+            &["", "warn!", "informational"],
         ),
         (
             "MONTH",
@@ -889,6 +941,8 @@ mod tests {
                 "2026-10-03T01:58:18Z",
                 "2026-10-03T01:58:18+05:30",
                 "2026-10-03T01:58:18-0800",
+                "2026-10-03T0158",
+                "2026-10-03T015818Z",
             ],
             &[
                 "",
@@ -915,8 +969,8 @@ mod tests {
         ),
         (
             "SYSLOGHOST",
-            &["web-01", "10.1.2.3", "::1"],
-            &["", "web 01", "web_01", "-web"],
+            &["web-01", "web_01", "10.1.2.3", "::1"],
+            &["", "web 01", "-web"],
         ),
         (
             "URIPROTO",
@@ -925,12 +979,26 @@ mod tests {
         ),
         (
             "URIHOST",
-            &["example.com", "example.com:8080", "10.1.2.3", "10.1.2.3:443"],
-            &["", "example.com:", "example.com:0", "example.com:port", "a b"],
+            &[
+                "example.com",
+                "example.com:8080",
+                "10.1.2.3",
+                "10.1.2.3:443",
+                "[2001:db8::1]",
+                "[2001:db8::1]:8443",
+            ],
+            &[
+                "",
+                "example.com:",
+                "example.com:0",
+                "example.com:port",
+                "a b",
+                "[2001:db8::1",
+            ],
         ),
         (
             "URIPATH",
-            &["", "/", "/a/b.html", "/a%20b/~c;d=e"],
+            &["", "/", "/a/b.html", "/a%20b/~c;d=e", "/a&b", "/a[0]|b"],
             &["a b", "/a?b", "/a\"b", "/a<b>"],
         ),
         (
@@ -1069,31 +1137,84 @@ mod tests {
 }
 
 /// The GUI's grok autocomplete and Grok patterns page (`gui-frontend/src/grokPatterns.ts`) carry a hand-written copy
-/// of `BUILTINS`, with a use and an example for each and the definition last; this keeps its names and definitions
-/// equal to the engine's.
+/// of `BUILTINS`, each a `builtin(name, description, matches, misses, regex)` with values it takes and refuses; this
+/// keeps its names and regexes equal to the engine's, and its values true of them.
 #[cfg(test)]
 mod gui_grok_sync {
-    #[test]
-    fn the_gui_names_every_builtin() {
-        let source = include_str!("../../gui-frontend/src/grokPatterns.ts");
-        let re = regex::Regex::new(r#"name:\s*'([A-Z0-9_]+)'"#).unwrap();
-        let gui: std::collections::BTreeSet<&str> =
-            re.captures_iter(source).map(|c| c.get(1).unwrap().as_str()).collect();
-        let engine: std::collections::BTreeSet<&str> = super::BUILTINS.iter().map(|(n, _)| *n).collect();
-        assert_eq!(gui, engine, "grokPatterns.ts's names differ from BUILTINS");
+    use super::tests::matcher;
+
+    /// A string literal or a list of them, as an argument of `builtin(...)`.
+    enum Arg {
+        Text(String),
+        List(Vec<String>),
     }
 
-    /// Each definition is quoted as a TypeScript string in either quote writes it.
-    #[test]
-    fn the_gui_quotes_every_builtin_definition() {
-        let source = include_str!("../../gui-frontend/src/grokPatterns.ts");
-        for (name, def) in super::BUILTINS {
-            let escaped = def.replace('\\', r"\\");
-            let in_quote = |q: char| format!("Regex: `{}`{q},", escaped.replace(q, &format!("\\{q}")));
-            assert!(
-                source.contains(&in_quote('\'')) || source.contains(&in_quote('"')),
-                "grokPatterns.ts does not quote {name}'s definition as BUILTINS has it"
-            );
+    /// Each `builtin(...)` call's arguments. Only string literals and lists of them are read: the file holds no others.
+    fn builtins(source: &str) -> Vec<Vec<Arg>> {
+        let mut calls = Vec::new();
+        for (at, _) in source.match_indices("\n  builtin(") {
+            let mut chars = source[at + "\n  builtin(".len()..].chars();
+            let (mut args, mut list): (Vec<Arg>, Option<Vec<String>>) = (Vec::new(), None);
+            while let Some(c) = chars.next() {
+                match c {
+                    '\'' | '"' => {
+                        let mut text = String::new();
+                        while let Some(d) = chars.next() {
+                            match d {
+                                '\\' => text.push(chars.next().unwrap()),
+                                d if d == c => break,
+                                d => text.push(d),
+                            }
+                        }
+                        match &mut list {
+                            Some(l) => l.push(text),
+                            None => args.push(Arg::Text(text)),
+                        }
+                    }
+                    '[' => list = Some(Vec::new()),
+                    ']' => args.push(Arg::List(list.take().unwrap())),
+                    ')' => break,
+                    _ => {}
+                }
+            }
+            calls.push(args);
         }
+        calls
+    }
+
+    #[test]
+    fn the_gui_carries_every_builtin_with_its_regex_and_values_it_takes_and_refuses() {
+        let calls = builtins(include_str!("../../gui-frontend/src/grokPatterns.ts"));
+        let mut named = std::collections::BTreeSet::new();
+        for call in &calls {
+            let [
+                Arg::Text(name),
+                Arg::Text(_),
+                Arg::List(takes),
+                Arg::List(refuses),
+                Arg::Text(regex),
+            ] = &call[..]
+            else {
+                panic!("a builtin(...) in grokPatterns.ts is not (name, description, matches, misses, regex)");
+            };
+            let def = (super::BUILTINS.iter().find(|(n, _)| n == name).map(|(_, d)| *d))
+                .unwrap_or_else(|| panic!("grokPatterns.ts names {name}, which BUILTINS lacks"));
+            assert_eq!(regex, def, "grokPatterns.ts's regex for {name}");
+            let m = matcher(&format!("^%{{{name}:v}}$"));
+            for text in takes {
+                let got = m.match_row(text);
+                assert_eq!(
+                    got.as_ref().and_then(|r| r.name("v")),
+                    Some(text.as_str()),
+                    "{name} takes {text:?}"
+                );
+            }
+            for text in refuses {
+                assert!(m.match_row(text).is_none(), "{name} refuses {text:?}");
+            }
+            named.insert(name.as_str());
+        }
+        let engine: std::collections::BTreeSet<&str> = super::BUILTINS.iter().map(|(n, _)| *n).collect();
+        assert_eq!(named, engine, "grokPatterns.ts's names differ from BUILTINS");
     }
 }

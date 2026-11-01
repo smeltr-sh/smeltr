@@ -621,6 +621,33 @@
                   >{:else}{p.text}{/if}{/each}</Clamped
             >
           </span>
+          {#if fn.regex !== undefined}
+            <span class="fn-facts">
+              {#if fn.matches?.length}
+                <span class="fact-label">Matches</span>
+                <span class="fact"
+                  >{#each fn.matches as m, j (j)}{#if j > 0}{', '}{/if}<code>{m}</code>{/each}</span
+                >
+              {/if}
+              {#if fn.misses?.length}
+                <span class="fact-label">Doesn't match</span>
+                <span class="fact"
+                  >{#each fn.misses as m, j (j)}{#if j > 0}{', '}{/if}<code>{m}</code>{/each}</span
+                >
+              {/if}
+              <span class="fact-label">Regex</span>
+              <span class="fact">
+                <Clamped
+                  text={fn.regex}
+                  open={openDescription === `${fn.signature} regex`}
+                  ontoggle={() =>
+                    (openDescription =
+                      openDescription === `${fn.signature} regex` ? null : `${fn.signature} regex`)}
+                  label={`${fn.signature} regex`}><code>{fn.regex}</code></Clamped
+                >
+              </span>
+            </span>
+          {/if}
         </li>
       {/each}
     </ul>
@@ -944,8 +971,31 @@
     color: var(--warn);
   }
 
-  .fn-desc code {
+  .fn-desc code,
+  .fn-facts code {
     font-family: var(--mono);
     color: var(--ink);
+  }
+
+  /* A grok pattern's values and regex, a row each under its description, labels as wide as the widest. */
+  .fn-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    column-gap: 0.75rem;
+    row-gap: 0.2rem;
+    margin-top: 0.3rem;
+    font-size: var(--text-micro);
+    color: var(--dim);
+  }
+
+  .fact {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* A value wraps whole to the next line, and breaks only where it is wider than the line. */
+  .fact > code {
+    display: inline-block;
+    max-width: 100%;
   }
 </style>

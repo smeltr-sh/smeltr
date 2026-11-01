@@ -28,7 +28,7 @@
   { "name": "IP", "matches": "An IPv4 address, else an IPv6 one.", "example": "2001:db8::1" },
   {
     "name": "HOSTNAME",
-    "matches": "A dotted host name; each label is letters, digits and inner `-`.",
+    "matches": "A dotted host name; each label is letters, digits, `_` and inner `-`. It may end with `.`.",
     "example": "api.example.com"
   },
   {
@@ -36,15 +36,19 @@
     "matches": "An IP address, else a host name.",
     "example": "web-01.example.com"
   },
-  { "name": "USERNAME", "matches": "Letters, digits, `.`, `_` and `-`.", "example": "j.doe-2" },
+  {
+    "name": "USERNAME",
+    "matches": "Letters, digits, `.`, `_` and `-`, or a Windows account written with `\\`, `@` or `$`.",
+    "example": "j.doe-2"
+  },
   {
     "name": "UUID",
-    "matches": "A UUID in its 8-4-4-4-12 hexadecimal form.",
+    "matches": "A UUID in its 8-4-4-4-12 hexadecimal form, in braces or not, or as 32 hexadecimal digits.",
     "example": "123e4567-e89b-12d3-a456-426614174000"
   },
   {
     "name": "MAC",
-    "matches": "A MAC address as six colon-separated hexadecimal pairs.",
+    "matches": "A MAC address: pairs split by colons or dashes, groups of four split by dots, two halves split by a dash, or no separator.",
     "example": "00:1A:2b:3C:4d:5E"
   },
   {
@@ -59,12 +63,12 @@
   },
   {
     "name": "QUOTEDSTRING",
-    "matches": "Text in double or single quotes, with backslash escapes; the quotes are part of the match.",
+    "matches": "Text in double, single or back quotes, with backslash escapes; the quotes are part of the match.",
     "example": "\"say \\\"hi\\\"\""
   },
   {
     "name": "LOGLEVEL",
-    "matches": "A log level name in any case: trace, debug, info, notice, warn, warning, err, error, crit, critical, fatal, severe, emerg, emergency, alert.",
+    "matches": "A log level name in any case: trace, debug, dbg, info, information, inf, notice, warn, warning, wrn, err, error, crit, critical, fatal, severe, emerg, emergency, alert, panic, verbose, fine, finer, finest.",
     "example": "WARNING"
   },
   {
@@ -97,7 +101,7 @@
   },
   {
     "name": "TIMESTAMP_ISO8601",
-    "matches": "`YEAR-MONTHNUM-MONTHDAY`, `T` or a space, then `TIME` and an optional `Z` or offset. Its parts take the widths of their own patterns, so `26-1-4T9:30` matches too.",
+    "matches": "`YEAR-MONTHNUM-MONTHDAY`, `T` or a space, then the time and an optional `Z` or offset. The time's colons are optional, and its parts take the widths of their own patterns, so `26-1-4T930` matches too.",
     "example": "2026-10-04T09:30:15.250+02:00"
   },
   {
@@ -118,12 +122,12 @@
   { "name": "URIPROTO", "matches": "A URI scheme.", "example": "https" },
   {
     "name": "URIHOST",
-    "matches": "An IPv4 address or host name, with an optional `:port`.",
+    "matches": "An IPv4 address, an IPv6 address in brackets, or a host name, with an optional `:port`.",
     "example": "example.com:8443"
   },
   {
     "name": "URIPATH",
-    "matches": "A run of ASCII letters, digits and `$.+!*'(){},~:;=@#%_/-`. It stops at `?` and at `&`.",
+    "matches": "A run of ASCII letters, digits and `$.+!*'(){},~:;=@#%&[]|_/-`. It stops at `?`.",
     "example": "/api/v1/users"
   },
   {
