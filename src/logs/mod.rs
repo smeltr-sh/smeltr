@@ -948,7 +948,7 @@ mod tests {
             "the same fault is not said again at once"
         );
         assert_eq!(relog.why(), Some("away"), "the fault stands while it is not said");
-        relog.logged = Some(std::time::Instant::now() - RELOG_EVERY);
+        relog.logged = std::time::Instant::now().checked_sub(RELOG_EVERY);
         assert_eq!(
             relog.fail_due("away".into()),
             Some("away"),
