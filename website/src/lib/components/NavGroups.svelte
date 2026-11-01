@@ -11,7 +11,7 @@
   /** The groups a reader folded or opened, by title. */
   let flipped = $state(new Set<string>());
   function isOpen(group: Group): boolean {
-    const starts = !group.closed || holds(group, page.url.pathname);
+    const starts = group.open || holds(group, page.url.pathname);
     return starts !== flipped.has(group.title);
   }
   function flip(group: Group) {

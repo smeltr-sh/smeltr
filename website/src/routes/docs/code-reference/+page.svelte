@@ -75,7 +75,7 @@
   <title>Language reference — smeltr</title>
   <meta
     name="description"
-    content="Every operator and function in smeltr's expression language, grouped by type with worked examples: naming a field, comparison and logic, conversion, numbers, sequences, strings, regular expressions, arrays, dates, durations and addresses."
+    content="Every operator and function in Smeltr's language, grouped by type with worked examples: naming a field, comparison and logic, conversion, numbers, sequences, strings, regular expressions, arrays, dates, durations and addresses."
   />
 </svelte:head>
 

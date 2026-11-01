@@ -100,16 +100,13 @@
       links: kinds.map(({ href, name }) => ({ href, title: name })),
     }));
   }
-  // The reference groups are long, so each starts closed.
   groups.push(
     {
       title: 'Pipeline steps',
-      closed: true,
       links: [{ href: '/docs/steps', title: 'Overview' }, ...stepPages],
     },
     {
       title: 'Sources',
-      closed: true,
       links: [
         { href: '/docs/sources', title: 'Overview' },
         ...categoryLinks(
@@ -120,7 +117,6 @@
     },
     {
       title: 'Destinations',
-      closed: true,
       links: [{ href: '/docs/destinations', title: 'Overview' }, ...categoryLinks(destinations)],
     },
   );

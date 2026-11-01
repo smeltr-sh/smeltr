@@ -34,7 +34,7 @@ export function downloadHref(release: Release): string {
   return release === latest ? '/get#download' : `${source}/releases/tag/v${release.version}`;
 }
 
-/** The rail's groups: one per major, newest open and older ones closed, a heading per minor over its releases. */
+/** The rail's groups: one per major, the newest open and older ones folded, a heading per minor over its releases. */
 export function railGroups(): Group[] {
   const majors = new Map<string, Map<string, Link[]>>();
   for (const r of releases) {
@@ -49,7 +49,7 @@ export function railGroups(): Group[] {
   }
   return [...majors].map(([major, minors], i) => ({
     title: `Smeltr ${major}`,
-    closed: i > 0,
+    open: i === 0,
     links: [...minors].map(([title, links]) => ({ title, links })),
   }));
 }
