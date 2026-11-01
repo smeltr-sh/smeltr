@@ -42,6 +42,7 @@
   import { formatDiffValue } from './diff';
   import InlineError from './InlineError.svelte';
   import { RECOMMENDED_NAMED } from './schemas';
+  import MoreButton from './MoreButton.svelte';
   import {
     countStates,
     fieldAt,
@@ -258,6 +259,8 @@
     }
     return out;
   });
+  /** The schemas whose recommended fields the reader asked to see all of. */
+  const lackingAll = new SvelteSet<string>();
 
   /** Every field the records hold, and every field the pipeline declares that none of them
    * do, which the Fields menu lists as held by none. A declared struct a record fills is its
@@ -936,15 +939,19 @@
                                 <p class="lacking" class:after={required.length > 0}>
                                   Recommended by {schema}:
                                 </p>
-                                {#each recommended.slice(0, RECOMMENDED_NAMED) as m (m.path)}
+                                {@const listed = lackingAll.has(schema)
+                                  ? recommended
+                                  : recommended.slice(0, RECOMMENDED_NAMED)}
+                                {#each listed as m (m.path)}
                                   <span class="mono lacking">{m.path}</span>
                                   <span class="mono lacking">{m.written_as}</span>
                                   <span class="lacking"><i>missing</i></span>
                                 {/each}
-                                {#if recommended.length > RECOMMENDED_NAMED}
-                                  <p class="lacking">
-                                    and {recommended.length - RECOMMENDED_NAMED} more
-                                  </p>
+                                {#if listed.length < recommended.length}
+                                  <MoreButton
+                                    count={recommended.length - listed.length}
+                                    onclick={() => lackingAll.add(schema)}
+                                  />
                                 {/if}
                               {/if}
                             </div>

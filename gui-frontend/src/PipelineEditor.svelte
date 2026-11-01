@@ -13,6 +13,9 @@
   import StateMark from './StateMark.svelte';
   import InlineError from './InlineError.svelte';
   import { tick, untrack } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
+  import MoreButton from './MoreButton.svelte';
+  import { RECOMMENDED_NAMED } from './schemas';
   import { opening } from './StepEditor.svelte';
   import { store, stored } from './stored';
   import StepList from './StepList.svelte';
@@ -675,6 +678,18 @@
   // the sample away from under whoever is fixing it. `result` still drives
   // the error itself -- this only decides what the grid below it shows.
   let lastGoodResult = $state<PreviewResult | null>(null);
+  /** The paths each schema recommends and the run's rows lack, by the schema's title: no warning, told. */
+  let recommendedBySchema = $derived.by(() => {
+    const out = new Map<string, string[]>();
+    if (!result?.ok) return out;
+    for (const m of result.missing ?? []) {
+      if (m.requirement === 'recommended')
+        out.set(m.schema, [...(out.get(m.schema) ?? []), m.path]);
+    }
+    return out;
+  });
+  /** The schemas whose recommended paths the author asked to see all of. */
+  const recommendedAll = new SvelteSet<string>();
   let running = $state(false);
   let autoRun = $state(true);
   let requestError = $state('');
@@ -1473,12 +1488,23 @@
           </div>
         {/if}
 
-        {#if result?.ok && result.recommended?.length}
+        {#if recommendedBySchema.size > 0}
           <div class="recommended" role="status">
-            {#each result.recommended as told (told)}
+            {#each recommendedBySchema as [schema, paths] (schema)}
+              {@const named = recommendedAll.has(schema)
+                ? paths
+                : paths.slice(0, RECOMMENDED_NAMED)}
               <div class="recommended-note">
                 <span aria-hidden="true">ⓘ</span>
-                <span>{told}</span>
+                <span
+                  >{schema} recommends {named
+                    .map((p) => `\`${p}\``)
+                    .join(', ')}{#if named.length < paths.length}{' '}and
+                    <MoreButton
+                      count={paths.length - named.length}
+                      onclick={() => recommendedAll.add(schema)}
+                    />{/if}; the rows lack {paths.length === 1 ? 'it' : 'them'}.</span
+                >
               </div>
             {/each}
           </div>
