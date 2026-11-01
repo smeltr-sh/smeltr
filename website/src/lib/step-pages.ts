@@ -1,5 +1,4 @@
 import { parse } from './json-text.ts';
-import { destinations, sources } from './connections.ts';
 
 /** The Pipeline reference pages, one per step type, in order of title. */
 export const stepPages = [
