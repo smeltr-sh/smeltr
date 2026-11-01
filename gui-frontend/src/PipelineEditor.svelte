@@ -851,8 +851,6 @@
         ownPipelines,
         ownLookupTables,
         ownGrokPatterns,
-        // The leader holds the rows to the branch's schemas: a standard's megabytes are not sent with every edit.
-        [],
         produces,
       ),
     );
@@ -926,7 +924,6 @@
           ownPipelines,
           ownLookupTables,
           ownGrokPatterns,
-          [],
           produces,
         ),
       ),

@@ -519,7 +519,6 @@ export function buildFileConfig(
   otherPipelines: RawPipelineDto[],
   lookupTables: unknown[],
   grokPatterns: unknown[] = [],
-  schemas: unknown[] = [],
   produces: string[] = [],
 ): unknown {
   const callerSteps = steps.map(stepToDto);
@@ -558,7 +557,8 @@ export function buildFileConfig(
     destinations: [],
     lookupTables,
     grokPatterns,
-    schemas,
+    // None: the leader holds the rows to the branch's schemas, and a standard's runs to megabytes.
+    schemas: [],
     pipelines: includedPipelines,
   };
 }

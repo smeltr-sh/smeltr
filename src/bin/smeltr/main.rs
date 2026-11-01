@@ -552,12 +552,9 @@ async fn import_schema(
     .await
 }
 
-/// Rewrites `req.config`, a group's own bundle, into that bundle merged with `shared/` at the commit `reading`
-/// resolved, and answers where each table in the merge resolves. `None` leaves `req` as it was: a config that does
-/// not parse is `run_preview`'s to report.
 /// `req.config` with each schema it names but does not declare taken from `reading`, the area as the branch holds
-/// it. An editor sends a schema only when it differs from the branch's: a standard's runs to megabytes, and sending it
-/// with every preview stalls the page that builds the request. One the config declares wins over the branch's.
+/// it. The pipeline editor sends none: a standard's runs to megabytes, and sending it with every preview stalls the
+/// page that builds the request. A schema the config declares wins over the branch's.
 fn with_branch_schemas(req: &mut PreviewRequest, reading: &config_api::Reading) {
     let Ok(mut file) = serde_json::from_str::<config_file::FileConfig>(&req.config) else {
         return;
@@ -579,6 +576,9 @@ fn with_branch_schemas(req: &mut PreviewRequest, reading: &config_api::Reading) 
     }
 }
 
+/// Rewrites `req.config`, a group's own bundle, into that bundle merged with `shared/` at the commit `reading`
+/// resolved, and answers where each table in the merge resolves. `None` leaves `req` as it was: a config that does
+/// not parse is `run_preview`'s to report.
 fn merge_shared_into(req: &mut PreviewRequest, reading: &config_api::Reading) -> Option<config_file::DeclaredAt> {
     let merged = merged_with_shared(&req.config, reading)?;
     // Shared's pipelines come first in the merge, so the default -- the first pipeline -- is pinned to the group's
