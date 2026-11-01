@@ -403,6 +403,7 @@ impl LoadedSystem {
         let Some(pipeline) = self.pipeline_ids.iter().position(|p| p == id) else {
             return Vec::new();
         };
+        let named = (self.pipelines.iter().find(|p| p.id == pipeline)).map_or(id, |p| p.name.as_str());
         let mut out: Vec<SchemaFinding> = Vec::new();
         let delivered = (self.topology.routes.iter())
             .filter(|route| route.pipeline == pipeline)
@@ -420,7 +421,7 @@ impl LoadedSystem {
                 pipeline: id.to_string(),
                 step: None,
                 message: format!(
-                    "Pipeline {id} produces no schema that destination {name} accepts ({}).",
+                    "Pipeline {named} produces no schema that destination {name} accepts ({}).",
                     titles.join(", ")
                 ),
                 breaks: true,
