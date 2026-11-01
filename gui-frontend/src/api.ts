@@ -1563,6 +1563,25 @@ export function configAt(onBranch: string, inScope: string, at?: string): Promis
   return apiJson(`${inArea('', inScope)}?${q}`);
 }
 
+/** Pipeline `id` in one scope of one branch, at commit `at`, read as `configAt` reads the whole bundle. Null where
+ * that commit has no such pipeline. A standard's schemas run to megabytes, so a check of one pipeline reads it alone. */
+export async function pipelineAt(
+  onBranch: string,
+  inScope: string,
+  id: string,
+  at: string,
+): Promise<PipelineDto | null> {
+  const q = new URLSearchParams({ branch: onBranch, at });
+  const res = await apiJson<GetPipelineResult>(
+    `${inArea(`/pipelines/${encodeURIComponent(id)}`, inScope)}?${q}`,
+    undefined,
+    'quiet',
+  );
+  // A commit read with the pipeline missing answers with that commit; a read that failed answers with none.
+  if (!res.ok && !res.commit) throw new Error(res.errors.map((e) => e.message).join('; '));
+  return res.pipeline;
+}
+
 /** `shared/`'s bundle on the current branch, which a group's pages show beside the group's own, since a group
  * runs the two merged. Null in `shared/` itself, which draws on nothing, and when it cannot be read. */
 export async function sharedConfig(): Promise<FileConfigDto | null> {

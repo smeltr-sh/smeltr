@@ -1541,10 +1541,15 @@ pub struct Pipeline {
 
 pub async fn get_pipeline(
     AxPath((area, id)): AxPath<(String, String)>,
-    Query(q): Query<BranchQuery>,
+    Query(q): Query<ConfigQuery>,
 ) -> Envelope<Pipeline> {
-    let branch = q.name().to_string();
-    let reading = match blocking(move || open_for_read(&branch, &area)).await {
+    blocking_answer(move || pipeline_in(&leader_data_dir(), &area, &id, &q)).await
+}
+
+/// Pipeline `id` as `q` reads the area. Missing, it answers not found with the commit read, which a read that failed
+/// does not: a caller comparing two commits tells "not there yet" from "could not look".
+fn pipeline_in(data_dir: &Path, area: &str, id: &str, q: &ConfigQuery) -> Envelope<Pipeline> {
+    let reading = match q.open_in(data_dir, area) {
         Ok(reading) => reading,
         Err(e) => return Envelope::refused(e),
     };
@@ -4449,14 +4454,18 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    fn config_at(data: &Path, branch: &str, at: Option<&str>) -> Envelope<Config> {
-        let q = ConfigQuery {
+    /// A read of `branch`, at `at` where one is named.
+    fn read_of(branch: &str, at: Option<&str>) -> ConfigQuery {
+        ConfigQuery {
             branch: BranchQuery {
                 branch: Some(branch.to_string()),
             },
             at: at.map(str::to_string),
-        };
-        config_in(data, config_file::SHARED_DIR, &q)
+        }
+    }
+
+    fn config_at(data: &Path, branch: &str, at: Option<&str>) -> Envelope<Config> {
+        config_in(data, config_file::SHARED_DIR, &read_of(branch, at))
     }
 
     /// A read at a commit is the scope as that commit holds it, for any commit of the branch or of `main`.
@@ -4489,6 +4498,49 @@ mod tests {
                 "{refused}"
             );
         }
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// One pipeline reads at a commit as the whole area does, and one the commit lacks is not found at that commit.
+    #[test]
+    fn a_pipeline_read_at_a_commit_is_that_commit() {
+        let data = main_with_routes("pipeline-at");
+        let repo = git::repo_path(&data);
+        let left_at = git::main_head(&repo).unwrap();
+        save_work(&data, Touches::OnlyPipelines, |file| {
+            file.pipelines = vec![
+                pipeline_p(Some("1")),
+                PipelineDto {
+                    id: "q".to_string(),
+                    ..pipeline_p(None)
+                },
+            ]
+        });
+        let read = |id: &str, at: Option<&str>| pipeline_in(&data, config_file::SHARED_DIR, id, &read_of("work", at));
+
+        let tip = read("p", None);
+        assert_eq!(tip.commit, git::branch_tip(&repo, "work"));
+        assert_eq!(as_json(&tip.body.pipeline), as_json(&Some(pipeline_p(Some("1")))));
+        let base = read("p", Some(&left_at));
+        assert_eq!(base.commit.as_deref(), Some(left_at.as_str()));
+        assert_eq!(
+            as_json(&base.body.pipeline),
+            as_json(&Some(pipeline_p(None))),
+            "as the branch started"
+        );
+
+        let not_yet = read("q", Some(&left_at));
+        assert!(!not_yet.succeeded() && not_yet.body.pipeline.is_none());
+        assert_eq!(
+            not_yet.commit.as_deref(),
+            Some(left_at.as_str()),
+            "missing at a commit it read"
+        );
+        let refused = read("p", Some("main"));
+        assert!(
+            !refused.succeeded() && refused.commit.is_none(),
+            "a read that failed names no commit"
+        );
         std::fs::remove_dir_all(&data).ok();
     }
 
