@@ -944,6 +944,11 @@ mod tests {
             .map(|e| e.unwrap().path())
             .collect();
         files.push(root.join("src/leader/mod.rs"));
+        // A module `main.rs` declares only for its tests is a test, whatever it registers.
+        let main = std::fs::read_to_string(root.join("src/bin/smeltr/main.rs")).unwrap();
+        let declared = regex::Regex::new(r"#\[cfg\(test\)\]\s*mod (\w+);").unwrap();
+        let tests: Vec<_> = declared.captures_iter(&main).map(|c| format!("{}.rs", &c[1])).collect();
+        files.retain(|f| !tests.iter().any(|t| f.file_name().is_some_and(|n| n == t.as_str())));
         let mut found = Vec::new();
         for file in files.iter().filter(|f| f.extension().is_some_and(|e| e == "rs")) {
             // A test module's routes serve only its tests. rustfmt closes the module with a `}` alone on a line.
