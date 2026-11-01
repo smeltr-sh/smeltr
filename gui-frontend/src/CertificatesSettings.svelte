@@ -343,12 +343,18 @@
   }
 
   const ISSUED = 'this leader is serving the certificate the authority issued';
+  /** An order is running. The leader answers once the authority has issued or given up (`leader::acme`'s
+   * `ORDER_TIMEOUT` and `DNS_ORDER_TIMEOUT`). */
+  let ordering = $state(false);
+  const orderWait = $derived(`This can take up to ${challenge === 'dns-01' ? 15 : 2} minutes.`);
 
   /** Orders a certificate with what the form says, and serves it. */
   async function order() {
     if (!(await saveAcme())) return;
     message = '';
+    ordering = true;
     await act(() => orderAcme(), switched(ISSUED));
+    ordering = false;
     // What the order left, however it went: the failure it recorded, or when the next renewal is due.
     getAcme().then(showAcme).catch(reported);
   }
@@ -904,7 +910,7 @@
                 'the names above'} must reach this leader.
             </p>
           {/if}
-          {@render status(formError, message)}
+          {@render status(formError, ordering ? orderWait : message)}
           <div class="buttons">
             {#if inForce === 'acme'}
               <button
@@ -916,7 +922,7 @@
                 Save
               </button>
               <button type="button" disabled={busy || !orderable} onclick={() => order()}>
-                Renew now
+                {ordering ? 'Renewing…' : 'Renew now'}
               </button>
             {:else}
               <button
@@ -925,7 +931,7 @@
                 disabled={busy || !orderable || !agreed}
                 onclick={() => order()}
               >
-                Get certificate
+                {ordering ? 'Getting certificate…' : 'Get certificate'}
               </button>
             {/if}
           </div>

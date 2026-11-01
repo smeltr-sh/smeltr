@@ -402,6 +402,24 @@ describe('ACME', () => {
     await vi.waitFor(() => expect(posts).toEqual(['/api/settings/tls/acme/order']));
   });
 
+  it('says an order is running until the leader answers', async () => {
+    await show(IN_FORCE, 'Save', { ...ORDERED, challenge: 'dns-01' });
+    const answered = vi.mocked(fetch).getMockImplementation()!;
+    let answer!: () => void;
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (!String(url).endsWith('/order')) return answered(url as string, init);
+      posts.push(String(url));
+      await new Promise<void>((r) => (answer = r));
+      return json(IN_FORCE);
+    });
+    button('Renew now')!.click();
+    await vi.waitFor(() => expect(button('Renewing…')?.disabled).toBe(true));
+    expect(target.textContent).toContain('This can take up to 15 minutes.');
+    answer();
+    await vi.waitFor(() => expect(button('Renew now')?.disabled).toBe(false));
+    expect(target.textContent).not.toContain('This can take up to');
+  });
+
   it('says what the last order failed with', async () => {
     await show(IN_FORCE, 'Save', {
       ...ORDERED,
