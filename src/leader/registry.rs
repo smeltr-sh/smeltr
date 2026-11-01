@@ -500,7 +500,11 @@ impl Registry {
     /// heartbeat").
     pub fn observe_facts(&self, active: &HashSet<FactKey>, now_ms: i64) -> HashMap<FactKey, i64> {
         let mut clock = self.fact_clock.lock().unwrap();
-        let removed: Vec<FactKey> = clock.keys().filter(|k| !active.contains(k)).cloned().collect();
+        let removed: Vec<(FactKey, i64)> = clock
+            .iter()
+            .filter(|(k, _)| !active.contains(k))
+            .map(|(k, start)| (k.clone(), *start))
+            .collect();
         clock.retain(|k, _| active.contains(k));
         let mut inserted: Vec<FactKey> = Vec::new();
         for k in active {
@@ -509,8 +513,34 @@ impl Registry {
                 inserted.push(k.clone());
             }
         }
+        // The one place every issue with a start time begins and ends, so the log has each one's history once
+        // the Issues page no longer shows it. `issue` marks the line as an issue's own, which the catalog's
+        // "worker logged warnings" entry leaves out (`warnings::recent_logs`): it would be the same issue twice.
+        for k in &inserted {
+            let it = super::warnings::logged_issue(&k.entry, &k.subject);
+            tracing::warn!(
+                target: "issues.began",
+                issue = it.issue,
+                group = it.group,
+                subject = it.subject,
+                commit = it.commit,
+                "an issue began"
+            );
+        }
+        for (k, start) in &removed {
+            let it = super::warnings::logged_issue(&k.entry, &k.subject);
+            tracing::info!(
+                target: "issues.cleared",
+                issue = it.issue,
+                group = it.group,
+                subject = it.subject,
+                commit = it.commit,
+                held_secs = (now_ms - start).max(0) / 1000,
+                "an issue cleared"
+            );
+        }
         if let Some(store) = &self.store {
-            let removed: Vec<(String, String)> = removed.into_iter().map(|k| (k.entry, k.subject)).collect();
+            let removed: Vec<(String, String)> = removed.into_iter().map(|(k, _)| (k.entry, k.subject)).collect();
             let inserted: Vec<(String, String)> = inserted.into_iter().map(|k| (k.entry, k.subject)).collect();
             if let Err(e) = store.sync_fact_clock(&removed, &inserted, now_ms) {
                 tracing::warn!(
@@ -954,6 +984,35 @@ mod tests {
             starts[&key], 9_000,
             "gone once, so this is a new occurrence, not the old one continuing"
         );
+    }
+
+    #[test]
+    fn an_issue_is_logged_when_it_begins_and_when_it_clears() {
+        let r = Registry::default();
+        let key = FactKey::new("source_blocked", r#"["prod","syslog"]"#);
+        let began = crate::logs::said(|| {
+            r.observe_facts(&HashSet::from([key.clone()]), 1_000);
+            // Still active: nothing new to say.
+            r.observe_facts(&HashSet::from([key.clone()]), 2_000);
+        });
+        assert_eq!(began.len(), 1, "{began:?}");
+        let (level, site, fields) = &began[0];
+        assert_eq!((*level, site.as_str()), (tracing::Level::WARN, "issues.began"));
+        let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(field("issue"), Some("sourceBlocked"));
+        assert_eq!(field("group"), Some("prod"));
+        assert_eq!(field("subject"), Some("syslog"));
+        assert_eq!(field("message"), Some("an issue began"));
+
+        let cleared = crate::logs::said(|| {
+            r.observe_facts(&HashSet::new(), 61_000);
+        });
+        assert_eq!(cleared.len(), 1, "{cleared:?}");
+        let (level, site, fields) = &cleared[0];
+        assert_eq!((*level, site.as_str()), (tracing::Level::INFO, "issues.cleared"));
+        let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(field("held_secs"), Some("60"));
+        assert_eq!(field("message"), Some("an issue cleared"));
     }
 
     #[test]
