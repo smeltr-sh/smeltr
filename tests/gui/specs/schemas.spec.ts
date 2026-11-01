@@ -50,7 +50,9 @@ test('a schema opens to its fields, and the search narrows them', async ({
   await expect(admin.getByRole('heading', { name: 'Schemas' })).toBeVisible();
   await admin.getByRole('button', { name: 'login fields' }).click();
   await expect(admin.getByText('Edit it with Edit JSON.')).toBeVisible();
-  await expect(admin.getByRole('cell', { name: /^time\*$/ })).toBeVisible();
+  await expect(admin.getByRole('combobox', { name: 'Requirement of time' })).toHaveValue(
+    'required',
+  );
   await expect(
     admin.getByRole('cell', { name: 'Milliseconds since the epoch.', exact: true }),
   ).toBeVisible();
@@ -279,10 +281,8 @@ test("a field's requirement is chosen on the Schemas page, and shared/'s schemas
     admin.getByRole('combobox', { name: `Requirement of ${field}`, exact: true });
   await expect(requirement('time')).toHaveValue('required');
   await expect(requirement('src_endpoint')).toHaveValue('recommended');
-  await expect(admin.getByRole('cell', { name: 'src_endpoint°', exact: true })).toBeVisible();
   await expect(requirement('user.name')).toHaveValue('optional');
   await requirement('user.name').selectOption('recommended');
-  await expect(admin.getByRole('cell', { name: 'user.name°', exact: true })).toBeVisible();
   await requirement('src_endpoint').selectOption('optional');
   await admin.screenshot({ path: 'results/schemas-requirement.png' });
 
@@ -303,7 +303,7 @@ test("a field's requirement is chosen on the Schemas page, and shared/'s schemas
   await admin.getByRole('button', { name: '▸ login' }).click();
   await expect(admin.getByRole('combobox', { name: /^Requirement of / })).toHaveCount(0);
   await expect(admin.getByRole('link', { name: 'Edit in shared/', exact: true })).toBeVisible();
-  await expect(admin.getByRole('cell', { name: 'recommended', exact: true })).toHaveCount(1);
+  await expect(admin.getByRole('cell', { name: '° recommended', exact: true })).toHaveCount(1);
   await admin.screenshot({ path: 'results/schemas-requirement-shared.png' });
 });
 
@@ -373,7 +373,7 @@ test("a JSON Schema added on the Schemas page is saved as the bundle's own", asy
   await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(JSON.stringify(schema));
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
-  await expect(admin.getByRole('cell', { name: /^id\*$/ })).toBeVisible();
+  await expect(admin.getByRole('combobox', { name: 'Requirement of id' })).toHaveValue('required');
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
@@ -491,7 +491,9 @@ test('a schema is imported by a pipeline of the bundle run over an uploaded file
   await dialog.getByRole('textbox', { name: 'line breaker' }).fill(ECS_LINE_BREAKER);
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
-  await expect(admin.getByRole('cell', { name: '@timestamp*', exact: true })).toBeVisible();
+  await expect(admin.getByRole('combobox', { name: 'Requirement of @timestamp' })).toHaveValue(
+    'required',
+  );
   await expect(
     admin.getByRole('cell', {
       name: 'Unique number allocated to the autonomous system.',
@@ -678,7 +680,9 @@ test('ECS comes in from ecs_flat.yml with its types, settings and examples', asy
   await expect(dialog.getByRole('heading', { name: /new schema from ECS$/ })).toBeVisible();
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
-  await expect(admin.getByRole('cell', { name: '@timestamp*', exact: true })).toBeVisible();
+  await expect(admin.getByRole('combobox', { name: 'Requirement of @timestamp' })).toHaveValue(
+    'required',
+  );
   await expect(admin.getByRole('cell', { name: 'Albert Einstein', exact: true })).toBeVisible();
   const field = await saved(admin, api, 'ecs');
   expect(field('ecs.version')?.requirement).toBe('required');

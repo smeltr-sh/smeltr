@@ -376,8 +376,7 @@
               hash="#/build/schemas"
               label="Edit in shared/"
             />.{:else if readOnly}Edit it with Edit JSON.{:else}Choose each field’s requirement
-            here, or edit it with Edit JSON.{/if}
-          <span class="required">*</span> required, ° recommended.</span
+            here, or edit it with Edit JSON.{/if}</span
         >
         <span class="grow"></span>
         <button type="button" onclick={() => void exported(id, 'json-schema')}
@@ -476,10 +475,6 @@
     align-items: center;
     margin-bottom: 0.5rem;
     font-size: var(--text-note);
-  }
-
-  .required {
-    color: var(--error);
   }
 
   input {

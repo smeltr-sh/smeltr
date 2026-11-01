@@ -26,17 +26,10 @@
   import Toggle from './Toggle.svelte';
   import type { DictionaryOut } from './api';
   import { producedSchemas } from './producedSchemas.svelte';
+  import RequirementMark from './RequirementMark.svelte';
   import Segmented from './Segmented.svelte';
   import ShowAll from './ShowAll.svelte';
-  import {
-    askedUnder,
-    fields as countFields,
-    firstOf,
-    fmt,
-    groupOf,
-    matching,
-    REQUIREMENT_MARK,
-  } from './schemaTree';
+  import { askedUnder, fields as countFields, firstOf, fmt, groupOf, matching } from './schemaTree';
 
   let {
     fields,
@@ -193,12 +186,14 @@
               class:dim={f.count === 0 && f.type === null}
               class:missing={f.requiredBy !== undefined}
               title={f.requiredBy && `${f.requiredBy} requires it; the rows lack it`}
-              >{before}<mark>{match}</mark>{after}{#if f.requiredBy}<span class="required-by">
-                  required by {f.requiredBy}</span
+              >{before}<mark>{match}</mark>{after}{#if f.requiredBy}{' '}<span class="required-by"
+                  >required by {f.requiredBy}</span
                 >{/if}</span
             >
             <span class="mono dim type" title={f.type ?? undefined}>{f.type ?? ''}</span>
-            {#if tree}<span class="req {req ?? ''}">{req ? REQUIREMENT_MARK[req] : ''}</span>{/if}
+            {#if tree}<span class="req"
+                >{#if req}<RequirementMark of={req} />{/if}</span
+              >{/if}
             {#if records !== null}<button
                 type="button"
                 class="count link-button"
@@ -230,15 +225,19 @@
                 >{c.nested > 0 ? countFields(c.nested) : (c.field?.type ?? '')}</span
               >
               {#if c.nested > 0}
-                <span
-                  class="req"
-                  class:required={c.required > 0}
-                  class:recommended={c.required === 0 && c.recommended > 0}
-                  >{askedUnder(c)[0] ?? 'optional'}</span
+                <span class="req"
+                  ><RequirementMark
+                    of={c.required > 0
+                      ? 'required'
+                      : c.recommended > 0
+                        ? 'recommended'
+                        : 'optional'}
+                    text={askedUnder(c)[0] ?? 'optional'}
+                  /></span
                 >
               {:else}
                 {@const req = c.field?.requirement ?? 'optional'}
-                <span class="req {req}">{REQUIREMENT_MARK[req]}</span>
+                <span class="req"><RequirementMark of={req} /></span>
               {/if}
               {#if !uncounted}<span class="count dash" aria-hidden="true"
                   >{records === null ? '' : '—'}</span
@@ -349,17 +348,6 @@
 
   .req {
     font-size: var(--text-micro);
-    color: var(--dim);
-  }
-
-  .req.required {
-    color: var(--error);
-    font-weight: 600;
-  }
-
-  .req.recommended {
-    color: var(--warn);
-    font-weight: 600;
   }
 
   .row.unset {
