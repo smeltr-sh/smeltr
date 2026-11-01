@@ -9,7 +9,7 @@
   import { count } from './time';
   import { tick } from 'svelte';
   import CrossButton from './CrossButton.svelte';
-  import MoreButton from './MoreButton.svelte';
+  import ShowAll from './ShowAll.svelte';
   import Locked from './Locked.svelte';
   import { editable } from './access';
 
@@ -157,11 +157,7 @@
 {/each}
 {#if !raggedAll && ragged.length > RAGGED_NAMED}
   <p class="bar">
-    <MoreButton
-      count={ragged.length - RAGGED_NAMED}
-      what="row"
-      onclick={() => (raggedAll = true)}
-    />
+    <ShowAll more={ragged.length - RAGGED_NAMED} what="row" onshowall={() => (raggedAll = true)} />
   </p>
 {/if}
 
