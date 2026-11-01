@@ -22,7 +22,7 @@ use axum::extract::State;
 use crate::lookup::store::{self, Pointer};
 
 use super::envelope::{Envelope, Refusal};
-use super::store::{Actor, Store, StoreError};
+use super::store::{Actor, SecretSave, Store, StoreError};
 use super::{AppState, git, run_store, tree};
 
 pub const URL_KEY: &str = "git.remote.url";
@@ -1082,19 +1082,7 @@ pub async fn put_settings(
             (POLL_KEY, poll.as_secs().to_string()),
             (APPROVE_KEY, request.approve_pushes.to_string()),
         ];
-        // A token is for the remote it was saved with: a new URL, or none, forgets it unless a new one is given.
-        let token = match request.token {
-            None if url != was => Some(String::new()),
-            token => token,
-        };
-        if let Some(token) = token {
-            let stored = if token.is_empty() {
-                token
-            } else {
-                s.sealed_setting(TOKEN_KEY, &token)?
-            };
-            entries.push((TOKEN_KEY, stored));
-        }
+        entries.extend(SecretSave::sent(request.token, url != was).entry(s, TOKEN_KEY)?);
         s.put_settings(&entries, Some(&event))?;
         Ok((url != was, configured(s)?))
     })

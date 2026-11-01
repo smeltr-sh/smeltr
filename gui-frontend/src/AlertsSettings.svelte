@@ -29,7 +29,7 @@
   import LeaderSecretField from './LeaderSecretField.svelte';
   import Panel from './Panel.svelte';
   import Toggle from './Toggle.svelte';
-  import { ago } from './time';
+  import { ago, fromLocalInput, localDateTime } from './time';
 
   let settings = $state<AlertSettingsDto | null>(null);
   let loadFailed = $state(false);
@@ -333,10 +333,8 @@
         next.setHours(9, 0, 0, 0);
         return next.getTime();
       }
-      case 'at': {
-        const at = new Date(muteAt).getTime();
-        return Number.isNaN(at) ? undefined : at;
-      }
+      case 'at':
+        return fromLocalInput(muteAt);
     }
   }
 
@@ -347,14 +345,6 @@
   }
 
   const muted = (c: AlertChannelDto) => c.mutedUntil !== undefined && c.mutedUntil > Date.now();
-
-  function when(millis: number): string {
-    const at = new Date(millis);
-    const time = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    return at.toDateString() === new Date().toDateString()
-      ? `${time} today`
-      : `${at.toLocaleDateString()} ${time}`;
-  }
 
   function where(c: AlertChannelDto): string {
     return c.kind.type === 'webhook' ? c.kind.url : c.kind.to.join(', ');
@@ -475,7 +465,7 @@
             {#if c.kind.type === 'email' && !mailOn}
               <span class="line warn">Not sent: the mail server is off.</span>
             {:else if muted(c) && c.mutedUntil}
-              <span class="line dim">Muted until {when(c.mutedUntil)}</span>
+              <span class="line dim">Muted until {localDateTime(c.mutedUntil)}</span>
             {/if}
             {#if rowTested[c.id]?.ok}
               <span class="line ok" role="status">✓ {rowTested[c.id]?.text}</span>

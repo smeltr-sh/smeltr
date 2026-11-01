@@ -14,7 +14,7 @@ use smeltr::config_file::{SHARED_DIR, group_subtree};
 use smeltr::leader::access::{AgentPermissions, ByAgent};
 use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::model::{self, Provider, Settings};
-use smeltr::leader::store::Actor;
+use smeltr::leader::store::{Actor, SecretSave};
 use smeltr::leader::{accounts, blocking};
 
 use crate::accounts_api::store_call;
@@ -214,19 +214,13 @@ async fn write_settings(auth: &Auth, actor: &Actor, request: PutSettings) -> Env
         Ok(was) => was,
         Err(e) => return answer(auth, Some(e.into())).await,
     };
-    // A key belongs to the service it was issued by: another provider or endpoint forgets it unless a new one is
-    // given.
-    let key = match request.api_key {
-        None if request.provider != was.provider || endpoint != was.endpoint => Some(String::new()),
-        key => key,
-    };
+    let key = SecretSave::sent(
+        request.api_key,
+        request.provider != was.provider || endpoint != was.endpoint,
+    );
     let keep_days = request.keep_days.unwrap_or(was.keep_days);
     let mut context = request.context_tokens.unwrap_or(was.context);
-    let will_hold = match &key {
-        Some(k) if k.is_empty() => None,
-        Some(k) => Some(k.clone()),
-        None => was.api_key.clone(),
-    };
+    let will_hold = key.held(was.api_key.as_deref()).map(str::to_string);
     if request.enabled {
         let missing: Vec<&str> = [
             (endpoint.is_empty(), "endpoint URL"),
@@ -289,13 +283,7 @@ async fn write_settings(auth: &Auth, actor: &Actor, request: PutSettings) -> Env
             (model::KEEP_DAYS_KEY, keep_days.to_string()),
             (model::CONTEXT_KEY, context.to_string()),
         ];
-        if let Some(key) = key {
-            let stored = match key.is_empty() {
-                true => key,
-                false => store.sealed_setting(model::API_KEY_KEY, &key)?,
-            };
-            entries.push((model::API_KEY_KEY, stored));
-        }
+        entries.extend(key.entry(store.as_ref(), model::API_KEY_KEY)?);
         store.put_settings(&entries, Some(&event))
     })
     .await;

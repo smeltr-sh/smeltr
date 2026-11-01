@@ -15,7 +15,7 @@ use axum::extract::State;
 use serde::{Deserialize, Serialize};
 
 use super::envelope::{Envelope, Refusal};
-use super::store::{Actor, AlertTold, Store, StoreError};
+use super::store::{Actor, AlertTold, SecretSave, Store, StoreError};
 use super::warnings::{Condition, Warning};
 use super::{AppState, run_store};
 
@@ -31,6 +31,12 @@ pub const CHANNELS_KEY: &str = "alerts.channels";
 /// The setting a webhook's secret header value is sealed under.
 pub fn secret_key(channel: &str) -> String {
     format!("alerts.channel.{channel}.secret")
+}
+
+/// Whether `key` is a setting [`secret_key`] names.
+pub fn is_secret_key(key: &str) -> bool {
+    key.strip_prefix("alerts.channel.")
+        .is_some_and(|k| k.ends_with(".secret"))
 }
 
 /// The setting the mail server is kept in, as JSON.
@@ -342,7 +348,7 @@ pub fn webhook_body(format: Format, status: Status, told: &AlertTold, routing_ke
         }),
         Format::PagerDuty => {
             let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, told.warning.as_bytes());
-            let dedup_key: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+            let dedup_key = super::auth::hex_encode(digest.as_ref());
             let severity = match value["severity"].as_str() {
                 Some("failed") => "critical",
                 _ => "warning",
@@ -763,17 +769,8 @@ pub async fn put_mail(
         let was = s.setting(MAIL_KEY)?.and_then(|t| serde_json::from_str::<Mail>(&t).ok());
         let text = serde_json::to_string(&mail).map_err(|e| StoreError::failed(e.to_string()))?;
         let mut entries = vec![(MAIL_KEY, text)];
-        let password = match request.password {
-            None if was.is_none_or(|w| w.host != mail.host) => Some(String::new()),
-            password => password,
-        };
-        if let Some(password) = password {
-            let stored = match password.is_empty() {
-                true => password,
-                false => s.sealed_setting(MAIL_PASSWORD_KEY, &password)?,
-            };
-            entries.push((MAIL_PASSWORD_KEY, stored));
-        }
+        let moved = was.is_none_or(|w| w.host != mail.host);
+        entries.extend(SecretSave::sent(request.password, moved).entry(s, MAIL_PASSWORD_KEY)?);
         s.put_settings(&entries, Some(&event))?;
         read_settings(s, &alerts)
     })
@@ -893,14 +890,8 @@ pub async fn put_channels(
         };
         let mut secrets: Vec<(String, String)> = Vec::new();
         for put in &sent {
-            let key = secret_key(&put.channel.id);
             let moved = was.get(&put.channel.id).is_none_or(|w| url(w) != url(&put.channel));
-            match &put.secret {
-                Some(secret) if !secret.is_empty() => secrets.push((key.clone(), s.sealed_setting(&key, secret)?)),
-                Some(_) => secrets.push((key, String::new())),
-                None if moved => secrets.push((key, String::new())),
-                None => {}
-            }
+            secrets.extend(SecretSave::sent(put.secret.clone(), moved).entry(s, secret_key(&put.channel.id))?);
         }
         for id in was.keys().filter(|id| !sent.iter().any(|p| &p.channel.id == *id)) {
             secrets.push((secret_key(id), String::new()));
@@ -961,39 +952,28 @@ async fn test(state: &AppState, channel: &Channel, secret: Option<String>) -> Re
             format,
             secret_header,
         } => {
-            let secret = match secret {
-                Some(secret) => Some(secret).filter(|s| !s.is_empty()),
-                // The stored secret is for the URL it was saved with, and is sent nowhere else.
-                None => {
-                    let id = channel.id.clone();
-                    let key = secret_key(&id);
-                    let (saved, stored) = run_store(state.store.clone(), move |s| {
-                        Ok((channels(s)?.into_iter().find(|c| c.id == id), s.opened_setting(&key)?))
-                    })
-                    .await
-                    .map_err(|e| e.message)?;
-                    let saved_url = saved.and_then(|c| match c.kind {
-                        Kind::Webhook { url, .. } => Some(url),
-                        Kind::Email { .. } => None,
-                    });
-                    match stored {
-                        Some(_) if saved_url.as_deref() != Some(url.as_str()) => {
-                            return Err(match format {
-                                Format::PagerDuty => format!("{}: enter the routing key again", channel.name),
-                                _ => format!("{}: enter the secret header value again", channel.name),
-                            });
-                        }
-                        stored => stored.filter(|s| !s.is_empty()),
-                    }
-                }
-            };
+            let id = channel.id.clone();
+            let key = secret_key(&id);
+            let (saved, stored) = run_store(state.store.clone(), move |s| {
+                Ok((channels(s)?.into_iter().find(|c| c.id == id), s.opened_setting(&key)?))
+            })
+            .await
+            .map_err(|e| e.message)?;
+            let stored = stored.filter(|s| !s.is_empty());
+            let moved = saved.is_none_or(|c| !matches!(&c.kind, Kind::Webhook { url: saved, .. } if saved == url));
+            if secret.is_none() && moved && stored.is_some() {
+                return Err(match format {
+                    Format::PagerDuty => format!("{}: enter the routing key again", channel.name),
+                    _ => format!("{}: enter the secret header value again", channel.name),
+                });
+            }
+            let save = SecretSave::sent(secret, moved);
+            let secret = save.held(stored.as_deref());
             let name = match format {
                 Format::PagerDuty => "",
                 _ => secret_header.as_deref().unwrap_or_default(),
             };
-            let secret = secret
-                .as_deref()
-                .filter(|_| *format == Format::PagerDuty || !name.is_empty());
+            let secret = secret.filter(|_| *format == Format::PagerDuty || !name.is_empty());
             let secret = secret.map(|value| (name, value));
             let status = post(url, *format, secret, Status::Test, &told)
                 .await

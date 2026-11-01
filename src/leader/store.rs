@@ -546,6 +546,53 @@ impl From<StoreError> for String {
     }
 }
 
+/// What a save does to a credential the leader holds sealed in a setting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretSave {
+    Keep,
+    Forget,
+    Replace(String),
+}
+
+impl SecretSave {
+    /// As a page sends it: absent keeps the stored one, empty forgets it. A credential belongs to what it was saved
+    /// with, a URL, host or service, so `moved`, that it changed, forgets it unless a new one is sent: it is never
+    /// sent anywhere else.
+    pub fn sent(secret: Option<String>, moved: bool) -> Self {
+        match secret {
+            Some(s) if s.is_empty() => SecretSave::Forget,
+            Some(s) => SecretSave::Replace(s),
+            None if moved => SecretSave::Forget,
+            None => SecretSave::Keep,
+        }
+    }
+
+    /// The credential held after the save, given the one held now.
+    pub fn held<'a>(&'a self, now: Option<&'a str>) -> Option<&'a str> {
+        match self {
+            SecretSave::Keep => now,
+            SecretSave::Forget => None,
+            SecretSave::Replace(s) => Some(s),
+        }
+    }
+
+    /// The entry for [`Store::put_settings`] that makes the save to `key`, sealed; none to keep it.
+    pub fn entry<K: AsRef<str>>(
+        self,
+        store: &(impl Store + ?Sized),
+        key: K,
+    ) -> Result<Option<(K, String)>, StoreError> {
+        Ok(match self {
+            SecretSave::Keep => None,
+            SecretSave::Forget => Some((key, String::new())),
+            SecretSave::Replace(s) => {
+                let sealed = store.sealed_setting(key.as_ref(), &s)?;
+                Some((key, sealed))
+            }
+        })
+    }
+}
+
 /// An enrollment code being written down. The secret itself is never here -- the leader shows it once and keeps the
 /// hash.
 pub struct NewEnrollmentCode {

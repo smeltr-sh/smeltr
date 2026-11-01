@@ -34,7 +34,7 @@ use smeltr::leader::access::{Role, given_by};
 use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::oidc::{self, Jwks, Provider, RefreshFailure};
 use smeltr::leader::sessions::{Due, Grant};
-use smeltr::leader::store::{Actor, OidcSignIn, Store, StoreError};
+use smeltr::leader::store::{Actor, OidcSignIn, SecretSave, Store, StoreError};
 use smeltr::leader::{accounts, blocking};
 
 use crate::gate::{Auth, store_unavailable};
@@ -944,15 +944,11 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Enve
         Ok(was) => was,
         Err(e) => return answer(auth, Some(e.into())).await,
     };
-    // A secret is for the client it was issued to: another issuer or client id forgets it unless a new one is given.
-    let secret = match request.client_secret {
-        None if issuer != was.issuer || client_id != was.client_id => Some(String::new()),
-        secret => secret,
-    };
-    let will_hold_secret = match &secret {
-        Some(s) => !s.is_empty(),
-        None => was.client_secret.is_some(),
-    };
+    let secret = SecretSave::sent(
+        request.client_secret,
+        issuer != was.issuer || client_id != was.client_id,
+    );
+    let will_hold_secret = secret.held(was.client_secret.as_deref()).is_some();
     if request.enabled {
         if issuer.is_empty() || client_id.is_empty() || !will_hold_secret {
             return answer(
@@ -978,11 +974,7 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Enve
         "" => DEFAULT_GROUPS_CLAIM,
         claim => claim,
     };
-    let secret_moved = match secret.as_deref() {
-        None => false,
-        Some("") => was.client_secret.is_some(),
-        Some(new) => was.client_secret.as_deref() != Some(new),
-    };
+    let secret_moved = secret.held(was.client_secret.as_deref()) != was.client_secret.as_deref();
     let changed: Vec<&str> = [
         (request.enabled && !was.enabled, "turned on"),
         (!request.enabled && was.enabled, "turned off"),
@@ -1007,14 +999,7 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Enve
             (CLIENT_ID_KEY, client_id),
             (GROUPS_CLAIM_KEY, groups_claim),
         ];
-        if let Some(secret) = secret {
-            let stored = if secret.is_empty() {
-                secret
-            } else {
-                store.sealed_setting(SECRET_KEY, &secret)?
-            };
-            entries.push((SECRET_KEY, stored));
-        }
+        entries.extend(secret.entry(store.as_ref(), SECRET_KEY)?);
         store.put_settings(&entries, Some(&event))
     })
     .await;

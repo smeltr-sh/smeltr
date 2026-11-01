@@ -14,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 
 use smeltr::leader::envelope::Envelope;
-use smeltr::leader::store::Actor;
+use smeltr::leader::store::{Actor, SecretSave};
 use smeltr::leader::{accounts, acme, acme_dns, blocking, tls};
 
 use crate::certificates_api::{self, Tls};
@@ -302,14 +302,7 @@ async fn put_settings(
             (acme::EAB_HMAC_KEY, request.eab_hmac),
             (acme::CLOUDFLARE_TOKEN_KEY, request.cloudflare_token),
         ] {
-            if let Some(value) = value {
-                let stored = if value.is_empty() {
-                    value
-                } else {
-                    store.sealed_setting(key, &value)?
-                };
-                entries.push((key, stored));
-            }
+            entries.extend(SecretSave::sent(value, false).entry(store.as_ref(), key)?);
         }
         store.put_settings(&entries, Some(&event))
     })

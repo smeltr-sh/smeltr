@@ -2890,6 +2890,9 @@ pub(crate) fn sealed_setting_place(key: &str) -> (&str, &'static str) {
         crate::leader::model::API_KEY_KEY => ("AI agents API key", "System, AI agents"),
         crate::leader::acme::EAB_HMAC_KEY => ("ACME EAB HMAC key", "System, Certificates"),
         crate::leader::acme::CLOUDFLARE_TOKEN_KEY => ("Cloudflare API token", "System, Certificates"),
+        crate::leader::alerts::MAIL_PASSWORD_KEY => ("Mail server password", "System, Alerts"),
+        // Each channel's is its own warning, so it is named by its key.
+        other if crate::leader::alerts::is_secret_key(other) => (other, "System, Alerts"),
         other => (other, "System"),
     }
 }
