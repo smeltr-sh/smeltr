@@ -21,8 +21,8 @@
   type Link = { href: string; title: string };
   /** A sidebar entry: a page, or a category heading over its pages. */
   type Entry = Link | { title: string; links: Link[] };
-  /** A sidebar group. A folded one opens on its own pages, and on a click. */
-  type Group = { title: string; fold?: boolean; links: Entry[] };
+  /** A sidebar group. Each folds on a click. A closed one starts folded, except on its own pages. */
+  type Group = { title: string; closed?: boolean; links: Entry[] };
   const groups: Group[] = [
     {
       title: 'Getting started',
@@ -103,16 +103,16 @@
       links: kinds.map(({ href, name }) => ({ href, title: name })),
     }));
   }
-  // The reference groups are long, so each folds.
+  // The reference groups are long, so each starts closed.
   groups.push(
     {
       title: 'Pipeline steps',
-      fold: true,
+      closed: true,
       links: [{ href: '/docs/steps', title: 'Overview' }, ...stepPages],
     },
     {
       title: 'Sources',
-      fold: true,
+      closed: true,
       links: [
         { href: '/docs/sources', title: 'Overview' },
         ...categoryLinks(
@@ -123,7 +123,7 @@
     },
     {
       title: 'Destinations',
-      fold: true,
+      closed: true,
       links: [{ href: '/docs/destinations', title: 'Overview' }, ...categoryLinks(destinations)],
     },
   );
@@ -131,16 +131,17 @@
   function holds(group: Group, path: string): boolean {
     return group.links.some((e) => ('href' in e ? [e] : e.links).some((l) => l.href === path));
   }
-  /** The folded groups a reader opened, by title, beside the one holding the page. */
-  let opened = $state(new Set<string>());
+  /** The groups a reader folded or opened, by title. */
+  let flipped = $state(new Set<string>());
   function isOpen(group: Group): boolean {
-    return !group.fold || opened.has(group.title) || holds(group, page.url.pathname);
+    const starts = !group.closed || holds(group, page.url.pathname);
+    return starts !== flipped.has(group.title);
   }
   function flip(group: Group) {
-    const next = new Set(opened);
-    if (isOpen(group)) next.delete(group.title);
+    const next = new Set(flipped);
+    if (next.has(group.title)) next.delete(group.title);
     else next.add(group.title);
-    opened = next;
+    flipped = next;
   }
 
   let {
@@ -260,16 +261,12 @@
           >Overview</a
         >
         {#each groups as group (group.title)}
-          {#if group.fold}
-            <button
-              class="nav-label group-label fold"
-              aria-expanded={isOpen(group)}
-              onclick={() => flip(group)}
-              >{group.title} <span aria-hidden="true">{isOpen(group) ? '▾' : '▸'}</span></button
-            >
-          {:else}
-            <p class="nav-label group-label">{group.title}</p>
-          {/if}
+          <button
+            class="nav-label group-label fold"
+            aria-expanded={isOpen(group)}
+            onclick={() => flip(group)}
+            >{group.title} <span aria-hidden="true">{isOpen(group) ? '▾' : '▸'}</span></button
+          >
           {#each isOpen(group) ? group.links : [] as entry ('href' in entry ? entry.href : entry.title)}
             {#if 'href' in entry}
               {@render navLink(entry)}
