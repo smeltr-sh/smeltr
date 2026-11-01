@@ -4,7 +4,7 @@
     contact_sheet.py SHOTS_DIR OUT.png   # the sheet
     contact_sheet.py --clean SHOTS_DIR   # remove what a run writes there, and nothing else
 
-A screenshot is one that `shots.json` or `incident.json` names: SHOTS_DIR may hold other images.
+A screenshot is one that `shots.json`, `incident.json` or `outage.json` names: SHOTS_DIR may hold other images.
 """
 
 import json
@@ -14,7 +14,7 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 DIR = os.path.dirname(os.path.abspath(__file__))
-names = sorted(s["name"] for spec in ("shots.json", "incident.json")
+names = sorted(s["name"] for spec in ("shots.json", "incident.json", "outage.json")
                for s in json.load(open(os.path.join(DIR, spec))))
 
 if sys.argv[1] == "--clean":

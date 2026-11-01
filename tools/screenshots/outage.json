@@ -1,0 +1,26 @@
+[
+  {
+    "name": "05b-map-source-below",
+    "site": "feed-health-volume",
+    "hash": "#/map?group=network&kind=source&id=fortigate-firewalls&range=24h",
+    "themes": ["light", "dark"],
+    "delay": 5000,
+    "steps": [{ "delay": 1000 }, { "blur": true }]
+  },
+  {
+    "name": "02b-issues-feed-health",
+    "site": "feed-health-issues",
+    "hash": "#/status/issues",
+    "themes": ["light", "dark"],
+    "delay": 3000,
+    "steps": [
+      { "delay": 2000 },
+      { "clickAll": ".collapsible > .head > button.toggle[aria-expanded='true']" },
+      { "delay": 500 },
+      { "text": "Rows below normal" },
+      { "delay": 500 },
+      { "text": "Field not its declared type" },
+      { "delay": 1500 }
+    ]
+  }
+]
