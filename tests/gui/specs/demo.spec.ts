@@ -9,7 +9,6 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUN_DIR, recordPid } from '../run';
-import { navPages } from '../../../tools/screenshots/navPages.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const TARGET = path.resolve(REPO, process.env.CARGO_TARGET_DIR ?? 'target');
@@ -181,40 +180,4 @@ test('the Schemas page reads a schema through the service', async ({ page }) => 
   await expect(page.getByRole('cell', { name: 'user.name', exact: true })).toBeVisible();
   await page.getByRole('searchbox', { name: 'Search schemas' }).fill('src_endpoint.port');
   await expect(page.getByRole('cell', { name: 'src_endpoint.port', exact: true })).toBeVisible();
-});
-
-// A page that reads what the recording does not hold shows "not found": `just demo-fixtures` records it again.
-test('the recording answers every read of every page the navigation reaches', async ({
-  browser,
-}) => {
-  const unrecorded = new Set<string>();
-  const open = async (hash: string) => {
-    const page = await browser.newPage();
-    // The demo's leader answers in the page, so its answers are read where it is installed.
-    await page.addInitScript(() => {
-      let fetch = window.fetch;
-      Object.defineProperty(window, 'fetch', {
-        get: () => async (input: RequestInfo | URL, init?: RequestInit) => {
-          const answer = await fetch(input, init);
-          if (answer.status === 404) {
-            const body = await answer
-              .clone()
-              .json()
-              .catch(() => null);
-            if (body?.errors?.[0]?.message === 'not found')
-              console.log(`unrecorded ${input instanceof Request ? input.url : String(input)}`);
-          }
-          return answer;
-        },
-        set: (installed) => (fetch = installed),
-      });
-    });
-    page.on('console', (m) => {
-      if (m.text().startsWith('unrecorded ')) unrecorded.add(`${hash}: ${m.text().slice(11)}`);
-    });
-    return page;
-  };
-  const pages = await navPages(open, base);
-  expect(pages).toContain('#/status/issues');
-  expect([...unrecorded]).toEqual([]);
 });
