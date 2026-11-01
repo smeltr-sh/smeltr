@@ -29,6 +29,7 @@
   import LeaderSecretField from './LeaderSecretField.svelte';
   import Panel from './Panel.svelte';
   import Toggle from './Toggle.svelte';
+  import WorkerGroupIcon from './WorkerGroupIcon.svelte';
   import { ago, dateTime, fromLocalInput } from './time';
 
   let settings = $state<AlertSettingsDto | null>(null);
@@ -419,7 +420,8 @@
       <div class="channels" role="table" aria-label="Channels">
         <div class="channel head dim" role="row">
           <span role="columnheader">Name</span><span role="columnheader">Sends to</span><span
-            role="columnheader">Groups</span
+            role="columnheader"
+            class="glyphed"><WorkerGroupIcon />Worker groups</span
           ><span role="columnheader">Message</span><span></span>
         </div>
         {#each settings.channels as c (c.id)}
@@ -436,7 +438,9 @@
                     : ''}</span
                 >{/if}</span
             >
-            <span role="cell" class="note">{c.groups ? c.groups.join(', ') : 'All groups'}</span>
+            <span role="cell" class="note"
+              >{c.groups ? c.groups.join(', ') : 'All worker groups'}</span
+            >
             <span role="cell" class="note dim">{c.includeMessage ? 'Included' : 'Left out'}</span>
             <span role="cell" class="actions">
               <button type="button" class="compact" disabled={busy} onclick={() => testRow(c.id)}
@@ -583,8 +587,10 @@
         </Field>
       {/if}
       <fieldset class="groups">
-        <legend>Groups</legend>
-        <label><input type="radio" bind:group={draft.groupsTaken} value="all" /> All groups</label>
+        <legend class="glyphed"><WorkerGroupIcon />Worker groups</legend>
+        <label
+          ><input type="radio" bind:group={draft.groupsTaken} value="all" /> All worker groups</label
+        >
         <label><input type="radio" bind:group={draft.groupsTaken} value="these" /> Only these</label
         >
         {#if draft.groupsTaken === 'these'}
@@ -650,6 +656,13 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
+  }
+
+  /* A glyph before a name, centred on its line as the name's own Field draws it. */
+  .glyphed {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
   }
 
   .label,

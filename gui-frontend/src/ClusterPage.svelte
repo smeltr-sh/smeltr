@@ -962,7 +962,7 @@
                 ? 'never'
                 : `${selectedWorker.stopAfterUnreachableSecs}s`}
             </dd>
-            <dt>Group</dt>
+            <dt><WorkerGroupIcon />Group</dt>
             <dd>{selectedWorker.groupId ?? '--'}</dd>
             <dt>Threads</dt>
             <dd>{runningThreads(selectedWorker.threads)}</dd>
@@ -1159,7 +1159,8 @@
                 ><th aria-sort={rankedSort.aria('kind')}
                   ><SortButton sort={rankedSort} key="kind">Kind</SortButton></th
                 ><th aria-sort={rankedSort.aria('group')}
-                  ><SortButton sort={rankedSort} key="group"><WorkerGroupIcon />Group</SortButton
+                  ><SortButton sort={rankedSort} key="group"
+                    ><WorkerGroupIcon />Worker group</SortButton
                   ></th
                 ><th class="num" aria-sort={rankedSort.aria('now')}
                   ><SortButton sort={rankedSort} key="now">Now, rows/s</SortButton></th

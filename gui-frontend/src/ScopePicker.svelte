@@ -115,7 +115,7 @@
     >
       <span>Shared configuration</span>
       <span class="dim"
-        >{#if administrator}every group draws on this{:else if level}<LevelMark
+        >{#if administrator}every worker group draws on this{:else if level}<LevelMark
             {level}
           />{/if}</span
       >

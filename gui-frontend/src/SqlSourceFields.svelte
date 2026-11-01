@@ -133,7 +133,7 @@
     sampled = '';
     await run.discard();
     if (!group) {
-      runError = 'No worker group to run it: Run asks a worker in the source’s group.';
+      runError = 'No worker group to run it: Run asks a worker in the source’s worker group.';
       return;
     }
     started = performance.now();

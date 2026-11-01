@@ -388,7 +388,7 @@ test('a capture of a blocked source shows the records that blocked it, and why',
   await expect(dialog.getByRole('combobox', { name: /^Capture target/ })).toHaveValue(
     'source:own-metrics',
   );
-  await expect(dialog.getByRole('combobox', { name: /^Group/ })).toHaveValue('west');
+  await expect(dialog.getByRole('combobox', { name: /^Worker group/ })).toHaveValue('west');
   await dialog.getByRole('spinbutton', { name: 'records' }).fill('1');
   await dialog.getByRole('button', { name: 'Start' }).click();
 
@@ -632,7 +632,7 @@ test('the whole fleet is one view, grouped by group, and a group only filters it
   await expect(admin.getByRole('heading', { name: 'east', exact: true })).toHaveCount(0);
   await expect(admin.getByRole('heading', { name: 'north', exact: true })).toHaveCount(0);
 
-  await filter.selectOption({ label: 'All groups' });
+  await filter.selectOption({ label: 'All worker groups' });
   for (const g of groups)
     await expect(admin.getByRole('heading', { name: g, exact: true })).toBeVisible();
 });

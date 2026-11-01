@@ -294,7 +294,7 @@
 
           {#if sharedSchemas.length > 0}
             <tr class="band"
-              ><th colspan="4">from shared/ &mdash; every group may name these</th></tr
+              ><th colspan="4">from shared/ &mdash; every worker group may name these</th></tr
             >
             {#each sharedSchemas as s (s.id)}
               {#if shown(s.id)}

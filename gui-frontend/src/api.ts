@@ -2650,7 +2650,7 @@ export function conditionLabel(condition: WarningCondition): string {
     case 'sourceRowsAbove':
       return 'Rows above normal';
     case 'groupNotDeployed':
-      return 'Group not deployed';
+      return 'Worker group not deployed';
     case 'workerNotDeployingItsTarget':
       return 'Not deploying its target';
     case 'workerOnAnotherBuild':

@@ -73,7 +73,7 @@ export function summary(all: Row[], groups: string[]): string {
   const parts = all.filter((r) => r.noun !== 'route').map(folded);
   if (all.length === 0) parts.push('nothing yet');
   if (groups.length === 1) parts.push(groups[0]);
-  else if (groups.length > 1) parts.push(`${groups.length} groups`);
+  else if (groups.length > 1) parts.push(`${groups.length} worker groups`);
   return parts.join(' · ');
 }
 

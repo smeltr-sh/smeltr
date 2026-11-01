@@ -833,6 +833,7 @@
       <div class="mintrow">
         <Field
           label="Group"
+          icon={WorkerGroupIcon}
           help="Only live groups can receive new workers."
           note={mintableGroups.length === 0
             ? 'Add a worker group on Worker groups and deploy it, then mint.'
