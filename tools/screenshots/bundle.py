@@ -464,7 +464,7 @@ def samples():
              "records": records("web.nginx.access", 12, 31)},
             {"id": "auth-sample", "name": "Bastion auth.log", "source": "linux-auth",
              "records": records("syslog.auth", 10, 41)},
-            {"id": "cloudtrail-sample", "name": "CloudTrail management events", "source": "aws-cloudtrail",
+            {"id": "cloudtrail-sample", "name": "CloudTrail management and data events", "source": "aws-cloudtrail",
              "records": records("aws.cloudtrail", 8, 51)},
         ],
     }

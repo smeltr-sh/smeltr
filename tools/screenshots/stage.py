@@ -351,11 +351,11 @@ def apps():
     lock_tests(c, b, "apps", [
         ("nginx-access maps requests, drops health checks", "nginx-access", "nginx-sample", 12),
         ("linux-auth classifies logins and sudo", "linux-auth", "auth-sample", 10),
-        ("aws-cloudtrail maps management events", "aws-cloudtrail", "cloudtrail-sample", 8),
+        ("aws-cloudtrail maps management and data events", "aws-cloudtrail", "cloudtrail-sample", 8),
     ])
     c.open_change(b, "Onboard storefront, bastion and CloudTrail logs",
-                  "nginx access logs to logs-web; sshd and sudo from the bastions and every CloudTrail management "
-                  "event to logs-security. Failed CloudTrail calls also go to the alerts topic.")
+                  "nginx access logs to logs-web; sshd and sudo from the bastions and every CloudTrail event to "
+                  "logs-security. Failed CloudTrail calls also go to the alerts topic.")
     as_("admin").deploy(b)
 
 
