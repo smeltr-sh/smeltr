@@ -6,14 +6,18 @@
 <script lang="ts">
   import Ticked from './Ticked.svelte';
   import Recommends from './Recommends.svelte';
-  import { setScope, type SchemaFindingDto } from './api';
+  import type { SchemaFindingDto } from './api';
+  import { openOnBranch } from './unsavedGuard';
 
   let {
+    branch,
     findings,
     loading,
     error,
     pipelineName,
   }: {
+    /** The branch the change is on, where its pipelines open. */
+    branch: string;
     findings: SchemaFindingDto[];
     loading: boolean;
     error: string;
@@ -57,7 +61,10 @@
       <h3>
         <a
           href="#/build/pipelines/{encodeURIComponent(g.pipeline)}"
-          onclick={() => setScope(g.group)}>{pipelineName(g.group, g.pipeline)}</a
+          onclick={(e) => {
+            e.preventDefault();
+            void openOnBranch(branch, g.group, e.currentTarget.hash);
+          }}>{pipelineName(g.group, g.pipeline)}</a
         >
         <span class="dim">in {g.group}</span>
       </h3>

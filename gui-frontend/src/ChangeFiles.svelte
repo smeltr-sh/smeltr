@@ -6,7 +6,8 @@
   listed above its file, and one on a file the diff does not hold above them all.
 -->
 <script lang="ts">
-  import { commitDiff, setScope, type CommentAnchor, type FileChangeDto } from './api';
+  import { commitDiff, type CommentAnchor, type FileChangeDto } from './api';
+  import { openOnBranch } from './unsavedGuard';
   import { count, shortPath } from './time';
   import { editorFor } from './nav';
   import CommentComposer from './CommentComposer.svelte';
@@ -118,13 +119,6 @@
     composing = null;
     await onchanged();
   }
-
-  /** Open the page that edits a file, in the group that holds it. Setting
-   * the scope is half the navigation: the same file name lives in every
-   * group, and only one of them is the one under review. */
-  function openEditor(target: { scope: string; hash: string }) {
-    setScope(target.scope, target.hash);
-  }
 </script>
 
 {#snippet placed(t: Thread)}
@@ -183,7 +177,12 @@
             </td>
             <td class="edit-cell">
               {#if target}
-                <button type="button" onclick={() => openEditor(target)}> Edit </button>
+                <button
+                  type="button"
+                  onclick={() => openOnBranch(branch, target.scope, target.hash)}
+                >
+                  Edit
+                </button>
               {/if}
             </td>
           </tr>

@@ -5,8 +5,6 @@
 <script lang="ts">
   import InlineError from './InlineError.svelte';
   import {
-    currentBranch,
-    setScope,
     scopedKey,
     type Reason,
     type ScopedImpact,
@@ -18,6 +16,7 @@
   import { count } from './time';
   import { testsCovering } from './objectChanges';
   import Help from './Help.svelte';
+  import { openOnBranch } from './unsavedGuard';
 
   let {
     branch,
@@ -28,7 +27,7 @@
     testsError,
     pipelineName,
   }: {
-    /** The branch the change is on. A re-lock writes to the branch in hand, so it is offered only there. */
+    /** The branch the change is on, which a re-lock opens. */
     branch: string;
     /** What the change reaches, one entry per scope it reaches anything in. Kept apart from
      * `testResults` because something here with no result covering it is reached and untested. */
@@ -144,9 +143,9 @@
     actualLine: string | null;
   };
 
-  /** Lock a failing test again, in the scope that holds it. */
+  /** Lock a failing test again, on the change's branch and in the scope that holds it. */
   function relock(t: TestResult) {
-    setScope(t.area, `#/build/tests/relock/${encodeURIComponent(t.id)}`);
+    void openOnBranch(branch, t.area, `#/build/tests/relock/${encodeURIComponent(t.id)}`);
   }
 
   /** "held 3 records when locked, now 4": the sample itself changed under the test. */
@@ -265,9 +264,7 @@
                 <span class="added">Passing</span>
               {:else}
                 <span class="removed">Failing</span>
-                {#if branch === currentBranch()}
-                  <button type="button" onclick={() => relock(t)}>Re-lock</button>
-                {/if}
+                <button type="button" onclick={() => relock(t)}>Re-lock</button>
               {/if}
             </div>
             {#if t.verdict && !t.verdict.passed}
