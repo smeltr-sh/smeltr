@@ -26,6 +26,7 @@
   import { scopeOf } from './objectChanges';
   import { session } from './session';
   import { count } from './time';
+  import { testsTally, type TestsTally } from './review';
 
   let {
     entry,
@@ -45,10 +46,7 @@
   let error = $state('');
 
   let files = $state<{ count: number; added: number; removed: number } | null>(null);
-  /** `errored` could not run, so it is neither a pass nor a failure. */
-  let tests = $state<{ passed: number; failed: number; errored: number; total: number } | null>(
-    null,
-  );
+  let tests = $state<TestsTally | null>(null);
   let testsError = $state('');
   /** Who reviews: everybody enabled who may approve this change, as the leader judges it
    * (`deployBlocker`), but the author. Null when the roster cannot be read, as it cannot by somebody
@@ -115,13 +113,7 @@
       };
     }
     if (run.status === 'fulfilled' && run.value.ok) {
-      const ran = run.value.results;
-      tests = {
-        passed: ran.filter((t) => t.verdict?.passed).length,
-        failed: ran.filter((t) => t.verdict && !t.verdict.passed).length,
-        errored: ran.filter((t) => !t.verdict).length,
-        total: ran.length,
-      };
+      tests = testsTally(run.value.results);
     } else {
       testsError = 'tests could not be run';
     }
@@ -226,14 +218,14 @@
           <span class="dim">no tests reach this change</span>
         {:else if tests.passed === tests.total}
           <span class="pass"
-            ><StateMark state="ok" /> {tests.passed} of {count(tests.total, 'test')} pass</span
+            ><StateMark state="ok" /> {tests.passed} of {count(tests.total, 'test')} passing</span
           >
         {:else}
           {#if tests.failed}
-            <span class="fail">{tests.failed} of {count(tests.total, 'test')} fail</span>
+            <span class="fail">{tests.failed} of {count(tests.total, 'test')} failing</span>
           {/if}
-          {#if tests.errored}
-            <span class="dim">{count(tests.errored, 'test')} could not run</span>
+          {#if tests.couldNotRun}
+            <span class="dim">{count(tests.couldNotRun, 'test')} could not run</span>
           {/if}
         {/if}
       {:else if testsError}

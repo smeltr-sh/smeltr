@@ -484,13 +484,18 @@ fn preview_on(
     match sample {
         Ok((columns, records)) => {
             with_branch_schemas(&mut req, &reading);
+            let produced = produced_in(&req);
             let declared_at = if scope == config_file::SHARED_DIR {
                 single_origin_declared_at(&req.config, &reading.at())
             } else {
                 merge_shared_into(&mut req, &reading)
                     .unwrap_or_else(|| single_origin_declared_at(&req.config, &reading.at()))
             };
-            run_preview(req, declared_at, &columns, records)
+            let mut answer = run_preview(req, declared_at, &columns, records);
+            if let Some((pipeline, produces)) = produced {
+                refused_on_branch(&mut answer, data_dir, &reading, &pipeline, &produces);
+            }
+            answer
         }
         Err(message) => Preview::failed("sample", vec![ApiError::new(message)], vec![]),
     }
@@ -550,6 +555,45 @@ async fn import_schema(
             .into()
     })
     .await
+}
+
+/// The pipeline `req` runs a sample through, and the ids of the schemas it produces as the request has them. `None`
+/// for a request that asks a question instead (`PreviewRequest::after_dot`, `PreviewRequest::capture_filter`).
+fn produced_in(req: &PreviewRequest) -> Option<(String, Vec<String>)> {
+    if req.after_dot.is_some() || req.capture_filter.is_some() {
+        return None;
+    }
+    let file = serde_json::from_str::<config_file::FileConfig>(&req.config).ok()?;
+    let pipeline = match &req.pipeline {
+        Some(id) => file.pipelines.iter().find(|p| p.id == *id),
+        None => file.pipelines.first(),
+    }?;
+    Some((pipeline.id.clone(), pipeline.produces.clone()))
+}
+
+/// `answer` warned also of each destination the routes on `reading`'s branch deliver `pipeline` to that accepts none
+/// of `produces` (`LoadedSystem::refused_by_destinations`). The editor sends no routes, and cannot change them, so
+/// they are the branch's; the schemas are the editor's.
+fn refused_on_branch(
+    answer: &mut Envelope<Preview>,
+    data_dir: &std::path::Path,
+    reading: &config_api::Reading,
+    pipeline: &str,
+    produces: &[String],
+) {
+    let ran = answer.status == axum::http::StatusCode::OK && answer.body.stage.is_none();
+    let Some(group) = reading.group_id().filter(|_| ran) else {
+        return;
+    };
+    let repo = smeltr::leader::git::repo_path(data_dir);
+    let Ok(system) = smeltr::leader::tree::load_group_at(&repo, &reading.commit, group) else {
+        return;
+    };
+    let produces: Vec<&str> = produces.iter().map(String::as_str).collect();
+    for found in system.refused_by_destinations(pipeline, &produces) {
+        answer.body.warnings.push(ApiError::new(found.message));
+        answer.body.schema_findings += 1;
+    }
 }
 
 /// `req.config` with each schema it names but does not declare taken from `reading`, the area as the branch holds
@@ -3279,6 +3323,83 @@ mod tests {
         );
         let missing: Vec<_> = response.missing.iter().map(|m| m.path.as_str()).collect();
         assert_eq!(missing, ["reviewer"], "the branch's schema held the rows");
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// The editor sends no routes, and its preview is warned of a destination the branch's routes deliver the
+    /// pipeline to that accepts none of the schemas the editor has it produce.
+    #[test]
+    fn a_preview_tells_a_destination_on_the_branch_accepting_none_of_the_schemas_produced() {
+        use smeltr::config_file;
+
+        let data = std::env::temp_dir().join(format!("smeltr-preview-accepts-{}", std::process::id()));
+        let mut group = config_file::FileConfig {
+            schemas: serde_json::from_value(serde_json::json!([
+                { "id": "audit-out", "fields": [] },
+                { "id": "search-in", "title": "Search", "fields": [] }
+            ]))
+            .unwrap(),
+            destinations: serde_json::from_value(serde_json::json!([
+                { "id": "es-prod", "type": "elasticsearch", "url": "http://es:9200", "defaultIndex": "orders",
+                  "accepts": ["search-in"] }
+            ]))
+            .unwrap(),
+            routes: serde_json::from_value(serde_json::json!([
+                { "id": "audit-orders", "source": "orders", "condition": null, "pipeline": "audit",
+                  "deliver": [ { "to": ["es-prod"] } ] }
+            ]))
+            .unwrap(),
+            ..audit_calling_shared()
+        };
+        group.pipelines[0].produces = vec!["audit-out".to_string()];
+        let sample = config_file::SampleDto {
+            id: "s".to_string(),
+            name: "s".to_string(),
+            source: None,
+            records: vec![smeltr::io::raw_object("{}".to_string())],
+            columns: Vec::new(),
+        };
+        seed_west_over_shared(&data, &group, &sample);
+
+        let warned = |produces: &str| {
+            let mut sent = config_file::FileConfig {
+                routes: vec![],
+                destinations: vec![],
+                ..group.clone()
+            };
+            sent.pipelines[0].produces = vec![produces.to_string()];
+            let response = super::preview_on(
+                &data,
+                "work",
+                "west",
+                super::PreviewRequest {
+                    config: serde_json::to_string(&sent).unwrap(),
+                    pipeline: None,
+                    sample: Some(sample.id.clone()),
+                    show_internal: false,
+                    at_micros: None,
+                    filter: None,
+                    attribution: false,
+                    after_dot: None,
+                    capture_filter: None,
+                },
+                Vec::new(),
+            );
+            assert!(response.succeeded(), "{:?}", response.errors);
+            (response.warnings.iter())
+                .filter(|w| w.step.is_none())
+                .map(|w| w.message.clone())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            warned("audit-out"),
+            ["Pipeline audit produces no schema that destination es-prod accepts (Search)."]
+        );
+        assert!(
+            warned("search-in").is_empty(),
+            "the editor's schemas are the ones checked"
+        );
         std::fs::remove_dir_all(&data).ok();
     }
 

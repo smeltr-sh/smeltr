@@ -544,6 +544,34 @@ test('a review sets apart the samples no test uses, which the deploy leaves out'
   expect(main.samples).toEqual([]);
 });
 
+test('the dock’s count of tests opens the Tests tab', async ({ admin, api, leader }) => {
+  const on = '?branch=tested';
+  await api.put(`/api/areas/shared/pipelines/p${on}`, {
+    id: 'p',
+    name: 'p',
+    steps: [{ type: 'drop', id: 'none', condition: 'false' }],
+  });
+  await api.put(`/api/areas/shared/samples/s${on}`, {
+    id: 's',
+    name: 's',
+    records: [{ _raw: 'a' }],
+  });
+  await api.put(`/api/areas/shared/tests/t${on}`, {
+    id: 't',
+    name: 't',
+    pipeline: 'p',
+    sample: 's',
+    lockedAt: 0,
+    rowsIn: 1,
+    expected: [null],
+  });
+  await api.openChange('tested', 'A tested pipeline');
+
+  await goto(admin, leader, '#/changes/review/tested');
+  await admin.getByRole('button', { name: /of 1 test/ }).click();
+  await expect(admin.getByRole('tab', { name: /^Tests/ })).toHaveAttribute('aria-selected', 'true');
+});
+
 test('a review and History name the first three objects a change touches, and a button shows the rest', async ({
   admin,
   api,
