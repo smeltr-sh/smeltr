@@ -68,6 +68,7 @@ const ACME = {
   lastAttemptMillis: null,
   lastError: null,
   orderWithinSecs: { 'tls-alpn-01': 120, 'http-01': 120, 'dns-01': 900 },
+  ordering: null,
 };
 
 /** The certificate list the leader's chooser offers. */
@@ -403,29 +404,39 @@ describe('ACME', () => {
     await vi.waitFor(() => expect(posts).toEqual(['/api/settings/tls/acme/order']));
   });
 
-  it('says an order is running until the leader answers, in place of the last failure', async () => {
-    await show(IN_FORCE, 'Save', {
+  it('follows an order the leader runs to its end, in place of the last failure', async () => {
+    const failed = {
       ...ORDERED,
       challenge: 'dns-01',
       lastAttemptMillis: Date.now(),
       lastError: 'no answer on port 443',
-    });
+    };
+    await show(IN_FORCE, 'Save', failed);
     expect(target.textContent).toContain('no answer on port 443');
     const answered = vi.mocked(fetch).getMockImplementation()!;
-    let answer!: () => void;
+    let running = true;
     vi.mocked(fetch).mockImplementation(async (url, init) => {
-      if (!String(url).endsWith('/order')) return answered(url as string, init);
-      posts.push(String(url));
-      await new Promise<void>((r) => (answer = r));
-      return json(IN_FORCE);
+      if (String(url).endsWith('/order')) posts.push(String(url));
+      if (String(url).startsWith('/api/settings/tls/acme'))
+        return json(
+          running
+            ? { ...failed, ordering: { step: 'propagating', sinceMillis: Date.now() } }
+            : { ...failed, lastError: null },
+        );
+      return answered(url as string, init);
     });
     button('Renew now')!.click();
     await vi.waitFor(() => expect(button('Renewing…')?.disabled).toBe(true));
-    expect(target.textContent).toContain('This can take up to 15 minutes.');
+    expect(posts).toEqual(['/api/settings/tls/acme/order']);
+    expect(target.textContent).toContain(
+      "Waiting for the zone's nameservers to answer the DNS record. This can take up to 15 minutes.",
+    );
     expect(target.textContent).not.toContain('no answer on port 443');
-    answer();
-    await vi.waitFor(() => expect(button('Renew now')?.disabled).toBe(false));
-    expect(target.textContent).not.toContain('This can take up to');
+    running = false;
+    await vi.waitFor(() => expect(button('Renew now')?.disabled).toBe(false), { timeout: 5000 });
+    expect(target.textContent).toContain(
+      'this leader is serving the certificate the authority issued',
+    );
   });
 
   it('says what the last order failed with', async () => {

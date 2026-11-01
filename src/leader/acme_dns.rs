@@ -14,6 +14,7 @@
 //! can publish and remove a TXT record ([`Provider`]); Cloudflare is the one there is.
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -22,7 +23,7 @@ use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::proto::rr::RData;
 use hickory_resolver::{Resolver, TokioResolver};
 
-use super::acme::{Prover, Settings};
+use super::acme::{Progress, Prover, Settings, Step};
 
 /// Which provider publishes the records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -118,6 +119,7 @@ pub struct Publishing {
     published: tokio::sync::Mutex<Vec<Record>>,
     ask_every: Duration,
     within: Duration,
+    progress: Arc<Progress>,
 }
 
 impl Publishing {
@@ -128,7 +130,13 @@ impl Publishing {
             published: Default::default(),
             ask_every: ASK_EVERY,
             within: VISIBLE_WITHIN,
+            progress: Arc::default(),
         }
+    }
+
+    /// Saying each step to `progress`.
+    pub fn reporting(self, progress: Arc<Progress>) -> Publishing {
+        Publishing { progress, ..self }
     }
 
     /// Asking every `ask_every`, giving up after `within`: a test's own clock.
@@ -190,9 +198,11 @@ impl Prover for Publishing {
         if name.parse::<IpAddr>().is_ok() {
             return Err(format!("DNS-01 cannot prove an IP address: {name}"));
         }
+        self.progress.set(Step::Publishing);
         let record = self.provider.publish(&record_name(name), value).await?;
         tracing::info!(target: "leader.acme_dns_published", record = %record.name, zone = %record.zone, "published the DNS-01 record");
         self.published.lock().await.push(record.clone());
+        self.progress.set(Step::Propagating);
         self.visible(&record).await
     }
 

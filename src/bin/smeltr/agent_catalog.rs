@@ -746,7 +746,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/settings/tls/acme/order",
-        what: "Order the leader's certificate now and serve it. No query.",
+        what: "Start ordering the leader's certificate, and serve it once issued; answers at once, and GET /api/settings/tls/acme says the step it is on until it ends. No query.",
         body: "",
     },
     Route {

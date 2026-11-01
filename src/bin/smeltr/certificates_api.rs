@@ -33,6 +33,8 @@ pub struct Tls {
     /// to serve it, not merely one of `names`.
     pub from_inside: Option<String>,
     pub validity: Duration,
+    /// The order over ACME this leader runs, one at a time.
+    pub ordering: crate::acme_api::Ordering,
     /// Enough of the leader to finish a rotation. A rotation ends on a fact workers report, and the heartbeat is
     /// where that arrives -- but a leader whose workers have all gone quiet receives none, and this page is the
     /// one place somebody is still watching for the ending it was promised.
@@ -732,12 +734,4 @@ pub(crate) fn reload_socket(serving: &Tls) -> Result<(), String> {
     })?;
     tls::socket_took(&serving.dir, generation);
     Ok(())
-}
-
-/// What is in force, for a route outside this module that changed it.
-pub(crate) async fn answer_in_force(serving: &Arc<Tls>) -> Response {
-    match read(Some(serving)).await {
-        Ok(dto) => Envelope::ok(dto).into_response(),
-        Err(e) => refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    }
 }

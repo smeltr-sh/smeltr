@@ -332,20 +332,28 @@ pub async fn order(
     let (chain, ca) = root_of(&chain, &settings.authority)?;
     let ca = ca.into_bytes();
     tls::check_supplied(&chain, &key, &ca, names, required)?;
-    let rotates = tls::supplying_changes_root(tls_dir, &chain, &ca)?;
-    // Under another root, it would begin a rotation while one is open: refused here, before a caller records one
-    // beginning. The order is spent, since only the issued certificate says which root it is under.
-    if rotates {
-        tls::rotation_may_begin(tls_dir, tls::Installs::Supplied).map_err(|e| e.message().to_string())?;
-    }
     let certificate = tls::describe(&chain, "the certificate")?;
-    Ok(Issued {
+    let mut issued = Issued {
         chain,
         key,
         ca,
         certificate,
-        rotates,
-    })
+        rotates: false,
+    };
+    against_served(tls_dir, &mut issued)?;
+    Ok(issued)
+}
+
+/// Sets whether `issued` changes the root, against what is served now. A caller that waited since the order
+/// asks again under its lock on what is served, before it writes.
+pub fn against_served(tls_dir: &Path, issued: &mut Issued) -> Result<(), String> {
+    issued.rotates = tls::supplying_changes_root(tls_dir, &issued.chain, &issued.ca)?;
+    // Under another root, it would begin a rotation while one is open: refused here, before a caller records one
+    // beginning. The order is spent, since only the issued certificate says which root it is under.
+    if issued.rotates {
+        tls::rotation_may_begin(tls_dir, tls::Installs::Supplied).map_err(|e| e.message().to_string())?;
+    }
+    Ok(())
 }
 
 /// `chain` as it is served, and the root that signed it, PEM: as [`tls::split_root`] finds it, from `authority`
@@ -435,10 +443,51 @@ pub fn failed(tls_dir: &Path, now_ms: i64, error: &str) -> Result<(), String> {
 
 // -- the authority, over ACME -------------------------------------------------------------------------------------
 
+/// Where an order is, for a page that shows it while it runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Step {
+    /// Waiting for an earlier change to the settings to finish.
+    Queued,
+    /// Reaching the authority and the account this leader holds there.
+    Account,
+    /// Giving the authority the proof for each name.
+    Proving,
+    /// Publishing a DNS-01 record through the provider.
+    Publishing,
+    /// Waiting for the zone's nameservers to answer the record.
+    Propagating,
+    /// Waiting for the authority to check the proofs and issue.
+    Validating,
+    /// Storing and serving what was issued.
+    Installing,
+}
+
+/// The step the running order is on, and since when, or none while no order runs. One per leader, shared by
+/// whatever takes part in an order.
+#[derive(Default)]
+pub struct Progress(Mutex<Option<(Step, i64)>>);
+
+impl Progress {
+    pub fn set(&self, step: Step) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some((step, crate::leader::warnings::now_millis()));
+    }
+
+    pub fn clear(&self) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// The step and when it began, in milliseconds.
+    pub fn now(&self) -> Option<(Step, i64)> {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// A certificate authority reached at its directory URL, with the account this leader holds there.
 pub struct Directory {
     settings: Settings,
     tls_dir: PathBuf,
+    progress: Arc<Progress>,
 }
 
 impl Directory {
@@ -446,7 +495,13 @@ impl Directory {
         Directory {
             settings,
             tls_dir: tls_dir.to_path_buf(),
+            progress: Arc::default(),
         }
+    }
+
+    /// Saying each step to `progress`.
+    pub fn reporting(self, progress: Arc<Progress>) -> Directory {
+        Directory { progress, ..self }
     }
 
     /// A client for the authority: TLS through this process's provider, trusting the platform's roots and the
@@ -530,6 +585,7 @@ struct SavedAccount {
 #[async_trait]
 impl Issuer for Directory {
     async fn issue(&self, names: &[String], csr_der: &[u8], prover: &dyn Prover) -> Result<String, String> {
+        self.progress.set(Step::Account);
         let account = self.account().await?;
         tracing::info!(target: "leader.acme_account", directory = %self.settings.directory, "holding an account at the certificate authority");
         let identifiers: Vec<Identifier> = names
@@ -563,6 +619,7 @@ impl Issuer for Directory {
                     self.settings.challenge.as_str()
                 )
             })?;
+            self.progress.set(Step::Proving);
             tracing::info!(target: "leader.acme_proving", %name, challenge = self.settings.challenge.as_str(), "proving a name to the certificate authority");
             let key_authorization = challenge.key_authorization();
             match self.settings.challenge {
@@ -577,6 +634,7 @@ impl Issuer for Directory {
             tracing::info!(target: "leader.acme_proof_ready", %name, "told the certificate authority to check the proof");
         }
 
+        self.progress.set(Step::Validating);
         let retries = RetryPolicy::new().timeout(ORDER_TIMEOUT);
         match order.poll_ready(&retries).await {
             Ok(OrderStatus::Ready) => {}
