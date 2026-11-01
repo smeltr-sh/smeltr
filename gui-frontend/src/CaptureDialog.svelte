@@ -198,7 +198,7 @@
       {/each}
       {#if !allRows && shownRows > ROWS}
         <p class="note">
-          <ShowAll more={shownRows - ROWS} what="row" onshowall={() => (allRows = true)} />
+          <ShowAll more={shownRows - ROWS} what="record" onshowall={() => (allRows = true)} />
         </p>
       {/if}
 

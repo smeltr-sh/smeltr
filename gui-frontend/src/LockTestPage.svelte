@@ -298,7 +298,7 @@
             <div class="dim line">
               <ShowAll
                 more={sampleRecords.length - SHOWN}
-                what="record"
+                what="row"
                 onshowall={() => (allRecords = true)}
               />
             </div>
