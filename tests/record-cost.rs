@@ -3,6 +3,7 @@
 //! text a parse step reads those fields out of. The same eval runs after either, and both make the same documents.
 //! `cargo test --profile dist --test record-cost -- --ignored --nocapture`.
 
+mod panos;
 mod reference;
 
 use std::sync::{Arc, Mutex};
