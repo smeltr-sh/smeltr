@@ -3,7 +3,8 @@
 
   const STEP_EXPANDED_KEY_PREFIX = 'step-expanded:';
 
-  function loadExpanded(id: string): boolean {
+  /** Whether step `id` is open, as it last opened or shut. */
+  export function loadExpanded(id: string): boolean {
     return stored(STEP_EXPANDED_KEY_PREFIX + id) === '1';
   }
 
@@ -786,6 +787,7 @@
                     <Locked>
                       <ValidatedField
                         placeholder="target field"
+                        schemaPaths
                         bind:value={step.assignments[i].target}
                         errors={stepErrorMessages}
                         warnings={stepWarningMessages}
@@ -875,6 +877,7 @@
                     <ValidatedField
                       placeholder="to"
                       bind:value={step.pairs[i].to}
+                      schemaPaths
                       errors={stepErrorMessages}
                       warnings={stepWarningMessages}
                       forced={nameError(step.pairs[i].to)}
@@ -1431,6 +1434,7 @@
                       <Locked>
                         <ValidatedField
                           placeholder="output field name"
+                          schemaPaths
                           bind:value={existing.field}
                           errors={stepErrorMessages}
                           warnings={stepWarningMessages}

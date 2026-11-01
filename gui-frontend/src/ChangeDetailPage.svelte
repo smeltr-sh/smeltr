@@ -35,7 +35,8 @@
     type TimelineEvent,
   } from './api';
   import { reviews, testsTally } from './review';
-  import { ago, count, shortCommit, pathSummary } from './time';
+  import { ago, count, shortCommit, pathParts } from './time';
+  import ShowAll from './ShowAll.svelte';
   import { nameOf, pipelineNamesAt, type PipelineNames } from './pipelineNames';
   import SectionShell from './SectionShell.svelte';
   import SecondaryTabs from './SecondaryTabs.svelte';
@@ -64,6 +65,11 @@
   let notFound = $state(false);
   let noChange = $state(false);
   let loaded = $state<Loaded | null>(null);
+  /** Whoever asked to see every object the change touches, not the first three. */
+  let allTouched = $state(false);
+  let touched = $derived(
+    pathParts(loaded?.branch.touches ?? [], pipelineFileLabel, allTouched ? Infinity : 3),
+  );
   /** The remote's URL while one is set. The change is then merged on the host, not approved here. */
   let remote = $state<string | undefined>(undefined);
   // The commit a rollback holds the fleet on, or null. An approval then merges and does not deploy.
@@ -445,10 +451,11 @@
               loaded.branch.commits,
               'save',
             )} from <span class="mono">{branch}</span>
-            <span class="sep">&middot;</span>touches {pathSummary(
-              loaded.branch.touches,
-              pipelineFileLabel,
-            )}
+            <span class="sep">&middot;</span>touches {touched.text}{#if touched.more > 0}
+              <span class="sep">&middot;</span><ShowAll
+                more={touched.more}
+                onshowall={() => (allTouched = true)}
+              />{/if}
             <span class="sep">&middot;</span><span class="mono"
               >{shortCommit(loaded.branch.head)}</span
             >

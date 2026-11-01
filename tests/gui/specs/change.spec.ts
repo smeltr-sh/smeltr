@@ -543,3 +543,42 @@ test('a review sets apart the samples no test uses, which the deploy leaves out'
   const main = await api.get('/api/areas/shared/samples?branch=main');
   expect(main.samples).toEqual([]);
 });
+
+test('a review and History name the first three objects a change touches, and a button shows the rest', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  const on = '?branch=five-files';
+  const D = '/api/areas/default';
+  await api.put(`${D}/schemas${on}`, [
+    { id: 'audit', title: 'Audit', fields: [{ field: 'action', type: 'str' }] },
+  ]);
+  await api.put(`${D}/sources${on}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
+  await api.put(`${D}/pipelines/logins${on}`, { id: 'logins', name: 'logins', steps: [] });
+  await api.put(`${D}/destinations${on}`, [
+    { id: 'search', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'logs' },
+  ]);
+  await api.put(`${D}/routes${on}`, [
+    { id: 'r1', source: 'm1', condition: null, pipeline: 'logins', deliver: [{ to: ['search'] }] },
+  ]);
+  await api.openChange('five-files', 'Touch five files');
+
+  await goto(admin, leader, '#/changes/review/five-files');
+  const header = admin.locator('.meta').filter({ hasText: 'touches' });
+  const more = header.getByRole('button', { name: '2 more', exact: true });
+  await expect(more).toBeVisible();
+  await expect(header).not.toContainText('schemas');
+  await more.click();
+  await expect(more).toHaveCount(0);
+  await expect(header).toContainText('schemas');
+
+  await api.deploy('five-files');
+  await goto(admin, leader, '#/changes/history');
+  const files = historyRow(admin, 'Touch five files').locator('.change');
+  const rest = files.getByRole('button', { name: '2 more', exact: true });
+  await expect(files).not.toContainText('schemas');
+  await rest.click();
+  await expect(rest).toHaveCount(0);
+  await expect(files).toContainText('schemas');
+});

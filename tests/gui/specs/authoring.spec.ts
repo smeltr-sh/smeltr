@@ -3137,3 +3137,107 @@ test('A10: the Sources page names the worker that holds a listing source', async
   w1.child.kill('SIGSTOP');
   await expect(row).toContainText(/held by w1, last heard \d+s ago/, { timeout: 60_000 });
 });
+
+test('A6: the lock page shows five rows a side, and a button shows the rest', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [
+      {
+        type: 'parser',
+        id: 'body',
+        input: '_raw',
+        kind: { type: 'json' },
+        declared: [{ name: 'id', type: 'i64' }],
+      },
+    ],
+  });
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    records: Array.from({ length: 8 }, (_, i) => ({ _raw: `{"id":${i + 1}}` })),
+  });
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  const lock = admin.getByRole('button', { name: 'Lock this as a test' });
+  await expect(lock).toBeEnabled({ timeout: 15_000 });
+  await lock.click();
+
+  const more = admin.getByRole('button', { name: '3 more rows', exact: true });
+  await expect(more).toHaveCount(2);
+  await expect(admin.getByText('{"id":8}', { exact: true })).toHaveCount(0);
+  await more.first().click();
+  await expect(admin.getByText('{"id":8}', { exact: true })).toBeVisible();
+  await more.click();
+  await expect(more).toHaveCount(0);
+});
+
+test('A4: a destination in the route preview shows fifty documents, and a button shows the rest', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  await api.put(`/api/areas/shared/sources${ON}`, [{ id: 'storefront', type: 'logs' }]);
+  await api.put(`/api/areas/shared/destinations${ON}`, [
+    { id: 'es-web', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'web' },
+  ]);
+  await api.put(`/api/areas/shared/pipelines/web${ON}`, { id: 'web', name: 'web', steps: [] });
+  await api.put(`/api/areas/shared/samples/web-sample${ON}`, {
+    id: 'web-sample',
+    name: 'storefront hour',
+    source: 'storefront',
+    records: Array.from({ length: 53 }, (_, i) => ({ _raw: `line ${i + 1}` })),
+  });
+  await api.put(`/api/areas/shared/routes${ON}`, [
+    {
+      id: 'web',
+      source: 'storefront',
+      condition: null,
+      pipeline: 'web',
+      deliver: [{ to: ['es-web'] }],
+    },
+  ]);
+  await goto(admin, leader, '#/build/routes');
+  await admin.getByRole('link', { name: 'Route a sample' }).click();
+  await admin.getByRole('button', { name: 'Run', exact: true }).click();
+  await admin.getByRole('button', { name: /^53\s*es-web/ }).click();
+
+  const more = admin.getByRole('button', { name: '3 more documents' });
+  await expect(more).toBeVisible();
+  const last = admin.locator('.doc').filter({ hasText: 'line 53' });
+  await expect(last).toHaveCount(0);
+  await more.click();
+  await expect(more).toHaveCount(0);
+  await expect(last).toBeVisible();
+});
+
+test('A1: a capture shows eight records, and a button shows the rest', async ({
+  admin,
+  api,
+  leader,
+  fleet,
+}) => {
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+  ]);
+  await fleet.startWorker(leader, api, 'default', 'w1');
+  await goto(admin, leader, '#/build');
+  await admin.getByRole('button', { name: 'Add sample' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Capture' }).click();
+  await dialog.getByRole('spinbutton', { name: 'records' }).fill('12');
+  await dialog.getByRole('spinbutton', { name: 'seconds' }).fill('60');
+  await dialog.getByRole('button', { name: 'Start' }).click();
+
+  const capture = admin.getByRole('dialog', { name: /Save the capture/ });
+  await expect(capture).toBeVisible({ timeout: 90_000 });
+  const more = capture.getByRole('button', { name: '4 more records' });
+  await expect(more).toBeVisible();
+  await expect(capture.locator('tbody tr')).toHaveCount(8);
+  await more.click();
+  await expect(more).toHaveCount(0);
+  await expect(capture.locator('tbody tr')).toHaveCount(12);
+});

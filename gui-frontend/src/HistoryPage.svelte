@@ -8,7 +8,9 @@
   import { reported } from './errors.svelte';
   import Locked from './Locked.svelte';
   import { history, deployCommit, type CommitDto, type HeldDto } from './api';
-  import { ago, shortCommit, pathSummary } from './time';
+  import { ago, shortCommit, pathParts } from './time';
+  import ShowAll from './ShowAll.svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import { ask } from './Confirm.svelte';
@@ -34,6 +36,8 @@
   // The commit a rollback is in flight for, or null. Every rollback button
   // disables while any one of them is running, so two can't race.
   let rollingBack = $state<string | null>(null);
+  /** The commits whose every changed file somebody asked to see, not the first three. */
+  const allFiles = new SvelteSet<string>();
 
   let canShowMore = $derived(commits.length >= limit && limit < MORE_LIMIT);
 
@@ -166,6 +170,7 @@
         </thead>
         <tbody>
           {#each commits as c, i (c.commit)}
+            {@const files = pathParts(c.files, undefined, allFiles.has(c.commit) ? Infinity : 3)}
             <tr class:current-row={c.commit === deployed}>
               <td class="mono">
                 <span class="commit">
@@ -178,7 +183,10 @@
               </td>
               <td class="change">
                 <strong>{c.subject}</strong>
-                <div class="dim small">{pathSummary(c.files)}</div>
+                <div class="dim small">
+                  {files.text}{#if files.more > 0}{' '}&middot;
+                    <ShowAll more={files.more} onshowall={() => allFiles.add(c.commit)} />{/if}
+                </div>
                 {#if c.body.trim()}
                   <div class="dim small">{c.body}</div>
                 {/if}

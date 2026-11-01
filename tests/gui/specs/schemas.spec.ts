@@ -1016,3 +1016,93 @@ test('review names five fields a schema recommends and the rows lack, and a butt
   );
   await admin.screenshot({ path: 'results/review-more-shown.png' });
 });
+
+/** `logins`, producing `login`, setting `time` from its sample and `activity_id` in an eval step that starts open. */
+async function stageLogins(api: Api) {
+  await declare(api);
+  await api.put(`${SHARED}/pipelines/logins${ON}`, {
+    id: 'logins',
+    name: 'logins',
+    produces: ['login'],
+    steps: [
+      {
+        type: 'parser',
+        id: 'login',
+        input: '_raw',
+        kind: { type: 'json' },
+        declared: [{ name: 'when', type: 'datetime' }],
+      },
+      {
+        type: 'eval',
+        id: 'map',
+        disabled: false,
+        filter: 'true',
+        assignments: [
+          { target: 'time', expr: 'when.epochMillis()' },
+          { target: 'activity_id', expr: '1' },
+        ],
+      },
+    ],
+  });
+  await api.put(`${SHARED}/samples/logins-sample${ON}`, {
+    id: 'logins-sample',
+    name: 'logins',
+    records: [{ _raw: '{"when":"2026-10-27T10:00:00Z"}' }],
+  });
+}
+
+test("a name box offers the produced schema's fields, one level at a time", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await stageLogins(api);
+  await goto(admin, leader, '#/build/pipelines/logins/for/logins-sample');
+  await admin.getByRole('button', { name: /^Eval time/ }).click();
+  await admin.getByRole('button', { name: '+ assignment' }).click();
+  const target = admin.getByPlaceholder('target field').last();
+  await target.click();
+  await target.pressSequentially('s');
+
+  const list = admin.getByRole('listbox');
+  await expect(list).toContainText('Login');
+  await expect(list).toContainText('src_endpoint. 2 fields');
+  await admin.keyboard.press('Enter');
+  await expect(target).toHaveValue('src_endpoint.');
+  await expect(list).toContainText('Login · src_endpoint');
+  await expect(list.getByRole('option')).toHaveText([/^ip str\s+optional/, /^port i64\s+optional/]);
+  await admin.screenshot({ path: 'results/schemas-name-box.png' });
+  await admin.keyboard.press('ArrowDown');
+  await admin.keyboard.press('Enter');
+  await expect(target).toHaveValue('src_endpoint.port');
+  await expect(list).toHaveCount(0);
+});
+
+test("the Fields menu lists the produced schema's fields the rows lack, and assigns one", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await stageLogins(api);
+  await goto(admin, leader, '#/build/pipelines/logins/for/logins-sample');
+  await admin.getByRole('button', { name: /^Eval time/ }).click();
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  await admin.getByRole('button', { name: 'Not set' }).click();
+
+  await expect(admin.locator('.tally')).toHaveText(
+    /Login\s+Required 2 of 3 set\s*·\s*Recommended 0 of 1 set\s*·\s*Optional 0 of 4 set/,
+  );
+  const rows = admin.locator('.row.unset');
+  await expect(rows.locator('.path')).toHaveText(['user.…', 'src_endpoint.…']);
+
+  await rows
+    .filter({ hasText: 'src_endpoint' })
+    .getByRole('button', { name: 'Show fields' })
+    .click();
+  await expect(admin.getByLabel('Find a field')).toHaveValue('src_endpoint.');
+  await expect(rows.locator('.path')).toHaveText(['src_endpoint.ip', 'src_endpoint.port']);
+  await admin.screenshot({ path: 'results/schemas-fields-menu.png' });
+
+  await admin.getByRole('button', { name: 'assign src_endpoint.ip' }).click();
+  await expect(admin.getByPlaceholder('target field').last()).toHaveValue('src_endpoint.ip');
+});
