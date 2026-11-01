@@ -154,7 +154,7 @@
     </p>
     <p>
       <a href="/docs/reference">Administrator reference →</a> &nbsp;
-      <a href="/docs/code-reference">Expression reference →</a> &nbsp;
+      <a href="/docs/code-reference">Language reference →</a> &nbsp;
       <a href="/docs/sources">Sources →</a> &nbsp;
       <a href="/docs/destinations">Destinations →</a>
     </p>

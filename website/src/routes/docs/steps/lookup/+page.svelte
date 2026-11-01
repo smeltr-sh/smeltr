@@ -236,6 +236,6 @@
   <h2 id="see-also">See also</h2>
   <ul>
     <li><a href="/docs/steps">Pipeline steps</a></li>
-    <li><a href="/docs/code-reference#types">Expression reference: types and conversion</a></li>
+    <li><a href="/docs/code-reference#types">Language reference: types and conversion</a></li>
   </ul>
 </GuideLayout>

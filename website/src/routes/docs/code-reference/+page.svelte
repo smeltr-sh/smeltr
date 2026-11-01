@@ -70,7 +70,7 @@
 </script>
 
 <svelte:head>
-  <title>Expression reference — smeltr</title>
+  <title>Language reference — smeltr</title>
   <meta
     name="description"
     content="Every operator and function in smeltr's expression language, grouped by type with worked examples: naming a field, comparison and logic, conversion, numbers, sequences, strings, regular expressions, arrays, dates, durations and addresses."
@@ -261,7 +261,7 @@
 
 <DocsLayout {sections} {entries}>
   <section class="hero">
-    <h1>Expression reference</h1>
+    <h1>Language reference</h1>
     <p class="lede">
       An expression computes one value from a record's fields. Use expressions in Eval, Code, Drop
       and If steps, step filters, and route conditions.

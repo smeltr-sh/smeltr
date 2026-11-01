@@ -17,4 +17,4 @@
   }));
 </script>
 
-<DocRedirect title="Expression reference" {destination} {links} preserveHash />
+<DocRedirect title="Language reference" {destination} {links} preserveHash />

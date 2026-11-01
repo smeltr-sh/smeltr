@@ -14,7 +14,7 @@ npm run preview  # serve build/ as a plain static server
 ```
 
 Documentation search uses Pagefind. `npm run build` indexes the rendered docs
-and expression reference after prerendering. Results link to pages and matching
+and language reference after prerendering. Results link to pages and matching
 headings; the navigation and search page stay out of the index. To test search
 locally, use `npm run build` then `npm run preview`; the Vite dev server does not
 generate or serve the production search index.
@@ -23,9 +23,10 @@ generate or serve the production search index.
 
 Marketing pages explain authoring, review, deployment, and operation. The
 docs hub introduces the pipeline walkthrough, review and operations guides,
-and expression reference. The hub and reference share
-a sticky section sidebar on desktop and a sticky, collapsible contents control
-on mobile. The reference sidebar searches function names and summaries;
+and language reference. Every docs page shares one sidebar, grouped by topic,
+sticky on desktop and a collapsible contents control on mobile. Pipeline steps,
+Sources and Destinations fold, and open on their own pages. The language
+reference's page tools search function names and summaries;
 examples stack expressions above results on narrow screens.
 
 The site links the repository in one place, `src/lib/release.ts`, which names
@@ -123,7 +124,7 @@ for what changes outside the startup file. Its table comes from
 `src/lib/startup-settings.json`, which the tests check against the file keys,
 environment variables and stated defaults the binary reads.
 
-**Expression reference**
+**Language reference**
 
 One catalog page, not an overview and item pages: a reader scans it for an
 operator or function, and its sidebar searches function names. Its sections, in
@@ -281,7 +282,7 @@ Workers use an in-process Git client; only the leader needs Git's HTTP backend.
 retry, refused-record handling, retention and replay.
 Destination guides link there.
 
-The expression reference lives at `/docs/code-reference`, alongside the administrator
+The language reference lives at `/docs/code-reference`, alongside the administrator
 and parser references. `/reference` redirects there with its query and section bookmark
 intact and is excluded from search. Keep future references under `/docs`; reserve
 `/docs/api-reference` for an API guide when it is ready.

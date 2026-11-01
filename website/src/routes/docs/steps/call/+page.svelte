@@ -83,6 +83,6 @@
     <li><a href="/docs/steps">Pipeline steps</a></li>
     <li><a href="/docs/steps/if">If step</a></li>
     <li><a href="/docs/steps/unroll">Unroll step</a></li>
-    <li><a href="/docs/code-reference">Expression reference</a></li>
+    <li><a href="/docs/code-reference">Language reference</a></li>
   </ul>
 </GuideLayout>

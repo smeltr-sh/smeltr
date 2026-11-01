@@ -355,7 +355,7 @@ cat delivered.jsonl</code
   </p>
   <p>The preview checks your transformation; send a real record to check destination access too.</p>
   <p>
-    Use the <a href="/docs/code-reference">expression reference</a> as you build, then follow the
+    Use the <a href="/docs/code-reference">language reference</a> as you build, then follow the
     <a href="/docs/review#check">review checklist</a> before deploying.
   </p>
 </GuideLayout>
