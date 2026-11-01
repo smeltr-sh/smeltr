@@ -15,11 +15,11 @@ const EVENTS: &[(&str, &str, u8, &str)] = &[
     ("1004", "Outbound Threat Filter", 8, "Outbound Threat Filter"),
     ("1005", "TCP SYN Authentication", 4, "TCP SYN Authentication"),
 ];
-/// The protection groups, and the servers in each.
-const GROUPS: &[(&str, &str)] = &[
-    ("Web Servers", "172.16.1"),
-    ("DNS Servers", "172.16.2"),
-    ("VPN Gateways", "172.16.3"),
+/// The protection groups: name, the servers' network, the port they serve.
+const GROUPS: &[(&str, &str, u16)] = &[
+    ("Web Servers", "172.16.1", 443),
+    ("DNS Servers", "172.16.2", 53),
+    ("VPN Gateways", "172.16.3", 500),
 ];
 
 /// Event `i`, logged at `at`. With `attacked`, a UDP reflection flood hits the web servers and AED drops it.
@@ -28,7 +28,7 @@ pub fn record(i: u64, at: &Clock, attacked: bool) -> String {
     let b = mix(i ^ 0xAED0_0002);
     let device = pick(DEVICES, a);
     let flood = attacked && (a >> 50).is_multiple_of(2);
-    let (group, net) = if flood { GROUPS[0] } else { pick(GROUPS, a >> 4) };
+    let (group, net, port) = if flood { GROUPS[0] } else { pick(GROUPS, a >> 4) };
     let server = format!("{net}.{}", 10 + (a >> 8) % 20);
     let (outside, _) = pick(people::PUBLIC, b);
     let rt = at.unix * 1_000 + i64::from(at.nanos / 1_000_000);
@@ -42,7 +42,7 @@ pub fn record(i: u64, at: &Clock, attacked: bool) -> String {
         let bytes = 1_000_000 + (b >> 8) % 9_000_000;
         return format!(
             "{}rt={rt} src={outside} dst={server} spt={sport} dpt=443 proto=UDP act=Drop cnt={packets} in={bytes} \
-             cs1Label=Protection Group cs1={group} cs2Label=Attack Category cs2=UDP Reflection Amplification \
+             cs1Label=Protection Group cs1={group} cs2Label=Protection Category cs2=UDP Reflection Amplification \
              cs3Label=Protection Level cs3=High",
             head(("2001", "DDoS Attack Mitigated", 9, "")),
             sport = pick(&[53, 123, 389, 1900, 11211][..], b >> 40),
@@ -68,11 +68,7 @@ pub fn record(i: u64, at: &Clock, attacked: bool) -> String {
          cs3={level}",
         head(event),
         sport = 1_024 + (b >> 44) % 60_000,
-        dpt = if outbound {
-            443
-        } else {
-            pick(&[443, 53, 500][..], a >> 20)
-        },
+        dpt = if outbound { 443 } else { port },
         proto = if event.0 == "1003" { "UDP" } else { "TCP" },
         act = if event.0 == "1005" { "Authenticated" } else { "Blocked" },
         cnt = 1 + (a >> 30) % 400,

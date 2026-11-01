@@ -22,8 +22,8 @@ const INTERFACES: &[(u32, &str, &str, u64, u64)] = &[
     (4, "Cellular0/2/0", "WAN: LTE backup", 100, 2),
 ];
 
-/// Metric `i`, polled at `at`. With `flapping`, the internet uplink of one router is taking errors and discards
-/// and now and then reports itself down.
+/// Metric `i`, polled at `at`. With `flapping`, the internet uplink of one router now and then reports itself
+/// down; its errors and discards climb in the same windows whether or not the caller says so.
 pub fn record(i: u64, at: &Clock, flapping: bool) -> String {
     let a = mix(i ^ 0x07E1_E6AF);
     let (router, address) = pick(ROUTERS, a);
@@ -38,14 +38,15 @@ pub fn record(i: u64, at: &Clock, flapping: bool) -> String {
     let seed = mix(r << 8 | u64::from(index));
     let octets = |share: u64, salt: u64| (mix(seed ^ salt) >> 40) + uptime * load * share / 100 * 125_000;
     let (inbound, outbound) = (octets(100, 1), octets(35, 2));
-    let errors = |salt: u64| {
-        (mix(seed ^ salt) >> 48)
-            + if sick {
-                uptime / 2 + (a >> 40) % 50
-            } else {
-                uptime / 50_000
-            }
+    // The sick uplink takes errors through every trouble window, the first two minutes of each ten, so its error
+    // counters climb fastest then and never fall but at a boot. `errored(t)` counts the trouble seconds before `t`.
+    let errored = |t: u64| (t / 600) * 120 + (t % 600).min(120);
+    let extra = if r == 1 && index == 2 {
+        40 * (errored(t) - errored(t - uptime))
+    } else {
+        0
     };
+    let errors = |salt: u64| (mix(seed ^ salt) >> 48) + uptime / 50_000 + extra;
     let up = !(sick && (a >> 56).is_multiple_of(4));
     json!({
         "fields": {
@@ -87,6 +88,15 @@ fn a_counter_grows_with_the_clock_and_flapping_shows_on_one_uplink() {
         assert!(
             field(&b, "ifHCInOctets").as_u64() > field(&a, "ifHCInOctets").as_u64(),
             "{a}"
+        );
+        // Across a trouble window's end, an error counter still only grows.
+        let (c, d) = (
+            record(i, &Clock::at(1_790_000_510, 0), true),
+            record(i, &Clock::at(1_790_000_530, 0), false),
+        );
+        assert!(
+            field(&d, "ifInErrors").as_u64() >= field(&c, "ifInErrors").as_u64(),
+            "{c}"
         );
     }
     let down = (0..2_000)

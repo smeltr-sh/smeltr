@@ -1,8 +1,8 @@
 //! Versa SD-WAN branch appliances exporting their logs as syslog (Versa's log export function, LEF): each line is
-//! an ISO timestamp, the log type, and comma-separated `key=value` pairs. Four types share a flow's identity
-//! (`tenantId`, `applianceId`, `flowId`, `flowCookie`, `vsnId`), so they join: the flow's start (`flowIdLog`), the
-//! firewall's verdict (`accessLog`), an intrusion signature (`idpLog`), and the SD-WAN path's measured quality
-//! (`sdwanB2BSlamLog`).
+//! an ISO timestamp, the log type, and comma-separated `key=value` pairs. Every line carries a flow's identity
+//! (`tenantId`, `applianceId`, `flowId`, `flowCookie`, `vsnId`), so the lines of one flow join: its start
+//! (`flowIdLog`), the firewall's verdict (`accessLog`), and an intrusion signature (`idpLog`) or the SD-WAN path's
+//! measured quality (`sdwanB2BSlamLog`).
 //!
 //! The key names follow Versa's published log types; the values are synthetic.
 
@@ -38,11 +38,13 @@ const SIGNATURES: &[(&str, u32, &str)] = &[
 /// The WAN paths a branch measures to the hub.
 const PATHS: &[(&str, &str)] = &[("MPLS", "Hub-DC1"), ("Internet", "Hub-DC1"), ("LTE", "Hub-DC2")];
 
-/// Line `i`, logged at `at`. With `degraded`, the internet path is losing packets and adding latency, and its SLA
-/// logs say so.
+/// Line `i`, logged at `at`. Lines come in threes, one flow each: its start, the firewall's verdict, then for
+/// half the flows an intrusion signature and for the rest an SLA measurement. With `degraded`, the internet path is
+/// losing packets and adding latency, and its SLA logs say so.
 pub fn record(i: u64, at: &Clock, degraded: bool) -> String {
-    let a = mix(i);
-    let b = mix(i ^ 0x7E25_A000);
+    let a = mix(i / 3);
+    let b = mix((i / 3) ^ 0x7E25_A000);
+    let c = mix(i ^ 0x7E25_A001);
     let (appliance, net) = APPLIANCES[(a % APPLIANCES.len() as u64) as usize];
     let appliance_id = 100 + (a % APPLIANCES.len() as u64);
     let flow = 30_000_000 + (b >> 8) % 60_000_000;
@@ -58,22 +60,21 @@ pub fn record(i: u64, at: &Clock, degraded: bool) -> String {
         (a >> 32) % 41,
         2 + (a >> 40) % 248
     );
-    let (dst, _) = people::PUBLIC[((b >> 4) as usize) % people::PUBLIC.len()];
+    let (dst, country) = people::PUBLIC[((b >> 4) as usize) % people::PUBLIC.len()];
     let sport = 32_768 + (b >> 16) % 28_000;
     let flow_keys = format!(
         "sourceIPv4Address={src}, destinationIPv4Address={dst}, sourcePort={sport}, destinationPort={port}, protocolIdentifier={proto}"
     );
     let stamp = format!("{}-{:02}-{:02}T{}+0000", at.year, at.month, at.day, at.hms());
-    match (a >> 56) % 16 {
-        _ if degraded && (a >> 52).is_multiple_of(4) => sla(&stamp, &ids, appliance, b, true),
-        0..=5 => format!(
+    match i % 3 {
+        _ if degraded && (c >> 52).is_multiple_of(4) => sla(&stamp, &ids, appliance, c, true),
+        0 => format!(
             "{stamp} flowIdLog, {ids}, {flow_keys}, fromZone=trust, toZone=untrust, fromCountry=, toCountry={country}, \
              ingressInterfaceName=vni-0/2.0, egressInterfaceName=vni-0/0.0, appId={app}, appFamily={family}, \
              user={user}",
-            country = people::PUBLIC[((b >> 4) as usize) % people::PUBLIC.len()].1,
             user = user(a),
         ),
-        6..=11 => {
+        1 => {
             let deny = app == "bittorrent";
             format!(
                 "{stamp} accessLog, {ids}, {flow_keys}, fromZone=trust, toZone=untrust, rule={rule}, action={action}, \
@@ -89,10 +90,10 @@ pub fn record(i: u64, at: &Clock, degraded: bool) -> String {
                 user = user(a),
             )
         }
-        12..=13 => {
+        _ if (a >> 60).is_multiple_of(2) => {
             let (sig, id, severity) = SIGNATURES[((b >> 12) % SIGNATURES.len() as u64) as usize];
             format!(
-                "{stamp} idpLog, {ids}, {flow_keys}, fromZone=untrust, toZone=trust, signatureId={id}, \
+                "{stamp} idpLog, {ids}, {flow_keys}, fromZone=trust, toZone=untrust, signatureId={id}, \
                  signatureMsg=\"{sig}\", threatSeverity={severity}, idpAction={action}, appId={app}",
                 action = if severity == "critical" {
                     "drop-session"
@@ -101,13 +102,13 @@ pub fn record(i: u64, at: &Clock, degraded: bool) -> String {
                 },
             )
         }
-        _ => sla(&stamp, &ids, appliance, b, false),
+        _ => sla(&stamp, &ids, appliance, c, false),
     }
 }
 
 /// One SLA measurement of a WAN path to the hub.
 fn sla(stamp: &str, ids: &str, appliance: &str, r: u64, degraded: bool) -> String {
-    let (path, hub) = PATHS[(r % PATHS.len() as u64) as usize];
+    let (path, hub) = if degraded { PATHS[1] } else { pick(PATHS, r) };
     let bad = degraded || path == "LTE";
     let (delay, jitter, loss) = if bad {
         (60 + (r >> 8) % 140, 8 + (r >> 16) % 30, (r >> 24) % 600)
@@ -149,4 +150,6 @@ fn every_line_is_a_timestamp_a_type_and_pairs_that_name_the_flow() {
         assert!(pairs.contains("flowId=") && pairs.contains("tenantId=2"), "{line}");
     }
     assert_eq!(types.len(), 4, "{types:?}");
+    let flow = |line: &str| line.split(", ").find(|p| p.starts_with("flowId=")).map(str::to_string);
+    assert_eq!(flow(&record(30, &at, false)), flow(&record(31, &at, false)));
 }

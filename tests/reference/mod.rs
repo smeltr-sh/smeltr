@@ -116,6 +116,19 @@ pub fn pick<T: Copy>(pool: &[T], r: u64) -> T {
     pool[(r % pool.len() as u64) as usize]
 }
 
+/// A version 4 UUID drawn from `r`.
+pub fn uuid(r: u64) -> String {
+    let g = mix(r);
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        r >> 32,
+        r & 0xffff,
+        (g >> 4) & 0xfff,
+        0x8000 | ((g >> 20) & 0x3fff),
+        g >> 16
+    )
+}
+
 pub const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];

@@ -140,6 +140,9 @@ pub fn networks() -> (Vec<&'static str>, Vec<Vec<String>>) {
     (vec!["network", "site", "city", "tier", "business_unit"], rows)
 }
 
+/// The [`PUBLIC`] address password spraying comes from, whichever feed sees it.
+pub const SPRAYER: usize = 11;
+
 /// Internet addresses from the ranges MaxMind's GeoIP2 test databases
 /// answer for, with the country each is in.
 pub const PUBLIC: &[(&str, &str)] = &[

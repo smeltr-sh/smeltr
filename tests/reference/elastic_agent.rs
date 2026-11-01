@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Clock, auth, mix, people, pick};
+use super::{Clock, auth, mix, people, pick, uuid};
 
 const VERSION: &str = "8.15.0";
 
@@ -15,7 +15,7 @@ fn agent(host: &str, os: Value, h: u64) -> (Value, Value, Value) {
     let host = json!({
         "hostname": host, "name": host, "architecture": "x86_64",
         "id": format!("{:032x}", u128::from(mix(h)) << 64 | u128::from(mix(h ^ 1))),
-        "ip": [format!("10.{}.{}.{}", h % people::NETWORKS, (h >> 8) % 41, 2 + (h >> 16) % 248)],
+        "ip": [address(h)],
         "os": os,
     });
     let agent = json!({"type": "filebeat", "version": VERSION, "name": host["name"], "id": id,
@@ -24,16 +24,10 @@ fn agent(host: &str, os: Value, h: u64) -> (Value, Value, Value) {
     (host, agent, elastic_agent)
 }
 
-fn uuid(h: u64) -> String {
-    let g = mix(h);
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        h >> 32,
-        h & 0xffff,
-        (g >> 4) & 0xfff,
-        0x8000 | ((g >> 20) & 0x3fff),
-        g >> 16
-    )
+/// The address of host `h`, inside one of the company's networks.
+fn address(h: u64) -> String {
+    let m = mix(h ^ 0x10AD);
+    format!("10.{}.{}.{}", m % people::NETWORKS, (m >> 8) % 41, 2 + (m >> 16) % 248)
 }
 
 /// The envelope every event shares: who sent it, into which data stream.
@@ -57,7 +51,7 @@ const LINUX_HOSTS: &[&str] = &["bastion-01", "bastion-02", "app-db-01", "web-01"
 const SYSLOG: &[&str] = &[
     "systemd[1]: Started Session {n} of User {user}.",
     "systemd[1]: Starting Daily apt upgrade and clean activities...",
-    "kernel: [UFW BLOCK] IN=eth0 OUT= SRC={ip} DST=10.0.0.5 PROTO=TCP SPT={port} DPT=23 WINDOW=1024 SYN",
+    "kernel: [UFW BLOCK] IN=eth0 OUT= SRC={ip} DST={host_ip} PROTO=TCP SPT={port} DPT=23 WINDOW=1024 SYN",
     "CRON[{n}]: (root) CMD (/usr/local/bin/backup.sh >/dev/null 2>&1)",
     "dockerd[{n}]: time=\"{iso}\" level=info msg=\"ignoring event\" container={hex} module=libcontainerd",
     "kernel: Out of memory: Killed process {n} (java) total-vm:8123456kB, anon-rss:4012345kB",
@@ -67,18 +61,23 @@ const SYSLOG: &[&str] = &[
 /// attempts (`auth::record`).
 pub fn linux(i: u64, at: &Clock, guessing: bool) -> String {
     let a = mix(i);
-    let k = a % LINUX_HOSTS.len() as u64;
+    // Guessing goes at the bastions, the first two hosts: they are the ones the internet can reach.
+    let k = if guessing { a % 2 } else { a % LINUX_HOSTS.len() as u64 };
     let name = LINUX_HOSTS[k as usize];
+    // Apart from the Windows hosts' numbers, which start at 0 too.
+    let h = k | 1 << 32;
     let os = json!({"type": "linux", "family": "debian", "platform": "ubuntu", "name": "Ubuntu",
                     "version": "22.04.4 LTS (Jammy Jellyfish)", "kernel": "5.15.0-118-generic"});
-    let (host, agent, elastic_agent) = agent(name, os, k);
+    let (host, agent, elastic_agent) = agent(name, os, h);
     let auth = guessing || (a >> 8).is_multiple_of(3);
     let (dataset, path, line) = if auth {
         // auth.log's own line, with this host's name in it.
         let line = auth::record(i, at, guessing);
-        let line = match line.splitn(5, ' ').collect::<Vec<_>>()[..] {
-            [m, d, t, _, rest] => format!("{m} {d} {t} {name} {rest}"),
-            _ => line,
+        // The stamp pads a day under ten with a space, so it is cut off whole rather than split on spaces.
+        let stamp = at.syslog();
+        let line = match line.strip_prefix(&format!("{stamp} ")).and_then(|r| r.split_once(' ')) {
+            Some((_, rest)) => format!("{stamp} {name} {rest}"),
+            None => line,
         };
         ("system.auth", "/var/log/auth.log", line)
     } else {
@@ -87,6 +86,7 @@ pub fn linux(i: u64, at: &Clock, guessing: bool) -> String {
             .replace("{n}", &((a >> 24) % 60_000 + 100).to_string())
             .replace("{user}", &user)
             .replace("{ip}", people::PUBLIC[((a >> 32) as usize) % people::PUBLIC.len()].0)
+            .replace("{host_ip}", &address(h))
             .replace("{port}", &(1024 + (a >> 40) % 60_000).to_string())
             .replace("{iso}", &at.iso())
             .replace("{hex}", &format!("{:016x}", mix(a)));
@@ -183,12 +183,14 @@ const SYSMON_NETWORK: WinEvent = WinEvent {
 pub fn windows(i: u64, at: &Clock, spraying: bool) -> String {
     let a = mix(i);
     let b = mix(i ^ 0x3D1C_0000);
-    let owner = people::person(a % people::PEOPLE as u64);
-    let (site, _) = people::site_of(a >> 12);
-    let name = format!("WS-{}-{:04}", site.to_uppercase(), a % people::PEOPLE as u64);
+    // A workstation is its owner's: one name, one id and one address each.
+    let n = a % people::PEOPLE as u64;
+    let owner = people::person(n);
+    let (site, _) = people::site_of(n);
+    let name = format!("WS-{}-{:04}", site.to_uppercase(), n);
     let os = json!({"type": "windows", "family": "windows", "platform": "windows", "name": "Windows 11 Enterprise",
                     "version": "10.0", "build": "22631.4317", "kernel": "10.0.22621.4317 (WinBuild.160101.0800)"});
-    let (host, agent, elastic_agent) = agent(&name, os, a % people::PEOPLE as u64);
+    let (host, agent, elastic_agent) = agent(&name, os, n);
     let logon_id = format!("0x{:x}", 0x3e7 + (b >> 8) % 0xffffff);
     let record_id = (i % 10_000_000) + 120_000;
     let fqdn = format!("{name}.acme.example");
@@ -217,7 +219,7 @@ pub fn windows(i: u64, at: &Clock, spraying: bool) -> String {
         ),
         1 => {
             let from = if spraying {
-                "89.160.20.156"
+                people::PUBLIC[people::SPRAYER].0
             } else {
                 people::PUBLIC[(b >> 4) as usize % people::PUBLIC.len()].0
             };
@@ -306,6 +308,16 @@ fn every_event_is_a_document_in_a_data_stream() {
             assert_eq!(doc["data_stream"]["type"], "logs");
             assert_eq!(doc["@timestamp"], "2026-09-21T14:13:20.000Z");
         }
+    }
+    // A day under ten, which syslog pads with a space: the line keeps its time and takes the host's name.
+    let early = Clock::at(1_793_500_000, 0);
+    for i in 0..50 {
+        let doc: Value = serde_json::from_str(&linux(i, &early, true)).expect("JSON");
+        let message = doc["message"].as_str().expect("a message");
+        assert!(
+            message.starts_with(&format!("{} bastion-0", early.syslog())),
+            "{message}"
+        );
     }
     let spray: Value = serde_json::from_str(&windows(7, &at, true)).expect("JSON");
     assert_eq!(spray["winlog"]["event_id"], "4625");

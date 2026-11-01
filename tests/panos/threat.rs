@@ -1,5 +1,6 @@
-//! PAN-OS THREAT records over syslog: what the firewalls' security profiles caught in the sessions of
-//! [`super::record`]. The columns follow PAN-OS's THREAT log format; the signature names and ids are synthetic.
+//! PAN-OS THREAT records over syslog: what the firewalls' security profiles caught, on the same firewalls, sites
+//! and people as [`super::record`]. The columns follow PAN-OS's THREAT log format; the signature names and ids are
+//! synthetic.
 
 use super::{app, people};
 use crate::reference::{Clock, mix, pick};
@@ -89,10 +90,10 @@ pub fn record(i: u64, at: &Clock, scanning: bool) -> String {
     };
     let (app, port, proto, ..) = match (kind, category) {
         ("spyware", "dns-c2") => super::APPS[2],
+        _ if inbound => super::APPS[0],
         ("url" | "file" | "virus", _) => super::APPS[1],
         _ => app(a >> 20),
     };
-    let port = if inbound && port != 53 { 443 } else { port };
     let user = if inbound || (a >> 24).is_multiple_of(4) {
         String::new()
     } else {
@@ -109,7 +110,7 @@ pub fn record(i: u64, at: &Clock, scanning: bool) -> String {
         "<14>{syslog} {device}.acme.example 1,{now},0132010{serial:05},THREAT,{kind},2562,{now},{src},{dst},\
          {nat},{dst},{rule},{user},,{app},vsys1,{szone},{dzone},ethernet1/{iif},ethernet1/{oif},log-fwd-siem,,\
          {session},1,{sport},{port},0,0,0x80402000,{proto},{action},{target},{name}({id}),{category},{severity},\
-         {direction},{sequence},0x8000000000000000,{scountry},{dcountry},,,0,,,,,,,,,,,,,0,0,0,0,vsys1,{device},,",
+         {direction},{sequence},0x8000000000000000,{scountry},{dcountry},,,0,,,,,,,,,,,,0,0,0,0,vsys1,{device},,",
         syslog = at.syslog(),
         serial = net * 2 + (a >> 16) % 2,
         nat = if inbound {
@@ -128,7 +129,7 @@ pub fn record(i: u64, at: &Clock, scanning: bool) -> String {
         oif = if inbound { 3 } else { 1 },
         session = 100_000 + (a >> 32) % 900_000,
         sport = 32_768 + (b >> 44) % 28_000,
-        direction = if inbound {
+        direction = if inbound || kind == "spyware" {
             "client-to-server"
         } else {
             "server-to-client"
@@ -147,6 +148,7 @@ fn a_threat_names_its_signature_and_scanning_comes_from_one_address() {
         let cols: Vec<&str> = line.split(',').collect();
         assert_eq!(cols[3], "THREAT", "{line}");
         assert!(cols.iter().any(|c| c.ends_with(')') && c.contains('(')), "{line}");
+        assert_eq!(cols[58], "vsys1", "{line}");
     }
     let scans = (0..300)
         .map(|i| record(i, &at, true))
