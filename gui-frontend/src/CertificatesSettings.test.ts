@@ -429,7 +429,7 @@ describe('ACME', () => {
     await vi.waitFor(() => expect(button('Renewing…')?.disabled).toBe(true));
     expect(posts).toEqual(['/api/settings/tls/acme/order']);
     expect(target.textContent).toContain(
-      "Waiting for the zone's nameservers to answer the DNS record. This can take up to 15 minutes.",
+      "Waiting for the zone's nameservers to serve the new DNS record. The order can take up to 15 minutes.",
     );
     expect(target.textContent).not.toContain('no answer on port 443');
     running = false;

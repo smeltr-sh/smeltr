@@ -348,9 +348,9 @@
   const STEPS: Record<AcmeStep, string> = {
     queued: 'Waiting for another change to the settings to finish.',
     account: 'Reaching the certificate authority.',
-    proving: 'Giving the certificate authority a proof for each name.',
-    publishing: 'Adding the DNS record.',
-    propagating: "Waiting for the zone's nameservers to answer the DNS record.",
+    proving: 'Proving each name to the certificate authority.',
+    publishing: 'Adding the DNS record in Cloudflare.',
+    propagating: "Waiting for the zone's nameservers to serve the new DNS record.",
     validating: 'Waiting for the certificate authority to check the names.',
     installing: 'Installing the certificate.',
   };
@@ -360,7 +360,7 @@
    * elsewhere, before this page was opened included. */
   const ordering = $derived(starting || acme?.ordering != null);
   const orderWait = $derived(
-    `This can take up to ${Math.ceil((acme?.orderWithinSecs?.[challenge] ?? 0) / 60)} minutes.`,
+    `The order can take up to ${Math.ceil((acme?.orderWithinSecs?.[challenge] ?? 0) / 60)} minutes.`,
   );
   const orderStatus = $derived(
     acme?.ordering ? `${STEPS[acme.ordering.step]} ${orderWait}` : orderWait,
