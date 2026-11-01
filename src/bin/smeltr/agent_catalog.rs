@@ -946,9 +946,18 @@ mod tests {
         files.push(root.join("src/leader/mod.rs"));
         let mut found = Vec::new();
         for file in files.iter().filter(|f| f.extension().is_some_and(|e| e == "rs")) {
+            // A test module's routes serve only its tests. rustfmt closes the module with a `}` alone on a line.
+            let mut in_test_module = false;
+            let mut after_cfg_test = false;
             let text: String = std::fs::read_to_string(file)
                 .unwrap()
                 .lines()
+                .filter(|line| {
+                    let opens = after_cfg_test && line.starts_with("mod ") && line.ends_with('{');
+                    after_cfg_test = *line == "#[cfg(test)]";
+                    in_test_module = (in_test_module || opens) && *line != "}";
+                    !in_test_module && !opens
+                })
                 .filter(|line| !line.trim_start().starts_with("//"))
                 .collect::<Vec<_>>()
                 .join("\n");
