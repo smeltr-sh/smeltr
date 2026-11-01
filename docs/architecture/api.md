@@ -88,8 +88,9 @@ there is a status with no envelope.
 
 An operator request body refuses a field it does not know. An answer may add
 fields. Every answer under `/api/` is `Cache-Control: no-store`, and every
-refusal under it is logged by the one layer that shapes them: a 4xx at debug,
-a 5xx at error, with the method, the path, the status and what was said.
+refusal under it is logged by the layer that shapes them, whether or not the
+route said anything where it failed: a 4xx at debug, a 5xx at error, with
+the method, the path, the status and what was said.
 
 ## Names
 

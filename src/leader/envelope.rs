@@ -135,7 +135,7 @@ impl<T: serde::Serialize> IntoResponse for Envelope<T> {
         };
         let mut response = (self.status, [(header::CONTENT_TYPE, "application/json")], json).into_response();
         if !self.succeeded() {
-            response.extensions_mut().insert(Said(
+            response.extensions_mut().insert(Reason(
                 self.errors
                     .iter()
                     .map(|e| e.message.as_str())
@@ -150,13 +150,54 @@ impl<T: serde::Serialize> IntoResponse for Envelope<T> {
 /// What a refused answer said, carried on the response for the layer that logs every refusal
 /// ([`log_refused`]), so it is not read back out of the body.
 #[derive(Debug, Clone)]
-pub struct Said(pub String);
+pub struct Reason(pub String);
 
-/// Logs a refused `/api/` call, the one place every refusal is written down: a 4xx at debug, since a caller's
-/// mistake is theirs and only worth reading when looking for it, and a 5xx at error, since that one is the leader's.
+/// Logs a refused `/api/` call, so every refusal is in the log whether or not the handler said anything where it
+/// failed: a 4xx at debug, since a caller's mistake is theirs and only worth reading when looking for it, and a 5xx
+/// at error, since that one is the leader's.
+///
+/// A 5xx that repeats is one failure, not many: a store that is down fails every heartbeat and every poll, and a
+/// line per call would fill the log it cannot write with the same sentence. So a call that fails the way one just
+/// did (same method, path and status) is logged once a minute, with how many failed meanwhile under `repeats`.
 pub fn log_refused(method: &str, path: &str, status: StatusCode, error: &str) {
+    log_refused_at(method, path, status, error, std::time::Instant::now());
+}
+
+/// How long a repeated 5xx is held before it is said again.
+const FAILED_AGAIN: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A failing call by its method, path and status, and what was last said of it: when, and how many have failed since.
+type Failing = std::collections::HashMap<(String, String, u16), (std::time::Instant, u32)>;
+
+static FAILED: std::sync::LazyLock<std::sync::Mutex<Failing>> = std::sync::LazyLock::new(Default::default);
+
+/// Paths carry ids, so what failed is bounded by forgetting everything once this many are held.
+const FAILED_HELD: usize = 1024;
+
+fn log_refused_at(method: &str, path: &str, status: StatusCode, error: &str, now: std::time::Instant) {
     if status.is_server_error() {
-        tracing::error!(target: "api.failed", method, path, status = status.as_u16(), error, "an API call failed");
+        let mut failed = FAILED.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (method.to_string(), path.to_string(), status.as_u16());
+        let repeats = match failed.get_mut(&key) {
+            Some((said, since)) if now.duration_since(*said) < FAILED_AGAIN => {
+                *since += 1;
+                return;
+            }
+            Some((said, since)) => {
+                let repeats = std::mem::take(since);
+                *said = now;
+                Some(repeats)
+            }
+            None => {
+                if failed.len() >= FAILED_HELD {
+                    failed.clear();
+                }
+                failed.insert(key, (now, 0));
+                None
+            }
+        };
+        drop(failed);
+        tracing::error!(target: "api.failed", method, path, status = status.as_u16(), error, repeats, "an API call failed");
     } else if status.is_client_error() {
         tracing::debug!(target: "api.refused", method, path, status = status.as_u16(), error, "an API call was refused");
     }
@@ -379,14 +420,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_refused_answer_says_why_on_the_response_and_a_good_one_does_not() {
+    fn a_refused_answer_carries_its_reason_and_a_good_one_does_not() {
         let refused = Refusal::conflict("the name exists").into_response();
         assert_eq!(
-            refused.extensions().get::<Said>().map(|s| s.0.as_str()),
+            refused.extensions().get::<Reason>().map(|s| s.0.as_str()),
             Some("the name exists")
         );
         let fine = Envelope::ok(Empty).into_response();
-        assert!(fine.extensions().get::<Said>().is_none());
+        assert!(fine.extensions().get::<Reason>().is_none());
+    }
+
+    #[test]
+    fn a_failure_that_repeats_is_said_once_a_minute_with_its_count() {
+        let t0 = std::time::Instant::now();
+        let s = std::time::Duration::from_secs;
+        let fail = |at: u64| {
+            log_refused_at(
+                "GET",
+                "/api/repeat",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "down",
+                t0 + s(at),
+            )
+        };
+        let seen = crate::logs::said(|| {
+            fail(0);
+            fail(1);
+            fail(2);
+            fail(61);
+            fail(62);
+        });
+        let repeats: Vec<Option<String>> = seen
+            .iter()
+            .map(|(_, _, f)| f.iter().find(|(n, _)| n == "repeats").map(|(_, v)| v.clone()))
+            .collect();
+        assert_eq!(repeats, vec![None, Some("2".to_string())], "{seen:?}");
+        // Another path is its own failure.
+        let other = crate::logs::said(|| {
+            log_refused_at("GET", "/api/other", StatusCode::SERVICE_UNAVAILABLE, "down", t0 + s(62));
+        });
+        assert_eq!(other.len(), 1, "{other:?}");
     }
 
     #[test]
@@ -395,11 +468,11 @@ mod tests {
             log_refused("POST", "/api/branches/x/deploy", StatusCode::CONFLICT, "a stale base");
             log_refused(
                 "GET",
-                "/api/logs",
+                "/api/logs-once",
                 StatusCode::SERVICE_UNAVAILABLE,
                 "the store is unavailable",
             );
-            log_refused("GET", "/api/logs", StatusCode::OK, "");
+            log_refused("GET", "/api/logs-once", StatusCode::OK, "");
         });
         assert_eq!(seen.len(), 2, "{seen:?}");
         let field = |i: usize, k: &str| seen[i].2.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
@@ -408,7 +481,7 @@ mod tests {
         assert_eq!(field(0, "error").as_deref(), Some("a stale base"));
         assert_eq!(field(0, "message").as_deref(), Some("an API call was refused"));
         assert_eq!((seen[1].0, seen[1].1.as_str()), (tracing::Level::ERROR, "api.failed"));
-        assert_eq!(field(1, "path").as_deref(), Some("/api/logs"));
+        assert_eq!(field(1, "path").as_deref(), Some("/api/logs-once"));
         assert_eq!(field(1, "message").as_deref(), Some("an API call failed"));
     }
 

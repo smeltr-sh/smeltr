@@ -29,7 +29,7 @@ use axum::response::{IntoResponse, Response};
 use smeltr::leader::access::{Access, ByAgent, Level, given_by};
 use smeltr::leader::auth::hash_secret;
 use smeltr::leader::blocking;
-use smeltr::leader::envelope::{Refusal, Said, log_refused};
+use smeltr::leader::envelope::{Reason, Refusal, log_refused};
 use smeltr::leader::sessions::{Refused, Sessions};
 use smeltr::leader::store::{Actor, AuthSource, Store, StoreError, UserRecord};
 use smeltr::leader::throttle::LoginThrottle;
@@ -430,7 +430,7 @@ pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) ->
         return response;
     }
     // A handler's own refusal says why on the response (`Envelope`), and is answered as it is.
-    if let Some(said) = response.extensions().get::<Said>() {
+    if let Some(said) = response.extensions().get::<Reason>() {
         log_refused(&method, &path, status, &said.0);
         return response;
     }
