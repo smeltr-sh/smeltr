@@ -33,14 +33,20 @@
       source="feed-health-issues"
       height={1800}
       crop={{ x: 472, y: 758, width: 2360, height: 176 }}
-      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 420,808 rows in 30 minutes where 735,037 to 965,805 is normal at this time of day."
+      phone={{
+        source: 'feed-health-issues-phone',
+        height: 2200,
+        width: 1440,
+        crop: { x: 472, y: 922, width: 920, height: 299 },
+      }}
+      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 418,174 rows in 30 minutes where 729,828 to 958,960 is normal at this time of day."
       caption="The Issues page names the source, what it read and what is normal."
     />
     <ProductScreenshot
       source="feed-health-volume"
       height={1800}
       crop={{ x: 2150, y: 470, width: 690, height: 950 }}
-      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 245 rows a second, expected 408 to 537. Its 24-hour chart follows the expected band through the day, then falls to half."
+      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 243 rows a second, expected 405 to 533. Its 24-hour chart follows the expected band through the day, then falls to half."
       caption="Over the last 24 hours the source reads within its band, until it falls to half."
     />
     <p>
@@ -60,6 +66,12 @@
       source="feed-health-issues"
       height={1800}
       crop={{ x: 472, y: 558, width: 2360, height: 176 }}
+      phone={{
+        source: 'feed-health-issues-phone',
+        height: 2200,
+        width: 1440,
+        crop: { x: 472, y: 601, width: 920, height: 299 },
+      }}
       alt="The Issues page: Field not its declared type, for the fortigate-traffic pipeline, whose field proto has failed to read as its declared type in the last hour."
       caption="The Issues page names the pipeline, the field and the step."
     />
