@@ -340,18 +340,32 @@ async fn order(State(state): State<Acme>, actor: axum::Extension<Actor>, headers
     if let Err(e) = acme::orderable(&settings.directory, &settings.names) {
         return refuse(StatusCode::UNPROCESSABLE_ENTITY, &e);
     }
-    if let Ok(one) = serving.ordering.one.clone().try_lock_owned() {
-        let required = certificates_api::must_serve(&serving, &headers);
-        // Said before the answer, so the page it goes to shows the order running.
-        serving.ordering.progress.set(acme::Step::Account);
-        let auth = state.auth.clone();
-        let serving = serving.clone();
-        tokio::spawn(async move {
-            let _one = one;
-            let _ = run(&auth, &serving, &settings, &actor, &required, true).await;
-        });
-    }
+    let Ok(one) = serving.ordering.one.clone().try_lock_owned() else {
+        return refuse(StatusCode::CONFLICT, ALREADY_ORDERING);
+    };
+    let required = certificates_api::must_serve(&serving, &headers);
+    // Said before the answer, so the page it goes to shows the order running.
+    serving.ordering.progress.set(acme::Step::Account);
+    let auth = state.auth.clone();
+    let serving = serving.clone();
+    tokio::spawn(async move {
+        let _one = one;
+        let _ = run(&auth, &serving, &settings, &actor, &required, true).await;
+    });
     answer(&state).await
+}
+
+const ALREADY_ORDERING: &str = "A certificate is already being ordered. Wait for that order to finish.";
+const SETTINGS_MOVED: &str = "The names, directory or challenge changed while this order ran, so its certificate \
+                              is not served. Order again.";
+
+/// Clears the step said when it is dropped, however the order ended, a panic included.
+struct Cleared<'a>(&'a acme::Progress);
+
+impl Drop for Cleared<'_> {
+    fn drop(&mut self) {
+        self.0.clear();
+    }
 }
 
 /// `settings_writes`, saying so when it has to wait: an order writes only once issued, under the lock every
@@ -381,6 +395,7 @@ async fn run(
     let now_ms = smeltr::leader::warnings::now_millis();
     tracing::info!(target: "leader.acme_order_started", names = %settings.names.join(","), challenge = settings.challenge.as_str(), "ordering a certificate");
     let progress = &serving.ordering.progress;
+    let _cleared = Cleared(progress);
     progress.set(acme::Step::Account);
     let mut outcome = order_once(auth, serving, settings, actor, required, serve, now_ms).await;
     if outcome.is_ok() {
@@ -393,7 +408,6 @@ async fn run(
             outcome = Err(e);
         }
     }
-    progress.clear();
     outcome
 }
 
@@ -420,6 +434,10 @@ async fn order_once(
     // What is served may have moved while the authority took its time; asked again where nothing else moves it.
     let _writes = settings_writes(auth, progress).await;
     progress.set(acme::Step::Installing);
+    let now = self::settings(auth).await?;
+    if (&now.names, &now.directory, now.challenge) != (&settings.names, &settings.directory, settings.challenge) {
+        return Err(SETTINGS_MOVED.to_string());
+    }
     acme::against_served(&serving.dir, &mut issued)?;
     issued.rotates &= serve;
     // Recorded before anything is served, as an upload is: a switch of root as the rotation it begins, against
