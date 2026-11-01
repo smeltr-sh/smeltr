@@ -365,10 +365,11 @@
     () => baseline?.rowsOut.filter((series) => flowMatchesSelection(series)).length ?? 0,
   );
 
-  // Derived fresh by the leader on every request and cleared when its fact stops, so these
-  // are replaced wholesale each poll and never merged with what was showing.
   /** Issues the ribbon names; the Issues page lists the rest. */
   const RIBBON_ISSUES = 3;
+
+  // Derived fresh by the leader on every request and cleared when its fact stops, so these
+  // are replaced wholesale each poll and never merged with what was showing.
   let warnings: WarningDto[] = $state([]);
   // Stamped with the answer, so an age reads as of the poll that produced it rather than
   // creeping upward between polls -- the same discipline as `lastSeenMillisAgo`.
@@ -704,9 +705,7 @@
       <a class="issue-ribbon" href="#/status/issues" aria-label="Active fleet issues">
         <span class="issue-head">
           <strong
-            ><StateMark
-              state={warnings.some((w) => w.severity === 'failed') ? 'error' : 'warning'}
-            />
+            ><StateMark state={severityState(warnings[0].severity)} />
             {count(warnings.length, 'active issue')}</strong
           >
           <span class="issue-more">View all issues &rsaquo;</span>
