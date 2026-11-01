@@ -4855,7 +4855,8 @@ fn load_target(
         // A commit carries every group, so it holds this one before anybody authors it and after somebody deletes
         // it. Nothing to run is a state, not a failure.
         Err(_) if content.group.is_none() => {
-            tracing::info!(target: "worker.group_not_authored", %group_id, subject = %commit, "the commit has nothing for this worker's group, so it runs nothing");
+            // Debug: the supervisor validates the commit and the runtime loads it, so an info line would be two.
+            tracing::debug!(target: "worker.group_not_authored", %group_id, subject = %commit, "the commit has nothing for this worker's group, so it runs nothing");
             LoadedSystem::default()
         }
         Err(e) => return Err(format!("a commit was fetched but does not load: {e}")),

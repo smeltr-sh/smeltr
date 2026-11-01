@@ -703,7 +703,6 @@ pub fn run_runtime_child() -> ! {
     }
     let _ = send(&mut locked, &FromRuntime::Stopped { incarnation });
     drop(locked);
-    tracing::info!(target: "runtime.stopped", incarnation, "the runtime stopped");
     crate::logs::stop();
     std::process::exit(0);
 }
@@ -1198,7 +1197,11 @@ fn read_from_runtime_frames(from: impl std::io::Read, inbox: &Arc<RuntimeInbox>,
                 }
             }
             FromRuntime::Captured { report, .. } => inbox.captured.lock().unwrap().push(*report),
-            FromRuntime::Stopped { .. } => inbox.exited.store(true, Ordering::Relaxed),
+            // Said here, where it can still reach the leader: the runtime sends nothing after this.
+            FromRuntime::Stopped { .. } => {
+                tracing::info!(target: "runtime.stopped", incarnation, "the runtime stopped");
+                inbox.exited.store(true, Ordering::Relaxed)
+            }
         }
     }
 }
