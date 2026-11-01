@@ -22,6 +22,9 @@ def tables():
 
 KAFKA = "localhost:19092"
 ES = "http://localhost:9200"
+SPLUNK = "http://localhost:8088"
+S3 = "http://localhost:4566"
+ARCHIVE_BUCKET = "acme-firewall-archive"
 
 # -- shared ------------------------------------------------------------------------
 
@@ -38,6 +41,12 @@ _ALL_DESTINATIONS = {
     "kafka-alerts": {"id": "kafka-alerts", "type": "kafka", "brokers": KAFKA, "defaultTopic": "alerts.security",
                      "compression": "zstd"},
     "kafka-dlq": {"id": "kafka-dlq", "type": "kafka", "brokers": KAFKA, "defaultTopic": "smeltr.dlq"},
+    # The SIEM, sent PAN-OS lines as they were sent, trimmed. The workers hold the token (stage.py).
+    "splunk": {"id": "splunk", "type": "splunkHec", "url": SPLUNK, "token": "SPLUNK_HEC_TOKEN", "endpoint": "raw",
+               "format": "text", "index": "main", "sourcetype": "pan:traffic"},
+    # Every record as it arrived, for a search or a replay later. The workers' AWS settings sign for LocalStack.
+    "s3-archive": {"id": "s3-archive", "type": "s3", "bucket": ARCHIVE_BUCKET, "region": "us-east-1",
+                   "endpoint": S3, "format": "bytes"},
 }
 
 
@@ -53,6 +62,7 @@ def destinations(ids, key_version):
 
 
 NETWORK_DESTINATIONS = ["es-network", "kafka-alerts", "kafka-dlq"]
+SIEM_DESTINATIONS = ["splunk", "s3-archive"]
 APPS_DESTINATIONS = ["es-web", "es-security", "kafka-alerts", "kafka-dlq"]
 
 def sites_table():
@@ -179,6 +189,21 @@ PANOS = {
         ]])},
         {"type": "call", "id": "common", "pipeline": "ecs-common"},
     ],
+}
+
+# -- network: PAN-OS trimmed for the SIEM ------------------------------------------------------------
+
+# The pipeline the Cut SIEM costs page shows: the same line, with the columns no search uses left empty, and the
+# allowed DNS lookups dropped.
+PANOS_TRIM = {
+    "id": "panos-trim", "name": "panos-trim",
+    "steps": json.load(open(os.path.join(REPO, "website", "src", "lib", "siem-cut-example.json")))["steps"],
+}
+
+# A route runs a pipeline. The archive's changes nothing, and its destination writes the bytes each record arrived as.
+AS_SENT = {
+    "id": "as-sent", "name": "as-sent",
+    "steps": [{"type": "comment", "id": "about", "text": "Nothing changed: the archive keeps each line as it was sent."}],
 }
 
 # -- network: FortiGate ---------------------------------------------------------------
@@ -428,6 +453,14 @@ NETWORK_ROUTES = [
      "deliver": [{"to": ["es-network"]}]},
     {"id": "fortigate", "source": "fortigate-firewalls", "condition": None, "pipeline": "fortigate-traffic",
      "deliver": [{"to": ["es-network"]}]},
+]
+# The same PAN-OS feed twice more, since every route whose condition matches runs: trimmed to the SIEM, and whole
+# to the archive.
+SIEM_ROUTES = [
+    {"id": "panos-siem", "source": "panw-firewalls", "condition": None, "pipeline": "panos-trim",
+     "deliver": [{"to": ["splunk"]}]},
+    {"id": "panos-archive", "source": "panw-firewalls", "condition": None, "pipeline": "as-sent",
+     "deliver": [{"to": ["s3-archive"]}]},
 ]
 APPS_ROUTES = [
     {"id": "web", "source": "nginx-access", "condition": None, "pipeline": "nginx-access",

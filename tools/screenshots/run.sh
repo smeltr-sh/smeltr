@@ -40,7 +40,7 @@ SETUP
 
 if [ "${1:-}" = "" ] || { [ "${1:-}" = demo ] && ! curl -sk -o /dev/null https://127.0.0.1:8443/; }; then
     [ -x "${CARGO_TARGET_DIR:-$REPO/target}/release/smeltr" ] || { echo "no release binary: just build" >&2; exit 1; }
-    docker compose -f "$REPO/tests/live/compose.live.yaml" up -d --wait kafka elasticsearch elasticsearch-2
+    docker compose -f "$REPO/tests/live/compose.live.yaml" up -d --wait kafka elasticsearch elasticsearch-2 splunk localstack
     python3 stage.py traffic
     python3 -u stage.py
     echo "settling for $SETTLE_MIN min, so the charts have history"

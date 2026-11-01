@@ -1,7 +1,7 @@
 <script lang="ts">
   import SiemSteps from '#lib/components/SiemSteps.svelte';
   import SiemCutExample from '#lib/components/SiemCutExample.svelte';
-  import WorkflowDiagram from '#lib/components/WorkflowDiagram.svelte';
+  import ProductScreenshot from '#lib/components/ProductScreenshot.svelte';
 </script>
 
 <svelte:head
@@ -38,7 +38,13 @@
   <section aria-labelledby="copy-heading">
     <h2 id="copy-heading">Trim it for the SIEM. Keep it whole in object storage.</h2>
     <p>Send the same records to your SIEM trimmed and to object storage whole.</p>
-    <WorkflowDiagram kind="siem" />
+    <ProductScreenshot
+      source="siem-routes"
+      height={2800}
+      crop={{ x: 507, y: 661, width: 2323, height: 850 }}
+      alt="The Routes page: the panw-firewalls source feeds three pipelines, panos-traffic to es-network, panos-trim to splunk, and as-sent to s3-archive."
+      caption="One source, three routes. Every route whose condition matches runs, so Elasticsearch gets the traffic mapped to ECS, Splunk gets the trimmed lines, and S3 keeps each line as it was sent."
+    />
     <p>
       <a href="/docs/destinations/s3">Amazon S3</a> ·
       <a href="/docs/destinations/gcs">Google Cloud Storage</a> ·

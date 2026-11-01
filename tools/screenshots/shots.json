@@ -777,6 +777,17 @@
     ]
   },
   {
+    "name": "14c-routes-siem",
+    "site": "siem-routes",
+    "hash": "#/build/routes",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1400,
+    "delay": 2000,
+    "steps": [{ "delay": 2000 }, { "text": "panw-firewalls" }, { "delay": 1500 }]
+  },
+  {
     "name": "15-route-preview",
     "site": "route-preview",
     "hash": "#/build/routes/preview",

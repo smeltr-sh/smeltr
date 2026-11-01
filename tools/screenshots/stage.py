@@ -39,6 +39,9 @@ PACE = float(os.environ.get("PACE", "1"))
 # A throwaway leader on loopback: these open nothing a run does not create and then discard.
 ADMIN_PW = "Smeltr-Demo-2026!"
 PEOPLE = {"priya": ("Priya Raman", "Firewall-Logs-2026!"), "marcus": ("Marcus Webb", "Platform-Logs-2026!")}
+# A HEC token with indexer acknowledgement on, which the splunk destination waits for by default. `reset` makes it,
+# as `just live-up` does.
+SPLUNK_HEC_TOKEN = "00000000-0000-0000-0000-00000000a0c4"
 WORKERS = [("fw-collector-01", "network"), ("fw-collector-02", "network"),
            ("app-collector-01", "apps"), ("app-collector-02", "apps")]
 TOPICS = [("syslog.panos", 4), ("syslog.fortigate", 4), ("web.nginx.access", 2), ("syslog.auth", 1),
@@ -225,6 +228,12 @@ def reset():
     for method, path, body in es:
         subprocess.run(["curl", "-s", "-o", "/dev/null", "-X", method, f"localhost:9200/{path}",
                         "-H", "Content-Type: application/json"] + (["-d", body] if body else []), check=False)
+    subprocess.run(["curl", "-s", "-o", "/dev/null", "-u", "admin:smeltr-live-1",
+                    "http://localhost:8089/servicesNS/nobody/splunk_httpinput/data/inputs/http", "-d", "name=smeltr-ack",
+                    "-d", f"token={SPLUNK_HEC_TOKEN}", "-d", "useACK=1", "-d", "index=main", "-d", "indexes=main"],
+                   check=False)
+    # LocalStack takes an unsigned request; a bucket already there is left as it is.
+    subprocess.run(["curl", "-s", "-o", "/dev/null", "-X", "PUT", f"{bundle.S3}/{bundle.ARCHIVE_BUCKET}"], check=False)
     shutil.rmtree(STATE, ignore_errors=True)
     os.makedirs(STATE)
 
@@ -271,7 +280,8 @@ def start_workers():
         spawn(PIDS, host, [BINARY], wd, os.path.join(STATE, f"{host}.log"),
               fleet_env(HOSTNAME=host, SMELTR_WORKER_ENABLED="1", SMELTR_WORKER_GROUP=group,
                         SMELTR_WORKER_ENROLLMENT_CODE=codes[group], SMELTR_LEADER_URL=api.BASE,
-                        SMELTR_WORKER_THREAD_LIMIT="2"))
+                        SMELTR_WORKER_THREAD_LIMIT="2", SPLUNK_HEC_TOKEN=SPLUNK_HEC_TOKEN,
+                        AWS_ACCESS_KEY_ID="test", AWS_SECRET_ACCESS_KEY="test"))
 
 
 # -- the people, and the changes they make ------------------------------------------------------------
@@ -390,6 +400,21 @@ def alert_5xx():
     as_("admin").deploy(b)
 
 
+def siem():
+    log("change: trim for the SIEM")
+    c = as_("priya")
+    b = "trim-panos-for-splunk"
+    c.put("destinations", bundle.destinations(bundle.NETWORK_DESTINATIONS + bundle.SIEM_DESTINATIONS, 1), b,
+          "network")
+    for p in (bundle.PANOS_TRIM, bundle.AS_SENT):
+        c.put_pipeline(p, b, "network")
+    c.put("routes", bundle.NETWORK_ROUTES + bundle.SIEM_ROUTES, b, "network")
+    c.open_change(b, "Send PAN-OS to Splunk trimmed, and archive it whole in S3",
+                  "Splunk gets each TRAFFIC line with only the 20 columns the SOC searches, and no allowed DNS "
+                  "lookups. Every line also goes to the S3 archive as it arrived, so nothing is lost.")
+    as_("admin").deploy(b)
+
+
 def rotate():
     log("change: rotate key")
     admin = as_("admin")
@@ -416,7 +441,7 @@ def open_change():
         ("panw.app.high_risk", "panw.app.risk >= 4"),
     ])})
     c.put_pipeline(p, b, "network")
-    routes = copy.deepcopy(bundle.NETWORK_ROUTES)
+    routes = copy.deepcopy(bundle.NETWORK_ROUTES + bundle.SIEM_ROUTES)
     next(r for r in routes if r["id"] == "panos")["deliver"].insert(1, {"when": "panw.app.risk >= 5",
                                                                       "to": ["kafka-alerts"]})
     c.put("routes", routes, b, "network")
@@ -481,7 +506,9 @@ def main():
     apps()
     pause(4)
     alert_5xx()
-    pause(3)
+    pause(2)
+    siem()
+    pause(2)
     rotate()
     pause(1)
     open_change()
