@@ -41,9 +41,9 @@
     <ProductScreenshot
       source="siem-routes"
       height={2800}
-      crop={{ x: 507, y: 661, width: 2323, height: 850 }}
-      alt="The Routes page: the panw-firewalls source feeds three pipelines, panos-traffic to es-network, panos-trim to splunk, and as-sent to s3-archive."
-      caption="One source, three routes. Every route whose condition matches runs, so Elasticsearch gets the traffic mapped to ECS, Splunk gets the trimmed lines, and S3 keeps each line as it was sent."
+      crop={{ x: 507, y: 877, width: 2323, height: 830 }}
+      alt="The Routes page: the panw-siem source feeds two pipelines, panos-trim to splunk and as-sent to s3-archive."
+      caption="One source, two routes. Every route whose condition matches runs, so Splunk gets the trimmed lines and S3 keeps each line as it was sent."
     />
     <p>
       <a href="/docs/destinations/s3">Amazon S3</a> ·

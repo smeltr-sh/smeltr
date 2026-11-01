@@ -785,7 +785,7 @@
     "themes": ["light", "dark"],
     "height": 1400,
     "delay": 2000,
-    "steps": [{ "delay": 2000 }, { "text": "panw-firewalls" }, { "delay": 1500 }]
+    "steps": [{ "delay": 2000 }, { "text": "panw-siem" }, { "delay": 1500 }]
   },
   {
     "name": "15-route-preview",

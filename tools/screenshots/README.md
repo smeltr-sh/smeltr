@@ -17,13 +17,13 @@ The PNGs land in `shots/` as `<nn>-<page>-<light|dark>.png`, 1440 px wide at 2x 
 
 ```mermaid
 graph LR
-  gen[demo-traffic] --> pa([panw-firewalls]) & fg([fortigate-firewalls]) & ng([nginx-access]) & au([linux-auth]) & ct([aws-cloudtrail])
+  gen[demo-traffic] --> pa([panw-firewalls]) & ps([panw-siem]) & fg([fortigate-firewalls]) & ng([nginx-access]) & au([linux-auth]) & ct([aws-cloudtrail])
   gen --> asa([cisco-asa]) & pt([panw-threats]) & vs([versa-sdwan]) & aed([netscout-aed]) & snmp([router-snmp])
   gen --> eal([elastic-agent-linux]) & eaw([elastic-agent-windows]) & sen([sentinel-eventhub])
   subgraph network [Network security: fw-collector-01, -02]
     pa --> pp[panos-traffic] --> esn([es-network])
-    pa --> pt2[panos-trim] --> spl([splunk])
-    pa --> arc([s3-archive])
+    ps --> pt2[panos-trim] --> spl([splunk])
+    ps --> arc([s3-archive])
     fg --> fp[fortigate-traffic] --> esn
     asa & pt & vs & aed & snmp
   end

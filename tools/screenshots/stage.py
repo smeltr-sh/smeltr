@@ -48,7 +48,7 @@ TOPICS = [("syslog.panos", 4), ("syslog.fortigate", 4), ("web.nginx.access", 2),
           ("aws.cloudtrail", 1), ("syslog.asa", 2), ("syslog.panos.threat", 1), ("syslog.versa", 2),
           ("syslog.netscout", 1), ("metrics.snmp.interface", 1), ("elastic.agent.linux", 1),
           ("elastic.agent.windows", 1), ("azure.eventhub.sentinel", 1), ("smeltr.dlq", 1), ("alerts.security", 2)]
-CONSUMER_GROUPS = [s["groupId"] for s in bundle.NETWORK_SOURCES + bundle.APPS_SOURCES]
+CONSUMER_GROUPS = [s["groupId"] for s in bundle.NETWORK_SOURCES + [bundle.SIEM_SOURCE] + bundle.APPS_SOURCES]
 KAFKA = ["docker", "compose", "-f", os.path.join(REPO, "tests", "live", "compose.live.yaml"), "exec", "-T", "kafka"]
 
 
@@ -406,6 +406,7 @@ def siem():
     b = "trim-panos-for-splunk"
     c.put("destinations", bundle.destinations(bundle.NETWORK_DESTINATIONS + bundle.SIEM_DESTINATIONS, 1), b,
           "network")
+    c.put("sources", bundle.NETWORK_SOURCES + [bundle.SIEM_SOURCE], b, "network")
     for p in (bundle.PANOS_TRIM, bundle.AS_SENT):
         c.put_pipeline(p, b, "network")
     c.put("routes", bundle.NETWORK_ROUTES + bundle.SIEM_ROUTES, b, "network")

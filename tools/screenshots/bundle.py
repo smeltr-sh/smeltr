@@ -431,6 +431,8 @@ NETWORK_SOURCES = [
     kafka_source("netscout-aed", "syslog.netscout", "smeltr-netscout"),
     kafka_source("router-snmp", "metrics.snmp.interface", "smeltr-snmp"),
 ]
+# The same PAN-OS lines, read again for the SIEM and the archive.
+SIEM_SOURCE = kafka_source("panw-siem", "syslog.panos", "smeltr-panos-siem")
 APPS_SOURCES = [
     kafka_source("nginx-access", "web.nginx.access", "smeltr-nginx"),
     kafka_source("linux-auth", "syslog.auth", "smeltr-auth"),
@@ -454,12 +456,12 @@ NETWORK_ROUTES = [
     {"id": "fortigate", "source": "fortigate-firewalls", "condition": None, "pipeline": "fortigate-traffic",
      "deliver": [{"to": ["es-network"]}]},
 ]
-# The same PAN-OS feed twice more, since every route whose condition matches runs: trimmed to the SIEM, and whole
-# to the archive.
+# Two routes from one source, since every route whose condition matches runs: trimmed to the SIEM, and whole to
+# the archive.
 SIEM_ROUTES = [
-    {"id": "panos-siem", "source": "panw-firewalls", "condition": None, "pipeline": "panos-trim",
+    {"id": "panos-siem", "source": "panw-siem", "condition": None, "pipeline": "panos-trim",
      "deliver": [{"to": ["splunk"]}]},
-    {"id": "panos-archive", "source": "panw-firewalls", "condition": None, "pipeline": "as-sent",
+    {"id": "panos-archive", "source": "panw-siem", "condition": None, "pipeline": "as-sent",
      "deliver": [{"to": ["s3-archive"]}]},
 ]
 APPS_ROUTES = [
