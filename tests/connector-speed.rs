@@ -21,6 +21,7 @@
 #![cfg(target_os = "linux")]
 
 mod live;
+mod panos;
 mod reference;
 
 use std::io::Read;
