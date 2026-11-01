@@ -56,6 +56,17 @@ source from the time the bug went in; when a source is far behind, skip to
 the newest, by changing where the source starts. Each partition reads from
 that point once, whatever its group has committed.
 
+**E9 — Reached where I already look.** When something needs me, I hear
+of it in the tool I already watch -- my automation or paging service, my
+inbox, my monitoring -- when it starts and when it ends. Nobody has to keep
+smeltr open.
+
+**E10 — Only what is mine.** My team hears of the kinds of trouble it acts
+on, for the groups it owns. Another team's trouble is not my noise.
+
+**E11 — Told when smeltr cannot tell me.** When the leader itself is down,
+I still learn of it, from outside smeltr.
+
 ## Data analyst
 
 **A1 — Real records to work from.** Samples obtained by reading a source,
@@ -240,6 +251,17 @@ leader's AI agents on by naming the model endpoint they think with:
 Anthropic, OpenAI or another OpenAI-compatible service, its model and its
 key. Until I do, nobody is offered the agent's screens, and a key or model
 that cannot work is refused when I save it.
+
+**S13 — Decide who hears what.** For each kind of warning, I choose which
+recipients hear it, and I can try a recipient before I rely on it.
+
+**S14 — Nothing leaves that should not.** What goes out is what a recipient
+needs to act: what, where, how bad, since when, and a way back to it. Record
+data and a connector's own error text stay inside unless I choose to send
+them.
+
+**S15 — Sending credentials stay sealed.** A mail password or a webhook's
+secret is set once and never read back, as any credential is (S8).
 
 ## Groups
 
