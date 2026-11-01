@@ -46,8 +46,10 @@
     { id: 'fields', title: 'Fields' },
     ...recordGroups.map((g) => ({ id: g.id, title: g.title })),
     { id: 'statements', title: 'Statements' },
-    { id: 'parse', title: 'Parse and lookup' },
+    { id: 'types', title: 'Types' },
+    { id: 'nulls', title: 'Null' },
     ...typeGroups.map((g) => ({ id: g.id, title: g.title })),
+    { id: 'parse', title: 'Parse and lookup' },
     { id: 'exceptions', title: 'Exceptions and try' },
     { id: 'see-also', title: 'See also' },
   ];
@@ -263,21 +265,69 @@
   <section class="hero">
     <h1>Language reference</h1>
     <p class="lede">
-      An expression computes one value from a record's fields. Use expressions in Eval, Code, Drop
-      and If steps, step filters, and route conditions.
+      Smeltr's language is what you write in Eval, Code, Drop and If steps, in step filters and in
+      route conditions. A statement changes the record or declares a name, and an expression
+      computes a value.
     </p>
   </section>
 
   <section class="prelude">
     <h2 id="how-it-works">How it works</h2>
     <p>
-      A name reads the field of that name on the record being processed, and operators and functions
-      compute from those values. A method call and a function call are one call. Every value has a
-      type, and the pipeline compiles only when every expression's types fit.
+      A name reads the field of that name on the record being processed. Operators and functions
+      compute from those values. <code>host.length()</code> and <code>length(host)</code> are the
+      same call. Every value has a type (see <a href="#types">Types</a>), and a pipeline compiles
+      only when every type fits.
     </p>
     {@render examples(calls.examples)}
+  </section>
 
-    <h3 id="types">Types</h3>
+  <section class="group">
+    <h2 id="fields">Fields</h2>
+    <p>
+      Every record has these fields. A source's own fields are on its
+      <a href="/docs/sources">source page</a>, and the fields a destination reads are on its
+      <a href="/docs/destinations">destination page</a>. Smeltr never delivers a field at the
+      record's root whose name starts with <code>__</code>.
+    </p>
+    <div class="tscroll">
+      <table class="kinds">
+        <thead><tr><th>Field</th><th>Type</th><th>Set by</th><th>Holds</th></tr></thead>
+        <tbody>
+          {#each recordFields as f (f.name)}
+            <tr>
+              <td><code>{f.name}</code></td>
+              <td><code>{f.type}</code></td>
+              <td>{f.setBy}</td>
+              <td><Prose text={f.what} /></td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {#each recordGroups as g (g.id)}{@render group(g)}{/each}
+
+  <section class="group">
+    <h2 id="statements">Statements</h2>
+    <p class="blurb">
+      A statement ends with a semicolon, and a block in braces holds statements. The language has
+      these statements:
+    </p>
+    <div class="tscroll">
+      <table class="kinds">
+        <tbody>
+          {#each language.statements as row (row.form)}
+            <tr><td><code>{row.form}</code></td><td><Prose text={row.rule} /></td></tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="group">
+    <h2 id="types">Types</h2>
     <p>
       A name's first write sets its type. A name's type is fixed for the whole pipeline. A
       declaration, <code>name: T = e</code>, states it, and
@@ -338,8 +388,10 @@
     {@render refused(errors.conversion)}
     <p>An expression whose types do not fit on any row does not compile.</p>
     {@render rejected(typeTopic.rejected)}
+  </section>
 
-    <h3 id="nulls">Null</h3>
+  <section class="group">
+    <h2 id="nulls">Null</h2>
     <p>
       A declared field a record lacks reads as null, and a name no step declares or writes does not
       compile. Arithmetic on null gives null. A condition reads null as false: a ternary takes the
@@ -350,49 +402,7 @@
     {@render examples(nulls.examples)}
   </section>
 
-  <section class="group">
-    <h2 id="fields">Fields</h2>
-    <p>
-      Every record has these fields. A source's own fields are on its
-      <a href="/docs/sources">source page</a>, and the fields a destination reads are on its
-      <a href="/docs/destinations">destination page</a>. Smeltr never delivers a field at the
-      record's root whose name starts with <code>__</code>.
-    </p>
-    <div class="tscroll">
-      <table class="kinds">
-        <thead><tr><th>Field</th><th>Type</th><th>Set by</th><th>Holds</th></tr></thead>
-        <tbody>
-          {#each recordFields as f (f.name)}
-            <tr>
-              <td><code>{f.name}</code></td>
-              <td><code>{f.type}</code></td>
-              <td>{f.setBy}</td>
-              <td><Prose text={f.what} /></td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  {#each recordGroups as g (g.id)}{@render group(g)}{/each}
-
-  <section class="group">
-    <h2 id="statements">Statements</h2>
-    <p class="blurb">
-      A statement ends with a semicolon, and a block in braces holds statements. The language has
-      these statements:
-    </p>
-    <div class="tscroll">
-      <table class="kinds">
-        <tbody>
-          {#each language.statements as row (row.form)}
-            <tr><td><code>{row.form}</code></td><td><Prose text={row.rule} /></td></tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  </section>
+  {#each typeGroups as g (g.id)}{@render group(g)}{/each}
 
   <section class="group">
     <h2 id="parse">Parse and lookup</h2>
@@ -426,8 +436,6 @@
       </article>
     {/each}
   </section>
-
-  {#each typeGroups as g (g.id)}{@render group(g)}{/each}
 
   <section class="group">
     <h2 id="exceptions">Exceptions and try</h2>

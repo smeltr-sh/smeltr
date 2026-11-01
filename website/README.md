@@ -130,16 +130,20 @@ One catalog page, not an overview and item pages: a reader scans it for an
 operator or function, and its sidebar searches function names. Its sections, in
 order:
 
-1. Lede: what an expression is and where one is written.
-2. How it works: what holds for every expression, with Types and Null as
-   `h3`s.
+1. Lede: what the language is, where it is written, and what a statement and an
+   expression each do.
+2. How it works: what holds for every expression.
 3. Fields: the fields every record has. A source's own fields are on its page,
    and the fields a destination reads on its page.
-4. One section per group, by the type its operators and functions work on: the
+4. Naming a field and Objects.
+5. Statements.
+6. Types, then Null.
+7. One section per group, by the type its operators and functions work on: the
    group's rule, its notes, the operator table, what does not compile, then
    each function.
-5. Exceptions: what a throw does, and every kind.
-6. See also.
+8. Parse and lookup.
+9. Exceptions: what a throw does, and every kind.
+10. See also.
 
 A function gives its signature, the engine's typed rows from
 `src/lib/signatures.json`, its summary and rules, then its examples. Every other
