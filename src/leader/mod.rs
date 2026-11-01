@@ -71,7 +71,7 @@ use axum::Router;
 use axum::extract::{Extension, Json, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 
 use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
 use envelope::{Empty, Envelope, Refusal};
@@ -3674,6 +3674,10 @@ pub fn admin_router() -> Router<AppState> {
             "/api/settings/git-remote",
             get(remote::get_settings).put(remote::put_settings),
         )
+        .route("/api/settings/alerts", get(alerts::get_settings))
+        .route("/api/settings/alerts/mail", put(alerts::put_mail))
+        .route("/api/settings/alerts/channels", put(alerts::put_channels))
+        .route("/api/settings/alerts/test", post(alerts::post_test))
         .route("/api/settings/git-remote/sync", post(remote::post_sync))
         .route("/api/branches/:name/overwrite", post(remote::overwrite))
         .route("/api/secrets", get(list_secrets).post(create_secret))
