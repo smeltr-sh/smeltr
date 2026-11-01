@@ -188,6 +188,8 @@ test('the Schemas page reads a schema through the service', async ({ page }) => 
 test('the recording answers every read of every page the navigation reaches', async ({
   browser,
 }) => {
+  // It opens every page the navigation reaches, which under a full run's load passes the default.
+  test.setTimeout(300_000);
   const unrecorded = new Set<string>();
   const open = async (hash: string) => {
     const page = await browser.newPage();
