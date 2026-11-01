@@ -11,6 +11,7 @@
     { id: 'ocsf', title: 'Read an OCSF class' },
     { id: 'csv', title: 'Read a CSV of fields' },
     { id: 'produces', title: 'Hold a pipeline to a schema' },
+    { id: 'fields', title: "Fill in a schema's fields" },
     { id: 'findings', title: 'Read the findings' },
     { id: 'export', title: 'Export an Elasticsearch mapping' },
   ];
@@ -189,6 +190,26 @@
     alt="An Elasticsearch destination that accepts the login schema."
     caption="This destination accepts Login. A route whose pipeline does not produce it is a finding."
   />
+
+  <h2 id="fields">Fill in a schema's fields</h2>
+  <p>
+    While you build the pipeline, its name boxes offer the fields of the schemas it produces. Type
+    in a field name, such as an eval step's target. The list shows one level at a time, each field
+    with its type and requirement. The field you highlight shows in full beside it: its description,
+    an example and its Elasticsearch type.
+  </p>
+  <ProductScreenshot
+    source="schema-name-box"
+    height={1800}
+    crop={{ x: 500, y: 800, width: 1820, height: 850 }}
+    alt="An eval step's target box with user. typed. The list shows Login's three fields under user, and the highlighted user.name in full beside it."
+    caption="Login's fields under user, with user.name in full beside the list."
+  />
+  <p>
+    <strong>Fields</strong>, above the records, lists the same fields. Choose
+    <strong>Not set</strong> for those the rows still lack, and <strong>+ assign</strong> to write one
+    in an eval step.
+  </p>
 
   <h2 id="findings">Read the findings</h2>
   <p>
