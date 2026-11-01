@@ -64,7 +64,10 @@
       <span>smeltr</span>
     </a>
   </div>
-  <p><a href={source}>Source code</a> · <a href="mailto:support@smeltr.sh">support@smeltr.sh</a></p>
+  <p>
+    <a href="/releases">Releases</a> · <a href={source}>Source code</a> ·
+    <a href="mailto:support@smeltr.sh">support@smeltr.sh</a>
+  </p>
 </footer>
 
 <style>
