@@ -1,0 +1,481 @@
+//! Telling people of warnings where they already look: each alert channel is a webhook or a mailbox, and is told
+//! when a warning it takes is raised and again when it clears.
+//!
+//! The leader looks on its own timer, so a fleet whose workers have all gone silent is still told. Each look reads
+//! the catalog, works out what each channel should know, and compares that with what the channel was told
+//! (`alerts_told` in the store). A row is written only once the channel took the send, so a send that failed is
+//! made again on the next look, and a restarted leader neither repeats nor drops one.
+
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+use super::store::{AlertTold, Store, StoreError};
+use super::warnings::{Condition, Warning};
+use super::{AppState, run_store};
+
+/// How often the leader looks, and so how soon a failed send is made again.
+const EVERY: Duration = Duration::from_secs(60);
+
+/// How long one send may take, its answer included.
+const TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The setting the channels are kept in, as JSON.
+pub const CHANNELS_KEY: &str = "alerts.channels";
+
+/// The setting a webhook's secret header value is sealed under.
+pub fn secret_key(channel: &str) -> String {
+    format!("alerts.channel.{channel}.secret")
+}
+
+/// One place warnings are sent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Channel {
+    /// Names the channel in the store and in its sealed secret. Its name can change; this cannot.
+    pub id: String,
+    pub name: String,
+    pub kind: Kind,
+    /// The groups whose warnings it takes. `None` takes every group's, and the warnings about the leader itself,
+    /// which name no group.
+    #[serde(default)]
+    pub groups: Option<Vec<String>>,
+    /// Whether it is sent a warning's message, which can quote a source's or destination's error and so a
+    /// record's values.
+    #[serde(default)]
+    pub include_message: bool,
+    /// The catalog entries it takes.
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+    /// Epoch milliseconds until which it is sent nothing.
+    #[serde(default)]
+    pub muted_until: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum Kind {
+    #[serde(rename_all = "camelCase")]
+    Webhook {
+        url: String,
+        format: Format,
+        /// The header that carries the sealed secret, when there is one.
+        #[serde(default)]
+        secret_header: Option<String>,
+    },
+    Email {
+        to: Vec<String>,
+    },
+}
+
+/// What a webhook's body looks like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Format {
+    /// Each warning as a JSON object, its fields as the catalog names them.
+    GenericJson,
+}
+
+/// A send that failed, kept until the channel takes one, for the channel's own warning and the page.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Failing {
+    /// When the first send in this run of failures failed.
+    pub since: i64,
+    /// When the last one did.
+    pub last: i64,
+    pub message: String,
+}
+
+/// What the leader holds about its alerts between looks.
+#[derive(Default)]
+pub struct Alerts {
+    failing: Mutex<HashMap<String, Failing>>,
+    /// Wakes the timer when the channels change, so a new channel is told at once.
+    pub settings_changed: tokio::sync::Notify,
+}
+
+impl Alerts {
+    fn held(&self) -> std::sync::MutexGuard<'_, HashMap<String, Failing>> {
+        self.failing.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Each channel whose last send failed, by id.
+    pub fn failing(&self) -> BTreeMap<String, Failing> {
+        self.held().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    fn failed(&self, channel: &str, message: String, now: i64) {
+        let mut held = self.held();
+        let since = held.get(channel).map_or(now, |f| f.since);
+        held.insert(
+            channel.to_string(),
+            Failing {
+                since,
+                last: now,
+                message,
+            },
+        );
+    }
+
+    fn took(&self, channel: &str) {
+        self.held().remove(channel);
+    }
+
+    /// Forget the failures of channels that are gone.
+    fn keep(&self, ids: &[String]) {
+        self.held().retain(|id, _| ids.contains(id));
+    }
+}
+
+/// The channels as stored. None stored is none at all.
+pub fn channels(store: &dyn Store) -> Result<Vec<Channel>, StoreError> {
+    match store.setting(CHANNELS_KEY)? {
+        None => Ok(Vec::new()),
+        Some(text) => serde_json::from_str(&text).map_err(|e| StoreError::failed(format!("{CHANNELS_KEY}: {e}"))),
+    }
+}
+
+/// Names one warning across looks: the catalog entry and what it is about. Its start and message are left out, so a
+/// warning whose message changes is the same warning.
+pub fn key(w: &Warning) -> String {
+    serde_json::to_string(&(w.condition, w.subject_kind, &w.group, &w.subject_id, &w.site)).unwrap_or_default()
+}
+
+/// Whether `channel` takes `w`.
+fn takes(channel: &Channel, w: &Warning) -> bool {
+    channel.conditions.contains(&w.condition)
+        && match (&channel.groups, &w.group) {
+            (None, _) => true,
+            (Some(groups), Some(group)) => groups.contains(group),
+            (Some(_), None) => false,
+        }
+}
+
+/// The warning as `channel` is told of it: its message only where the channel takes messages.
+fn body(channel: &Channel, w: &Warning) -> serde_json::Value {
+    let mut value = serde_json::to_value(w).unwrap_or_default();
+    if let Some(fields) = value.as_object_mut()
+        && !channel.include_message
+    {
+        fields.remove("message");
+    }
+    value
+}
+
+/// What one look must tell one channel.
+#[derive(Debug, Default, PartialEq)]
+pub struct Changes {
+    /// Warnings it takes and has not been told of, as rows to write once it takes them.
+    pub raised: Vec<AlertTold>,
+    /// Warnings it was told of that no longer hold.
+    pub cleared: Vec<AlertTold>,
+}
+
+/// What `channel` must be told at `now`, given the warnings that hold and what every channel was told. A muted
+/// channel is told nothing; once its mute ends, what then holds and what has cleared since are told.
+pub fn changes(channel: &Channel, now: i64, warnings: &[Warning], told: &[AlertTold]) -> Changes {
+    if channel.muted_until.is_some_and(|until| until > now) {
+        return Changes::default();
+    }
+    let told: HashMap<&str, &AlertTold> = told
+        .iter()
+        .filter(|t| t.channel == channel.id)
+        .map(|t| (t.warning.as_str(), t))
+        .collect();
+    let mut wanted = BTreeMap::new();
+    for w in warnings.iter().filter(|w| takes(channel, w)) {
+        wanted.entry(key(w)).or_insert(w);
+    }
+    let raised = wanted
+        .iter()
+        .filter(|(k, _)| !told.contains_key(k.as_str()))
+        .map(|(k, w)| AlertTold {
+            channel: channel.id.clone(),
+            warning: k.clone(),
+            told_at: now,
+            body: body(channel, w).to_string(),
+        })
+        .collect();
+    let mut cleared: Vec<AlertTold> = told
+        .iter()
+        .filter(|(k, _)| !wanted.contains_key(**k))
+        .map(|(_, t)| (*t).clone())
+        .collect();
+    cleared.sort_by(|a, b| a.warning.cmp(&b.warning));
+    Changes { raised, cleared }
+}
+
+/// Whether a send says a warning was raised or has cleared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Status {
+    Raised,
+    Cleared,
+}
+
+/// A webhook's body for one change, in `format`.
+pub fn webhook_body(format: Format, status: Status, told: &AlertTold) -> serde_json::Value {
+    match format {
+        Format::GenericJson => {
+            let mut value: serde_json::Value = serde_json::from_str(&told.body).unwrap_or_default();
+            if let Some(fields) = value.as_object_mut() {
+                fields.insert("status".into(), serde_json::json!(status));
+                fields.insert("key".into(), serde_json::json!(told.warning));
+            }
+            value
+        }
+    }
+}
+
+/// Post one change to a webhook.
+async fn post(
+    url: &str,
+    format: Format,
+    secret: Option<(&str, &str)>,
+    status: Status,
+    told: &AlertTold,
+) -> Result<(), String> {
+    let client = super::outbound::client(url, "the webhook", TIMEOUT, reqwest::redirect::Policy::none())?;
+    let mut request = client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(webhook_body(format, status, told).to_string());
+    if let Some((name, value)) = secret {
+        request = request.header(name, value);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("could not reach the webhook: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("the webhook answered {}", response.status()));
+    }
+    Ok(())
+}
+
+/// Tell `channel` of `changes`, one at a time, recording each as it is taken. Stops at the first that fails, so
+/// what follows it is tried again on the next look, in order.
+async fn tell(state: &AppState, channel: &Channel, changes: Changes) -> Result<(), String> {
+    match &channel.kind {
+        Kind::Webhook {
+            url,
+            format,
+            secret_header,
+        } => {
+            let secret = match secret_header {
+                Some(header) => {
+                    let key = secret_key(&channel.id);
+                    let value = run_store(state.store.clone(), move |s| s.opened_setting(&key))
+                        .await
+                        .map_err(|e| e.message)?
+                        .ok_or("its secret header value is not stored, or cannot be opened")?;
+                    Some((header.clone(), value))
+                }
+                None => None,
+            };
+            let secret = secret.as_ref().map(|(n, v)| (n.as_str(), v.as_str()));
+            for told in changes.raised {
+                post(url, *format, secret, Status::Raised, &told).await?;
+                record(state, vec![told], Vec::new()).await?;
+            }
+            for told in changes.cleared {
+                post(url, *format, secret, Status::Cleared, &told).await?;
+                record(state, Vec::new(), vec![(told.channel, told.warning)]).await?;
+            }
+            Ok(())
+        }
+        Kind::Email { .. } => Err("email channels are not built yet".into()),
+    }
+}
+
+async fn record(state: &AppState, told: Vec<AlertTold>, cleared: Vec<(String, String)>) -> Result<(), String> {
+    run_store(state.store.clone(), move |s| s.record_alerts_told(&told, &cleared))
+        .await
+        .map_err(|e| format!("could not record what was sent: {}", e.message))
+}
+
+/// One look: tell every channel what has changed since it was last told.
+pub async fn look(state: &AppState) -> Result<(), StoreError> {
+    let now = super::warnings::now_millis();
+    let (channels, told) = run_store(state.store.clone(), |s| Ok((channels(s)?, s.alerts_told()?))).await?;
+    let ids: Vec<String> = channels.iter().map(|c| c.id.clone()).collect();
+    state.alerts.keep(&ids);
+    if told.iter().any(|t| !ids.contains(&t.channel)) {
+        run_store(state.store.clone(), move |s| s.forget_alert_channels(&ids)).await?;
+    }
+    if channels.is_empty() {
+        return Ok(());
+    }
+    let warnings = super::warnings_snapshot(state).await?;
+    for channel in &channels {
+        let changes = changes(channel, now, &warnings, &told);
+        if changes.raised.is_empty() && changes.cleared.is_empty() {
+            continue;
+        }
+        match tell(state, channel, changes).await {
+            Ok(()) => state.alerts.took(&channel.id),
+            Err(why) => {
+                tracing::warn!(channel = %channel.name, "could not send to the alert channel: {why}");
+                state.alerts.failed(&channel.id, why, now);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Look on the timer for as long as the leader runs, and at once when the channels change.
+pub async fn run(state: AppState) {
+    loop {
+        if let Err(e) = look(&state).await {
+            tracing::warn!("could not look for alerts to send: {}", e.message);
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(EVERY) => {}
+            _ = state.alerts.settings_changed.notified() => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::leader::warnings::{Severity, SubjectKind};
+
+    fn warning(condition: Condition, subject: &str, group: Option<&str>) -> Warning {
+        Warning {
+            condition,
+            subject_kind: SubjectKind::Source,
+            subject_id: subject.into(),
+            group: group.map(str::to_owned),
+            severity: Severity::Failed,
+            since_millis: Some(1_000),
+            message: "orders: connection refused for row 42".into(),
+            site: None,
+            area: None,
+        }
+    }
+
+    fn channel(groups: Option<&[&str]>) -> Channel {
+        Channel {
+            id: "c1".into(),
+            name: "Paging".into(),
+            kind: Kind::Webhook {
+                url: "https://hooks.example.com/x".into(),
+                format: Format::GenericJson,
+                secret_header: None,
+            },
+            groups: groups.map(|g| g.iter().map(|s| s.to_string()).collect()),
+            include_message: false,
+            conditions: vec![Condition::SourceUnreachable],
+            muted_until: None,
+        }
+    }
+
+    #[test]
+    fn a_channel_is_told_once_of_what_it_takes_and_again_when_it_clears() {
+        let c = channel(None);
+        let up = [warning(Condition::SourceUnreachable, "orders", Some("payments"))];
+        let first = changes(&c, 5, &up, &[]);
+        assert_eq!(first.raised.len(), 1);
+        assert!(first.cleared.is_empty());
+
+        let told = first.raised;
+        assert_eq!(
+            changes(&c, 6, &up, &told),
+            Changes::default(),
+            "a warning already told is not told again"
+        );
+
+        let gone = changes(&c, 7, &[], &told);
+        assert!(gone.raised.is_empty());
+        assert_eq!(gone.cleared, told);
+    }
+
+    #[test]
+    fn a_channel_takes_only_its_conditions_and_groups() {
+        let c = channel(Some(&["payments"]));
+        let ws = [
+            warning(Condition::SourceUnreachable, "orders", Some("payments")),
+            warning(Condition::SourceUnreachable, "clicks", Some("search")),
+            warning(Condition::SourceBlocked, "refunds", Some("payments")),
+            warning(Condition::SourceUnreachable, "leader", None),
+        ];
+        let raised = changes(&c, 5, &ws, &[]).raised;
+        assert_eq!(raised.len(), 1, "{raised:?}");
+        assert_eq!(raised[0].warning, key(&ws[0]));
+
+        let all = changes(&channel(None), 5, &ws, &[]).raised;
+        assert_eq!(
+            all.len(),
+            3,
+            "a channel for every group also takes the warnings that name none"
+        );
+    }
+
+    #[test]
+    fn a_muted_channel_is_told_nothing_until_its_mute_ends() {
+        let mut c = channel(None);
+        c.muted_until = Some(10);
+        let up = [warning(Condition::SourceUnreachable, "orders", None)];
+        let told = changes(&channel(None), 1, &up, &[]).raised;
+        assert_eq!(changes(&c, 5, &[up[0].clone()], &[]), Changes::default());
+        assert_eq!(
+            changes(&c, 5, &[], &told),
+            Changes::default(),
+            "nor of what cleared meanwhile"
+        );
+        assert_eq!(
+            changes(&c, 10, &[], &told).cleared,
+            told,
+            "and once it ends, of what cleared"
+        );
+    }
+
+    #[test]
+    fn a_channel_is_told_the_message_only_when_it_takes_messages() {
+        let mut c = channel(None);
+        let up = [warning(Condition::SourceUnreachable, "orders", None)];
+        let left_out = changes(&c, 5, &up, &[]).raised.remove(0);
+        assert!(!left_out.body.contains("row 42"), "{}", left_out.body);
+        c.include_message = true;
+        let included = changes(&c, 5, &up, &[]).raised.remove(0);
+        assert!(included.body.contains("row 42"), "{}", included.body);
+    }
+
+    #[test]
+    fn a_generic_json_body_says_whether_the_warning_was_raised_or_cleared() {
+        let c = channel(None);
+        let told = changes(
+            &c,
+            5,
+            &[warning(Condition::SourceUnreachable, "orders", Some("payments"))],
+            &[],
+        )
+        .raised;
+        let body = webhook_body(Format::GenericJson, Status::Cleared, &told[0]);
+        assert_eq!(body["status"], "cleared");
+        assert_eq!(body["condition"], "sourceUnreachable");
+        assert_eq!(body["subjectId"], "orders");
+        assert_eq!(body["group"], "payments");
+        assert_eq!(body["key"], told[0].warning);
+        assert!(body.get("message").is_none());
+    }
+
+    #[test]
+    fn stored_channels_read_back_as_written() {
+        let c = Channel {
+            kind: Kind::Email {
+                to: vec!["oncall@example.com".into()],
+            },
+            groups: Some(vec!["payments".into()]),
+            include_message: true,
+            muted_until: Some(99),
+            ..channel(None)
+        };
+        let text = serde_json::to_string(&vec![c.clone()]).unwrap();
+        assert_eq!(serde_json::from_str::<Vec<Channel>>(&text).unwrap(), vec![c]);
+    }
+}

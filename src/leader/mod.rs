@@ -22,6 +22,7 @@ pub mod accounts;
 pub mod acme;
 pub mod acme_dns;
 pub mod agent;
+pub mod alerts;
 pub mod auth;
 pub mod capture;
 pub mod connections;
@@ -104,6 +105,8 @@ pub struct AppState {
     pub remote: Arc<remote::Syncing>,
     /// The look for a newer release (`updates`), and what the last one found.
     pub updates: Arc<updates::Updates>,
+    /// What the leader holds about its alert channels between looks (`alerts`).
+    pub alerts: Arc<alerts::Alerts>,
     /// What operators have asked of workers and the workers have not yet taken.
     pub directives: Arc<directives::Directives>,
 }
@@ -4188,6 +4191,7 @@ mod secrets_delivery_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir,
         }
@@ -4675,6 +4679,7 @@ mod warnings_endpoint_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir,
         }
@@ -4907,6 +4912,7 @@ mod logs_endpoint_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         }
@@ -5132,6 +5138,7 @@ mod flow_endpoint_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         }
@@ -5160,6 +5167,7 @@ mod flow_endpoint_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         };
@@ -5525,6 +5533,7 @@ mod authority_delivery_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir,
         };

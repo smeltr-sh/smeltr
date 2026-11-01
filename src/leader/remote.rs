@@ -2080,6 +2080,7 @@ mod tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir,
         }

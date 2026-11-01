@@ -1093,4 +1093,25 @@ pub trait Store: Send + Sync {
     /// The setting `key`, written by [`Store::sealed_setting`], opened. `None` when unset, or sealed by a key this
     /// leader does not hold.
     fn opened_setting(&self, key: &str) -> Result<Option<String>, StoreError>;
+
+    /// Every warning an alert channel has been told of and not yet told has cleared.
+    fn alerts_told(&self) -> Result<Vec<AlertTold>, StoreError>;
+
+    /// Record, as one transaction, that channels took `told` and were told that each `(channel, warning)` in
+    /// `cleared` has cleared.
+    fn record_alerts_told(&self, told: &[AlertTold], cleared: &[(String, String)]) -> Result<(), StoreError>;
+
+    /// Drop what was told to every channel not in `keep`: a channel that is gone has nobody left to tell.
+    fn forget_alert_channels(&self, keep: &[String]) -> Result<(), StoreError>;
+}
+
+/// A warning an alert channel was told of (`leader::alerts`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlertTold {
+    pub channel: String,
+    /// The warning's key, which names it across looks.
+    pub warning: String,
+    pub told_at: i64,
+    /// The warning as told, as JSON, so that its clearing can say what cleared.
+    pub body: String,
 }

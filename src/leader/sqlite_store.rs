@@ -12,10 +12,10 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension};
 use super::access::{ADMINISTRATOR, AgentPermissions, Level, Role};
 use super::secrets::{self, EncryptionKey, Sealed};
 use super::store::{
-    AccountError, ApiKeyRecord, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource, Issued,
-    Kept, KeyStanding, KeyState, LocalCredentialRecord, NewApiKey, NewEnrollmentCode, NewKeyAccount, NewLocalUser,
-    OidcIdentityRecord, OidcSignIn, PresentedKey, SecretRecord, SecurityEvent, SourceHold, Spend, Store, StoreError,
-    StoredValue, Unopenable, UsableEnrollmentCode, UserRecord, WorkerCredentialRecord, WorkerKind,
+    AccountError, AlertTold, ApiKeyRecord, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource,
+    Issued, Kept, KeyStanding, KeyState, LocalCredentialRecord, NewApiKey, NewEnrollmentCode, NewKeyAccount,
+    NewLocalUser, OidcIdentityRecord, OidcSignIn, PresentedKey, SecretRecord, SecurityEvent, SourceHold, Spend, Store,
+    StoreError, StoredValue, Unopenable, UsableEnrollmentCode, UserRecord, WorkerCredentialRecord, WorkerKind,
 };
 use crate::heartbeat::{LedgerEntry, SourceKey};
 use crate::io::Progress;
@@ -414,6 +414,17 @@ pub(crate) const STEPS: &[&str] = &[
      UPDATE account_roles SET roles = (
          SELECT COALESCE(json_group_array(value), '[]') FROM json_each(account_roles.roles)
           WHERE value IN (SELECT name FROM roles)
+     );",
+    // 17 -- what each alert channel has been told (`leader::alerts`). Additive: an older build sends no alerts, and
+    // leaves the table as it finds it.
+    "-- One row for each warning a channel was told of and not yet told has cleared. Written only once the channel
+     -- took it, so a send that failed is sent again on the next look.
+     CREATE TABLE alerts_told (
+         channel  TEXT NOT NULL,
+         warning  TEXT NOT NULL,
+         told_at  INTEGER NOT NULL,
+         body     TEXT NOT NULL,
+         PRIMARY KEY (channel, warning)
      );",
 ];
 
@@ -2381,6 +2392,51 @@ impl Store for SqliteStore {
         };
         let opened = Sealed::from_text(&text).and_then(|sealed| sealing.open(key, &sealed));
         Ok(opened.and_then(|value| String::from_utf8(value).ok()))
+    }
+
+    fn alerts_told(&self) -> Result<Vec<AlertTold>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt =
+            conn.prepare("SELECT channel, warning, told_at, body FROM alerts_told ORDER BY channel, warning")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AlertTold {
+                channel: row.get(0)?,
+                warning: row.get(1)?,
+                told_at: row.get(2)?,
+                body: row.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(StoreError::from)
+    }
+
+    fn record_alerts_told(&self, told: &[AlertTold], cleared: &[(String, String)]) -> Result<(), StoreError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction()?;
+        for t in told {
+            tx.execute(
+                "INSERT INTO alerts_told (channel, warning, told_at, body) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(channel, warning) DO UPDATE SET told_at = excluded.told_at, body = excluded.body",
+                rusqlite::params![t.channel, t.warning, t.told_at, t.body],
+            )?;
+        }
+        for (channel, warning) in cleared {
+            tx.execute(
+                "DELETE FROM alerts_told WHERE channel = ?1 AND warning = ?2",
+                (channel, warning),
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn forget_alert_channels(&self, keep: &[String]) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let keep = serde_json::to_string(keep).map_err(|e| StoreError::failed(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM alerts_told WHERE channel NOT IN (SELECT value FROM json_each(?1))",
+            [keep],
+        )?;
+        Ok(())
     }
 }
 
@@ -5378,6 +5434,29 @@ mod tests {
     #[test]
     fn the_single_worker_step_is_additive() {
         assert!(super::super::steps::is_additive(STEPS[2]));
+    }
+
+    /// An older build sends no alerts, so the table it does not know of changes nothing it does.
+    #[test]
+    fn the_alerts_step_is_additive() {
+        assert!(super::super::steps::is_additive(STEPS[16]));
+    }
+
+    #[test]
+    fn what_a_channel_was_told_is_kept_until_it_clears_or_the_channel_goes() {
+        let s = store();
+        let told = |channel: &str, warning: &str| AlertTold {
+            channel: channel.into(),
+            warning: warning.into(),
+            told_at: 5,
+            body: "{}".into(),
+        };
+        s.record_alerts_told(&[told("a", "w1"), told("a", "w2"), told("b", "w1")], &[])
+            .unwrap();
+        s.record_alerts_told(&[], &[("a".into(), "w1".into())]).unwrap();
+        assert_eq!(s.alerts_told().unwrap(), vec![told("a", "w2"), told("b", "w1")]);
+        s.forget_alert_channels(&["b".into()]).unwrap();
+        assert_eq!(s.alerts_told().unwrap(), vec![told("b", "w1")]);
     }
 
     /// The provider's name for an account is only shown, so a build without it loses nothing it relies on.

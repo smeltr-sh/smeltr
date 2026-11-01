@@ -58,7 +58,7 @@ pub enum SubjectKind {
 
 /// Which catalog entry raised this warning. The catalog is fixed (design doc, Control plane), so a reader can
 /// switch on it and a new entry is a compile error rather than a blank label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Condition {
     WorkerSilent,
