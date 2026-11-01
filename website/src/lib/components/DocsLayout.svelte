@@ -21,8 +21,8 @@
   type Link = { href: string; title: string };
   /** A sidebar entry: a page, or a category heading over its pages. */
   type Entry = Link | { title: string; links: Link[] };
-  /** A sidebar group. Each folds on a click. A closed one starts folded, except on its own pages. */
-  type Group = { title: string; closed?: boolean; links: Entry[] };
+  /** A sidebar group. It starts folded, except on its own pages, and folds or opens on a click. */
+  type Group = { title: string; links: Entry[] };
   const groups: Group[] = [
     {
       title: 'Getting started',
@@ -103,16 +103,13 @@
       links: kinds.map(({ href, name }) => ({ href, title: name })),
     }));
   }
-  // The reference groups are long, so each starts closed.
   groups.push(
     {
       title: 'Pipeline steps',
-      closed: true,
       links: [{ href: '/docs/steps', title: 'Overview' }, ...stepPages],
     },
     {
       title: 'Sources',
-      closed: true,
       links: [
         { href: '/docs/sources', title: 'Overview' },
         ...categoryLinks(
@@ -123,7 +120,6 @@
     },
     {
       title: 'Destinations',
-      closed: true,
       links: [{ href: '/docs/destinations', title: 'Overview' }, ...categoryLinks(destinations)],
     },
   );
@@ -134,8 +130,7 @@
   /** The groups a reader folded or opened, by title. */
   let flipped = $state(new Set<string>());
   function isOpen(group: Group): boolean {
-    const starts = !group.closed || holds(group, page.url.pathname);
-    return starts !== flipped.has(group.title);
+    return holds(group, page.url.pathname) !== flipped.has(group.title);
   }
   function flip(group: Group) {
     const next = new Set(flipped);
