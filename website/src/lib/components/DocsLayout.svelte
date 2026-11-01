@@ -138,10 +138,8 @@
       `${entry.title} ${entry.summary}`.toLowerCase().includes(query.trim().toLowerCase()),
     ),
   );
-  let toggle: HTMLButtonElement;
   let toolsToggle = $state<HTMLButtonElement>();
   let toolsExpanded = $state(false);
-  let expanded = $state(false);
   let active = $state('');
   let manualNavigation: HTMLElement;
 
@@ -207,9 +205,6 @@
     if (event.key === 'Escape' && toolsExpanded) {
       toolsExpanded = false;
       toolsToggle?.focus();
-    } else if (event.key === 'Escape' && expanded) {
-      expanded = false;
-      toggle.focus();
     }
   }}
 />
@@ -217,17 +212,12 @@
 <div class="docs-layout" class:no-tools={sections.length === 0 && entries.length === 0}>
   <aside class="manual-nav" bind:this={manualNavigation}>
     <DocsSearchForm />
-    <button
-      bind:this={toggle}
-      aria-expanded={expanded}
-      aria-controls="docs-navigation"
-      onclick={() => (expanded = !expanded)}
-    >
-      Documentation <span aria-hidden="true">{expanded ? '−' : '+'}</span>
-    </button>
-    <div id="docs-navigation" class:expanded>
-      <NavGroups label="Documentation" links={[{ href: '/docs', title: 'Overview' }]} {groups} />
-    </div>
+    <NavGroups
+      label="Documentation"
+      id="docs-navigation"
+      links={[{ href: '/docs', title: 'Overview' }]}
+      {groups}
+    />
   </aside>
   <div class="docs-content" data-pagefind-body={searchable ? '' : undefined}>
     {@render children()}
@@ -485,14 +475,6 @@
     }
     button {
       display: flex;
-    }
-    #docs-navigation {
-      display: none;
-      padding: 1rem;
-      border: 1px solid var(--border);
-    }
-    #docs-navigation.expanded {
-      display: block;
     }
   }
   @media (max-width: 32rem) {

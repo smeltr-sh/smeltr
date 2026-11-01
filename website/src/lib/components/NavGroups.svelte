@@ -2,8 +2,13 @@
   import { page } from '$app/state';
   import type { Group, Link } from '#lib/nav.ts';
 
-  /** `label` names the sidebar, `links` come before its groups. */
-  let { label, links, groups }: { label: string; links: Link[]; groups: Group[] } = $props();
+  /** `label` names the sidebar, `links` come before its groups, and `id` names the panel a narrow screen folds. */
+  let { label, id, links, groups }: { label: string; id: string; links: Link[]; groups: Group[] } =
+    $props();
+
+  // On a narrow screen the whole sidebar folds behind a button.
+  let toggle: HTMLButtonElement;
+  let expanded = $state(false);
 
   function holds(group: Group, path: string): boolean {
     return group.links.some((e) => ('href' in e ? [e] : e.links).some((l) => l.href === path));
@@ -27,31 +32,78 @@
   >
 {/snippet}
 
-<nav aria-label={label}>
-  <p class="nav-label">{label}</p>
-  {#each links as link (link.href)}
-    {@render navLink(link)}
-  {/each}
-  {#each groups as group (group.title)}
-    <button class="nav-label fold" aria-expanded={isOpen(group)} onclick={() => flip(group)}
-      >{group.title} <span aria-hidden="true">{isOpen(group) ? '▾' : '▸'}</span></button
-    >
-    {#each isOpen(group) ? group.links : [] as entry ('href' in entry ? entry.href : entry.title)}
-      {#if 'href' in entry}
-        {@render navLink(entry)}
-      {:else}
-        <p class="sub-label">{entry.title}</p>
-        <div class="sub-links">
-          {#each entry.links as link (link.href)}
-            {@render navLink(link)}
-          {/each}
-        </div>
-      {/if}
+<svelte:window
+  onkeydown={(event) => {
+    if (event.key === 'Escape' && expanded) {
+      expanded = false;
+      toggle.focus();
+    }
+  }}
+/>
+
+<button
+  class="toggle"
+  bind:this={toggle}
+  aria-expanded={expanded}
+  aria-controls={id}
+  onclick={() => (expanded = !expanded)}
+>
+  {label} <span aria-hidden="true">{expanded ? '−' : '+'}</span>
+</button>
+<div {id} class="panel" class:expanded>
+  <nav aria-label={label}>
+    <p class="nav-label">{label}</p>
+    {#each links as link (link.href)}
+      {@render navLink(link)}
     {/each}
-  {/each}
-</nav>
+    {#each groups as group (group.title)}
+      <button class="nav-label fold" aria-expanded={isOpen(group)} onclick={() => flip(group)}
+        >{group.title} <span aria-hidden="true">{isOpen(group) ? '▾' : '▸'}</span></button
+      >
+      {#each isOpen(group) ? group.links : [] as entry ('href' in entry ? entry.href : entry.title)}
+        {#if 'href' in entry}
+          {@render navLink(entry)}
+        {:else}
+          <p class="sub-label">{entry.title}</p>
+          <div class="sub-links">
+            {#each entry.links as link (link.href)}
+              {@render navLink(link)}
+            {/each}
+          </div>
+        {/if}
+      {/each}
+    {/each}
+  </nav>
+</div>
 
 <style>
+  .toggle {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    gap: 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.75rem;
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+    cursor: pointer;
+  }
+  @media (max-width: 60rem) {
+    .toggle {
+      display: flex;
+    }
+    .panel {
+      display: none;
+      padding: 1rem;
+      border: 1px solid var(--border);
+    }
+    .panel.expanded {
+      display: block;
+    }
+  }
   nav {
     display: grid;
     gap: 0.2rem;
