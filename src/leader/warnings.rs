@@ -9,6 +9,7 @@
 //! acknowledge, and an entry is forgotten the instant its fact is.
 
 use crate::handoff::BlockCause;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ use serde::Serialize;
 
 use crate::heartbeat::{MetricValueDto, ThreadKind};
 use crate::leader::access::{Access, Level};
+use crate::leader::alerts::{self, Channel};
 use crate::leader::deploy_checks::{FailingTest, Findings};
 use crate::leader::registry::{FactKey, ThreadHealth};
 use crate::leader::series::{DRIFT_WINDOW, DeclaredField, LoggedSite, RegistryStore, Tier};
@@ -2790,14 +2792,14 @@ pub fn issued_certificates_not_renewed(issued: &[IssuedChain], signing: &str, no
 const KEY_SUBJECT: &str = "secrets encryption key";
 
 /// The facts the secrets encryption key's warnings start from, so each says how long it has held.
-pub fn encryption_key_facts(standing: &KeyStanding) -> HashSet<FactKey> {
+pub fn encryption_key_facts(standing: &KeyStanding, channels: &[Channel]) -> HashSet<FactKey> {
     if standing.broken() {
         return HashSet::from([FactKey::new("secretsKeyUnusable", KEY_SUBJECT)]);
     }
     standing
         .unopenable
         .iter()
-        .map(|u| FactKey::new("secretNeedsValue", unopenable_id(u)))
+        .map(|u| FactKey::new("secretNeedsValue", unopenable_id(u, channels)))
         .collect()
 }
 
@@ -2807,6 +2809,7 @@ pub fn encryption_key_facts(standing: &KeyStanding) -> HashSet<FactKey> {
 /// `issued` names the certificates this leader issued, which are renewed rather than replaced.
 pub fn encryption_key_warnings(
     standing: &KeyStanding,
+    channels: &[Channel],
     kept: &std::collections::BTreeMap<String, crate::leader::store::Kept>,
     starts: &HashMap<FactKey, i64>,
 ) -> Vec<Warning> {
@@ -2858,7 +2861,7 @@ pub fn encryption_key_warnings(
                     SubjectKind::Leader,
                     format!(
                         "encrypted with a key this leader no longer has. Enter it again under {}",
-                        sealed_setting_place(key).1
+                        sealed_setting_place(key, channels).1
                     ),
                 ),
             };
@@ -2866,7 +2869,7 @@ pub fn encryption_key_warnings(
                 subject_kind,
                 ..leader(
                     Condition::SecretNeedsValue,
-                    unopenable_id(u),
+                    unopenable_id(u, channels),
                     Severity::Warning,
                     message,
                 )
@@ -2875,26 +2878,32 @@ pub fn encryption_key_warnings(
         .collect()
 }
 
-fn unopenable_id(u: &Unopenable) -> String {
+fn unopenable_id(u: &Unopenable, channels: &[Channel]) -> String {
     match u {
         Unopenable::Secret(name) | Unopenable::Certificate(name) => name.clone(),
-        Unopenable::Setting(key) => sealed_setting_place(key).0.to_string(),
+        Unopenable::Setting(key) => sealed_setting_place(key, channels).0.into_owned(),
     }
 }
 
 /// What a sealed leader setting is called, and where it is entered.
-pub(crate) fn sealed_setting_place(key: &str) -> (&str, &'static str) {
-    match key {
+/// `channels` are the alert channels, whose secrets are named for them.
+pub(crate) fn sealed_setting_place<'a>(key: &'a str, channels: &[Channel]) -> (Cow<'a, str>, &'static str) {
+    let (name, place) = match key {
         crate::leader::remote::TOKEN_KEY => ("Git remote token", "System, Git remote"),
         crate::leader::oidc::CLIENT_SECRET_KEY => ("Single sign-on client secret", "Accounts, Single sign-on"),
         crate::leader::model::API_KEY_KEY => ("AI agents API key", "System, AI agents"),
         crate::leader::acme::EAB_HMAC_KEY => ("ACME EAB HMAC key", "System, Certificates"),
         crate::leader::acme::CLOUDFLARE_TOKEN_KEY => ("Cloudflare API token", "System, Certificates"),
-        crate::leader::alerts::MAIL_PASSWORD_KEY => ("Mail server password", "System, Alerts"),
-        // Each channel's is its own warning, so it is named by its key.
-        other if crate::leader::alerts::is_secret_key(other) => (other, "System, Alerts"),
-        other => (other, "System"),
-    }
+        alerts::MAIL_PASSWORD_KEY => ("Mail server password", "System, Alerts"),
+        other => {
+            let channel = channels.iter().find(|c| alerts::secret_key(&c.id) == other);
+            return match channel.and_then(alerts::secret_label) {
+                Some(label) => (Cow::Owned(label), "System, Alerts"),
+                None => (Cow::Borrowed(other), "System"),
+            };
+        }
+    };
+    (Cow::Borrowed(name), place)
 }
 
 /// What is wrong with the deployed commit, as warnings: [`derive`]'s catalog takes these beside its own.
@@ -6478,9 +6487,9 @@ mod tests {
                 Unopenable::Setting(crate::leader::remote::TOKEN_KEY.to_string()),
             ],
         );
-        let facts = encryption_key_facts(&broken);
+        let facts = encryption_key_facts(&broken, &[]);
         let starts: HashMap<FactKey, i64> = facts.iter().map(|f| (f.clone(), NOW)).collect();
-        let said = encryption_key_warnings(&broken, &Default::default(), &starts);
+        let said = encryption_key_warnings(&broken, &[], &Default::default(), &starts);
         assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(said[0].condition, Condition::SecretsKeyUnusable);
         assert_eq!(said[0].severity, Severity::Failed);
@@ -6525,7 +6534,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let said = encryption_key_warnings(&held, &kept, &HashMap::new());
+        let said = encryption_key_warnings(&held, &[], &kept, &HashMap::new());
         assert_eq!(said.len(), 5);
         assert!(
             said.iter()
@@ -6575,10 +6584,47 @@ mod tests {
         assert!(
             encryption_key_warnings(
                 &standing(crate::leader::store::KeyState::Absent, vec![]),
+                &[],
                 &Default::default(),
                 &HashMap::new()
             )
             .is_empty()
+        );
+    }
+
+    /// An alert channel's secret is named for its channel, as its row names it, and the mail password for the server.
+    #[test]
+    fn an_alert_secret_to_enter_again_is_named_for_its_channel() {
+        use crate::leader::alerts::{Channel, Format, Kind, MAIL_PASSWORD_KEY, secret_key};
+        let channel = Channel {
+            id: "c1".into(),
+            name: "On call".into(),
+            kind: Kind::Webhook {
+                url: "https://events.pagerduty.com/v2/enqueue".into(),
+                format: Format::PagerDuty,
+                secret_header: None,
+            },
+            groups: None,
+            include_message: false,
+            conditions: Vec::new(),
+            muted_until: None,
+        };
+        let held = standing(
+            crate::leader::store::KeyState::Held {
+                key_id: "5be1a09c44d7f312".to_string(),
+            },
+            vec![
+                Unopenable::Setting(MAIL_PASSWORD_KEY.to_string()),
+                Unopenable::Setting(secret_key("c1")),
+            ],
+        );
+        let said = encryption_key_warnings(&held, &[channel], &Default::default(), &HashMap::new());
+        let named: Vec<&str> = said.iter().map(|w| w.subject_id.as_str()).collect();
+        assert_eq!(named, ["Mail server password", "On call: routing key"]);
+        assert!(
+            said.iter()
+                .all(|w| w.message.ends_with("Enter it again under System, Alerts")),
+            "{said:?}"
         );
     }
 }

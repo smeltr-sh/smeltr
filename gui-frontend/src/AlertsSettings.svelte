@@ -29,7 +29,7 @@
   import LeaderSecretField from './LeaderSecretField.svelte';
   import Panel from './Panel.svelte';
   import Toggle from './Toggle.svelte';
-  import { ago, fromLocalInput, localDateTime } from './time';
+  import { ago, dateTime, fromLocalInput } from './time';
 
   let settings = $state<AlertSettingsDto | null>(null);
   let loadFailed = $state(false);
@@ -465,7 +465,7 @@
             {#if c.kind.type === 'email' && !mailOn}
               <span class="line warn">Not sent: the mail server is off.</span>
             {:else if muted(c) && c.mutedUntil}
-              <span class="line dim">Muted until {localDateTime(c.mutedUntil)}</span>
+              <span class="line dim">Muted until {dateTime(c.mutedUntil / 1000)}</span>
             {/if}
             {#if rowTested[c.id]?.ok}
               <span class="line ok" role="status">✓ {rowTested[c.id]?.text}</span>

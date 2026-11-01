@@ -33,10 +33,20 @@ pub fn secret_key(channel: &str) -> String {
     format!("alerts.channel.{channel}.secret")
 }
 
-/// Whether `key` is a setting [`secret_key`] names.
-pub fn is_secret_key(key: &str) -> bool {
-    key.strip_prefix("alerts.channel.")
-        .is_some_and(|k| k.ends_with(".secret"))
+/// What a webhook's sealed secret is called on the page: PagerDuty's is its routing key.
+pub fn secret_name(format: Format) -> &'static str {
+    match format {
+        Format::PagerDuty => "routing key",
+        _ => "secret header value",
+    }
+}
+
+/// The channel's sealed secret, as the page names it: `<channel>: <secret_name>`. `None` for an email channel.
+pub fn secret_label(channel: &Channel) -> Option<String> {
+    match &channel.kind {
+        Kind::Webhook { format, .. } => Some(format!("{}: {}", channel.name, secret_name(*format))),
+        Kind::Email { .. } => None,
+    }
 }
 
 /// The setting the mail server is kept in, as JSON.
@@ -537,10 +547,7 @@ async fn tell(state: &AppState, channel: &Channel, mail: Option<&Mail>, changes:
                     let value = run_store(state.store.clone(), move |s| s.opened_setting(&key))
                         .await
                         .map_err(|e| e.message)?
-                        .ok_or_else(|| match format {
-                            Format::PagerDuty => format!("{}: enter the routing key again", channel.name),
-                            _ => format!("{}: enter the secret header value again", channel.name),
-                        })?;
+                        .ok_or_else(|| format!("{}: enter the {} again", channel.name, secret_name(*format)))?;
                     Some((header.clone(), value))
                 }
                 None => None,
@@ -962,10 +969,7 @@ async fn test(state: &AppState, channel: &Channel, secret: Option<String>) -> Re
             let stored = stored.filter(|s| !s.is_empty());
             let moved = saved.is_none_or(|c| !matches!(&c.kind, Kind::Webhook { url: saved, .. } if saved == url));
             if secret.is_none() && moved && stored.is_some() {
-                return Err(match format {
-                    Format::PagerDuty => format!("{}: enter the routing key again", channel.name),
-                    _ => format!("{}: enter the secret header value again", channel.name),
-                });
+                return Err(format!("{}: enter the {} again", channel.name, secret_name(*format)));
             }
             let save = SecretSave::sent(secret, moved);
             let secret = save.held(stored.as_deref());

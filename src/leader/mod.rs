@@ -1093,10 +1093,13 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
         &recovering,
         heartbeat_interval,
     ));
-    let (key, kept) = run_store(state.store.clone(), |s| Ok((s.key_standing()?, s.kept_certificates()?))).await?;
-    active_facts.extend(warnings::encryption_key_facts(&key));
+    let (key, kept, channels) = run_store(state.store.clone(), |s| {
+        Ok((s.key_standing()?, s.kept_certificates()?, alerts::channels(s)?))
+    })
+    .await?;
+    active_facts.extend(warnings::encryption_key_facts(&key, &channels));
     let starts = state.registry.observe_facts(&active_facts, now_ms);
-    let key_warnings = warnings::encryption_key_warnings(&key, &kept, &starts);
+    let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
     let normal_warnings =
         warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
@@ -2367,8 +2370,9 @@ pub struct UnopenableOut {
     pub label: String,
 }
 
-impl From<store::KeyStanding> for EncryptionKeyOut {
-    fn from(standing: store::KeyStanding) -> EncryptionKeyOut {
+impl EncryptionKeyOut {
+    /// `channels` are the alert channels, whose secrets are named for them.
+    fn new(standing: store::KeyStanding, channels: &[alerts::Channel]) -> EncryptionKeyOut {
         let (state, key_id) = match standing.key {
             store::KeyState::Absent => ("absent", None),
             store::KeyState::Held { key_id } => ("held", Some(key_id)),
@@ -2395,7 +2399,7 @@ impl From<store::KeyStanding> for EncryptionKeyOut {
                     },
                     store::Unopenable::Setting(name) => UnopenableOut {
                         kind: "setting",
-                        label: warnings::sealed_setting_place(&name).0.to_string(),
+                        label: warnings::sealed_setting_place(&name, channels).0.into_owned(),
                         name,
                     },
                 })
@@ -2405,10 +2409,11 @@ impl From<store::KeyStanding> for EncryptionKeyOut {
 }
 
 async fn encryption_key(State(state): State<AppState>) -> Envelope<EncryptionKeyOut> {
-    run_store(state.store, |s| s.key_standing())
-        .await
-        .map(EncryptionKeyOut::from)
-        .into()
+    run_store(state.store, |s| {
+        Ok(EncryptionKeyOut::new(s.key_standing()?, &alerts::channels(s)?))
+    })
+    .await
+    .into()
 }
 
 async fn regenerate_encryption_key(
@@ -2417,11 +2422,15 @@ async fn regenerate_encryption_key(
     axum::Extension(actor): axum::Extension<store::Actor>,
 ) -> Envelope<EncryptionKeyOut> {
     let event = accounts::event_for(&actor, "key-regenerate", "", "ok");
-    let regenerated = run_store(state.store, move |s| s.regenerate_key(&event)).await;
+    let regenerated = run_store(state.store, move |s| {
+        let channels = alerts::channels(s)?;
+        Ok(EncryptionKeyOut::new(s.regenerate_key(&event)?, &channels))
+    })
+    .await;
     if regenerated.is_ok() {
         RENEW_NOW.notify_one();
     }
-    regenerated.map(EncryptionKeyOut::from).into()
+    regenerated.into()
 }
 
 /// Stores a new value and forgets what retention no longer keeps.
