@@ -13,6 +13,7 @@
   import StateMark from './StateMark.svelte';
   import InlineError from './InlineError.svelte';
   import { tick, untrack } from 'svelte';
+  import Recommends from './Recommends.svelte';
   import { loadExpanded, opening, saveExpanded } from './StepEditor.svelte';
   import { store, stored } from './stored';
   import StepList from './StepList.svelte';
@@ -688,6 +689,16 @@
     produced.held = new Set(
       [...(d?.compiled.fields ?? []), ...(d?.sampled?.fields ?? [])].map(([path]) => path),
     );
+  });
+  /** The paths each schema recommends and the run's rows lack, by the schema's title: no warning, told. */
+  let recommendedBySchema = $derived.by(() => {
+    const out = new Map<string, string[]>();
+    if (!result?.ok) return out;
+    for (const m of result.missing ?? []) {
+      if (m.requirement === 'recommended')
+        out.set(m.schema, [...(out.get(m.schema) ?? []), m.path]);
+    }
+    return out;
   });
   let running = $state(false);
   let autoRun = $state(true);
@@ -1502,12 +1513,12 @@
           </div>
         {/if}
 
-        {#if result?.ok && result.recommended?.length}
+        {#if recommendedBySchema.size > 0}
           <div class="recommended" role="status">
-            {#each result.recommended as told (told)}
+            {#each recommendedBySchema as [schema, paths] (schema)}
               <div class="recommended-note">
                 <span aria-hidden="true">ⓘ</span>
-                <span>{told}</span>
+                <span><Recommends {schema} fields={paths} /></span>
               </div>
             {/each}
           </div>
