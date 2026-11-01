@@ -854,9 +854,8 @@ mod tests {
     #[test]
     fn the_example_file_shows_the_defaults_this_module_applies() {
         let example = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/smeltr.example.toml"))
-            .expect("read smeltr.example.toml")
-            // A Windows checkout may end its lines with CRLF.
-            .replace("\r\n", "\n");
+            .expect("read smeltr.example.toml");
+        let lines: Vec<&str> = example.lines().collect();
         for shown in [
             format!("port = {DEFAULT_GUI_PORT}"),
             format!("bind = {DEFAULT_GUI_BIND:?}"),
@@ -873,8 +872,10 @@ mod tests {
             "thread_limit = 0 ".to_string(),
             "stop_after_unreachable_secs = -1 ".to_string(),
         ] {
+            // Each of its lines, on lines one after another.
+            let parts: Vec<&str> = shown.lines().collect();
             assert!(
-                example.contains(&shown),
+                (lines.windows(parts.len())).any(|run| run.iter().zip(&parts).all(|(line, part)| line.contains(part))),
                 "smeltr.example.toml no longer shows {shown:?}"
             );
         }
