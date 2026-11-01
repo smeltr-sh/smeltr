@@ -39,6 +39,11 @@
     cursor: pointer;
   }
 
+  /* A glyph before the name centers on its line, as the words sit on their baseline. */
+  .sort-head :global(svg) {
+    align-self: center;
+  }
+
   .sort-head:hover,
   .sort-head.sorted {
     color: var(--ink);

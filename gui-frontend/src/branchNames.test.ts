@@ -1,14 +1,45 @@
 import { describe, expect, it } from 'vitest';
-import { funnyBranchName } from './branchNames';
+import { editedBy, ownerOf, suggestBranchName } from './branchNames';
 
-describe('funnyBranchName', () => {
-  it('is an adjective and an animal, and a name git takes as it is', () => {
-    expect(funnyBranchName(() => 0)).toBe('absurd-aardvark');
-    expect(funnyBranchName(() => 0.999)).toBe('zealous-zebra');
-    for (let i = 0; i < 50; i++) expect(funnyBranchName()).toMatch(/^[a-z]+-[a-z]+$/);
+describe('editedBy', () => {
+  it('names what a write changes, and the worker group when it is not shared', () => {
+    expect(editedBy('/api/areas/shared/routes?branch=main')).toBe('routes');
+    expect(editedBy('/api/areas/network/sources')).toBe('network-sources');
+    expect(editedBy('/api/areas/shared/pipelines/fortigate')).toBe('pipeline-fortigate');
+    expect(editedBy('/api/areas/shared/files/pipelines/cisco-asa.yaml')).toBe('cisco-asa');
+    expect(editedBy('/api/worker-groups/east')).toBe('worker-group-east');
+    expect(editedBy('/api/secrets/db%20password')).toBe('secret-db password');
+  });
+});
+
+describe('suggestBranchName', () => {
+  it('is who and what, in a shape git takes as it is', () => {
+    expect(suggestBranchName('Dana', 'routes', [])).toBe('dana/routes');
+    expect(suggestBranchName('Dana Lee', 'secret-db password', [])).toBe(
+      'dana-lee/secret-db-password',
+    );
+    expect(suggestBranchName('', '', [])).toBe('edit');
   });
 
-  it('is not the same name every time', () => {
-    expect(new Set(Array.from({ length: 50 }, () => funnyBranchName())).size).toBeGreaterThan(1);
+  it('keeps an SSO login readable', () => {
+    expect(suggestBranchName('José.García', 'routes', [])).toBe('jose-garcia/routes');
+    expect(suggestBranchName('DOMAIN\\jdoe', 'routes', [])).toBe('domain-jdoe/routes');
+    // A login of no Latin letters leaves what the edit is about.
+    expect(suggestBranchName('李明', 'routes', [])).toBe('routes');
+  });
+
+  it('takes a number when the name is taken', () => {
+    expect(suggestBranchName('dana', 'routes', ['dana/routes'])).toBe('dana/routes-2');
+    expect(suggestBranchName('dana', 'routes', ['dana/routes', 'dana/routes-2'])).toBe(
+      'dana/routes-3',
+    );
+  });
+});
+
+describe('ownerOf', () => {
+  it('is what comes before the first slash, or nothing', () => {
+    expect(ownerOf('dana/routes')).toBe('dana');
+    expect(ownerOf('dana/routes/v2')).toBe('dana');
+    expect(ownerOf('fix-proto')).toBe('');
   });
 });

@@ -27,6 +27,7 @@
   leader keeps no series for `smeltr_rows_errored_total`.
 -->
 <script lang="ts">
+  import WorkerGroupIcon from './WorkerGroupIcon.svelte';
   import ChevronIcon from './ChevronIcon.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -839,7 +840,7 @@
                   selectedGroupId = selectedGroupId === group ? null : group;
                 }}
               >
-                <strong>{group}</strong><span
+                <WorkerGroupIcon /><strong>{group}</strong><span
                   >{workers.length} {workers.length === 1 ? 'worker' : 'workers'}</span
                 >
                 <span class="group-spacer"></span>
@@ -1145,7 +1146,8 @@
                 ><th aria-sort={rankedSort.aria('kind')}
                   ><SortButton sort={rankedSort} key="kind">Kind</SortButton></th
                 ><th aria-sort={rankedSort.aria('group')}
-                  ><SortButton sort={rankedSort} key="group">Group</SortButton></th
+                  ><SortButton sort={rankedSort} key="group"><WorkerGroupIcon />Group</SortButton
+                  ></th
                 ><th class="num" aria-sort={rankedSort.aria('now')}
                   ><SortButton sort={rankedSort} key="now">Now, rows/s</SortButton></th
                 ><th class="num" aria-sort={rankedSort.aria('normal')}
