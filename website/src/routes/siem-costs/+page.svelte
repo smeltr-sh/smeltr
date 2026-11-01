@@ -36,8 +36,7 @@
     <SiemCutExample />
   </section>
   <section aria-labelledby="copy-heading">
-    <h2 id="copy-heading">Trim it for the SIEM. Keep it whole in object storage.</h2>
-    <p>Send the same records to your SIEM trimmed and to object storage whole.</p>
+    <h2 id="copy-heading">Trim it for the SIEM.<br />Keep it whole in object storage.</h2>
     <ProductScreenshot
       source="siem-routes"
       height={2800}
