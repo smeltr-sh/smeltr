@@ -1094,9 +1094,11 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
         heartbeat_interval,
     ));
     let (key, kept, channels) = run_store(state.store.clone(), |s| {
-        Ok((s.key_standing()?, s.kept_certificates()?, alerts::channels(s)?))
+        Ok((s.key_standing()?, s.kept_certificates()?, alerts::channels(s)))
     })
     .await?;
+    // Only to name a channel's secret: unreadable channels are the alerts loop's to report, not every warning's.
+    let channels = channels.unwrap_or_default();
     active_facts.extend(warnings::encryption_key_facts(&key, &channels));
     let starts = state.registry.observe_facts(&active_facts, now_ms);
     let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
