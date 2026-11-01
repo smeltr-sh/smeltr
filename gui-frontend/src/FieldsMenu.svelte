@@ -3,6 +3,10 @@
   compiled pipeline have, with its type and how many records hold it. A tick shows the field as a
   column; a count filters the records to those that hold the field. Select all and Select none act
   on what the search shows, so a search and one press choose a family of fields.
+
+  Where the pipeline produces a schema, the menu also lists the schema's fields the records lack, one
+  level at a time under the path the search names, in the order the name boxes offer them
+  (`schemaTree`), so an optional field is in reach while the pipeline is built.
 -->
 <script lang="ts" module>
   /** One field, as the menu lists it. */
@@ -20,7 +24,10 @@
   import ChipPicker from './ChipPicker.svelte';
   import Help from './Help.svelte';
   import Toggle from './Toggle.svelte';
-  import type { DictionaryOut } from './api';
+  import type { DictionaryOut, Requirement } from './api';
+  import { producedSchemas } from './producedSchemas.svelte';
+  import { firstOf, groupOf, matching, type SchemaChild } from './schemaTree';
+  import { store, stored } from './stored';
 
   let {
     fields,
@@ -30,6 +37,7 @@
     onshow,
     ondefault,
     onhas,
+    onassign,
   }: {
     fields: MenuField[];
     /** How many records there are, or null with none to count. */
@@ -41,6 +49,8 @@
     ondefault: () => void;
     /** Filters the records to those holding `path`. */
     onhas: (path: string) => void;
+    /** Writes `path` in an eval step, where the pipeline can be edited. */
+    onassign?: (path: string) => void;
   } = $props();
 
   // A list this long is read by searching it; the rest wait behind one line.
@@ -55,6 +65,51 @@
   });
   let listed = $derived(all ? matches : matches.slice(0, LISTED));
   let shownCount = $derived(fields.filter((f) => shown(f.path)).length);
+
+  // -- the produced schemas' fields ---------------------------------------------
+
+  const produced = producedSchemas();
+  let tree = $derived(produced?.tree ?? null);
+  type Which = 'unset' | 'set' | 'all';
+  const WHICH_KEY = 'smeltr-fields-menu-which';
+  const WHICH: [Which, string][] = [
+    ['unset', 'Not set'],
+    ['set', 'Set'],
+    ['all', 'All'],
+  ];
+  let which = $state<Which>(
+    (['unset', 'set', 'all'] as const).find((w) => w === stored(WHICH_KEY)) ?? 'set',
+  );
+  function choose(w: Which) {
+    which = w;
+    store(WHICH_KEY, w);
+  }
+  /** The fields not set the menu names before it offers the rest. */
+  const UNSET_NAMED = 8;
+  let tally = $derived(tree && open ? tree.tally(produced!.held) : null);
+  let unsetAt = $derived(tree ? tree.at(query) : null);
+  let unset = $derived.by(() => {
+    if (!tree || !unsetAt || which === 'set') return null;
+    const found = matching(
+      tree.children(unsetAt.parent, produced!.held).filter((c) => !c.set),
+      unsetAt.key,
+    );
+    return { found, listed: all ? found : firstOf(found, UNSET_NAMED) };
+  });
+  /** The record's fields the menu lists: every one, unless it lists only what is not set. */
+  let setListed = $derived(tree && which === 'unset' ? [] : listed);
+  const fmt = (n: number) => n.toLocaleString('en-US');
+  const REQUIREMENT: Record<Requirement, string> = {
+    required: '* required',
+    recommended: '° recommended',
+    optional: 'optional',
+  };
+  /** What an object's fields ask for, as its requirement cell says it. */
+  function askedUnder(c: SchemaChild): string {
+    if (c.required > 0) return `${fmt(c.required)} required`;
+    if (c.recommended > 0) return `${fmt(c.recommended)} recommended`;
+    return 'optional';
+  }
 
   const showMatches = (show: boolean) =>
     onshow(
@@ -90,7 +145,7 @@
     Fields <span class="dim">{shownCount} of {fields.length}</span>
   {/snippet}
   {#snippet children()}
-    <div class="menu">
+    <div class="menu" class:wide={tree !== null}>
       <!-- svelte-ignore a11y_autofocus -->
       <input
         type="search"
@@ -101,22 +156,48 @@
         autofocus
       />
       <div class="actions">
-        <button type="button" onclick={() => showMatches(true)}
-          >Select all{query.trim() ? ` ${matches.length}` : ''}</button
-        >
-        <button type="button" onclick={() => showMatches(false)}>Select none</button>
-        <span class="grow"></span>
-        <span class="dim"
-          >{matches.filter((f) => shown(f.path)).length} of {matches.length} shown</span
-        >
+        {#if tree}
+          <div class="which" role="radiogroup" aria-label="Which fields">
+            {#each WHICH as [w, label] (w)}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={which === w}
+                class:on={which === w}
+                onclick={() => choose(w)}>{label}</button
+              >
+            {/each}
+          </div>
+        {/if}
+        <!-- What is not set has no column to show. -->
+        {#if !tree || which !== 'unset'}
+          <button type="button" onclick={() => showMatches(true)}
+            >Select all{query.trim() ? ` ${matches.length}` : ''}</button
+          >
+          <button type="button" onclick={() => showMatches(false)}>Select none</button>
+          <span class="grow"></span>
+          <span class="dim"
+            >{matches.filter((f) => shown(f.path)).length} of {matches.length} shown</span
+          >
+        {/if}
       </div>
+      {#if tree && tally}
+        <p class="tally">
+          <strong>{tree.titles}</strong>
+          {#each [['required', 'Required'], ['recommended', 'Recommended'], ['optional', 'Optional']] as const as [r, label], i (r)}
+            {#if i > 0}<span class="dim">·</span>{/if}
+            <span>{label} <strong>{fmt(tally[r].set)} of {fmt(tally[r].of)}</strong> set</span>
+          {/each}
+        </p>
+      {/if}
       <div class="list" role="group" aria-label="Fields">
         <div class="row head" aria-hidden="true">
-          <span></span><span>field</span><span>type</span><span class="records"
-            >{records === null ? '' : 'records'}</span
-          >
+          <span></span><span>field</span><span>type</span>{#if tree}<span>requirement</span
+            >{/if}<span class="records">{records === null ? '' : 'records'}</span>{#if tree}<span
+            ></span>{/if}
         </div>
-        {#each listed as f (f.path)}
+        {#each setListed as f (f.path)}
+          {@const req = tree?.requirement(f.path)}
           {@const [before, match, after] = parts(f.path)}
           <label class="row">
             <input
@@ -135,6 +216,7 @@
                 >{/if}</span
             >
             <span class="mono dim type" title={f.type ?? undefined}>{f.type ?? ''}</span>
+            {#if tree}<span class="req {req ?? ''}">{req ? REQUIREMENT[req] : ''}</span>{/if}
             {#if records !== null}<button
                 type="button"
                 class="count link-button"
@@ -146,15 +228,77 @@
                   open = false;
                   onhas(f.path);
                 }}>{f.count} of {records}</button
-              >{/if}
+              >{:else}<span></span>{/if}
+            {#if tree}<span></span>{/if}
           </label>
         {/each}
-        {#if listed.length < matches.length}
+        {#if unset}
+          {#each unset.listed as c, i (c.path)}
+            {@const before = i > 0 ? groupOf(unset.listed[i - 1]) : groupOf(c)}
+            <div
+              class="row unset"
+              class:after-fields={(i === 0 && setListed.length > 0) ||
+                (before <= 2 && groupOf(c) > 2)}
+            >
+              <span></span>
+              <span class="mono path" class:object={c.nested > 0}
+                >{c.path}{c.nested > 0 ? '.…' : ''}</span
+              >
+              <span class="mono dim type"
+                >{c.nested > 0
+                  ? `${fmt(c.nested)} ${c.nested === 1 ? 'field' : 'fields'}`
+                  : (c.field?.type ?? '')}</span
+              >
+              {#if c.nested > 0}
+                <span
+                  class="req"
+                  class:required={c.required > 0}
+                  class:recommended={c.required === 0 && c.recommended > 0}>{askedUnder(c)}</span
+                >
+              {:else}
+                {@const req = c.field?.requirement ?? 'optional'}
+                <span class="req {req}">{REQUIREMENT[req]}</span>
+              {/if}
+              <span class="count dash" aria-hidden="true">{records === null ? '' : '—'}</span>
+              {#if c.nested > 0}
+                <button
+                  type="button"
+                  class="act"
+                  onclick={() => {
+                    query = `${c.path}.`;
+                    all = false;
+                  }}>Show fields</button
+                >
+              {:else if onassign}
+                <button
+                  type="button"
+                  class="act"
+                  aria-label={`assign ${c.path}`}
+                  onclick={() => {
+                    open = false;
+                    onassign(c.path);
+                  }}>+ assign</button
+                >
+              {:else}<span></span>{/if}
+            </div>
+          {/each}
+        {/if}
+        {#if setListed.length < matches.length && which !== 'unset'}
           <button type="button" class="more" onclick={() => (all = true)}
             >{matches.length - listed.length} more</button
           >
         {/if}
       </div>
+      {#if unset && unsetAt}
+        <p class="unset-foot dim">
+          Showing {fmt(unset.listed.length)} of {fmt(unset.found.length)}
+          {unset.found.length === 1 ? 'field' : 'fields'} not set{unsetAt.parent
+            ? ` under ${unsetAt.parent}`
+            : ''}{#if unset.listed.length < unset.found.length}{' '}·
+            <button type="button" class="link-button" onclick={() => (all = true)}>Show all</button
+            >{/if}
+        </p>
+      {/if}
       <div class="foot">
         {#if dictionary}
           {@const d = dictionary}
@@ -198,6 +342,97 @@
     gap: 0.5rem;
     width: min(40rem, 80vw);
     padding: 0.5rem;
+  }
+
+  /* A schema's fields add a requirement and an action to each row. */
+  .menu.wide {
+    width: min(56rem, 90vw);
+  }
+
+  .menu.wide .row {
+    grid-template-columns: 1.2rem minmax(0, 1fr) 7rem 7.5rem 5rem 6rem;
+  }
+
+  .which {
+    display: inline-flex;
+  }
+
+  .which button {
+    border-radius: 0;
+  }
+
+  .which button:first-child {
+    border-radius: var(--radius-card) 0 0 var(--radius-card);
+  }
+
+  .which button:last-child {
+    border-radius: 0 var(--radius-card) var(--radius-card) 0;
+  }
+
+  .which button + button {
+    margin-left: -1px;
+  }
+
+  .which button.on {
+    background: var(--ink);
+    color: var(--panel);
+    border-color: var(--ink);
+  }
+
+  .tally {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin: 0;
+    font-size: var(--text-label);
+  }
+
+  .req {
+    font-size: var(--text-micro);
+    color: var(--dim);
+  }
+
+  .req.required {
+    color: var(--error);
+    font-weight: 600;
+  }
+
+  .req.recommended {
+    color: var(--warn);
+    font-weight: 600;
+  }
+
+  .row.unset {
+    cursor: default;
+  }
+
+  .row.after-fields {
+    margin-top: 0.25rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.3rem;
+  }
+
+  .path.object {
+    color: var(--accent);
+  }
+
+  .act {
+    justify-self: end;
+    font-size: var(--text-micro);
+    padding: 0.05rem 0.5rem;
+  }
+
+  .count.dash {
+    color: var(--dim);
+  }
+
+  .unset-foot {
+    margin: 0;
+    font-size: var(--text-micro);
+  }
+
+  .unset-foot .link-button {
+    font-size: inherit;
   }
 
   .find {

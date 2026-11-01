@@ -17,6 +17,9 @@
   in place. Set only where an expression or pattern is typed, never on a
   plain field-name input.
 
+  `schemaPaths` is for a field-name input instead: it suggests the fields the pipeline's schemas declare
+  (`producedSchemas`), one level of the typed path at a time, and marks those the record already holds.
+
   A field that suggests functions is code, so it is laid out in the style when it is left. It is colored as it is
   typed, and so is any field given its own `paint`: the text is drawn by a highlighted copy
   behind the input, whose own text is transparent. The copy matches the input's box and follows its scroll.
@@ -58,6 +61,15 @@
   import { fieldError, holdsName, markRuns, quotedTokens } from './errorMarks';
   import { formatCode, type DotAnswer } from './api';
   import { beginReconcile, endReconcile } from './grokFields';
+  import { producedSchemas } from './producedSchemas.svelte';
+  import {
+    firstOf,
+    groupOf,
+    matching,
+    requirementOf,
+    typedPath,
+    type SchemaChild,
+  } from './schemaTree';
 
   let {
     value = $bindable(''),
@@ -74,6 +86,7 @@
     wrap = false,
     ask,
     required = false,
+    schemaPaths = false,
   }: {
     value: string;
     errors?: string[];
@@ -108,6 +121,8 @@
     ask?: (text: string, dot: number) => Promise<DotAnswer | null>;
     /** As `PasswordField`'s. */
     required?: boolean;
+    /** Suggests the produced schemas' fields: for a box that names the field a step writes. */
+    schemaPaths?: boolean;
   } = $props();
 
   /** A `wrap` field being written in: left, it shows its text laid out instead. */
@@ -324,12 +339,64 @@
     }
     return [];
   });
+  // -- schema paths -----------------------------------------------------------
+
+  // svelte-ignore state_referenced_locally
+  const produced = schemaPaths ? producedSchemas() : undefined;
+  /** The most schema fields the list names before it counts the rest. */
+  const PATHS_NAMED = 10;
+  const fmt = (n: number) => n.toLocaleString('en-US');
+  /** The path the text stands under and the key being typed, where the pipeline produces a schema. */
+  let pathAt = $derived(produced?.tree ? typedPath(value) : null);
+  let pathChoices = $derived.by(() => {
+    const tree = produced?.tree;
+    if (!pathAt || !tree) return null;
+    const all = tree.children(pathAt.parent, produced!.held);
+    const found = matching(all, pathAt.key);
+    return {
+      all,
+      shown: firstOf(found, PATHS_NAMED),
+      more: Math.max(0, found.length - PATHS_NAMED),
+      nested: tree.nestedUnder(pathAt.parent),
+      titles: tree.titles,
+    };
+  });
+  /** How many fields an object holds, and what of them the schemas ask for. */
+  function heldUnder(c: SchemaChild): string {
+    const asked = [
+      c.required > 0 ? `${fmt(c.required)} required` : '',
+      c.recommended > 0 ? `${fmt(c.recommended)} recommended` : '',
+    ].filter(Boolean);
+    return [`${fmt(c.nested)} ${c.nested === 1 ? 'field' : 'fields'}`, ...asked].join(', ');
+  }
+  /** How many the list offers: the schema's fields in a name box, else the functions or patterns. */
+  let offered = $derived(pathChoices ? pathChoices.shown.length : suggestions.length);
+
+  async function pickPath(c: SchemaChild) {
+    const parent = pathAt?.parent ?? '';
+    // An object opens to its own fields; a field ends the path.
+    const opens = c.nested > 0;
+    value = (parent ? `${parent}.` : '') + c.name + (opens ? '.' : '');
+    open = opens;
+    highlighted = 0;
+    await tick();
+    inputEl?.setSelectionRange(value.length, value.length);
+    inputEl?.focus();
+  }
+
   // Opens on a non-matching word too: the "no matches" row is what points
   // a wrong guess (`toInt`) at the browse button.
-  let showDropdown = $derived(open && (suggestions.length > 0 || currentWordText.length > 0));
+  let showDropdown = $derived(
+    open &&
+      (pathChoices
+        ? pathChoices.shown.length > 0
+        : suggestions.length > 0 || currentWordText.length > 0),
+  );
 
   function onInput() {
-    if (functions) {
+    if (pathChoices) {
+      open = true;
+    } else if (functions) {
       // A dot is where a list helps most: what can follow it depends on what is before it.
       open = currentWordText.length > 0 || member !== null;
     } else if (autocomplete === 'grok') {
@@ -443,16 +510,17 @@
       open = false;
       return;
     }
-    if (suggestions.length === 0) return;
+    if (offered === 0) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      highlighted = (highlighted + 1) % suggestions.length;
+      highlighted = (highlighted + 1) % offered;
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      highlighted = (highlighted - 1 + suggestions.length) % suggestions.length;
+      highlighted = (highlighted - 1 + offered) % offered;
     } else if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault();
-      pick(suggestions[highlighted]);
+      if (pathChoices) void pickPath(pathChoices.shown[highlighted]);
+      else pick(suggestions[highlighted]);
     }
   }
 </script>
@@ -565,11 +633,66 @@
   {#if showDropdown}
     <ul
       class="suggestions"
+      class:paths={pathChoices !== null}
       role="listbox"
       popover="manual"
       {@attach float(wordBox, { floor: LIST_FLOOR }, (place) => (placeList = place))}
     >
-      {#if suggestions.length === 0}
+      {#if pathChoices}
+        {@const at = pathAt?.parent ?? ''}
+        <li class="path-head" aria-hidden="true">
+          <span><strong>{pathChoices.titles}</strong>{at ? ` · ${at}` : ''}</span>
+          <span class="path-count"
+            >{fmt(pathChoices.all.length)}
+            {pathChoices.all.length === 1 ? 'field' : 'fields'}{at ? ` in ${at}` : ''} · {fmt(
+              pathChoices.nested,
+            )} including nested fields</span
+          >
+        </li>
+        {#each pathChoices.shown as c, i (c.path)}
+          {@const group = groupOf(c)}
+          {@const before = i > 0 ? groupOf(pathChoices.shown[i - 1]) : group}
+          {@const req = requirementOf(c)}
+          <li
+            role="option"
+            aria-selected={i === highlighted}
+            class="path"
+            class:highlighted={i === highlighted}
+            class:set={c.set}
+            class:after-fields={(before <= 2 && group > 2) || (before < 5 && group === 5)}
+            onmousedown={(e) => e.preventDefault()}
+            onclick={() => pickPath(c)}
+            onkeydown={(e) => e.key === 'Enter' && pickPath(c)}
+            onmouseenter={() => (highlighted = i)}
+          >
+            <span class="fn-head">
+              <span class="fn-sig"
+                >{c.name}{c.nested > 0 ? '.' : ''}
+                <span class="path-type">{c.nested > 0 ? heldUnder(c) : c.field?.type}</span></span
+              >
+              {#if c.set}
+                <span class="path-req held">✓ set above</span>
+              {:else if c.nested === 0 || c.field?.requirement}
+                <span class="path-req {req}"
+                  >{req === 'required'
+                    ? '* required'
+                    : req === 'recommended'
+                      ? '° recommended'
+                      : 'optional'}</span
+                >
+              {/if}
+            </span>
+            {#if c.field?.description && !c.set}
+              <span class="fn-desc path-desc">{c.field.description}</span>
+            {/if}
+          </li>
+        {/each}
+        {#if pathChoices.more > 0}
+          <li class="path-more" aria-hidden="true">
+            and {fmt(pathChoices.more)} more: keep typing to narrow
+          </li>
+        {/if}
+      {:else if suggestions.length === 0}
         <li class="no-match">
           <span class="fn-desc">
             {#if functions}
@@ -581,7 +704,7 @@
           </span>
         </li>
       {/if}
-      {#each suggestions as fn, i}
+      {#each pathChoices ? [] : suggestions as fn, i}
         <li
           role="option"
           aria-selected={i === highlighted}
@@ -997,5 +1120,75 @@
   .fact > code {
     display: inline-block;
     max-width: 100%;
+  }
+
+  /* A schema's fields: where the list is, and how many it holds. */
+  /* A schema's paths and the counts beside them need more room than a function's name. */
+  .suggestions.paths {
+    max-width: min(520px, calc(100vw - 2rem));
+  }
+
+  .suggestions li.path-head {
+    flex-direction: row;
+    flex-wrap: wrap;
+    column-gap: 0.75rem;
+    font-size: var(--text-micro);
+    color: var(--dim);
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    margin-bottom: 0.2rem;
+    cursor: default;
+  }
+
+  .path-head strong {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  .path-count {
+    margin-left: auto;
+  }
+
+  .path-type {
+    font-weight: 400;
+    color: var(--dim);
+  }
+
+  .path-req {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-size: var(--text-micro);
+    color: var(--dim);
+  }
+
+  .path-req.required {
+    color: var(--error);
+    font-weight: 600;
+  }
+
+  .path-req.recommended {
+    color: var(--warn);
+    font-weight: 600;
+  }
+
+  .path-req.held {
+    color: var(--added);
+  }
+
+  /* What the record already holds is offered last, quieter. */
+  .path.set .fn-sig {
+    color: var(--dim);
+  }
+
+  .path-desc {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .suggestions li.path-more {
+    font-size: var(--text-micro);
+    color: var(--dim);
+    cursor: default;
   }
 </style>
