@@ -77,7 +77,7 @@ test('a long schema shows its first 100 fields until Show all, which a search ke
   const rows = admin.locator('table.fields tbody tr');
   const search = admin.getByRole('searchbox', { name: 'Search schemas' });
   await expect(rows).toHaveCount(100);
-  await expect(admin.getByText('100 of 150 fields shown', { exact: true })).toBeVisible();
+  await expect(admin.getByText('Showing 100 of 150 fields', { exact: true })).toBeVisible();
   await search.fill('beta');
   await expect(rows).toHaveCount(30);
   await expect(admin.getByText('30 fields of 150 hold “beta”.')).toBeVisible();
@@ -85,7 +85,7 @@ test('a long schema shows its first 100 fields until Show all, which a search ke
   await search.fill('alpha');
   await expect(rows).toHaveCount(100);
   await expect(
-    admin.getByText('100 of the 120 fields that hold “alpha” shown', { exact: true }),
+    admin.getByText('Showing 100 of the 120 fields that hold “alpha”', { exact: true }),
   ).toBeVisible();
   await admin.getByRole('button', { name: 'Show all' }).click();
   await expect(rows).toHaveCount(120);
@@ -403,7 +403,7 @@ test("a pipeline's Produces is saved with it, and the editor says what its rows 
   await expect(produces.getByRole('link', { name: 'login' })).toBeVisible();
   await expect(produces.getByRole('status')).toHaveText('1 schema finding', { timeout: 15_000 });
   await expect(
-    admin.getByText('Login requires `activity_id`, `time` and `user`; the rows lack them.'),
+    admin.getByText('Login requires activity_id, time and user; the rows lack them.'),
   ).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-produces.png' });
 
@@ -916,7 +916,7 @@ test('a field the schema requires and the rows lack is a column of its own, with
   );
   await expect(admin.getByText('Required by Login:')).toBeVisible();
   await expect(
-    admin.getByText('Login requires `activity_id` and `user`; the rows lack them.'),
+    admin.getByText('Login requires activity_id and user; the rows lack them.'),
   ).toBeVisible();
   // A recommended field the rows lack is told apart from the warning, and is no column.
   await expect(admin.getByText('Login recommends src_endpoint; the rows lack it.')).toBeVisible();

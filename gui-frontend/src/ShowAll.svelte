@@ -39,7 +39,7 @@
   >
 {:else}
   <div class="show-all">
-    <span class="count">{shown} of {of} shown</span>
+    <span class="count">Showing {shown} of {of}</span>
     <button type="button" class="compact" onclick={onshowall}>Show all</button>
   </div>
 {/if}
