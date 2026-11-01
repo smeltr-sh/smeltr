@@ -179,9 +179,9 @@ pub struct State {
     pub renew_after_millis: Option<i64>,
     #[serde(default)]
     pub last_attempt_millis: Option<i64>,
-    /// Why the last attempt failed. Cleared by one that succeeds.
+    /// Why the last attempt failed, logged when it was recorded. Cleared by one that succeeds.
     #[serde(default)]
-    pub last_error: Option<String>,
+    pub last_error: Option<crate::logs::Noted>,
 }
 
 pub fn dir_of(tls_dir: &Path) -> PathBuf {
@@ -433,11 +433,16 @@ pub fn abandoned(tls_dir: &Path) -> Result<(), String> {
     )
 }
 
-/// Records that an attempt at `now_ms` failed with `error`, keeping what the last success left.
-pub fn failed(tls_dir: &Path, now_ms: i64, error: &str) -> Result<(), String> {
+/// Records that an attempt at `now_ms` against `directory` failed with `error`, keeping what the last success left.
+pub fn failed(tls_dir: &Path, now_ms: i64, directory: &str, error: &str) -> Result<(), String> {
     let mut state = state(tls_dir)?;
     state.last_attempt_millis = Some(now_ms);
-    state.last_error = Some(error.to_string());
+    state.last_error = Some(crate::noted!(
+        target: "leader.acme_order_failed",
+        "ordering a certificate failed",
+        error.to_string(),
+        directory
+    ));
     write_state(tls_dir, &state)
 }
 
@@ -1230,7 +1235,7 @@ mod tests {
             },
         )
         .unwrap();
-        failed(&dir, NOW, "the authority is down").unwrap();
+        failed(&dir, NOW, "https://acme.test/dir", "the authority is down").unwrap();
         let state = state(&dir).unwrap();
         assert_eq!(state.renew_after_millis, Some(NOW));
         assert_eq!(state.last_attempt_millis, Some(NOW));
@@ -1249,7 +1254,7 @@ mod tests {
         assert!(renews(&issued, NOW));
         assert!(!renews(&issued, NOW - 1));
         let never = State {
-            last_error: Some("the authority is down".to_string()),
+            last_error: serde_json::from_str(r#""the authority is down""#).unwrap(),
             ..State::default()
         };
         assert!(!renews(&never, NOW));

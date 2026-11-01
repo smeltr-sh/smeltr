@@ -51,8 +51,9 @@ pub struct Newer {
 pub struct Looked {
     /// Unix millis.
     pub checked_at: i64,
+    /// Why the list was not read, logged when it was recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub failure: Option<String>,
+    pub failure: Option<crate::logs::Noted>,
 }
 
 /// The leader's looks: what the last found, and what wakes the timer.
@@ -103,7 +104,11 @@ impl Updates {
     fn failed(&self, why: String, now: i64) {
         self.held().1 = Some(Looked {
             checked_at: now,
-            failure: Some(why),
+            failure: Some(crate::noted!(
+                target: "leader.release_check_failed",
+                "the list of releases could not be read",
+                why
+            )),
         });
     }
 
@@ -328,13 +333,8 @@ mod tests {
         assert_eq!(updates.newer().unwrap().since, 10);
         updates.failed("down".into(), 30);
         assert_eq!(updates.newer().unwrap().release, "1.3.0", "the release is still out");
-        assert_eq!(
-            updates.looked().unwrap(),
-            Looked {
-                checked_at: 30,
-                failure: Some("down".into())
-            }
-        );
+        let looked = updates.looked().unwrap();
+        assert_eq!((looked.checked_at, looked.failure.as_deref()), (30, Some("down")));
         updates.found(v("1.4.0"), 40);
         assert_eq!(updates.newer().unwrap().since, 40, "another release is news again");
         updates.found(None, 50);

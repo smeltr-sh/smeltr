@@ -3513,7 +3513,7 @@ mod tests {
 
     /// The last try, at `NOW`, failed with `error`.
     fn failing(mut serving: Serving, error: &str) -> Serving {
-        serving.acme.last_error = Some(error.to_string());
+        serving.acme.last_error = serde_json::from_str(&serde_json::to_string(error).unwrap()).unwrap();
         serving.acme.last_attempt_millis = Some(NOW);
         serving
     }

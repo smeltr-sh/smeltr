@@ -27,6 +27,7 @@
 mod console;
 mod event;
 mod layer;
+mod noted;
 
 pub(crate) use console::{render_fields, render_value, stamp};
 #[cfg(test)]
@@ -39,6 +40,7 @@ use std::sync::{Condvar, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 pub use event::{Event, Value};
+pub use noted::Noted;
 pub use tracing::Level;
 
 /// One event as a test reads it: its level, its target, and its fields with the sentence under `message`.
