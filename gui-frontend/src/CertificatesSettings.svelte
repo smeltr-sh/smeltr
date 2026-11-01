@@ -346,7 +346,7 @@
   /** An order is running, until the leader answers: once the authority has issued, or after `orderWithinSecs`. */
   let ordering = $state(false);
   const orderWait = $derived(
-    `This can take up to ${Math.ceil((acme?.orderWithinSecs[challenge] ?? 0) / 60)} minutes.`,
+    `This can take up to ${Math.ceil((acme?.orderWithinSecs?.[challenge] ?? 0) / 60)} minutes.`,
   );
 
   /** Orders a certificate with what the form says, and serves it. */
