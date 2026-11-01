@@ -382,7 +382,7 @@ impl RowTable {
                     .unwrap_or_else(|e| e.into_inner())
                     .fail_due(e.to_string())
                 {
-                    tracing::warn!(target: "lookup.index_not_kept", error, "a lookup file's index could not be stored, so it is built again at every compile");
+                    tracing::warn!(target: "lookup.index_not_kept", file = shown, error, "a lookup file's index could not be stored, so it is built again at every compile");
                 }
                 anon(&built)?
             }
