@@ -13,7 +13,7 @@
     <p class="eyebrow">Feed health</p>
     <h1>Know when a feed changes.</h1>
     <p class="lede">
-      A log relay stops. A scan floods a firewall. A vendor upgrade changes a field. Smeltr learns
+      A syslog relay stops. A scan floods a firewall. A vendor upgrade changes a field. Smeltr learns
       what each source normally sends and the fields each pipeline declares, and warns when either
       changes.
     </p>
