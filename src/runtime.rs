@@ -208,6 +208,10 @@ pub struct Reader {
     /// The source letting senders go, said once per change and on the interval with what it dropped meanwhile.
     losing: crate::logs::Relog,
     dropped_unsaid: u64,
+    /// The source's system unreachable, said once per change and on the interval, with the recovery.
+    unreachable: crate::logs::Relog,
+    /// What this reader's lines call the source: the id its author gave it, or its number until [`Reader::named`].
+    subject: String,
     /// Recent refusals every destination this reader hears from gave, for the heartbeat. Shared with the transform
     /// threads serving the same destinations; a fresh, private ring until [`Reader::with_refusals`] injects a
     /// deployment-wide one.
@@ -764,6 +768,8 @@ impl Reader {
             full_since: None,
             losing: Default::default(),
             dropped_unsaid: 0,
+            unreachable: Default::default(),
+            subject: source_label,
             refusals: Arc::new(RefusalRing::default()),
             wants_headers: Box::new(|| false),
         }
@@ -773,6 +779,13 @@ impl Reader {
     /// destination's history in one place, however many readers and transform threads dispatch to it.
     pub fn with_refusals(mut self, refusals: Arc<RefusalRing>) -> Reader {
         self.refusals = refusals;
+        self
+    }
+
+    /// The id the author gave the source, for this reader's lines and the source's own.
+    pub fn named(mut self, name: &str) -> Reader {
+        self.subject = name.to_string();
+        self.source.named(name);
         self
     }
 
@@ -815,8 +828,20 @@ impl Reader {
     /// source every call -- unlike `block_reason`, nothing on `Reader` remembers it, since the source kind is
     /// already the thing keeping it (`Source::connection_error`). `None` once a fetch or an assignment proves the
     /// source reachable again, the same as `blocked_fact` clearing once a block ends.
-    pub fn connection_error_fact(&self) -> Option<crate::heartbeat::MetricSampleDto> {
-        let reason = self.source.connection_error()?;
+    pub fn connection_error_fact(&mut self) -> Option<crate::heartbeat::MetricSampleDto> {
+        let reason = match self.source.connection_error() {
+            Some(reason) => reason,
+            None => {
+                if self.unreachable.clear() {
+                    tracing::info!(target: "runtime.source_reachable", subject = %self.subject, "a source reaches the system it reads from again");
+                }
+                return None;
+            }
+        };
+        // One line for every source kind that knows its client's health, said once per change and on the interval.
+        if let Some(error) = self.unreachable.fail_due(reason.clone()) {
+            tracing::warn!(target: "runtime.source_unreachable", subject = %self.subject, error, "a source cannot reach the system it reads from");
+        }
         Some(crate::heartbeat::MetricSampleDto {
             metric: "smeltr_source_connection_error".to_string(),
             labels: vec![("source".to_string(), self.source_id.to_string())],
@@ -1036,7 +1061,7 @@ impl Transform {
                 let panic = crate::logs::panic_text(&*panic);
                 tracing::error!(
                     target: "runtime.batch_poisoned",
-                    subject = %source_label,
+                    subject = lane.source_name.as_deref().unwrap_or(&source_label),
                     rows = turn.records.len(),
                     %panic,
                     "a batch made the pipelines panic, so it is answered as unprocessable rather than tried again"
@@ -4419,7 +4444,7 @@ mod tests {
     #[test]
     fn a_sources_connection_error_reaches_a_heartbeat_fact() {
         let registry = Arc::new(crate::metrics::Metrics::new());
-        let healthy = Reader::new(
+        let mut healthy = Reader::new(
             7,
             Box::new(FlakySource { error: None }),
             vec![],
@@ -4432,7 +4457,7 @@ mod tests {
         );
 
         let reason = "kafka-nowhere.invalid:9092/bootstrap: Failed to resolve".to_string();
-        let unreachable = Reader::new(
+        let mut unreachable = Reader::new(
             7,
             Box::new(FlakySource {
                 error: Some(reason.clone()),
@@ -4451,7 +4476,7 @@ mod tests {
             crate::heartbeat::MetricValueDto::Text(t) if t == &reason
         ));
 
-        let rambling = Reader::new(
+        let mut rambling = Reader::new(
             7,
             Box::new(FlakySource {
                 error: Some("x".repeat(10 * MAX_TEXT_LEN)),

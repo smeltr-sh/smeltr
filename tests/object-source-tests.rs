@@ -32,6 +32,10 @@ struct Calls {
 struct FakeQueue(Arc<Mutex<Calls>>);
 
 impl Queue for FakeQueue {
+    fn name(&self) -> &str {
+        "fake"
+    }
+
     fn receive(&self, max: usize, _: Duration, _: Duration) -> Result<Vec<Message>, IoError> {
         let delay = self.0.lock().unwrap().delay;
         std::thread::sleep(delay);

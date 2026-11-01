@@ -711,8 +711,9 @@ impl<D: Driver + 'static> SqlSource<D> {
             rows.clear();
             self.wide = true;
         } else {
-            tracing::warn!(
-                target: "sql.poll",
+            tracing::error!(
+                target: "sql.rows_skipped",
+                subject = %self.pacer.subject,
                 position = %name,
                 value = ?last,
                 rows = limit,
@@ -752,7 +753,7 @@ impl<D: Driver + 'static> SqlSource<D> {
             .collect::<Result<Vec<_>, _>>()?;
         for c in columns {
             if !self.config.fields.iter().any(|(name, _)| name == c) && self.warned.insert(c.clone()) {
-                tracing::warn!(target: "sql.poll", column = %c, "a result column no field of the record reads is left out");
+                tracing::warn!(target: "sql.column_unread", subject = %self.pacer.subject, column = %c, "a result column no field of the record reads is left out");
             }
         }
         Ok(found)
@@ -827,6 +828,10 @@ impl<D: Driver + 'static> SqlSource<D> {
 }
 
 impl<D: Driver + 'static> Source for SqlSource<D> {
+    fn named(&mut self, name: &str) {
+        self.pacer.subject = name.to_string();
+    }
+
     fn poll_batch(
         &mut self,
         max_rows: usize,

@@ -970,6 +970,10 @@ pub trait Source: Send {
     fn connection_error(&self) -> Option<String> {
         None
     }
+
+    /// The name the bundle gives this source, for the lines it logs itself. The default keeps none: a source that
+    /// logs nothing of its own has no use for it.
+    fn named(&mut self, _name: &str) {}
 }
 
 /// One record on its way out. `key` and `doc_id` are separate channels: a partition key changes how every record on a

@@ -373,6 +373,8 @@ impl Drop for Client {
 fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clients: &Weak<Clients>) {
     let mut cluster_known = false;
     let mut stalls_checked = Instant::now();
+    // A poll failing: said once per change and on the interval, not per poll.
+    let mut polling = crate::logs::Relog::default();
     while !stop.load(Ordering::Relaxed) {
         routes.resubscribe_if_due(consumer);
         routes.refetch_if_due(consumer);
@@ -406,7 +408,11 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
             // Any other consumption error is transient (the client reconnects underneath), or says a partition is
             // caught up.
             Some(Err(KafkaError::MessageConsumption(_) | KafkaError::PartitionEOF(_))) => {}
-            Some(Err(e)) => tracing::debug!(target: "kafka.poll", error = %e, "the Kafka client's poll failed"),
+            Some(Err(e)) => {
+                if let Some(error) = polling.fail_due(e.to_string()) {
+                    tracing::warn!(target: "kafka.poll", group = %routes.group(), error, "could not read from Kafka; trying again");
+                }
+            }
         }
     }
 }
@@ -685,6 +691,8 @@ struct RoutesInner {
     changed: Mutex<Option<Instant>>,
     /// The client's most recent global error, until a fetch or an assignment proves it reachable (E4).
     last_error: Mutex<Option<String>>,
+    /// Signing in refused, said once per change and on the interval: librdkafka asks again every few seconds.
+    sign_in: Mutex<crate::logs::Relog>,
     /// The cluster the client is connected to, once it knows.
     cluster: OnceLock<String>,
     /// Some source waits for its inbox to be fetched again (`SlotState::refetch`).
@@ -703,6 +711,11 @@ impl Routes {
     /// Marks the subscription to be sent once changes settle.
     pub(super) fn changed(&self) {
         *self.0.changed.lock().unwrap() = Some(Instant::now());
+    }
+
+    /// The consumer group this client is in, for its lines.
+    pub(super) fn group(&self) -> &str {
+        &self.0.group
     }
 
     /// What `KafkaSource::connection_error` reads of the client.
@@ -932,9 +945,14 @@ impl Routes {
             let names: Vec<&str> = topics.iter().map(String::as_str).collect();
             consumer.subscribe(&names)
         };
-        if let Err(e) = sent {
-            tracing::warn!(target: "kafka.subscribe", error = %e, "could not subscribe; trying again");
-            self.changed();
+        match sent {
+            Err(e) => {
+                tracing::warn!(target: "kafka.subscribe", group = %self.group(), error = %e, "could not subscribe; trying again");
+                self.changed();
+            }
+            Ok(()) => {
+                tracing::info!(target: "kafka.subscribed", group = %self.group(), topics = topics.len(), "the client subscribed to its topics")
+            }
         }
     }
 
@@ -1057,7 +1075,20 @@ impl ClientContext for Routes {
         &self,
         config: Option<&str>,
     ) -> Result<rdkafka::client::OAuthToken, Box<dyn std::error::Error>> {
-        super::entra::token(config)
+        // librdkafka asks again on its own schedule, so a refusal stalls the client until one is answered.
+        match super::entra::token(config) {
+            Ok(token) => {
+                self.0.sign_in.lock().unwrap().clear();
+                tracing::debug!(target: "kafka.token_refreshed", group = %self.group(), principal = %token.principal_name, "signed in to Kafka as the pod's workload identity");
+                Ok(token)
+            }
+            Err(e) => {
+                if let Some(error) = self.0.sign_in.lock().unwrap().fail_due(e.to_string()) {
+                    tracing::warn!(target: "kafka.sign_in", group = %self.group(), error, "could not sign in to Kafka as the pod's workload identity");
+                }
+                Err(e)
+            }
+        }
     }
 
     /// The most recent global error wins: a DNS failure that later becomes a connection refusal should read as the
@@ -1088,6 +1119,7 @@ impl ConsumerContext for Routes {
         } else if revoke {
             Rebalance::Revoke(tpl)
         } else {
+            tracing::warn!(target: "kafka.rebalance_failed", group = %self.group(), error = %KafkaError::Rebalance(err.into()), "a rebalance failed, so this client's partitions stay as they were");
             Rebalance::Error(KafkaError::Rebalance(err.into()))
         };
         self.pre_rebalance(base_consumer, &rebalance);
@@ -1143,8 +1175,15 @@ impl ConsumerContext for Routes {
     /// ordinary idle case `error()` must not be mistaken for (E4's requirement: idle and unreachable read alike
     /// otherwise). A revoke or a rebalance error proves nothing either way, so only `Assign` clears.
     fn post_rebalance(&self, _consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
-        if matches!(rebalance, Rebalance::Assign(_)) {
-            self.clear_error();
+        match rebalance {
+            Rebalance::Assign(tpl) => {
+                tracing::info!(target: "kafka.assigned", group = %self.group(), partitions = tpl.count(), "the group assigned partitions to this client");
+                self.clear_error();
+            }
+            Rebalance::Revoke(tpl) => {
+                tracing::info!(target: "kafka.revoked", group = %self.group(), partitions = tpl.count(), "the group took partitions from this client");
+            }
+            Rebalance::Error(_) => {}
         }
     }
 
@@ -1441,7 +1480,7 @@ fn list_topics(consumer: &BaseConsumer<Routes>, routes: &Routes, clients: &Weak<
     let metadata = match consumer.fetch_metadata(None, LAG_QUERY_TIMEOUT) {
         Ok(metadata) => metadata,
         Err(e) => {
-            tracing::debug!(target: "kafka.topic_list", error = %e, "could not list the cluster's topics");
+            tracing::debug!(target: "kafka.topic_list", group = %routes.group(), error = %e, "could not list the cluster's topics");
             return;
         }
     };
@@ -1483,15 +1522,23 @@ type Committed = (String, i32, i64);
 /// handed to it as soon as its own partitions are measured, so a slow broker behind one source does not hold back the
 /// others. Nothing is handed over when the broker did not answer, or once `stopped` turns true.
 fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn Fn() -> bool, between: &dyn Fn()) {
-    let Ok(assignment) = consumer.assignment() else {
-        return;
+    let assignment = match consumer.assignment() {
+        Ok(assignment) => assignment,
+        Err(e) => {
+            tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the assignment could not be read, so lag is not measured this round");
+            return;
+        }
     };
     if assignment.elements().is_empty() {
         return;
     }
     // One batched call for every partition's committed offset.
-    let Ok(committed) = consumer.committed_offsets(assignment, LAG_QUERY_TIMEOUT) else {
-        return;
+    let committed = match consumer.committed_offsets(assignment, LAG_QUERY_TIMEOUT) {
+        Ok(committed) => committed,
+        Err(e) => {
+            tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the committed offsets could not be read, so lag is not measured this round");
+            return;
+        }
     };
 
     // Each source's partitions, with the offset committed on each.
@@ -1520,8 +1567,12 @@ fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn F
             }
             between();
             // No batched form of this call exists in librdkafka -- one round trip per partition.
-            let Ok((_, high)) = consumer.fetch_watermarks(&topic, partition, LAG_QUERY_TIMEOUT) else {
-                continue;
+            let (_, high) = match consumer.fetch_watermarks(&topic, partition, LAG_QUERY_TIMEOUT) {
+                Ok(marks) => marks,
+                Err(e) => {
+                    tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), %topic, partition, error = %e, "a partition's high watermark could not be read, so its lag is not measured this round");
+                    continue;
+                }
             };
             let topic = slot
                 .topics

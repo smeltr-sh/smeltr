@@ -1255,6 +1255,7 @@ fn spawn_reader(
         depth.lane + crate::runtime::MAX_IN_FLIGHT,
         MetricsHandle::new(shared.registry.clone(), &thread_id),
     )
+    .named(source_name)
     .with_byte_budget(depth.lane * depth.batch_bytes + depth.ack)
     .with_refusals(shared.refusals.clone())
     .with_headers({
