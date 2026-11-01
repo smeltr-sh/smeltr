@@ -5,6 +5,13 @@ import type { DestinationDto, ExportFormat, PipelineDto, Requirement, SchemaDto 
 /** A field's requirements, in order: what a schema asks of a row, and OCSF's levels. */
 export const REQUIREMENTS: Requirement[] = ['required', 'recommended', 'optional'];
 
+/** A requirement, as every list of a schema's fields marks it (`RequirementMark`). */
+export const REQUIREMENT_MARK: Record<Requirement, string> = {
+  required: '* required',
+  recommended: '° recommended',
+  optional: 'optional',
+};
+
 /** The recommended fields a list names before a button shows the rest, so a standard's long list stays short. */
 export const RECOMMENDED_NAMED = 5;
 

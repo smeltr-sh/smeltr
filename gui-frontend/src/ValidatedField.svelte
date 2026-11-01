@@ -62,6 +62,7 @@
   import { formatCode, type DotAnswer } from './api';
   import { beginReconcile, endReconcile } from './grokFields';
   import { producedSchemas } from './producedSchemas.svelte';
+  import RequirementMark from './RequirementMark.svelte';
   import FieldDoc from './FieldDoc.svelte';
   import ShowAll from './ShowAll.svelte';
   import Ticked from './Ticked.svelte';
@@ -72,7 +73,6 @@
     fmt,
     groupOf,
     matching,
-    REQUIREMENT_MARK,
     requirementOf,
     typedPath,
     type SchemaChild,
@@ -683,7 +683,7 @@
               {#if c.set}
                 <span class="path-req held">✓ set above</span>
               {:else if c.nested === 0 || c.field?.requirement}
-                <span class="path-req {req}">{REQUIREMENT_MARK[req]}</span>
+                <span class="path-req"><RequirementMark of={req} /></span>
               {/if}
             </span>
             {#if c.field?.description && !c.set}
@@ -1172,16 +1172,6 @@
     flex-shrink: 0;
     font-size: var(--text-micro);
     color: var(--dim);
-  }
-
-  .path-req.required {
-    color: var(--error);
-    font-weight: 600;
-  }
-
-  .path-req.recommended {
-    color: var(--warn);
-    font-weight: 600;
   }
 
   .path-req.held {

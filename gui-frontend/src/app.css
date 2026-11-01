@@ -37,6 +37,18 @@ body {
   color: var(--dim);
 }
 
+/* A field's requirement, as every list of a schema's fields colors it (`RequirementMark`, the Schemas table's
+   choice of it). An optional one is `dim`. */
+.requirement-mark.required {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.requirement-mark.recommended {
+  color: var(--warn);
+  font-weight: 600;
+}
+
 /* Takes the room a row has left, pushing what follows it to the far end. */
 .grow {
   flex-grow: 1;

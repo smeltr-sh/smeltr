@@ -6,12 +6,11 @@
 <script lang="ts">
   import type { SchemaFieldDto } from './api';
   import FieldDescription from './FieldDescription.svelte';
+  import RequirementMark from './RequirementMark.svelte';
   import { ownElasticsearchType } from './schemas';
-  import { REQUIREMENT_MARK } from './schemaTree';
 
   let { field, head = false }: { field: SchemaFieldDto; head?: boolean } = $props();
 
-  let requirement = $derived(field.requirement ?? 'optional');
   let mapsTo = $derived(field.elasticsearch?.type ?? ownElasticsearchType(field.type));
 </script>
 
@@ -20,7 +19,7 @@
     <div class="head">
       <code class="path">{field.field}</code>
       <code class="dim">{field.type}</code>
-      <span class="requirement {requirement}">{REQUIREMENT_MARK[requirement]}</span>
+      <span class="requirement"><RequirementMark of={field.requirement ?? 'optional'} /></span>
     </div>
   {/if}
   {#if field.description}<FieldDescription text={field.description} />{/if}
@@ -62,17 +61,6 @@
   .requirement {
     margin-left: auto;
     font-size: var(--text-micro);
-    color: var(--dim);
-  }
-
-  .requirement.required {
-    color: var(--error);
-    font-weight: 600;
-  }
-
-  .requirement.recommended {
-    color: var(--warn);
-    font-weight: 600;
   }
 
   dl {

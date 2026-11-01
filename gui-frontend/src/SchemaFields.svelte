@@ -10,8 +10,14 @@
   import Help from './Help.svelte';
   import Segmented from './Segmented.svelte';
   import ShowAll, { SHOWN } from './ShowAll.svelte';
-  import { elasticsearchTypes, ownElasticsearchType, REQUIREMENTS } from './schemas';
+  import {
+    elasticsearchTypes,
+    ownElasticsearchType,
+    REQUIREMENT_MARK,
+    REQUIREMENTS,
+  } from './schemas';
   import FieldDescription from './FieldDescription.svelte';
+  import RequirementMark from './RequirementMark.svelte';
   import { count } from './time';
 
   let {
@@ -119,9 +125,9 @@
   let columns = $derived.by(() => {
     const field = `min(calc(${widest(of.fields.map((f) => f.field)) + 1}ch + 1rem), 45%)`;
     const type = `calc(${Math.max(4, widest(of.fields.map((f) => f.type)))}ch + 1rem)`;
-    if (view === 'elasticsearch') return `${field} ${type} minmax(0, 1fr)`;
     // As wide as `recommended` in a dropdown, or as its column's head where it is text.
     const requirement = onrequire ? '11rem' : 'calc(12ch + 1.5rem)';
+    if (view === 'elasticsearch') return `${field} ${type} ${requirement} minmax(0, 1fr)`;
     const example = examples
       ? ` min(calc(${widest(of.fields.map((f) => f.example))}ch + 1rem), 18rem)`
       : '';
@@ -147,12 +153,13 @@
       <tr>
         <th>Field</th>
         <th>Type</th>
+        <th>Requirement</th>
         {#if view === 'elasticsearch'}<th
             >Elasticsearch <Help label="Elasticsearch"
               >Each field is indexed as this Elasticsearch type. The first in its list is the type
               its schema type maps to, and a field left on it saves no mapping of its own.</Help
             ></th
-          >{:else}<th>Requirement</th><th>Description</th>
+          >{:else}<th>Description</th>
           {#if examples}<th>Example</th>{/if}{/if}
       </tr>
     </thead>
@@ -160,15 +167,23 @@
       {#each shown as f (f.field)}
         <tr>
           <td class="name" title={f.field}>
-            <span class="mono">{f.field}</span>{#if f.requirement === 'required'}<span
-                class="required"
-                title="required">*</span
-              >{:else if f.requirement === 'recommended'}<span
-                class="recommended"
-                title="recommended">°</span
-              >{/if}
+            <span class="mono">{f.field}</span>
           </td>
           <td class="mono">{f.type}</td>
+          <td class="requirement">
+            {#if onrequire}
+              <select
+                class="requirement-mark {f.requirement ?? 'optional'}"
+                aria-label={`Requirement of ${f.field}`}
+                value={f.requirement ?? 'optional'}
+                onchange={(e) => onrequire(f.field, e.currentTarget.value as Requirement)}
+              >
+                {#each REQUIREMENTS as r (r)}<option value={r}>{REQUIREMENT_MARK[r]}</option>{/each}
+              </select>
+            {:else}
+              <RequirementMark of={f.requirement ?? 'optional'} />
+            {/if}
+          </td>
           {#if view === 'elasticsearch'}
             {@const types = elasticsearchTypes(f.type)}
             <!-- An integer's unit is its choice of type, not another setting. -->
@@ -202,19 +217,6 @@
                 >{/if}
             </td>
           {:else}
-            <td class="mono requirement">
-              {#if onrequire}
-                <select
-                  aria-label={`Requirement of ${f.field}`}
-                  value={f.requirement ?? 'optional'}
-                  onchange={(e) => onrequire(f.field, e.currentTarget.value as Requirement)}
-                >
-                  {#each REQUIREMENTS as r (r)}<option value={r}>{r}</option>{/each}
-                </select>
-              {:else}
-                {f.requirement ?? 'optional'}
-              {/if}
-            </td>
             <td class="about"><FieldDescription text={f.description ?? ''} /></td>
             {#if examples}<td class="example mono" title={f.example}
                 ><div>{f.example ?? ''}</div></td
@@ -338,16 +340,6 @@
 
   .about {
     overflow-wrap: anywhere;
-  }
-
-  .required {
-    margin-left: 0.15rem;
-    color: var(--error);
-  }
-
-  .recommended {
-    margin-left: 0.15rem;
-    color: var(--dim);
   }
 
   .dim {

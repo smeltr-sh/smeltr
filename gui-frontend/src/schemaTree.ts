@@ -28,13 +28,6 @@ function stronger(a: Requirement = 'optional', b: Requirement = 'optional'): Req
   return RANK[a] <= RANK[b] ? a : b;
 }
 
-/** A requirement, as the lists of a schema's fields mark it. */
-export const REQUIREMENT_MARK: Record<Requirement, string> = {
-  required: '* required',
-  recommended: '° recommended',
-  optional: 'optional',
-};
-
 /** A count as a list writes it: 56,056. */
 export const fmt = (n: number) => n.toLocaleString('en-US');
 
