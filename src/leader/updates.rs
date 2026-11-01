@@ -17,6 +17,11 @@ use super::{AppState, run_store};
 /// releases were published in, so a patch to an older line published after a newer major would take it.
 const RELEASES: &str = "https://smeltr.sh/api/releases";
 
+/// A release's page on smeltr.sh. `just cut-release` refuses a release without one.
+fn page(release: &str) -> String {
+    format!("https://smeltr.sh/releases/{release}")
+}
+
 /// How often the leader looks.
 const EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -33,7 +38,7 @@ pub const CHECK_KEY: &str = "updates.check";
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Newer {
     pub release: String,
-    /// Its page on GitHub.
+    /// Its page on smeltr.sh, which says what it changed.
     pub url: String,
     /// When this leader first saw it, unix millis.
     #[serde(skip)]
@@ -157,7 +162,6 @@ async fn fetch(own: &str) -> Result<Option<(String, String)>, String> {
 #[derive(serde::Deserialize)]
 struct Published {
     tag_name: String,
-    html_url: String,
     #[serde(default)]
     draft: bool,
     #[serde(default)]
@@ -175,11 +179,11 @@ fn newest(list: &[u8], own: &str) -> Result<Option<(String, String)>, String> {
         .filter_map(|p| {
             let name = p.tag_name.strip_prefix('v')?.to_string();
             let (core, pre) = parse(&name)?;
-            pre.is_none().then_some((core, name, p.html_url))
+            pre.is_none().then(|| (core, page(&name), name))
         })
         .max_by_key(|(core, ..)| *core)
         .filter(|(core, ..)| newer(*core, own))
-        .map(|(_, name, url)| (name, url)))
+        .map(|(_, url, name)| (name, url)))
 }
 
 type Core = (u64, u64, u64);
@@ -274,10 +278,7 @@ mod tests {
         ]);
         assert_eq!(
             newest(&published, "1.2.0").unwrap(),
-            Some((
-                "2.0.0".into(),
-                "https://github.com/smeltr-sh/smeltr/releases/tag/v2.0.0".into()
-            ))
+            Some(("2.0.0".into(), "https://smeltr.sh/releases/2.0.0".into()))
         );
         assert_eq!(newest(&published, "2.0.0").unwrap(), None, "nothing newer than its own");
         assert_eq!(

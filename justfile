@@ -246,10 +246,15 @@ check-package package: need-nextest stable
 # only, a patch fixes and adds no step. A pre-release tag (`v1.2.0-rc1`), made by hand with `git tag`, runs
 # the workflow as a trial: a draft pre-release and its own image tag, with nothing recorded.
 [doc("Record a release, commit it and tag it.")]
-cut-release release: (record-release if release =~ '^[0-9]+\.[0-9]+\.[0-9]+$' { release } else { error('a release is named major.minor.patch, like 1.0.0') })
+cut-release release: (has-notes release) (record-release if release =~ '^[0-9]+\.[0-9]+\.[0-9]+$' { release } else { error('a release is named major.minor.patch, like 1.0.0') })
     git add tests/fixtures/releases
     git commit -m "Release {{release}}"
     git tag -a "v{{release}}" -m "Release {{release}}"
+
+# A release is cut only once its notes are written and dated in `website/src/lib/releases.json`.
+[private]
+has-notes release: need-node
+    node website/scripts/release-notes.js {{release}} > /dev/null
 
 # Run from the commit being released, once. Every later build must start on
 # what this one leaves and still read what it sends (`src/releases.rs`).

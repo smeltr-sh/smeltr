@@ -23,7 +23,7 @@ jobs:
           fetch-depth: 0
           # The Dockerfile copies `.git` into its builder, which must not carry the token.
           persist-credentials: false
-      - name: The tag is semver, on main and alone on its commit, and a release carries its fixtures
+      - name: The tag is semver, on main and alone on its commit, and a release carries its fixtures and notes
         run: |
           git merge-base --is-ancestor HEAD origin/main \
             || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
@@ -36,6 +36,8 @@ jobs:
           case "$name" in *-*) exit 0 ;; esac
           test -d "tests/fixtures/releases/$name" \
             || { echo "::error::no tests/fixtures/releases/$name: cut a release with just cut-release"; exit 1; }
+          node website/scripts/release-notes.js "$name" > /dev/null \
+            || { echo "::error::no dated notes for $name in website/src/lib/releases.json"; exit 1; }
 
   linux:
     needs: guard
@@ -158,8 +160,12 @@ jobs:
         run: |
           # The release lists what most people download; the image archive and the reports go in one zip beside them.
           zip -j smeltr-extras.zip linux/smeltr-image.tar.gz linux/smeltr-sbom.cdx.json linux/smeltr-stig.html linux/smeltr-cves.txt
-          prerelease=
-          case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
+          # A release's notes are its page on smeltr.sh, as Markdown; a pre-release has none.
+          prerelease= notes=
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=--prerelease ;;
+            *) notes=$(node repo/website/scripts/release-notes.js "${GITHUB_REF_NAME#v}") ;;
+          esac
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease \
-            --title "${GITHUB_REF_NAME#v}" --notes "" \
+            --title "${GITHUB_REF_NAME#v}" --notes "$notes" \
             linux/smeltr-linux.tar.gz windows/smeltr-windows.zip smeltr-extras.zip
