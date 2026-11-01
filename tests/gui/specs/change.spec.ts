@@ -67,7 +67,7 @@ test('an edit aimed at main asks for a branch, and saying no saves nothing', asy
   const prompt = admin.getByRole('dialog', { name: 'branch required' });
   await expect(prompt).toBeVisible();
   // Who is editing and what: the admin, on the lookup tables.
-  await expect(prompt.getByLabel('branch to edit on')).toHaveValue('admin-lookups');
+  await expect(prompt.getByLabel('branch to edit on')).toHaveValue('admin/lookups');
   await prompt.getByRole('button', { name: "Don't save" }).click();
   await expect(prompt).toBeHidden();
   await expect(admin.getByText('not saved -- no branch was chosen to save it on')).toBeVisible();

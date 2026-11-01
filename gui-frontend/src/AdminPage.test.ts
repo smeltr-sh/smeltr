@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { slugify } from './AdminPage.svelte';
+import { slugify } from './slugify';
 
 describe('slugify', () => {
   it('is empty for an empty name', () => {

@@ -14,17 +14,24 @@ describe('editedBy', () => {
 
 describe('suggestBranchName', () => {
   it('is who and what, in a shape git takes as it is', () => {
-    expect(suggestBranchName('Dana', 'routes', [])).toBe('dana-routes');
+    expect(suggestBranchName('Dana', 'routes', [])).toBe('dana/routes');
     expect(suggestBranchName('Dana Lee', 'secret-db password', [])).toBe(
-      'dana-lee-secret-db-password',
+      'dana-lee/secret-db-password',
     );
     expect(suggestBranchName('', '', [])).toBe('edit');
   });
 
+  it('keeps an SSO login readable', () => {
+    expect(suggestBranchName('José.García', 'routes', [])).toBe('jose-garcia/routes');
+    expect(suggestBranchName('DOMAIN\\jdoe', 'routes', [])).toBe('domain-jdoe/routes');
+    // A login of no Latin letters leaves what the edit is about.
+    expect(suggestBranchName('李明', 'routes', [])).toBe('routes');
+  });
+
   it('takes a number when the name is taken', () => {
-    expect(suggestBranchName('dana', 'routes', ['dana-routes'])).toBe('dana-routes-2');
-    expect(suggestBranchName('dana', 'routes', ['dana-routes', 'dana-routes-2'])).toBe(
-      'dana-routes-3',
+    expect(suggestBranchName('dana', 'routes', ['dana/routes'])).toBe('dana/routes-2');
+    expect(suggestBranchName('dana', 'routes', ['dana/routes', 'dana/routes-2'])).toBe(
+      'dana/routes-3',
     );
   });
 });
