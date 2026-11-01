@@ -352,6 +352,62 @@ const DEPLOY_DOES_NOT_LOAD: &str = "deploy_does_not_load";
 const DEPLOY_FAILS_TESTS: &str = "deploy_fails_tests";
 const DEPLOY_BREAKS_SCHEMAS: &str = "deploy_breaks_schemas";
 
+/// An issue as its log line names it (`Registry::observe_facts`): the condition by the name `GET /api/warnings`
+/// gives it, and the fact's subject taken apart the way this module packed it.
+pub struct LoggedIssue<'a> {
+    pub issue: &'a str,
+    pub group: Option<&'a str>,
+    pub subject: &'a str,
+    /// The commit a worker is not deploying, for that one issue.
+    pub commit: Option<&'a str>,
+}
+
+/// What an issue's log line says of the fact `entry` about `subject`.
+pub fn logged_issue<'a>(entry: &'a str, subject: &'a str) -> LoggedIssue<'a> {
+    let issue = issue_of_fact(entry);
+    let pair = serde_json::from_str::<(&str, &str)>(subject).ok();
+    match (entry, pair) {
+        (NOT_DEPLOYING, Some((worker, commit))) => LoggedIssue {
+            issue,
+            group: None,
+            subject: worker,
+            commit: Some(commit),
+        },
+        (_, Some((group, object))) => LoggedIssue {
+            issue,
+            group: Some(group),
+            subject: object,
+            commit: None,
+        },
+        (_, None) => LoggedIssue {
+            issue,
+            group: None,
+            subject,
+            commit: None,
+        },
+    }
+}
+
+/// The issue a fact clock entry is, by the name `GET /api/warnings` gives its condition. An entry keyed by a
+/// condition's name already is one.
+fn issue_of_fact(entry: &str) -> &str {
+    match entry {
+        SOURCE_BLOCKED => Condition::SourceBlocked.name(),
+        SOURCE_REFUSED => Condition::SourceRefused.name(),
+        SOURCE_WAITING => Condition::SourceWaiting.name(),
+        SOURCE_UNREACHABLE => Condition::SourceUnreachable.name(),
+        DESTINATION_REFUSING => Condition::DestinationRefusing.name(),
+        DESTINATION_UNREACHABLE => Condition::DestinationUnreachable.name(),
+        SOURCE_ROWS_BELOW => Condition::SourceRowsBelow.name(),
+        SOURCE_ROWS_ABOVE => Condition::SourceRowsAbove.name(),
+        GROUP_NOT_DEPLOYED => Condition::GroupNotDeployed.name(),
+        DEPLOY_DOES_NOT_LOAD => Condition::DeployDoesNotLoad.name(),
+        DEPLOY_FAILS_TESTS => Condition::DeployFailsTests.name(),
+        DEPLOY_BREAKS_SCHEMAS => Condition::DeployBreaksSchemas.name(),
+        other => other,
+    }
+}
+
 /// A source blocked on `cause`: its condition, its severity, and its fact-clock entry -- each cause its own, so a
 /// source whose block changes cause is dated from the change.
 fn block_condition(cause: BlockCause) -> (Condition, Severity, &'static str) {
@@ -2354,6 +2410,8 @@ fn recent_logs(store: Option<&RegistryStore>, credentials: &[WorkerCredentialRec
                 .collect();
             Logged { row, fields }
         })
+        // A line that is an issue's own history (`Registry::observe_facts`) is that issue, not a second one.
+        .filter(|logged| logged.field("issue").is_none())
         .collect()
 }
 
@@ -3562,7 +3620,7 @@ mod tests {
 
     /// The last try, at `NOW`, failed with `error`.
     fn failing(mut serving: Serving, error: &str) -> Serving {
-        serving.acme.last_error = Some(error.to_string());
+        serving.acme.last_error = serde_json::from_str(&serde_json::to_string(error).unwrap()).unwrap();
         serving.acme.last_attempt_millis = Some(NOW);
         serving
     }
@@ -4597,6 +4655,21 @@ mod tests {
             Some(store),
             &deployed(),
         )
+    }
+
+    /// An issue's own history line (`Registry::observe_facts`) is not a second issue about the leader.
+    #[test]
+    fn an_issues_own_log_line_raises_nothing() {
+        let store = RegistryStore::open(Path::new(":memory:")).unwrap();
+        let mut event = log_event(0, NOW - 60_000, "warn", "an issue began");
+        event.site = "issues.began".to_string();
+        event.fields = vec![(
+            "issue".to_string(),
+            crate::heartbeat::FieldValueDto::Str("sourceBlocked".to_string()),
+        )];
+        store.record_logs("leader", 1, None, &[event]).unwrap();
+
+        assert!(log_warnings(&store).is_empty());
     }
 
     #[test]

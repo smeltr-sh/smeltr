@@ -27,6 +27,7 @@
 mod console;
 mod event;
 mod layer;
+mod noted;
 
 pub(crate) use console::{render_fields, render_value, stamp};
 #[cfg(test)]
@@ -39,7 +40,45 @@ use std::sync::{Condvar, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 pub use event::{Event, Value};
+pub use noted::Noted;
 pub use tracing::Level;
+
+/// One event as a test reads it: its level, its target, and its fields with the sentence under `message`.
+#[cfg(test)]
+pub(crate) type Said = (Level, String, Vec<(String, String)>);
+
+/// Every event raised on this thread while `f` runs.
+#[cfg(test)]
+pub(crate) fn said(f: impl FnOnce()) -> Vec<Said> {
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[derive(Default)]
+    struct Catch(std::sync::Arc<Mutex<Vec<Said>>>);
+    struct Fields(Vec<(String, String)>);
+    impl tracing::field::Visit for Fields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.push((
+                field.name().to_string(),
+                format!("{value:?}").trim_matches('"').to_string(),
+            ));
+        }
+    }
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Catch {
+        fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+            let mut fields = Fields(Vec::new());
+            event.record(&mut fields);
+            self.0.lock().unwrap().push((
+                *event.metadata().level(),
+                event.metadata().target().to_string(),
+                fields.0,
+            ));
+        }
+    }
+    let catch = Catch::default();
+    let seen = catch.0.clone();
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(catch), f);
+    seen.lock().unwrap().clone()
+}
 
 /// Events held between drains. Reached only when the drain thread is behind, so it buys time rather than storage.
 ///

@@ -122,7 +122,8 @@ fn is_plain(url: &str) -> bool {
 pub struct Failure {
     /// The remote's head it was about, when the fetch got that far.
     pub commit: Option<String>,
-    pub message: String,
+    /// Logged when the sync first failed this way.
+    pub message: crate::logs::Noted,
     /// When syncs began failing, unix millis.
     pub since: i64,
 }
@@ -672,6 +673,16 @@ pub async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
                 held.remote_head = commit.clone();
             }
             let since = held.failure.as_ref().map_or(now, |f| f.since);
+            // A sync failing the same way as the last is the same failure, logged once.
+            let message = match held.failure.take() {
+                Some(f) if f.message == *message => f.message,
+                _ => crate::noted!(
+                    target: "remote.sync_failed",
+                    "syncing the remote failed",
+                    message,
+                    commit = commit.as_deref()
+                ),
+            };
             held.failure = Some(Failure { commit, message, since });
         }
     }
@@ -707,7 +718,8 @@ pub async fn poll(state: AppState) {
 pub struct PushFailure {
     /// The save that did not go out; `None` is the branch's deletion. A newer save is pushed afresh.
     pub tip: Option<String>,
-    pub message: String,
+    /// Logged when the push failed.
+    pub message: crate::logs::Noted,
     /// The host's branch is not what this leader last pushed, so the lease refused the push. It stays refused until
     /// the host's branch is overwritten ([`overwrite`]) or the branch is saved again.
     pub refused: bool,
@@ -770,7 +782,7 @@ pub fn push_all(
             continue;
         }
         let tip = tip.map(String::as_str);
-        let failed = |message: String, refused: bool, host_tip: Option<String>| PushFailure {
+        let failed = |message: crate::logs::Noted, refused: bool, host_tip: Option<String>| PushFailure {
             tip: tip.map(str::to_string),
             message,
             refused,
@@ -786,21 +798,32 @@ pub fn push_all(
             // Refused only once the host has said where its branch is: that is what an overwrite leases on.
             Ok(git::Pushed::Refused) => {
                 let failure = match git::host_branch(repo, &remote.url, remote.authorization().as_deref(), branch) {
-                    Ok(host_tip) => failed(refused_message(branch), true, host_tip),
-                    Err(e) => failed(e.message, false, None),
+                    Ok(host_tip) => failed(refused_push(branch), true, host_tip),
+                    Err(e) => failed(failed_push(branch, e.message), false, None),
                 };
                 still.insert(branch.clone(), failure);
             }
             Err(message) => {
-                still.insert(branch.clone(), failed(message, false, None));
+                still.insert(branch.clone(), failed(failed_push(branch, message), false, None));
             }
         }
     }
     Ok(still)
 }
 
-fn refused_message(branch: &str) -> String {
-    format!("{branch} on the remote has commits this leader did not push")
+/// The host's branch has moved past what this leader pushed, so the lease refused the push.
+fn refused_push(branch: &str) -> crate::logs::Noted {
+    crate::noted!(
+        target: "remote.push_refused",
+        "the host refused a push: its branch has commits this leader did not push",
+        format!("{branch} on the remote has commits this leader did not push"),
+        %branch
+    )
+}
+
+/// The push did not reach the host, or the host would not take it, for `message`.
+fn failed_push(branch: &str, message: String) -> crate::logs::Noted {
+    crate::noted!(target: "remote.push_failed", "a branch was not pushed", message, %branch)
 }
 
 /// Push `tip` to `branch` on the host, or delete it there for `None`, while the host's branch is at `lease`. Lookup
@@ -881,7 +904,7 @@ pub async fn overwrite(
         Ok(Some((tip, host_tip))) => {
             let failed = PushFailure {
                 tip: Some(tip),
-                message: refused_message(&branch),
+                message: refused_push(&branch),
                 refused: true,
                 host_tip,
                 at: super::warnings::now_millis(),

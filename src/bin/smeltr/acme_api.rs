@@ -113,7 +113,7 @@ async fn read(state: &Acme) -> Result<AcmeDto, String> {
         not_after_millis: issued.not_after_millis,
         renew_after_millis: issued.renew_after_millis,
         last_attempt_millis: issued.last_attempt_millis,
-        last_error: issued.last_error,
+        last_error: issued.last_error.map(|e| e.to_string()),
         order_within_secs: acme::Challenge::ALL
             .iter()
             .map(|c| (c.as_str(), c.order_within().as_secs()))
@@ -356,8 +356,9 @@ async fn order(State(state): State<Acme>, actor: axum::Extension<Actor>, headers
 }
 
 const ALREADY_ORDERING: &str = "A certificate is already being ordered. Wait for that order to finish.";
+const TURNED_OFF: &str = "ACME was turned off while this order ran, so its certificate was not installed.";
 const SETTINGS_MOVED: &str = "The names, directory or challenge changed while this order ran, so its certificate \
-                              is not served. Order again.";
+                              was not installed. Get a certificate again.";
 
 /// Clears the step said when it is dropped, however the order ended, a panic included.
 struct Cleared<'a>(&'a acme::Progress);
@@ -402,9 +403,8 @@ async fn run(
         tracing::info!(target: "leader.acme_order_issued", names = %settings.names.join(","), "the certificate authority issued a certificate");
     }
     if let Err(e) = &outcome {
-        tracing::warn!(target: "leader.acme_order_failed", error = %e, "the certificate authority did not issue a certificate");
         let _writes = settings_writes(auth, progress).await;
-        if let Err(e) = acme::failed(&serving.dir, now_ms, e) {
+        if let Err(e) = acme::failed(&serving.dir, now_ms, &settings.directory, e) {
             outcome = Err(e);
         }
     }
@@ -435,6 +435,9 @@ async fn order_once(
     let _writes = settings_writes(auth, progress).await;
     progress.set(acme::Step::Installing);
     let now = self::settings(auth).await?;
+    if !now.enabled {
+        return Err(TURNED_OFF.to_string());
+    }
     if (&now.names, &now.directory, now.challenge) != (&settings.names, &settings.directory, settings.challenge) {
         return Err(SETTINGS_MOVED.to_string());
     }

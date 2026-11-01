@@ -265,7 +265,15 @@ counts; the newest suggestion is the one served.
 
 A leader writes its own logs into the same table, under the
 name `leader`, so an administrator reads them where they read the fleet's, and
-they count against the same cap.
+they count against the same cap. Among them is every issue's history: the
+fact clock that times an issue logs its beginning and its end, so what the
+Issues page no longer shows can still be read. Such a line is the issue
+itself, and the catalog's "a worker logged warnings" entry leaves it out.
+A failure a page shows from the leader's own state -- why the last ACME order
+failed, why the remote is not followed, why a save is not on the host, why the
+list of releases was not read -- is logged where it is recorded, by
+construction: the message is held as a `Noted`, which only the line that logs
+it can make, so a stored failure that was never logged does not compile.
 
 ## Seams
 
