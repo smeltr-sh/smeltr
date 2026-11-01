@@ -36,7 +36,7 @@
     <SiemCutExample />
   </section>
   <section aria-labelledby="copy-heading">
-    <h2 id="copy-heading">Keep everything, somewhere cheaper.</h2>
+    <h2 id="copy-heading">Trim it for the SIEM. Keep it whole in object storage.</h2>
     <p>Send the same records to your SIEM trimmed and to object storage whole.</p>
     <WorkflowDiagram kind="siem" />
     <p>
@@ -50,9 +50,9 @@
   <section aria-labelledby="fit-heading">
     <h2 id="fit-heading">Fits in front of the SIEM you have.</h2>
     <p>
-      Point your senders at Smeltr instead of the SIEM. They keep their own protocol and change only
-      where they send: Splunk forwarders, HEC senders, Filebeat and Fluent Bit. Smeltr sends on to
-      Splunk, Elasticsearch or a Log Analytics workspace.
+      Change only where your senders send. Splunk forwarders, HEC senders, Filebeat and Fluent Bit
+      send to Smeltr as they did to your SIEM, and Smeltr sends on to Splunk, Elasticsearch or a Log
+      Analytics workspace.
     </p>
     <p>
       <a href="/docs/sources/s2s-receiver">S2S receiver</a> ·
