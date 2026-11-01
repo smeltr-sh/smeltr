@@ -1156,7 +1156,7 @@ struct MetricRow {
 }
 
 /// `smeltr_` names in `src/` that a metrics source never emits.
-const NOT_METRICS: [&str; 5] = [
+const NOT_METRICS: [&str; 7] = [
     // The session cookie.
     "smeltr_session",
     // The cookie binding an OIDC sign-in to the browser that started it.
@@ -1165,6 +1165,9 @@ const NOT_METRICS: [&str; 5] = [
     "smeltr_source_blocked_reason",
     "smeltr_source_connection_error",
     "smeltr_destination_last_refusal",
+    // The leader's warnings, scraped from it rather than a worker: the Operations page says what they are.
+    "smeltr_warning",
+    "smeltr_warning_start_time_seconds",
 ];
 
 /// The Sources page lists every metric the engine writes, under the kind it writes it as. There is no list of metrics

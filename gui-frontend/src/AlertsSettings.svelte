@@ -553,6 +553,7 @@
               bind:replacing={replacingSecret}
               stored={secretKept}
               ariaLabel="routing key"
+              required
             />
           </Field>
         {:else}
