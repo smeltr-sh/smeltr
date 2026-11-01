@@ -367,6 +367,8 @@
 
   // Derived fresh by the leader on every request and cleared when its fact stops, so these
   // are replaced wholesale each poll and never merged with what was showing.
+  /** Issues the ribbon names; the Issues page lists the rest. */
+  const RIBBON_ISSUES = 3;
   let warnings: WarningDto[] = $state([]);
   // Stamped with the answer, so an age reads as of the poll that produced it rather than
   // creeping upward between polls -- the same discipline as `lastSeenMillisAgo`.
@@ -392,7 +394,7 @@
       });
     listWarnings()
       .then((w) => {
-        // Failed first: the ribbon names only the worst one, and a broken thing must never sit
+        // Failed first: the ribbon names only the first few, and a broken thing must never sit
         // behind an advisory one just because the catalog derived it later.
         warnings = w.toSorted(
           (a, b) => Number(b.severity === 'failed') - Number(a.severity === 'failed'),
@@ -700,13 +702,25 @@
   {:else}
     {#if warnings.length > 0}
       <a class="issue-ribbon" href="#/status/issues" aria-label="Active fleet issues">
-        <strong
-          ><StateMark state={warnings.some((w) => w.severity === 'failed') ? 'error' : 'warning'} />
-          {warnings.length} active {warnings.length === 1 ? 'issue' : 'issues'}</strong
-        >
-        <span class="issue-divider">|</span>
-        <span class="issue-teaser">{warnings[0].subjectId}: {warnings[0].message}</span>
-        <span class="issue-more">View all issues &rsaquo;</span>
+        <span class="issue-head">
+          <strong
+            ><StateMark
+              state={warnings.some((w) => w.severity === 'failed') ? 'error' : 'warning'}
+            />
+            {count(warnings.length, 'active issue')}</strong
+          >
+          <span class="issue-more">View all issues &rsaquo;</span>
+        </span>
+        {#each warnings.slice(0, RIBBON_ISSUES) as w, i (i)}
+          <span class="issue-row">
+            <StateMark state={severityState(w.severity)} />
+            <span class="issue-teaser">{w.subjectId}: {w.message}</span>
+          </span>
+        {/each}
+        {#if warnings.length > RIBBON_ISSUES}
+          <span class="issue-overflow">+{count(warnings.length - RIBBON_ISSUES, 'more issue')}</span
+          >
+        {/if}
       </a>
     {/if}
 
@@ -1247,8 +1261,8 @@
   .issue-ribbon {
     padding: 0.65rem 1rem;
     display: flex;
-    align-items: center;
-    gap: 1rem;
+    flex-direction: column;
+    gap: 0.4rem;
     color: var(--error);
     background: color-mix(in oklab, var(--error) 8%, var(--panel));
     border: 1px solid color-mix(in oklab, var(--error) 18%, var(--border));
@@ -1258,12 +1272,14 @@
   .issue-ribbon:hover {
     background: color-mix(in oklab, var(--error) 14%, var(--panel));
   }
-  .issue-ribbon strong {
-    flex: none;
+  .issue-head,
+  .issue-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
   }
-  .issue-divider {
-    flex: none;
-    opacity: 0.45;
+  .issue-row {
+    padding-left: 1.25rem;
   }
   /* The one thing on this row allowed to shrink -- a long message is cut
      with an ellipsis rather than pushing "View all issues" off screen. */
@@ -1277,6 +1293,13 @@
     flex: none;
     margin-left: auto;
     font-weight: 600;
+  }
+  /* What the ribbon leaves out must not read as nothing left: bold, at the body's size, on its own rule. */
+  .issue-overflow {
+    padding: 0.4rem 0 0 1.25rem;
+    border-top: 1px solid color-mix(in oklab, var(--error) 18%, var(--border));
+    font-size: var(--text-body);
+    font-weight: 700;
   }
   .fleet-header {
     display: flex;

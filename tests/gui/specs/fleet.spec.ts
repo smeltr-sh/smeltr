@@ -160,6 +160,28 @@ test('the Status page shows every worker of every group, and one that stops repo
   await expect(admin.getByText('No active issues.')).toBeVisible({ timeout: 20_000 });
 });
 
+test('the issue ribbon names the first three issues and counts the rest', async ({
+  admin,
+  leader,
+}) => {
+  const warnings = ['a', 'b', 'c', 'd', 'e'].map((id) => ({
+    condition: 'workerSilent',
+    subjectKind: 'worker',
+    subjectId: `worker-${id}`,
+    group: 'east',
+    severity: 'failed',
+    sinceMillis: null,
+    message: 'stopped sending heartbeats',
+  }));
+  await admin.route('**/api/warnings', (r) => r.fulfill({ json: { warnings } }));
+  await goto(admin, leader, '#/status');
+  const ribbon = admin.getByRole('link', { name: 'Active fleet issues' });
+  await expect(ribbon).toContainText('5 active issues', { timeout: 20_000 });
+  for (const id of ['a', 'b', 'c']) await expect(ribbon).toContainText(`worker-${id}`);
+  await expect(ribbon).not.toContainText('worker-d');
+  await expect(ribbon).toContainText('+2 more issues');
+});
+
 test("a worker's detail names where each receiver it runs listens", async ({
   admin,
   api,
