@@ -82,6 +82,6 @@
     <li><a href="/docs/steps/unroll">Unroll step</a></li>
     <li><a href="/docs/steps/drop">Drop step</a></li>
     <li><a href="/docs/steps/comment">Comment step</a></li>
-    <li><a href="/docs/code-reference">Expression reference</a></li>
+    <li><a href="/docs/code-reference">Language reference</a></li>
   </ul>
 </GuideLayout>

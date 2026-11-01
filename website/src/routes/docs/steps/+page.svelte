@@ -96,7 +96,7 @@
 
   <h2 id="see-also">See also</h2>
   <ul>
-    <li><a href="/docs/code-reference">Expression reference</a></li>
+    <li><a href="/docs/code-reference">Language reference</a></li>
     <li><a href="/docs/first-pipeline">Build a first pipeline</a></li>
     <li><a href="/docs/routing/exceptions#answers">Exception answers</a></li>
   </ul>

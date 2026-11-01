@@ -1,7 +1,7 @@
 <script module lang="ts">
-  // Each sidebar is shared by its pages, but each route mounts a new instance.
-  // Navigation hooks update these only in the browser.
-  const navigationScrollTop = { Documentation: 0, Reference: 0 };
+  // The sidebar is shared by every page, but each route mounts a new instance.
+  // Navigation hooks update this only in the browser.
+  const navigation = { scrollTop: 0 };
 </script>
 
 <script lang="ts">
@@ -9,7 +9,7 @@
   import { afterNavigate, beforeNavigate } from '$app/navigation';
   import { page } from '$app/state';
   import DocsSearchForm from './DocsSearchForm.svelte';
-  import { isReferencePage, stepPages } from '#lib/step-pages.ts';
+  import { stepPages } from '#lib/step-pages.ts';
   import {
     byCategory,
     destinations,
@@ -21,8 +21,9 @@
   type Link = { href: string; title: string };
   /** A sidebar entry: a page, or a category heading over its pages. */
   type Entry = Link | { title: string; links: Link[] };
-
-  const guideGroups: { title: string; links: Entry[] }[] = [
+  /** A sidebar group. It starts folded, except on its own pages, and folds or opens on a click. */
+  type Group = { title: string; links: Entry[] };
+  const groups: Group[] = [
     {
       title: 'Getting started',
       links: [
@@ -48,11 +49,16 @@
       ],
     },
     {
+      title: 'Smeltr language',
+      links: [{ href: '/docs/code-reference', title: 'Language reference' }],
+    },
+    {
       title: 'Administration',
       links: [
         { href: '/docs/certificates', title: 'Certificates & TLS' },
         { href: '/docs/accounts', title: 'Accounts & access' },
         { href: '/docs/secrets', title: 'Secrets & credentials' },
+        { href: '/docs/reference', title: 'Administrator settings' },
       ],
     },
     {
@@ -97,10 +103,11 @@
       links: kinds.map(({ href, name }) => ({ href, title: name })),
     }));
   }
-  // The reference pages have a sidebar of their own, and the site's top bar a link of its own.
-  const referenceGroups: { title: string; links: Entry[] }[] = [
-    { title: '', links: [{ href: '/docs/code-reference', title: 'Expression reference' }] },
-    { title: 'Pipeline steps', links: [{ href: '/docs/steps', title: 'Overview' }, ...stepPages] },
+  groups.push(
+    {
+      title: 'Pipeline steps',
+      links: [{ href: '/docs/steps', title: 'Overview' }, ...stepPages],
+    },
     {
       title: 'Sources',
       links: [
@@ -115,13 +122,22 @@
       title: 'Destinations',
       links: [{ href: '/docs/destinations', title: 'Overview' }, ...categoryLinks(destinations)],
     },
-    {
-      title: 'Administration',
-      links: [{ href: '/docs/reference', title: 'Administrator settings' }],
-    },
-  ];
-  const inReference = $derived(isReferencePage(page.url.pathname));
-  const sidebarName = $derived(inReference ? 'Reference' : 'Documentation');
+  );
+
+  function holds(group: Group, path: string): boolean {
+    return group.links.some((e) => ('href' in e ? [e] : e.links).some((l) => l.href === path));
+  }
+  /** The groups a reader folded or opened, by title. */
+  let flipped = $state(new Set<string>());
+  function isOpen(group: Group): boolean {
+    return holds(group, page.url.pathname) !== flipped.has(group.title);
+  }
+  function flip(group: Group) {
+    const next = new Set(flipped);
+    if (next.has(group.title)) next.delete(group.title);
+    else next.add(group.title);
+    flipped = next;
+  }
 
   let {
     sections,
@@ -150,13 +166,13 @@
   beforeNavigate(() => {
     // On mobile the menu is part of the document, not a separate scroll area.
     if (manualNavigation && getComputedStyle(manualNavigation).overflowY === 'auto') {
-      navigationScrollTop[sidebarName] = manualNavigation.scrollTop;
+      navigation.scrollTop = manualNavigation.scrollTop;
     }
   });
 
   afterNavigate(() => {
     if (manualNavigation && getComputedStyle(manualNavigation).overflowY === 'auto') {
-      manualNavigation.scrollTop = navigationScrollTop[sidebarName];
+      manualNavigation.scrollTop = navigation.scrollTop;
     }
   });
 
@@ -231,19 +247,22 @@
       aria-controls="docs-navigation"
       onclick={() => (expanded = !expanded)}
     >
-      {sidebarName} <span aria-hidden="true">{expanded ? '−' : '+'}</span>
+      Documentation <span aria-hidden="true">{expanded ? '−' : '+'}</span>
     </button>
     <div id="docs-navigation" class:expanded>
-      <nav aria-label={sidebarName}>
-        <p class="nav-label">{sidebarName}</p>
-        {#if !inReference}
-          <a href="/docs" aria-current={page.url.pathname === '/docs' ? 'page' : undefined}
-            >Overview</a
+      <nav aria-label="Documentation">
+        <p class="nav-label">Documentation</p>
+        <a href="/docs" aria-current={page.url.pathname === '/docs' ? 'page' : undefined}
+          >Overview</a
+        >
+        {#each groups as group (group.title)}
+          <button
+            class="nav-label group-label fold"
+            aria-expanded={isOpen(group)}
+            onclick={() => flip(group)}
+            >{group.title} <span aria-hidden="true">{isOpen(group) ? '▾' : '▸'}</span></button
           >
-        {/if}
-        {#each inReference ? referenceGroups : guideGroups as group (group.title)}
-          {#if group.title}<p class="nav-label group-label">{group.title}</p>{/if}
-          {#each group.links as entry ('href' in entry ? entry.href : entry.title)}
+          {#each isOpen(group) ? group.links : [] as entry ('href' in entry ? entry.href : entry.title)}
             {#if 'href' in entry}
               {@render navLink(entry)}
             {:else}
@@ -386,6 +405,26 @@
   .group-label {
     border-top: 1px solid var(--border);
     padding-top: 0.9rem;
+  }
+  nav .fold {
+    display: block;
+    width: auto;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    padding: 0.9rem 0 0;
+    background: none;
+    color: var(--dim);
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    text-align: left;
+    cursor: pointer;
+  }
+  nav .fold:hover {
+    color: var(--ink);
   }
   nav a {
     padding: 0.32rem 0.65rem;

@@ -29,7 +29,7 @@
   </p>
   <p>
     Each assignment sets one target field to the value of one expression. The
-    <a href="/docs/code-reference">expression reference</a> lists the operators and functions an expression
+    <a href="/docs/code-reference">language reference</a> lists the operators and functions an expression
     can use.
   </p>
 
@@ -88,7 +88,7 @@
   <h2 id="see-also">See also</h2>
   <ul>
     <li><a href="/docs/steps">Pipeline steps</a></li>
-    <li><a href="/docs/code-reference">Expression reference</a></li>
+    <li><a href="/docs/code-reference">Language reference</a></li>
     <li><a href="/docs/steps/code">Code step</a></li>
   </ul>
 </GuideLayout>

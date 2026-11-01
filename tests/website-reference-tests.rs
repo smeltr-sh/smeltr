@@ -782,7 +782,7 @@ fn code_language() -> CodeLanguage {
 }
 
 /// Every word that begins or shapes a statement has a row: the reserved words but the values and `as` (the
-/// expression reference's), the statements spelled as calls, and the words the parser reads only where a statement
+/// language reference's), the statements spelled as calls, and the words the parser reads only where a statement
 /// starts.
 #[test]
 fn the_statement_table_names_every_statement() {

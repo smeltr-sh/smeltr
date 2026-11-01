@@ -38,7 +38,7 @@
     writes fields that later steps and destinations see; assigning <code>null</code> removes a
     field. Every name has one type. This page gives worked examples of common tasks, each showing a
     record before and after the step. The
-    <a href="/docs/code-reference">expression reference</a> gives the rules its code follows, and lists
+    <a href="/docs/code-reference">language reference</a> gives the rules its code follows, and lists
     the operators and functions it can use.
   </p>
 
@@ -162,7 +162,7 @@
 
   <h2 id="see-also">See also</h2>
   <ul>
-    <li><a href="/docs/code-reference">Expression reference</a></li>
+    <li><a href="/docs/code-reference">Language reference</a></li>
     <li><a href="/docs/steps">Pipeline steps</a></li>
     <li><a href="/docs/routing/exceptions#answers">Exception answers</a></li>
     <li><a href="/docs/steps/unroll">Unroll step</a></li>

@@ -14,7 +14,7 @@ npm run preview  # serve build/ as a plain static server
 ```
 
 Documentation search uses Pagefind. `npm run build` indexes the rendered docs
-and expression reference after prerendering. Results link to pages and matching
+and language reference after prerendering. Results link to pages and matching
 headings; the navigation and search page stay out of the index. To test search
 locally, use `npm run build` then `npm run preview`; the Vite dev server does not
 generate or serve the production search index.
@@ -23,9 +23,10 @@ generate or serve the production search index.
 
 Marketing pages explain authoring, review, deployment, and operation. The
 docs hub introduces the pipeline walkthrough, review and operations guides,
-and expression reference. The hub and reference share
-a sticky section sidebar on desktop and a sticky, collapsible contents control
-on mobile. The reference sidebar searches function names and summaries;
+and language reference. Every docs page shares one sidebar, grouped by topic,
+sticky on desktop and a collapsible contents control on mobile. Pipeline steps,
+Sources and Destinations fold, and open on their own pages. The language
+reference's page tools search function names and summaries;
 examples stack expressions above results on narrow screens.
 
 The site links the repository in one place, `src/lib/release.ts`, which names
@@ -123,22 +124,26 @@ for what changes outside the startup file. Its table comes from
 `src/lib/startup-settings.json`, which the tests check against the file keys,
 environment variables and stated defaults the binary reads.
 
-**Expression reference**
+**Language reference**
 
 One catalog page, not an overview and item pages: a reader scans it for an
 operator or function, and its sidebar searches function names. Its sections, in
 order:
 
-1. Lede: what an expression is and where one is written.
-2. How it works: what holds for every expression, with Types and Null as
-   `h3`s.
+1. Lede: what the language is, where it is written, and what a statement and an
+   expression each do.
+2. How it works: what holds for every expression.
 3. Fields: the fields every record has. A source's own fields are on its page,
    and the fields a destination reads on its page.
-4. One section per group, by the type its operators and functions work on: the
+4. Naming a field and Objects.
+5. Statements.
+6. Types, then Null.
+7. One section per group, by the type its operators and functions work on: the
    group's rule, its notes, the operator table, what does not compile, then
    each function.
-5. Exceptions: what a throw does, and every kind.
-6. See also.
+8. Parse and lookup.
+9. Exceptions: what a throw does, and every kind.
+10. See also.
 
 A function gives its signature, the engine's typed rows from
 `src/lib/signatures.json`, its summary and rules, then its examples. Every other
@@ -281,7 +286,7 @@ Workers use an in-process Git client; only the leader needs Git's HTTP backend.
 retry, refused-record handling, retention and replay.
 Destination guides link there.
 
-The expression reference lives at `/docs/code-reference`, alongside the administrator
+The language reference lives at `/docs/code-reference`, alongside the administrator
 and parser references. `/reference` redirects there with its query and section bookmark
 intact and is excluded from search. Keep future references under `/docs`; reserve
 `/docs/api-reference` for an API guide when it is ready.
