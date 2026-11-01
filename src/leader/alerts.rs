@@ -30,6 +30,46 @@ pub fn secret_key(channel: &str) -> String {
     format!("alerts.channel.{channel}.secret")
 }
 
+/// The setting the mail server is kept in, as JSON.
+pub const MAIL_KEY: &str = "alerts.mail";
+
+/// The setting the mail server's password is sealed under.
+pub const MAIL_PASSWORD_KEY: &str = "alerts.mail.password";
+
+/// The one mail server every email channel sends through.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Mail {
+    /// Off, no email is sent, and what email channels would be told waits until it is on.
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub encryption: Encryption,
+    pub from: String,
+    /// Who to sign in as. `None` sends without signing in.
+    #[serde(default)]
+    pub username: Option<String>,
+}
+
+/// How the connection to the mail server is encrypted. Always encrypted: the password and what is sent cross it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Encryption {
+    /// Plain at first, then upgraded; refused if the server cannot upgrade. Usually port 587.
+    StartTls,
+    /// TLS from the first byte. Usually port 465.
+    Tls,
+}
+
+/// The mail server as stored, when one is and it is on.
+pub fn mail(store: &dyn Store) -> Result<Option<Mail>, StoreError> {
+    let Some(text) = store.setting(MAIL_KEY)? else {
+        return Ok(None);
+    };
+    let mail: Mail = serde_json::from_str(&text).map_err(|e| StoreError::failed(format!("{MAIL_KEY}: {e}")))?;
+    Ok(mail.enabled.then_some(mail))
+}
+
 /// One place warnings are sent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -317,9 +357,78 @@ async fn post(
     Ok(())
 }
 
+/// One email that tells of every change in `changes`: its subject and its body.
+pub fn email(changes: &Changes) -> (String, String) {
+    let lines: Vec<String> = changes
+        .raised
+        .iter()
+        .map(|t| (Status::Raised, t))
+        .chain(changes.cleared.iter().map(|t| (Status::Cleared, t)))
+        .map(|(status, t)| summary(status, &serde_json::from_str(&t.body).unwrap_or_default()))
+        .collect();
+    let subject = match lines.as_slice() {
+        [one] => format!("smeltr: {one}"),
+        _ => format!(
+            "smeltr: {} raised, {} cleared",
+            changes.raised.len(),
+            changes.cleared.len()
+        ),
+    };
+    (subject, lines.join("\n") + "\n")
+}
+
+/// Send one email through `mail` to `to`.
+async fn send_mail(
+    mail: &Mail,
+    password: Option<String>,
+    to: &[String],
+    subject: String,
+    body: String,
+) -> Result<(), String> {
+    use lettre::transport::smtp::authentication::Credentials;
+    use lettre::transport::smtp::client::{Certificate, CertificateStore, Tls, TlsParameters};
+    use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+
+    let mut message = Message::builder()
+        .from(
+            mail.from
+                .parse()
+                .map_err(|e| format!("the From address {}: {e}", mail.from))?,
+        )
+        .subject(subject);
+    for address in to {
+        message = message.to(address.parse().map_err(|e| format!("the address {address}: {e}"))?);
+    }
+    let message = message
+        .body(body)
+        .map_err(|e| format!("could not write the email: {e}"))?;
+
+    let mut tls = TlsParameters::builder(mail.host.clone()).certificate_store(CertificateStore::None);
+    for root in crate::io::trust::roots(None).map_err(|e| e.to_string())? {
+        tls = tls.add_root_certificate(Certificate::from_der(root.to_vec()).map_err(|e| e.to_string())?);
+    }
+    let tls = tls.build_rustls().map_err(|e| format!("the mail server's TLS: {e}"))?;
+    let mut transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&mail.host)
+        .port(mail.port)
+        .timeout(Some(TIMEOUT))
+        .tls(match mail.encryption {
+            Encryption::StartTls => Tls::Required(tls),
+            Encryption::Tls => Tls::Wrapper(tls),
+        });
+    if let Some(username) = &mail.username {
+        transport = transport.credentials(Credentials::new(username.clone(), password.unwrap_or_default()));
+    }
+    transport
+        .build()
+        .send(message)
+        .await
+        .map_err(|e| format!("the mail server {}: {e}", mail.host))?;
+    Ok(())
+}
+
 /// Tell `channel` of `changes`, one at a time, recording each as it is taken. Stops at the first that fails, so
 /// what follows it is tried again on the next look, in order.
-async fn tell(state: &AppState, channel: &Channel, changes: Changes) -> Result<(), String> {
+async fn tell(state: &AppState, channel: &Channel, mail: Option<&Mail>, changes: Changes) -> Result<(), String> {
     match &channel.kind {
         Kind::Webhook {
             url,
@@ -348,7 +457,20 @@ async fn tell(state: &AppState, channel: &Channel, changes: Changes) -> Result<(
             }
             Ok(())
         }
-        Kind::Email { .. } => Err("email channels are not built yet".into()),
+        // Every change in one email, so a fleet that falls over at once fills nobody's inbox.
+        Kind::Email { to } => {
+            let mail = mail.ok_or("the mail server is off")?;
+            let password = match mail.username {
+                Some(_) => run_store(state.store.clone(), |s| s.opened_setting(MAIL_PASSWORD_KEY))
+                    .await
+                    .map_err(|e| e.message)?,
+                None => None,
+            };
+            let (subject, body) = email(&changes);
+            send_mail(mail, password, to, subject, body).await?;
+            let cleared = changes.cleared.into_iter().map(|t| (t.channel, t.warning)).collect();
+            record(state, changes.raised, cleared).await
+        }
     }
 }
 
@@ -361,7 +483,8 @@ async fn record(state: &AppState, told: Vec<AlertTold>, cleared: Vec<(String, St
 /// One look: tell every channel what has changed since it was last told.
 pub async fn look(state: &AppState) -> Result<(), StoreError> {
     let now = super::warnings::now_millis();
-    let (channels, told) = run_store(state.store.clone(), |s| Ok((channels(s)?, s.alerts_told()?))).await?;
+    let (channels, mail, told) =
+        run_store(state.store.clone(), |s| Ok((channels(s)?, mail(s)?, s.alerts_told()?))).await?;
     let ids: Vec<String> = channels.iter().map(|c| c.id.clone()).collect();
     state.alerts.keep(&ids);
     if told.iter().any(|t| !ids.contains(&t.channel)) {
@@ -372,11 +495,15 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
     }
     let warnings = super::warnings_snapshot(state).await?;
     for channel in &channels {
+        // What an email channel would be told waits for the mail server, which the page says is off.
+        if matches!(channel.kind, Kind::Email { .. }) && mail.is_none() {
+            continue;
+        }
         let changes = changes(channel, now, &warnings, &told);
         if changes.raised.is_empty() && changes.cleared.is_empty() {
             continue;
         }
-        match tell(state, channel, changes).await {
+        match tell(state, channel, mail.as_ref(), changes).await {
             Ok(()) => state.alerts.took(&channel.id),
             Err(why) => {
                 tracing::warn!(channel = %channel.name, "could not send to the alert channel: {why}");
@@ -568,6 +695,24 @@ mod tests {
         assert_eq!(open["dedup_key"].as_str().unwrap().len(), 64);
         assert_eq!(open["payload"]["severity"], "critical");
         assert_eq!(open["payload"]["summary"], "Source unreachable: orders");
+    }
+
+    #[test]
+    fn one_email_tells_of_every_change_and_one_change_is_its_subject() {
+        let c = channel(None);
+        let ws = [
+            warning(Condition::SourceUnreachable, "orders", Some("payments")),
+            warning(Condition::SourceUnreachable, "clicks", None),
+        ];
+        let both = changes(&c, 5, &ws, &[]);
+        let (subject, body) = email(&both);
+        assert_eq!(subject, "smeltr: 2 raised, 0 cleared");
+        assert_eq!(
+            body,
+            "Source unreachable: orders in payments\nSource unreachable: clicks\n"
+        );
+        let one = changes(&c, 6, &ws[..1], &both.raised);
+        assert_eq!(email(&one).0, "smeltr: Cleared: Source unreachable: clicks");
     }
 
     #[test]
