@@ -130,9 +130,10 @@ impl Relog {
         }
     }
 
-    /// Keeps `why` as the fault under way. A changed message is due its log at once.
+    /// Keeps `why` as the fault under way. A changed message is due its log at once; one that differs only in what
+    /// [`steady`] drops is the same fault.
     pub fn fail(&mut self, why: String) {
-        if self.why.as_deref() != Some(&why) {
+        if self.why.as_deref().is_none_or(|old| steady(old) != steady(&why)) {
             self.logged = None;
         }
         self.why = Some(why);
@@ -164,6 +165,19 @@ impl Relog {
         self.logged = None;
         self.why.take().is_some()
     }
+}
+
+/// `text` without the parts of an error that change from one report of the same fault to the next: how long curl or
+/// librdkafka waited ("after 3005ms", "after 30 milliseconds with 0 bytes received"), and how many repeats librdkafka
+/// counted (", 571 identical error(s) suppressed"). For telling two reports apart; the line keeps the text as it was.
+pub fn steady(text: &str) -> std::borrow::Cow<'_, str> {
+    static VARYING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(, \d+ identical error\(s\) suppressed)|( ?after \d+ ?(milliseconds|ms)( with \d+ (out of \d+ )?bytes received)?)",
+        )
+        .unwrap()
+    });
+    VARYING.replace_all(text, "")
 }
 
 thread_local! {
@@ -939,6 +953,35 @@ mod tests {
         assert!(
             reader.drain(8).iter().all(|e| e.site != "mirror.before_open.test"),
             "a reader was handed what was said before it opened"
+        );
+    }
+
+    /// A report that differs only in how long it waited or how many repeats it counted is the same fault, said once.
+    #[test]
+    fn a_relog_reads_past_a_duration_and_a_repeat_count() {
+        let refused = |took: u32, repeats: u32| {
+            format!(
+                "Connect to ipv4#127.0.0.1:9 failed: Connection refused (after {took}ms in state CONNECT, {repeats} \
+                 identical error(s) suppressed)"
+            )
+        };
+        let mut relog = Relog::new();
+        assert!(relog.fail_due(refused(0, 1)).is_some());
+        assert_eq!(
+            relog.fail_due(refused(3005, 571)),
+            None,
+            "only the wait and the count changed"
+        );
+        assert_eq!(
+            relog.fail_due("unable to access: Could not resolve host after 30 ms".into()),
+            Some("unable to access: Could not resolve host after 30 ms"),
+            "a changed fault is said at once, with its text as it was"
+        );
+        assert_eq!(
+            relog.fail_due(
+                "unable to access: Could not resolve host after 2041 milliseconds with 0 bytes received".into()
+            ),
+            None
         );
     }
 

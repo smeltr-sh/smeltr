@@ -861,10 +861,7 @@ fn refused_push(branch: &str) -> crate::logs::Noted {
 /// Whether two of git's failures say the same thing. curl's text says how long it took, and on a timeout how much
 /// came, which differ from one try to the next where refusing a connect takes time, as it does on Windows.
 fn same_failure(a: &str, b: &str) -> bool {
-    static TOOK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r" after \d+ (ms|milliseconds)( with \d+ (out of \d+ )?bytes received)?").unwrap()
-    });
-    TOOK.replace_all(a, "") == TOOK.replace_all(b, "")
+    crate::logs::steady(a) == crate::logs::steady(b)
 }
 
 /// The push did not reach the host, or the host would not take it, for `message`.

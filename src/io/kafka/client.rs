@@ -1094,17 +1094,7 @@ impl ClientContext for Routes {
     /// The most recent global error wins: a DNS failure that later becomes a connection refusal should read as the
     /// latter, not stay frozen on the first symptom seen.
     fn error(&self, error: KafkaError, reason: &str) {
-        *self.0.last_error.lock().unwrap() = Some(format!("{error}: {}", without_repeat_count(reason)));
-    }
-}
-
-/// `reason` without the count of repeats librdkafka writes into it, so the same fault reads the same each time
-/// and is relogged once, not on every count.
-fn without_repeat_count(reason: &str) -> std::borrow::Cow<'_, str> {
-    const SUPPRESSED: &str = " identical error(s) suppressed)";
-    match reason.strip_suffix(SUPPRESSED).and_then(|r| r.rsplit_once(", ")) {
-        Some((kept, count)) if count.chars().all(|c| c.is_ascii_digit()) => format!("{kept})").into(),
-        _ => reason.into(),
+        *self.0.last_error.lock().unwrap() = Some(format!("{error}: {reason}"));
     }
 }
 
@@ -1608,30 +1598,6 @@ mod fuzz;
 mod tests {
     use super::*;
     use rdkafka::error::RDKafkaErrorCode;
-
-    /// librdkafka counts repeats into the text. Without the count the fault reads the same each time, so a relog
-    /// says it once rather than on every count.
-    #[test]
-    fn the_recorded_error_leaves_out_the_repeat_count() {
-        let routes = Routes::default();
-        let refused = "127.0.0.1:9/bootstrap: Connect to ipv4#127.0.0.1:9 failed: Connection refused";
-        ClientContext::error(
-            &routes,
-            KafkaError::Rebalance(RDKafkaErrorCode::BrokerTransportFailure),
-            &format!("{refused} (after 0ms in state CONNECT, 571 identical error(s) suppressed)"),
-        );
-        let first = routes.last_error().unwrap();
-        assert!(
-            first.ends_with(&format!("{refused} (after 0ms in state CONNECT)")),
-            "{first}"
-        );
-        ClientContext::error(
-            &routes,
-            KafkaError::Rebalance(RDKafkaErrorCode::BrokerTransportFailure),
-            &format!("{refused} (after 0ms in state CONNECT)"),
-        );
-        assert_eq!(routes.last_error().unwrap(), first, "the count is all that changed");
-    }
 
     #[test]
     fn a_client_starts_clear_and_keeps_its_most_recent_error() {
