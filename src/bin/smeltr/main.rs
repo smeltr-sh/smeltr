@@ -2273,6 +2273,7 @@ async fn run_leader() {
             names: smeltr::startup_config::leader_certificate_names(&origin_hosts(&auth.origin)),
             from_inside: embedded_worker_reaches_us_at(&origin_hosts(&auth.origin)),
             validity: smeltr::startup_config::leader_ca_validity(),
+            ordering: acme_api::Ordering::default(),
             leader,
         })
     });

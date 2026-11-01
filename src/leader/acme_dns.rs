@@ -14,6 +14,7 @@
 //! can publish and remove a TXT record ([`Provider`]); Cloudflare is the one there is.
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -22,7 +23,7 @@ use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::proto::rr::RData;
 use hickory_resolver::{Resolver, TokioResolver};
 
-use super::acme::{Prover, Settings};
+use super::acme::{Progress, Prover, Settings, Step};
 
 /// Which provider publishes the records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -107,6 +108,8 @@ pub fn publishing(settings: &Settings) -> Result<Publishing, String> {
 /// How often the nameservers are asked again, and for how long, before the record is given up on.
 const ASK_EVERY: Duration = Duration::from_secs(5);
 const VISIBLE_WITHIN: Duration = Duration::from_secs(5 * 60);
+/// How often the log says the record is still waited for.
+const TELL_EVERY: Duration = Duration::from_secs(60);
 
 /// DNS-01 proofs published through a provider, each waited for on the zone's nameservers. Every record it published
 /// is removed when the order is over, however it ended.
@@ -116,6 +119,7 @@ pub struct Publishing {
     published: tokio::sync::Mutex<Vec<Record>>,
     ask_every: Duration,
     within: Duration,
+    progress: Arc<Progress>,
 }
 
 impl Publishing {
@@ -126,7 +130,13 @@ impl Publishing {
             published: Default::default(),
             ask_every: ASK_EVERY,
             within: VISIBLE_WITHIN,
+            progress: Arc::default(),
         }
+    }
+
+    /// Saying each step to `progress`.
+    pub fn reporting(self, progress: Arc<Progress>) -> Publishing {
+        Publishing { progress, ..self }
     }
 
     /// Asking every `ask_every`, giving up after `within`: a test's own clock.
@@ -142,10 +152,20 @@ impl Publishing {
     /// Until every nameserver answers `record`. The last error is kept so a record never seen says why.
     async fn visible(&self, record: &Record) -> Result<(), String> {
         let started = tokio::time::Instant::now();
+        let mut told = started;
         loop {
             let asked = self.nameservers.all_answer(record).await;
             if let Ok(true) = asked {
+                tracing::info!(target: "leader.acme_dns_visible", record = %record.name, zone = %record.zone, "every nameserver answers the DNS-01 record");
                 return Ok(());
+            }
+            if told.elapsed() >= TELL_EVERY {
+                told = tokio::time::Instant::now();
+                let answer = match &asked {
+                    Err(e) => e.clone(),
+                    Ok(_) => "not every nameserver answers it yet".to_string(),
+                };
+                tracing::info!(target: "leader.acme_dns_waiting", record = %record.name, zone = %record.zone, waited_secs = started.elapsed().as_secs(), %answer, "waiting for the nameservers to answer the DNS-01 record");
             }
             if started.elapsed() >= self.within {
                 let why = match asked {
@@ -178,15 +198,23 @@ impl Prover for Publishing {
         if name.parse::<IpAddr>().is_ok() {
             return Err(format!("DNS-01 cannot prove an IP address: {name}"));
         }
+        self.progress.set(Step::Publishing);
         let record = self.provider.publish(&record_name(name), value).await?;
+        tracing::info!(target: "leader.acme_dns_published", record = %record.name, zone = %record.zone, "published the DNS-01 record");
         self.published.lock().await.push(record.clone());
+        self.progress.set(Step::Propagating);
         self.visible(&record).await
     }
 
     async fn done(&self) {
         for record in self.published.lock().await.drain(..) {
-            if let Err(e) = self.provider.remove(&record).await {
-                tracing::warn!(target: "leader.acme_dns_left", record = %record.name, error = %e, "could not remove a DNS-01 record");
+            match self.provider.remove(&record).await {
+                Ok(()) => {
+                    tracing::info!(target: "leader.acme_dns_removed", record = %record.name, "removed the DNS-01 record")
+                }
+                Err(e) => {
+                    tracing::warn!(target: "leader.acme_dns_left", record = %record.name, error = %e, "could not remove a DNS-01 record")
+                }
             }
         }
     }
@@ -230,17 +258,28 @@ impl ZoneNameservers {
 impl Nameservers for ZoneNameservers {
     async fn all_answer(&self, record: &Record) -> Result<bool, String> {
         for (host, addresses) in ZoneNameservers::of(&record.zone).await? {
-            for ip in addresses {
-                if !answers(SocketAddr::new(ip, 53), record)
-                    .await
-                    .map_err(|e| format!("{host}: {e}"))?
-                {
-                    return Ok(false);
-                }
+            let mut at: Vec<_> = addresses.into_iter().map(|ip| SocketAddr::new(ip, 53)).collect();
+            // IPv4 first: a host with no IPv6 route waits out each IPv6 address.
+            at.sort_by_key(SocketAddr::is_ipv6);
+            if !one_answers(&host, &at, record).await? {
+                return Ok(false);
             }
         }
         Ok(true)
     }
+}
+
+/// Whether the nameserver `host` answers `record.value`, asked at the first of its `addresses` this host reaches:
+/// a host with no IPv6 route reaches none of its IPv6 ones. An error only when none is reached.
+async fn one_answers(host: &str, addresses: &[SocketAddr], record: &Record) -> Result<bool, String> {
+    let mut unreached = Vec::new();
+    for at in addresses {
+        match answers(*at, record).await {
+            Ok(answered) => return Ok(answered),
+            Err(e) => unreached.push(format!("{}: {e}", at.ip())),
+        }
+    }
+    Err(format!("{host}: {}", unreached.join("; ")))
 }
 
 /// Whether the nameserver at `at` answers `record.value` among the TXT records at `record.name`. Asked without
@@ -279,6 +318,10 @@ pub async fn answers(at: SocketAddr, record: &Record) -> Result<bool, String> {
 /// Cloudflare's API.
 pub const CLOUDFLARE_API: &str = "https://api.cloudflare.com/client/v4";
 
+/// Cloudflare's codes for a record that is already there, name and content alike: 81058, and 81057 as it answered
+/// before.
+const IDENTICAL: [i64; 2] = [81057, 81058];
+
 /// How long one call to the provider may take, and the most it may answer.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const MOST_ANSWER: usize = 1024 * 1024;
@@ -302,30 +345,75 @@ impl Cloudflare {
 
     /// The `result` of a call, or what Cloudflare said is wrong with it.
     async fn call(&self, request: reqwest::RequestBuilder, what: &str) -> Result<serde_json::Value, String> {
+        self.answer(request, what).await.map_err(|(_, e)| e)
+    }
+
+    /// As [`Cloudflare::call`], with the codes of what Cloudflare said is wrong.
+    async fn answer(
+        &self,
+        request: reqwest::RequestBuilder,
+        what: &str,
+    ) -> Result<serde_json::Value, (Vec<i64>, String)> {
         let response = request
             .bearer_auth(&self.token)
             .send()
             .await
-            .map_err(|e| format!("Cloudflare, {what}: {e}"))?;
+            .map_err(|e| (Vec::new(), format!("Cloudflare, {what}: {e}")))?;
         let status = response.status();
         let body = super::outbound::read(response, MOST_ANSWER)
             .await
-            .map_err(|e| format!("Cloudflare, {what}: {e}"))?;
-        let answer: serde_json::Value = serde_json::from_slice(&body)
-            .map_err(|_| format!("Cloudflare, {what}: answered HTTP {status} with no JSON"))?;
+            .map_err(|e| (Vec::new(), format!("Cloudflare, {what}: {e}")))?;
+        let answer: serde_json::Value = serde_json::from_slice(&body).map_err(|_| {
+            (
+                Vec::new(),
+                format!("Cloudflare, {what}: answered HTTP {status} with no JSON"),
+            )
+        })?;
         if status.is_success() && answer["success"] == true {
             return Ok(answer["result"].clone());
         }
+        let codes = answer["errors"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e["code"].as_i64())
+            .collect();
         let said: Vec<String> = answer["errors"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|e| e["message"].as_str().map(str::to_string))
             .collect();
-        Err(match said.is_empty() {
-            true => format!("Cloudflare refused {what}: HTTP {status}"),
-            false => format!("Cloudflare refused {what}: {}", said.join("; ")),
-        })
+        Err((
+            codes,
+            match said.is_empty() {
+                true => format!("Cloudflare refused {what}: HTTP {status}"),
+                false => format!("Cloudflare refused {what}: {}", said.join("; ")),
+            },
+        ))
+    }
+
+    /// The id of the TXT record at `name` holding `value`.
+    async fn existing(&self, zone_id: &str, name: &str, value: &str) -> Result<String, String> {
+        let mut url =
+            reqwest::Url::parse(&format!("{}/zones/{zone_id}/dns_records", self.api)).map_err(|e| e.to_string())?;
+        url.query_pairs_mut()
+            .append_pair("type", "TXT")
+            .append_pair("name", name);
+        let found = self
+            .call(self.client.get(url), &format!("looking up the TXT record {name}"))
+            .await?;
+        found
+            .as_array()
+            .into_iter()
+            .flatten()
+            // Cloudflare may answer a TXT record's content quoted.
+            .find(|r| {
+                r["name"].as_str() == Some(name) && r["content"].as_str().map(|c| c.trim_matches('"')) == Some(value)
+            })
+            .and_then(|r| r["id"].as_str())
+            .map(str::to_string)
+            .ok_or_else(|| format!("Cloudflare said the TXT record {name} is already there, but lists none"))
     }
 
     /// The zone holding `name`, nearest first, as the token sees them.
@@ -362,16 +450,25 @@ impl Provider for Cloudflare {
             .post(format!("{}/zones/{zone_id}/dns_records", self.api))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(serde_json::json!({ "type": "TXT", "name": name, "content": value, "ttl": 60 }).to_string());
-        let created = self.call(request, &format!("adding the TXT record {name}")).await?;
-        let id = created["id"]
-            .as_str()
-            .ok_or_else(|| format!("Cloudflare added the TXT record {name} but named no id for it"))?;
+        let id = match self.answer(request, &format!("adding the TXT record {name}")).await {
+            Ok(created) => created["id"]
+                .as_str()
+                .ok_or_else(|| format!("Cloudflare added the TXT record {name} but named no id for it"))?
+                .to_string(),
+            // Left by an earlier order that did not remove it: taken as this order's own, and removed with it.
+            Err((codes, _)) if codes.iter().any(|c| IDENTICAL.contains(c)) => {
+                let id = self.existing(&zone_id, name, value).await?;
+                tracing::info!(target: "leader.acme_dns_adopted", record = %name, "the DNS-01 record was already there, and is taken as this order's");
+                id
+            }
+            Err((_, e)) => return Err(e),
+        };
         Ok(Record {
             zone,
             zone_id,
             name: name.to_string(),
             value: value.to_string(),
-            id: id.to_string(),
+            id,
         })
     }
 
@@ -430,11 +527,14 @@ mod tests {
         async fn start(zones: &[&str], fails: Fails) -> FakeCloudflare {
             use axum::extract::{Path, Query, State};
             use axum::http::{HeaderMap, StatusCode};
-            use axum::routing::{delete, get, post};
+            use axum::routing::{delete, get};
 
             type Shared = Arc<Mutex<Held>>;
             fn refused(status: StatusCode, message: &str) -> (StatusCode, String) {
-                let body = serde_json::json!({ "success": false, "errors": [{ "code": 1, "message": message }], "result": null });
+                refused_as(status, 1, message)
+            }
+            fn refused_as(status: StatusCode, code: i64, message: &str) -> (StatusCode, String) {
+                let body = serde_json::json!({ "success": false, "errors": [{ "code": code, "message": message }], "result": null });
                 (status, body.to_string())
             }
             fn ok(result: serde_json::Value) -> (StatusCode, String) {
@@ -482,7 +582,27 @@ mod tests {
                 )
                 .route(
                     "/zones/:zone/dns_records",
-                    post(
+                    get(
+                        |State(held): State<Shared>,
+                         headers: HeaderMap,
+                         Path(zone): Path<String>,
+                         Query(q): Query<HashMap<String, String>>| async move {
+                            let held = held.lock().unwrap();
+                            if let Err(e) = authorized(&held, &headers) {
+                                return e;
+                            }
+                            let found: Vec<_> = held
+                                .records
+                                .iter()
+                                .filter(|(_, (z, n, _))| {
+                                    *z == zone && Some(n) == q.get("name")
+                                })
+                                .map(|(id, (_, n, c))| serde_json::json!({ "id": id, "name": n, "content": format!("\"{c}\"") }))
+                                .collect();
+                            ok(serde_json::json!(found))
+                        },
+                    )
+                    .post(
                         |State(held): State<Shared>, headers: HeaderMap, Path(zone): Path<String>, body: String| async move {
                             let mut held = held.lock().unwrap();
                             if let Err(e) = authorized(&held, &headers) {
@@ -498,6 +618,9 @@ mod tests {
                             // In the nearest zone that holds it, not one above.
                             let nearest = enclosing(&name).find_map(|z| held.zones.get(z)).unwrap();
                             assert_eq!(*nearest, zone, "{name} added to the wrong zone");
+                            if held.records.values().any(|(_, n, c)| *n == name && *c == content) {
+                                return refused_as(StatusCode::BAD_REQUEST, 81058, "An identical record already exists.");
+                            }
                             held.next += 1;
                             let id = format!("record{}", held.next);
                             held.records.insert(id.clone(), (zone, name.clone(), content.clone()));
@@ -715,6 +838,26 @@ mod tests {
         coverage.assert_complete();
     }
 
+    /// A record already there with the same value, as an earlier order that did not remove it leaves, is taken as
+    /// this order's own and removed with it.
+    #[test]
+    fn a_record_already_there_is_taken_and_removed() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let cloudflare = FakeCloudflare::start(&["example.com"], Fails::Never).await;
+            // An earlier order that ended without removing what it published.
+            publishing(&cloudflare, TOKEN, Some(0))
+                .dns("www.example.com", "the-value")
+                .await
+                .unwrap();
+            let again = publishing(&cloudflare, TOKEN, Some(0));
+            again.dns("www.example.com", "the-value").await.unwrap();
+            assert_eq!(cloudflare.held.lock().unwrap().added.len(), 1, "added once");
+            again.done().await;
+            assert_eq!(cloudflare.records(), [], "removed with the order that took it");
+        });
+    }
+
     /// The real nameserver check, against a stand-in nameserver on loopback that answers what it holds, and
     /// refuses a query that asks it to recurse.
     #[test]
@@ -775,6 +918,13 @@ mod tests {
             assert_eq!(answers(at, &record("_acme-challenge.b.example.com")).await, Ok(false));
             assert_eq!(answers(at, &record("_acme-challenge.c.example.com")).await, Ok(false));
             assert_eq!(answers(at, &record("_acme-challenge.d.example.com")).await, Ok(false));
+            // A nameserver answers at any one address this host reaches, as one with no IPv6 route reaches none
+            // of its IPv6 ones; an error only when it is reached at none.
+            let unreached: SocketAddr = "[2001:db8::1]:53".parse().unwrap();
+            let a = record("_acme-challenge.a.example.com");
+            assert_eq!(one_answers("ns1.test", &[unreached, at], &a).await, Ok(true));
+            let e = one_answers("ns1.test", &[unreached], &a).await.unwrap_err();
+            assert!(e.starts_with("ns1.test: 2001:db8::1: "), "{e}");
         });
     }
 }

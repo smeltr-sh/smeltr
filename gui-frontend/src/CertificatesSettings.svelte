@@ -30,6 +30,7 @@
     putAcme,
     orderAcme,
     type AcmeChallenge,
+    type AcmeStep,
     type AcmeDnsProvider,
     type AcmeDto,
     type AcmeSettings,
@@ -343,15 +344,70 @@
   }
 
   const ISSUED = 'this leader is serving the certificate the authority issued';
+  /** What each step of a running order says. */
+  const STEPS: Record<AcmeStep, string> = {
+    queued: 'Waiting for another change to the settings to finish.',
+    account: 'Reaching the certificate authority.',
+    proving: 'Proving each name to the certificate authority.',
+    publishing: 'Adding the DNS record in Cloudflare.',
+    propagating: "Waiting for the zone's nameservers to serve the new DNS record.",
+    validating: 'Waiting for the certificate authority to check the names.',
+    installing: 'Installing the certificate.',
+  };
+  /** The form is being saved before an order begins. */
+  let starting = $state(false);
+  /** An order runs on the leader, until the authority has issued or `orderWithinSecs` has passed: begun here or
+   * elsewhere, before this page was opened included. */
+  const ordering = $derived(starting || acme?.ordering != null);
+  const orderWait = $derived(
+    `The order can take up to ${Math.ceil((acme?.orderWithinSecs?.[challenge] ?? 0) / 60)} minutes.`,
+  );
+  const orderStatus = $derived(
+    acme?.ordering ? `${STEPS[acme.ordering.step]} ${orderWait}` : orderWait,
+  );
 
-  /** Orders a certificate with what the form says, and serves it. */
+  /** Begins an order with what the form says. The page follows it from there. */
   async function order() {
-    if (!(await saveAcme())) return;
-    message = '';
-    await act(() => orderAcme(), switched(ISSUED));
-    // What the order left, however it went: the failure it recorded, or when the next renewal is due.
-    getAcme().then(showAcme).catch(reported);
+    starting = true;
+    try {
+      if (!(await saveAcme())) return;
+      message = '';
+      await attempt(
+        () => orderAcme(),
+        (a) => {
+          acme = a;
+          return '';
+        },
+      );
+    } finally {
+      starting = false;
+    }
   }
+
+  // Follows a running order to its end, then shows what it left: the failure it recorded, or what is served.
+  const ORDER_POLL_MS = 2000;
+  const orderRunning = $derived(acme?.ordering != null);
+  $effect(() => {
+    if (!orderRunning) return;
+    const id = setInterval(() => {
+      getAcme()
+        .then(async (a) => {
+          if (a.ordering) {
+            acme = a;
+            return;
+          }
+          const c = await getCertificates();
+          message = a.lastError ? '' : switched(ISSUED)(c);
+          certificates = c;
+          chosen = c.entry ?? undefined;
+          showAcme(a);
+        })
+        .catch(() => {
+          // Keep showing what the page last knew; the next tick asks again.
+        });
+    }, ORDER_POLL_MS);
+    return () => clearInterval(id);
+  });
 
   /** Saves the ACME form while ACME is in force. Other names or another directory no longer fit what is served,
    * so they are ordered at once, where the page shows how it went. */
@@ -778,7 +834,7 @@
         </div>
       {:else if source === 'acme' && acme && (!switching || newRoot)}
         <div class="setting">
-          {#if acme.lastError && !formError}
+          {#if acme.lastError && !formError && !ordering}
             <InlineError>
               The order of {on(acme.lastAttemptMillis ?? Date.now())} failed: {acme.lastError}
               {#if inForce === 'acme'}Tried again every hour.{/if}
@@ -893,39 +949,38 @@
               </Field>
             </div>
           </Advanced>
-          {#if inForce !== 'acme' && challenge === 'dns-01'}
-            <p class="critical">
-              The zones that hold {nameList.join(', ') || 'the names above'} must be in this Cloudflare
-              account.
-            </p>
-          {:else if inForce !== 'acme'}
+          {#if inForce !== 'acme' && challenge !== 'dns-01'}
             <p class="critical">
               Port {challenge === 'tls-alpn-01' ? 443 : 80} on {nameList.join(', ') ||
                 'the names above'} must reach this leader.
             </p>
           {/if}
-          {@render status(formError, message)}
+          {@render status(formError, ordering ? orderStatus : message)}
           <div class="buttons">
             {#if inForce === 'acme'}
               <button
                 class="primary"
                 type="button"
-                disabled={busy || !orderable}
+                disabled={busy || ordering || !orderable}
                 onclick={() => save()}
               >
                 Save
               </button>
-              <button type="button" disabled={busy || !orderable} onclick={() => order()}>
-                Renew now
+              <button
+                type="button"
+                disabled={busy || ordering || !orderable}
+                onclick={() => order()}
+              >
+                {ordering ? 'Renewing…' : 'Renew now'}
               </button>
             {:else}
               <button
                 class="primary"
                 type="button"
-                disabled={busy || !orderable || !agreed}
+                disabled={busy || ordering || !orderable || !agreed}
                 onclick={() => order()}
               >
-                Get certificate
+                {ordering ? 'Getting certificate…' : 'Get certificate'}
               </button>
             {/if}
           </div>

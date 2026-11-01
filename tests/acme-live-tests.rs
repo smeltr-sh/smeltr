@@ -186,6 +186,25 @@ impl Leader {
         let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
         (status, json)
     }
+
+    /// Begins an order and waits for it to end, as the page follows it: the settings it left.
+    fn order(&self) -> serde_json::Value {
+        let (status, begun) = self.call("POST", "/api/settings/tls/acme/order", None);
+        assert_eq!(status, 200, "{begun}");
+        assert!(!begun["ordering"].is_null(), "the order is said to run: {begun}");
+        let started = std::time::Instant::now();
+        loop {
+            let (_, acme) = self.call("GET", "/api/settings/tls/acme", None);
+            if acme["ordering"].is_null() {
+                return acme;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(120),
+                "still ordering: {acme}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
 }
 
 /// The roots the leader is told to trust: minica's, which signs Pebble's own certificate, and the one Pebble issues
@@ -239,13 +258,8 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
 
     // The first order is under another root than the leader's own, so it begins a rotation rather than serving at
     // once. Nobody is enrolled to wait for, and the next read of the certificates finishes it.
-    let (status, ordered) = leader.call("POST", "/api/settings/tls/acme/order", None);
-    assert_eq!(status, 200, "{ordered}");
-    assert_eq!(
-        ordered["source"], "own",
-        "nothing served before the fleet holds the root"
-    );
-    assert_eq!(ordered["rotation"]["installs"], "supplied", "{ordered}");
+    let ordered = leader.order();
+    assert!(ordered["lastError"].is_null(), "{ordered}");
     let (status, certificates) = leader.call("GET", "/api/settings/tls", None);
     assert_eq!(status, 200, "{certificates}");
     assert_eq!(certificates["source"], "acme", "{certificates}");
@@ -269,8 +283,8 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
     let (status, saved) = leader.call("PUT", "/api/settings/tls/acme", Some(settings("http-01")));
     assert_eq!(status, 200, "{saved}");
     assert_eq!(saved["issued"], first, "changing the challenge forgets nothing");
-    let (status, renewed) = leader.call("POST", "/api/settings/tls/acme/order", None);
-    assert_eq!(status, 200, "{renewed}");
+    leader.order();
+    let (_, renewed) = leader.call("GET", "/api/settings/tls", None);
     assert_eq!(renewed["source"], "acme", "{renewed}");
     assert!(renewed["rotation"].is_null(), "{renewed}");
     assert_eq!(renewed["authority"]["fingerprint"], issuing);
@@ -283,9 +297,7 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
     elsewhere["names"] = serde_json::json!([NAME, "elsewhere.invalid"]);
     let (status, _) = leader.call("PUT", "/api/settings/tls/acme", Some(elsewhere));
     assert_eq!(status, 200);
-    let (status, refused) = leader.call("POST", "/api/settings/tls/acme/order", None);
-    assert_eq!(status, 400, "{refused}");
-    let (_, acme) = leader.call("GET", "/api/settings/tls/acme", None);
+    let acme = leader.order();
     assert!(acme["lastError"].as_str().is_some_and(|e| !e.is_empty()), "{acme}");
     assert_eq!(
         acme["issued"], renewed["served"]["fingerprint"],
