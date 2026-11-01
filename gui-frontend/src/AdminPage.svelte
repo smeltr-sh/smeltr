@@ -5,6 +5,7 @@
 -->
 
 <script lang="ts">
+  import WorkerGroupIcon from './WorkerGroupIcon.svelte';
   import { slugify } from './slugify';
   import { bareError, errors, reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -706,7 +707,9 @@
                   ><SortButton sort={workerSort} key="worker">Worker</SortButton></th
                 >
                 <th aria-sort={workerSort.aria('group')}
-                  ><SortButton sort={workerSort} key="group">Group</SortButton></th
+                  ><SortButton sort={workerSort} key="group"
+                    ><span class="glyphed"><WorkerGroupIcon />Group</span></SortButton
+                  ></th
                 >
                 <th aria-sort={workerSort.aria('kind')}
                   ><SortButton sort={workerSort} key="kind">Kind</SortButton></th
@@ -906,7 +909,9 @@
             <thead>
               <tr>
                 <th aria-sort={codeSort.aria('group')}
-                  ><SortButton sort={codeSort} key="group">Group</SortButton></th
+                  ><SortButton sort={codeSort} key="group"
+                    ><span class="glyphed"><WorkerGroupIcon />Group</span></SortButton
+                  ></th
                 >
                 <th aria-sort={codeSort.aria('kind')}
                   ><SortButton sort={codeSort} key="kind">Kind</SortButton></th
@@ -1225,6 +1230,12 @@
 </SectionShell>
 
 <style>
+  .glyphed {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
   /* A group's color, opened from its row. */
   .toolbar {
     display: flex;
