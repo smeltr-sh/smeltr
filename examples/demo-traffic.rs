@@ -198,12 +198,17 @@ fn history(registry: &std::path::Path) {
     println!("{written} buckets of history");
 }
 
-/// Runs a write to the registry, again while the leader holds it.
+/// Runs a write to the registry, again while the leader's own write holds it. The leader keeps running: its sign-in
+/// sessions live in memory, and a restart would end the recorder's. Any other error ends the run.
 fn write(mut attempt: impl FnMut() -> Result<(), smeltr::leader::store::StoreError>) {
     for _ in 0..50 {
         match attempt() {
             Ok(()) => return,
-            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            // SQLite's busy and locked errors, which `StoreError` carries only as their message.
+            Err(e) if e.message.contains("database is locked") || e.message.contains("database is busy") => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            Err(e) => panic!("writing to the registry: {e}"),
         }
     }
     attempt().expect("a write to the registry");

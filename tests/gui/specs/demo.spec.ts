@@ -131,16 +131,16 @@ test('a visitor captures a sample, saves it on a branch and previews a pipeline 
   // main is never edited, so the save asks for a branch and the demo's leader forks one.
   await page.getByRole('button', { name: 'Edit on this branch' }).click();
   await expect(page.locator('dialog[open]')).toHaveCount(0);
-  const sample = await page.evaluate(() => {
+  // The branch the save forked, which the GUI is now on: a recorded branch may hold samples of its own.
+  const forked = await page.evaluate(() => localStorage.getItem('smeltr-branch'));
+  expect(forked, "the GUI's branch, under the key api.ts keeps it in").toBeTruthy();
+  const sample = await page.evaluate((forked) => {
     const state = JSON.parse(sessionStorage.getItem('smeltr-demo')!);
-    // The branch the save forked, which the GUI is now on: a recorded branch may hold samples of its own.
-    const branch = (state.branches as Record<string, { touches: string[] }>)[
-      localStorage.getItem('smeltr-branch')!
-    ];
+    const branch = (state.branches as Record<string, { touches: string[] }>)[forked];
     return branch.touches
       .find((t) => t.includes('/samples/'))!
       .replace(/.*\/samples\/(.*)\.json$/, '$1');
-  });
+  }, forked!);
 
   await page.goto(`${base}#/build/pipelines/panos-traffic/for/${sample}`);
   await expect(page.getByText('panw-firewalls, captured', { exact: true })).toBeVisible();
