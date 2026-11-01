@@ -38,7 +38,7 @@
     </a>
 
     <div class="links">
-      {#each [['/siem-costs', 'Cut SIEM costs'], ['/one-schema', 'One schema'], ['/how-it-works', 'How it works']] as [href, label] (href)}
+      {#each [['/siem-costs', 'Cut SIEM costs'], ['/one-schema', 'One schema'], ['/feed-health', 'Feed health'], ['/how-it-works', 'How it works']] as [href, label] (href)}
         <a {href} aria-current={page.url.pathname === href ? 'page' : undefined}>{label}</a>
       {/each}
       <a

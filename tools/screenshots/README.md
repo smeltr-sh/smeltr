@@ -65,6 +65,9 @@ graph LR
   within the settle.
 - **Incident** (`incident.py`). Issues and a Status that needs attention need something wrong: it freezes
   fw-collector-02 until the leader reports it silent, captures those two pages, and thaws it.
+- **Outage** (`outage.py`). The feed health page needs a feed at half its volume: it takes one of FortiGate's two
+  relays down, waits until the leader warns that the source reads below normal, captures the Map and Issues, and
+  brings the relay back.
 
 ## Setup
 

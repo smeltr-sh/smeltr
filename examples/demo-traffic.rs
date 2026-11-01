@@ -10,6 +10,8 @@
 //! ```
 //!
 //! `SMELTR_DEMO_KAFKA` names the brokers, `localhost:19092` (`tests/live/compose.live.yaml`'s) when unset.
+//! `SMELTR_DEMO_DOWN` names streams, separated by commas, whose sender went down. `topic` sends nothing;
+//! `topic/n` sends through n relays, one of them down, so it loses every nth record.
 //! `tools/screenshots` runs it.
 
 #[path = "../tests/panos/mod.rs"]
@@ -87,12 +89,30 @@ fn traffic(scale: f64) {
     let first = now().unix as u64 * 10_000;
     let mut next = vec![first; STREAMS.len()];
     let mut debt = vec![0.0; STREAMS.len()];
+    let down = std::env::var("SMELTR_DEMO_DOWN").unwrap_or_default();
+    // Each down stream, and the share of its records that still arrive: one relay of n lost.
+    let down: Vec<(&str, u64)> = down
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| match t.split_once('/') {
+            Some((topic, n)) => (topic, number(n).max(2)),
+            None => (t, 1),
+        })
+        .collect();
+    for (topic, _) in &down {
+        stream(topic);
+    }
     let (mut sent, mut reported) = (0u64, start);
     loop {
         let tick = Instant::now();
         let t = start.elapsed().as_secs_f64();
         let at = now();
         for (k, s) in STREAMS.iter().enumerate() {
+            let lost = down.iter().find(|(t, _)| *t == s.topic).map(|&(_, n)| n);
+            if lost == Some(1) {
+                continue;
+            }
             let wave = 1.0 + 0.25 * (TAU * t / s.period + s.phase).sin();
             // A jitter of ±15% on each tick's share.
             let jitter = 0.85 + 0.3 * (mix(next[k] ^ 0x7177) % 1_000) as f64 / 1_000.0;
@@ -102,6 +122,9 @@ fn traffic(scale: f64) {
                 debt[k] -= 1.0;
                 let i = next[k];
                 next[k] += 1;
+                if lost.is_some_and(|n| i.is_multiple_of(n)) {
+                    continue;
+                }
                 let mut line = (s.record)(i, &at, trouble);
                 // Now and then an access line is cut short in transit: it fails to parse and takes the DLQ path.
                 if s.topic == "web.nginx.access" && mix(i ^ 0xC07).is_multiple_of(250) {
