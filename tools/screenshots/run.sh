@@ -49,10 +49,15 @@ fi
 
 [ -f state/sessions.json ] || { echo "no fleet staged here: run $0 without \`capture\` first" >&2; exit 1; }
 if [ "${1:-}" = demo ]; then
+    # A recording is of these generators only if they staged the fleet and write its traffic.
+    current=$("${CARGO_TARGET_DIR:-$REPO/target}/release/examples/demo-traffic" fingerprint)
+    if [ "$(cat state/fingerprint 2>/dev/null)" != "$current" ] || [ "$(cat .traffic.fingerprint 2>/dev/null)" != "$current" ]; then
+        echo "the fleet is from older generators: run.sh stop, then run.sh demo" >&2
+        exit 1
+    fi
     node demo.mjs "$REPO/gui-frontend/src/demo/recorded.json"
-    # What the generators made, so a test says when the recording no longer shows it.
-    "${CARGO_TARGET_DIR:-$REPO/target}/release/examples/demo-traffic" fingerprint \
-        >"$REPO/gui-frontend/src/demo/recorded.fingerprint"
+    # So a test says when the generators no longer make what the recording shows.
+    echo "$current" >"$REPO/gui-frontend/src/demo/recorded.fingerprint"
     exit 0
 fi
 mkdir -p "$OUT"

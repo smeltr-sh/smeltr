@@ -5,4 +5,5 @@ shots/
 node_modules/
 __pycache__/
 .traffic.pid
+.traffic.fingerprint
 traffic.log

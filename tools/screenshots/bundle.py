@@ -400,11 +400,20 @@ NETWORK_SOURCES = [
     kafka_source("fortigate-firewalls", "syslog.fortigate", "smeltr-fortigate"),
     # No route takes it: the `cisco-asa-draft` branch is where its pipeline is being written.
     kafka_source("cisco-asa", "syslog.asa", "smeltr-asa"),
+    # Routed by no one, for a visitor to write a pipeline for.
+    kafka_source("panw-threats", "syslog.panos.threat", "smeltr-panos-threat"),
+    kafka_source("versa-sdwan", "syslog.versa", "smeltr-versa"),
+    kafka_source("netscout-aed", "syslog.netscout", "smeltr-netscout"),
+    kafka_source("router-snmp", "metrics.snmp.interface", "smeltr-snmp"),
 ]
 APPS_SOURCES = [
     kafka_source("nginx-access", "web.nginx.access", "smeltr-nginx"),
     kafka_source("linux-auth", "syslog.auth", "smeltr-auth"),
     kafka_source("aws-cloudtrail", "aws.cloudtrail", "smeltr-cloudtrail"),
+    # Routed by no one, for a visitor to write a pipeline for.
+    kafka_source("elastic-agent-linux", "elastic.agent.linux", "smeltr-ea-linux"),
+    kafka_source("elastic-agent-windows", "elastic.agent.windows", "smeltr-ea-windows"),
+    kafka_source("sentinel-eventhub", "azure.eventhub.sentinel", "smeltr-sentinel"),
 ]
 
 # Answers for a category and for one kind in it, so the Routes page shows the matrix's range.
@@ -458,6 +467,14 @@ def samples():
              "records": panos_sample()},
             {"id": "fortigate-sample", "name": "FortiGate forward traffic", "source": "fortigate-firewalls",
              "records": records("syslog.fortigate", 10, 21)},
+            {"id": "panos-threat-sample", "name": "PAN-OS threats", "source": "panw-threats",
+             "records": records("syslog.panos.threat", 10, 61)},
+            {"id": "versa-sample", "name": "Versa flow, access, IDP and SLA logs", "source": "versa-sdwan",
+             "records": records("syslog.versa", 12, 73)},
+            {"id": "netscout-sample", "name": "Arbor Edge Defense events", "source": "netscout-aed",
+             "records": records("syslog.netscout", 10, 81)},
+            {"id": "snmp-sample", "name": "Router interface counters", "source": "router-snmp",
+             "records": records("metrics.snmp.interface", 10, 91)},
         ],
         "apps": [
             {"id": "nginx-sample", "name": "Storefront access log", "source": "nginx-access",
@@ -466,5 +483,11 @@ def samples():
              "records": records("syslog.auth", 10, 41)},
             {"id": "cloudtrail-sample", "name": "CloudTrail management and data events", "source": "aws-cloudtrail",
              "records": records("aws.cloudtrail", 8, 51)},
+            {"id": "elastic-agent-linux-sample", "name": "Elastic Agent, Linux hosts", "source": "elastic-agent-linux",
+             "records": records("elastic.agent.linux", 10, 101)},
+            {"id": "elastic-agent-windows-sample", "name": "Elastic Agent, Windows hosts",
+             "source": "elastic-agent-windows", "records": records("elastic.agent.windows", 10, 111)},
+            {"id": "sentinel-sample", "name": "Sentinel tables from Event Hubs", "source": "sentinel-eventhub",
+             "records": records("azure.eventhub.sentinel", 6, 121)},
         ],
     }

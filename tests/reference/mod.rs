@@ -23,11 +23,16 @@ pub mod asa;
 pub mod auth;
 pub mod cloudtrail;
 pub mod demo;
+pub mod elastic_agent;
 pub mod fortigate;
 pub mod json_app;
 pub mod k8s;
+pub mod netscout;
 pub mod nginx;
 pub mod people;
+pub mod sentinel;
+pub mod telegraf;
+pub mod versa;
 
 mod driver;
 

@@ -14,6 +14,8 @@
 
 use crate::reference::{Clock, mix, people};
 
+pub mod threat;
+
 // -- the record ---------------------------------------------------------------
 
 /// PAN-OS 10.1 TRAFFIC, in the order the firewall writes it. Positional:
