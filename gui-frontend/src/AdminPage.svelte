@@ -5,6 +5,7 @@
 -->
 
 <script lang="ts">
+  import WorkerGroupIcon from './WorkerGroupIcon.svelte';
   import { slugify } from './slugify';
   import { bareError, errors, reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -706,7 +707,8 @@
                   ><SortButton sort={workerSort} key="worker">Worker</SortButton></th
                 >
                 <th aria-sort={workerSort.aria('group')}
-                  ><SortButton sort={workerSort} key="group">Group</SortButton></th
+                  ><SortButton sort={workerSort} key="group"><WorkerGroupIcon />Group</SortButton
+                  ></th
                 >
                 <th aria-sort={workerSort.aria('kind')}
                   ><SortButton sort={workerSort} key="kind">Kind</SortButton></th
@@ -906,7 +908,7 @@
             <thead>
               <tr>
                 <th aria-sort={codeSort.aria('group')}
-                  ><SortButton sort={codeSort} key="group">Group</SortButton></th
+                  ><SortButton sort={codeSort} key="group"><WorkerGroupIcon />Group</SortButton></th
                 >
                 <th aria-sort={codeSort.aria('kind')}
                   ><SortButton sort={codeSort} key="kind">Kind</SortButton></th
