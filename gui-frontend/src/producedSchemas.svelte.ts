@@ -19,7 +19,8 @@ export class ProducedSchemas {
 
   /** Rebuilds the tree only when the schemas themselves change: a standard's runs to tens of thousands of fields. */
   setSchemas(schemas: SchemaDto[]) {
-    if (schemas.length === this.#schemas.length && schemas.every((s, i) => s === this.#schemas[i])) return;
+    if (schemas.length === this.#schemas.length && schemas.every((s, i) => s === this.#schemas[i]))
+      return;
     this.#schemas = schemas;
     this.tree = schemas.length > 0 ? new SchemaTree(schemas) : null;
   }

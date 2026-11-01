@@ -63,7 +63,9 @@
   import { beginReconcile, endReconcile } from './grokFields';
   import { producedSchemas } from './producedSchemas.svelte';
   import RequirementMark from './RequirementMark.svelte';
+  import FieldDoc from './FieldDoc.svelte';
   import ShowAll from './ShowAll.svelte';
+  import Ticked from './Ticked.svelte';
   import {
     askedUnder,
     fields,
@@ -369,6 +371,9 @@
   });
   /** How many the list offers: the schema's fields in a name box, else the functions or patterns. */
   let offered = $derived(pathChoices ? pathChoices.shown.length : suggestions.length);
+  let listEl = $state<HTMLUListElement>();
+  /** The field the highlighted entry names, told in full beside the list. */
+  let docField = $derived(pathChoices?.shown[highlighted]?.field);
 
   async function pickPath(c: SchemaChild) {
     const parent = pathAt?.parent ?? '';
@@ -632,6 +637,7 @@
   {/if}
   {#if showDropdown}
     <ul
+      bind:this={listEl}
       class="suggestions"
       class:paths={pathChoices !== null}
       role="listbox"
@@ -643,8 +649,10 @@
         <li class="path-head" aria-hidden="true">
           <span><strong>{pathChoices.titles}</strong>{at ? ` · ${at}` : ''}</span>
           <span class="path-count"
-            >{fields(pathChoices.all.length)}{at ? ` in ${at}` : ''} · {fmt(pathChoices.nested)} including
-            nested fields</span
+            >{fields(pathChoices.all.length)}{at ? ` in ${at}` : ''}{pathChoices.nested !==
+            pathChoices.all.length
+              ? ` · ${fmt(pathChoices.nested)} including nested fields`
+              : ''}</span
           >
         </li>
         {#each pathChoices.shown as c, i (c.path)}
@@ -679,7 +687,7 @@
               {/if}
             </span>
             {#if c.field?.description && !c.set}
-              <span class="fn-desc path-desc">{c.field.description}</span>
+              <span class="fn-desc path-desc"><Ticked text={c.field.description} /></span>
             {/if}
           </li>
         {/each}
@@ -771,6 +779,15 @@
         </li>
       {/each}
     </ul>
+    {#if docField}
+      <div
+        class="path-doc"
+        popover="manual"
+        {@attach float(() => listEl?.getBoundingClientRect(), { beside: true })}
+      >
+        <FieldDoc field={docField} head />
+      </div>
+    {/if}
   {/if}
 </span>
 
@@ -1164,6 +1181,17 @@
   /* What the record already holds is offered last, quieter. */
   .path.set .fn-sig {
     color: var(--dim);
+  }
+
+  /* The highlighted field told in full, beside the list. */
+  .path-doc {
+    width: min(360px, calc(100vw - 2rem));
+    max-height: 280px;
+    padding: 0.6rem 0.75rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
   }
 
   .path-desc {
