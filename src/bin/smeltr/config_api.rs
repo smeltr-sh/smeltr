@@ -4454,14 +4454,18 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    fn config_at(data: &Path, branch: &str, at: Option<&str>) -> Envelope<Config> {
-        let q = ConfigQuery {
+    /// A read of `branch`, at `at` where one is named.
+    fn read_of(branch: &str, at: Option<&str>) -> ConfigQuery {
+        ConfigQuery {
             branch: BranchQuery {
                 branch: Some(branch.to_string()),
             },
             at: at.map(str::to_string),
-        };
-        config_in(data, config_file::SHARED_DIR, &q)
+        }
+    }
+
+    fn config_at(data: &Path, branch: &str, at: Option<&str>) -> Envelope<Config> {
+        config_in(data, config_file::SHARED_DIR, &read_of(branch, at))
     }
 
     /// A read at a commit is the scope as that commit holds it, for any commit of the branch or of `main`.
@@ -4512,15 +4516,7 @@ mod tests {
                 },
             ]
         });
-        let read = |id: &str, at: Option<&str>| {
-            let q = ConfigQuery {
-                branch: BranchQuery {
-                    branch: Some("work".to_string()),
-                },
-                at: at.map(str::to_string),
-            };
-            pipeline_in(&data, config_file::SHARED_DIR, id, &q)
-        };
+        let read = |id: &str, at: Option<&str>| pipeline_in(&data, config_file::SHARED_DIR, id, &read_of("work", at));
 
         let tip = read("p", None);
         assert_eq!(tip.commit, git::branch_tip(&repo, "work"));
