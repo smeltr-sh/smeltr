@@ -129,6 +129,8 @@ pub enum Format {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Failing {
+    /// The channel's name when it failed.
+    pub channel: String,
     /// When the first send in this run of failures failed.
     pub since: i64,
     /// When the last one did.
@@ -154,17 +156,16 @@ impl Alerts {
         self.held().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
-    fn failed(&self, channel: &str, message: String, now: i64) {
+    fn failed(&self, channel: &Channel, message: String, now: i64) {
         let mut held = self.held();
-        let since = held.get(channel).map_or(now, |f| f.since);
-        held.insert(
-            channel.to_string(),
-            Failing {
-                since,
-                last: now,
-                message,
-            },
-        );
+        let since = held.get(&channel.id).map_or(now, |f| f.since);
+        let failing = Failing {
+            channel: channel.name.clone(),
+            since,
+            last: now,
+            message,
+        };
+        held.insert(channel.id.clone(), failing);
     }
 
     fn took(&self, channel: &str) {
@@ -507,7 +508,7 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
             Ok(()) => state.alerts.took(&channel.id),
             Err(why) => {
                 tracing::warn!(channel = %channel.name, "could not send to the alert channel: {why}");
-                state.alerts.failed(&channel.id, why, now);
+                state.alerts.failed(channel, why, now);
             }
         }
     }
@@ -713,6 +714,31 @@ mod tests {
         );
         let one = changes(&c, 6, &ws[..1], &both.raised);
         assert_eq!(email(&one).0, "smeltr: Cleared: Source unreachable: clicks");
+    }
+
+    #[test]
+    fn a_channel_fails_from_its_first_failed_send_until_one_is_taken() {
+        let alerts = Alerts::default();
+        let c = channel(None);
+        alerts.failed(&c, "the webhook answered 500".into(), 5);
+        alerts.failed(&c, "the webhook answered 503".into(), 9);
+        let failing = alerts.failing().remove("c1").unwrap();
+        assert_eq!(
+            (failing.since, failing.last, failing.message.as_str()),
+            (5, 9, "the webhook answered 503")
+        );
+        let w = crate::leader::warnings::alert_channel_failing(&failing.channel, &failing);
+        assert_eq!(
+            (w.condition, w.group, w.since_millis),
+            (Condition::AlertChannelFailing, None, Some(5))
+        );
+        assert!(
+            w.message.contains("Paging") && w.message.contains("503"),
+            "{}",
+            w.message
+        );
+        alerts.took("c1");
+        assert!(alerts.failing().is_empty());
     }
 
     #[test]

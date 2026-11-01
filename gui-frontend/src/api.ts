@@ -2583,7 +2583,8 @@ export type WarningCondition =
   | 'secretNeedsValue'
   | 'acmeRenewalFailing'
   | 'leaderCertificateRunningOut'
-  | 'issuedCertificateNotRenewed';
+  | 'issuedCertificateNotRenewed'
+  | 'alertChannelFailing';
 
 /** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
  * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
@@ -2696,6 +2697,8 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Leader certificate running out';
     case 'issuedCertificateNotRenewed':
       return 'Certificate not renewed';
+    case 'alertChannelFailing':
+      return 'Alert channel failing';
   }
 }
 

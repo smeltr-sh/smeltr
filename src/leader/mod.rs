@@ -1152,6 +1152,13 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     out.extend(held.as_ref().map(warnings::deploy_held));
     out.extend(remote_failure.as_ref().map(warnings::remote_not_followed));
     out.extend(
+        state
+            .alerts
+            .failing()
+            .values()
+            .map(|f| warnings::alert_channel_failing(&f.channel, f)),
+    );
+    out.extend(
         newer_release
             .as_ref()
             .zip(crate::version::RELEASE)

@@ -97,6 +97,8 @@ pub enum Condition {
     AcmeRenewalFailing,
     LeaderCertificateRunningOut,
     IssuedCertificateNotRenewed,
+    /// An alert channel did not take the last send (`leader::alerts`).
+    AlertChannelFailing,
 }
 
 impl Condition {
@@ -139,6 +141,7 @@ impl Condition {
         Condition::AcmeRenewalFailing,
         Condition::LeaderCertificateRunningOut,
         Condition::IssuedCertificateNotRenewed,
+        Condition::AlertChannelFailing,
     ];
 
     /// What a person reads for it: the page's own label (`conditionLabel`), for what is sent where the page is not.
@@ -180,6 +183,7 @@ impl Condition {
             Condition::AcmeRenewalFailing => "ACME renewal failing",
             Condition::LeaderCertificateRunningOut => "Leader certificate running out",
             Condition::IssuedCertificateNotRenewed => "Certificate not renewed",
+            Condition::AlertChannelFailing => "Alert channel failing",
         }
     }
 
@@ -222,6 +226,7 @@ impl Condition {
             Condition::AcmeRenewalFailing => "acmeRenewalFailing",
             Condition::LeaderCertificateRunningOut => "leaderCertificateRunningOut",
             Condition::IssuedCertificateNotRenewed => "issuedCertificateNotRenewed",
+            Condition::AlertChannelFailing => "alertChannelFailing",
         }
     }
 }
@@ -2613,6 +2618,25 @@ pub fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning 
         severity: Severity::Warning,
         since_millis: Some(failure.since),
         message: format!("{}. The fleet keeps running what it runs", failure.message),
+    }
+}
+
+/// An alert channel that did not take the last send, and why. Raised until one is taken: until then, whoever the
+/// channel reaches is not told of what it takes.
+pub fn alert_channel_failing(channel: &str, failing: &crate::leader::alerts::Failing) -> Warning {
+    Warning {
+        area: None,
+        condition: Condition::AlertChannelFailing,
+        subject_kind: SubjectKind::Leader,
+        site: None,
+        subject_id: channel.to_string(),
+        group: None,
+        severity: Severity::Warning,
+        since_millis: Some(failing.since),
+        message: format!(
+            "The alert channel {channel} did not take what was sent: {}. It is sent again every minute",
+            failing.message
+        ),
     }
 }
 
