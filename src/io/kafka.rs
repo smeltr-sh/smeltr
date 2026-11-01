@@ -172,7 +172,13 @@ pub fn total_partitions(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Op
     entra::sign_in_unpolled(consumer.client(), client_config.get("sasl.oauthbearer.config"));
     let mut total = 0;
     for topic in &config.topics {
-        let md = consumer.fetch_metadata(Some(topic), SETUP_TIMEOUT).ok()?;
+        let md = match consumer.fetch_metadata(Some(topic), SETUP_TIMEOUT) {
+            Ok(md) => md,
+            Err(e) => {
+                tracing::debug!(target: "kafka.size_unknown", %topic, group = %config.group_id, error = %e, "a topic's partitions could not be counted, so the source's size is unknown");
+                return None;
+            }
+        };
         total += md
             .topics()
             .iter()
@@ -515,7 +521,9 @@ impl KafkaSource {
                         placed.push((e.topic().to_string(), e.partition()));
                     }
                 }
-                Err(e) => tracing::debug!(target: "kafka.placement", error = %e, "could not seek held partitions"),
+                Err(e) => {
+                    tracing::debug!(target: "kafka.placement", group = %self.client.routes.group(), error = %e, "could not seek held partitions")
+                }
             }
         }
         let mut state = self.slot.lock();
@@ -534,6 +542,7 @@ impl KafkaSource {
     /// Marks a partition exhausted and pauses it so librdkafka stops fetching from it. Idempotent.
     fn mark_exhausted(&self, state: &mut client::SlotState, topic: &str, partition: i32) -> Result<(), IoError> {
         if state.exhausted.insert((topic.to_string(), partition)) {
+            tracing::info!(target: "kafka.partition_at_stop", group = %self.client.routes.group(), topic, partition, "a partition reached the stop time set for the source, so it is no longer fetched");
             self.slot.sync(self.consumer(), state)?;
         }
         Ok(())

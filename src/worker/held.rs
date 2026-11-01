@@ -110,6 +110,7 @@ impl Held {
             touched: BTreeSet::new(),
             revoked: Vec::new(),
             keep_headers: false,
+            name: None,
             blocked: false,
             outbox: self.outbox.clone(),
         }
@@ -427,6 +428,8 @@ pub struct HeldSource {
     revoked: Vec<TopicPartition>,
     keep_headers: bool,
     blocked: bool,
+    /// The id the author gave the source, handed to each source a grant opens.
+    name: Option<String>,
     outbox: Arc<Outbox>,
 }
 
@@ -457,6 +460,9 @@ impl HeldSource {
         let mut source = (self.open)()?;
         source.resume(from)?;
         source.keep_headers(self.keep_headers);
+        if let Some(name) = &self.name {
+            source.named(name);
+        }
         if self.blocked {
             source.block()?;
         }
@@ -553,6 +559,13 @@ impl Source for HeldSource {
 
     fn take_finished(&mut self) -> u64 {
         self.inner.as_mut().map_or(0, |s| s.take_finished())
+    }
+
+    fn named(&mut self, name: &str) {
+        self.name = Some(name.to_string());
+        if let Some(s) = self.inner.as_mut() {
+            s.named(name);
+        }
     }
 
     fn keep_headers(&mut self, keep: bool) {
