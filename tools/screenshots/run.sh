@@ -26,8 +26,12 @@ capture | demo | "") ;;
 esac
 
 python3 -c 'import confluent_kafka, PIL' 2>/dev/null || {
-    echo "Python packages missing. Do every step of the one-time setup in $PWD/README.md. The first is:" >&2
-    echo "  pip install -r $PWD/requirements.txt" >&2
+    cat >&2 <<SETUP
+Python packages missing. Run the one-time setup from $PWD/README.md:
+  pip install -r $PWD/requirements.txt
+  npm --prefix $PWD ci
+  npx --prefix $PWD playwright install chromium
+SETUP
     exit 1
 }
 [ -d node_modules/playwright ] || npm ci
