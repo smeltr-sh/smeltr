@@ -185,12 +185,7 @@ fn log_panics() {
                     .downcast_ref::<crate::core::buffer::OverBudget>()
                     .is_none()
             {
-                let panic = info
-                    .payload()
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| info.payload().downcast_ref::<String>().cloned())
-                    .unwrap_or_default();
+                let panic = panic_text(info.payload());
                 let thread = std::thread::current();
                 tracing::error!(
                     target: "process.panicked",
@@ -503,6 +498,48 @@ thread_local! {
 /// in the same process. Called on the leader's main thread and on each thread its runtime starts.
 pub fn mark_leader_thread() {
     LEADER_THREAD.with(|t| t.set(true));
+}
+
+/// Say what the buffers lost since the last call, once per outage and on the interval: the counts a scrape reads,
+/// for a reader of the log alone. Console-only, since what carries logs onward must not queue a report of its own
+/// failing to.
+pub fn report_losses() {
+    static LAST: Mutex<([u64; 4], Relog)> = Mutex::new(([0; 4], Relog::new()));
+    let now = [dropped(), undelivered(), unread(), unwritable()];
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let since: Vec<u64> = now.iter().zip(last.0).map(|(n, l)| n.saturating_sub(l)).collect();
+    let (dropped, undelivered, unread, unwritable) = (since[0], since[1], since[2], since[3]);
+    if since.iter().any(|n| *n > 0) {
+        if last.1.fail_due("losing".to_string()).is_some() {
+            // Counted from the last line, not the last call: a beat that says nothing leaves its losses for the next.
+            last.0 = now;
+            let count = |n: u64| (n > 0).then_some(n);
+            while_delivering(|| {
+                tracing::warn!(
+                    target: "logs.events_lost",
+                    dropped = count(dropped),
+                    undelivered = count(undelivered),
+                    unread = count(unread),
+                    unwritable = count(unwritable),
+                    "log events were lost since the last report"
+                );
+            });
+        }
+    } else if last.1.clear() {
+        while_delivering(|| {
+            tracing::info!(target: "logs.events_kept_again", "no log event has been lost since the last report");
+        });
+    }
+}
+
+/// What a panic said, for a line or an error: its message when it has one, as `panic!` and `expect` leave it,
+/// and nothing otherwise.
+pub fn panic_text(payload: &dyn std::any::Any) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_default()
 }
 
 /// Run `f` with everything this thread reports marked console-only.
@@ -917,7 +954,7 @@ mod tests {
             "the same fault is not said again at once"
         );
         assert_eq!(relog.why(), Some("away"), "the fault stands while it is not said");
-        relog.logged = Some(std::time::Instant::now() - RELOG_EVERY);
+        relog.logged = std::time::Instant::now().checked_sub(RELOG_EVERY);
         assert_eq!(
             relog.fail_due("away".into()),
             Some("away"),

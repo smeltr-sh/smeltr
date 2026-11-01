@@ -1626,7 +1626,10 @@ fn load_and_apply_config_file() {
     use smeltr::startup_config::{backfill_env, find_config_file, parse_config_file};
 
     let file: FileConfig = match find_config_file("smeltr.toml") {
-        Some(path) => parse_config_file(&path),
+        Some(path) => {
+            tracing::info!(target: "startup.config_loaded", path = %path.display(), "settings were read from a config file");
+            parse_config_file(&path)
+        }
         None => FileConfig::default(),
     };
 

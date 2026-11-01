@@ -312,6 +312,9 @@ impl Gathered {
         // deliver is dropped at the oldest end, which is where the least useful of it is.
         let overflow = logs.len().saturating_sub(UNDELIVERED_LOGS);
         logs.drain(..overflow);
+        if overflow > 0 {
+            logs_dropped(overflow);
+        }
         // Each is a step the leader applies in order, so none is merged or dropped.
         let mut progress = self.progress;
         progress.extend(next.progress);
@@ -423,7 +426,44 @@ fn frames<T: serde::de::DeserializeOwned>(from: impl std::io::Read) -> impl Iter
     BufReader::with_capacity(64 * 1024, from)
         .lines()
         .map_while(Result::ok)
-        .filter_map(|line| serde_json::from_str::<T>(&line).ok())
+        .filter_map(|line| match serde_json::from_str::<T>(&line) {
+            Ok(frame) => Some(frame),
+            Err(e) => {
+                frame_unreadable(&e);
+                None
+            }
+        })
+}
+
+/// A frame the other process wrote that this one cannot read: a build this one does not know, most likely. Said
+/// once per change and on the interval, with how many since; the console sees it even when nothing else does.
+fn frame_unreadable(e: &serde_json::Error) {
+    static UNREAD: std::sync::Mutex<(crate::logs::Relog, u64)> = std::sync::Mutex::new((crate::logs::Relog::new(), 0));
+    let mut unread = UNREAD.lock().unwrap_or_else(|e| e.into_inner());
+    unread.1 += 1;
+    let (failing, count) = &mut *unread;
+    if let Some(error) = failing.fail_due(e.to_string()) {
+        let count = *count;
+        crate::logs::while_delivering(|| {
+            tracing::warn!(target: "runtime.frame_unreadable", count, error, "a message between the supervisor and the runtime could not be read, so what it carried is lost");
+        });
+        unread.1 = 0;
+    }
+}
+
+/// Runtime logs the supervisor could not deliver before its buffer filled, said once per outage with the count.
+fn logs_dropped(dropped: usize) {
+    static DROPPING: std::sync::Mutex<(crate::logs::Relog, u64)> =
+        std::sync::Mutex::new((crate::logs::Relog::new(), 0));
+    let mut dropping = DROPPING.lock().unwrap_or_else(|e| e.into_inner());
+    dropping.1 += dropped as u64;
+    if dropping.0.fail_due("dropping".to_string()).is_some() {
+        let dropped = dropping.1;
+        crate::logs::while_delivering(|| {
+            tracing::warn!(target: "worker.runtime_logs_dropped", dropped, "the runtime's logs outgrew what this worker can hold for the leader, so the oldest were dropped");
+        });
+        dropping.1 = 0;
+    }
 }
 
 // -- the child ---------------------------------------------------------------
@@ -436,6 +476,7 @@ pub fn run_runtime_child() -> ! {
 
     let Some(ToRuntime::Start(spec)) = incoming.next() else {
         // Nothing to run and nobody to tell: the supervisor is gone, or said something this build does not know.
+        eprintln!("smeltr: the supervisor sent no start message this build can read, so the runtime ends");
         std::process::exit(1);
     };
     let incarnation = spec.incarnation;
@@ -502,10 +543,14 @@ pub fn run_runtime_child() -> ! {
             // consumer nobody can stop, so it stops itself -- and bounds its own stop, because the deadline that
             // would otherwise end it belonged to the process that has just disappeared.
             stopping.store(true, Ordering::Relaxed);
+            tracing::warn!(target: "runtime.orphaned", budget_secs = ORPHAN_DRAIN_BUDGET.as_secs(), "the supervisor is gone, so the runtime stops itself");
             let armed = std::thread::Builder::new().spawn(|| {
                 std::thread::sleep(ORPHAN_DRAIN_BUDGET);
                 // The cooperative stop joins threads that may never return, which is the hang this boundary
                 // exists for. Orphaned, there is no supervisor left to kill the tree, so it ends itself.
+                eprintln!(
+                    "smeltr: the supervisor is gone and the runtime did not finish stopping in time, so it ends now"
+                );
                 std::process::exit(1);
             });
             if armed.is_err() {
@@ -535,8 +580,8 @@ pub fn run_runtime_child() -> ! {
     // deployed logs source is running, and a supervisor's own offer, recorded separately, cannot stand in for
     // this process's -- it is this one that opens the deployment's connections.
     let (suites, groups) = crate::crypto::offered();
-    tracing::info!(
-        target: "worker.tls_offered",
+    tracing::debug!(
+        target: "runtime.tls_offered",
         suites = suites.join(", "),
         groups = groups.join(", "),
         "TLS algorithms offered"
@@ -671,12 +716,20 @@ fn obey(frame: ToRuntime, runtime: &Runtime) -> bool {
         held,
     } = runtime;
     match frame {
-        ToRuntime::Stop => return false,
+        ToRuntime::Stop => {
+            tracing::info!(target: "runtime.stopping", "the supervisor asked the runtime to stop");
+            return false;
+        }
         ToRuntime::Capture(invitation) => super::serve_capture(captures, *invitation, registry, secrets),
         ToRuntime::Listed { sessions } => captures.drop_unlisted(&sessions.into_iter().collect()),
         ToRuntime::Mirror { samples, logs } => {
             registry.mirror(samples.into_iter().filter_map(MetricSampleDto::into_sample));
-            crate::logs::mirror(logs.into_iter().filter_map(LogDto::into_event));
+            let offered = logs.len();
+            let events: Vec<_> = logs.into_iter().filter_map(LogDto::into_event).collect();
+            if events.len() < offered {
+                tracing::debug!(target: "runtime.mirror_skipped", count = offered - events.len(), "mirrored logs of a severity this build does not know were skipped");
+            }
+            crate::logs::mirror(events);
         }
         ToRuntime::Holds { seq, holds } => held.apply(seq, holds),
         ToRuntime::Backlogged { full } => held.set_upstream_backlogged(full),
@@ -992,7 +1045,9 @@ impl RuntimeHandle {
     /// `Err` is a termination that could not be confirmed: the caller stays blocked from activating anything and
     /// says so, rather than claiming a replacement over a runtime that may still be running.
     pub fn stop(&mut self, graceful: Duration, hard: Duration, inbox: &RuntimeInbox) -> std::io::Result<()> {
-        let _ = self.control.send_within(ToRuntime::Stop, CONTROL_FRAME_BUDGET);
+        if let Err(e) = self.control.send_within(ToRuntime::Stop, CONTROL_FRAME_BUDGET) {
+            tracing::debug!(target: "worker.stop_not_sent", error = %e, "the runtime could not be asked to stop, so it is ended at the deadline");
+        }
         let deadline = Instant::now() + graceful;
         while Instant::now() < deadline {
             // Asked, not reaped: the kill below is aimed at the id this child holds only while it is unreaped.
@@ -1065,26 +1120,26 @@ impl RuntimeHandle {
         if self.process.kill_tree().is_err() || !self.reader_finished() {
             return Exit::Unconfirmed;
         }
-        if !matches!(self.process.reap_within(Duration::ZERO), Ok(Some(_))) {
+        let Ok(Some(status)) = self.process.reap_within(Duration::ZERO) else {
             return Exit::Unconfirmed;
-        }
+        };
         self.join_reader();
-        Exit::Confirmed
+        Exit::Confirmed(status.to_string())
     }
 }
 
 /// What [`RuntimeHandle::exited`] found. A caller that only asks "is it gone" cannot tell a process still running
 /// from one whose tree it dare not consider dead -- and only the second of those is [`Unconfirmed`](Exit::Unconfirmed),
 /// the state the Control plane's process boundary (design doc) has a worker report rather than recover from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Exit {
     /// Neither observed nor asked for: this handle is still what it was deployed as.
     Running,
     /// The process ended, but its tree did not confirm: the group kill failed, or something is still holding its
     /// pipe open. A descendant may still be consuming, so nothing may take this handle's place.
     Unconfirmed,
-    /// The process ended, its tree is gone, and it has been reaped.
-    Confirmed,
+    /// The process ended, its tree is gone, and it has been reaped: how it ended, as the system says it.
+    Confirmed(String),
 }
 
 /// The one error every unconfirmed ending here reports. A caller that sees it keeps the handle: a tree it cannot
@@ -1142,7 +1197,11 @@ fn read_from_runtime_frames(from: impl std::io::Read, inbox: &Arc<RuntimeInbox>,
                 }
             }
             FromRuntime::Captured { report, .. } => inbox.captured.lock().unwrap().push(*report),
-            FromRuntime::Stopped { .. } => inbox.exited.store(true, Ordering::Relaxed),
+            // Said here, where it can still reach the leader: the runtime sends nothing after this.
+            FromRuntime::Stopped { .. } => {
+                tracing::info!(target: "runtime.stopped", incarnation, "the runtime stopped");
+                inbox.exited.store(true, Ordering::Relaxed)
+            }
         }
     }
 }
@@ -1200,7 +1259,7 @@ mod tests {
             "the kill did not follow the graceful budget"
         );
         assert!(
-            matches!(handle.exited(), Exit::Confirmed),
+            matches!(handle.exited(), Exit::Confirmed(_)),
             "a stopped runtime was not confirmed dead"
         );
     }

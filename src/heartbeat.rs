@@ -1507,7 +1507,10 @@ mod client {
         /// arrives twice counts once. A status code is the leader's answer and is not retried.
         pub fn send(&self, req: &HeartbeatRequest) -> Result<HeartbeatResponse, HeartbeatError> {
             match self.send_once(req) {
-                Err(e) if e.retryable => self.send_once(req).map_err(|e| e.error),
+                Err(e) if e.retryable => {
+                    tracing::debug!(target: "heartbeat.retried", error = %e.error, "a heartbeat's connection failed, so it is sent once more");
+                    self.send_once(req).map_err(|e| e.error)
+                }
                 other => other.map_err(|e| e.error),
             }
         }

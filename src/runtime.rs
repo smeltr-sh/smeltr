@@ -205,6 +205,9 @@ pub struct Reader {
     pub membership_after: Duration,
     /// Since when the reader has been unable to take work. `None` while it is taking it.
     full_since: Option<std::time::Instant>,
+    /// The source letting senders go, said once per change and on the interval with what it dropped meanwhile.
+    losing: crate::logs::Relog,
+    dropped_unsaid: u64,
     /// Recent refusals every destination this reader hears from gave, for the heartbeat. Shared with the transform
     /// threads serving the same destinations; a fresh, private ring until [`Reader::with_refusals`] injects a
     /// deployment-wide one.
@@ -759,6 +762,8 @@ impl Reader {
             pending: None,
             membership_after: MEMBERSHIP_AFTER,
             full_since: None,
+            losing: Default::default(),
+            dropped_unsaid: 0,
             refusals: Arc::new(RefusalRing::default()),
             wants_headers: Box::new(|| false),
         }
@@ -1022,11 +1027,20 @@ impl Transform {
                 reports.send(Report::Block(BlockCause::Held, held.message.clone()));
                 return Err(held);
             }
-            Err(_panic) => {
+            Err(panic) => {
                 // The same records meet the same pipelines, so a second attempt would panic the same way. What the
-                // routes produced before the panic goes with `out`.
+                // routes produced before the panic goes with `out`. The panic itself is logged by the hook; this is
+                // what became of the batch.
                 self.metrics
                     .incr("smeltr_batches_poisoned_total", &[("source", source_label.as_str())], 1);
+                let panic = crate::logs::panic_text(&*panic);
+                tracing::error!(
+                    target: "runtime.batch_poisoned",
+                    subject = %source_label,
+                    rows = turn.records.len(),
+                    %panic,
+                    "a batch made the pipelines panic, so it is answered as unprocessable rather than tried again"
+                );
                 let turn = Turn {
                     waiting_since: None,
                     ..turn
@@ -2291,7 +2305,7 @@ fn report_rejections(
     // `reasons` is what says whether this is one cause or thousands; `reason` is an example, which is all
     // `RefusalRing` below keeps for the same reason.
     let reasons: HashSet<&str> = rows.iter().map(|(_, reason)| reason.as_str()).collect();
-    tracing::error!(
+    tracing::warn!(
         target: "runtime.rows_rejected",
         subject = %dest,
         rows = rows.len(),
@@ -2358,6 +2372,19 @@ impl Reader {
                 &[("source", source_label.as_str())],
                 dropped,
             );
+            self.dropped_unsaid += dropped;
+            if self.losing.fail_due("dropping".to_string()).is_some() {
+                tracing::warn!(
+                    target: "runtime.source_dropped",
+                    subject = %source_label,
+                    dropped = self.dropped_unsaid,
+                    "a source dropped records that arrived while it had no room for them"
+                );
+                self.dropped_unsaid = 0;
+            }
+        } else if self.losing.clear() {
+            tracing::info!(target: "runtime.source_dropping_ended", subject = %source_label, dropped = self.dropped_unsaid, "a source has room for records again");
+            self.dropped_unsaid = 0;
         }
         for (reason, refused) in self.source.take_refused() {
             self.metrics.incr(
