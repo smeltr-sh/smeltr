@@ -738,6 +738,63 @@ mod tests {
         }
     }
 
+    /// A worker route's refusal goes out as the bytes the handler wrote, whether or not `shape` read it for its
+    /// reason: its family carries no envelope, and a worker reads the body. The length header must say what goes
+    /// out, or the worker reads a body that ends early. An operator route's refusal is answered in the envelope.
+    #[tokio::test]
+    async fn a_refusal_goes_out_as_it_was_on_a_worker_route_and_enveloped_elsewhere() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use tower_service::Service;
+
+        let line = "could not record this heartbeat: the store is away".to_string();
+        let long = "x".repeat(LINE_AT_MOST + 1);
+        let refusing = |text: String| move || async move { (StatusCode::SERVICE_UNAVAILABLE, text) };
+        let mut app = Router::new()
+            .route("/api/worker/line", get(refusing(line.clone())))
+            .route("/api/worker/long", get(refusing(long.clone())))
+            .route("/api/operator", get(refusing(line.clone())))
+            .layer(axum::middleware::from_fn(shape));
+        let mut answer = |path: &'static str| {
+            let request = Request::get(path).body(Body::empty()).unwrap();
+            let call = app.call(request);
+            async move {
+                let response = call.await.unwrap();
+                let status = response.status();
+                let content_type = response.headers().get(header::CONTENT_TYPE).cloned();
+                let length = response
+                    .headers()
+                    .get(header::CONTENT_LENGTH)
+                    .and_then(|l| l.to_str().ok()?.parse::<usize>().ok());
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                (status, content_type, length, body)
+            }
+        };
+
+        for (path, text) in [("/api/worker/line", &line), ("/api/worker/long", &long)] {
+            let (status, content_type, length, body) = answer(path).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
+            assert_eq!(body, text.as_bytes(), "{path}: the body is the handler's");
+            assert_eq!(length, Some(text.len()), "{path}: the length says what goes out");
+            assert_ne!(
+                content_type.as_ref().map(|t| t.as_bytes()),
+                Some(b"application/json".as_slice()),
+                "{path}: a worker route carries no envelope"
+            );
+        }
+
+        let (status, content_type, _, body) = answer("/api/operator").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            content_type.as_ref().map(|t| t.as_bytes()),
+            Some(b"application/json".as_slice())
+        );
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("an operator refusal is JSON");
+        assert_eq!(body["errors"][0]["message"], line);
+    }
+
     /// The gate over real routes and a real store, with roles: what an OIDC account holds is what it may do.
     mod access {
         use super::*;

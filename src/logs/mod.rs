@@ -904,4 +904,37 @@ mod tests {
             "a reader was handed what was said before it opened"
         );
     }
+
+    /// A fault is said when it begins, when its message changes, and again each [`RELOG_EVERY`] while it lasts;
+    /// its end is said once, and a fault after that is a new one.
+    #[test]
+    fn a_relog_says_a_fault_when_it_begins_changes_or_lasts_and_its_end_once() {
+        let mut relog = Relog::new();
+        assert_eq!(relog.fail_due("away".into()), Some("away"));
+        assert_eq!(
+            relog.fail_due("away".into()),
+            None,
+            "the same fault is not said again at once"
+        );
+        assert_eq!(relog.why(), Some("away"), "the fault stands while it is not said");
+        relog.logged = Some(std::time::Instant::now() - RELOG_EVERY);
+        assert_eq!(
+            relog.fail_due("away".into()),
+            Some("away"),
+            "a fault that lasts is said again on the interval"
+        );
+        assert_eq!(
+            relog.fail_due("gone".into()),
+            Some("gone"),
+            "a changed message is said at once"
+        );
+        assert!(relog.clear(), "a fault under way ends");
+        assert!(!relog.clear(), "its end is said once");
+        assert_eq!(relog.due(), None, "nothing is due after the fault ends");
+        assert_eq!(
+            relog.fail_due("away".into()),
+            Some("away"),
+            "a fault after a recovery is new"
+        );
+    }
 }
