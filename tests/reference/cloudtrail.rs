@@ -9,7 +9,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Clock, Pipeline, mix, pick};
+use super::{Clock, Pipeline, mix, pick, uuid};
 
 pub const PIPELINE: Pipeline = Pipeline {
     name: "cloudtrail",
@@ -98,18 +98,6 @@ fn key_id(prefix: &str, h: u64) -> String {
         x = (x / 32) ^ mix(x);
     }
     s
-}
-
-fn uuid(h: u64) -> String {
-    let g = mix(h);
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        h >> 32,
-        h & 0xffff,
-        (g >> 4) & 0xfff,
-        0x8000 | (g >> 20) & 0x3fff,
-        g >> 16
-    )
 }
 
 /// How many events delivery `i` carries: 1 to 20, mean about five, with the

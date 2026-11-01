@@ -1137,7 +1137,8 @@ export class DemoLeader {
       name: req.name,
       source: req.source,
       columns: [
-        ...(pool.columns ?? []),
+        // The recorder's own save stamped the pool with its `__capture` fields; these are this capture's.
+        ...(pool.columns ?? []).filter((c) => !c.name.startsWith('__capture.')),
         ...Object.entries(taken).map(([k, [type]]) => ({ name: `__capture.${k}`, type })),
       ],
       records,

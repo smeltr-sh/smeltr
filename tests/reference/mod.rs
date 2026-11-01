@@ -23,11 +23,16 @@ pub mod asa;
 pub mod auth;
 pub mod cloudtrail;
 pub mod demo;
+pub mod elastic_agent;
 pub mod fortigate;
 pub mod json_app;
 pub mod k8s;
+pub mod netscout;
 pub mod nginx;
 pub mod people;
+pub mod sentinel;
+pub mod telegraf;
+pub mod versa;
 
 mod driver;
 
@@ -109,6 +114,19 @@ pub fn mix(i: u64) -> u64 {
 
 pub fn pick<T: Copy>(pool: &[T], r: u64) -> T {
     pool[(r % pool.len() as u64) as usize]
+}
+
+/// A version 4 UUID drawn from `r`.
+pub fn uuid(r: u64) -> String {
+    let g = mix(r);
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        r >> 32,
+        r & 0xffff,
+        (g >> 4) & 0xfff,
+        0x8000 | ((g >> 20) & 0x3fff),
+        g >> 16
+    )
 }
 
 pub const MONTHS: [&str; 12] = [

@@ -5,7 +5,9 @@
 
 use serde_json::{Value, json};
 
-use super::{Clock, asa, auth, cloudtrail, fortigate, mix, nginx, people};
+use super::{
+    Clock, asa, auth, cloudtrail, elastic_agent, fortigate, mix, netscout, nginx, people, sentinel, telegraf, versa,
+};
 use crate::panos;
 
 /// One topic's traffic.
@@ -74,6 +76,70 @@ pub const STREAMS: &[Stream] = &[
         phase: 1.9,
         record: |i, at, _| asa::record(i, at),
         trouble: |_| false,
+    },
+    Stream {
+        topic: "syslog.panos.threat",
+        rate: 25.0,
+        period: 400.0,
+        phase: 0.4,
+        record: panos::threat::record,
+        // Forty seconds of a vulnerability scan against the DMZ every eight minutes.
+        trouble: |t| t % 480 < 40,
+    },
+    Stream {
+        topic: "syslog.versa",
+        rate: 150.0,
+        period: 500.0,
+        phase: 2.4,
+        record: versa::record,
+        // A minute and a half of a lossy internet path every twelve minutes.
+        trouble: |t| t % 720 < 90,
+    },
+    Stream {
+        topic: "elastic.agent.linux",
+        rate: 60.0,
+        period: 450.0,
+        phase: 1.1,
+        record: elastic_agent::linux,
+        // Password guessing at the bastions, with the auth.log stream's.
+        trouble: |t| t % 300 < 20,
+    },
+    Stream {
+        topic: "elastic.agent.windows",
+        rate: 80.0,
+        period: 380.0,
+        phase: 3.0,
+        record: elastic_agent::windows,
+        // Thirty seconds of password spraying every seven minutes.
+        trouble: |t| t % 420 < 30,
+    },
+    Stream {
+        // A message carries about two and a half rows.
+        topic: "azure.eventhub.sentinel",
+        rate: 15.0,
+        period: 520.0,
+        phase: 0.2,
+        record: sentinel::record,
+        // The same spraying, as Entra ID sees it.
+        trouble: |t| t % 420 < 30,
+    },
+    Stream {
+        topic: "syslog.netscout",
+        rate: 40.0,
+        period: 340.0,
+        phase: 1.6,
+        record: netscout::record,
+        // A minute of a reflection flood every fifteen minutes.
+        trouble: |t| t % 900 < 60,
+    },
+    Stream {
+        topic: "metrics.snmp.interface",
+        rate: 10.0,
+        period: 600.0,
+        phase: 2.6,
+        record: telegraf::record,
+        // Two minutes of a flapping uplink every ten minutes.
+        trouble: |t| t % 600 < 120,
     },
 ];
 

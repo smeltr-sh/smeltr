@@ -17,11 +17,13 @@ The PNGs land in `shots/` as `<nn>-<page>-<light|dark>.png`, 1440 px wide at 2x 
 
 ```mermaid
 graph LR
-  gen[demo-traffic] --> pa([panw-firewalls]) & fg([fortigate-firewalls]) & ng([nginx-access]) & au([linux-auth]) & ct([aws-cloudtrail]) & asa([cisco-asa])
+  gen[demo-traffic] --> pa([panw-firewalls]) & fg([fortigate-firewalls]) & ng([nginx-access]) & au([linux-auth]) & ct([aws-cloudtrail])
+  gen --> asa([cisco-asa]) & pt([panw-threats]) & vs([versa-sdwan]) & aed([netscout-aed]) & snmp([router-snmp])
+  gen --> eal([elastic-agent-linux]) & eaw([elastic-agent-windows]) & sen([sentinel-eventhub])
   subgraph network [Network security: fw-collector-01, -02]
     pa --> pp[panos-traffic] --> esn([es-network])
     fg --> fp[fortigate-traffic] --> esn
-    asa
+    asa & pt & vs & aed & snmp
   end
   subgraph apps [Applications & cloud: app-collector-01, -02]
     ng --> np[nginx-access] --> esw([es-web])
@@ -29,18 +31,24 @@ graph LR
     ct --> cp[aws-cloudtrail] --> ess
     np -. 5xx .-> ka([kafka-alerts])
     cp -. failures .-> ka
+    eal & eaw & sen
   end
 ```
 
-- **Traffic.** `demo-traffic` (`examples/demo-traffic.rs`) writes about 1,600 records a second to Kafka from the
+- **Traffic.** `demo-traffic` (`examples/demo-traffic.rs`) writes about 2,100 records a second to Kafka from the
   reference generators the benchmark runs (`tests/reference`, `tests/panos`): PAN-OS TRAFFIC over syslog, FortiGate
-  traffic and UTM key=value, nginx access, sshd and sudo, CloudTrail deliveries, and Cisco ASA's many messages. The
+  traffic and UTM key=value, nginx access, sshd and sudo, CloudTrail deliveries, and Cisco ASA's many messages. Seven
+  more feeds are there for a visitor to normalize: PAN-OS THREAT, Versa SD-WAN, NETSCOUT Arbor Edge Defense CEF, router
+  interface counters from Telegraf's SNMP input, Elastic Agent from Linux and Windows hosts, and Sentinel tables from
+  an Event Hubs export. Each feed has its own spells of trouble: a scan, a lossy path, a flood, password spraying. The
   samples and the lookup tables come from the same generators, so the pipelines join on what the logs carry. Every
   value is synthetic; addresses outside 10/8 come from the MaxMind test ranges and the documentation ranges. Now
   and then an nginx line is cut short and fails to parse; it reaches es-web tagged with its exception.
-- **Something to fix.** No route takes cisco-asa, so the leader warns that its stream is unrouted. FGT-SIN
-  names `proto` (`tcp`) where the FortiGate pipeline declares the protocol number, so the leader warns that the
-  field is not its declared type.
+- **Something to fix.** No route takes cisco-asa or the seven feeds after it, so the leader warns that their streams
+  are unrouted. The network group sends what no route takes to kafka-dlq and the apps group drops it. The seven
+  feeds' samples wait on the `work` branch, since a deploy leaves out a sample no test names. FGT-SIN names
+  `proto` (`tcp`) where the FortiGate pipeline declares the protocol number, so the leader warns that the field is
+  not its declared type.
 - **Pipelines** (`bundle.py`), each normalizing to ECS: grok and a positional CSV table for PAN-OS, with CIDR,
   directory and App-ID lookups; grok and key=value for FortiGate; grok with a custom pattern for nginx; grok and a
   code step for auth.log; JSON with nested structs for CloudTrail, unrolled to a document per event. Each has a
@@ -49,6 +57,10 @@ graph LR
   Priya Raman onboards the firewalls, Marcus Webb onboards the web and cloud feeds and adds a 5xx alert, and
   the admin rotates the Elasticsearch key. Priya's App-ID risk change stays open for review; Marcus's Cisco ASA
   draft stays a branch.
+- **A week before it** (`demo-traffic history`). Once staged, every throughput series is extended back eight days
+  at the rate it has read, on a daily curve, so the charts span a week and each source shows the band it is
+  expected to read in. The leader refuses a few heartbeats while it writes; their warnings fade in five minutes,
+  within the settle.
 - **Incident** (`incident.py`). Issues and a Status that needs attention need something wrong: it freezes
   fw-collector-02 until the leader reports it silent, captures those two pages, and thaws it.
 

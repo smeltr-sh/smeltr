@@ -29,6 +29,10 @@ REPO = os.path.dirname(os.path.dirname(DIR))
 STATE = os.path.join(DIR, "state")
 PIDS = os.path.join(STATE, "pids")
 TRAFFIC_PIDS = os.path.join(DIR, ".traffic.pid")
+# What the generators of the running traffic make (`demo-traffic fingerprint`), and what those that staged the fleet's
+# samples and tables made. A recording is of these generators only when both are the current build's.
+TRAFFIC_FINGERPRINT = os.path.join(DIR, ".traffic.fingerprint")
+STAGED_FINGERPRINT = os.path.join(STATE, "fingerprint")
 BINARY = os.path.join(REPO, os.environ.get("CARGO_TARGET_DIR", "target"), "release", "smeltr")
 PACE = float(os.environ.get("PACE", "1"))
 
@@ -38,7 +42,9 @@ PEOPLE = {"priya": ("Priya Raman", "Firewall-Logs-2026!"), "marcus": ("Marcus We
 WORKERS = [("fw-collector-01", "network"), ("fw-collector-02", "network"),
            ("app-collector-01", "apps"), ("app-collector-02", "apps")]
 TOPICS = [("syslog.panos", 4), ("syslog.fortigate", 4), ("web.nginx.access", 2), ("syslog.auth", 1),
-          ("aws.cloudtrail", 1), ("syslog.asa", 2), ("smeltr.dlq", 1), ("alerts.security", 2)]
+          ("aws.cloudtrail", 1), ("syslog.asa", 2), ("syslog.panos.threat", 1), ("syslog.versa", 2),
+          ("syslog.netscout", 1), ("metrics.snmp.interface", 1), ("elastic.agent.linux", 1),
+          ("elastic.agent.windows", 1), ("azure.eventhub.sentinel", 1), ("smeltr.dlq", 1), ("alerts.security", 2)]
 CONSUMER_GROUPS = [s["groupId"] for s in bundle.NETWORK_SOURCES + bundle.APPS_SOURCES]
 KAFKA = ["docker", "compose", "-f", os.path.join(REPO, "tests", "live", "compose.live.yaml"), "exec", "-T", "kafka"]
 
@@ -137,14 +143,27 @@ def stop(pidfile=PIDS):
     os.remove(pidfile)
 
 
+def fingerprint():
+    return bundle.traffic("fingerprint").strip()
+
+
 def start_traffic():
-    """Start the traffic (`bundle.TRAFFIC`), unless the one started last is still running. It outlives this process and
-    every reset."""
-    if started(TRAFFIC_PIDS):
+    """Start the traffic (`bundle.TRAFFIC`), unless the one started last is still running and from generators that
+    make what the current build's do. It outlives this process and every reset."""
+    current = fingerprint()
+    if started(TRAFFIC_PIDS) and read(TRAFFIC_FINGERPRINT) == current:
         return
     stop(TRAFFIC_PIDS)
     log("traffic")
     spawn(TRAFFIC_PIDS, "traffic", [bundle.TRAFFIC], DIR, os.path.join(DIR, "traffic.log"))
+    with open(TRAFFIC_FINGERPRINT, "w") as f:
+        f.write(current + "\n")
+
+
+def read(path):
+    with contextlib.suppress(FileNotFoundError), open(path) as f:
+        return f.read().strip()
+    return None
 
 
 # -- reset and start ----------------------------------------------------------------------------------
@@ -348,6 +367,7 @@ def apps():
     for s in bundle.samples()["apps"]:
         c.put_sample(s, b, "apps")
     c.put("routes", routes, b, "apps")
+    c.put("manifest", {"exceptions": bundle.APPS_EXCEPTIONS}, b, "apps")
     lock_tests(c, b, "apps", [
         ("nginx-access maps requests, drops health checks", "nginx-access", "nginx-sample", 12),
         ("linux-auth classifies logins and sudo", "linux-auth", "auth-sample", 10),
@@ -410,6 +430,14 @@ def open_change():
                   "the alerts topic. The PAN-OS test is re-locked with the two new fields.")
 
 
+def waiting():
+    log("samples for the feeds waiting on pipelines")
+    c = as_("admin")
+    for scope, samples in bundle.waiting().items():
+        for s in samples:
+            c.put_sample(s, "work", scope)
+
+
 def draft():
     log("draft branch")
     c = as_("marcus")
@@ -458,6 +486,16 @@ def main():
     pause(1)
     open_change()
     draft()
+    waiting()
+    # A week of throughput before what the fleet has read so far, so each source's chart shows the band it is
+    # expected to read in. The leader refuses a few heartbeats while this writes, and the warnings that leaves
+    # fade before a settled fleet is captured.
+    log("history")
+    subprocess.run([bundle.TRAFFIC, "history", os.path.join(STATE, "leader", "smeltr-leader-data", "registry.db")],
+                   check=True)
+    # Last, so a fleet whose staging failed part way is not one `run.sh demo` records.
+    with open(STAGED_FINGERPRINT, "w") as f:
+        f.write(fingerprint() + "\n")
     log("staged")
 
 
