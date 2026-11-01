@@ -1,8 +1,9 @@
 //! The reference workload: PAN-OS TRAFFIC syslog normalized to ECS.
 //!
 //! The record generator and the bundle it feeds. The two ends the runtime
-//! runs it between are `tests/reference`'s. The workload is one file and
-//! reproducible from `seed` alone.
+//! runs it between are `tests/reference`'s, and so are the company's people
+//! and sites the records name (`reference::people`). A record is a pure
+//! function of its index.
 //!
 //! The pipeline is the shape real deployments run: a Grok pattern over the
 //! syslog envelope, a positional CSV parse of the vendor's comma-separated
@@ -10,6 +11,8 @@
 //! vendor names into ECS ones.
 
 #![allow(dead_code)]
+
+use crate::reference::{Clock, mix, people};
 
 // -- the record ---------------------------------------------------------------
 
@@ -122,164 +125,193 @@ pub const NUMERIC: &[&str] = &[
     "elapsed_time",
 ];
 
-/// splitmix64. A record is a pure function of its index, so a run is
-/// reproducible and two runs of different lengths agree row for row.
-fn mix(i: u64) -> u64 {
-    let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
+/// App-ID: name, port, transport, category, subcategory, risk (1 to 5), and
+/// its share of sessions.
+pub const APPS: &[(&str, u16, &str, &str, &str, u8, u64)] = &[
+    ("ssl", 443, "tcp", "networking", "encrypted-tunnel", 4, 18),
+    ("web-browsing", 80, "tcp", "general-internet", "internet-utility", 4, 8),
+    ("dns-base", 53, "udp", "networking", "infrastructure", 3, 14),
+    (
+        "ms-office365-base",
+        443,
+        "tcp",
+        "business-systems",
+        "office-programs",
+        2,
+        10,
+    ),
+    ("ms-teams", 443, "tcp", "collaboration", "instant-messaging", 2, 6),
+    ("slack-base", 443, "tcp", "collaboration", "instant-messaging", 2, 5),
+    ("zoom-base", 443, "tcp", "collaboration", "voip-video", 2, 4),
+    (
+        "github-base",
+        443,
+        "tcp",
+        "business-systems",
+        "software-development",
+        2,
+        4,
+    ),
+    ("salesforce-base", 443, "tcp", "business-systems", "crm", 2, 3),
+    ("google-base", 443, "tcp", "general-internet", "internet-utility", 4, 6),
+    ("ssh", 22, "tcp", "networking", "encrypted-tunnel", 4, 2),
+    ("ntp-base", 123, "udp", "networking", "infrastructure", 2, 2),
+    ("ldap", 389, "tcp", "business-systems", "auth-service", 3, 2),
+    ("kerberos", 88, "tcp", "business-systems", "auth-service", 2, 2),
+    ("smtp-base", 25, "tcp", "collaboration", "email", 5, 1),
+    ("bittorrent", 6881, "tcp", "general-internet", "file-sharing", 5, 1),
+    ("tor", 9001, "tcp", "networking", "encrypted-tunnel", 5, 1),
+];
+
+/// The App-IDs `block-high-risk-apps` denies.
+pub const DENIED: &[&str] = &["bittorrent", "tor", "smtp-base"];
+
+/// The App-ID a draw of `r` lands on, by each one's share.
+fn app(r: u64) -> (&'static str, u16, &'static str, &'static str, &'static str, u8, u64) {
+    let total: u64 = APPS.iter().map(|a| a.6).sum();
+    let mut at = r % total;
+    for a in APPS {
+        if at < a.6 {
+            return *a;
+        }
+        at -= a.6;
+    }
+    unreachable!("the shares add up to the total")
 }
 
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
-/// Applications, with the app table's categories keyed on the same list.
-pub const APPS: &[&str] = &[
-    "ssl",
-    "web-browsing",
-    "dns",
-    "ms-office365",
-    "ssh",
-    "smtp",
-    "ldap",
-    "ntp",
-    "google-base",
-    "salesforce",
-    "zoom",
-    "github",
-    "slack",
-    "apt-get",
-    "kerberos",
-    "snmp",
-];
-
-/// Sites the CIDR table maps `10.<n>.0.0/16` onto.
-pub const SITES: &[&str] = &["nyc", "lon", "fra", "sin", "syd", "sfo", "tor", "dub"];
-
-/// How many `10.<n>.0.0/16` rows the CIDR table carries.
-pub const CIDR_ROWS: usize = 64;
-/// How many users the department table carries.
-pub const USER_ROWS: usize = 1024;
+/// A draw of `r` from the exponential distribution with mean `mean`.
+fn exponential(r: u64, mean: f64) -> f64 {
+    let u = (r >> 11) as f64 / (1u64 << 53) as f64;
+    -mean * (1.0 - u).ln()
+}
 
 /// One PAN-OS TRAFFIC record as it arrives over syslog: a BSD syslog
 /// envelope wrapping the vendor's comma-separated body.
 pub fn line(i: u64) -> String {
+    record(i, &Clock::of(i))
+}
+
+/// Session `i`, logged at `at`, when it ended. A share of sessions comes from
+/// the DMZ, with no user; the risky App-IDs are denied by rule.
+pub fn record(i: u64, at: &Clock) -> String {
     let a = mix(i);
     let b = mix(i ^ 0x5DEE_CE66);
     let c = mix(i.wrapping_mul(31));
 
-    let day = 1 + (a % 28) as u32;
-    let (hh, mm, ss) = ((b % 24) as u32, (b >> 8) % 60, (b >> 16) % 60);
-    let month = (a >> 8) as usize % 12;
-    let syslog_time = format!("{} {:>2} {:02}:{:02}:{:02}", MONTHS[month], day, hh, mm, ss);
-    let panos_time = format!("2026/{:02}/{:02} {:02}:{:02}:{:02}", month + 1, day, hh, mm, ss);
-
-    let site = SITES[(a % SITES.len() as u64) as usize];
-    let net = (a % CIDR_ROWS as u64) as u8;
-    let src = format!("10.{}.{}.{}", net, (b >> 24) % 256, (b >> 32) % 254 + 1);
-    let dst = format!("203.0.{}.{}", (c >> 8) % 256, (c >> 16) % 254 + 1);
-    let nat = format!("198.51.100.{}", (c >> 24) % 254 + 1);
-    let user = format!("acme\\user{:04}", a % USER_ROWS as u64);
-    let app = APPS[(c % APPS.len() as u64) as usize];
-    let allow = !i.is_multiple_of(11);
-    let sent = 400 + (b % 60_000);
-    let recv = 300 + (c % 900_000);
+    let net = a % people::NETWORKS;
+    let (site, _) = people::site_of(net);
+    let device = format!("pa-{site}-0{}", 1 + (a >> 16) % 2);
+    let (app, port, proto, category, _, _, _) = app(c);
+    let dmz = b % 100 < 12;
+    let src = if dmz {
+        format!("172.16.{}.{}", 1 + (b >> 8) % 20, 2 + (b >> 16) % 248)
+    } else {
+        format!("10.{net}.{}.{}", (b >> 24) % 41, 2 + (b >> 32) % 248)
+    };
+    let (dst, country) = people::PUBLIC[(c >> 8) as usize % people::PUBLIC.len()];
+    let nat = format!("198.51.100.{}", 2 + (c >> 24) % 29);
+    let user = if dmz || (a >> 24).is_multiple_of(4) {
+        String::new()
+    } else {
+        format!("acme\\{}", people::person(a >> 28).login)
+    };
+    let deny = DENIED.contains(&app) || (dmz && (b >> 40) % 100 < 15);
+    let rule = match () {
+        _ if DENIED.contains(&app) => "block-high-risk-apps",
+        _ if deny => "dmz-deny-default",
+        _ if dmz => "dmz-to-internet",
+        _ if category == "networking" && app != "ssl" => "allow-infrastructure",
+        _ => "allow-outbound-web",
+    };
+    let (sent, recv) = if deny {
+        (0, 0)
+    } else {
+        (
+            exponential(mix(b), 2_400.0) as u64 + 60,
+            exponential(mix(c), 12_000.0) as u64 + 60,
+        )
+    };
+    let (psent, precv) = if deny {
+        (1, 0)
+    } else {
+        ((sent / 700).max(2), (recv / 1100).max(1))
+    };
+    let elapsed = if deny { 0 } else { exponential(mix(a), 25.0) as i64 };
+    let reason = match () {
+        _ if deny => "policy-deny",
+        _ if proto == "udp" => "aged-out",
+        _ if (c >> 40).is_multiple_of(4) => "tcp-rst-from-client",
+        _ => "tcp-fin",
+    };
+    let panos = |t: &Clock| format!("{}/{:02}/{:02} {}", t.year, t.month, t.day, t.hms());
+    let (now, start) = (panos(at), panos(&at.plus(-elapsed)));
 
     // The empty fields are the vendor's own: PAN-OS writes a placeholder
     // column rather than omitting it, and a parser that mishandles those
     // shifts every column after them.
     format!(
-        "<14>{syslog_time} fw-{site}-0{n} 1,{panos_time},01280100{serial:04},TRAFFIC,{subtype},2561,{panos_time},\
-         {src},{dst},{nat},{dst},{rule},{user},,{app},vsys1,{szone},{dzone},ethernet1/{iif},ethernet1/{oif},\
-         log-fwd-default,,{session},1,{sport},{dport},{natport},{dport},0x400053,{proto},{action},{total},{sent},\
-         {recv},{packets},{panos_time},{elapsed},{category},,{sequence},0x0,10.0.0.0-10.255.255.255,{dloc},,\
-         {psent},{precv},{reason},0,0,0,0,vsys1,fw-{site}-0{n},from-policy,,",
-        n = 1 + (a >> 16) % 4,
-        serial = a % 10_000,
-        subtype = if allow { "end" } else { "deny" },
-        rule = if allow { "allow-web-outbound" } else { "block-untrusted" },
-        szone = if i.is_multiple_of(5) { "dmz" } else { "trust" },
-        dzone = "untrust",
-        iif = 1 + (b % 4),
-        oif = 5 + (b % 4),
-        session = 100_000 + (a % 900_000),
-        sport = 32_768 + (b % 28_000),
-        dport = if app == "dns" { 53 } else { 443 },
-        natport = 40_000 + (c % 20_000),
-        proto = if app == "dns" { "udp" } else { "tcp" },
-        action = if allow { "allow" } else { "deny" },
+        "<14>{syslog} {device}.acme.example 1,{now},0132010{serial:05},TRAFFIC,{subtype},2562,{now},\
+         {src},{dst},{nat},{dst},{rule},{user},,{app},vsys1,{szone},untrust,ethernet1/{iif},ethernet1/1,\
+         log-fwd-siem,,{session},1,{sport},{port},{natport},{port},0x400053,{proto},{action},{total},{sent},\
+         {recv},{packets},{start},{elapsed},{url_category},,{sequence},0x8000000000000000,{range},{country},,\
+         {psent},{precv},{reason},0,0,0,0,vsys1,{device},from-policy,,",
+        syslog = at.syslog(),
+        serial = net * 2 + (a >> 16) % 2,
+        subtype = if deny { "deny" } else { "end" },
+        szone = if dmz { "dmz" } else { "trust" },
+        iif = if dmz { 3 } else { 2 },
+        session = 100_000 + (a >> 32) % 900_000,
+        sport = 32_768 + (b >> 44) % 28_000,
+        natport = 20_000 + (c >> 44) % 40_000,
+        action = if deny { "deny" } else { "allow" },
         total = sent + recv,
-        packets = 4 + (b % 400),
-        elapsed = a % 120,
-        category = "computer-and-internet-info",
-        sequence = 7_000_000 + (c % 1_000_000),
-        dloc = "United States",
-        psent = 2 + (b % 200),
-        precv = 2 + (c % 200),
-        reason = if allow { "tcp-fin" } else { "policy-deny" },
+        packets = psent + precv,
+        url_category = if category == "business-systems" {
+            "business-and-economy"
+        } else {
+            "computer-and-internet-info"
+        },
+        sequence = 7_000_000 + (c >> 20) % 1_000_000,
+        range = if dmz {
+            "172.16.0.0-172.31.255.255"
+        } else {
+            "10.0.0.0-10.255.255.255"
+        },
     )
 }
 
 // -- the lookup tables --------------------------------------------------------
 
-/// `10.<n>.0.0/16` to the site that owns it. A CIDR match, which is what
-/// asset enrichment actually is.
-fn cidr_table() -> serde_json::Value {
-    let rows: Vec<Vec<String>> = (0..CIDR_ROWS)
-        .map(|n| {
-            vec![
-                format!("10.{n}.0.0/16"),
-                SITES[n % SITES.len()].to_string(),
-                if n % 4 == 0 { "restricted" } else { "general" }.to_string(),
-                format!("bu-{:02}", n % 12),
-            ]
-        })
-        .collect();
-    serde_json::json!({
-        "id": "sites", "type": "inline",
-        "headers": ["network", "site", "tier", "business_unit"],
-        "rows": rows,
-    })
+fn inline(id: &str, (headers, rows): (Vec<&str>, Vec<Vec<String>>)) -> serde_json::Value {
+    serde_json::json!({"id": id, "type": "inline", "headers": headers, "rows": rows})
 }
 
-/// Directory enrichment: the widest of the three tables and an exact
-/// match, which is the common case.
-fn user_table() -> serde_json::Value {
-    let rows: Vec<Vec<String>> = (0..USER_ROWS)
-        .map(|n| {
-            vec![
-                format!("acme\\user{n:04}"),
-                format!("dept-{:02}", n % 40),
-                format!("User {n:04}"),
-            ]
-        })
-        .collect();
-    serde_json::json!({
-        "id": "users", "type": "inline",
-        "headers": ["account", "department", "full_name"],
-        "rows": rows,
-    })
+/// `10.<n>.0.0/16` to the site that owns it, and the DMZ. A CIDR match,
+/// which is what asset enrichment actually is.
+pub fn sites() -> (Vec<&'static str>, Vec<Vec<String>>) {
+    let (headers, mut rows) = people::networks();
+    rows.push(
+        ["172.16.0.0/12", "dmz", "New York", "restricted", "bu-00"]
+            .map(String::from)
+            .to_vec(),
+    );
+    (headers, rows)
 }
 
-fn app_table() -> serde_json::Value {
-    let rows: Vec<Vec<String>> = APPS
+/// The App-ID catalogue's view of each application.
+pub fn apps() -> (Vec<&'static str>, Vec<Vec<String>>) {
+    let rows = APPS
         .iter()
-        .enumerate()
-        .map(|(n, app)| {
+        .map(|(name, _, _, category, subcategory, risk, _)| {
             vec![
-                app.to_string(),
-                ["business-systems", "collaboration", "networking", "general-internet"][n % 4].to_string(),
-                (1 + n % 5).to_string(),
+                name.to_string(),
+                category.to_string(),
+                subcategory.to_string(),
+                risk.to_string(),
             ]
         })
         .collect();
-    serde_json::json!({
-        "id": "apps", "type": "inline",
-        "headers": ["name", "category", "risk"],
-        "rows": rows,
-    })
+    (vec!["name", "category", "subcategory", "risk"], rows)
 }
 
 // -- the pipeline -------------------------------------------------------------
@@ -493,7 +525,7 @@ pub fn bundle(stage: Stage) -> String {
         "destinations": [{
             "id": "ecs", "type": "kafka", "brokers": "127.0.0.1:1", "defaultTopic": "ecs-traffic",
         }],
-        "lookupTables": [cidr_table(), user_table(), app_table()],
+        "lookupTables": [inline("sites", sites()), inline("users", people::directory()), inline("apps", apps())],
         "pipelines": [{ "id": "p", "name": "panos-to-ecs", "steps": steps(stage) }],
         "routes": [{
             "id": "r", "source": "panw", "condition": null, "pipeline": "p",

@@ -10,7 +10,7 @@
 //! use go under `fortinet.`, which is where `rest($)` puts them in
 //! `docs/examples.md`.
 
-use super::Pipeline;
+use super::{Clock, Pipeline, mix, pick};
 
 pub const PIPELINE: Pipeline = Pipeline {
     name: "fortigate",
@@ -18,19 +18,6 @@ pub const PIPELINE: Pipeline = Pipeline {
     bundle,
     check,
 };
-
-/// splitmix64. A record is a pure function of its index, so a run is
-/// reproducible and two runs of different lengths agree row for row.
-fn mix(i: u64) -> u64 {
-    let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-fn pick<'a>(pool: &[&'a str], r: u64) -> &'a str {
-    pool[(r % pool.len() as u64) as usize]
-}
 
 // -- the asset inventory ------------------------------------------------------
 
@@ -195,18 +182,19 @@ const ATTACKS: &[(&str, u32, &str)] = &[
 
 /// One FortiOS 7.4 log line as a syslog collector receives it.
 pub fn line(i: u64) -> String {
+    record(i, &Clock::of(i), false)
+}
+
+/// Line `i`, logged at `at`. With `renamed`, FGT-SIN runs a firmware that
+/// names a forwarded session's `proto` (`"tcp"`) where the others number it
+/// (`6`).
+pub fn record(i: u64, at: &Clock, renamed: bool) -> String {
     let a = mix(i);
     let b = mix(i ^ 0xC0FF_EE00);
     let c = mix(i.wrapping_mul(0x2545_F491));
     let k = kind(i);
 
     let (devname, devid) = DEVICES[(b % DEVICES.len() as u64) as usize];
-    let (mon, day) = (1 + (a >> 8) % 12, 1 + (a >> 12) % 28);
-    let (hh, mm, ss) = ((b >> 8) % 24, (b >> 16) % 60, (b >> 24) % 60);
-    // Days before each month of 2026, so `eventtime` is the same instant as
-    // `date` and `time`.
-    const BEFORE: [u64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-    let epoch = 1_767_225_600 + (BEFORE[mon as usize - 1] + day - 1) * 86_400 + hh * 3600 + mm * 60 + ss;
     let srcip = match source_host(i) {
         Some(h) => host_ip(h),
         None => format!(
@@ -245,9 +233,14 @@ pub fn line(i: u64) -> String {
     );
     let country = pick(COUNTRIES, b >> 4);
     let head = format!(
-        "<189>date=2026-{mon:02}-{day:02} time={hh:02}:{mm:02}:{ss:02} devname=\"{devname}\" devid=\"{devid}\" \
+        "<189>date={year}-{mon:02}-{day:02} time={hms} devname=\"{devname}\" devid=\"{devid}\" \
          eventtime={epoch}{nanos:09} tz=\"+0000\"",
-        nanos = c % 1_000_000_000
+        year = at.year,
+        mon = at.month,
+        day = at.day,
+        hms = at.hms(),
+        epoch = at.unix,
+        nanos = at.nanos,
     );
 
     match k {
@@ -284,6 +277,11 @@ pub fn line(i: u64) -> String {
             let sentbyte = sentpkt * (60 + (c >> 20) % 900);
             let rcvdbyte = rcvdpkt * (60 + (a >> 44) % 1400);
             let natport = 1024 + (a >> 48) % 64_000;
+            let proto = match proto {
+                6 if renamed && devname == "FGT-SIN" => "\"tcp\"".to_string(),
+                17 if renamed && devname == "FGT-SIN" => "\"udp\"".to_string(),
+                n => n.to_string(),
+            };
             format!(
                 "{head} logid=\"0000000013\" type=\"traffic\" subtype=\"forward\" level=\"{level}\" vd=\"root\" \
                  srcip={srcip} srcport={srcport} srcintf=\"port{sif}\" srcintfrole=\"lan\" dstip={dstip} \

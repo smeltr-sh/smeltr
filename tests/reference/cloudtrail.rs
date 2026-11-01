@@ -9,7 +9,7 @@
 
 use serde_json::{Value, json};
 
-use super::Pipeline;
+use super::{Clock, Pipeline, mix, pick};
 
 pub const PIPELINE: Pipeline = Pipeline {
     name: "cloudtrail",
@@ -19,19 +19,6 @@ pub const PIPELINE: Pipeline = Pipeline {
 };
 
 // -- the record ---------------------------------------------------------------
-
-/// splitmix64. A record is a pure function of its index, so a run is
-/// reproducible and two runs of different lengths agree row for row.
-fn mix(i: u64) -> u64 {
-    let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-fn pick<'a>(pool: &[&'a str], h: u64) -> &'a str {
-    pool[(h % pool.len() as u64) as usize]
-}
 
 /// A delivery file is per account and per region, so both are fixed for a
 /// record and vary across the corpus.
@@ -125,18 +112,6 @@ fn uuid(h: u64) -> String {
     )
 }
 
-/// Seconds into October 2026 as CloudTrail writes them.
-fn timestamp(t: u64) -> String {
-    let t = t % (30 * 86_400);
-    format!(
-        "2026-10-{:02}T{:02}:{:02}:{:02}Z",
-        1 + t / 86_400,
-        t / 3_600 % 24,
-        t / 60 % 60,
-        t % 60
-    )
-}
-
 /// How many events delivery `i` carries: 1 to 20, mean about five, with the
 /// long tail a busy minute gives. Most deliveries are small.
 fn event_count(i: u64) -> u64 {
@@ -150,7 +125,7 @@ fn event_count(i: u64) -> u64 {
 /// Who made the call. Assumed roles dominate a modern account; long-lived
 /// IAM users, service principals and the occasional root sign-in fill the
 /// rest.
-fn identity(acct: &str, h: u64) -> Value {
+fn identity(acct: &str, h: u64, at: &Clock) -> Value {
     match h % 100 {
         0..=59 => {
             let role = pick(ROLES, h >> 8);
@@ -170,7 +145,7 @@ fn identity(acct: &str, h: u64) -> Value {
                     },
                     "webIdFederationData": {},
                     "attributes": {
-                        "creationDate": timestamp(h >> 24),
+                        "creationDate": at.plus(-(((h >> 24) % 3_600) as i64)).iso(),
                         "mfaAuthenticated": if (h >> 30).is_multiple_of(3) { "true" } else { "false" },
                     },
                 },
@@ -202,20 +177,23 @@ fn identity(acct: &str, h: u64) -> Value {
     }
 }
 
-/// Event `k` of delivery `i`, as CloudTrail writes it.
-pub fn event(i: u64, k: u64) -> Value {
+/// Event `k` of delivery `i`, as CloudTrail writes it, the delivery made at
+/// `at`.
+pub fn event(i: u64, k: u64, at: &Clock) -> Value {
     let r = mix(i);
     let acct = pick(ACCOUNTS, r);
     let region = pick(REGIONS, r >> 8);
     let h = mix(i.wrapping_mul(64).wrapping_add(k) ^ 0x5EF6);
     let g = mix(h);
-    let who = identity(acct, g);
+    let who = identity(acct, g, at);
     let service = who["type"] == "AWSService";
     let bucket = pick(BUCKETS, h >> 20);
     let object = format!(
-        "{}/2026/10/{:02}/part-{:05}.parquet",
+        "{}/{}/{:02}/{:02}/part-{:05}.parquet",
         pick(&["orders", "events", "metrics"], h >> 24),
-        1 + (h >> 28) % 30,
+        at.year,
+        at.month,
+        at.day,
         (h >> 32) % 100_000
     );
     let instance = format!("i-0{:016x}", g >> 8);
@@ -402,7 +380,7 @@ pub fn event(i: u64, k: u64) -> Value {
     let console = name == "ConsoleLogin";
     // A console sign-in is a person's, never a service principal's.
     let who = if console && service {
-        identity(acct, 60 + g % 20)
+        identity(acct, 60 + g % 20, at)
     } else {
         who
     };
@@ -427,7 +405,8 @@ pub fn event(i: u64, k: u64) -> Value {
     let mut e = json!({
         "eventVersion": if data { "1.09" } else { "1.08" },
         "userIdentity": who,
-        "eventTime": timestamp(i * 13 + k * 2),
+        // A delivery holds the last few minutes of calls.
+        "eventTime": at.plus(-(((k * 13) % 300) as i64)).iso(),
         "eventSource": source,
         "eventName": name,
         "awsRegion": region,
@@ -488,7 +467,12 @@ pub fn event(i: u64, k: u64) -> Value {
 /// Delivery `i`: the file CloudTrail writes to S3, one per account, region
 /// and few minutes.
 pub fn line(i: u64) -> String {
-    let records: Vec<Value> = (0..event_count(i)).map(|k| event(i, k)).collect();
+    record(i, &Clock::of(i))
+}
+
+/// Delivery `i`, written at `at`.
+pub fn record(i: u64, at: &Clock) -> String {
+    let records: Vec<Value> = (0..event_count(i)).map(|k| event(i, k, at)).collect();
     json!({ "Records": records }).to_string()
 }
 
@@ -589,7 +573,7 @@ fn check(rows: u64, docs: u64, kept: &[Value]) {
         kept.iter()
             .any(|d| d["user"]["type"] == "AWSService" && d["user"].get("id").is_none())
     );
-    let expected = (0..).flat_map(|i| (0..event_count(i)).map(move |k| event(i, k)));
+    let expected = (0..).flat_map(|i| (0..event_count(i)).map(move |k| event(i, k, &Clock::of(i))));
     for (doc, e) in kept.iter().zip(expected) {
         let at = |p: &str| doc.pointer(p).unwrap_or(&Value::Null);
         let ts = at("/@timestamp").as_str().expect("@timestamp is a timestamp");

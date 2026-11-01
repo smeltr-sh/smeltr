@@ -1,9 +1,24 @@
 """The demo deployment: what each scope holds, as the API takes it."""
 
-import datetime as dt
-import random
+import functools
+import json
+import os
+import subprocess
 
-import logs
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# The reference generators' driver (`examples/demo-traffic.rs`): the live traffic, the samples and the lookup tables
+# all come from it, so a pipeline here joins on what the logs carry.
+TRAFFIC = os.path.join(REPO, os.environ.get("CARGO_TARGET_DIR", "target"), "release", "examples", "demo-traffic")
+
+
+def traffic(*args):
+    return subprocess.run([TRAFFIC, *map(str, args)], capture_output=True, text=True, check=True).stdout
+
+
+@functools.cache
+def tables():
+    return json.loads(traffic("tables"))
+
 
 KAFKA = "localhost:19092"
 ES = "http://localhost:9200"
@@ -40,28 +55,17 @@ def destinations(ids, key_version):
 NETWORK_DESTINATIONS = ["es-network", "kafka-alerts", "kafka-dlq"]
 APPS_DESTINATIONS = ["es-web", "es-security", "kafka-alerts", "kafka-dlq"]
 
-SITES_TABLE = {
-    "id": "sites", "type": "inline",
-    "headers": ["network", "site", "city", "tier"],
-    "rows": [[f"10.{n}.0.0/16", site, city, tier] for n, site, city, tier in logs.SITES]
-    + [["172.16.0.0/12", "dmz", "New York", "restricted"]],
-}
+def sites_table():
+    return {"id": "sites", "type": "inline", **tables()["sites"]}
 
-APPS_TABLE = {
-    "id": "app-risk", "type": "inline",
-    "headers": ["app", "category", "subcategory", "risk"],
-    "rows": [[a[0], a[3], a[5], str(a[4])] for a in logs.APPS],
-}
+
+def apps_table():
+    return {"id": "app-risk", "type": "inline", **tables()["apps"]}
 
 
 def directory_csv():
-    lines = ["account,department,full_name,title"]
-    titles = {"Engineering": "Software Engineer", "Finance": "Analyst", "Sales": "Account Executive",
-              "Support": "Support Engineer", "IT Operations": "Systems Administrator", "Marketing": "Marketing Manager",
-              "Legal": "Counsel", "Executive": "Chief Operating Officer", "Security": "Security Engineer", "HR": "HR Partner"}
-    for u, dept, name in logs.USERS:
-        lines.append(f"acme\\{u},{dept},{name},{titles[dept]}")
-    return "\n".join(lines) + "\n"
+    d = tables()["directory"]
+    return "\n".join(",".join(row) for row in [d["headers"], *d["rows"]]) + "\n"
 
 
 ECS_COMMON = {
@@ -136,7 +140,7 @@ PANOS = {
          "outputs": [{"source": "department", "field": "user.department"},
                      {"source": "full_name", "field": "user.full_name"}]},
         {"type": "lookup", "id": "app", "input": "application", "table": "app-risk", "matchKind": "exact",
-         "multiplicity": "first", "keyColumn": "app",
+         "multiplicity": "first", "keyColumn": "name",
          "outputs": [{"source": "category", "field": "panw.app.category"},
                      {"source": "risk", "field": "panw.app.risk", "type": "i64"}]},
         {"type": "eval", "id": "derive", "assignments": ev([
@@ -185,13 +189,16 @@ FORTI_FIELDS = [
     ("dstport", "i64"), ("dstintf", "str"), ("dstcountry", "str"), ("sessionid", "i64"), ("proto", "i64"),
     ("action", "str"), ("policyid", "i64"), ("policyname", "str"), ("service", "str"), ("transip", "str"),
     ("transport", "i64"), ("app", "str"), ("appcat", "str"), ("apprisk", "str"), ("duration", "i64"),
-    ("sentbyte", "i64"), ("rcvdbyte", "i64"), ("sentpkt", "i64"), ("rcvdpkt", "i64"), ("user", "str"),
+    ("sentbyte", "i64"), ("rcvdbyte", "i64"), ("sentpkt", "i64"), ("rcvdpkt", "i64"),
 ]
 
 FORTIGATE = {
     "id": "fortigate-traffic", "name": "fortigate-traffic",
     "steps": [
-        {"type": "parser", "id": "kv", "input": "_raw",
+        {"type": "parser", "id": "syslog", "input": "_raw",
+         "kind": {"type": "grok", "patterns": ["<%{INT:pri}>%{GREEDYDATA:body}"]},
+         "declared": [{"name": "pri", "type": "str"}, {"name": "body", "type": "str"}]},
+        {"type": "parser", "id": "kv", "input": "body",
          "kind": {"type": "keyValue", "pairSep": " ", "kvSep": "=", "quote": '"'},
          "declared": [{"name": n, "type": t} for n, t in FORTI_FIELDS]},
         {"type": "drop", "id": "drop-ntp", "condition": 'service == "NTP"'},
@@ -220,10 +227,10 @@ FORTIGATE = {
             ("dstintf", "observer.egress.interface.name"), ("policyid", "rule.id"), ("policyname", "rule.name"),
             ("app", "network.application"), ("appcat", "fortinet.firewall.appcat"),
             ("apprisk", "fortinet.firewall.apprisk"), ("sessionid", "fortinet.firewall.sessionid"),
-            ("dstcountry", "destination.geo.country_name"), ("user", "user.name"),
+            ("dstcountry", "destination.geo.country_name"),
         ]]},
         {"type": "eval", "id": "prune", "assignments": ev([(n, "null") for n in [
-            "_raw", "date", "time", "type", "subtype", "level", "action", "proto", "service", "duration",
+            "_raw", "pri", "body", "date", "time", "type", "subtype", "level", "action", "proto", "service", "duration",
             "sentpkt", "rcvdpkt", "eventtime", "tz", "logid", "vd", "srcintfrole", "dstintfrole", "srccountry",
             "policytype", "trandisp",
         ]])},
@@ -339,8 +346,8 @@ CLOUDTRAIL = {
     "id": "aws-cloudtrail", "name": "aws-cloudtrail",
     "steps": [
         {"type": "parser", "id": "json", "input": "_raw", "kind": {"type": "json"},
-         "declared": [
-             {"name": "eventTime", "type": "datetime"}, {"name": "eventSource", "type": "str"},
+         "declared": [{"name": "Records", "type": {"type": "array", "of": {"type": "struct", "fields": [
+             {"name": "eventTime", "type": "str"}, {"name": "eventSource", "type": "str"},
              {"name": "eventName", "type": "str"}, {"name": "awsRegion", "type": "str"},
              {"name": "sourceIPAddress", "type": "str"}, {"name": "userAgent", "type": "str"},
              {"name": "errorCode", "type": "str"}, {"name": "errorMessage", "type": "str"},
@@ -351,35 +358,32 @@ CLOUDTRAIL = {
                  {"name": "accountId", "type": "str"}, {"name": "userName", "type": "str"}]}},
              {"name": "responseElements", "type": {"type": "struct", "fields": [{"name": "ConsoleLogin", "type": "str"}]}},
              {"name": "additionalEventData", "type": {"type": "struct", "fields": [{"name": "MFAUsed", "type": "str"}]}},
-         ]},
+         ]}}}]},
+        {"type": "unroll", "id": "events", "field": "Records", "keepParentFields": False},
         {"type": "eval", "id": "derive", "assignments": ev([
-            ("@timestamp", "eventTime"),
+            ("@timestamp", "parseTime(Records.eventTime)"),
             ("cloud.provider", '"aws"'),
-            ("cloud.region", "awsRegion"),
-            ("cloud.account.id", "recipientAccountId"),
+            ("cloud.region", "Records.awsRegion"),
+            ("cloud.account.id", "Records.recipientAccountId"),
             ("event.dataset", '"aws.cloudtrail"'),
-            ("event.provider", "eventSource"),
-            ("event.action", "eventName"),
-            ("event.id", "eventID"),
-            ("event.outcome", '!isNull(errorCode) || responseElements.ConsoleLogin == "Failure" ? "failure" : "success"'),
-            ("aws.cloudtrail.console_login.mfa_used", 'eventName == "ConsoleLogin" ? additionalEventData.MFAUsed == "Yes" : null'),
-            ("event.category", 'eventSource == "signin.amazonaws.com" ? "authentication" : eventSource == "iam.amazonaws.com" ? "iam" : "configuration"'),
-            ("source.ip", "isIp(sourceIPAddress) ? sourceIPAddress : null"),
-            ("user.name", 'isNull(userIdentity.userName) ? userIdentity.arn.split("/")[-1] : userIdentity.userName'),
-            ("user_agent.original", "userAgent"),
-            ("aws.cloudtrail.user_identity.type", "userIdentity.type"),
-            ("aws.cloudtrail.user_identity.arn", "userIdentity.arn"),
-            ("aws.cloudtrail.error_code", "errorCode"),
-            ("aws.cloudtrail.error_message", "errorMessage"),
-            ("aws.cloudtrail.read_only", "readOnly"),
+            ("event.provider", "Records.eventSource"),
+            ("event.action", "Records.eventName"),
+            ("event.id", "Records.eventID"),
+            ("event.outcome", '!isNull(Records.errorCode) || Records.responseElements.ConsoleLogin == "Failure" ? "failure" : "success"'),
+            ("aws.cloudtrail.console_login.mfa_used", 'Records.eventName == "ConsoleLogin" ? Records.additionalEventData.MFAUsed == "Yes" : null'),
+            ("event.category", 'Records.eventSource == "signin.amazonaws.com" ? "authentication" : Records.eventSource == "iam.amazonaws.com" ? "iam" : "configuration"'),
+            ("source.ip", "isIp(Records.sourceIPAddress) ? Records.sourceIPAddress : null"),
+            ("user.name", 'isNull(Records.userIdentity.userName) ? Records.userIdentity.arn.split("/")[-1] : Records.userIdentity.userName'),
+            ("user_agent.original", "Records.userAgent"),
+            ("aws.cloudtrail.user_identity.type", "Records.userIdentity.type"),
+            ("aws.cloudtrail.user_identity.arn", "Records.userIdentity.arn"),
+            ("aws.cloudtrail.error_code", "Records.errorCode"),
+            ("aws.cloudtrail.error_message", "Records.errorMessage"),
+            ("aws.cloudtrail.read_only", "Records.readOnly"),
             ("ecs.version", '"8.17.0"'),
             ("event.ingested", "now()"),
         ])},
-        {"type": "eval", "id": "prune", "assignments": ev([(n, "null") for n in [
-            "_raw", "eventTime", "eventSource", "eventName", "awsRegion", "sourceIPAddress", "userAgent",
-            "errorCode", "errorMessage", "eventType", "recipientAccountId", "readOnly", "eventID", "userIdentity",
-            "responseElements", "additionalEventData", "eventVersion", "eventCategory", "managementEvent", "requestID",
-        ]])},
+        {"type": "eval", "id": "prune", "assignments": ev([("_raw", "null"), ("Records", "null")])},
     ],
 }
 
@@ -426,35 +430,24 @@ APPS_ROUTES = [
 
 # -- samples: generated from the same code as the live traffic, at a fixed instant -----------------
 
-SAMPLE_AT = dt.datetime(2026, 9, 27, 14, 20, 5, tzinfo=dt.timezone.utc)
 
-
-def records(gen, n, seed, **kw):
-    r = random.Random(seed)
-    out = []
-    t = SAMPLE_AT
-    for i in range(n):
-        t = t + dt.timedelta(seconds=r.randint(0, 3), milliseconds=r.randint(0, 999))
-        line = gen(r, t, **kw)
-        r.randint(0, 5)  # Once an offset's jitter; drawn still, so each seed makes the records it always has.
-        out.append({"_raw": line})
-    return out
+def records(topic, n, seed):
+    return [{"_raw": line} for line in traffic("sample", topic, n, seed).splitlines()]
 
 
 def panos_sample():
     # Ten sessions picked for variety: web, SaaS, DNS, a DMZ server and a denied app.
-    r = random.Random(11)
     want = ["ms-office365-base", "ssl", "dns-base", "slack-base", "bittorrent", "github-base", "ms-teams",
             "web-browsing", "zoom-base", "salesforce-base"]
-    out, t = [], SAMPLE_AT
-    while want:
-        t = t + dt.timedelta(milliseconds=r.randint(50, 900))
-        line = logs.panos_traffic(r, t)
+    out = []
+    for r in records("syslog.panos", 5000, 11):
+        line = r["_raw"]
         app = line.split(",")[14]
         if app in want and (app != "ssl" or ",dmz," in line) and (app == "ssl" or ",dmz," not in line) and (
                 app in ("bittorrent", "dns-base", "ssl") or ",acme\\" in line):
             want.remove(app)
-            out.append({"_raw": line})
+            out.append(r)
+    assert not want, f"no {want} in the PAN-OS pool"
     return out
 
 
@@ -464,14 +457,14 @@ def samples():
             {"id": "panos-traffic-sample", "name": "PAN-OS traffic, mixed sessions", "source": "panw-firewalls",
              "records": panos_sample()},
             {"id": "fortigate-sample", "name": "FortiGate forward traffic", "source": "fortigate-firewalls",
-             "records": records(logs.fortigate_traffic, 10, 21)},
+             "records": records("syslog.fortigate", 10, 21)},
         ],
         "apps": [
             {"id": "nginx-sample", "name": "Storefront access log", "source": "nginx-access",
-             "records": records(logs.nginx_access, 12, 31, error_rate=0.2)},
+             "records": records("web.nginx.access", 12, 31)},
             {"id": "auth-sample", "name": "Bastion auth.log", "source": "linux-auth",
-             "records": records(logs.auth_log, 10, 41)},
+             "records": records("syslog.auth", 10, 41)},
             {"id": "cloudtrail-sample", "name": "CloudTrail management events", "source": "aws-cloudtrail",
-             "records": records(logs.cloudtrail, 8, 51)},
+             "records": records("aws.cloudtrail", 8, 51)},
         ],
     }

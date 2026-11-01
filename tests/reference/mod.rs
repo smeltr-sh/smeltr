@@ -8,6 +8,10 @@
 //! runs it between a generator and a counter, with no broker: the workload
 //! is the transform.
 //!
+//! The same generators write the website demo's logs (`demo`), so what the
+//! benchmark measures is what the demo shows. `people` is the company both
+//! are about; `auth` is a generator the benchmark has no pipeline for.
+//!
 //! This file and the pipeline modules are the workload; `driver` is the half
 //! that reaches into the engine. The benchmark log runs head's workload on
 //! each side's own driver, so a change to the engine's internals does not
@@ -16,11 +20,14 @@
 #![allow(dead_code)]
 
 pub mod asa;
+pub mod auth;
 pub mod cloudtrail;
+pub mod demo;
 pub mod fortigate;
 pub mod json_app;
 pub mod k8s;
 pub mod nginx;
+pub mod people;
 
 mod driver;
 
@@ -90,3 +97,119 @@ pub const GB: f64 = 1e9;
 
 /// How many distinct records the corpus holds before it repeats, at most.
 pub const CORPUS: u64 = 50_000;
+
+/// splitmix64. A record is a pure function of its index, so a run is
+/// reproducible and two runs of different lengths agree row for row.
+pub fn mix(i: u64) -> u64 {
+    let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+pub fn pick<T: Copy>(pool: &[T], r: u64) -> T {
+    pool[(r % pool.len() as u64) as usize]
+}
+
+pub const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// A UTC instant, broken into the fields a log line writes. The benchmark
+/// stamps record `i` with [`Clock::of`], so a record stays a pure function
+/// of its index; the demo stamps each with the time it is sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Clock {
+    /// Seconds since the Unix epoch.
+    pub unix: i64,
+    pub nanos: u32,
+    pub year: i64,
+    /// 1 to 12.
+    pub month: u32,
+    /// 1 to 31.
+    pub day: u32,
+    pub hour: u32,
+    pub minute: u32,
+    pub second: u32,
+}
+
+impl Clock {
+    pub fn at(unix: i64, nanos: u32) -> Clock {
+        // Howard Hinnant's `civil_from_days`.
+        let (days, secs) = (unix.div_euclid(86_400), unix.rem_euclid(86_400));
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+        Clock {
+            unix,
+            nanos,
+            year: yoe + era * 400 + i64::from(month <= 2),
+            month,
+            day,
+            hour: (secs / 3_600) as u32,
+            minute: (secs / 60 % 60) as u32,
+            second: (secs % 60) as u32,
+        }
+    }
+
+    /// The benchmark's instant for record `i`: anywhere in 2026, to the
+    /// nanosecond.
+    pub fn of(i: u64) -> Clock {
+        const START_2026: i64 = 1_767_225_600;
+        let r = mix(i ^ 0xC10C_C10C);
+        Clock::at(
+            START_2026 + (r % (365 * 86_400)) as i64,
+            ((r >> 32) % 1_000_000_000) as u32,
+        )
+    }
+
+    pub fn mon(&self) -> &'static str {
+        MONTHS[self.month as usize - 1]
+    }
+
+    /// `HH:MM:SS`.
+    pub fn hms(&self) -> String {
+        format!("{:02}:{:02}:{:02}", self.hour, self.minute, self.second)
+    }
+
+    /// `Oct  5 14:20:05`, BSD syslog's: no year, the day padded with a space.
+    pub fn syslog(&self) -> String {
+        format!("{} {:>2} {}", self.mon(), self.day, self.hms())
+    }
+
+    /// `2026-10-05T14:20:05Z`.
+    pub fn iso(&self) -> String {
+        format!("{}-{:02}-{:02}T{}Z", self.year, self.month, self.day, self.hms())
+    }
+
+    /// `2026-10-05T14:20:05.123Z`.
+    pub fn iso_millis(&self) -> String {
+        format!(
+            "{}-{:02}-{:02}T{}.{:03}Z",
+            self.year,
+            self.month,
+            self.day,
+            self.hms(),
+            self.nanos / 1_000_000
+        )
+    }
+
+    /// The instant `secs` later.
+    pub fn plus(&self, secs: i64) -> Clock {
+        Clock::at(self.unix + secs, self.nanos)
+    }
+}
+
+#[test]
+fn a_clock_breaks_an_instant_into_its_civil_fields() {
+    let c = Clock::at(1_790_000_000, 5);
+    assert_eq!(c.iso(), "2026-09-21T14:13:20Z");
+    assert_eq!(c.syslog(), "Sep 21 14:13:20");
+    assert_eq!(Clock::at(951_782_400, 0).iso(), "2000-02-29T00:00:00Z");
+    assert_eq!(Clock::at(0, 0).iso(), "1970-01-01T00:00:00Z");
+}

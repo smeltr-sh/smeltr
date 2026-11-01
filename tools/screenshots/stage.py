@@ -3,7 +3,7 @@
 
     python3 stage.py          # stop the last run, reset, start, and write the history, paced over ~15 minutes
     PACE=0 python3 stage.py   # the same, with no waits between changes
-    python3 stage.py traffic  # start gen.py writing to Kafka, unless it already is
+    python3 stage.py traffic  # start the demo's traffic into Kafka, unless it already is
     python3 stage.py stop     # stop what the last run started, and the traffic
 
 Needs Kafka and Elasticsearch from `tests/live/compose.live.yaml`, and a release binary. The fleet writes under ./state.
@@ -28,7 +28,7 @@ DIR = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(DIR))
 STATE = os.path.join(DIR, "state")
 PIDS = os.path.join(STATE, "pids")
-TRAFFIC = os.path.join(DIR, ".gen.pid")
+TRAFFIC_PIDS = os.path.join(DIR, ".traffic.pid")
 BINARY = os.path.join(REPO, os.environ.get("CARGO_TARGET_DIR", "target"), "release", "smeltr")
 PACE = float(os.environ.get("PACE", "1"))
 
@@ -138,12 +138,13 @@ def stop(pidfile=PIDS):
 
 
 def start_traffic():
-    """Start `gen.py`, unless the one started last is still running. It outlives this process and every reset."""
-    if started(TRAFFIC):
+    """Start the traffic (`bundle.TRAFFIC`), unless the one started last is still running. It outlives this process and
+    every reset."""
+    if started(TRAFFIC_PIDS):
         return
-    stop(TRAFFIC)
+    stop(TRAFFIC_PIDS)
     log("traffic")
-    spawn(TRAFFIC, "gen", [sys.executable, "gen.py"], DIR, os.path.join(DIR, "gen.log"))
+    spawn(TRAFFIC_PIDS, "traffic", [bundle.TRAFFIC], DIR, os.path.join(DIR, "traffic.log"))
 
 
 # -- reset and start ----------------------------------------------------------------------------------
@@ -185,7 +186,7 @@ def reset():
         if "not empty" not in deleted.stdout + deleted.stderr:
             break
         time.sleep(10)
-    # A topic Kafka makes on a first write has one partition, and `gen.py` may write first. A group's two workers
+    # A topic Kafka makes on a first write has one partition, and the traffic may write first. A group's two workers
     # split a topic by partition, so a short topic is grown rather than kept.
     have = topic_partitions()
     for topic, partitions in TOPICS:
@@ -314,7 +315,7 @@ def firewalls():
     c = as_("priya")
     b = "onboard-firewalls"
     c.put("destinations", bundle.destinations(bundle.NETWORK_DESTINATIONS, 1), b, "network")
-    c.put("lookups", [bundle.SITES_TABLE, bundle.APPS_TABLE, upload_directory(c, b, "network")], b, "network")
+    c.put("lookups", [bundle.sites_table(), bundle.apps_table(), upload_directory(c, b, "network")], b, "network")
     c.put("sources", bundle.NETWORK_SOURCES, b, "network")
     for p in (bundle.ECS_COMMON, bundle.PANOS, bundle.FORTIGATE):
         c.put_pipeline(p, b, "network")
@@ -416,16 +417,16 @@ def draft():
         {"type": "comment", "id": "todo",
          "text": "Draft: ASA syslog from the colo firewalls. Connection build and teardown (302013/302014) first."},
         {"type": "parser", "id": "syslog", "input": "_raw", "kind": {"type": "grok", "patterns": [
-            "%{SYSLOGTIMESTAMP:syslog_time} %{HOSTNAME:host_name} %%{WORD:vendor}-%{INT:severity}-%{INT:message_id}: "
+            "<%{INT:pri}>%{DATA:syslog_time} %{HOSTNAME:host_name} : %%{WORD:vendor}-%{INT:severity}-%{INT:message_id}: "
             "%{GREEDYDATA:message}"]},
          "declared": [{"name": n, "type": "str"} for n in
-                      ["syslog_time", "host_name", "vendor", "severity", "message_id", "message"]]},
+                      ["pri", "syslog_time", "host_name", "vendor", "severity", "message_id", "message"]]},
     ]}, "cisco-asa-draft", "network")
 
 
 def main():
     if sys.argv[1:] == ["stop"]:
-        stop(TRAFFIC)
+        stop(TRAFFIC_PIDS)
         stop()
         return
     if sys.argv[1:] == ["traffic"]:

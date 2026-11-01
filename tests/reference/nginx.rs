@@ -2,7 +2,7 @@
 //! over the line, a GeoIP lookup on the client address, and the field
 //! mapping. `docs/examples.md`, "Web server access log, Grok (nginx)".
 
-use super::Pipeline;
+use super::{Clock, Pipeline, mix, pick};
 
 pub const PIPELINE: Pipeline = Pipeline {
     name: "nginx",
@@ -10,23 +10,6 @@ pub const PIPELINE: Pipeline = Pipeline {
     bundle,
     check,
 };
-
-/// splitmix64. A record is a pure function of its index, so a run is
-/// reproducible and two runs of different lengths agree row for row.
-fn mix(i: u64) -> u64 {
-    let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-fn pick<'a>(pool: &[&'a str], r: u64) -> &'a str {
-    pool[(r % pool.len() as u64) as usize]
-}
-
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
 
 /// What a public storefront's access log carries: browsers on every
 /// platform, the crawlers that index it, and the scripts that poll its API.
@@ -175,17 +158,24 @@ fn client(i: u64, r: u64) -> String {
 
 /// One line as nginx's `combined` log format writes it.
 pub fn line(i: u64) -> String {
+    record(i, &Clock::of(i), false)
+}
+
+/// Line `i` of the log, written at `at`. With `failing`, the API's upstream is
+/// failing: a quarter of the API's requests end in a 5xx.
+pub fn record(i: u64, at: &Clock, failing: bool) -> String {
     let a = mix(i);
     let b = mix(i ^ 0x5DEE_CE66);
     let c = mix(i.wrapping_mul(31));
 
-    let day = 1 + (a % 28);
-    let month = MONTHS[(a >> 8) as usize % 12];
-    let (hh, mm, ss) = (b % 24, (b >> 8) % 60, (b >> 16) % 60);
     // Most servers log UTC; a share keep the host's local zone.
-    let zone = ["+0000", "+0000", "+0000", "-0700", "+0200"][(c >> 4) as usize % 5];
+    let (zone, offset) = [("+0000", 0), ("+0000", 0), ("+0000", 0), ("-0700", -7), ("+0200", 2)][(c >> 4) as usize % 5];
+    let local = at.plus(offset * 3_600);
 
-    let (method, path, status, bytes) = request(c);
+    let (method, path, mut status, mut bytes) = request(c);
+    if failing && path.starts_with("/api/") && (a >> 52).is_multiple_of(4) {
+        (status, bytes) = [(500, 212), (502, 157), (503, 190)][(a >> 56) as usize % 3];
+    }
     let user = if b % 100 < 8 { pick(USERS, b >> 32) } else { "-" };
     let version = match (a >> 20) % 10 {
         0..=5 => "1.1",
@@ -200,9 +190,13 @@ pub fn line(i: u64) -> String {
     };
 
     format!(
-        "{client} - {user} [{day:02}/{month}/2026:{hh:02}:{mm:02}:{ss:02} {zone}] \"{method} {path} HTTP/{version}\" \
+        "{client} - {user} [{day:02}/{month}/{year}:{hms} {zone}] \"{method} {path} HTTP/{version}\" \
          {status} {bytes} \"{referrer}\" \"{agent}\"",
         client = client(i, a),
+        day = local.day,
+        month = local.mon(),
+        year = local.year,
+        hms = local.hms(),
     )
 }
 

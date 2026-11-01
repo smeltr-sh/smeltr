@@ -98,3 +98,20 @@ fn log_run() {
         r.wall.as_secs_f64()
     );
 }
+
+/// The website demo replays what its staged fleet answered (`gui-frontend/src/demo/recorded.json`), and that
+/// fleet's logs came from these generators (`reference::demo`). Once they write something else, the demo shows logs
+/// they no longer make, so `just demo-fixtures` records it again, and their fingerprint beside it.
+#[test]
+fn the_demo_is_recorded_from_these_generators() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/gui-frontend/src/demo/recorded.fingerprint"
+    );
+    let recorded = std::fs::read_to_string(path).unwrap_or_default();
+    assert_eq!(
+        recorded.trim(),
+        reference::demo::fingerprint(),
+        "the generators changed since the demo was recorded: run `just demo-fixtures`"
+    );
+}
