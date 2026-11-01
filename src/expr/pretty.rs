@@ -405,6 +405,22 @@ fn spaced(
     }
 }
 
+/// The text of each ```` ```ts ```` block in the Markdown `doc`, its lines joined by `\n`.
+#[cfg(test)]
+pub(crate) fn ts_fences(doc: &str) -> Vec<String> {
+    let mut fences = Vec::new();
+    let mut open: Option<Vec<&str>> = None;
+    for line in doc.lines() {
+        match &mut open {
+            None if line.trim_start() == "```ts" => open = Some(Vec::new()),
+            Some(_) if line.trim_start().starts_with("```") => fences.push(open.take().unwrap().join("\n")),
+            Some(body) => body.push(line),
+            None => {}
+        }
+    }
+    fences
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,10 +435,11 @@ mod tests {
 
     #[test]
     fn the_prelude_is_in_the_style() {
-        // A Windows checkout may hold the file with CRLF; the formatter writes LF.
-        let prelude = include_str!("prelude.smeltr").replace("\r\n", "\n");
-        let prelude = prelude.trim_end();
-        assert_eq!(block(prelude), prelude);
+        let prelude = include_str!("prelude.smeltr").trim_end();
+        assert_eq!(
+            block(prelude).lines().collect::<Vec<_>>(),
+            prelude.lines().collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -536,10 +553,8 @@ mod tests {
             include_str!("../../docs/architecture/language.md"),
         ];
         for doc in docs {
-            // A Windows checkout may hold the file with CRLF.
-            let doc = doc.replace("\r\n", "\n");
-            for fenced in doc.split("```ts\n").skip(1) {
-                let src = fenced.split("\n```").next().expect("a fence's text");
+            for src in ts_fences(doc) {
+                let src = src.as_str();
                 if parse::parse_block(src).is_err() {
                     continue;
                 }
