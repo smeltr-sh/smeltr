@@ -29,7 +29,15 @@
   import RequirementMark from './RequirementMark.svelte';
   import Segmented from './Segmented.svelte';
   import ShowAll from './ShowAll.svelte';
-  import { askedUnder, fields as countFields, firstOf, fmt, groupOf, matching } from './schemaTree';
+  import {
+    askedUnder,
+    fields as countFields,
+    firstOf,
+    fmt,
+    groupOf,
+    matching,
+    requirementOf,
+  } from './schemaTree';
 
   let {
     fields,
@@ -236,7 +244,7 @@
                   /></span
                 >
               {:else}
-                {@const req = c.field?.requirement ?? 'optional'}
+                {@const req = requirementOf(c)}
                 <span class="req"><RequirementMark of={req} /></span>
               {/if}
               {#if !uncounted}<span class="count dash" aria-hidden="true"
