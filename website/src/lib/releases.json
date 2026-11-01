@@ -1,0 +1,93 @@
+[
+  {
+    "version": "1.0.0",
+    "date": null,
+    "summary": "The first release. Build pipelines in a browser, test them on captured samples, review and deploy them as Git commits, and run them on a fleet of workers.",
+    "highlights": [
+      {
+        "title": "Send your SIEM only what you search",
+        "text": "Drop the records nobody searches and the fields nobody reads before they are indexed, and send a full copy to cheaper storage. Your senders change only where they send.",
+        "href": "/siem-costs"
+      },
+      {
+        "title": "Every source in one schema",
+        "text": "Map each vendor's logs to ECS, OCSF or your own schema on the way in, and see where a pipeline's output does not match it, in the editor and in review.",
+        "href": "/one-schema"
+      },
+      {
+        "title": "Build on records from your own sources",
+        "text": "Capture a sample from a live source, see what each step adds, changes or drops as you type, and save the result as a test.",
+        "href": "/how-it-works#build-heading"
+      },
+      {
+        "title": "Review every change before it runs",
+        "text": "Each change is a Git branch. Review its diff and test results, then approve and deploy it. Any earlier version is one deploy away.",
+        "href": "/how-it-works#review-heading"
+      },
+      {
+        "title": "See where every record goes",
+        "text": "Follow each source through its pipelines to its destinations, with throughput and warnings.",
+        "href": "/how-it-works#run-heading"
+      },
+      {
+        "title": "Check what you install",
+        "text": "Every release comes with its SBOM, a CVE report and a STIG report. The source code is public.",
+        "href": "/docs/release-extras"
+      }
+    ],
+    "sections": [
+      {
+        "title": "Build pipelines",
+        "items": [
+          "A pipeline editor that previews every step on sample records captured from a live source, as you type.",
+          "Steps: Parser (JSON, CSV, Key/value and Regex/Grok), Eval, Code, Drop, Rename, Remove, Lookup, Unroll, Call, If and Comment.",
+          "A CSV or Key/value Parser can leave out the columns or pairs it does not need and send the shorter line on in the same format. A skipped CSV column stays as an empty column; a skipped pair is gone.",
+          "Lock a preview as a test, and see after each save whether every test still gives its result.",
+          "Schemas: read ECS, OCSF, JSON Schema or a CSV of fields, see what a pipeline produces against them, and export an Elasticsearch mapping."
+        ]
+      },
+      {
+        "title": "Smeltr language",
+        "items": [
+          "A typed, JavaScript-like language, compiled to run on whole columns, not row by row.",
+          "A standard library for text, numbers, times, addresses, URLs, user agents and hashes."
+        ]
+      },
+      {
+        "title": "Sources",
+        "items": [
+          "Kafka and Event Hubs, with Avro read through a schema registry.",
+          "Object stores: S3 with SQS, Azure Blob with a queue, GCS with Pub/Sub, and listings of S3, GCS, Azure Blob and SFTP.",
+          "Receivers: HTTP, Splunk HEC and S2S, OTLP, Prometheus remote_write, syslog and the Elasticsearch Bulk API.",
+          "HTTP APIs, Okta's System Log, PostgreSQL and MySQL."
+        ]
+      },
+      {
+        "title": "Destinations",
+        "items": [
+          "Elasticsearch, Splunk HEC, HTTP, Prometheus remote_write and a Log Analytics workspace.",
+          "Kafka and Event Hubs, as JSON or Avro.",
+          "Object stores and SFTP as JSON, CSV, Avro or Parquet, and Apache Iceberg and Delta Lake tables."
+        ]
+      },
+      {
+        "title": "Run a fleet",
+        "items": [
+          "One leader manages any number of workers in groups. Every change is a Git commit you review and deploy, and roll back.",
+          "A map of sources, pipelines and destinations, with volume, lag and warnings.",
+          "A worker runs each deployment in a process it can end, so a deployment that hangs or will not stop never keeps it from taking the next one.",
+          "Each worker sizes itself to its memory.",
+          "The leader tells you when a newer release is out."
+        ]
+      },
+      {
+        "title": "Security",
+        "items": [
+          "Local, OIDC and key accounts, with roles per area. A key account is one a script calls the API as.",
+          "Workers enroll with a code and talk to the leader over mutual TLS. Certificates can come from ACME.",
+          "Credentials are kept encrypted in the leader, by name and version."
+        ]
+      }
+    ]
+  }
+]

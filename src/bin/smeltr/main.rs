@@ -3396,7 +3396,10 @@ mod tests {
             warned("audit-out"),
             ["Pipeline audit produces no schema that destination es-prod accepts (Search)."]
         );
-        assert!(warned("search-in").is_empty(), "the editor's schemas are the ones checked");
+        assert!(
+            warned("search-in").is_empty(),
+            "the editor's schemas are the ones checked"
+        );
         std::fs::remove_dir_all(&data).ok();
     }
 
