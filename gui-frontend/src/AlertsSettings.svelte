@@ -215,7 +215,7 @@
       url: kind?.type === 'webhook' ? kind.url : '',
       secretHeader: kind?.type === 'webhook' ? (kind.secretHeader ?? '') : '',
       to: kind?.type === 'email' ? kind.to.join(', ') : '',
-      groupsTaken: from?.groups === undefined ? 'all' : 'these',
+      groupsTaken: from?.groups == null ? 'all' : 'these',
       groups: from?.groups ?? [],
       includeMessage: from?.includeMessage ?? false,
     };
@@ -443,7 +443,7 @@
             <span role="cell" class="mono note sends"
               >{where(c)}{#if c.kind.type === 'webhook'}<br /><span class="dim"
                   >{formatLabel(c.kind.format)}{c.secretSet
-                    ? ` · secret ${c.kind.format === 'pagerDuty' ? 'key' : 'header'} stored`
+                    ? ` · ${c.kind.format === 'pagerDuty' ? 'routing key' : 'secret header'} stored`
                     : ''}</span
                 >{/if}</span
             >
@@ -487,7 +487,7 @@
                 ><InlineError
                   inline
                   message="Last send failed {ago(c.failing.last / 1000)}: {c.failing
-                    .message}. Retrying every minute."
+                    .message}. Smeltr sends it again every minute."
                 /></span
               >
             {/if}
@@ -557,8 +557,8 @@
         <Field required label="URL"><input bind:value={draft.url} class="mono" /></Field>
         {#if draft.format === 'pagerDuty'}
           <Field required label="Routing key" group>
-            {#snippet help()}The integration key of the PagerDuty service to open incidents on.
-              Stored encrypted.{/snippet}
+            {#snippet help()}The routing key of the PagerDuty service to open incidents on, which
+              PagerDuty calls its integration key. Stored encrypted.{/snippet}
             <LeaderSecretField
               bind:value={secret}
               bind:replacing={replacingSecret}

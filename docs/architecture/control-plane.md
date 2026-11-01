@@ -290,6 +290,16 @@ warnings a reader may see to a scraper too, each a series while it holds, so an
 alert manager pages on what the Issues page shows and resolves it when the
 series goes.
 
+The leader also tells alert channels itself, on a timer of its own, so a fleet
+whose workers have all gone quiet is still told. Each channel, a webhook or a
+mailbox, takes the kinds of warning ticked for it, in the groups chosen for it.
+It is told when one is raised and again when it clears. What each channel was
+told is kept in the leader's store and written only once the channel took it,
+so a failed send is made again and a restarted leader neither repeats one nor
+drops one. A channel muted until a time is told nothing meanwhile; what still
+holds when the mute ends is told then. A channel that does not take a send is
+itself a warning about the leader.
+
 An entry is a failure, a warning or a notice. A notice is a fact worth knowing
 that asks nothing of anyone, such as a worker on another release of the
 leader's major. The leader gives notices only to a reader that asks for them,

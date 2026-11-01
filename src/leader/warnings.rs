@@ -2634,7 +2634,7 @@ pub fn alert_channel_failing(channel: &str, failing: &crate::leader::alerts::Fai
         severity: Severity::Warning,
         since_millis: Some(failing.since),
         message: format!(
-            "The alert channel {channel} did not take what was sent: {}. It is sent again every minute",
+            "The alert channel {channel} did not take what was sent: {}. Smeltr sends it again every minute",
             failing.message
         ),
     }

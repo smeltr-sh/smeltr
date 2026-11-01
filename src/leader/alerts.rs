@@ -50,7 +50,7 @@ pub struct Mail {
     pub encryption: Encryption,
     pub from: String,
     /// Who to sign in as. `None` sends without signing in.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
 }
 
@@ -83,7 +83,7 @@ pub struct Channel {
     pub kind: Kind,
     /// The groups whose warnings it takes. `None` takes every group's, and the warnings about the leader itself,
     /// which name no group.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<String>>,
     /// Whether it is sent a warning's message, which can quote a source's or destination's error and so a
     /// record's values.
@@ -93,7 +93,7 @@ pub struct Channel {
     #[serde(default)]
     pub conditions: Vec<Condition>,
     /// Epoch milliseconds until which it is sent nothing.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub muted_until: Option<i64>,
 }
 
@@ -105,7 +105,7 @@ pub enum Kind {
         url: String,
         format: Format,
         /// The header that carries the sealed secret, when there is one.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         secret_header: Option<String>,
     },
     Email {
@@ -287,7 +287,7 @@ pub fn summary(status: Status, body: &serde_json::Value) -> String {
     let mut line = match status {
         Status::Raised => format!("{label}: {}", body["subjectId"].as_str().unwrap_or_default()),
         Status::Cleared => format!("Cleared: {label}: {}", body["subjectId"].as_str().unwrap_or_default()),
-        Status::Test => return "Test from smeltr. This channel is set up.".to_string(),
+        Status::Test => return "Test from Smeltr.".to_string(),
     };
     if let Some(group) = body["group"].as_str() {
         line.push_str(&format!(" in {group}"));
@@ -394,9 +394,9 @@ pub fn email(changes: &Changes) -> (String, String) {
         .map(|(status, t)| summary(status, &serde_json::from_str(&t.body).unwrap_or_default()))
         .collect();
     let subject = match lines.as_slice() {
-        [one] => format!("smeltr: {one}"),
+        [one] => format!("Smeltr: {one}"),
         _ => format!(
-            "smeltr: {} raised, {} cleared",
+            "Smeltr: {} raised, {} cleared",
             changes.raised.len(),
             changes.cleared.len()
         ),
@@ -468,7 +468,10 @@ async fn tell(state: &AppState, channel: &Channel, mail: Option<&Mail>, changes:
                     let value = run_store(state.store.clone(), move |s| s.opened_setting(&key))
                         .await
                         .map_err(|e| e.message)?
-                        .ok_or("its secret header value is not stored, or cannot be opened")?;
+                        .ok_or_else(|| match format {
+                            Format::PagerDuty => format!("{}: enter the routing key again", channel.name),
+                            _ => format!("{}: enter the secret header value again", channel.name),
+                        })?;
                     Some((header.clone(), value))
                 }
                 None => None,
@@ -486,7 +489,7 @@ async fn tell(state: &AppState, channel: &Channel, mail: Option<&Mail>, changes:
         }
         // Every change in one email, so a fleet that falls over at once fills nobody's inbox.
         Kind::Email { to } => {
-            let mail = mail.ok_or("the mail server is off")?;
+            let mail = mail.ok_or("Turn the mail server on first")?;
             let password = match mail.username {
                 Some(_) => run_store(state.store.clone(), |s| s.opened_setting(MAIL_PASSWORD_KEY))
                     .await
@@ -817,7 +820,10 @@ pub async fn put_channels(
     let mut names: Vec<&str> = sent.iter().map(|p| p.channel.name.as_str()).collect();
     names.sort_unstable();
     if let Some(twice) = names.windows(2).find(|w| w[0] == w[1]) {
-        return answer(Err(Refusal::invalid(format!("two channels are called {}", twice[0]))));
+        return answer(Err(Refusal::invalid(format!(
+            "Rename one of the two channels called {}",
+            twice[0]
+        ))));
     }
     let event = super::accounts::event_for(&actor, "alerts-channels-change", &names.join(", "), "ok");
     let alerts = state.alerts.clone();
@@ -933,9 +939,9 @@ async fn test(state: &AppState, channel: &Channel, secret: Option<String>) -> Re
             })
             .await
             .map_err(|e| e.message)?;
-            let mail = mail.ok_or("the mail server is off")?;
+            let mail = mail.ok_or("Turn the mail server on first")?;
             let line = summary(Status::Test, &serde_json::Value::Null);
-            send_mail(&mail, password, to, format!("smeltr: {line}"), format!("{line}\n")).await?;
+            send_mail(&mail, password, to, format!("Smeltr: {line}"), format!("{line}\n")).await?;
             Ok(Tested {
                 host: mail.host,
                 status: None,
@@ -1121,13 +1127,13 @@ mod tests {
         ];
         let both = changes(&c, 5, &ws, &[]);
         let (subject, body) = email(&both);
-        assert_eq!(subject, "smeltr: 2 raised, 0 cleared");
+        assert_eq!(subject, "Smeltr: 2 raised, 0 cleared");
         assert_eq!(
             body,
             "Source unreachable: orders in payments\nSource unreachable: clicks\n"
         );
         let one = changes(&c, 6, &ws[..1], &both.raised);
-        assert_eq!(email(&one).0, "smeltr: Cleared: Source unreachable: clicks");
+        assert_eq!(email(&one).0, "Smeltr: Cleared: Source unreachable: clicks");
     }
 
     #[test]

@@ -45,8 +45,9 @@
   <h2 id="alerts">Page on warnings</h2>
   <p>
     The leader serves its active warnings at <code>/api/metrics</code>, in the format Prometheus
-    scrapes. Each warning is a <code>smeltr_warning</code> series while it holds, labeled with its condition,
-    severity, subject and group, so Alertmanager pages on it and resolves it when it clears.
+    scrapes. Each warning is a <code>smeltr_warning</code> series while it holds, labeled with its
+    condition, severity, subject kind, subject, group and site, so Alertmanager pages on it and
+    resolves it when it clears. <code>smeltr_warning_start_time_seconds</code> says when each began.
   </p>
   <ol>
     <li>
@@ -58,6 +59,13 @@
       notices the leader itself is down.
     </li>
   </ol>
+  <p>
+    Without Prometheus, the leader sends warnings itself. In Admin → System → Alerts, add a webhook
+    (Generic JSON, Slack, Microsoft Teams or PagerDuty) or, with the mail server on, an email
+    channel. Tick the issues each channel gets. A channel is told when an issue is raised and again
+    when it clears, and is sent the issue's message only if you include it. Mute a channel during
+    planned work.
+  </p>
   <pre><code
       >{`scrape_configs:
   - job_name: smeltr-leader

@@ -272,6 +272,12 @@ without it.
 The leader's scrape is an API route like any other: a scraper comes in as a
 key account, with its key, and reads the warnings its account's roles let it see.
 
+An alert channel is sent a warning's message only where it is set to be, since
+a message can quote a source's error and so a record's values. The mail
+server's password and each webhook's secret are sealed leader settings, kept
+for the host or URL they were saved with, and the mail server is reached over
+STARTTLS or TLS only.
+
 ## Secrets boundary
 
 **A bundle names a credential and never carries one.** A committed value
