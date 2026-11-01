@@ -1106,3 +1106,46 @@ test("the Fields menu lists the produced schema's fields the rows lack, and assi
   await admin.getByRole('button', { name: 'assign src_endpoint.ip' }).click();
   await expect(admin.getByPlaceholder('target field').last()).toHaveValue('src_endpoint.ip');
 });
+
+test("a field's documentation shows beside a name box's list and under a Fields menu row", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await declare(api);
+  await api.put(`${SHARED}/pipelines/logins${ON}`, {
+    id: 'logins',
+    name: 'logins',
+    produces: ['login'],
+    steps: [
+      {
+        type: 'eval',
+        id: 'map',
+        disabled: false,
+        filter: 'true',
+        assignments: [{ target: 'activity_id', expr: '1' }],
+      },
+    ],
+  });
+  await goto(admin, leader, '#/build/pipelines/logins');
+  await admin.getByRole('button', { name: /^Eval activity_id/ }).click();
+  await admin.getByRole('button', { name: '+ assignment' }).click();
+  const target = admin.getByPlaceholder('target field').last();
+  await target.click();
+  await target.pressSequentially('ti');
+  const doc = admin.locator('.path-doc');
+  await expect(doc).toContainText('time');
+  await expect(doc).toContainText('Milliseconds since the epoch.');
+  await expect(doc).toContainText(/Elasticsearch type\s*long/);
+  await target.blur();
+  await expect(doc).toHaveCount(0);
+
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  await admin.getByRole('button', { name: 'Not set' }).click();
+  await admin.getByLabel('Find a field').fill('time');
+  await admin.getByRole('button', { name: 'Show details' }).click();
+  const details = admin.locator('.details');
+  await expect(details).toContainText('Milliseconds since the epoch.');
+  await admin.getByRole('button', { name: 'Hide details' }).click();
+  await expect(details).toHaveCount(0);
+});
