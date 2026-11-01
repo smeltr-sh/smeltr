@@ -1,4 +1,8 @@
 <script lang="ts">
+  type Crop = { x: number; y: number; width: number; height: number };
+  /** One screenshot, by its file's stem, its size and the part of it shown. */
+  type Shot = { source: string; height: number; width?: number; crop?: Crop };
+
   let {
     source,
     alt,
@@ -6,15 +10,51 @@
     height,
     width = 2880,
     crop,
+    phone,
   }: {
     source: string;
     alt: string;
     caption: string;
     height: number;
     width?: number;
-    crop?: { x: number; y: number; width: number; height: number };
+    crop?: Crop;
+    /** What a phone shows instead: the same page taken at a narrow width, where a wide shot's text
+     * would be too small to read. */
+    phone?: Shot;
   } = $props();
 </script>
+
+{#snippet image(shot: Shot, theme: string)}
+  {@const w = shot.width ?? 2880}
+  {#if shot.crop}
+    <div
+      class="crop"
+      style:aspect-ratio={`${shot.crop.width} / ${shot.crop.height}`}
+      style:max-width={`${shot.crop.width / 2}px`}
+    >
+      <img
+        src={`/${shot.source}-${theme}.png`}
+        width={w}
+        height={shot.height}
+        {alt}
+        loading="lazy"
+        decoding="async"
+        style:width={`${(w / shot.crop.width) * 100}%`}
+        style:left={`${(-shot.crop.x / shot.crop.width) * 100}%`}
+        style:top={`${(-shot.crop.y / shot.crop.height) * 100}%`}
+      />
+    </div>
+  {:else}
+    <img
+      src={`/${shot.source}-${theme}.png`}
+      width={w}
+      height={shot.height}
+      {alt}
+      loading="lazy"
+      decoding="async"
+    />
+  {/if}
+{/snippet}
 
 <figure>
   {#each ['light', 'dark'] as theme}
@@ -25,33 +65,11 @@
       href={`/${source}-${theme}.png`}
       aria-label={`Open full-size screenshot: ${alt}`}
     >
-      {#if crop}
-        <div
-          class="crop"
-          style:aspect-ratio={`${crop.width} / ${crop.height}`}
-          style:max-width={`${crop.width / 2}px`}
-        >
-          <img
-            src={`/${source}-${theme}.png`}
-            {width}
-            {height}
-            {alt}
-            loading="lazy"
-            decoding="async"
-            style:width={`${(width / crop.width) * 100}%`}
-            style:left={`${(-crop.x / crop.width) * 100}%`}
-            style:top={`${(-crop.y / crop.height) * 100}%`}
-          />
-        </div>
+      {#if phone}
+        <div class="wide">{@render image({ source, height, width, crop }, theme)}</div>
+        <div class="narrow">{@render image(phone, theme)}</div>
       {:else}
-        <img
-          src={`/${source}-${theme}.png`}
-          {width}
-          {height}
-          {alt}
-          loading="lazy"
-          decoding="async"
-        />
+        {@render image({ source, height, width, crop }, theme)}
       {/if}
       <span>Open complete screenshot ↗</span>
     </a>
@@ -86,6 +104,17 @@
     max-width: none;
     border: 0;
     border-radius: 0;
+  }
+  .narrow {
+    display: none;
+  }
+  @media (max-width: 640px) {
+    .wide {
+      display: none;
+    }
+    .narrow {
+      display: block;
+    }
   }
   .shot:focus-visible {
     outline: 2px solid var(--accent);
