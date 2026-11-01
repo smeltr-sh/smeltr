@@ -486,13 +486,19 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
         }
     }
     let lack = |paths: &[String]| if paths.len() == 1 { "it" } else { "them" };
+    // `a`, `b` and `c`: "and" before the last, as a sentence lists.
+    let listed = |paths: &[String]| match paths.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    };
     for (schema, paths) in missing {
         out.push(Told {
             keys: None,
             message: format!(
                 "{} requires {}; the rows lack {}.",
                 title(schema),
-                paths.join(", "),
+                listed(&paths),
                 lack(&paths)
             ),
             breaks: true,
@@ -504,7 +510,7 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
             message: format!(
                 "{} recommends {}; the rows lack {}.",
                 title(schema),
-                paths.join(", "),
+                listed(&paths),
                 lack(&paths)
             ),
             breaks: false,
@@ -715,7 +721,7 @@ mod tests {
                 },
                 Told {
                     keys: None,
-                    message: "Login requires `activity_id`, `user`, `metadata`; the rows lack them.".to_string(),
+                    message: "Login requires `activity_id`, `user` and `metadata`; the rows lack them.".to_string(),
                     breaks: true,
                 },
             ]
@@ -764,7 +770,7 @@ mod tests {
             [
                 ("Audit requires `time`; the rows lack it.", true),
                 (
-                    "Audit recommends `a`, `b`, `c`, `d`, `e`, `f`, `src.ip`; the rows lack them.",
+                    "Audit recommends `a`, `b`, `c`, `d`, `e`, `f` and `src.ip`; the rows lack them.",
                     false
                 ),
             ]

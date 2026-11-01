@@ -1497,9 +1497,9 @@
               <div class="recommended-note">
                 <span aria-hidden="true">ⓘ</span>
                 <span
-                  >{schema} recommends {named
-                    .map((p) => `\`${p}\``)
-                    .join(', ')}{#if named.length < paths.length}{' '}and
+                  >{schema} recommends {#each named as p, i (p)}{#if i > 0}{i === paths.length - 1
+                        ? ' and '
+                        : ', '}{/if}<code>{p}</code>{/each}{#if named.length < paths.length}{' '}and
                     <MoreButton
                       count={paths.length - named.length}
                       onclick={() => recommendedAll.add(schema)}
@@ -1841,6 +1841,11 @@
     padding: 0.55rem 0.7rem;
     border: 1px solid var(--border);
     border-radius: var(--radius);
+  }
+
+  .recommended-note code {
+    font-family: var(--mono);
+    font-size: 0.92em;
   }
 
   .recommended-note {

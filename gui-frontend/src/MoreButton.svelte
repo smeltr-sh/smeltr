@@ -2,7 +2,8 @@
   "N more" under a list cut short: a click shows the rest. The list keeps whether it is cut.
 -->
 <script lang="ts">
-  let { count, onclick }: { count: number; onclick: () => void } = $props();
+  /** `what` names the items, singular, where the list does not say what they are. */
+  let { count, what, onclick }: { count: number; what?: string; onclick: () => void } = $props();
 </script>
 
 <button
@@ -12,7 +13,7 @@
     // Showing the rest is all the click does, inside a row that a click would open or close.
     e.stopPropagation();
     onclick();
-  }}>{count} more</button
+  }}>{count} more{what ? ` ${count === 1 ? what : `${what}s`}` : ''}</button
 >
 
 <style>

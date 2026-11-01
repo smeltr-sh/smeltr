@@ -1651,7 +1651,10 @@ mod tests {
         let warned = warnings_of(producing(r#"["login"]"#), &[]);
         assert_eq!(
             warned,
-            [(None, "Login requires `time`, `user`; the rows lack them.".to_string())]
+            [(
+                None,
+                "Login requires `time` and `user`; the rows lack them.".to_string()
+            )]
         );
     }
 

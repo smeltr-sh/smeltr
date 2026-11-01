@@ -403,7 +403,7 @@ test("a pipeline's Produces is saved with it, and the editor says what its rows 
   await expect(produces.getByRole('link', { name: 'login' })).toBeVisible();
   await expect(produces.getByRole('status')).toHaveText('1 schema finding', { timeout: 15_000 });
   await expect(
-    admin.getByText('Login requires `activity_id`, `time`, `user`; the rows lack them.'),
+    admin.getByText('Login requires `activity_id`, `time` and `user`; the rows lack them.'),
   ).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-produces.png' });
 
@@ -857,12 +857,12 @@ test('review lists where the rows do not fit a schema, and the dock counts them 
   const panel = admin.getByRole('tabpanel');
   await expect(panel.getByRole('link', { name: 'logins' })).toBeVisible();
   await expect(
-    panel.getByText('Login requires `activity_id`, `time`, `user`; the rows lack them.'),
+    panel.getByText('Login requires activity_id, time and user; the rows lack them.'),
   ).toBeVisible();
   await expect(panel.getByText(/destination "search" accepts Audit/)).toBeVisible();
   // A recommended field the rows lack is told after the findings, and not counted with them.
   await expect(
-    panel.locator('li').last().getByText('Login recommends `src_endpoint`; the rows lack it.'),
+    panel.locator('li').last().getByText('Login recommends src_endpoint; the rows lack it.'),
   ).toBeVisible();
   await expect(admin.getByRole('tab', { name: /^Schemas/ })).toHaveText(/Schemas\s*2$/);
   await expect(admin.getByRole('button', { name: 'Approve & deploy' })).toBeEnabled();
@@ -916,10 +916,10 @@ test('a field the schema requires and the rows lack is a column of its own, with
   );
   await expect(admin.getByText('Required by Login:')).toBeVisible();
   await expect(
-    admin.getByText('Login requires `activity_id`, `user`; the rows lack them.'),
+    admin.getByText('Login requires `activity_id` and `user`; the rows lack them.'),
   ).toBeVisible();
   // A recommended field the rows lack is told apart from the warning, and is no column.
-  await expect(admin.getByText('Login recommends `src_endpoint`; the rows lack it.')).toBeVisible();
+  await expect(admin.getByText('Login recommends src_endpoint; the rows lack it.')).toBeVisible();
   await expect(admin.getByText('Recommended by Login:')).toBeVisible();
   await expect(grid.locator('thead th', { hasText: 'src_endpoint' })).toHaveCount(0);
   await expect(admin.getByText('1 schema finding')).toBeVisible();
@@ -955,7 +955,7 @@ test('a schema recommending more than five fields the rows lack names five, and 
 
   const note = admin.locator('.recommended-note');
   await expect(note).toHaveText(
-    'ⓘ Connection recommends `host`, `port`, `proto`, `region`, `session` and 3 more; the rows lack them.',
+    'ⓘ Connection recommends host, port, proto, region, session and 3 more; the rows lack them.',
     { timeout: 15_000 },
   );
   const detail = admin.locator('.missing-fields');
@@ -965,7 +965,7 @@ test('a schema recommending more than five fields the rows lack names five, and 
 
   await note.getByRole('button', { name: '3 more' }).click();
   await expect(note).toHaveText(
-    'ⓘ Connection recommends `host`, `port`, `proto`, `region`, `session`, `severity`, `tenant`, `zone`; the rows lack them.',
+    'ⓘ Connection recommends host, port, proto, region, session, severity, tenant and zone; the rows lack them.',
   );
   await detail.getByRole('button', { name: '3 more' }).click();
   await expect(detail.locator('span.mono', { hasText: 'zone' })).toBeVisible();

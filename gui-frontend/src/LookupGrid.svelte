@@ -150,14 +150,18 @@
 {#each raggedAll ? ragged : ragged.slice(0, RAGGED_NAMED) as r (r)}
   <p class="bar">
     <InlineError inline
-      >row {r + 1} has {rows[r].length} fields; the header has {headers.length}.</InlineError
+      >row {r + 1} has {count(rows[r].length, 'field')}; the header has {headers.length}.</InlineError
     >
     <button type="button" class="quiet" onclick={() => show(r)}>show</button>
   </p>
 {/each}
 {#if !raggedAll && ragged.length > RAGGED_NAMED}
   <p class="bar">
-    <MoreButton count={ragged.length - RAGGED_NAMED} onclick={() => (raggedAll = true)} />
+    <MoreButton
+      count={ragged.length - RAGGED_NAMED}
+      what="row"
+      onclick={() => (raggedAll = true)}
+    />
   </p>
 {/if}
 

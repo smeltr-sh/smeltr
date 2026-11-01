@@ -4,6 +4,7 @@
   findings come the recommended fields its rows lack, which are not findings.
 -->
 <script lang="ts">
+  import Ticked from './Ticked.svelte';
   import type { SchemaFindingDto } from './api';
 
   let {
@@ -62,8 +63,8 @@
         {#each g.found as f, i (i)}
           <li>
             <span class="step mono">{f.step ?? 'no step'}</span>
-            {#if f.breaks}<span>{f.message}</span>{:else}<span class="dim"
-                ><span aria-hidden="true">ⓘ&nbsp;</span>{f.message}</span
+            {#if f.breaks}<span><Ticked text={f.message} /></span>{:else}<span class="dim"
+                ><span aria-hidden="true">ⓘ&nbsp;</span><Ticked text={f.message} /></span
               >{/if}
           </li>
         {/each}
