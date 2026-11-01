@@ -50,6 +50,7 @@
   import ChangeTests from './ChangeTests.svelte';
   import ChangeSchemas from './ChangeSchemas.svelte';
   import ChangeDock from './ChangeDock.svelte';
+  import { lessMotion } from './glide';
   import ChangeObjects from './ChangeObjects.svelte';
   import { scopeOf, type ObjectChange } from './objectChanges';
   import { deployBlocker } from './access';
@@ -96,6 +97,13 @@
   const TABS = ['conversation', 'saves', 'tests', 'schemas'] as const;
   let tab = $state<(typeof TABS)[number]>('conversation');
   let dockHeight = $state(0);
+  let subtabs = $state<HTMLElement>();
+
+  /** Opens a tab from the dock, bringing its row into view: the dock stays put while the page scrolls. */
+  function openTab(t: (typeof TABS)[number]) {
+    tab = t;
+    subtabs?.scrollIntoView({ block: 'start', behavior: lessMotion() ? 'auto' : 'smooth' });
+  }
 
   let events = $state<TimelineEvent[]>([]);
   let timelineLoading = $state(true);
@@ -508,7 +516,7 @@
             </div>
           {/if}
 
-          <div class="subtabs">
+          <div class="subtabs" bind:this={subtabs}>
             <SecondaryTabs tabs={TABS} active={tab} onselect={(t) => (tab = t)} ariaLabel="Change">
               {#snippet label(t)}
                 {#if t === 'conversation'}Conversation
@@ -621,6 +629,7 @@
         tests={tally}
         {testsLoading}
         schemaFindings={schemasLoading ? undefined : schemaFound}
+        onopen={openTab}
         behind={loaded.branch.behind}
         leftOut={loaded.branch.leftOut?.length ?? 0}
         {bringingCurrent}
@@ -738,6 +747,8 @@
 
   .subtabs {
     margin: 1rem 0 0.9rem;
+    /* Room above the row when the dock scrolls it into view. */
+    scroll-margin-top: 1rem;
   }
   .pill {
     padding: 0 0.4rem;
