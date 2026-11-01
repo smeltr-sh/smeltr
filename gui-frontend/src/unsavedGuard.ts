@@ -5,6 +5,7 @@
 // under a page that still shows the old context. This asks first, so the
 // write never happens unless the reader means it to.
 
+import { currentBranch, setBranch, setScope } from './api';
 import { ask } from './Confirm.svelte';
 import { heldLabel, listHeld } from './edits';
 
@@ -30,4 +31,19 @@ export async function confirmContextSwitch(): Promise<boolean> {
     danger: true,
   });
   return ok ?? false;
+}
+
+/** Opens `hash` in group `scope` on `branch`, as review opens what a change holds: the reader sees it where the
+ * change is, not on the branch in hand. Another branch is asked for first and reloads the app, as a branch switch
+ * does. */
+export async function openOnBranch(branch: string, scope: string, hash: string): Promise<void> {
+  if (branch === currentBranch()) {
+    setScope(scope, hash);
+    return;
+  }
+  if (!(await confirmContextSwitch())) return;
+  setBranch(branch);
+  setScope(scope);
+  location.assign(hash);
+  location.reload();
 }

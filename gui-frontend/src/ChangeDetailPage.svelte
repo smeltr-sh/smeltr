@@ -556,6 +556,7 @@
               {/if}
             {:else if tab === 'schemas'}
               <ChangeSchemas
+                {branch}
                 findings={schemaFindings}
                 loading={schemasLoading}
                 error={schemasError}

@@ -871,6 +871,12 @@ test('review lists where the rows do not fit a schema, and the dock counts them 
   await expect(admin.getByRole('tab', { name: /^Schemas/ })).toHaveText(/Schemas\s*2$/);
   await expect(admin.getByRole('button', { name: 'Approve & deploy' })).toBeEnabled();
   await admin.screenshot({ path: 'results/schemas-review.png' });
+
+  // The pipeline opens where the change is: its branch and its group.
+  await panel.getByRole('link', { name: 'logins' }).click();
+  await expect(admin.getByText('Branch logins')).toBeVisible();
+  await expect(admin.getByText('no pipeline')).toHaveCount(0);
+  await admin.screenshot({ path: 'results/schemas-review-opens.png' });
 });
 
 test('a field the schema requires and the rows lack is a column of its own, with its type', async ({
