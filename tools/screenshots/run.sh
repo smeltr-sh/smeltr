@@ -25,8 +25,15 @@ capture | demo | "") ;;
     ;;
 esac
 
-python3 -c 'import confluent_kafka, PIL' 2>/dev/null ||
-    { echo "pip install -r $PWD/requirements.txt" >&2; exit 1; }
+python3 -c 'import confluent_kafka, PIL' 2>/dev/null || {
+    cat >&2 <<SETUP
+Python packages missing. Run the one-time setup from $PWD/README.md:
+  pip install -r $PWD/requirements.txt
+  npm --prefix $PWD ci
+  npx --prefix $PWD playwright install chromium
+SETUP
+    exit 1
+}
 [ -d node_modules/playwright ] || npm ci
 
 if [ "${1:-}" = "" ] || { [ "${1:-}" = demo ] && ! curl -sk -o /dev/null https://127.0.0.1:8443/; }; then

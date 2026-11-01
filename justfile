@@ -681,6 +681,7 @@ screenshots: build
 
 # The website demo's leader answers from these. They come from a staged fleet,
 # as `just screenshots` stages one, so they change only when this runs again.
+# It needs the one-time setup in `tools/screenshots/README.md`.
 [doc("Record the staged demo fleet's answers for the website demo.")]
 [group("dev")]
 [unix]
