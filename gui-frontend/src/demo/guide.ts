@@ -66,7 +66,7 @@ function protoType(world: World): unknown {
 export const TASKS: Task[] = [
   {
     id: 'status',
-    text: 'Open Status and find the two issues',
+    text: 'Open Status and find the issues for cisco-asa and fortigate-traffic',
     hash: '#/status/issues',
     steps: [],
     done: (w) => w.sawStatus,
