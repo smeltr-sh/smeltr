@@ -513,10 +513,11 @@ pub fn report_losses() {
     let now = [dropped(), undelivered(), unread(), unwritable()];
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     let since: Vec<u64> = now.iter().zip(last.0).map(|(n, l)| n.saturating_sub(l)).collect();
-    last.0 = now;
     let (dropped, undelivered, unread, unwritable) = (since[0], since[1], since[2], since[3]);
     if since.iter().any(|n| *n > 0) {
         if last.1.fail_due("losing".to_string()).is_some() {
+            // Counted from the last line, not the last call: a beat that says nothing leaves its losses for the next.
+            last.0 = now;
             let count = |n: u64| (n > 0).then_some(n);
             while_delivering(|| {
                 tracing::warn!(
