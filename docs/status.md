@@ -90,6 +90,7 @@ document's systems.
 | Kafka record time: the time Kafka stamped a record, as `__source.time` (Runtime stages) | built |
 | Authenticating to sources and destinations (Control plane) | Kafka built (TLS, SASL/PLAIN, SASL/SCRAM, OAuth/OIDC, Kerberos/GSSAPI); Elasticsearch `auth` only |
 | Self-observability: `Metrics` source, logs to the console, the leader and a `smeltr logs` source (Observability) | built |
+| The leader's warnings as Prometheus scrapes them: `GET /api/metrics`, a key account's key letting a scraper in (Control plane, Security) | built (`leader::warnings::as_metrics`). Not built: pushing a warning to a webhook or email |
 | A worker's metrics endpoint: `GET /metrics` in Prometheus's text format, with optional TLS, client certificates and basic auth (Observability, Security) | built (`worker::metrics_endpoint`, `metrics::exposition`). Not built: the leader listing workers for Prometheus's HTTP service discovery |
 
 ### Control plane

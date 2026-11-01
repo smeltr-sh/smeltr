@@ -863,7 +863,8 @@ pub const CATALOG: &[Route] = &[
 
 #[cfg(test)]
 /// Gated paths the agent cannot call: its person's conversations and the models they pick from, a file upload that
-/// is no JSON request, and what a person sets for their own agent, which no agent changes.
+/// is no JSON request, what a person sets for their own agent, which no agent changes, and the warnings as a scraper
+/// reads them, which `/api/warnings` gives the agent as JSON.
 pub const LEFT_OUT: &[(&str, &str)] = &[
     ("POST", "/api/agent/conversations"),
     ("GET", "/api/agent/conversations"),
@@ -876,6 +877,7 @@ pub const LEFT_OUT: &[(&str, &str)] = &[
     ("POST", "/api/areas/:area/lookups/upload"),
     ("PUT", "/api/me/agent-permissions"),
     ("POST", "/api/accounts/:id/keys"),
+    ("GET", "/api/metrics"),
 ];
 
 #[cfg(test)]

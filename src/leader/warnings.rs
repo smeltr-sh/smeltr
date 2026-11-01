@@ -252,6 +252,46 @@ impl Warning {
     }
 }
 
+/// `warnings` in the text format Prometheus scrapes (`metrics::exposition`): for each, `smeltr_warning` at 1, and
+/// `smeltr_warning_start_time_seconds` where its start is known, labeled by its condition, severity and subject. A
+/// warning that clears leaves the scrape, which is what tells an alert manager it resolved.
+pub fn as_metrics(warnings: &[Warning]) -> String {
+    use crate::metrics::{MetricKey, MetricSample, MetricValue};
+    /// The name serde gives `value`, as the API names it.
+    fn named(value: impl Serialize) -> String {
+        serde_json::to_value(value)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+    let samples = warnings.iter().flat_map(|w| {
+        let labels = vec![
+            ("condition", named(w.condition)),
+            ("severity", named(w.severity)),
+            ("subject_kind", named(w.subject_kind)),
+            ("subject", w.subject_id.clone()),
+            ("group", w.group.clone().unwrap_or_default()),
+            ("site", w.site.clone().unwrap_or_default()),
+        ];
+        let started = w.since_millis.map(|ms| MetricSample {
+            key: MetricKey {
+                name: "smeltr_warning_start_time_seconds",
+                labels: labels.clone(),
+            },
+            value: MetricValue::Gauge(ms as f64 / 1000.0),
+        });
+        std::iter::once(MetricSample {
+            key: MetricKey {
+                name: "smeltr_warning",
+                labels,
+            },
+            value: MetricValue::Gauge(1.0),
+        })
+        .chain(started)
+    });
+    crate::metrics::exposition::render(samples)
+}
+
 const SOURCE_BLOCKED: &str = "source_blocked";
 const SOURCE_REFUSED: &str = "source_refused";
 const SOURCE_WAITING: &str = "source_waiting";
@@ -4767,6 +4807,30 @@ mod tests {
             since_millis: Some(NOW - 90_000),
             message: "it is wrong".to_string(),
         }
+    }
+
+    /// Each warning is a series a scraper can page on, labeled by what it is and what it is about, with its start
+    /// where known. One about the leader names no group, and the label is left out rather than empty.
+    #[test]
+    fn a_warning_is_a_series_a_scraper_pages_on() {
+        let blocked = catalog(Condition::SourceBlocked, SubjectKind::Source, "orders", "payments");
+        let leader = Warning {
+            group: None,
+            since_millis: None,
+            ..catalog(Condition::RemoteNotFollowed, SubjectKind::Leader, "leader", "")
+        };
+        let text = as_metrics(&[blocked, leader]);
+        let start = (NOW - 90_000) as f64 / 1000.0;
+        assert_eq!(
+            text,
+            format!(
+                "# TYPE smeltr_warning gauge\n\
+                 smeltr_warning{{condition=\"remoteNotFollowed\",severity=\"failed\",subject=\"leader\",subject_kind=\"leader\"}} 1\n\
+                 smeltr_warning{{condition=\"sourceBlocked\",group=\"payments\",severity=\"failed\",subject=\"orders\",subject_kind=\"source\"}} 1\n\
+                 # TYPE smeltr_warning_start_time_seconds gauge\n\
+                 smeltr_warning_start_time_seconds{{condition=\"sourceBlocked\",group=\"payments\",severity=\"failed\",subject=\"orders\",subject_kind=\"source\"}} {start}\n"
+            )
+        );
     }
 
     /// A viewer sees the warnings of the groups they hold. One about the leader itself names no group, and only an

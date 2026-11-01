@@ -2,6 +2,7 @@
   import GuideLayout from '#lib/components/GuideLayout.svelte';
   const sections = [
     { id: 'daily', title: 'Read the running state' },
+    { id: 'alerts', title: 'Page on warnings' },
     { id: 'delivery', title: 'Delivery and recovery' },
     { id: 'logs', title: 'Change log verbosity' },
     { id: 'changes', title: 'Deploy and roll back configuration' },
@@ -41,6 +42,32 @@
   <p>
     <a href="/docs/git/configuration#verify">How to compare the deployed and running commits →</a>
   </p>
+  <h2 id="alerts">Page on warnings</h2>
+  <p>
+    The leader serves its active warnings at <code>/api/metrics</code>, in the format Prometheus
+    scrapes. Each warning is a <code>smeltr_warning</code> series while it holds, labeled with its condition,
+    severity, subject and group, so Alertmanager pages on it and resolves it when it clears.
+  </p>
+  <ol>
+    <li>
+      In Admin → Accounts, add a key account for the scraper and make it a key. Its roles decide
+      which groups' warnings it sees; only an administrator sees warnings about the leader itself.
+    </li>
+    <li>
+      Scrape <code>/api/metrics</code> with the key as a bearer token. A failed scrape is how Prometheus
+      notices the leader itself is down.
+    </li>
+  </ol>
+  <pre><code
+      >{`scrape_configs:
+  - job_name: smeltr-leader
+    scheme: https
+    metrics_path: /api/metrics
+    authorization:
+      credentials_file: /etc/prometheus/smeltr-key
+    static_configs:
+      - targets: ['smeltr.example.com']`}</code
+    ></pre>
   <h2 id="delivery">Delivery and recovery</h2>
   <p>
     For a stalled destination, distinguish connection failures from refused records. Check the

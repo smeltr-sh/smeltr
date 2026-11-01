@@ -285,7 +285,10 @@ or silent. Most read the facts workers report; the rest read what the fleet is
 running, since a certificate in the deployed bundle runs out on a date no
 heartbeat mentions. A warning is derived on every heartbeat, never stored, and
 clears when its fact stops. The catalog is fixed: each entry names a subject,
-the fact it reads and the sentence that says what to do.
+the fact it reads and the sentence that says what to do. The leader serves the
+warnings a reader may see to a scraper too, each a series while it holds, so an
+alert manager pages on what the Issues page shows and resolves it when the
+series goes.
 
 An entry is a failure, a warning or a notice. A notice is a fact worth knowing
 that asks nothing of anyone, such as a worker on another release of the

@@ -253,6 +253,7 @@ fn status_of(result: Result<ureq::http::Response<ureq::Body>, ureq::Error>, what
 const OPERATOR_ROUTES: &[&str] = &[
     "/api/health",
     "/api/warnings",
+    "/api/metrics",
     "/api/flow",
     "/api/streams",
     "/api/logs",
@@ -2160,6 +2161,28 @@ fn key_for(leader: &Leader, op: &Operator, id: &str) -> (String, String) {
         created["key"].as_str().unwrap().to_string(),
         created["id"].as_str().unwrap().to_string(),
     )
+}
+
+/// A scraper comes in as a key account, with its key, and is answered in the format Prometheus scrapes.
+#[test]
+fn a_key_scrapes_the_warnings_as_prometheus_reads_them() {
+    let leader = start("key-scrape");
+    let op = operator(&leader);
+    let id = key_account(
+        &leader,
+        &op,
+        serde_json::json!({ "displayName": "prometheus", "roles": ["administrator"] }),
+    );
+    let (key, _) = key_for(&leader, &op, &id);
+    let response = ureq::get(format!("{}/api/metrics", leader.base))
+        .header("authorization", format!("Bearer {key}"))
+        .call()
+        .expect("the scrape was answered");
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response.headers().get("content-type").and_then(|v| v.to_str().ok()),
+        Some("text/plain; version=0.0.4; charset=utf-8")
+    );
 }
 
 /// A key holds what its account's roles give, and nothing it does not.

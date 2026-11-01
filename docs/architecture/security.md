@@ -269,6 +269,9 @@ key are read when the worker starts, so a new one takes a restart. The password
 stays with the supervisor, which serves the endpoint; its runtime is started
 without it.
 
+The leader's scrape is an API route like any other: a scraper comes in as a
+key account, with its key, and reads the warnings its account's roles let it see.
+
 ## Secrets boundary
 
 **A bundle names a credential and never carries one.** A committed value

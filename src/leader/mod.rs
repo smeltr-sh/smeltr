@@ -1356,6 +1356,19 @@ async fn list_warnings(
     }))
 }
 
+/// `GET /api/metrics`: the warnings `access` may see, as Prometheus scrapes them (`warnings::as_metrics`), so an
+/// alert manager pages on what the Issues page shows. A scraper comes in as a key account, with its key.
+async fn warning_metrics(State(state): State<AppState>, Extension(access): Extension<access::Access>) -> Response {
+    match warnings_snapshot(&state).await {
+        Ok(all) => {
+            let visible: Vec<_> = all.into_iter().filter(|w| w.visible_to(&access)).collect();
+            let text = warnings::as_metrics(&visible);
+            ([(header::CONTENT_TYPE, crate::metrics::exposition::CONTENT_TYPE)], text).into_response()
+        }
+        Err(e) => Refusal::internal(e.to_string()).into_response(),
+    }
+}
+
 #[derive(serde::Serialize)]
 struct WarningList {
     warnings: Vec<warnings::Warning>,
@@ -3618,6 +3631,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/health", get(health))
         .route("/api/system", get(system_info))
         .route("/api/warnings", get(list_warnings))
+        .route("/api/metrics", get(warning_metrics))
         .route("/api/flow", get(get_flow))
         .route("/api/streams", get(get_streams))
         .route("/api/logs", get(get_logs))
