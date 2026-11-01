@@ -15,6 +15,12 @@ export interface StdFuncEntry {
   field?: boolean;
   /** Why it does not fit where it would be written: the function does not take the type before the dot. */
   warning?: string;
+  /** A grok pattern's values it takes whole. */
+  matches?: string[];
+  /** A grok pattern's values it refuses. */
+  misses?: string[];
+  /** A grok pattern's regex. */
+  regex?: string;
 }
 
 const REFERENCE = 'https://smeltr.sh/docs/code-reference';
