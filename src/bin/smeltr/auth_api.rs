@@ -21,6 +21,7 @@ use smeltr::leader::store::Actor;
 
 use crate::gate::{
     AccessDto, Auth, access_of, admitted, check_browser_protections, presented_token, refuse, store_unavailable,
+    store_unavailable_because,
 };
 
 /// What the GUI needs to decide which screen to be on.
@@ -130,10 +131,7 @@ pub async fn session(State(auth): State<Auth>, headers: HeaderMap) -> Response {
 
     let (user, username, provider_login, access, agents) = match looked_up {
         Ok(pair) => pair,
-        Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "the account store could not be read");
-            return store_unavailable();
-        }
+        Err(e) => return store_unavailable_because("the account store could not be read", &e),
     };
 
     let (Some(user), Some(access)) = (
@@ -223,10 +221,7 @@ pub async fn login(
 
     let outcome = match outcome {
         Ok(outcome) => outcome,
-        Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "a sign-in could not be verified");
-            return store_unavailable();
-        }
+        Err(e) => return store_unavailable_because("a sign-in could not be verified", &e),
     };
 
     let Authenticated::Ok {
@@ -501,9 +496,6 @@ pub async fn password(State(auth): State<Auth>, headers: HeaderMap, body: axum::
         ),
         Ok(PasswordChange::WrongPassword) => refuse(StatusCode::UNAUTHORIZED, "that is not your current password"),
         Ok(PasswordChange::Refused(refused)) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &refused.to_string()),
-        Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "a password change did not land");
-            store_unavailable()
-        }
+        Err(e) => store_unavailable_because("a password change did not land", &e),
     }
 }

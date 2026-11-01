@@ -28,12 +28,23 @@ fn name_path(repo: &Path, oid: &str) -> PathBuf {
 /// `(group, commit)` deployments names. Nothing is forgotten when what they name cannot be read in full: a file one of
 /// them needs would be gone for good.
 pub fn prune(repo: &Path, keep: usize, running: &HashSet<(String, String)>) {
-    let Ok(pinned) = pinned(repo, running) else {
-        return;
+    let pinned = match pinned(repo, running) {
+        Ok(pinned) => pinned,
+        Err(e) => {
+            tracing::warn!(target: "lookups.not_pruned", error = %e, "which lookup files the fleet needs could not be read, so none is forgotten this time");
+            return;
+        }
     };
-    let Ok(entries) = std::fs::read_dir(repo.join(store::STORE_DIR)) else {
-        return;
+    let entries = match std::fs::read_dir(repo.join(store::STORE_DIR)) {
+        Ok(entries) => entries,
+        // No store directory is a leader nobody has uploaded a lookup file to.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            tracing::warn!(target: "lookups.not_pruned", error = %e, "the stored lookup files could not be listed, so none is forgotten this time");
+            return;
+        }
     };
+    let mut forgotten = 0;
     let mut by_name: HashMap<String, Vec<(SystemTime, String)>> = HashMap::new();
     let ours = store::incoming_prefix(std::process::id());
     for entry in entries.flatten() {
@@ -65,8 +76,13 @@ pub fn prune(repo: &Path, keep: usize, running: &HashSet<(String, String)>) {
     for held in by_name.into_values() {
         let pins: Vec<_> = held.iter().filter(|(_, oid)| pinned.contains(oid)).cloned().collect();
         for (_, oid) in super::versions_to_forget(&held, keep, &pins) {
-            let _ = store::remove(repo, &oid);
+            if store::remove(repo, &oid).is_ok() {
+                forgotten += 1;
+            }
         }
+    }
+    if forgotten > 0 {
+        tracing::debug!(target: "lookups.pruned", forgotten, "stored lookup file versions retention no longer keeps were forgotten");
     }
 }
 

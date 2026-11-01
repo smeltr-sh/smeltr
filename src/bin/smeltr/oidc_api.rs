@@ -37,7 +37,7 @@ use smeltr::leader::sessions::{Due, Grant};
 use smeltr::leader::store::{Actor, OidcSignIn, SecretSave, Store, StoreError};
 use smeltr::leader::{accounts, blocking};
 
-use crate::gate::{Auth, store_unavailable};
+use crate::gate::{Auth, store_unavailable_because};
 
 pub const ENABLED_KEY: &str = "oidc.enabled";
 pub const ISSUER_KEY: &str = "oidc.issuer";
@@ -399,10 +399,7 @@ pub async fn offered(State(auth): State<Auth>) -> Response {
             offered: settings.is_some(),
         })
         .into_response(),
-        Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "the OIDC settings could not be read");
-            store_unavailable()
-        }
+        Err(e) => store_unavailable_because("the OIDC settings could not be read", &e),
     }
 }
 

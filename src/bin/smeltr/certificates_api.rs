@@ -420,7 +420,10 @@ async fn renew_issued(state: &Certificates, serving: &Arc<Tls>) {
             return;
         }
     };
-    let served = smeltr::leader::served_names(&serving.dir).unwrap_or_default();
+    let served = smeltr::leader::served_names(&serving.dir).unwrap_or_else(|e| {
+        tracing::warn!(target: "leader.served_list_unreadable", error = %e, "which certificates the socket serves could not be read, so a renewed one is not put on it until the next pass");
+        Default::default()
+    });
     for (name, outcome) in tried {
         let outcome = match outcome {
             Ok(()) if served.contains(&name) => {

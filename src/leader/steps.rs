@@ -60,6 +60,9 @@ pub fn upgrade_sqlite(conn: &mut Connection, store: &str, steps: &[&str]) -> Res
     check(store, min_reader, steps.len())?;
 
     let failed = |e: rusqlite::Error| format!("upgrading {store}: {e}");
+    if applied < steps.len() && applied > 0 {
+        tracing::info!(target: "store.upgrading", %store, from = applied, to = steps.len(), "upgrading a store's schema");
+    }
     for (i, step) in steps.iter().enumerate().skip(applied) {
         let version = i + 1;
         let tx = conn.transaction().map_err(failed)?;

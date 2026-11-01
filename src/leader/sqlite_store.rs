@@ -2455,6 +2455,13 @@ fn insert_event(conn: &Connection, event: &SecurityEvent) -> Result<(), StoreErr
             event.outcome
         ],
     )?;
+    // Logged where it is written, so every audited action reaches the log without its handler saying so. A refused
+    // one is already said at warn where it was refused.
+    if event.outcome == "ok" {
+        tracing::info!(target: "audit.recorded", actor = %event.actor, action = %event.action, subject = %event.target, "an audited action was recorded");
+    } else {
+        tracing::debug!(target: "audit.recorded", actor = %event.actor, action = %event.action, subject = %event.target, outcome = %event.outcome, "an audited action was recorded");
+    }
     Ok(())
 }
 

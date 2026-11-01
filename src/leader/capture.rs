@@ -454,9 +454,11 @@ impl Captures {
     pub fn record(&self, report: CaptureReport) {
         let mut sessions = self.0.lock().unwrap();
         let Some(session) = sessions.get_mut(&report.session) else {
+            tracing::debug!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why = "no such session", "a capture report was dropped");
             return;
         };
         if !session.invited.contains(&report.worker_id) || session.answered.contains(&report.worker_id) {
+            tracing::debug!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why = "not invited, or answered already", "a capture report was dropped");
             return;
         }
         // Checked before this report's own answer is noted, so the final that completes the capture is folded.
