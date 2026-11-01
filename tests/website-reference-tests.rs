@@ -1156,7 +1156,7 @@ struct MetricRow {
 }
 
 /// `smeltr_` names in `src/` that a metrics source never emits.
-const NOT_METRICS: [&str; 5] = [
+const NOT_METRICS_SOURCE: [&str; 7] = [
     // The session cookie.
     "smeltr_session",
     // The cookie binding an OIDC sign-in to the browser that started it.
@@ -1165,11 +1165,14 @@ const NOT_METRICS: [&str; 5] = [
     "smeltr_source_blocked_reason",
     "smeltr_source_connection_error",
     "smeltr_destination_last_refusal",
+    // The leader's warnings, scraped from it rather than a worker: the Operations page says what they are.
+    "smeltr_warning",
+    "smeltr_warning_start_time_seconds",
 ];
 
 /// The Sources page lists every metric the engine writes, under the kind it writes it as. There is no list of metrics
-/// in the engine, so this reads `src/`: every `"smeltr_…"` literal outside a test module is a metric or on
-/// `NOT_METRICS`, and each write form says whether its name is a counter or a gauge.
+/// in the engine, so this reads `src/`: every `"smeltr_…"` literal outside a test module is a metric the source
+/// gives or on `NOT_METRICS_SOURCE`, and each write form says whether its name is a counter or a gauge.
 #[test]
 fn the_metrics_table_matches_the_engine() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1222,7 +1225,7 @@ fn the_metrics_table_matches_the_engine() {
     let want: std::collections::BTreeSet<&str> = named
         .iter()
         .map(String::as_str)
-        .filter(|n| !NOT_METRICS.contains(n))
+        .filter(|n| !NOT_METRICS_SOURCE.contains(n))
         .collect();
     let have: std::collections::BTreeSet<&str> = rows.iter().map(|r| r.name.as_str()).collect();
     assert_eq!(have, want, "{} differs from the metrics src/ writes", path.display());
