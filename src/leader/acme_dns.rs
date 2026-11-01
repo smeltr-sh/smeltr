@@ -248,17 +248,26 @@ impl ZoneNameservers {
 impl Nameservers for ZoneNameservers {
     async fn all_answer(&self, record: &Record) -> Result<bool, String> {
         for (host, addresses) in ZoneNameservers::of(&record.zone).await? {
-            for ip in addresses {
-                if !answers(SocketAddr::new(ip, 53), record)
-                    .await
-                    .map_err(|e| format!("{host}: {e}"))?
-                {
-                    return Ok(false);
-                }
+            let at: Vec<_> = addresses.into_iter().map(|ip| SocketAddr::new(ip, 53)).collect();
+            if !one_answers(&host, &at, record).await? {
+                return Ok(false);
             }
         }
         Ok(true)
     }
+}
+
+/// Whether the nameserver `host` answers `record.value`, asked at the first of its `addresses` this host reaches:
+/// a host with no IPv6 route reaches none of its IPv6 ones. An error only when none is reached.
+async fn one_answers(host: &str, addresses: &[SocketAddr], record: &Record) -> Result<bool, String> {
+    let mut unreached = Vec::new();
+    for at in addresses {
+        match answers(*at, record).await {
+            Ok(answered) => return Ok(answered),
+            Err(e) => unreached.push(format!("{}: {e}", at.ip())),
+        }
+    }
+    Err(format!("{host}: {}", unreached.join("; ")))
 }
 
 /// Whether the nameserver at `at` answers `record.value` among the TXT records at `record.name`. Asked without
@@ -855,6 +864,13 @@ mod tests {
             assert_eq!(answers(at, &record("_acme-challenge.b.example.com")).await, Ok(false));
             assert_eq!(answers(at, &record("_acme-challenge.c.example.com")).await, Ok(false));
             assert_eq!(answers(at, &record("_acme-challenge.d.example.com")).await, Ok(false));
+            // A nameserver answers at any one address this host reaches, as one with no IPv6 route reaches none
+            // of its IPv6 ones; an error only when it is reached at none.
+            let unreached: SocketAddr = "[2001:db8::1]:53".parse().unwrap();
+            let a = record("_acme-challenge.a.example.com");
+            assert_eq!(one_answers("ns1.test", &[unreached, at], &a).await, Ok(true));
+            let e = one_answers("ns1.test", &[unreached], &a).await.unwrap_err();
+            assert!(e.starts_with("ns1.test: 2001:db8::1: "), "{e}");
         });
     }
 }
