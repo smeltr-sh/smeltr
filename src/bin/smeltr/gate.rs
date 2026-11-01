@@ -447,21 +447,34 @@ pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) ->
         log_refused(&method, &path, status, status.canonical_reason().unwrap_or_default());
         return response;
     }
-    // A rejection's text is a line. Anything longer is not one, and is answered by its status alone.
+    // A rejection's text is a line. Anything longer is not one, and is answered by its status alone. A worker
+    // route's answer is read only when its length says it is a line, and goes out as the bytes it was: its family
+    // carries no envelope, and a body this did not read is not one it may answer for.
+    let line = response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|l| l.to_str().ok()?.parse::<usize>().ok())
+        .is_some_and(|l| l <= LINE_AT_MOST);
+    if !enveloped && !line {
+        log_refused(&method, &path, status, status.canonical_reason().unwrap_or_default());
+        return response;
+    }
     let (parts, body) = response.into_parts();
-    let text = axum::body::to_bytes(body, 4096).await.unwrap_or_default();
-    let text = String::from_utf8_lossy(&text);
+    let bytes = axum::body::to_bytes(body, LINE_AT_MOST).await.unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes);
     let message = match text.trim() {
         "" => status.canonical_reason().unwrap_or("refused").to_lowercase(),
         text => text.to_string(),
     };
     log_refused(&method, &path, status, &message);
-    // A worker route's answer is logged for what it says, and answered as it was: its family carries no envelope.
     if !enveloped {
-        return Response::from_parts(parts, axum::body::Body::from(text.into_owned()));
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
     }
     refuse(status, &message)
 }
+
+/// The most a refusal's text may be to count as a line, in bytes.
+const LINE_AT_MOST: usize = 4096;
 
 /// Whether `user` may hold a session at all: any enabled account that signs in, and what it may then do is the
 /// policy's to decide. A key account never holds one: it calls with a key.

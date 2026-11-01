@@ -138,6 +138,12 @@ impl Relog {
         self.why = Some(why);
     }
 
+    /// [`Relog::fail`] and [`Relog::due`] in one, for a site with nothing to do between them.
+    pub fn fail_due(&mut self, why: String) -> Option<&str> {
+        self.fail(why);
+        self.due()
+    }
+
     /// The fault under way, when it is due its log now, and counts it logged.
     pub fn due(&mut self) -> Option<&str> {
         let why = self.why.as_deref()?;
@@ -160,6 +166,11 @@ impl Relog {
     }
 }
 
+thread_local! {
+    /// Whether this thread is inside [`take`], where a panic must not be logged through it again.
+    static WRITING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Every panic in the process is logged before the default hook prints it, so a thread or task that dies says so
 /// here and not only on a console nobody reads. A panic that budget handling expects is quiet.
 fn log_panics() {
@@ -167,10 +178,12 @@ fn log_panics() {
     ONCE.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if info
-                .payload()
-                .downcast_ref::<crate::core::buffer::OverBudget>()
-                .is_none()
+            let writing = WRITING.with(std::cell::Cell::get);
+            if !writing
+                && info
+                    .payload()
+                    .downcast_ref::<crate::core::buffer::OverBudget>()
+                    .is_none()
             {
                 let panic = info
                     .payload()
@@ -643,6 +656,15 @@ fn drain(receiver: Receiver<Message>) {
 /// Counted after the write and only when it landed: a count of what was said is worth nothing if it also counts
 /// what nobody could hear.
 fn take(event: Event, leader: bool) {
+    // A panic in here would re-enter through the hook and take a lock this thread holds.
+    WRITING.with(|w| w.set(true));
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            WRITING.with(|w| w.set(false));
+        }
+    }
+    let _done = Done;
     // Counted first, and against the console alone: whether the leader hears about this is a separate question
     // from whether anybody here did, and gating one on the other means a daemon with a closed stderr tells the
     // leader nothing -- the one shape where its console was already useless.

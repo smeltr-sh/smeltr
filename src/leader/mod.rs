@@ -63,7 +63,7 @@ pub mod updates;
 pub mod warnings;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
@@ -443,7 +443,9 @@ async fn heartbeat(
                 &entitled(&data_dir, &entitlements, &for_group),
                 // Unreadable, a beat entitles no certificate and the next one tries again.
                 &certificate_versions(&*store).unwrap_or_else(|e| {
-                    tracing::warn!(target: "leader.certificates_unreadable", subject = %for_group, error = %e, "the certificate versions could not be read, so this heartbeat is answered with none");
+                    if let Some(error) = relog(&CERTIFICATES_UNREADABLE, e) {
+                        tracing::warn!(target: "leader.certificates_unreadable", subject = %for_group, error, "the certificate versions could not be read, so this heartbeat is answered with none");
+                    }
                     Default::default()
                 }),
             ),
@@ -509,7 +511,9 @@ async fn heartbeat(
             .store
             .secrets_for_delivery(&entitled, &req.secret_versions)
             .unwrap_or_else(|e| {
-                tracing::warn!(target: "leader.secrets_not_delivered", subject = %worker_id, group = %group_id, error = %e, "the secrets a worker is entitled to could not be read, so this heartbeat delivers none");
+                if let Some(error) = relog(&SECRETS_NOT_DELIVERED, e.to_string()) {
+                    tracing::warn!(target: "leader.secrets_not_delivered", subject = %worker_id, group = %group_id, error, "the secrets a worker is entitled to could not be read, so this heartbeat delivers none");
+                }
                 Default::default()
             });
         (captures_for, secrets)
@@ -660,7 +664,9 @@ async fn ledger(
             let page = match store.ledger_page(&group, &key, after.as_deref(), LEDGER_PAGE) {
                 Ok(page) => page,
                 Err(e) => {
-                    tracing::warn!(target: "leader.ledger_unreadable", %group, source = %key.source, place = %key.place, error = %e, "what a source has already read could not be listed in full, so the worker may read some of it again");
+                    if let Some(error) = relog(&LEDGER_UNREADABLE, e.to_string()) {
+                        tracing::warn!(target: "leader.ledger_unreadable", %group, source = %key.source, place = %key.place, error, "what a source has already read could not be listed in full, so the worker may read some of it again");
+                    }
                     let _ = pages.blocking_send(Err(std::io::Error::other(e.to_string())));
                     return;
                 }
@@ -2052,10 +2058,36 @@ async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -
     }
 }
 
+/// A fault a request path meets on every request while it lasts, said once per change and on the interval
+/// (`logs::Relog`): what is due its log now, with the fault under way as `why`.
+fn relog(failing: &'static Mutex<crate::logs::Relog>, why: String) -> Option<String> {
+    failing
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .fail_due(why)
+        .map(str::to_string)
+}
+
+const fn relogged() -> Mutex<crate::logs::Relog> {
+    Mutex::new(crate::logs::Relog::new())
+}
+
+static CERTIFICATES_UNREADABLE: Mutex<crate::logs::Relog> = relogged();
+static SECRETS_NOT_DELIVERED: Mutex<crate::logs::Relog> = relogged();
+static LEDGER_UNREADABLE: Mutex<crate::logs::Relog> = relogged();
+static ROTATION_UNREADABLE: Mutex<crate::logs::Relog> = relogged();
+static ENROLLMENT_RETRIED: Mutex<crate::logs::Relog> = relogged();
+
 /// An enrollment refused, said here: the worker holding the enrollment code reads it in its own log, and an operator
 /// reading the leader's sees which worker is stuck and whether waiting will help (`retry`).
 fn refused_enrollment(subject: &str, error: String, retry: bool) -> Json<EnrollResult> {
-    tracing::warn!(target: "leader.enrollment_refused", %subject, %error, retry, "an enrollment was refused");
+    // A worker told to retry does, on a backoff, and is refused the same way until this leader mends: said once
+    // per change and on the interval. A settled refusal is each worker's own, and is said each time.
+    if !retry {
+        tracing::warn!(target: "leader.enrollment_refused", %subject, %error, retry, "an enrollment was refused");
+    } else if let Some(error) = relog(&ENROLLMENT_RETRIED, format!("{subject}: {error}")) {
+        tracing::warn!(target: "leader.enrollment_refused", %subject, error, retry, "an enrollment was refused");
+    }
     Json(EnrollResult {
         ok: false,
         error: Some(error),
@@ -3573,11 +3605,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
         Ok(Some(rotation)) => rotation,
         Ok(None) => return,
         Err(e) => {
-            // Once per change and on the interval, not on every beat: a file that stays unreadable is one problem.
-            static FAILING: std::sync::Mutex<crate::logs::Relog> = std::sync::Mutex::new(crate::logs::Relog::new());
-            let mut failing = FAILING.lock().unwrap_or_else(|e| e.into_inner());
-            failing.fail(e);
-            if let Some(error) = failing.due() {
+            if let Some(error) = relog(&ROTATION_UNREADABLE, e) {
                 tracing::warn!(target: "leader.rotation_unreadable", error, "the fleet's certificate authority rotation could not be read, so it does not cut over");
             }
             return;
