@@ -44,8 +44,7 @@ graph LR
 - **Pipelines** (`bundle.py`), each normalizing to ECS: grok and a positional CSV table for PAN-OS, with CIDR,
   directory and App-ID lookups; grok and key=value for FortiGate; grok with a custom pattern for nginx; grok and a
   code step for auth.log; JSON with nested structs for CloudTrail, unrolled to a document per event. Each has a
-  sample and a locked test. Each group holds its own tables, pipelines and destinations: the editor cannot preview a
-  group's pipeline that reads from `shared/`.
+  sample and a locked test. Each group holds its own tables, pipelines and destinations.
 - **History** (`stage.py`). Three accounts write it through the leader's API. The admin adds a worker group,
   Priya Raman onboards the firewalls, Marcus Webb onboards the web and cloud feeds and adds a 5xx alert, and
   the admin rotates the Elasticsearch key. Priya's App-ID risk change stays open for review; Marcus's Cisco ASA

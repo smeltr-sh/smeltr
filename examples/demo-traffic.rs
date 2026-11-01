@@ -100,7 +100,7 @@ fn traffic(scale: f64) {
                 let mut line = (s.record)(i, &at, trouble);
                 // Now and then an access line is cut short in transit: it fails to parse and takes the DLQ path.
                 if s.topic == "web.nginx.access" && mix(i ^ 0xC07).is_multiple_of(250) {
-                    line.truncate(20 + (mix(i) % (line.len() as u64 / 2 - 20)) as usize);
+                    line.truncate(line.len() / 4 + (mix(i) % (line.len() as u64 / 4 + 1)) as usize);
                 }
                 send(&producer, s.topic, &line);
                 sent += 1;
