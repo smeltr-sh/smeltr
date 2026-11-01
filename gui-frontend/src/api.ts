@@ -5275,7 +5275,13 @@ export interface AcmeDto {
   lastError: string | null;
   /** How long an order may take before the leader gives up on it, by challenge. */
   orderWithinSecs: Record<AcmeChallenge, number>;
+  /** The order running now, and the step it is on. */
+  ordering: { step: AcmeStep; sinceMillis: number } | null;
 }
+
+/** Where a running order is (`leader::acme::Step`). */
+export type AcmeStep =
+  'queued' | 'account' | 'proving' | 'publishing' | 'propagating' | 'validating' | 'installing';
 
 export type AcmeChallenge = 'tls-alpn-01' | 'http-01' | 'dns-01';
 
@@ -5317,9 +5323,10 @@ export function putAcme(settings: AcmeSettings): Promise<AcmeDto | AccountRefusa
   });
 }
 
-/** Orders a certificate from the authority the settings name, and serves it: at once under the root in force,
- * else as the switch an upload under another root begins. */
-export function orderAcme(): Promise<CertificatesDto | AccountRefusal> {
+/** Begins ordering a certificate from the authority the settings name, served once issued: at once under the
+ * root in force, else as the switch an upload under another root begins. Answers the settings with the step the
+ * order is on; one already running goes on instead. */
+export function orderAcme(): Promise<AcmeDto | AccountRefusal> {
   return accountCall('/api/settings/tls/acme/order', {
     method: 'POST',
   });
