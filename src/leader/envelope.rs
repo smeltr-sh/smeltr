@@ -159,6 +159,7 @@ pub struct Reason(pub String);
 /// A 5xx that repeats is one failure, not many: a store that is down fails every heartbeat and every poll, and a
 /// line per call would fill the log it cannot write with the same sentence. So a call that fails the way one just
 /// did (same method, path and status) is logged once a minute, with how many failed meanwhile under `repeats`.
+/// What fails after the last line is counted and never said: a failure that stops stops being written about.
 pub fn log_refused(method: &str, path: &str, status: StatusCode, error: &str) {
     log_refused_at(method, path, status, error, std::time::Instant::now());
 }
@@ -179,12 +180,12 @@ fn log_refused_at(method: &str, path: &str, status: StatusCode, error: &str, now
         let mut failed = FAILED.lock().unwrap_or_else(|e| e.into_inner());
         let key = (method.to_string(), path.to_string(), status.as_u16());
         let repeats = match failed.get_mut(&key) {
-            Some((said, since)) if now.duration_since(*said) < FAILED_AGAIN => {
-                *since += 1;
+            Some((said, count)) if now.duration_since(*said) < FAILED_AGAIN => {
+                *count += 1;
                 return;
             }
-            Some((said, since)) => {
-                let repeats = std::mem::take(since);
+            Some((said, count)) => {
+                let repeats = std::mem::take(count);
                 *said = now;
                 Some(repeats)
             }

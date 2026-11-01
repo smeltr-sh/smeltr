@@ -430,8 +430,8 @@ pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) ->
         return response;
     }
     // A handler's own refusal says why on the response (`Envelope`), and is answered as it is.
-    if let Some(said) = response.extensions().get::<Reason>() {
-        log_refused(&method, &path, status, &said.0);
+    if let Some(reason) = response.extensions().get::<Reason>() {
+        log_refused(&method, &path, status, &reason.0);
         return response;
     }
     let json = response
