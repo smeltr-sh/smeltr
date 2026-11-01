@@ -2,14 +2,16 @@
 //
 //   node demo.mjs ../../gui-frontend/src/demo/recorded.json
 //
-// Opens every page `shots.json` names, as the signed-in administrator, and keeps the last answer to every GET under
-// `/api/`, keyed by its path and sorted query. Then reads the live answers over a minute, so the demo's fleet moves
-// as the staged one did, and captures what each of main's sources reads and destinations are sent, so a capture
-// in the demo draws from what the fleet did. `stage.py` must have staged the fleet first.
+// Opens every page `shots.json` names and every page the GUI's navigation reaches (`navPages.mjs`), as the signed-in
+// administrator, and keeps the last answer to every GET under `/api/`, keyed by its path and sorted query. Then reads
+// the live answers over a minute, so the demo's fleet moves as the staged one did, and captures what each of main's
+// sources reads and destinations are sent, so a capture in the demo draws from what the fleet did. `stage.py` must
+// have staged the fleet first.
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { navPages } from './navPages.mjs';
 
 const BASE = 'https://127.0.0.1:8443';
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -53,24 +55,9 @@ const failed = [];
 // One visit per page, scope and branch: a page's answers do not depend on the shot's steps.
 const visits = new Map();
 for (const s of shots) visits.set(`${s.hash}|${s.scope || 'shared'}|${s.branch || 'main'}`, s);
-for (const extra of [
-  '#/status/issues',
-  '#/map',
-  '#/build/samples',
-  '#/admin/groups',
-  '#/admin/enrollment',
-  '#/admin/secrets',
-  '#/admin/accounts',
-  '#/admin/accounts/roles',
-  '#/admin/system/general',
-  '#/admin/system/sessions',
-  '#/admin/accounts/oidc',
-  '#/admin/system/certificates',
-  '#/admin/system/git',
-  '#/admin/system/license',
-  '#/changes',
-]) {
-  for (const branch of ['main', 'work']) visits.set(`${extra}|shared|${branch}`, { hash: extra });
+// And every page the GUI's navigation reaches, on both branches, so the demo answers each one.
+for (const hash of await navPages(() => ctx.newPage(), BASE + '/')) {
+  for (const branch of ['main', 'work']) visits.set(`${hash}|shared|${branch}`, { hash });
 }
 
 for (const [visit] of visits) {
