@@ -863,7 +863,9 @@ test('review lists where the rows do not fit a schema, and the dock counts them 
   await expect(
     panel.getByText('Login requires activity_id, time and user; the rows lack them.'),
   ).toBeVisible();
-  await expect(panel.getByText(/destination "search" accepts Audit/)).toBeVisible();
+  await expect(
+    panel.getByText('Pipeline logins produces no schema that destination search accepts (Audit).'),
+  ).toBeVisible();
   // A recommended field the rows lack is told after the findings, and not counted with them.
   await expect(
     panel.locator('li').last().getByText('Login recommends src_endpoint; the rows lack it.'),
