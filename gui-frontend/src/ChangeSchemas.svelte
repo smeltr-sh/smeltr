@@ -7,13 +7,17 @@
   import Ticked from './Ticked.svelte';
   import Recommends from './Recommends.svelte';
   import type { SchemaFindingDto } from './api';
+  import { openOnBranch } from './unsavedGuard';
 
   let {
+    branch,
     findings,
     loading,
     error,
     pipelineName,
   }: {
+    /** The branch the change is on, where its pipelines open. */
+    branch: string;
     findings: SchemaFindingDto[];
     loading: boolean;
     error: string;
@@ -55,15 +59,19 @@
   {#each grouped as g (JSON.stringify([g.group, g.pipeline]))}
     <section class="pipeline">
       <h3>
-        <a href="#/build/pipelines/{encodeURIComponent(g.pipeline)}"
-          >{pipelineName(g.group, g.pipeline)}</a
+        <a
+          href="#/build/pipelines/{encodeURIComponent(g.pipeline)}"
+          onclick={(e) => {
+            e.preventDefault();
+            void openOnBranch(branch, g.group, e.currentTarget.hash);
+          }}>{pipelineName(g.group, g.pipeline)}</a
         >
         <span class="dim">in {g.group}</span>
       </h3>
       <ul>
         {#each g.found as f, i (i)}
           <li>
-            <span class="step mono">{f.step ?? 'no step'}</span>
+            <span class="step mono">{f.step ?? ''}</span>
             {#if f.breaks}<span><Ticked text={f.message} /></span>{:else}<span class="dim"
                 ><span aria-hidden="true">ⓘ&nbsp;</span>{#if f.recommended}<Recommends
                     {...f.recommended}
