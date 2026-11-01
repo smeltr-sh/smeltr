@@ -691,6 +691,8 @@ struct RoutesInner {
     changed: Mutex<Option<Instant>>,
     /// The client's most recent global error, until a fetch or an assignment proves it reachable (E4).
     last_error: Mutex<Option<String>>,
+    /// Signing in refused, said once per change and on the interval: librdkafka asks again every few seconds.
+    sign_in: Mutex<crate::logs::Relog>,
     /// The cluster the client is connected to, once it knows.
     cluster: OnceLock<String>,
     /// Some source waits for its inbox to be fetched again (`SlotState::refetch`).
@@ -1076,11 +1078,14 @@ impl ClientContext for Routes {
         // librdkafka asks again on its own schedule, so a refusal stalls the client until one is answered.
         match super::entra::token(config) {
             Ok(token) => {
-                tracing::info!(target: "kafka.token_refreshed", group = %self.group(), principal = %token.principal_name, "signed in to Kafka as the pod's workload identity");
+                self.0.sign_in.lock().unwrap().clear();
+                tracing::debug!(target: "kafka.token_refreshed", group = %self.group(), principal = %token.principal_name, "signed in to Kafka as the pod's workload identity");
                 Ok(token)
             }
             Err(e) => {
-                tracing::warn!(target: "kafka.sign_in", group = %self.group(), error = %e, "could not sign in to Kafka as the pod's workload identity");
+                if let Some(error) = self.0.sign_in.lock().unwrap().fail_due(e.to_string()) {
+                    tracing::warn!(target: "kafka.sign_in", group = %self.group(), error, "could not sign in to Kafka as the pod's workload identity");
+                }
                 Err(e)
             }
         }

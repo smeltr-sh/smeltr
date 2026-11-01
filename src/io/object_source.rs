@@ -362,6 +362,8 @@ pub struct ObjectSource {
     receiving: Option<Receiving>,
     /// A receive failing, said once per change and on the interval.
     receive_failing: Relog,
+    /// Deleting finished messages failing, said once per change and on the interval: every tend tries again.
+    delete_failing: Relog,
 }
 
 impl ObjectSource {
@@ -416,6 +418,7 @@ impl ObjectSource {
             receive_error: None,
             receiving: None,
             receive_failing: Relog::default(),
+            delete_failing: Relog::default(),
         })
     }
 
@@ -444,14 +447,21 @@ impl ObjectSource {
         let finished = std::mem::take(&mut self.finished);
         let failed = self.queue.delete(&finished);
         self.messages_finished += finished.len().saturating_sub(failed.len()) as u64;
-        if let Some((_, why)) = failed.first() {
-            tracing::warn!(
-                target: "object_source.delete",
-                queue = %self.queue.name(),
-                count = failed.len(),
-                error = %why,
-                "finished messages were not deleted; trying again"
-            );
+        match failed.first() {
+            Some((_, why)) => {
+                if let Some(error) = self.delete_failing.fail_due(why.clone()) {
+                    tracing::warn!(
+                        target: "object_source.delete",
+                        queue = %self.queue.name(),
+                        count = failed.len(),
+                        error,
+                        "finished messages were not deleted; trying again"
+                    );
+                }
+            }
+            None => {
+                self.delete_failing.clear();
+            }
         }
         for (handle, _) in failed {
             self.finished.push(handle);
