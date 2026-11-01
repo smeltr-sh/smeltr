@@ -71,7 +71,7 @@
       <ul>
         {#each g.found as f, i (i)}
           <li>
-            <span class="step mono">{f.step ?? 'no step'}</span>
+            <span class="step mono">{f.step ?? ''}</span>
             {#if f.breaks}<span><Ticked text={f.message} /></span>{:else}<span class="dim"
                 ><span aria-hidden="true">ⓘ&nbsp;</span>{#if f.recommended}<Recommends
                     {...f.recommended}
