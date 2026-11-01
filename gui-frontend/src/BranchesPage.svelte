@@ -13,6 +13,8 @@
   import PushState, { pushWord } from './PushState.svelte';
   import SortButton from './SortButton.svelte';
   import { TableSort } from './sort.svelte';
+  import Chips, { type ChipItem } from './Chips.svelte';
+  import { ownerOf } from './branchNames';
   import { ago, count } from './time';
   import {
     listBranches,
@@ -244,11 +246,28 @@
     return `#/changes/review/${encodeURIComponent(branch)}`;
   }
 
+  // The key of the branches with no owner: a slash cannot be in an owner, so it is no owner's name.
+  const NO_OWNER = '/';
+  let owner = $state<string | null>(null);
+  const owners = $derived.by((): ChipItem<string>[] => {
+    const counts = new Map<string, number>();
+    for (const b of branches) {
+      const key = ownerOf(b.name) || NO_OWNER;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...counts]
+      .sort(([a], [b]) => (a === NO_OWNER ? 1 : b === NO_OWNER ? -1 : a.localeCompare(b)))
+      .map(([key, count]) => ({ key, label: key === NO_OWNER ? 'no owner' : key, count }));
+  });
+  const shown = $derived(
+    owner === null ? branches : branches.filter((b) => (ownerOf(b.name) || NO_OWNER) === owner),
+  );
+
   type Column = 'branch' | 'state' | 'tests' | 'behind' | 'lastSave' | 'remote';
   const sort = new TableSort<Column>();
   // `main` stays on top, outside the sort: it has none of these values.
   const sorted = $derived(
-    sort.apply(branches, {
+    sort.apply(shown, {
       branch: (b) => b.change?.title ?? b.name,
       state: stateText,
       tests: (b) => testTrouble(b.name),
@@ -262,8 +281,9 @@
 <SectionShell>
   <PageHeader title="Branches">
     {#snippet help()}
-      A branch is an editable copy of <code>main</code> as it is now. Opening it for review makes it a
-      change, which tells reviewers it is ready.
+      A branch is an editable copy of <code>main</code> as it is now. Opening it for review makes it
+      a change, which tells reviewers it is ready. A branch named <code>owner/what</code> is listed under
+      that owner.
     {/snippet}
   </PageHeader>
 
@@ -277,6 +297,17 @@
   {:else if loadFailed}
     <!-- The error bar says why. -->
   {:else}
+    {#if owners.some((o) => o.key !== NO_OWNER)}
+      <div class="tools">
+        <span class="dim">Owner</span>
+        <Chips
+          label="Filter branches by owner"
+          allCount={branches.length}
+          items={owners}
+          bind:value={owner}
+        />
+      </div>
+    {/if}
     <div class="card">
       <table>
         <thead>
@@ -336,7 +367,12 @@
                 {#if b.change}
                   <a href={reviewHash(b.name)}><strong>{b.change.title}</strong></a>
                 {:else}
-                  <span class="mono">{b.name}</span>
+                  {@const who = ownerOf(b.name)}
+                  <span class="mono"
+                    >{#if who}<span class="dim">{who}/</span>{b.name.slice(
+                        who.length + 1,
+                      )}{:else}{b.name}{/if}</span
+                  >
                 {/if}
                 {#if current === b.name}
                   <span class="tag accent">open here</span>
@@ -441,6 +477,16 @@
   .tally {
     display: inline-flex;
     gap: 0.5rem;
+  }
+  .tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 1.25rem;
+  }
+  .tools + .card {
+    margin-top: 0.5rem;
   }
   .card {
     border: 1px solid var(--border);

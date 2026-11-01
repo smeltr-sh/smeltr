@@ -378,6 +378,29 @@ test('the branch list shows every branch with its state, and deletes one', async
   expect(await branchNames(api)).not.toContain('parked');
 });
 
+test("the branch list shows one owner's branches, the part of a name before its slash", async ({
+  admin,
+  api,
+  leader,
+}) => {
+  for (const name of ['dana/routes', 'dana/lookups', 'lee/sources', 'fix-proto'])
+    await api.post('/api/branches', { name });
+
+  await goto(admin, leader, '#/changes');
+  const owners = admin.getByRole('group', { name: 'Filter branches by owner' });
+  await expect(owners).toContainText('dana2');
+  await expect(owners).toContainText('no owner1');
+  const row = (name: string) => admin.getByRole('row').filter({ hasText: name });
+  await owners.getByRole('button', { name: /^dana/ }).click();
+  await expect(row('dana/routes')).toBeVisible();
+  await expect(row('dana/lookups')).toBeVisible();
+  await expect(row('lee/sources')).toHaveCount(0);
+  await expect(row('fix-proto')).toHaveCount(0);
+  await owners.getByRole('button', { name: /^no owner/ }).click();
+  await expect(row('fix-proto')).toBeVisible();
+  await expect(row('dana/routes')).toHaveCount(0);
+});
+
 test('a sample the branch deleted is put back from its card on the change page', async ({
   admin,
   api,

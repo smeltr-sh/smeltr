@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { editedBy, suggestBranchName } from './branchNames';
+import { editedBy, ownerOf, suggestBranchName } from './branchNames';
 
 describe('editedBy', () => {
   it('names what a write changes, and the worker group when it is not shared', () => {
@@ -33,5 +33,13 @@ describe('suggestBranchName', () => {
     expect(suggestBranchName('dana', 'routes', ['dana/routes', 'dana/routes-2'])).toBe(
       'dana/routes-3',
     );
+  });
+});
+
+describe('ownerOf', () => {
+  it('is what comes before the first slash, or nothing', () => {
+    expect(ownerOf('dana/routes')).toBe('dana');
+    expect(ownerOf('dana/routes/v2')).toBe('dana');
+    expect(ownerOf('fix-proto')).toBe('');
   });
 });
