@@ -823,7 +823,7 @@ pub fn push_all(
         };
         // A push failing the way the last try did is the same failure, logged once, not once per retry.
         let not_pushed = |message: String| match failures.get(branch) {
-            Some(f) if f.tip.as_deref() == tip && f.message == *message => f.message.clone(),
+            Some(f) if f.tip.as_deref() == tip && same_failure(&f.message, &message) => f.message.clone(),
             _ => failed_push(branch, message),
         };
         match push_branch(repo, remote, branch, tip, last.map(String::as_str)) {
@@ -856,6 +856,15 @@ fn refused_push(branch: &str) -> crate::logs::Noted {
         format!("{branch} on the remote has commits this leader did not push"),
         %branch
     )
+}
+
+/// Whether two of git's failures say the same thing. curl's text says how long it took, and on a timeout how much
+/// came, which differ from one try to the next where refusing a connect takes time, as it does on Windows.
+fn same_failure(a: &str, b: &str) -> bool {
+    static TOOK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r" after \d+ (ms|milliseconds)( with \d+ (out of \d+ )?bytes received)?").unwrap()
+    });
+    TOOK.replace_all(a, "") == TOOK.replace_all(b, "")
 }
 
 /// The push did not reach the host, or the host would not take it, for `message`.
@@ -1961,6 +1970,18 @@ mod tests {
             Ok(git::Pushed::Done)
         );
         assert_eq!(git::branch_tip(&host.repo, "al/fix"), Some(ours));
+    }
+
+    #[test]
+    fn a_failure_differing_only_in_how_long_curl_took_to_connect_is_the_same() {
+        let at = |ms: u32| {
+            format!("unable to access: Failed to connect to 127.0.0.1 port 9 after {ms} ms: Couldn't connect")
+        };
+        assert!(same_failure(&at(0), &at(2041)));
+        assert!(!same_failure(&at(0), "unable to access: Could not resolve host"));
+        let timed_out =
+            |ms: u32, got: u32| format!("Operation timed out after {ms} milliseconds with {got} bytes received");
+        assert!(same_failure(&timed_out(30000, 0), &timed_out(30004, 12)));
     }
 
     #[test]
