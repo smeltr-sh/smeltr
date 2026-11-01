@@ -37,7 +37,7 @@ describe('ChangeDock', () => {
     });
     const button = (text: string) =>
       [...target.querySelectorAll('button')].find((b) => b.textContent === text)!;
-    button('1 of 4 tests fail').click();
+    button('1 of 4 tests failing').click();
     button('2 schema findings').click();
     expect(onopen.mock.calls).toEqual([['tests'], ['schemas']]);
   });
