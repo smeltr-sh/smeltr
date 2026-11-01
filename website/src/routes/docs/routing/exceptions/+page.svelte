@@ -98,10 +98,10 @@
     height={2800}
     crop={{ x: 460, y: 830, width: 2380, height: 1100 }}
     alt="The Exceptions on the Routes page: math is dropped, limits block the source, and Overflow, a math kind, is tagged."
-    caption="The group's Exceptions on the Routes page. Overflow's answer beats its category's, so Overflow is tagged while the rest of math is dropped."
+    caption="The worker group's Exceptions on the Routes page. Overflow's answer beats its category's, so Overflow is tagged while the rest of math is dropped."
   />
   <p>
-    A route or a destination can answer differently from the group, under
+    A route or a destination can answer differently from the worker group, under
     <strong>Exceptions</strong> in its card. A destination answers only the records it
     <a href="/docs/delivery#refused">refuses</a>.
   </p>
@@ -115,9 +115,9 @@
   </p>
   <p>
     The <strong>Tag field</strong>, under <strong>Exceptions</strong> →
-    <strong>Advanced</strong>, names another field for the group or for one route. If you rename it,
-    update both conditions. See <a href="/docs/steps/parser#unparsable">unparsable records</a> for examples
-    you can test.
+    <strong>Advanced</strong>, names another field for the worker group or for one route. If you
+    rename it, update both conditions. See
+    <a href="/docs/steps/parser#unparsable">unparsable records</a> for examples you can test.
   </p>
 
   <h2 id="unmatched">When no route matches</h2>

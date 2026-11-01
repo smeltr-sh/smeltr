@@ -210,12 +210,13 @@
     <li><strong>deployer</strong> also approves and deploys changes to it.</li>
   </ul>
   <p>
-    Anybody holding an area also reads the shared configuration, which every group draws on. The Map
-    and Status pages show only the groups a person holds. A change is shown only to someone who can
-    view every area it touches; changing it takes an editor, and deploying it a deployer, in each of
-    them. A change to shared counts as shared alone. Rolling back from History, or selecting
-    <strong>Release</strong>, moves every group, so it takes a deployer in shared and in every
-    group. Group lists name only the groups a person holds.
+    Anybody holding an area also reads the shared configuration, which every worker group draws on.
+    The Map and Status pages show only the worker groups a person holds. A change is shown only to
+    someone who can view every area it touches; changing it takes an editor, and deploying it a
+    deployer, in each of them. A change to shared counts as shared alone. Rolling back from History,
+    or selecting
+    <strong>Release</strong>, moves every worker group, so it takes a deployer in shared and in
+    every worker group. Worker group lists name only the worker groups a person holds.
   </p>
   <ol>
     <li>Open Admin → Accounts → Roles and select <strong>+ Add role</strong>.</li>

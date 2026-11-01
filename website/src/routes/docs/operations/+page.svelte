@@ -35,8 +35,8 @@
       wide that range is in Admin → System → General.
     </li>
     <li>
-      Use Logs to narrow by severity, worker, group, message and time. Preserve timestamps, commit
-      IDs and error text for an incident report; omit secrets and sensitive sample records.
+      Use Logs to narrow by severity, worker, worker group, message and time. Preserve timestamps,
+      commit IDs and error text for an incident report; omit secrets and sensitive sample records.
     </li>
   </ol>
   <p>
@@ -46,13 +46,14 @@
   <p>
     The leader serves its active warnings at <code>/api/metrics</code>, in the format Prometheus
     scrapes. Each warning is a <code>smeltr_warning</code> series while it holds, labeled with its
-    condition, severity, subject kind, subject, group and site, so Alertmanager pages on it and
-    resolves it when it clears. <code>smeltr_warning_start_time_seconds</code> says when each began.
+    condition, severity, subject kind, subject, worker group and site, so Alertmanager pages on it
+    and resolves it when it clears. <code>smeltr_warning_start_time_seconds</code> says when each began.
   </p>
   <ol>
     <li>
       In Admin → Accounts, add a key account for the scraper and make it a key. Its roles decide
-      which groups' warnings it sees; only an administrator sees warnings about the leader itself.
+      which worker groups' warnings it sees; only an administrator sees warnings about the leader
+      itself.
     </li>
     <li>
       Scrape <code>/api/metrics</code> with the key as a bearer token. A failed scrape is how Prometheus
@@ -111,7 +112,7 @@ enabled = true</code
     <li>For rollback, open Branches → History and identify the earlier known-good commit.</li>
     <li>
       Review its affected files and secret-version requirements. Rollback can affect the whole
-      fleet, not only the group selected in the UI.
+      fleet, not only the worker group selected in the UI.
     </li>
     <li>
       Select <strong>Roll back to here</strong> and confirm <strong>Deploy</strong>. The fleet stays

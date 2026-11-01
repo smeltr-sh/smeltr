@@ -48,7 +48,7 @@
   </p>
   <p>
     A value a step cannot read or compute throws an exception on its record, such as a parse or math
-    exception. The route's or the group's
+    exception. The route's or the worker group's
     <a href="/docs/routing/exceptions#answers">exception answers</a> decide what happens to the record.
   </p>
 

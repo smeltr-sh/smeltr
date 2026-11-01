@@ -97,7 +97,7 @@
     Select a schema's field count to open its fields. Choose each field's requirement in the table,
     or edit the schema with <strong>Edit JSON</strong>. A starred field is required, and one marked
     ° is recommended. A schema in
-    <code>shared/</code> can be named by every group.
+    <code>shared/</code> can be named by every worker group.
   </p>
 
   <h2 id="ecs">Read ECS</h2>

@@ -119,7 +119,7 @@ setup.ilm.enabled: false`;
 
   <h2 id="before-you-start">Before you start</h2>
   <ul>
-    <li>Pick a port no other receiver in the group uses, such as 9200.</li>
+    <li>Pick a port no other receiver in the worker group uses, such as 9200.</li>
     <li>
       Turn off the sender's setup of index templates and lifecycle policies. The receiver holds
       neither, and answers <code>404</code> to a request for one. On a Beat, set
@@ -180,7 +180,7 @@ setup.ilm.enabled: false`;
 
   <h2 id="senders">Tokens and certificates</h2>
   <p>
-    Anyone a receiver admits can put records into the group's pipelines, so a receiver needs
+    Anyone a receiver admits can put records into the worker group's pipelines, so a receiver needs
     <code>tokens</code>, an <code>certificate</code> and <code>trustedAuthorities</code>, or both.
     The leader refuses a receiver with neither.
   </p>

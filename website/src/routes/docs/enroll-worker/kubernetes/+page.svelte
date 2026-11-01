@@ -132,8 +132,8 @@ spec:
   </p>
   <p>
     <code>thread_limit</code> matches the CPU request, since a pod with no CPU limit otherwise runs
-    a transform thread for every core on its node. Size the memory limit for what the group runs:
-    see <a href="/docs/enroll-worker/sizing">Size a worker</a>.
+    a transform thread for every core on its node. Size the memory limit for what the worker group
+    runs: see <a href="/docs/enroll-worker/sizing">Size a worker</a>.
   </p>
   <p>
     <code>terminationGracePeriodSeconds</code> gives a stopping worker time to stop cleanly. It gives
@@ -153,9 +153,9 @@ spec:
 
   <h2 id="autoscale">Autoscale workers</h2>
   <p>
-    A group that grows and shrinks with load runs as a Deployment. Every pod enrolls itself with one
-    ephemeral enrollment code, and the leader forgets each worker once it is gone. Create and deploy
-    the group, then in Admin → Workers → Enrollment codes choose <strong
+    A worker group that grows and shrinks with load runs as a Deployment. Every pod enrolls itself
+    with one ephemeral enrollment code, and the leader forgets each worker once it is gone. Create
+    and deploy the group, then in Admin → Workers → Enrollment codes choose <strong
       >+ Add enrollment code</strong
     >, set
     <em>Workers it brings in</em> to Ephemeral and select <strong>Mint</strong>. An ephemeral
@@ -282,12 +282,12 @@ spec:
   </p>
   <ul>
     <li>
-      Keep <code>maxReplicas</code> at or below the partition count of the Kafka topics the group reads.
-      A worker beyond that is assigned no partitions and sits idle.
+      Keep <code>maxReplicas</code> at or below the partition count of the Kafka topics the worker group
+      reads. A worker beyond that is assigned no partitions and sits idle.
     </li>
     <li>
-      Do not autoscale a group whose Kafka source reads a selected range, one with a start or stop
-      position. A range read shares no work: every pod reads the whole range.
+      Do not autoscale a worker group whose Kafka source reads a selected range, one with a start or
+      stop position. A range read shares no work: every pod reads the whole range.
     </li>
     <li>Set a CPU request for the HorizontalPodAutoscaler to scale on.</li>
     <li>
@@ -339,7 +339,7 @@ spec:
     <a
       href="https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types"
       >Service type</a
-    > for your balancer. For an autoscaled group, select its Deployment's pods.
+    > for your balancer. For an autoscaled worker group, select its Deployment's pods.
   </p>
   <p>
     <code>GET /health</code> on the receiver port answers 200 while the receiver takes requests and 503
