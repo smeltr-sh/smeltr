@@ -127,7 +127,7 @@ export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
   ),
   builtin(
     'MAC',
-    'A hardware address, with colons, dashes, dots or no separator.',
+    'A hardware address: pairs split by colons or dashes, groups of four split by dots, two halves split by a dash, or no separator.',
     ['00:1A:2B:3C:4D:5E', '00-1A-2B-3C-4D-5E', '001A.2B3C.4D5E', '001A2B-3C4D5E', '001A2B3C4D5E'],
     ['00:1A:2B:3C:4D'],
     '(?:(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}|(?:[0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}|(?:[0-9A-Fa-f]{4}\\.){2}[0-9A-Fa-f]{4}|[0-9A-Fa-f]{6}-[0-9A-Fa-f]{6}|\\b[0-9A-Fa-f]{12}\\b)',
@@ -181,13 +181,7 @@ export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
     ['00', '32'],
     '(?:0?[1-9]|[12][0-9]|3[01])',
   ),
-  builtin(
-    'YEAR',
-    'A year of two or four digits. Of three digits, it takes the first two.',
-    ['26', '2026'],
-    ['2'],
-    '(?:[0-9]{2}){1,2}',
-  ),
+  builtin('YEAR', 'A year of two or four digits.', ['26', '2026'], ['2'], '(?:[0-9]{2}){1,2}'),
   builtin(
     'HOUR',
     'An hour on a 24-hour clock, 0 to 23, with an optional leading zero.',
@@ -262,7 +256,7 @@ export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
   ),
   builtin(
     'SYSLOGLINE',
-    'A whole classic syslog line, read into `log.syslog.priority`, `timestamp`, `host.hostname`, `process.name`, `process.pid` and `message`.',
+    'A whole syslog line, with a classic or ISO 8601 timestamp, read into `log.syslog.priority`, `timestamp`, `host.hostname`, `process.name`, `process.pid` and `message`.',
     ['<34>Oct 11 22:14:15 mymachine su[230]: failed'],
     [],
     '(?:<(?P<log.syslog.priority>[0-9]{1,3})>)?(?P<timestamp>%{SYSLOGTIMESTAMP}|%{TIMESTAMP_ISO8601}) %{NOTSPACE:host.hostname}(?: (?P<process.name>[\\x21-\\x5a\\x5c\\x5e-\\x7e]+)(?:\\[%{POSINT:process.pid}\\])?:)? %{GREEDYDATA:message}',

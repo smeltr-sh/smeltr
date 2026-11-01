@@ -48,7 +48,7 @@
   },
   {
     "name": "MAC",
-    "matches": "A MAC address with colons, dashes, dots or no separator.",
+    "matches": "A MAC address: pairs split by colons or dashes, groups of four split by dots, two halves split by a dash, or no separator.",
     "example": "00:1A:2b:3C:4d:5E"
   },
   {

@@ -630,7 +630,7 @@
                 >
               {/if}
               {#if fn.misses?.length}
-                <span class="fact-label">Doesn't match</span>
+                <span class="fact-label">Doesn't match whole</span>
                 <span class="fact"
                   >{#each fn.misses as m, j (j)}{#if j > 0}{', '}{/if}<code>{m}</code>{/each}</span
                 >
