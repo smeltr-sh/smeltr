@@ -44,6 +44,8 @@
   let error = $state('');
   /** The destination whose documents are open, by id. */
   let openDestination = $state<number | null>(null);
+  /** How many documents an open destination shows before a button shows the rest. */
+  const SHOWN = 50;
   /** Whether the open destination shows every document, not the first fifty. */
   let allDocuments = $state(false);
 
@@ -66,6 +68,7 @@
     running = true;
     error = '';
     openDestination = null;
+    allDocuments = false;
     try {
       const res = await routePreview(JSON.stringify(config), selected);
       if (!res.ok) {
@@ -226,13 +229,13 @@
               >{count(open.documents.length, 'document')}, as they would be sent</span
             >
           </div>
-          {#each allDocuments ? open.documents : open.documents.slice(0, 50) as doc}
+          {#each allDocuments ? open.documents : open.documents.slice(0, SHOWN) as doc}
             <div class="doc mono">{doc}</div>
           {/each}
-          {#if !allDocuments && open.documents.length > 50}
+          {#if !allDocuments && open.documents.length > SHOWN}
             <div class="doc dim">
               <ShowAll
-                more={open.documents.length - 50}
+                more={open.documents.length - SHOWN}
                 what="document"
                 onshowall={() => (allDocuments = true)}
               />

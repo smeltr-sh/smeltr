@@ -68,7 +68,7 @@
   let chips = $derived(status ? workerChips(status) : []);
   let shown = $derived(status ? shownRecords(status, only) : []);
   let held = $derived(status ? heldCount(status) : 0);
-  /** How many rows the tables show in all; the rest is a count. */
+  /** How many rows the tables show in all; a button shows the rest. */
   const ROWS = 8;
   let shownRows = $derived(shown.reduce((n, b) => n + b.rows.length, 0));
   /** Whoever asked to see every row captured, not the first few. */
