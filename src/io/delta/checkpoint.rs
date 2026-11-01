@@ -151,7 +151,7 @@ pub fn write(log: &Log, snapshot: &Snapshot) -> Result<Checkpoint, String> {
         sidecars: Vec::new(),
     };
     if let Err(why) = clean(log, metadata, &checkpoint, now) {
-        tracing::warn!(target: "delta.checkpoint", error = %why, "could not delete the log's expired entries");
+        tracing::warn!(target: "delta.log_not_cleaned", subject = log.subject(), error = %why, "could not delete the log's expired entries, so the log keeps them until a cleanup lands");
     }
     Ok(checkpoint)
 }

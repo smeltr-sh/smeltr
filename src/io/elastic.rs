@@ -56,7 +56,12 @@ pub fn classify_response(body: &[u8], count: usize, policy: DocIdPolicy) -> Resu
 /// [`classify_response`]'s outcome, and how many documents a data stream's failure store took: each answered as
 /// written, though not to the index it was sent to.
 fn classify(body: &[u8], count: usize, policy: DocIdPolicy) -> Result<(Outcome, usize), IoError> {
-    let Bulk { errors, items } = bulk(body).map_err(|_| IoError::transient("bulk response was not JSON"))?;
+    let Bulk { errors, items } = bulk(body).map_err(|_| {
+        IoError::transient(format!(
+            "bulk response was not JSON: {}",
+            String::from_utf8_lossy(&body[..body.len().min(200)])
+        ))
+    })?;
     let failure_stored = items.iter().flatten().flatten().filter(|a| a.failure_stored).count();
 
     if errors == Some(false) {

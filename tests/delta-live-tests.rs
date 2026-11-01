@@ -146,6 +146,7 @@ fn live_rows_are_committed_to_a_delta_log_it_creates() {
         smeltr::io::build_destination(
             &DestinationKind::Delta(config.clone()),
             0,
+            "d",
             metrics.clone(),
             &secrets,
             Some(&records),
@@ -334,8 +335,15 @@ fn live_a_unity_catalog_table_is_written_with_the_credentials_it_vends() {
     secrets.set_stored([("client-secret".to_string(), 1, "s3cr3t".to_string())]);
     let metrics = smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "live");
     let records = smeltr::plan::topology::Records::from([(None, record)]);
-    let mut d = smeltr::io::build_destination(&DestinationKind::Delta(config), 0, metrics, &secrets, Some(&records))
-        .expect("built");
+    let mut d = smeltr::io::build_destination(
+        &DestinationKind::Delta(config),
+        0,
+        "d",
+        metrics,
+        &secrets,
+        Some(&records),
+    )
+    .expect("built");
     let chunk = harness::cut(&plan, &[r#"{"host":"a","n":1}"#]);
     let rows = vec![OwnedRecord {
         payload: smeltr::plan::config::Payload::Record,

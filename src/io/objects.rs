@@ -233,6 +233,7 @@ fn key_of(prefix: &str, id: &str, extension: &str) -> String {
 /// a route not in it is refused. The line formats write every route's rows alike and do not read it.
 pub fn destination(
     config: &ObjectsDestinationConfig,
+    subject: &str,
     records: Option<&Records>,
     store: Arc<dyn ObjectStore>,
     runtime: Arc<tokio::runtime::Runtime>,
@@ -281,6 +282,7 @@ pub fn destination(
     };
     Ok(FileDestination::new(
         cloud_name(&config.cloud),
+        subject,
         files,
         store,
         runtime,

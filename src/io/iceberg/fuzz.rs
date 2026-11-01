@@ -731,15 +731,15 @@ fn writer(
     runtime: &Arc<tokio::runtime::Runtime>,
 ) -> Result<FileDestination, IoError> {
     let mut catalog = client(config, secrets);
-    let (loaded, schema) = open(&mut catalog, config, record)?;
+    let (loaded, schema) = open(&mut catalog, "d", config, record)?;
     assemble(
         config,
+        "d",
         record,
         catalog,
         loaded.metadata,
         schema,
-        store.clone(),
-        runtime.clone(),
+        (store.clone(), runtime.clone()),
     )
 }
 
@@ -1164,7 +1164,8 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
             ..config.clone()
         };
         let mut catalog = client(&earlier_config, &secrets);
-        open(&mut catalog, &earlier_config, &record_of(&earlier)).map_err(|e| format!("the earlier table: {e:?}"))?;
+        open(&mut catalog, "d", &earlier_config, &record_of(&earlier))
+            .map_err(|e| format!("the earlier table: {e:?}"))?;
         // As an engine of format version 3 made it, or upgraded it, its row ids already counted up to somewhere.
         if rng.chance(2) {
             let mut fake = fake.lock().unwrap();

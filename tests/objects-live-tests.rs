@@ -108,6 +108,7 @@ fn writing(config: ObjectsDestinationConfig, record: Option<&DataType>) -> Box<d
     smeltr::io::build_destination(
         &DestinationKind::Objects(config),
         0,
+        "d",
         metrics,
         &secrets,
         records.as_ref(),

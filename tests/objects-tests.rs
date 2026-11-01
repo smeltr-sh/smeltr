@@ -68,7 +68,7 @@ struct Fixture {
 fn open(config: &ObjectsDestinationConfig, records: Option<&Records>) -> Fixture {
     let store = Arc::new(InMemory::new());
     let runtime = smeltr::io::objects::runtime().unwrap();
-    let destination = smeltr::io::objects::destination(config, records, store.clone(), runtime.clone()).unwrap();
+    let destination = smeltr::io::objects::destination(config, "d", records, store.clone(), runtime.clone()).unwrap();
     Fixture {
         store,
         runtime,

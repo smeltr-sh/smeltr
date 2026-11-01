@@ -1251,9 +1251,17 @@ impl Transform {
         let Some(first) = held.rejections.first() else {
             return;
         };
-        let why = block_reason(&dest_name(&self.destinations, dest), &first.reason);
+        let name = dest_name(&self.destinations, dest);
+        let why = block_reason(&name, &first.reason);
         let rows: Vec<(usize, String)> = held.rejections.into_iter().map(|r| (r.doc, r.reason)).collect();
-        report_rejections(&self.metrics, &self.refusals, self.lanes[lane].source_id, dest, &rows);
+        report_rejections(
+            &self.metrics,
+            &self.refusals,
+            self.lanes[lane].source_id,
+            dest,
+            &name,
+            &rows,
+        );
         self.lanes[lane].reports.send(Report::Block(BlockCause::Refused, why));
     }
 
@@ -1266,7 +1274,15 @@ impl Transform {
         }
         let reports = self.lanes[lane].reports.clone();
         let rows: Vec<(usize, String)> = rejections.iter().map(|r| (r.doc, r.reason.clone())).collect();
-        report_rejections(&self.metrics, &self.refusals, self.lanes[lane].source_id, dest, &rows);
+        let name = dest_name(&self.destinations, dest);
+        report_rejections(
+            &self.metrics,
+            &self.refusals,
+            self.lanes[lane].source_id,
+            dest,
+            &name,
+            &rows,
+        );
         let own = rejections;
         let policy = self
             .destinations
@@ -2266,6 +2282,9 @@ pub struct Refusal {
 #[derive(Default)]
 pub struct RefusalRing {
     by_dest: Mutex<HashMap<DestId, VecDeque<Refusal>>>,
+    /// When each destination's refusals were last logged: once per [`crate::logs::RELOG_EVERY`] while they go on,
+    /// since every batch a blocking destination sends again is refused again.
+    said: Mutex<HashMap<DestId, crate::logs::Relog>>,
 }
 
 impl RefusalRing {
@@ -2282,6 +2301,12 @@ impl RefusalRing {
         while ring.len() > REFUSAL_RING_CAP {
             ring.pop_front();
         }
+    }
+
+    /// Whether `dest`'s refusals are due their line now.
+    fn due(&self, dest: DestId) -> bool {
+        let mut said = self.said.lock().unwrap_or_else(|e| e.into_inner());
+        said.entry(dest).or_default().fail_due("refusing".to_string()).is_some()
     }
 
     /// `dest`'s refusals, oldest first. Empty for a destination that has refused nothing.
@@ -2317,6 +2342,7 @@ fn report_rejections(
     ring: &RefusalRing,
     source: SourceId,
     dest: DestId,
+    dest_name: &str,
     rows: &[(usize, String)],
 ) {
     if rows.is_empty() {
@@ -2329,15 +2355,17 @@ fn report_rejections(
     //
     // `reasons` is what says whether this is one cause or thousands; `reason` is an example, which is all
     // `RefusalRing` below keeps for the same reason.
-    let reasons: HashSet<&str> = rows.iter().map(|(_, reason)| reason.as_str()).collect();
-    tracing::warn!(
-        target: "runtime.rows_rejected",
-        subject = %dest,
-        rows = rows.len(),
-        reasons = reasons.len(),
-        reason = %rows[0].1,
-        "a destination refused rows it will refuse again as sent, so its answer to Refused answers for them"
-    );
+    if ring.due(dest) {
+        let reasons: HashSet<&str> = rows.iter().map(|(_, reason)| reason.as_str()).collect();
+        tracing::warn!(
+            target: "runtime.rows_rejected",
+            subject = dest_name,
+            rows = rows.len(),
+            reasons = reasons.len(),
+            reason = %rows[0].1,
+            "a destination refused rows it will refuse again as sent, so its answer to Refused answers for them"
+        );
+    }
     ring.record(dest, &rows[0].1);
     let (source_label, dest_label) = (source.to_string(), dest.to_string());
     metrics.incr(
@@ -4694,7 +4722,7 @@ mod tests {
         let ring = RefusalRing::default();
         let rows: Vec<(usize, String)> = (0..500).map(|i| (i, "same cause every time".to_string())).collect();
 
-        report_rejections(&metrics, &ring, 0, 2, &rows);
+        report_rejections(&metrics, &ring, 0, 2, "d", &rows);
 
         let kept = ring.snapshot(2);
         assert_eq!(kept.len(), 1, "one call, one exemplar");

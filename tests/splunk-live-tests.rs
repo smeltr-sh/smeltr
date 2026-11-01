@@ -62,7 +62,7 @@ fn open(config: SplunkHecDestinationConfig, token: &str) -> Box<dyn Destination>
     let mut secrets = HeldSecrets::default();
     secrets.set_stored([("hec".to_string(), 1, token.to_string())]);
     let metrics = smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "live");
-    smeltr::io::build_destination(&DestinationKind::SplunkHec(config), 0, metrics, &secrets, None).expect("built")
+    smeltr::io::build_destination(&DestinationKind::SplunkHec(config), 0, "d", metrics, &secrets, None).expect("built")
 }
 
 /// Hands `rows` over as one batch and waits for its outcome.

@@ -98,6 +98,7 @@ const NULL_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
 /// cannot take the record, which a restart asks again.
 pub fn destination(
     config: &DeltaDestinationConfig,
+    subject: &str,
     records: Option<&Records>,
     secrets: &HeldSecrets,
 ) -> Result<FileDestination, IoError> {
@@ -122,7 +123,7 @@ pub fn destination(
         secrets,
         &runtime,
     )?;
-    let log = Log::new(store.clone(), runtime.clone(), config.stall_after, &root.key);
+    let log = Log::new(store.clone(), runtime.clone(), config.stall_after, &root.key).named(subject);
     let committer = DeltaCommitter::open(log, root, &config.partition_by, record).map_err(refused)?;
     let partitioner = committer.partitioner().map_err(refused)?;
     let file_schema = committer.file_schema().map_err(refused)?;
@@ -144,6 +145,7 @@ pub fn destination(
     };
     Ok(FileDestination::new(
         "delta",
+        subject,
         files,
         store,
         runtime,
@@ -288,8 +290,8 @@ impl Committer for DeltaCommitter {
                 Ok(()) => {}
                 // A checkpoint is upkeep, and no reason to hold rows back: the log reads without it.
                 Err(why) => {
-                    tracing::warn!(target: "delta.checkpoint", error = %why, version = self.snapshot.version,
-                        "could not checkpoint the table")
+                    tracing::warn!(target: "delta.checkpoint_failed", subject = self.log.subject(), error = %why, version = self.snapshot.version,
+                        "could not checkpoint the table, so its log is read whole until one lands")
                 }
             }
         }
@@ -371,6 +373,7 @@ impl Committer for DeltaCommitter {
                 // The conflict may be a lost commit of these files that landed late.
                 self.advance().map_err(CommitError::Transient)?;
                 if self.landed() {
+                    tracing::debug!(target: "delta.commit_found", subject = self.log.subject(), version = self.snapshot.version, "a commit whose answer was lost had landed");
                     return Ok(());
                 }
                 Err(CommitError::Conflict)
@@ -451,9 +454,13 @@ impl DeltaCommitter {
                 break;
             }
             // Taken or lost, the table is read again: whoever made it, it is there.
-            failed = log
-                .create(&commit_name(0), create(record, partition_by)?.into_bytes())
-                .err();
+            match log.create(&commit_name(0), create(record, partition_by)?.into_bytes()) {
+                Ok(true) => {
+                    tracing::info!(target: "delta.table_created", subject = log.subject(), partition_by = partition_by.len(), "a Delta table was created, its schema the record the pipeline writes")
+                }
+                Ok(false) => {}
+                Err(e) => failed = Some(e),
+            }
         }
         let mut snapshot = snapshot
             .ok_or_else(|| format!("the table could not be created: {}", failed.clone().unwrap_or_default()))?;
@@ -507,6 +514,7 @@ impl DeltaCommitter {
             // Taken or lost, the log is read again, and the columns are added or widened if they still need it.
             match log.create(&commit_name(version), body.into_bytes()) {
                 Ok(true) => {
+                    tracing::info!(target: "delta.schema_evolved", subject = log.subject(), operation, version, "a Delta table's schema took the columns of the record the pipeline writes");
                     snapshot.committed(vec![committed, Action::Metadata(Box::new(metadata))]);
                     checkpoint_due = checkpoint::due(&snapshot.metadata, version);
                 }

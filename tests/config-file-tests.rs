@@ -1627,7 +1627,7 @@ fn a_missing_credential_environment_variable_is_refused_at_construction() {
             stall_after: std::time::Duration::from_secs(30),
         });
     let metrics = smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "test");
-    let Err(e) = smeltr::io::build_destination(&cfg, 0, metrics, &Default::default(), None) else {
+    let Err(e) = smeltr::io::build_destination(&cfg, 0, "d", metrics, &Default::default(), None) else {
         panic!("an unset credential variable must not construct one");
     };
     assert!(e.to_string().contains("SMELTR_ES_AUTH_DEFINITELY_NOT_SET"), "{e}");

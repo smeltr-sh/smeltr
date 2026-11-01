@@ -1322,6 +1322,14 @@ impl Protocol for RemoteWrite {
             // A 2.0 store that wrote part of a request holds each series' newest point of it, so any of it sent again is
             // older than that point, and a store without an out-of-order window refuses it.
             400 | 409 | 413 | 422 if self.version == RemoteWriteVersion::V2 && wrote_any(response) => {
+                // Only this line carries the store's refusal: the rows it did not write are dropped, not sent again.
+                tracing::error!(
+                    target: "remote_write.partly_written",
+                    subject = self.unwritten.as_ref().map_or("prometheus", |u| u.subject()),
+                    status = response.status,
+                    error = %response.describe(),
+                    "the store wrote part of a request and refused the rest, which is dropped: sent again, it would be older than what the store now holds"
+                );
                 if let Some(unwritten) = &self.unwritten {
                     note_unwritten(unwritten, response, items, Some(0));
                 }
@@ -2545,7 +2553,7 @@ mod tests {
     #[test]
     fn a_2_0_store_writing_part_of_a_request_counts_the_rest_unwritten() {
         let registry = Arc::new(crate::metrics::Metrics::new());
-        let unwritten = Unwritten::new(crate::metrics::MetricsHandle::new(registry.clone(), "egress-7"), 7);
+        let unwritten = Unwritten::new(crate::metrics::MetricsHandle::new(registry.clone(), "egress-7"), 7, "d");
         let v2 = protocol_of(RemoteWriteVersion::V2).with_unwritten(unwritten);
         let mut items = samples(3);
         items.push(

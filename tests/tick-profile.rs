@@ -238,6 +238,7 @@ fn run_bundle(bundle: &str, rows: usize, max_rows: usize, gate: Option<&Gate>) -
             destination: smeltr::io::build_destination(
                 &d.kind,
                 d.id,
+                &d.name,
                 smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "profile"),
                 &Default::default(),
                 None,

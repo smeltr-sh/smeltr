@@ -71,8 +71,8 @@ pub fn destination(
     sign_in: Option<SharedSignIn>,
     name: &'static str,
     agent: &ureq::config::Config,
-    metrics: crate::metrics::MetricsHandle,
-    id: crate::core::id::DestId,
+    (metrics, id): (crate::metrics::MetricsHandle, crate::core::id::DestId),
+    subject: &str,
 ) -> HttpDestination<Post, HttpTransport> {
     let make = || {
         let transport = transport(config, credentials, agent);
@@ -82,6 +82,7 @@ pub fn destination(
         }
     };
     HttpDestination::new(make(), Post::new(config).named(name))
+        .with_subject(subject)
         .with_metrics(metrics, id)
         .with_max_request_bytes(config.max_request_bytes)
         .with_stall_after(config.stall_after)

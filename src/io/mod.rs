@@ -115,6 +115,7 @@ pub type Lend = Box<dyn FnMut() -> bool + Send>;
 pub fn build_destination(
     kind: &crate::plan::topology::DestinationKind,
     id: crate::core::id::DestId,
+    name: &str,
     metrics: crate::metrics::MetricsHandle,
     secrets: &crate::plan::topology::HeldSecrets,
     records: Option<&crate::plan::topology::Records>,
@@ -145,16 +146,17 @@ pub fn build_destination(
             let config = http::agent_config(c.tls.as_ref(), secrets)?;
             let protocol = elastic::Elastic::new(c.default_index.clone())
                 .with_doc_id_policy(c.doc_id)
-                .with_unwritten(http::Unwritten::new(metrics.clone(), id));
+                .with_unwritten(http::Unwritten::new(metrics.clone(), id, name));
             // One transport per request the buffer affords, each with its own connection, and one more for the
             // destination's own. The loop starts at `in_flight` and climbs; the senders above it are parked until it
             // earns them. Building one does no I/O, so an unearned sender costs a thread and no connection.
             if let Some(sniff) = &c.sniff {
-                let nodes = elastic_nodes::Nodes::new(&c.url, sniff, auth.clone(), &config, id.to_string());
+                let nodes = elastic_nodes::Nodes::new(&c.url, sniff, auth.clone(), &config, name.to_string());
                 let make =
                     || elastic_nodes::Sniffing::new(nodes.clone(), elastic::transport(&c.url, auth.clone(), &config));
                 return Ok(Box::new(
                     http::HttpDestination::new(make(), protocol)
+                        .with_subject(name)
                         .with_metrics(metrics, id)
                         .with_max_request_bytes(c.max_bulk_bytes)
                         .with_stall_after(c.stall_after)
@@ -164,6 +166,7 @@ pub fn build_destination(
             let make = || elastic::transport(&c.url, auth.clone(), &config);
             Ok(Box::new(
                 http::HttpDestination::new(make(), protocol)
+                    .with_subject(name)
                     .with_metrics(metrics, id)
                     .with_max_request_bytes(c.max_bulk_bytes)
                     .with_stall_after(c.stall_after)
@@ -178,6 +181,7 @@ pub fn build_destination(
             let make = || splunk::transport(c, &token, &config);
             Ok(Box::new(
                 http::HttpDestination::new(make(), splunk::Hec::new(c))
+                    .with_subject(name)
                     .with_metrics(metrics, id)
                     .with_max_request_bytes(c.max_request_bytes)
                     .with_stall_after(c.stall_after)
@@ -187,7 +191,7 @@ pub fn build_destination(
         DestinationKind::Http(c) => {
             let credentials = http::credential_headers("http destination", &c.credentials, secrets)?;
             let config = http::agent_config(c.tls.as_ref(), secrets)?;
-            let d = http_post::destination(c, &credentials, None, "http", &config, metrics, id);
+            let d = http_post::destination(c, &credentials, None, "http", &config, (metrics, id), name);
             Ok(Box::new(d))
         }
         DestinationKind::LogAnalytics(c) => {
@@ -197,7 +201,15 @@ pub fn build_destination(
                 &c.sign_in, resource, secrets, what,
             )?)));
             let config = http::agent_config(c.http.tls.as_ref(), secrets)?;
-            let d = http_post::destination(&c.http, &[], Some(sign_in), "logAnalytics", &config, metrics, id);
+            let d = http_post::destination(
+                &c.http,
+                &[],
+                Some(sign_in),
+                "logAnalytics",
+                &config,
+                (metrics, id),
+                name,
+            );
             Ok(Box::new(d))
         }
         DestinationKind::Prometheus(c) => {
@@ -208,8 +220,9 @@ pub fn build_destination(
             Ok(Box::new(
                 http::HttpDestination::new(
                     transport,
-                    remote_write::RemoteWrite::new(c).with_unwritten(http::Unwritten::new(metrics.clone(), id)),
+                    remote_write::RemoteWrite::new(c).with_unwritten(http::Unwritten::new(metrics.clone(), id, name)),
                 )
+                .with_subject(name)
                 .with_metrics(metrics, id)
                 .with_max_request_bytes(c.max_request_bytes)
                 .with_stall_after(c.stall_after),
@@ -218,11 +231,11 @@ pub fn build_destination(
         DestinationKind::Objects(c) => {
             let runtime = objects::runtime()?;
             let store = objects::store(c, secrets, &runtime)?;
-            let files = objects::destination(c, records, store, runtime).map_err(IoError::transient)?;
+            let files = objects::destination(c, name, records, store, runtime).map_err(IoError::transient)?;
             Ok(Box::new(files))
         }
-        DestinationKind::Iceberg(c) => Ok(Box::new(iceberg::table::destination(c, records, secrets)?)),
-        DestinationKind::Delta(c) => Ok(Box::new(delta::table::destination(c, records, secrets)?)),
+        DestinationKind::Iceberg(c) => Ok(Box::new(iceberg::table::destination(c, name, records, secrets)?)),
+        DestinationKind::Delta(c) => Ok(Box::new(delta::table::destination(c, name, records, secrets)?)),
     }
 }
 

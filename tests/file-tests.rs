@@ -203,6 +203,7 @@ fn table(config: FileConfig, answers: &[Answer]) -> Table {
     let record: Record = Arc::default();
     let d = FileDestination::new(
         "table",
+        "d",
         config,
         store.clone(),
         runtime.clone(),

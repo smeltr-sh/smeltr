@@ -788,8 +788,11 @@ fn a_pipeline_maps_as_it_compiled_and_as_its_sample_shows() {
 #[test]
 fn a_document_a_failure_store_took_lands_and_counts_unwritten() {
     let registry = Arc::new(smeltr::metrics::Metrics::new());
-    let unwritten =
-        smeltr::io::http::Unwritten::new(smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-4"), 4);
+    let unwritten = smeltr::io::http::Unwritten::new(
+        smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-4"),
+        4,
+        "d",
+    );
     let answer = Response {
         status: 200,
         headers: Vec::new(),

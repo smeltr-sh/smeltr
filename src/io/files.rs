@@ -392,9 +392,10 @@ pub struct FileDestination {
 
 impl FileDestination {
     /// Starts the writer thread. `store` and `runtime` are the table location's (`io::objects::store`,
-    /// `io::objects::runtime`); `name` names the destination in errors.
+    /// `io::objects::runtime`); `name` names the destination's kind in errors, `subject` the destination in its lines.
     pub fn new(
         name: &'static str,
+        subject: &str,
         config: FileConfig,
         store: Arc<dyn ObjectStore>,
         runtime: Arc<tokio::runtime::Runtime>,
@@ -406,11 +407,13 @@ impl FileDestination {
         let (reports, results) = channel();
         let open_bytes = Arc::new(AtomicUsize::new(0));
         let measured = open_bytes.clone();
+        let subject = subject.to_string();
         let thread = std::thread::Builder::new()
             .name(format!("{name}-file-writer"))
             .spawn(move || {
                 let mut writer = Writer {
                     name,
+                    subject,
                     config,
                     store,
                     runtime,
@@ -594,6 +597,8 @@ struct OpenFile {
 /// The writer thread's state. Owns the committer and every file between its opening and its commit.
 struct Writer {
     name: &'static str,
+    /// The destination, as its author named it, for its lines.
+    subject: String,
     config: FileConfig,
     store: Arc<dyn ObjectStore>,
     runtime: Arc<tokio::runtime::Runtime>,
@@ -690,6 +695,7 @@ impl Writer {
                         .map(|(p, _)| p.clone())
                         .expect("a full map has an oldest file");
                     let file = self.open.remove(&oldest).expect("found just now");
+                    tracing::debug!(target: "files.file_rotated", subject = %self.subject, open = MAX_OPEN_FILES, "the oldest open file was closed to make room for another partition's file");
                     self.close(file)?;
                 }
                 let file = self.open_file(partition.clone())?;
@@ -754,6 +760,7 @@ impl Writer {
             self.config.stall_after,
             self.config.parts_in_flight,
             self.config.attributes.clone(),
+            &self.subject,
             &path,
         )?;
         Ok(OpenFile {
@@ -831,10 +838,15 @@ impl Writer {
         loop {
             let error = match self.committer.commit(&self.closed) {
                 Ok(()) => {
+                    tracing::info!(
+                        target: "files.committed",
+                        subject = %self.subject,
+                        files = self.closed.len(),
+                        rows = self.closed.iter().map(|f| f.record_count).sum::<u64>(),
+                        after_failure = warned.then_some(true),
+                        "files were committed to the table"
+                    );
                     self.closed.clear();
-                    if warned {
-                        tracing::info!(target: "files.commit", destination = self.name, "the commit landed");
-                    }
                     return Ok(());
                 }
                 Err(e) => e,
@@ -844,18 +856,18 @@ impl Writer {
                 Some(wait) => {
                     match &error {
                         // Another writer committed first: ordinary for a shared table, so no warning.
-                        CommitError::Conflict => tracing::info!(
-                            target: "files.commit",
-                            destination = self.name,
+                        CommitError::Conflict => tracing::debug!(
+                            target: "files.commit_conflict",
+                            subject = %self.subject,
                             "another writer committed first; committing again"
                         ),
                         CommitError::Transient(why) | CommitError::Unknown(why) if !warned => {
                             warned = true;
                             tracing::warn!(
-                                target: "files.commit",
-                                destination = self.name,
+                                target: "files.commit_failed",
+                                subject = %self.subject,
                                 error = %why,
-                                stall_after = ?self.config.stall_after,
+                                stall_after_secs = self.config.stall_after.as_secs(),
                                 "a commit failed; trying again until the destination stalls"
                             );
                         }
@@ -864,19 +876,31 @@ impl Writer {
                     std::thread::sleep(wait)
                 }
                 None => {
-                    if maybe_landed {
-                        // A snapshot that landed names these files: deleting them would leave the table naming
-                        // files that are gone. Their rows are sent again, and may be in the table twice.
-                        self.closed.clear();
-                    }
-                    return Err(match error {
+                    let why = match error {
                         CommitError::Conflict => {
                             format!("commit lost to another writer {MAX_CONFLICT_RETRIES} times over")
                         }
                         CommitError::Transient(why) | CommitError::Unknown(why) => {
                             format!("commit did not land within {:?}: {why}", self.config.stall_after)
                         }
-                    });
+                    };
+                    // Only this line can say the rows may land twice: the stall that follows says the commit failed.
+                    tracing::error!(
+                        target: "files.commit_abandoned",
+                        subject = %self.subject,
+                        files = self.closed.len(),
+                        rows = self.closed.iter().map(|f| f.record_count).sum::<u64>(),
+                        maybe_landed,
+                        error = %why,
+                        "a commit was given up on, so its rows are sent again; a commit whose answer was lost may \
+                         have landed, and then the rows are in the table twice"
+                    );
+                    if maybe_landed {
+                        // A snapshot that landed names these files: deleting them would leave the table naming
+                        // files that are gone. Their rows are sent again, and may be in the table twice.
+                        self.closed.clear();
+                    }
+                    return Err(why);
                 }
             }
         }
@@ -885,6 +909,15 @@ impl Writer {
     /// The destination failed: aborts and forgets everything, so the batches sent again start clean. A closed file is
     /// deleted, best effort; one the store keeps is an orphan the table's own cleanup removes.
     fn fail(&mut self, why: String) -> IoError {
+        tracing::warn!(
+            target: "files.writer_reset",
+            subject = %self.subject,
+            files_aborted = self.open.len(),
+            files_deleted = self.closed.len(),
+            batches = self.pending.len(),
+            error = %why,
+            "the writer started over: its open uploads are aborted, its closed files deleted and its batches sent again"
+        );
         self.abort_open();
         self.delete_closed();
         self.ended = Some(self.seen);
@@ -900,10 +933,24 @@ impl Writer {
     }
 
     fn delete_closed(&mut self) {
+        let mut left = 0;
+        let mut first = None;
         for file in self.closed.drain(..) {
-            if let Ok(location) = Path::parse(&file.path) {
-                let _ = wait(&self.runtime, self.config.stall_after, self.store.delete(&location));
+            if let Ok(location) = Path::parse(&file.path)
+                && let Err(e) = wait(&self.runtime, self.config.stall_after, self.store.delete(&location))
+            {
+                left += 1;
+                first.get_or_insert_with(|| format!("{}: {e}", file.path));
             }
+        }
+        if let Some(error) = first {
+            tracing::warn!(
+                target: "files.orphans_left",
+                subject = %self.subject,
+                count = left,
+                error,
+                "files of a commit that did not land could not be deleted, so the store keeps them as orphans"
+            );
         }
     }
 }
@@ -954,6 +1001,8 @@ pub(crate) struct Upload {
     stall_after: Duration,
     parts_in_flight: usize,
     attributes: Attributes,
+    /// The destination, as its author named it, for its lines.
+    subject: String,
     /// The object's name in messages.
     name: String,
     location: Path,
@@ -971,6 +1020,7 @@ impl Upload {
         stall_after: Duration,
         parts_in_flight: usize,
         attributes: Attributes,
+        subject: &str,
         name: &str,
     ) -> Result<Upload, String> {
         let location = Path::parse(name).map_err(|e| format!("{name:?} is no path: {e}"))?;
@@ -980,6 +1030,7 @@ impl Upload {
             stall_after,
             parts_in_flight,
             attributes,
+            subject: subject.to_string(),
             name: name.to_string(),
             location,
             held: Vec::new(),
@@ -1068,9 +1119,11 @@ impl Upload {
 
 impl Drop for Upload {
     fn drop(&mut self) {
-        if let Some(parts) = self.parts.take() {
+        if let Some(parts) = self.parts.take()
+            && let Err(e) = wait(&self.runtime, self.stall_after, parts.abort())
+        {
             // A part left behind is an orphan the store's own lifecycle removes.
-            let _ = wait(&self.runtime, self.stall_after, parts.abort());
+            tracing::debug!(target: "files.upload_not_aborted", subject = %self.subject, object = %self.name, error = %e, "an upload could not be aborted, so the store keeps its parts until its lifecycle removes them");
         }
     }
 }
@@ -1138,6 +1191,7 @@ mod tests {
             Duration::from_secs(5),
             2,
             Attributes::new(),
+            "d",
             "a/file",
         )
         .unwrap();

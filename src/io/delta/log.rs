@@ -34,6 +34,8 @@ pub struct Log {
     stall_after: Duration,
     /// The log's key, `<table>/_delta_log`.
     dir: String,
+    /// The destination as its author named it, for the log's lines. The table's key until [`Log::named`].
+    subject: String,
 }
 
 /// One entry of the log as a listing gives it.
@@ -59,12 +61,24 @@ impl Log {
             store,
             runtime,
             stall_after,
+            subject: table.to_string(),
             dir: if table.is_empty() {
                 "_delta_log".to_string()
             } else {
                 format!("{table}/_delta_log")
             },
         }
+    }
+
+    /// Name the destination as its author did in the log's lines.
+    pub fn named(mut self, subject: &str) -> Log {
+        self.subject = subject.to_string();
+        self
+    }
+
+    /// The destination as its author named it.
+    pub fn subject(&self) -> &str {
+        &self.subject
     }
 
     /// How long a call may take.
@@ -201,6 +215,7 @@ impl Log {
             self.stall_after,
             1,
             Default::default(),
+            &self.subject,
             path.as_ref(),
         )
     }
@@ -883,7 +898,13 @@ pub fn last_checkpoint(log: &Log) -> Option<i64> {
     struct Last {
         version: i64,
     }
-    let bytes = log.get("_last_checkpoint").ok()??;
+    let bytes = match log.get("_last_checkpoint") {
+        Ok(bytes) => bytes?,
+        Err(e) => {
+            tracing::debug!(target: "delta.checkpoint_hint_unreadable", subject = log.subject(), error = %e, "the log's checkpoint hint could not be read, so the log is listed from its start");
+            return None;
+        }
+    };
     serde_json::from_slice::<Last>(&bytes).ok().map(|l| l.version)
 }
 
