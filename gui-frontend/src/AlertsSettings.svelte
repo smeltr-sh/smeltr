@@ -674,9 +674,16 @@
     gap: 0.5rem;
   }
 
-  .channel {
+  .channels {
     display: grid;
-    grid-template-columns: 9rem minmax(0, 1fr) 6rem 5rem 15rem;
+    grid-template-columns: 9rem minmax(0, 1fr) auto auto auto;
+  }
+
+  /* Each row lines up with the others: the columns are the table's, sized to the widest cell. */
+  .channel {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: subgrid;
     gap: 0.4rem 1rem;
     align-items: center;
     padding: 0.6rem 0;

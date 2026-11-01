@@ -624,9 +624,14 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
 
 /// Look on the timer for as long as the leader runs, and at once when the channels change.
 pub async fn run(state: AppState) {
+    let mut failing = crate::logs::Relog::default();
     loop {
-        if let Err(e) = look(&state).await {
-            tracing::warn!(target: "alerts.look", "could not look for alerts to send: {}", e.message);
+        match look(&state).await {
+            Ok(()) => _ = failing.clear(),
+            Err(e) => failing.fail(e.message),
+        }
+        if let Some(why) = failing.due() {
+            tracing::warn!(target: "alerts.look", "could not look for alerts to send: {why}");
         }
         tokio::select! {
             _ = tokio::time::sleep(EVERY) => {}
