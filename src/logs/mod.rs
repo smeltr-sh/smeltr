@@ -505,6 +505,37 @@ pub fn mark_leader_thread() {
     LEADER_THREAD.with(|t| t.set(true));
 }
 
+/// Say what the buffers lost since the last call, once per outage and on the interval: the counts a scrape reads,
+/// for a reader of the log alone. Console-only, since what carries logs onward must not queue a report of its own
+/// failing to.
+pub fn report_losses() {
+    static LAST: Mutex<([u64; 4], Relog)> = Mutex::new(([0; 4], Relog::new()));
+    let now = [dropped(), undelivered(), unread(), unwritable()];
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let since: Vec<u64> = now.iter().zip(last.0).map(|(n, l)| n.saturating_sub(l)).collect();
+    last.0 = now;
+    let (dropped, undelivered, unread, unwritable) = (since[0], since[1], since[2], since[3]);
+    if since.iter().any(|n| *n > 0) {
+        if last.1.fail_due("losing".to_string()).is_some() {
+            let count = |n: u64| (n > 0).then_some(n);
+            while_delivering(|| {
+                tracing::warn!(
+                    target: "logs.events_lost",
+                    dropped = count(dropped),
+                    undelivered = count(undelivered),
+                    unread = count(unread),
+                    unwritable = count(unwritable),
+                    "log events were lost since the last report"
+                );
+            });
+        }
+    } else if last.1.clear() {
+        while_delivering(|| {
+            tracing::info!(target: "logs.events_kept_again", "no log event has been lost since the last report");
+        });
+    }
+}
+
 /// Run `f` with everything this thread reports marked console-only.
 ///
 /// Whatever carries logs onward raises logs of its own when it fails, and those must not join the

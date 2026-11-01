@@ -67,6 +67,7 @@ pub fn backfill_env(env_var: &str, value: Option<impl ToString>) {
     let Some(value) = value else { return };
     let current = std::env::var(env_var).ok();
     if should_backfill(current.as_deref()) {
+        tracing::debug!(target: "startup.setting_from_file", var = env_var, "a setting the environment did not give was taken from the config file");
         unsafe { std::env::set_var(env_var, value.to_string()) };
     }
 }

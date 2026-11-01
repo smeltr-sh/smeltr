@@ -369,8 +369,12 @@ impl RowTable {
         }
         let built = index(match_kind, key, headers.len(), &file, cells)?;
         // A store that refuses the index costs every later compile a build, not this one its table.
-        let index = match kept.and_then(|at| store::derive(&at, &built).ok()) {
-            Some(index) => index,
+        let index = match kept.map(|at| store::derive(&at, &built)) {
+            Some(Ok(index)) => index,
+            Some(Err(e)) => {
+                tracing::warn!(target: "lookup.index_not_kept", error = %e, "a lookup file's index could not be stored, so it is built again at every compile");
+                anon(&built)?
+            }
             None => anon(&built)?,
         };
         RowTable::open(headers, Some(file), index, match_kind, key)

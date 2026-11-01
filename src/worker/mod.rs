@@ -146,10 +146,12 @@ fn host_name() -> Option<String> {
 
 fn load_or_create_worker_id(state_dir: &Path) -> String {
     let path = state_dir.join("worker_id");
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        let trimmed = existing.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
+    match std::fs::read_to_string(&path) {
+        Ok(existing) if !existing.trim().is_empty() => return existing.trim().to_string(),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            tracing::warn!(target: "worker.id_unreadable", path = %path.display(), error = %e, "this worker's id could not be read, so it mints a new one")
         }
     }
     let id = generate_worker_id();
@@ -171,10 +173,16 @@ pub fn needs_an_enrollment_code(state_dir: &Path) -> bool {
 }
 
 fn load_credential(state_dir: &Path) -> Option<String> {
-    std::fs::read_to_string(credential_path(state_dir))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    let path = credential_path(state_dir);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Some(s.trim().to_string()).filter(|s| !s.is_empty()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        // Read as never enrolled, which is wrong: a worker that enrolls again under a new id is the worst of it.
+        Err(e) => {
+            tracing::error!(target: "worker.credential_unreadable", path = %path.display(), error = %e, "this worker's credential could not be read, so it reads as never enrolled");
+            None
+        }
+    }
 }
 
 /// The id a worker enrolled again under, in place of the one its leader forgot.
@@ -1096,6 +1104,9 @@ fn run_reader_loop(
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    if !reader.commits.is_empty() {
+        tracing::info!(target: "runtime.drain_incomplete", subject = %reader.source_id, "the time allowed for finishing in-flight batches passed with some uncommitted, so they are read again by the next deployment");
+    }
     reader.report_in_flight();
 }
 
@@ -1521,6 +1532,7 @@ fn deploy(
         }
     }
 
+    tracing::info!(target: "runtime.deployed", readers = readers.len(), transform_threads = pool.len(), egress = egress.len(), "the deployment's threads started");
     registry_gauge(&registry, "smeltr_worker_readers", readers.len() as f64);
     registry_gauge(&registry, "smeltr_worker_transform_threads", pool.len() as f64);
     registry_gauge(&registry, "smeltr_worker_egress_threads", egress.len() as f64);
@@ -2296,6 +2308,7 @@ pub fn run_worker(mut config: WorkerConfig) {
         registry,
         secrets: Mutex::new(crate::plan::topology::HeldSecrets::default()),
         last_contact: Mutex::new(None),
+        heartbeat_failing: Default::default(),
         deployed_cue: Mutex::new(None),
         target: Mutex::new(None),
         arrived: Condvar::new(),
@@ -2527,6 +2540,8 @@ struct Supervisor {
     /// When the leader last answered. `None` until it has answered once, which is what gates everything else:
     /// a worker runs nothing until it has checked in, and its clone buys speed rather than independence.
     last_contact: Mutex<Option<Instant>>,
+    /// The heartbeat failing, and since when: said once per change and on the interval, not on every beat.
+    heartbeat_failing: Mutex<(crate::logs::Relog, Option<Instant>)>,
     /// The commit the leader's last answer said it deploys. `None` when the last beat went unanswered or the leader
     /// did not say, and then discovery fetches to find out.
     deployed_cue: Mutex<Option<String>>,
@@ -3071,6 +3086,7 @@ impl Supervisor {
             *self.deployed_cue.lock().unwrap() = answered.as_ref().ok().and_then(|resp| resp.deployed.clone());
             match answered {
                 Ok(resp) => {
+                    self.heartbeat_answered(&resp);
                     *self.last_contact.lock().unwrap() = Some(Instant::now());
                     self.window_answered();
 
@@ -3109,19 +3125,11 @@ impl Supervisor {
                     }
                 }
                 Err(e) if e.certificate_untrusted() => {
-                    tracing::warn!(
-                        target: "worker.heartbeat_failed",
-                        "the heartbeat failed: {}",
-                        heartbeat::untrusted_certificate(&self.config.leader_url, &e.reason()),
-                    );
+                    self.heartbeat_failed(heartbeat::untrusted_certificate(&self.config.leader_url, &e.reason()));
                     self.consider_offline_stop();
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        target: "worker.heartbeat_failed",
-                        error = %e,
-                        "the heartbeat failed, so the leader has not heard from this worker"
-                    );
+                    self.heartbeat_failed(e.to_string());
                     if e.credential_unknown() {
                         self.enroll_again();
                     }
@@ -3140,11 +3148,43 @@ impl Supervisor {
         }
     }
 
+    /// A heartbeat the leader did not answer: said once per change and on the interval, not on every beat, and the
+    /// recovery says how long it was.
+    fn heartbeat_failed(&self, error: String) {
+        let mut failing = self.heartbeat_failing.lock().unwrap_or_else(|e| e.into_inner());
+        failing.1.get_or_insert_with(Instant::now);
+        if let Some(error) = failing.0.fail_due(error) {
+            tracing::warn!(
+                target: "worker.heartbeat_failed",
+                error,
+                "the heartbeat failed, so the leader has not heard from this worker"
+            );
+        }
+    }
+
+    /// A heartbeat the leader answered.
+    fn heartbeat_answered(&self, resp: &heartbeat::HeartbeatResponse) {
+        let mut failing = self.heartbeat_failing.lock().unwrap_or_else(|e| e.into_inner());
+        if failing.0.clear() {
+            let down_for_secs = failing.1.take().map_or(0, |since| since.elapsed().as_secs());
+            tracing::info!(target: "worker.heartbeat_recovered", down_for_secs, "the leader answers heartbeats again");
+        }
+        tracing::debug!(
+            target: "worker.heartbeat_answered",
+            holds = resp.holds.len(),
+            captures = resp.captures.len(),
+            directive = resp.directive.is_some(),
+            deployed = resp.deployed.as_deref(),
+            "the leader answered a heartbeat"
+        );
+    }
+
     /// The beat to send next: the window still owed, or else a new one under the next number, with what this
     /// worker and its runtime say of themselves now.
     fn next_beat(&self, stopping: bool) -> HeartbeatRequest {
         // On every beat, whether or not it takes a new window: a scrape reads these too.
         record_log_counts(&self.registry, "supervisor");
+        crate::logs::report_losses();
         record_memory_gauge(&self.registry, "supervisor");
         // Read before the window's lock, which the supervisor's loop takes too: sampling reads files.
         let commit = self.commit.lock().unwrap().clone();
@@ -3333,6 +3373,7 @@ impl Supervisor {
                     }
                 }
                 crate::heartbeat::Invited::Unreadable { session } if inv.wants(&session) => {
+                    tracing::warn!(target: "worker.capture_unreadable", %session, "a capture invitation could not be read, so the capture is answered as not served");
                     unreadable.push(crate::heartbeat::CaptureReport {
                         session,
                         worker_id: self.worker_id.clone(),
@@ -3362,6 +3403,7 @@ impl Supervisor {
         let keys = |list: &[heartbeat::Hold]| list.iter().map(|h| h.key.clone()).collect::<HashSet<_>>();
         if keys(&held.listed) != keys(&holds) {
             held.epoch += 1;
+            tracing::info!(target: "worker.holds_changed", held = holds.len(), epoch = held.epoch, "the single-worker sources this worker holds changed");
         }
         held.listed = holds;
     }
@@ -3709,6 +3751,7 @@ impl Supervisor {
             return;
         }
         let generation = target.as_ref().map_or(1, |t| t.generation + 1);
+        tracing::debug!(target: "worker.target_discovered", subject = %commit, generation, "discovery saw a new commit");
         *target = Some(Target { generation, commit });
         drop(target);
         self.arrived.notify_all();
@@ -3781,14 +3824,22 @@ impl Supervisor {
                 match handle.exited() {
                     child::Exit::Running => running = Some(handle),
                     child::Exit::Unconfirmed => {
+                        if !blocked {
+                            tracing::error!(
+                                target: "worker.runtime_exit_unconfirmed",
+                                subject = %handle.commit,
+                                "the runtime ended but something it started may still be reading, so this worker deploys nothing until it is gone"
+                            );
+                        }
                         blocked = true;
                         running = Some(handle);
                     }
-                    child::Exit::Confirmed => {
+                    child::Exit::Confirmed(exit) => {
                         tracing::warn!(
                             target: "worker.runtime_exited",
                             subject = %handle.commit,
-                            "a runtime process ended on its own, so this worker is running nothing"
+                            %exit,
+                            "the runtime ended on its own, so this worker is running nothing"
                         );
                         content = None;
                         blocked = false;
@@ -3935,6 +3986,7 @@ impl Supervisor {
             };
             if running.is_some() && content.as_ref() == Some(&arriving) {
                 // Same configuration under a new commit: what this worker represents moves, and nothing restarts.
+                tracing::debug!(target: "worker.commit_represented", subject = %target.commit, "a new commit holds what this worker already runs, so nothing restarts");
                 *self.commit.lock().unwrap() = Some(target.commit.clone());
                 last_good = Some((target.commit.clone(), arriving));
                 self.note_failure(None);
@@ -3959,7 +4011,7 @@ impl Supervisor {
                             "a commit was fetched but will not run, so this worker keeps running what it has"
                         );
                     } else {
-                        tracing::info!(
+                        tracing::debug!(
                             target: "worker.commit_refused",
                             subject = %target.commit,
                             error = %why,
@@ -4042,6 +4094,7 @@ impl Supervisor {
             let (commit, arriving, validated) = started;
             match begun {
                 Begun::Started(handle) => {
+                    tracing::info!(target: "worker.deployed", subject = %commit, incarnation, restored, "the runtime is running the commit");
                     // What this process itself may have opened a capture against, it no longer may. Its sources
                     // are all it needs: this process's own registry labels no subject.
                     self.captures.set_deployed(&Arc::new(crate::metrics::Subjects {
@@ -4095,6 +4148,7 @@ impl Supervisor {
                     // The same target again once the backoff has run: a broker that was not up and a secret that
                     // had not arrived are both answered by asking again, not by waiting for another deploy.
                     retry_at = Some(Instant::now() + backoff(failures));
+                    tracing::debug!(target: "worker.retry_scheduled", subject = %target.commit, failures, retry_in_secs = backoff(failures).as_secs(), "the deploy is tried again after a backoff");
                 }
                 Begun::Unconfirmed(handle) => {
                     content = None;
@@ -4115,7 +4169,7 @@ impl Supervisor {
         incarnation: u64,
         inbox: &Arc<child::RuntimeInbox>,
     ) -> Begun {
-        tracing::info!(target: "worker.redeploying", subject = %target.commit, "redeploying to a new commit");
+        tracing::info!(target: "worker.runtime_starting", subject = %target.commit, "starting a runtime for a commit");
         self.phase("starting");
         // Before the runtime is handed its certificates, so a new version arriving while it starts restarts it
         // rather than leaving it on the one it was handed.
@@ -4800,7 +4854,10 @@ fn load_target(
         Ok(s) => s,
         // A commit carries every group, so it holds this one before anybody authors it and after somebody deletes
         // it. Nothing to run is a state, not a failure.
-        Err(_) if content.group.is_none() => LoadedSystem::default(),
+        Err(_) if content.group.is_none() => {
+            tracing::info!(target: "worker.group_not_authored", %group_id, subject = %commit, "the commit has nothing for this worker's group, so it runs nothing");
+            LoadedSystem::default()
+        }
         Err(e) => return Err(format!("a commit was fetched but does not load: {e}")),
     };
     // What orders this commit's Kafka `start`s after those of the commits before it.
@@ -4884,6 +4941,9 @@ fn start_deployment(spec: &child::StartSpec, runtime: &child::Runtime) -> Result
         }
         None => None,
     };
+    if let Some(fit) = &fitted {
+        tracing::debug!(target: "worker.memory_fitted", columnar_bytes = fit.columnar, "the deployment was sized to this worker's memory");
+    }
     process_memory_budget().set_limit(fitted.map_or_else(crate::startup_config::memory_budget_bytes, |f| f.columnar));
     deploy(&system, topology, spec.thread_limit, fitted, runtime).map_err(|e| e.to_string())
 }
@@ -6249,6 +6309,7 @@ mod tests {
             registry: Arc::new(Metrics::new()),
             secrets: Mutex::new(crate::plan::topology::HeldSecrets::default()),
             last_contact: Mutex::new(None),
+            heartbeat_failing: Default::default(),
             deployed_cue: Mutex::new(None),
             target: Mutex::new(None),
             arrived: Condvar::new(),
@@ -6612,7 +6673,7 @@ mod tests {
         .expect("a runtime stands up");
         let dead = (0..500).any(|_| {
             std::thread::sleep(Duration::from_millis(10));
-            matches!(handle.exited(), child::Exit::Confirmed)
+            matches!(handle.exited(), child::Exit::Confirmed(_))
         });
         assert!(
             dead,

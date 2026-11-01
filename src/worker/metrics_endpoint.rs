@@ -180,6 +180,7 @@ async fn answer(axum::extract::State(scraped): axum::extract::State<Arc<Scraped>
             .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("basic"))
             .map(|(_, credentials)| crate::leader::auth::hash_secret(credentials.trim()));
         if !sent.is_some_and(|sent| verify_slices_are_equal(sent.as_bytes(), expected.as_bytes()).is_ok()) {
+            tracing::debug!(target: "worker.metrics_scrape_refused", "a metrics scrape sent no usable credential");
             let mut refused = StatusCode::UNAUTHORIZED.into_response();
             refused.headers_mut().insert(
                 header::WWW_AUTHENTICATE,
