@@ -123,15 +123,9 @@
     }
   }
 
-  // Turned off, it saves at once: there is nothing left to fill in.
-  $effect(() => {
-    if (!enabled && settings?.mail?.enabled && !busy) {
-      void saveMailOff();
-    }
-  });
-
+  /** Off saves at once: there is nothing left to fill in. On opens the form for its Save. */
   async function saveMailOff() {
-    if (!settings?.mail) return;
+    if (enabled || !settings?.mail?.enabled || busy) return;
     busy = true;
     try {
       const { passwordSet: _, ...mail } = settings.mail;
@@ -367,7 +361,12 @@
   <Panel title="Mail server" onsubmit={saveMail}>
     {#snippet actions()}
       <span class="inline label"
-        >Enabled <Toggle bind:checked={enabled} ariaLabel="Mail server enabled" /></span
+        >Enabled <Toggle
+          bind:checked={enabled}
+          disabled={busy}
+          ariaLabel="Mail server enabled"
+          onchange={saveMailOff}
+        /></span
       >
     {/snippet}
     {#if enabled}

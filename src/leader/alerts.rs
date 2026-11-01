@@ -120,7 +120,8 @@ pub enum Kind {
     Webhook {
         url: String,
         format: Format,
-        /// The header that carries the sealed secret, when there is one.
+        /// The header that carries the channel's sealed secret, when it has one. PagerDuty has none: its secret is
+        /// the routing key, in the body.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secret_header: Option<String>,
     },
@@ -411,10 +412,34 @@ impl From<Unsent> for String {
 }
 
 /// Post one change to a webhook.
+/// How a webhook carries its channel's sealed secret.
+#[derive(Debug, Clone, Copy)]
+enum Secret<'a> {
+    /// In the named header.
+    Header(&'a str, &'a str),
+    /// As PagerDuty's routing key.
+    RoutingKey(&'a str),
+}
+
+impl<'a> Secret<'a> {
+    /// `value` as the webhook carries it; `None` where it carries no secret.
+    fn of(format: Format, secret_header: Option<&'a str>, value: &'a str) -> Option<Secret<'a>> {
+        match format {
+            Format::PagerDuty => Some(Secret::RoutingKey(value)),
+            _ => secret_header.map(|name| Secret::Header(name, value)),
+        }
+    }
+
+    /// Whether the webhook carries a secret: a PagerDuty one always does.
+    fn carried(format: Format, secret_header: Option<&str>) -> bool {
+        format == Format::PagerDuty || secret_header.is_some()
+    }
+}
+
 async fn post(
     url: &str,
     format: Format,
-    secret: Option<(&str, &str)>,
+    secret: Option<Secret<'_>>,
     status: Status,
     told: &AlertTold,
 ) -> Result<u16, Unsent> {
@@ -428,12 +453,15 @@ async fn post(
         TIMEOUT,
         reqwest::redirect::Policy::none(),
     )?;
-    let routing_key = secret.filter(|_| format == Format::PagerDuty).map(|(_, value)| value);
+    let routing_key = match secret {
+        Some(Secret::RoutingKey(key)) => Some(key),
+        _ => None,
+    };
     let mut request = client
         .post(url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(webhook_body(format, status, told, routing_key).to_string());
-    if let Some((name, value)) = secret.filter(|_| format != Format::PagerDuty) {
+    if let Some(Secret::Header(name, value)) = secret {
         request = request.header(name, value);
     }
     let response = request
@@ -541,18 +569,21 @@ async fn tell(state: &AppState, channel: &Channel, mail: Option<&Mail>, changes:
             format,
             secret_header,
         } => {
-            let secret = match secret_header {
-                Some(header) => {
+            let value = match Secret::carried(*format, secret_header.as_deref()) {
+                true => {
                     let key = secret_key(&channel.id);
                     let value = run_store(state.store.clone(), move |s| s.opened_setting(&key))
                         .await
                         .map_err(|e| e.message)?
+                        .filter(|v| !v.is_empty())
                         .ok_or_else(|| format!("{}: enter the {} again", channel.name, secret_name(*format)))?;
-                    Some((header.clone(), value))
+                    Some(value)
                 }
-                None => None,
+                false => None,
             };
-            let secret = secret.as_ref().map(|(n, v)| (n.as_str(), v.as_str()));
+            let secret = value
+                .as_deref()
+                .and_then(|v| Secret::of(*format, secret_header.as_deref(), v));
             for told in changes.raised {
                 post(url, *format, secret, Status::Raised, &told).await?;
                 record(state, vec![told], Vec::new()).await?;
@@ -627,11 +658,15 @@ pub async fn run(state: AppState) {
     let mut failing = crate::logs::Relog::default();
     loop {
         match look(&state).await {
-            Ok(()) => _ = failing.clear(),
+            Ok(()) => {
+                if failing.clear() {
+                    tracing::info!(target: "alerts.look", "alerts are looked for again");
+                }
+            }
             Err(e) => failing.fail(e.message),
         }
         if let Some(why) = failing.due() {
-            tracing::warn!(target: "alerts.look", "could not look for alerts to send: {why}");
+            tracing::warn!(target: "alerts.look", error = %why, "could not look for alerts to send");
         }
         tokio::select! {
             _ = tokio::time::sleep(EVERY) => {}
@@ -849,12 +884,16 @@ fn tidy(mut channel: Channel) -> Channel {
         channel.id = super::auth::generate_secret().split_at(16).0.to_string();
     }
     match &mut channel.kind {
-        Kind::Webhook { url, secret_header, .. } => {
+        Kind::Webhook {
+            url,
+            format,
+            secret_header,
+        } => {
             *url = url.trim().to_string();
             *secret_header = secret_header
                 .take()
                 .map(|h| h.trim().to_string())
-                .filter(|h| !h.is_empty());
+                .filter(|h| !h.is_empty() && *format != Format::PagerDuty);
         }
         Kind::Email { to } => {
             *to = to
@@ -978,12 +1017,7 @@ async fn test(state: &AppState, channel: &Channel, secret: Option<String>) -> Re
             }
             let save = SecretSave::sent(secret, moved);
             let secret = save.held(stored.as_deref());
-            let name = match format {
-                Format::PagerDuty => "",
-                _ => secret_header.as_deref().unwrap_or_default(),
-            };
-            let secret = secret.filter(|_| *format == Format::PagerDuty || !name.is_empty());
-            let secret = secret.map(|value| (name, value));
+            let secret = secret.and_then(|v| Secret::of(*format, secret_header.as_deref(), v));
             let status = post(url, *format, secret, Status::Test, &told)
                 .await
                 .map_err(String::from)?;
@@ -1021,6 +1055,22 @@ async fn test(state: &AppState, channel: &Channel, secret: Option<String>) -> Re
 mod tests {
     use super::*;
     use crate::leader::warnings::{Severity, SubjectKind};
+
+    /// A PagerDuty channel always carries its secret, as the routing key; another only in a header it names.
+    #[test]
+    fn a_secret_is_carried_as_the_format_carries_it() {
+        assert!(Secret::carried(Format::PagerDuty, None));
+        assert!(matches!(
+            Secret::of(Format::PagerDuty, None, "rk"),
+            Some(Secret::RoutingKey("rk"))
+        ));
+        assert!(!Secret::carried(Format::Slack, None));
+        assert!(Secret::of(Format::Slack, None, "s").is_none());
+        assert!(matches!(
+            Secret::of(Format::GenericJson, Some("X-Hook"), "s"),
+            Some(Secret::Header("X-Hook", "s"))
+        ));
+    }
 
     fn warning(condition: Condition, subject: &str, group: Option<&str>) -> Warning {
         Warning {
