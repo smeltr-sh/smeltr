@@ -411,7 +411,6 @@ impl From<Unsent> for String {
     }
 }
 
-/// Post one change to a webhook.
 /// How a webhook carries its channel's sealed secret.
 #[derive(Debug, Clone, Copy)]
 enum Secret<'a> {
@@ -436,6 +435,7 @@ impl<'a> Secret<'a> {
     }
 }
 
+/// Post one change to a webhook.
 async fn post(
     url: &str,
     format: Format,
