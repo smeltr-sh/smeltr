@@ -5273,6 +5273,8 @@ export interface AcmeDto {
   renewAfterMillis: number | null;
   lastAttemptMillis: number | null;
   lastError: string | null;
+  /** How long an order may take before the leader gives up on it, by challenge. */
+  orderWithinSecs: Record<AcmeChallenge, number>;
 }
 
 export type AcmeChallenge = 'tls-alpn-01' | 'http-01' | 'dns-01';

@@ -67,6 +67,7 @@ const ACME = {
   renewAfterMillis: null,
   lastAttemptMillis: null,
   lastError: null,
+  orderWithinSecs: { 'tls-alpn-01': 120, 'http-01': 120, 'dns-01': 900 },
 };
 
 /** The certificate list the leader's chooser offers. */

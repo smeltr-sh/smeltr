@@ -82,6 +82,16 @@ pub enum Challenge {
 }
 
 impl Challenge {
+    pub const ALL: [Challenge; 3] = [Challenge::TlsAlpn01, Challenge::Http01, Challenge::Dns01];
+
+    /// How long an order over it may take before it is given up on.
+    pub fn order_within(self) -> std::time::Duration {
+        match self {
+            Challenge::Dns01 => DNS_ORDER_TIMEOUT,
+            Challenge::TlsAlpn01 | Challenge::Http01 => ORDER_TIMEOUT,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Challenge::TlsAlpn01 => "tls-alpn-01",
@@ -309,10 +319,7 @@ pub async fn order(
         .serialize_request(&key)
         .map_err(|e| format!("the certificate request: {e}"))?;
 
-    let within = match settings.challenge {
-        Challenge::Dns01 => DNS_ORDER_TIMEOUT,
-        Challenge::TlsAlpn01 | Challenge::Http01 => ORDER_TIMEOUT,
-    };
+    let within = settings.challenge.order_within();
     let issued = tokio::time::timeout(within, issuer.issue(&settings.names, csr.der(), prover)).await;
     prover.done().await;
     let chain = match issued {

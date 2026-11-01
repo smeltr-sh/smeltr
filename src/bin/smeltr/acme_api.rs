@@ -64,6 +64,8 @@ struct AcmeDto {
     renew_after_millis: Option<i64>,
     last_attempt_millis: Option<i64>,
     last_error: Option<String>,
+    /// How long an order may take before it is given up on, by challenge, for a page saying how long to wait.
+    order_within_secs: std::collections::BTreeMap<&'static str, u64>,
 }
 
 async fn settings(auth: &Auth) -> Result<acme::Settings, String> {
@@ -95,6 +97,10 @@ async fn read(state: &Acme) -> Result<AcmeDto, String> {
         renew_after_millis: issued.renew_after_millis,
         last_attempt_millis: issued.last_attempt_millis,
         last_error: issued.last_error,
+        order_within_secs: acme::Challenge::ALL
+            .iter()
+            .map(|c| (c.as_str(), c.order_within().as_secs()))
+            .collect(),
     })
 }
 

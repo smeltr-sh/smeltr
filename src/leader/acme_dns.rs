@@ -381,6 +381,27 @@ impl Cloudflare {
         ))
     }
 
+    /// The id of the TXT record at `name` holding `value`.
+    async fn existing(&self, zone_id: &str, name: &str, value: &str) -> Result<String, String> {
+        let mut url =
+            reqwest::Url::parse(&format!("{}/zones/{zone_id}/dns_records", self.api)).map_err(|e| e.to_string())?;
+        url.query_pairs_mut()
+            .append_pair("type", "TXT")
+            .append_pair("name", name)
+            .append_pair("content", value);
+        let found = self
+            .call(self.client.get(url), &format!("looking up the TXT record {name}"))
+            .await?;
+        found
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|r| r["name"].as_str() == Some(name) && r["content"].as_str() == Some(value))
+            .and_then(|r| r["id"].as_str())
+            .map(str::to_string)
+            .ok_or_else(|| format!("Cloudflare said the TXT record {name} is already there, but lists none"))
+    }
+
     /// The zone holding `name`, nearest first, as the token sees them.
     async fn zone_of(&self, name: &str) -> Result<(String, String), String> {
         for zone in enclosing(name) {
@@ -415,26 +436,25 @@ impl Provider for Cloudflare {
             .post(format!("{}/zones/{zone_id}/dns_records", self.api))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(serde_json::json!({ "type": "TXT", "name": name, "content": value, "ttl": 60 }).to_string());
-        let created = match self.answer(request, &format!("adding the TXT record {name}")).await {
-            Ok(created) => created,
+        let id = match self.answer(request, &format!("adding the TXT record {name}")).await {
+            Ok(created) => created["id"]
+                .as_str()
+                .ok_or_else(|| format!("Cloudflare added the TXT record {name} but named no id for it"))?
+                .to_string(),
+            // Left by an earlier order that did not remove it: taken as this order's own, and removed with it.
             Err((codes, _)) if codes.iter().any(|c| IDENTICAL.contains(c)) => {
-                return Err(format!(
-                    "Cloudflare already holds the TXT record {name} with the value this order needs, added by an \
-                     earlier or running order for the same name. When no other order for it is running, delete the \
-                     record in Cloudflare and try again."
-                ));
+                let id = self.existing(&zone_id, name, value).await?;
+                tracing::info!(target: "leader.acme_dns_adopted", record = %name, "the DNS-01 record was already there, and is taken as this order's");
+                id
             }
             Err((_, e)) => return Err(e),
         };
-        let id = created["id"]
-            .as_str()
-            .ok_or_else(|| format!("Cloudflare added the TXT record {name} but named no id for it"))?;
         Ok(Record {
             zone,
             zone_id,
             name: name.to_string(),
             value: value.to_string(),
-            id: id.to_string(),
+            id,
         })
     }
 
@@ -493,7 +513,7 @@ mod tests {
         async fn start(zones: &[&str], fails: Fails) -> FakeCloudflare {
             use axum::extract::{Path, Query, State};
             use axum::http::{HeaderMap, StatusCode};
-            use axum::routing::{delete, get, post};
+            use axum::routing::{delete, get};
 
             type Shared = Arc<Mutex<Held>>;
             fn refused(status: StatusCode, message: &str) -> (StatusCode, String) {
@@ -548,7 +568,27 @@ mod tests {
                 )
                 .route(
                     "/zones/:zone/dns_records",
-                    post(
+                    get(
+                        |State(held): State<Shared>,
+                         headers: HeaderMap,
+                         Path(zone): Path<String>,
+                         Query(q): Query<HashMap<String, String>>| async move {
+                            let held = held.lock().unwrap();
+                            if let Err(e) = authorized(&held, &headers) {
+                                return e;
+                            }
+                            let found: Vec<_> = held
+                                .records
+                                .iter()
+                                .filter(|(_, (z, n, c))| {
+                                    *z == zone && Some(n) == q.get("name") && Some(c) == q.get("content")
+                                })
+                                .map(|(id, (_, n, c))| serde_json::json!({ "id": id, "name": n, "content": c }))
+                                .collect();
+                            ok(serde_json::json!(found))
+                        },
+                    )
+                    .post(
                         |State(held): State<Shared>, headers: HeaderMap, Path(zone): Path<String>, body: String| async move {
                             let mut held = held.lock().unwrap();
                             if let Err(e) = authorized(&held, &headers) {
@@ -784,23 +824,23 @@ mod tests {
         coverage.assert_complete();
     }
 
-    /// A record already there with the same value, as one an earlier or a running order left, is refused by
-    /// Cloudflare, and the order says which record to delete. The record is not this order's to remove.
+    /// A record already there with the same value, as an earlier order that did not remove it leaves, is taken as
+    /// this order's own and removed with it.
     #[test]
-    fn a_record_already_there_says_which_to_delete() {
+    fn a_record_already_there_is_taken_and_removed() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             let cloudflare = FakeCloudflare::start(&["example.com"], Fails::Never).await;
-            let earlier = publishing(&cloudflare, TOKEN, Some(0));
-            earlier.dns("www.example.com", "the-value").await.unwrap();
+            // An earlier order that ended without removing what it published.
+            publishing(&cloudflare, TOKEN, Some(0))
+                .dns("www.example.com", "the-value")
+                .await
+                .unwrap();
             let again = publishing(&cloudflare, TOKEN, Some(0));
-            let e = again.dns("www.example.com", "the-value").await.unwrap_err();
-            assert!(
-                e.starts_with("Cloudflare already holds the TXT record _acme-challenge.www.example.com with the value"),
-                "{e}"
-            );
+            again.dns("www.example.com", "the-value").await.unwrap();
+            assert_eq!(cloudflare.held.lock().unwrap().added.len(), 1, "added once");
             again.done().await;
-            assert_eq!(cloudflare.records().len(), 1, "the earlier order's record stays");
+            assert_eq!(cloudflare.records(), [], "removed with the order that took it");
         });
     }
 

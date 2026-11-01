@@ -343,10 +343,11 @@
   }
 
   const ISSUED = 'this leader is serving the certificate the authority issued';
-  /** An order is running. The leader answers once the authority has issued or given up (`leader::acme`'s
-   * `ORDER_TIMEOUT` and `DNS_ORDER_TIMEOUT`). */
+  /** An order is running, until the leader answers: once the authority has issued, or after `orderWithinSecs`. */
   let ordering = $state(false);
-  const orderWait = $derived(`This can take up to ${challenge === 'dns-01' ? 15 : 2} minutes.`);
+  const orderWait = $derived(
+    `This can take up to ${Math.ceil((acme?.orderWithinSecs[challenge] ?? 0) / 60)} minutes.`,
+  );
 
   /** Orders a certificate with what the form says, and serves it. */
   async function order() {
