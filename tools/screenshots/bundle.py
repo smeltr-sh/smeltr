@@ -417,11 +417,11 @@ APPS_SOURCES = [
 ]
 
 # Answers for a category and for one kind in it, so the Routes page shows the matrix's range.
+NETWORK_EXCEPTIONS = {"categories": {"math": "drop", "limits": "block"},
+                      "kinds": {"Overflow": "tag", "Unmatched": {"deliver": ["kafka-dlq"]}}}
 # The feeds no route takes yet are dropped, not blocked: a source that blocks stops reading, and the leader would
 # show it failed rather than waiting for a pipeline.
 APPS_EXCEPTIONS = {"kinds": {"Unmatched": "drop"}}
-NETWORK_EXCEPTIONS = {"categories": {"math": "drop", "limits": "block"},
-                      "kinds": {"Overflow": "tag", "Unmatched": {"deliver": ["kafka-dlq"]}}}
 
 NETWORK_ROUTES = [
     {"id": "panos", "source": "panw-firewalls", "condition": None, "pipeline": "panos-traffic",

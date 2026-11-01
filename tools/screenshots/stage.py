@@ -469,8 +469,6 @@ def main():
         raise SystemExit("something other than this tool's leader listens on 127.0.0.1:8443; stop it and run again. "
                          "Nothing was reset.")
     reset()
-    with open(STAGED_FINGERPRINT, "w") as f:
-        f.write(fingerprint() + "\n")
     one_time = start_leader()
     accounts(one_time)
     groups()
@@ -490,11 +488,14 @@ def main():
     draft()
     waiting()
     # A week of throughput before what the fleet has read so far, so each source's chart shows the band it is
-    # expected to read in. The leader refuses a heartbeat or two while this writes, and the warnings that leaves
+    # expected to read in. The leader refuses a few heartbeats while this writes, and the warnings that leaves
     # fade before a settled fleet is captured.
     log("history")
     subprocess.run([bundle.TRAFFIC, "history", os.path.join(STATE, "leader", "smeltr-leader-data", "registry.db")],
                    check=True)
+    # Last, so a fleet whose staging failed part way is not one `run.sh demo` records.
+    with open(STAGED_FINGERPRINT, "w") as f:
+        f.write(fingerprint() + "\n")
     log("staged")
 
 

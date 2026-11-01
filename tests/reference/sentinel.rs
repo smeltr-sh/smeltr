@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Clock, mix, people, pick};
+use super::{Clock, mix, people, pick, uuid};
 
 const TENANT: &str = "6c3a8f2e-1b4d-4e5f-9a7b-2d8c0e1f3a5b";
 const WINDOWS: &[&str] = &[
@@ -14,7 +14,8 @@ const WINDOWS: &[&str] = &[
     "FS01.acme.example",
     "WS-0417.acme.example",
 ];
-const LINUX: &[&str] = &["sentinel-fwd-01", "sentinel-fwd-02"];
+/// Linux hosts: name, address.
+const LINUX: &[(&str, &str)] = &[("sentinel-fwd-01", "10.0.4.21"), ("sentinel-fwd-02", "10.17.4.21")];
 const APPS: &[(&str, &str)] = &[
     ("Office 365 Exchange Online", "00000002-0000-0ff1-ce00-000000000000"),
     ("Microsoft Teams", "1fec8e78-bce4-4aaf-ab1b-5451cc387264"),
@@ -67,16 +68,16 @@ fn address(r: u64) -> String {
     format!("10.{}.{}.{}", r % people::NETWORKS, (r >> 8) % 41, 2 + (r >> 16) % 248)
 }
 
-fn guid(r: u64) -> String {
-    let g = mix(r);
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        r >> 32,
-        r & 0xffff,
-        (g >> 4) & 0xfff,
-        0x8000 | ((g >> 20) & 0x3fff),
-        g >> 16
-    )
+/// SigninLogs gives a country as its ISO 3166 alpha-2 code.
+fn code(country: &str) -> &'static str {
+    match country {
+        "United Kingdom" => "GB",
+        "Sweden" => "SE",
+        "China" => "CN",
+        "United States" => "US",
+        "Bhutan" => "BT",
+        _ => unreachable!("a country of people::PUBLIC"),
+    }
 }
 
 fn security_event(r: u64, at: &Clock) -> Value {
@@ -122,7 +123,7 @@ fn signin(r: u64, at: &Clock, spraying: bool) -> Value {
     let p = people::person(r >> 20);
     let (app, app_id) = pick(APPS, r >> 8);
     let (ip, country) = if spraying {
-        people::PUBLIC[11]
+        people::PUBLIC[people::SPRAYER]
     } else {
         pick(people::PUBLIC, r >> 12)
     };
@@ -141,16 +142,16 @@ fn signin(r: u64, at: &Clock, spraying: bool) -> Value {
             "OperationName": "Sign-in activity", "Category": "SignInLogs",
             "ResultType": result, "ResultDescription": description,
             "UserPrincipalName": format!("{}@acme.example", p.login), "UserDisplayName": p.full_name,
-            "UserId": guid(r >> 20), "AppDisplayName": app, "AppId": app_id, "IPAddress": ip,
+            "UserId": uuid(mix((r >> 20) % people::PEOPLE as u64)), "AppDisplayName": app, "AppId": app_id, "IPAddress": ip,
             "ClientAppUsed": if spraying { "Exchange ActiveSync" } else { "Browser" },
             "ConditionalAccessStatus": if failed { "notApplied" } else { "success" },
-            "Location": country,
-            "LocationDetails": {"countryOrRegion": country},
+            "Location": code(country),
+            "LocationDetails": {"countryOrRegion": code(country)},
             "DeviceDetail": {"operatingSystem": pick(&["Windows 10", "MacOs", "Ios", "Android"][..], r >> 44),
                              "browser": pick(&["Edge 120.0.0", "Chrome 121.0.0", "Safari 17.2"][..], r >> 46)},
             "Status": {"errorCode": result.parse::<u32>().expect("a number"), "failureReason": description},
             "RiskLevelDuringSignIn": if spraying { "medium" } else { "none" },
-            "CorrelationId": guid(r ^ 0xC0), "Id": guid(r ^ 0x1D),
+            "CorrelationId": uuid(r ^ 0xC0), "Id": uuid(r ^ 0x1D),
         }),
     )
 }
@@ -167,13 +168,13 @@ fn common_security_log(r: u64, at: &Clock) -> Value {
             "LogSeverity": if deny { "5" } else { "1" }, "DeviceAction": if deny { "Drop" } else { "Accept" },
             "SourceIP": address(r >> 4), "DestinationIP": dst,
             "SourcePort": 32_768 + (r >> 40) % 28_000, "DestinationPort": pick(&[443, 80, 53, 22][..], r >> 34),
-            "Protocol": "TCP", "Computer": pick(LINUX, r >> 2),
+            "Protocol": "TCP", "Computer": pick(LINUX, r >> 2).0,
         }),
     )
 }
 
 fn syslog(r: u64, at: &Clock) -> Value {
-    let host = pick(LINUX, r >> 2);
+    let (host, host_ip) = pick(LINUX, r >> 2);
     let (facility, severity, process, message) = pick(
         &[
             (
@@ -197,7 +198,7 @@ fn syslog(r: u64, at: &Clock) -> Value {
         "Syslog",
         at,
         json!({
-            "Computer": host, "HostName": host, "HostIP": address(r >> 16), "Facility": facility,
+            "Computer": host, "HostName": host, "HostIP": host_ip, "Facility": facility,
             "SeverityLevel": severity, "ProcessName": process, "ProcessID": 300 + (r >> 40) % 30_000,
             "SyslogMessage": message, "SourceSystem": "Linux",
         }),
@@ -224,5 +225,8 @@ fn every_message_is_a_batch_of_typed_rows_and_spraying_fails_sign_ins() {
             .count();
     }
     assert_eq!(tables.len(), 4, "{tables:?}");
+    for (_, country) in people::PUBLIC {
+        assert_eq!(code(country).len(), 2);
+    }
     assert!(failures > 200, "{failures}");
 }

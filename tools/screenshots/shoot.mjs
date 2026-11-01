@@ -6,7 +6,8 @@
 // to the state worth showing. PNGs land in $OUT, or ./shots. A shot with `site` also replaces the website's
 // image of that name, `website/static/<site>-<theme>.png`, so the site's pages, and the crops they show, keep
 // pointing at the same state of the same page. A shot with `card` captures that one step's card instead of the
-// window.
+// window. A shot with `scale` renders at that device pixel ratio rather than 2, so a review shot can be exactly its
+// window's size.
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';

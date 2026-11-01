@@ -176,12 +176,7 @@ fn history(registry: &std::path::Path) {
             let salt = subject.bytes().fold(0u64, |h, b| mix(h ^ u64::from(b)));
             let mut at = first;
             while at > now - HISTORY_MS {
-                let width = match now - at {
-                    age if age <= 3_600_000 => Tier::TenSeconds,
-                    age if age <= 86_400_000 => Tier::OneMinute,
-                    _ => Tier::FiveMinutes,
-                }
-                .bucket_ms();
+                let width = Tier::for_window(Duration::from_millis((now - at) as u64)).bucket_ms();
                 at -= width;
                 // A day's curve, at its mean at this time of day, with each bucket's own noise.
                 let curve = 1.0 + 0.3 * (TAU * (at - now) as f64 / DAY).sin();
@@ -204,10 +199,9 @@ fn write(mut attempt: impl FnMut() -> Result<(), smeltr::leader::store::StoreErr
     for _ in 0..50 {
         match attempt() {
             Ok(()) => return,
-            // SQLite's busy and locked errors, which `StoreError` carries only as their message.
-            Err(e) if e.message.contains("database is locked") || e.message.contains("database is busy") => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
+            // SQLITE_BUSY ("database is locked") and SQLITE_LOCKED ("database table is locked"), which `StoreError`
+            // carries only as their message.
+            Err(e) if e.message.contains("is locked") => std::thread::sleep(Duration::from_millis(20)),
             Err(e) => panic!("writing to the registry: {e}"),
         }
     }
