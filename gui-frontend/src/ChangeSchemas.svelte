@@ -6,7 +6,7 @@
 <script lang="ts">
   import Ticked from './Ticked.svelte';
   import Recommends from './Recommends.svelte';
-  import type { SchemaFindingDto } from './api';
+  import { setScope, type SchemaFindingDto } from './api';
 
   let {
     findings,
@@ -55,8 +55,9 @@
   {#each grouped as g (JSON.stringify([g.group, g.pipeline]))}
     <section class="pipeline">
       <h3>
-        <a href="#/build/pipelines/{encodeURIComponent(g.pipeline)}"
-          >{pipelineName(g.group, g.pipeline)}</a
+        <a
+          href="#/build/pipelines/{encodeURIComponent(g.pipeline)}"
+          onclick={() => setScope(g.group)}>{pipelineName(g.group, g.pipeline)}</a
         >
         <span class="dim">in {g.group}</span>
       </h3>
