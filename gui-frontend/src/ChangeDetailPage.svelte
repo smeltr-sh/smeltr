@@ -747,6 +747,8 @@
 
   .subtabs {
     margin: 1rem 0 0.9rem;
+    /* Room above the row when the dock scrolls it into view. */
+    scroll-margin-top: 1rem;
   }
   .pill {
     padding: 0 0.4rem;
