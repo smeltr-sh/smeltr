@@ -2387,6 +2387,13 @@ impl Store for SqliteStore {
 /// One audit row. Takes any connection, so a caller inside a transaction writes it with the mutation it
 /// describes rather than after it.
 fn insert_event(conn: &Connection, event: &SecurityEvent) -> Result<(), StoreError> {
+    // Logged where it is written, so every audited action reaches the log without its handler saying so. A refused
+    // one is already said at warn where it was refused.
+    if event.outcome == "ok" {
+        tracing::info!(target: "audit.recorded", actor = %event.actor, action = %event.action, subject = %event.target, "an audited action was recorded");
+    } else {
+        tracing::debug!(target: "audit.recorded", actor = %event.actor, action = %event.action, subject = %event.target, outcome = %event.outcome, "an audited action was recorded");
+    }
     conn.execute(
         "INSERT INTO security_events (id, at, actor, action, target, outcome)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

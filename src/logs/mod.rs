@@ -122,6 +122,14 @@ pub struct Relog {
 }
 
 impl Relog {
+    /// No fault under way. `const`, so a static can hold one.
+    pub const fn new() -> Relog {
+        Relog {
+            why: None,
+            logged: None,
+        }
+    }
+
     /// Keeps `why` as the fault under way. A changed message is due its log at once.
     pub fn fail(&mut self, why: String) {
         if self.why.as_deref() != Some(&why) {
@@ -150,6 +158,38 @@ impl Relog {
         self.logged = None;
         self.why.take().is_some()
     }
+}
+
+/// Every panic in the process is logged before the default hook prints it, so a thread or task that dies says so
+/// here and not only on a console nobody reads. A panic that budget handling expects is quiet.
+fn log_panics() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if info
+                .payload()
+                .downcast_ref::<crate::core::buffer::OverBudget>()
+                .is_none()
+            {
+                let panic = info
+                    .payload()
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                let thread = std::thread::current();
+                tracing::error!(
+                    target: "process.panicked",
+                    thread = thread.name().unwrap_or_default(),
+                    location = info.location().map(|l| l.to_string()).unwrap_or_default(),
+                    %panic,
+                    "a thread panicked"
+                );
+            }
+            previous(info);
+        }));
+    });
 }
 
 /// What the channel carries. `Stop` rides it so that it arrives behind every event already sent.
@@ -513,6 +553,7 @@ fn hand_off(event: Event) {
 /// everything else -- axum, tower and h2 instrument with it, and with no subscriber installed all of that went
 /// nowhere too.
 pub fn start() {
+    log_panics();
     let (sender, receiver) = sync_channel::<Message>(CAPACITY);
     if SENDER.set(sender).is_err() {
         return;

@@ -164,8 +164,9 @@ pub fn sync(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>
     if let Some(running) = git::deployed(repo).filter(|running| *running != head) {
         fetch_lookup_files(repo, &running, remote).map_err(refused)?;
     }
-    if git::main_head(repo).as_deref() != Some(head.as_str()) {
+    if let Some(from) = git::main_head(repo).filter(|main| *main != head) {
         git::follow(repo, &head).map_err(|e| refused(e.message))?;
+        tracing::info!(target: "remote.followed", %from, to = %head, "main followed the remote");
     }
     // Asked on every sync, not only the one that moved `main`: the fleet stays held until the remote mends it.
     if let Some(why) = git::worse_than_running(repo, &head).map_err(|e| refused(e.message))?
@@ -660,6 +661,9 @@ pub async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
     let mut held = state.remote.state.lock().unwrap_or_else(|e| e.into_inner());
     match synced {
         Ok(head) => {
+            if let Some(failure) = held.failure.take() {
+                tracing::info!(target: "remote.sync_recovered", failed_secs = (now - failure.since) / 1000, "syncing the remote works again");
+            }
             *held = SyncState {
                 synced_at: Some(now),
                 remote_head: head,
@@ -696,11 +700,14 @@ pub async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
 /// for the settings to change.
 pub async fn poll(state: AppState) {
     loop {
-        let every = run_store(state.store.clone(), configured)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|remote| remote.poll);
+        let every = match run_store(state.store.clone(), configured).await {
+            Ok(remote) => remote.and_then(|remote| remote.poll),
+            // Tried again on the default interval: a store that could not say is not one that said "no remote".
+            Err(e) => {
+                tracing::warn!(target: "remote.settings_unreadable", error = %e, "the git remote settings could not be read, so the sync is tried again later");
+                Some(DEFAULT_POLL)
+            }
+        };
         let Some(every) = every else {
             state.remote.settings_changed.notified().await;
             continue;
@@ -738,21 +745,43 @@ const PUSH_SCAN: Duration = Duration::from_secs(2);
 /// Push every save to the host for as long as the leader runs. A push that fails is tried again at the poll
 /// interval, so a host that was down gets the save once it is back.
 pub async fn push_saves(state: AppState) {
+    // The scan itself failing -- the settings or the branch list unreadable -- is said once per change and on the
+    // interval, not every two seconds, and said over when a scan works again.
+    let mut failing = crate::logs::Relog::default();
     loop {
         tokio::time::sleep(PUSH_SCAN).await;
         let _pushing = state.remote.pushing.lock().await;
-        let Ok(Some(remote)) = run_store(state.store.clone(), configured).await else {
-            continue;
+        let remote = match run_store(state.store.clone(), configured).await {
+            Ok(Some(remote)) => remote,
+            Ok(None) => continue,
+            Err(e) => {
+                scan_failed(&mut failing, e.to_string());
+                continue;
+            }
         };
         let retry = remote.poll.unwrap_or(DEFAULT_POLL).as_millis() as i64;
         let repo = git::repo_path(&state.data_dir);
         let failures = state.remote.push_failures();
         let now = super::warnings::now_millis();
-        if let Ok(Ok(failures)) =
-            tokio::task::spawn_blocking(move || push_all(&repo, &remote, &failures, now, retry)).await
-        {
-            *state.remote.pushes.lock().unwrap_or_else(|e| e.into_inner()) = failures;
+        let pushed = tokio::task::spawn_blocking(move || push_all(&repo, &remote, &failures, now, retry))
+            .await
+            .unwrap_or_else(|e| Err(format!("internal error: {e}")));
+        match pushed {
+            Ok(failures) => {
+                if failing.clear() {
+                    tracing::info!(target: "remote.push_scan_recovered", "branches are being checked for pushes again");
+                }
+                *state.remote.pushes.lock().unwrap_or_else(|e| e.into_inner()) = failures;
+            }
+            Err(e) => scan_failed(&mut failing, e),
         }
+    }
+}
+
+fn scan_failed(failing: &mut crate::logs::Relog, why: String) {
+    failing.fail(why);
+    if let Some(error) = failing.due() {
+        tracing::warn!(target: "remote.push_scan_failed", error, "branches could not be checked for pushes, so none is pushed until the check works again");
     }
 }
 
@@ -979,7 +1008,9 @@ pub fn approve_at(
     }
     // The host has it, so the change is merged whatever happens here; a sync follows it.
     if let Err(e) = git::deploy_squash(data_dir, &squash, author) {
-        let _ = git::delete_branch(data_dir, branch, Some(&squash.tip));
+        if let Err(e) = git::delete_branch(data_dir, branch, Some(&squash.tip)) {
+            tracing::debug!(target: "git.branch_not_deleted", %branch, error = %e.message, "a merged branch was not deleted");
+        }
         return Err(Refusal::internal(format!(
             "{branch} is on the remote's main, but this leader did not deploy it ({}); the next sync follows it",
             e.message

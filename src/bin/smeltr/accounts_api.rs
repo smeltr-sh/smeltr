@@ -20,7 +20,7 @@ use smeltr::leader::envelope::Envelope;
 use smeltr::leader::store::{AccountError, Actor, AuthSource, NewLocalUser, Store, StoreError, UserRecord};
 use smeltr::leader::{accounts, blocking, sessions};
 
-use crate::gate::{AccessDto, Auth, refuse, store_unavailable};
+use crate::gate::{AccessDto, Auth, refuse, store_unavailable_because};
 use crate::key_accounts_api::{self, KeyDto};
 
 /// An account as the roster shows it. No verifier, no password state beyond whether one must be changed, and
@@ -109,8 +109,7 @@ pub fn account_error(e: AccountError) -> Response {
 }
 
 fn unavailable(e: StoreError) -> Response {
-    tracing::error!(target: "leader.identity_unavailable", error = %e, "an account operation could not be completed");
-    store_unavailable()
+    store_unavailable_because("an account operation could not be completed", &e)
 }
 
 /// A store call on the pool, however it fails answered as unavailable.

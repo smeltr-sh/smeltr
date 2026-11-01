@@ -88,6 +88,11 @@ impl Updates {
                 .filter(|n| n.release == release)
                 .map_or(now, |n| n.since)
         };
+        if let Some((release, _)) = &newest
+            && held.0.as_ref().is_none_or(|n| n.release != *release)
+        {
+            tracing::info!(target: "leader.release_available", %release, "a newer release of Smeltr is out");
+        }
         held.0 = newest.map(|(release, url)| Newer {
             since: since(&release),
             release,
@@ -129,7 +134,11 @@ pub async fn poll(state: AppState) {
         return;
     };
     loop {
-        if !run_store(state.store.clone(), checking).await.unwrap_or(true) {
+        let checking = run_store(state.store.clone(), checking).await.unwrap_or_else(|e| {
+            tracing::debug!(target: "updates.setting_unreadable", error = %e, "the update-check setting could not be read, so the check runs");
+            true
+        });
+        if !checking {
             state.updates.forget();
             state.updates.settings_changed.notified().await;
             continue;

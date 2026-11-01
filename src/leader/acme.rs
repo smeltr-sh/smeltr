@@ -801,7 +801,12 @@ impl Prover for Proving {
             let _ = listening.stop.send(());
             // Until the port is free again, so a renewal that follows at once can bind it. A validator still mid-
             // request holds it a moment; one that never let go is not waited for.
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), listening.stopped).await;
+            if tokio::time::timeout(std::time::Duration::from_secs(5), listening.stopped)
+                .await
+                .is_err()
+            {
+                tracing::debug!(target: "leader.acme_http_not_stopped", "the HTTP-01 listener did not stop within 5s, so the next order may find its port held");
+            }
         }
     }
 }

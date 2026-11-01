@@ -161,6 +161,14 @@ pub fn store_unavailable() -> Response {
     refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable")
 }
 
+/// [`store_unavailable`], with `what` failed and how as the answer's reason: the layer that shapes the answer logs
+/// it with the call, once a minute while it repeats, and the body still names no file.
+pub fn store_unavailable_because(what: &str, e: &dyn std::fmt::Display) -> Response {
+    let mut response = store_unavailable();
+    response.extensions_mut().insert(Reason(format!("{what}: {e}")));
+    response
+}
+
 /// The session token this request carries, if any.
 ///
 /// Every `Cookie` header line, not just the first: HTTP/2 lets a client send more than one, and Firefox does --
@@ -268,10 +276,7 @@ pub async fn require_principal(
     .await;
     let user = match looked_up {
         Ok(user) => user,
-        Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "the account store could not be read");
-            return store_unavailable();
-        }
+        Err(e) => return store_unavailable_because("the account store could not be read", &e),
     };
 
     let Some((user, access)) = user.filter(|(u, _)| admitted(u) && u.generation == session.generation) else {
@@ -377,10 +382,10 @@ async fn key_account_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Act
             "this key was revoked or has expired, or its account is disabled",
         ))),
         Ok(None) => Err(Box::new(refuse(StatusCode::UNAUTHORIZED, "this key is not known"))),
-        Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "the account store could not be read");
-            Err(Box::new(store_unavailable()))
-        }
+        Err(e) => Err(Box::new(store_unavailable_because(
+            "the account store could not be read",
+            &e,
+        ))),
     }
 }
 
@@ -438,20 +443,23 @@ pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) ->
         .headers()
         .get(header::CONTENT_TYPE)
         .is_some_and(|t| t.as_bytes().starts_with(b"application/json"));
-    if !enveloped || json {
+    if json {
         log_refused(&method, &path, status, status.canonical_reason().unwrap_or_default());
         return response;
     }
     // A rejection's text is a line. Anything longer is not one, and is answered by its status alone.
-    let text = axum::body::to_bytes(response.into_body(), 4096)
-        .await
-        .unwrap_or_default();
+    let (parts, body) = response.into_parts();
+    let text = axum::body::to_bytes(body, 4096).await.unwrap_or_default();
     let text = String::from_utf8_lossy(&text);
     let message = match text.trim() {
         "" => status.canonical_reason().unwrap_or("refused").to_lowercase(),
         text => text.to_string(),
     };
     log_refused(&method, &path, status, &message);
+    // A worker route's answer is logged for what it says, and answered as it was: its family carries no envelope.
+    if !enveloped {
+        return Response::from_parts(parts, axum::body::Body::from(text.into_owned()));
+    }
     refuse(status, &message)
 }
 
