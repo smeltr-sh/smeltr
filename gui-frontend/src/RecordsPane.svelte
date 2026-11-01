@@ -42,7 +42,7 @@
   import { formatDiffValue } from './diff';
   import InlineError from './InlineError.svelte';
   import { RECOMMENDED_NAMED } from './schemas';
-  import MoreButton from './MoreButton.svelte';
+  import ShowAll from './ShowAll.svelte';
   import {
     countStates,
     fieldAt,
@@ -948,9 +948,9 @@
                                   <span class="lacking"><i>missing</i></span>
                                 {/each}
                                 {#if listed.length < recommended.length}
-                                  <MoreButton
-                                    count={recommended.length - listed.length}
-                                    onclick={() => lackingAll.add(schema)}
+                                  <ShowAll
+                                    more={recommended.length - listed.length}
+                                    onshowall={() => lackingAll.add(schema)}
                                   />
                                 {/if}
                               {/if}
