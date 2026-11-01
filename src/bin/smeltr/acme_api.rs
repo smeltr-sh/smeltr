@@ -14,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 
 use smeltr::leader::envelope::Envelope;
-use smeltr::leader::store::Actor;
+use smeltr::leader::store::{Actor, SecretSave};
 use smeltr::leader::{accounts, acme, acme_dns, blocking, tls};
 
 use crate::certificates_api::{self, Tls};
@@ -241,18 +241,16 @@ async fn put_settings(
         Ok(was) => was,
         Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
     };
-    let moved = |new: Option<&str>, was: Option<&str>| match new {
-        None => false,
-        Some("") => was.is_some(),
-        Some(new) => was != Some(new),
-    };
-    let key_moved = moved(request.eab_hmac.as_deref(), was.eab_hmac.as_deref());
-    let token_moved = moved(request.cloudflare_token.as_deref(), was.cloudflare_token.as_deref());
     let dns_provider = request.dns_provider.unwrap_or(was.dns_provider);
-    let token_held = match request.cloudflare_token.as_deref() {
-        None => was.cloudflare_token.is_some(),
-        Some(token) => !token.is_empty(),
-    };
+    // The external account key is the directory's, under its key id; the token is the DNS provider's.
+    let hmac = SecretSave::sent(
+        request.eab_hmac,
+        directory != was.directory || eab_key_id != was.eab_key_id,
+    );
+    let token = SecretSave::sent(request.cloudflare_token, dns_provider != was.dns_provider);
+    let key_moved = hmac.held(was.eab_hmac.as_deref()) != was.eab_hmac.as_deref();
+    let token_moved = token.held(was.cloudflare_token.as_deref()) != was.cloudflare_token.as_deref();
+    let token_held = token.held(was.cloudflare_token.as_deref()).is_some();
     if request.enabled
         && request.challenge == acme::Challenge::Dns01
         && dns_provider == acme_dns::Kind::Cloudflare
@@ -298,19 +296,8 @@ async fn put_settings(
             (acme::EAB_KEY_ID_KEY, eab_key_id),
             (acme::DNS_PROVIDER_KEY, dns_provider.as_str().to_string()),
         ];
-        for (key, value) in [
-            (acme::EAB_HMAC_KEY, request.eab_hmac),
-            (acme::CLOUDFLARE_TOKEN_KEY, request.cloudflare_token),
-        ] {
-            if let Some(value) = value {
-                let stored = if value.is_empty() {
-                    value
-                } else {
-                    store.sealed_setting(key, &value)?
-                };
-                entries.push((key, stored));
-            }
-        }
+        entries.extend(hmac.entry(store.as_ref(), acme::EAB_HMAC_KEY)?);
+        entries.extend(token.entry(store.as_ref(), acme::CLOUDFLARE_TOKEN_KEY)?);
         store.put_settings(&entries, Some(&event))
     })
     .await;

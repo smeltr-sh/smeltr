@@ -22,6 +22,7 @@ pub mod accounts;
 pub mod acme;
 pub mod acme_dns;
 pub mod agent;
+pub mod alerts;
 pub mod auth;
 pub mod capture;
 pub mod connections;
@@ -70,7 +71,7 @@ use axum::Router;
 use axum::extract::{Extension, Json, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 
 use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
 use envelope::{Empty, Envelope, Refusal};
@@ -104,6 +105,8 @@ pub struct AppState {
     pub remote: Arc<remote::Syncing>,
     /// The look for a newer release (`updates`), and what the last one found.
     pub updates: Arc<updates::Updates>,
+    /// What the leader holds about its alert channels between looks (`alerts`).
+    pub alerts: Arc<alerts::Alerts>,
     /// What operators have asked of workers and the workers have not yet taken.
     pub directives: Arc<directives::Directives>,
 }
@@ -1090,10 +1093,15 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
         &recovering,
         heartbeat_interval,
     ));
-    let (key, kept) = run_store(state.store.clone(), |s| Ok((s.key_standing()?, s.kept_certificates()?))).await?;
-    active_facts.extend(warnings::encryption_key_facts(&key));
+    let (key, kept, channels) = run_store(state.store.clone(), |s| {
+        Ok((s.key_standing()?, s.kept_certificates()?, alerts::channels(s)))
+    })
+    .await?;
+    // Only to name a channel's secret: unreadable channels are the alerts loop's to report, not every warning's.
+    let channels = channels.unwrap_or_default();
+    active_facts.extend(warnings::encryption_key_facts(&key, &channels));
     let starts = state.registry.observe_facts(&active_facts, now_ms);
-    let key_warnings = warnings::encryption_key_warnings(&key, &kept, &starts);
+    let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
     let normal_warnings =
         warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
@@ -1148,6 +1156,13 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     out.extend(warnings::certificate_expiring(&certificates, now_ms));
     out.extend(held.as_ref().map(warnings::deploy_held));
     out.extend(remote_failure.as_ref().map(warnings::remote_not_followed));
+    out.extend(
+        state
+            .alerts
+            .failing()
+            .values()
+            .map(|f| warnings::alert_channel_failing(&f.channel, f)),
+    );
     out.extend(
         newer_release
             .as_ref()
@@ -1354,6 +1369,19 @@ async fn list_warnings(
     Ok(Envelope::ok(WarningList {
         warnings: all.into_iter().filter(|w| w.visible_to(&access)).collect(),
     }))
+}
+
+/// `GET /api/metrics`: the warnings `access` may see, as Prometheus scrapes them (`warnings::as_metrics`), so an
+/// alert manager pages on what the Issues page shows. A scraper comes in as a key account, with its key.
+async fn warning_metrics(State(state): State<AppState>, Extension(access): Extension<access::Access>) -> Response {
+    match warnings_snapshot(&state).await {
+        Ok(all) => {
+            let visible: Vec<_> = all.into_iter().filter(|w| w.visible_to(&access)).collect();
+            let text = warnings::as_metrics(&visible);
+            ([(header::CONTENT_TYPE, crate::metrics::exposition::CONTENT_TYPE)], text).into_response()
+        }
+        Err(e) => Refusal::internal(e.to_string()).into_response(),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -2344,8 +2372,9 @@ pub struct UnopenableOut {
     pub label: String,
 }
 
-impl From<store::KeyStanding> for EncryptionKeyOut {
-    fn from(standing: store::KeyStanding) -> EncryptionKeyOut {
+impl EncryptionKeyOut {
+    /// `channels` are the alert channels, whose secrets are named for them.
+    fn new(standing: store::KeyStanding, channels: &[alerts::Channel]) -> EncryptionKeyOut {
         let (state, key_id) = match standing.key {
             store::KeyState::Absent => ("absent", None),
             store::KeyState::Held { key_id } => ("held", Some(key_id)),
@@ -2372,7 +2401,7 @@ impl From<store::KeyStanding> for EncryptionKeyOut {
                     },
                     store::Unopenable::Setting(name) => UnopenableOut {
                         kind: "setting",
-                        label: warnings::sealed_setting_place(&name).0.to_string(),
+                        label: warnings::sealed_setting_place(&name, channels).0.into_owned(),
                         name,
                     },
                 })
@@ -2382,10 +2411,11 @@ impl From<store::KeyStanding> for EncryptionKeyOut {
 }
 
 async fn encryption_key(State(state): State<AppState>) -> Envelope<EncryptionKeyOut> {
-    run_store(state.store, |s| s.key_standing())
-        .await
-        .map(EncryptionKeyOut::from)
-        .into()
+    run_store(state.store, |s| {
+        Ok(EncryptionKeyOut::new(s.key_standing()?, &alerts::channels(s)?))
+    })
+    .await
+    .into()
 }
 
 async fn regenerate_encryption_key(
@@ -2394,11 +2424,15 @@ async fn regenerate_encryption_key(
     axum::Extension(actor): axum::Extension<store::Actor>,
 ) -> Envelope<EncryptionKeyOut> {
     let event = accounts::event_for(&actor, "key-regenerate", "", "ok");
-    let regenerated = run_store(state.store, move |s| s.regenerate_key(&event)).await;
+    let regenerated = run_store(state.store, move |s| {
+        let channels = alerts::channels(s)?;
+        Ok(EncryptionKeyOut::new(s.regenerate_key(&event)?, &channels))
+    })
+    .await;
     if regenerated.is_ok() {
         RENEW_NOW.notify_one();
     }
-    regenerated.map(EncryptionKeyOut::from).into()
+    regenerated.into()
 }
 
 /// Stores a new value and forgets what retention no longer keeps.
@@ -3618,6 +3652,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/health", get(health))
         .route("/api/system", get(system_info))
         .route("/api/warnings", get(list_warnings))
+        .route("/api/metrics", get(warning_metrics))
         .route("/api/flow", get(get_flow))
         .route("/api/streams", get(get_streams))
         .route("/api/logs", get(get_logs))
@@ -3650,6 +3685,10 @@ pub fn admin_router() -> Router<AppState> {
             "/api/settings/git-remote",
             get(remote::get_settings).put(remote::put_settings),
         )
+        .route("/api/settings/alerts", get(alerts::get_settings))
+        .route("/api/settings/alerts/mail", put(alerts::put_mail))
+        .route("/api/settings/alerts/channels", put(alerts::put_channels))
+        .route("/api/settings/alerts/test", post(alerts::post_test))
         .route("/api/settings/git-remote/sync", post(remote::post_sync))
         .route("/api/branches/:name/overwrite", post(remote::overwrite))
         .route("/api/secrets", get(list_secrets).post(create_secret))
@@ -4174,6 +4213,7 @@ mod secrets_delivery_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir,
         }
@@ -4661,6 +4701,7 @@ mod warnings_endpoint_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir,
         }
@@ -4893,6 +4934,7 @@ mod logs_endpoint_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         }
@@ -5118,6 +5160,7 @@ mod flow_endpoint_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         }
@@ -5146,6 +5189,7 @@ mod flow_endpoint_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         };
@@ -5511,6 +5555,7 @@ mod authority_delivery_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir,
         };

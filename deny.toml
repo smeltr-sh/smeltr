@@ -52,6 +52,7 @@ skip = [
     { crate = "generic-array@0.14.7", reason = "crypto-common 0.1, through crc-fast" },
     { crate = "block-buffer@0.10.4", reason = "digest 0.10, through crc-fast and mysql_common" },
     { crate = "sha1@0.10.7", reason = "mysql_common 0.37, through mysql_async" },
+    { crate = "nom@7.1.3", reason = "asn1-rs, through x509-parser" },
     { crate = "sha2@0.10.9", reason = "mysql_common 0.37, through mysql_async" },
     { crate = "cpufeatures@0.2.17", reason = "sha1 and sha2 0.10, through mysql_async" },
     { crate = "sha3@0.11.0", reason = "ml-kem, through russh" },

@@ -1090,11 +1090,13 @@ async fn setup_leader(
         origin_hosts: hosts,
         remote: Default::default(),
         updates: Default::default(),
+        alerts: Default::default(),
         directives: Default::default(),
     };
     state.deploy_checks.set_runner(Arc::new(test_api::failing_at));
     tokio::spawn(smeltr::leader::remote::poll(state.clone()));
     tokio::spawn(smeltr::leader::updates::poll(state.clone()));
+    tokio::spawn(smeltr::leader::alerts::run(state.clone()));
     tokio::spawn(smeltr::leader::remote::push_saves(state.clone()));
     // Without a worker in this process, what the leader's threads did not raise is the leader's too.
     if !smeltr::startup_config::worker_enabled() {

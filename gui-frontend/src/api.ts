@@ -2583,7 +2583,8 @@ export type WarningCondition =
   | 'secretNeedsValue'
   | 'acmeRenewalFailing'
   | 'leaderCertificateRunningOut'
-  | 'issuedCertificateNotRenewed';
+  | 'issuedCertificateNotRenewed'
+  | 'alertChannelFailing';
 
 /** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
  * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
@@ -2696,6 +2697,8 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Leader certificate running out';
     case 'issuedCertificateNotRenewed':
       return 'Certificate not renewed';
+    case 'alertChannelFailing':
+      return 'Alert channel failing';
   }
 }
 
@@ -3454,6 +3457,84 @@ export function putRemoteSettings(req: {
 
 export function syncRemote(): Promise<RemoteSettingsResult> {
   return apiJson('/api/settings/git-remote/sync', { method: 'POST' });
+}
+
+/** How a webhook's body is shaped. */
+export type AlertFormat = 'genericJson' | 'slack' | 'teams' | 'pagerDuty';
+
+export type AlertChannelKind =
+  | { type: 'webhook'; url: string; format: AlertFormat; secretHeader?: string }
+  | { type: 'email'; to: string[] };
+
+/** One place warnings are sent. `groups` absent takes every group's, and the leader's own. */
+export type AlertChannel = {
+  id: string;
+  name: string;
+  kind: AlertChannelKind;
+  groups?: string[];
+  includeMessage: boolean;
+  conditions: WarningCondition[];
+  /** Epoch milliseconds. */
+  mutedUntil?: number;
+};
+
+/** A send the channel did not take, held until one is. */
+export type AlertFailing = { channel: string; since: number; last: number; message: string };
+
+export type AlertChannelDto = AlertChannel & { secretSet: boolean; failing?: AlertFailing };
+
+export type AlertMail = {
+  enabled: boolean;
+  host: string;
+  port: number;
+  encryption: 'startTls' | 'tls';
+  from: string;
+  username?: string;
+};
+
+export type AlertSettingsDto = {
+  mail: (AlertMail & { passwordSet: boolean }) | null;
+  channels: AlertChannelDto[];
+  /** What a channel can take, in the catalog's order. */
+  conditions: WarningCondition[];
+};
+
+export type AlertSettingsResult = {
+  ok: boolean;
+  errors: ApiError[];
+  settings: AlertSettingsDto | null;
+};
+
+export function getAlertSettings(): Promise<AlertSettingsResult> {
+  return apiJson('/api/settings/alerts');
+}
+
+/** `password` undefined keeps the stored one; empty removes it. */
+export function putAlertMail(req: AlertMail & { password?: string }): Promise<AlertSettingsResult> {
+  return apiJson('/api/settings/alerts/mail', { method: 'PUT', body: JSON.stringify(req) });
+}
+
+/** Every channel; one left out is removed. `secret` undefined keeps the stored one; empty removes it. */
+export function putAlertChannels(
+  channels: (AlertChannel & { secret?: string })[],
+): Promise<AlertSettingsResult> {
+  return apiJson('/api/settings/alerts/channels', {
+    method: 'PUT',
+    body: JSON.stringify({ channels }),
+  });
+}
+
+export type AlertTestResult = { ok: boolean; errors: ApiError[]; host?: string; status?: number };
+
+/** Send one test to `channel` as given, saved or not. Quiet: the dialog shows what it found. */
+export function testAlertChannel(
+  channel: AlertChannel & { secret?: string },
+): Promise<AlertTestResult> {
+  return apiJson(
+    '/api/settings/alerts/test',
+    { method: 'POST', body: JSON.stringify(channel) },
+    'quiet',
+  );
 }
 
 /** Asks a heartbeating worker to restart its deployment, on its next heartbeat. */

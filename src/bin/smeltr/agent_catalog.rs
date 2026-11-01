@@ -726,6 +726,35 @@ pub const CATALOG: &[Route] = &[
         body: "",
     },
     Route {
+        method: "GET",
+        path: "/api/settings/alerts",
+        what: "The mail server and the alert channels: where each sends, which issues and groups it takes, its mute, \
+               and its last failed send. Passwords and secrets only as whether one is stored. No query.",
+        body: "",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/settings/alerts/mail",
+        what: "Set the one mail server email channels send through. No query.",
+        body: "{ enabled: boolean, host: string, port: number, encryption: 'startTls'|'tls', from: string, \
+               username?: string, password?: string (absent keeps, '' removes) }",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/settings/alerts/channels",
+        what: "Replace every alert channel; one left out is removed. A new channel has id ''. No query.",
+        body: "{ channels: [{ id: string, name: string, kind: { type: 'webhook', url: string, \
+               format: 'genericJson'|'slack'|'teams'|'pagerDuty', secretHeader?: string } | { type: 'email', \
+               to: string[] }, groups?: string[] (absent = all), includeMessage: boolean, conditions: string[], \
+               mutedUntil?: number (epoch ms), secret?: string (absent keeps, '' removes) }] }",
+    },
+    Route {
+        method: "POST",
+        path: "/api/settings/alerts/test",
+        what: "Send a test to one channel as given, saved or not. No query.",
+        body: "one channel, as in PUT /api/settings/alerts/channels",
+    },
+    Route {
         method: "POST",
         path: "/api/branches/:name/overwrite",
         what: "Force-push a branch the remote refused, leased on the tips the caller was shown. No query.",
@@ -863,7 +892,8 @@ pub const CATALOG: &[Route] = &[
 
 #[cfg(test)]
 /// Gated paths the agent cannot call: its person's conversations and the models they pick from, a file upload that
-/// is no JSON request, and what a person sets for their own agent, which no agent changes.
+/// is no JSON request, what a person sets for their own agent, which no agent changes, and the warnings as a scraper
+/// reads them, which `/api/warnings` gives the agent as JSON.
 pub const LEFT_OUT: &[(&str, &str)] = &[
     ("POST", "/api/agent/conversations"),
     ("GET", "/api/agent/conversations"),
@@ -876,6 +906,7 @@ pub const LEFT_OUT: &[(&str, &str)] = &[
     ("POST", "/api/areas/:area/lookups/upload"),
     ("PUT", "/api/me/agent-permissions"),
     ("POST", "/api/accounts/:id/keys"),
+    ("GET", "/api/metrics"),
 ];
 
 #[cfg(test)]

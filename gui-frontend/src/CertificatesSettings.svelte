@@ -124,6 +124,17 @@
   let replacingToken = $state(false);
   const directory = $derived(preset === OTHER ? directoryUrl.trim() : preset);
   const terms = $derived(ACME_DIRECTORIES.find((d) => d.value === preset)?.terms ?? null);
+  // The leader forgets a stored key when what it belongs to changes: the HMAC key is the directory's, under its
+  // key id, and the token is the DNS provider's.
+  const hmacKept = $derived(
+    acme !== null &&
+      acme.eabHmacSet &&
+      directory === acme.directory &&
+      eabKeyId.trim() === acme.eabKeyId,
+  );
+  const tokenKept = $derived(
+    acme !== null && acme.cloudflareTokenSet && dnsProvider === acme.dnsProvider,
+  );
   /** What an order needs, as the leader will ask for it. */
   const orderable = $derived(directory !== '' && nameList.length > 0);
   const advancedChanged = $derived(
@@ -915,7 +926,7 @@
                       <LeaderSecretField
                         bind:value={cloudflareToken}
                         bind:replacing={replacingToken}
-                        stored={acme.cloudflareTokenSet}
+                        stored={tokenKept}
                         ariaLabel="API token"
                       />
                     </Field>
@@ -944,7 +955,7 @@
                 <PasswordField
                   bind:value={eabHmac}
                   ariaLabel="EAB HMAC key"
-                  placeholder={acme.eabHmacSet ? 'stored' : ''}
+                  placeholder={hmacKept ? 'stored' : ''}
                 />
               </Field>
             </div>

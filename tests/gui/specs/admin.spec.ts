@@ -1,6 +1,8 @@
 // What a system administrator does to smeltr itself: bring workers in and take them out, see what each runs,
 // configure the service, and hold its credentials. Each test drives the Admin and Status pages of a fleet of
 // its own; the API only arranges what a test is not about.
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { test, expect, goto, withKey, type Api } from '../fleet';
 import { FakeModel, MODEL_KEY, request, say } from '../model';
 import {
@@ -497,6 +499,76 @@ test('the git remote form takes an http or https URL, and warns about a credenti
   await url.fill('https://git.example.com/team/config.git');
   await expect(admin.getByText('unencrypted')).toHaveCount(0);
   await expect(save).toBeEnabled();
+});
+
+/** A webhook on this host that answers 200 and keeps each request it takes. */
+async function webhook(): Promise<{
+  url: string;
+  took: { headers: http.IncomingHttpHeaders; body: string }[];
+  stop: () => Promise<void>;
+}> {
+  const took: { headers: http.IncomingHttpHeaders; body: string }[] = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      took.push({ headers: req.headers, body });
+      res.writeHead(200).end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}/hook`,
+    took,
+    stop: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+test('a webhook added under System → Alerts takes a test, the issues ticked for it, and a mute', async ({
+  admin,
+  api,
+}) => {
+  // S13, S15, S16
+  const hook = await webhook();
+  try {
+    await openAdmin(admin, 'System');
+    await admin.getByRole('link', { name: 'Alerts', exact: true }).click();
+    await admin.getByRole('button', { name: '+ Webhook' }).click();
+    const dialog = admin.getByRole('dialog', { name: 'Add a webhook' });
+    await dialog.getByRole('textbox', { name: /^Name\b/ }).fill('Paging');
+    await dialog.getByRole('textbox', { name: /^URL\b/ }).fill(hook.url);
+    await dialog.getByRole('textbox', { name: 'Header name' }).fill('X-Hook-Secret');
+    await dialog.getByRole('textbox', { name: 'header value' }).fill('s3cr3t');
+    await dialog.getByRole('button', { name: 'Send test' }).click();
+    await expect(dialog.getByRole('status')).toHaveText('✓ Test sent. 127.0.0.1 answered 200.');
+    expect(hook.took[0].headers['x-hook-secret']).toBe('s3cr3t');
+    expect(JSON.parse(hook.took[0].body).status).toBe('test');
+    await dialog.getByRole('button', { name: 'Add' }).click();
+    await expect(dialog).toBeHidden();
+
+    await admin.getByRole('checkbox', { name: 'Paging: Worker silent' }).check();
+    await admin
+      .getByRole('form', { name: 'What each channel gets' })
+      .getByRole('button', { name: 'Save' })
+      .click();
+    await expect
+      .poll(async () => (await api.get('/api/settings/alerts')).settings.channels[0].conditions)
+      .toEqual(['workerSilent']);
+    const saved = (await api.get('/api/settings/alerts')).settings.channels[0];
+    expect(saved.secretSet).toBe(true);
+    expect(JSON.stringify(saved)).not.toContain('s3cr3t');
+
+    await admin.getByRole('button', { name: 'Mute…' }).click();
+    const mute = admin.getByRole('dialog', { name: 'Mute Paging' });
+    await mute.getByRole('radio', { name: '1 hour' }).check();
+    await mute.getByRole('button', { name: 'Mute', exact: true }).click();
+    await expect(admin.getByText(/^Muted until /)).toBeVisible();
+    await admin.getByRole('button', { name: 'Unmute' }).click();
+    await expect(admin.getByText(/^Muted until /)).toHaveCount(0);
+  } finally {
+    await hook.stop();
+  }
 });
 
 // S10
