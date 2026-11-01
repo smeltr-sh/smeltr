@@ -357,7 +357,7 @@ async fn order(State(state): State<Acme>, actor: axum::Extension<Actor>, headers
 
 const ALREADY_ORDERING: &str = "A certificate is already being ordered. Wait for that order to finish.";
 const SETTINGS_MOVED: &str = "The names, directory or challenge changed while this order ran, so its certificate \
-                              is not served. Order again.";
+                              was not installed. Get a certificate again.";
 
 /// Clears the step said when it is dropped, however the order ended, a panic included.
 struct Cleared<'a>(&'a acme::Progress);
