@@ -3,10 +3,9 @@
 //! What the leader stores for a page to show -- why the last ACME order failed, why the remote is not followed, why
 //! a save is not on the host -- must also be in the log, where it is read later and beside everything else. The
 //! page's text and the log line are one event, so one construction makes both: [`noted!`] logs the sentence with
-//! its fields and the message as `error`, and hands back the message as a [`Noted`]. A `Noted` has no other way
-//! to be made from a string, so a stored failure that was never logged does not compile.
-//!
-//! Reading one back from a store is not a new failure, so deserializing makes one silently.
+//! its fields and the message as `error`, and hands back the message as a [`Noted`]. Code has no other way to make
+//! one from a string, so a stored failure that was never logged does not compile. Reading one back from a store is
+//! not a new failure, so deserializing makes one silently: past the store, the guarantee holds by convention.
 
 use std::fmt;
 
@@ -25,6 +24,12 @@ impl Noted {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// A message nothing logged, for a test that needs a stored failure and not its line.
+    #[cfg(test)]
+    pub(crate) fn unlogged(message: &str) -> Self {
+        Noted(message.to_string())
     }
 }
 

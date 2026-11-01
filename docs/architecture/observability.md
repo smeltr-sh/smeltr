@@ -273,7 +273,10 @@ A failure a page shows from the leader's own state -- why the last ACME order
 failed, why the remote is not followed, why a save is not on the host, why the
 list of releases was not read -- is logged where it is recorded, by
 construction: the message is held as a `Noted`, which only the line that logs
-it can make, so a stored failure that was never logged does not compile.
+it can make, so a stored failure that was never logged does not compile; past
+the store, where one is read back, the guarantee holds by convention. A line
+that is a catalog issue's own carries the issue's name, as an issue's lines do,
+so the catalog says it once.
 Every refused API call is logged by the layer that shapes every answer
 (`docs/architecture/api.md`, The answer): a 4xx at debug, since it is the
 caller's and read only when looked for, and a 5xx at error, since it is the

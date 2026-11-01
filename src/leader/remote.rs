@@ -676,10 +676,13 @@ pub async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
             // A sync failing the same way as the last is the same failure, logged once.
             let message = match held.failure.take() {
                 Some(f) if f.message == *message => f.message,
+                // The failure is the catalog's "remote not followed" issue, which `issue` says, so the catalog's
+                // "leader logged warnings" entry leaves this line out rather than raising the same thing twice.
                 _ => crate::noted!(
                     target: "remote.sync_failed",
                     "syncing the remote failed",
                     message,
+                    issue = super::warnings::Condition::RemoteNotFollowed.name(),
                     commit = commit.as_deref()
                 ),
             };
@@ -789,6 +792,11 @@ pub fn push_all(
             host_tip,
             at: now,
         };
+        // A push failing the way the last try did is the same failure, logged once, not once per retry.
+        let not_pushed = |message: String| match failures.get(branch) {
+            Some(f) if f.tip.as_deref() == tip && f.message == *message => f.message.clone(),
+            _ => failed_push(branch, message),
+        };
         match push_branch(repo, remote, branch, tip, last.map(String::as_str)) {
             Ok(git::Pushed::Done) => {}
             // A deletion the host's branch moved past leaves that branch to whoever moved it.
@@ -799,12 +807,12 @@ pub fn push_all(
             Ok(git::Pushed::Refused) => {
                 let failure = match git::host_branch(repo, &remote.url, remote.authorization().as_deref(), branch) {
                     Ok(host_tip) => failed(refused_push(branch), true, host_tip),
-                    Err(e) => failed(failed_push(branch, e.message), false, None),
+                    Err(e) => failed(not_pushed(e.message), false, None),
                 };
                 still.insert(branch.clone(), failure);
             }
             Err(message) => {
-                still.insert(branch.clone(), failed(failed_push(branch, message), false, None));
+                still.insert(branch.clone(), failed(not_pushed(message), false, None));
             }
         }
     }
@@ -1950,6 +1958,17 @@ mod tests {
         let failed = push_all(&repo, &down, &HashMap::new(), 1_000, 60_000).unwrap();
         assert!(!failed["al/fix"].refused);
         assert_eq!(failed["al/fix"].tip.as_deref(), Some(tip.as_str()));
+
+        // Tried again once the retry is due and failing the same way: the same failure, not logged again.
+        let said = crate::logs::said(|| {
+            let again = push_all(&repo, &down, &failed, 61_000, 60_000).unwrap();
+            assert_eq!(again["al/fix"].message, failed["al/fix"].message);
+            assert_eq!(again["al/fix"].at, 61_000);
+        });
+        assert!(
+            !said.iter().any(|(_, site, _)| site == "remote.push_failed"),
+            "{said:?}"
+        );
 
         // Not tried again before the retry is due, then pushed once it is.
         assert_eq!(push_all(&repo, &host.remote(), &failed, 2_000, 60_000).unwrap(), failed);

@@ -1254,7 +1254,7 @@ mod tests {
         assert!(renews(&issued, NOW));
         assert!(!renews(&issued, NOW - 1));
         let never = State {
-            last_error: serde_json::from_str(r#""the authority is down""#).unwrap(),
+            last_error: Some(crate::logs::Noted::unlogged("the authority is down")),
             ..State::default()
         };
         assert!(!renews(&never, NOW));
