@@ -2060,15 +2060,20 @@ async function switchScope(page: Page, from: string, to: string) {
   // A narrow window folds the rail, and the chip with it.
   const unfold = page.getByRole('button', { name: /^Show .* section names$/ });
   if (await unfold.isVisible()) await unfold.click();
-  const option = page.getByRole('button', { name: new RegExp(`^${to}\\b`) });
+  // Shared is no worker group: the chip and its menu row call it the shared configuration.
+  const chip = (scope: string) =>
+    scope === 'shared' ? 'Shared configuration' : `Worker group ${scope}`;
+  const option = page.getByRole('button', {
+    name: to === 'shared' ? /^Shared configuration\b/ : new RegExp(`^${to}\\b`),
+  });
   // The chip lists the groups it reads when it opens; a click before the page is ready opens nothing, and the
   // list can close again before its option is clicked. The reload the click starts is waited for below, not here.
   await expect(async () => {
     if (!(await option.isVisible()))
-      await page.getByRole('button', { name: `Worker group ${from}`, exact: true }).click();
+      await page.getByRole('button', { name: chip(from), exact: true }).click();
     await option.click({ timeout: 2_000, noWaitAfter: true });
   }).toPass({ timeout: 15_000 });
-  await expect(page.getByRole('button', { name: `Worker group ${to}`, exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: chip(to), exact: true })).toBeVisible();
 }
 
 const capture: Move = {
