@@ -21,6 +21,7 @@
 </script>
 
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   import ChipPicker from './ChipPicker.svelte';
   import Help from './Help.svelte';
   import Toggle from './Toggle.svelte';
@@ -238,7 +239,7 @@
                   aria-label={shows ? 'Hide details' : 'Show details'}
                   aria-expanded={shows}
                   onclick={() => (shows ? detailed.delete(c.path) : detailed.add(c.path))}
-                  >{shows ? '▾' : '▸'}</button
+                  ><ChevronIcon open={shows} /></button
                 >
               {:else}<span></span>{/if}
               <span class="mono path" class:object={c.nested > 0}
