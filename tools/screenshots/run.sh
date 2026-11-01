@@ -25,8 +25,11 @@ capture | demo | "") ;;
     ;;
 esac
 
-python3 -c 'import confluent_kafka, PIL' 2>/dev/null ||
-    { echo "pip install -r $PWD/requirements.txt" >&2; exit 1; }
+python3 -c 'import confluent_kafka, PIL' 2>/dev/null || {
+    echo "Python packages missing. Do every step of the one-time setup in $PWD/README.md. The first is:" >&2
+    echo "  pip install -r $PWD/requirements.txt" >&2
+    exit 1
+}
 [ -d node_modules/playwright ] || npm ci
 
 if [ "${1:-}" = "" ] || { [ "${1:-}" = demo ] && ! curl -sk -o /dev/null https://127.0.0.1:8443/; }; then
