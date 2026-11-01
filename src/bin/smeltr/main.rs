@@ -483,6 +483,7 @@ fn preview_on(
     };
     match sample {
         Ok((columns, records)) => {
+            with_branch_schemas(&mut req, &reading);
             let declared_at = if scope == config_file::SHARED_DIR {
                 single_origin_declared_at(&req.config, &reading.at())
             } else {
@@ -549,6 +550,30 @@ async fn import_schema(
             .into()
     })
     .await
+}
+
+/// `req.config` with each schema it names but does not declare taken from `reading`, the area as the branch holds
+/// it. The pipeline editor sends none: a standard's runs to megabytes, and sending it with every preview stalls the
+/// page that builds the request. A schema the config declares wins over the branch's.
+fn with_branch_schemas(req: &mut PreviewRequest, reading: &config_api::Reading) {
+    let Ok(mut file) = serde_json::from_str::<config_file::FileConfig>(&req.config) else {
+        return;
+    };
+    let declared: std::collections::HashSet<&str> = file.schemas.iter().map(|s| s.id.as_str()).collect();
+    let missing: std::collections::HashSet<String> = (file.pipelines.iter().flat_map(|p| &p.produces))
+        .chain(file.destinations.iter().flat_map(|d| &d.accepts))
+        .filter(|id| !declared.contains(id.as_str()))
+        .cloned()
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    let branch = reading.raw().file.schemas;
+    file.schemas
+        .extend(branch.into_iter().filter(|s| missing.contains(&s.id)));
+    if let Ok(config) = serde_json::to_string(&file) {
+        req.config = config;
+    }
 }
 
 /// Rewrites `req.config`, a group's own bundle, into that bundle merged with `shared/` at the commit `reading`
@@ -3197,6 +3222,63 @@ mod tests {
             Vec::new(),
         );
         assert!(!response.succeeded(), "{} rows", response.rows.len());
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// A preview's config may leave out the schemas its pipeline produces, and the preview holds the rows to the
+    /// branch's: the editor does not send a standard's megabytes with every edit.
+    #[test]
+    fn a_preview_takes_the_schemas_its_config_leaves_out_from_the_branch() {
+        use smeltr::config_file;
+
+        let data = std::env::temp_dir().join(format!("smeltr-preview-schemas-{}", std::process::id()));
+        let mut group = audit_calling_shared();
+        group.pipelines[0].produces = vec!["audit-out".to_string()];
+        group.schemas = vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "audit-out",
+                "fields": [{ "field": "reviewer", "type": "str", "requirement": "recommended" }]
+            }))
+            .unwrap(),
+        ];
+        let sample = config_file::SampleDto {
+            id: "s".to_string(),
+            name: "s".to_string(),
+            source: None,
+            records: vec![smeltr::io::raw_object("{}".to_string())],
+            columns: Vec::new(),
+        };
+        seed_west_over_shared(&data, &group, &sample);
+
+        let sent = config_file::FileConfig {
+            schemas: vec![],
+            ..group
+        };
+        let response = super::preview_on(
+            &data,
+            "work",
+            "west",
+            super::PreviewRequest {
+                config: serde_json::to_string(&sent).unwrap(),
+                pipeline: None,
+                sample: Some(sample.id.clone()),
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Vec::new(),
+        );
+
+        assert!(
+            response.succeeded(),
+            "{:?}",
+            response.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        let missing: Vec<_> = response.missing.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(missing, ["reviewer"], "the branch's schema held the rows");
         std::fs::remove_dir_all(&data).ok();
     }
 

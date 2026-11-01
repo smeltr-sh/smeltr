@@ -138,7 +138,8 @@
       sampleRecords = sampleRes.sample.records.map((r) => recordLine(r));
 
       atMicros = lockedAt ?? Date.now() * 1000;
-      const config = JSON.stringify(configRes.config);
+      // Without its schemas: the leader holds the rows to the branch's, and a standard's runs to megabytes.
+      const config = JSON.stringify({ ...configRes.config, schemas: [] });
       if (pipeline) {
         const preview = await previewPipeline({ config, pipeline, sample, atMicros });
         expected = preview.rows.map((r) => r.json);
