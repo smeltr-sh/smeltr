@@ -139,10 +139,6 @@ pub struct Preview {
     /// How many of `warnings` are where the rows break the schemas the pipeline produces.
     #[serde(skip_serializing_if = "is_zero")]
     pub schema_findings: u32,
-    /// What the schemas the pipeline produces recommend and its rows lack, a sentence for each schema. Not among
-    /// `warnings`: the rows still keep the schema.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub recommended: Vec<String>,
     /// The fields the schemas the pipeline produces require or recommend and its rows lack, which the editor shows
     /// as columns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -927,7 +923,7 @@ pub fn run_preview(
         }
     };
     if records.is_empty() {
-        let (found, recommended, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first);
+        let (found, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first);
         warnings.extend(found.iter().map(warn));
         return Envelope::ok(Preview {
             stage: None,
@@ -943,7 +939,6 @@ pub fn run_preview(
             }),
             warnings,
             schema_findings: found.len() as u32,
-            recommended,
             missing,
         });
     }
@@ -1054,7 +1049,7 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
-    let (found, recommended, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first);
+    let (found, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first);
     warnings.extend(found.iter().map(warn));
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
     let rows = rows
@@ -1076,34 +1071,30 @@ pub fn run_preview(
         parsers,
         warnings,
         schema_findings: found.len() as u32,
-        recommended,
         missing,
     })
 }
 
 /// A warning for each field of `record`, what `plan` writes, that breaks the schemas the pipeline produces
 /// (`schema::check`): at the step that wrote the field, or at `first` where the source gave it. A field the schemas
-/// require and the record lacks has no step that wrote it, and is warned of with none. With them, what the schemas
-/// recommend and the record lacks, which is no warning, and every field it lacks.
+/// require and the record lacks has no step that wrote it, and is warned of with none. With them, every field the
+/// schemas require or recommend and the record lacks; one recommended is no warning.
 fn schema_warnings(
     produces: &[Arc<Schema>],
     plan: &Plan,
     record: &DataType,
     first: Option<FunctionId>,
-) -> (Vec<CompileError>, Vec<String>, Vec<crate::schema::Missing>) {
+) -> (Vec<CompileError>, Vec<crate::schema::Missing>) {
     let findings = crate::schema::check(produces, record);
-    let (warned, recommended): (Vec<_>, Vec<_>) = crate::schema::told(produces, &findings)
+    let warned = crate::schema::told(produces, &findings)
         .into_iter()
-        .partition(|t| t.breaks);
-    let warned = warned
-        .into_iter()
+        .filter(|t| t.breaks)
         .map(|t| {
             let at = (t.keys).and_then(|keys| plan::dictionary::writer(plan, &keys).or(first));
             CompileError::new(at, t.message)
         })
         .collect();
-    let recommended = recommended.into_iter().map(|t| t.message).collect();
-    (warned, recommended, crate::schema::missing(produces, &findings))
+    (warned, crate::schema::missing(produces, &findings))
 }
 
 /// Clear every `reuse` that would hand away a binding of a name, so `touched` can read each binding after the run.
@@ -1608,7 +1599,6 @@ mod tests {
             r#"{"field":"user.name","type":"str"},{"field":"message","type":"str","requirement":"recommended"}"#,
         );
         let preview = previewed(config, &[]);
-        assert_eq!(preview.recommended, ["Login recommends `message`; the rows lack it."]);
         assert_eq!(preview.schema_findings, 1, "{:?}", preview.warnings);
         let message = preview.missing.iter().find(|m| m.path == "message").unwrap();
         assert_eq!(message.requirement, crate::config_file::Requirement::Recommended);

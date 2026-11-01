@@ -387,6 +387,9 @@ pub struct SchemaFindingOut {
     message: String,
     /// False for recommended fields the rows lack, which review shows and does not count.
     breaks: bool,
+    /// For recommended fields the rows lack, those fields, which review lists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recommended: Option<smeltr::schema::Recommended>,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -431,6 +434,7 @@ fn branch_findings(data_dir: &Path, name: &str) -> Result<SchemaFindings, Refusa
                     step: f.step,
                     message: f.message,
                     breaks: f.breaks,
+                    recommended: f.recommended,
                 }),
         );
     }

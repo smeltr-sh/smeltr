@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import Ticked from './Ticked.svelte';
+  import Recommends from './Recommends.svelte';
   import type { SchemaFindingDto } from './api';
 
   let {
@@ -64,7 +65,9 @@
           <li>
             <span class="step mono">{f.step ?? 'no step'}</span>
             {#if f.breaks}<span><Ticked text={f.message} /></span>{:else}<span class="dim"
-                ><span aria-hidden="true">ⓘ&nbsp;</span><Ticked text={f.message} /></span
+                ><span aria-hidden="true">ⓘ&nbsp;</span>{#if f.recommended}<Recommends
+                    {...f.recommended}
+                  />{:else}<Ticked text={f.message} />{/if}</span
               >{/if}
           </li>
         {/each}

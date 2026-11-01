@@ -106,6 +106,8 @@ pub struct SchemaFinding {
     pub message: String,
     /// Whether the rows break a schema by it. One that does not is told and not counted.
     pub breaks: bool,
+    /// For recommended fields the rows lack, those fields (`schema::Told`).
+    pub recommended: Option<crate::schema::Recommended>,
 }
 
 /// The compiler's inputs, with every string id resolved to an integer id. Not yet compiled: `load_str` stops here so
@@ -382,6 +384,7 @@ impl LoadedSystem {
                         step: self.step_id_for(Some(route.pipeline), at),
                         message: told.message,
                         breaks: told.breaks,
+                        recommended: told.recommended,
                     });
                 }
             }
@@ -402,6 +405,7 @@ impl LoadedSystem {
                         titles.join(", ")
                     ),
                     breaks: true,
+                    recommended: None,
                 });
             }
         }

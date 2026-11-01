@@ -972,3 +972,47 @@ test('a schema recommending more than five fields the rows lack names five, and 
   await expect(detail.getByRole('button', { name: '3 more' })).toHaveCount(0);
   await admin.screenshot({ path: 'results/more-shown.png' });
 });
+
+test('review names five fields a schema recommends and the rows lack, and a button shows the rest', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const on = '?branch=conns';
+  const DEFAULT = '/api/areas/default';
+  const wide = ['host', 'port', 'proto', 'region', 'session', 'severity', 'tenant', 'zone'];
+  await api.put(`${DEFAULT}/schemas${on}`, [
+    {
+      id: 'conn',
+      title: 'Connection',
+      fields: wide.map((field) => ({ field, type: 'str', requirement: 'recommended' })),
+    },
+  ]);
+  await api.put(`${DEFAULT}/sources${on}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
+  await api.put(`${DEFAULT}/pipelines/conns${on}`, {
+    id: 'conns',
+    name: 'conns',
+    steps: [],
+    produces: ['conn'],
+  });
+  await api.put(`${DEFAULT}/routes${on}`, [
+    { id: 'r1', source: 'm1', condition: null, pipeline: 'conns', deliver: [] },
+  ]);
+  await api.openChange('conns', 'Connections');
+  await admin.setViewportSize({ width: 1920, height: 1080 });
+  await goto(admin, leader, '#/changes/review/conns');
+  await admin.getByRole('tab', { name: /^Schemas/ }).click();
+
+  const told = admin.getByRole('tabpanel').locator('li').last();
+  await expect(told).toContainText(
+    'Connection recommends host, port, proto, region, session and 3 more; the rows lack them.',
+    { timeout: 15_000 },
+  );
+  await expect(admin.getByText('Loading…')).toHaveCount(0);
+  await admin.screenshot({ path: 'results/review-more-cut.png' });
+  await told.getByRole('button', { name: '3 more' }).click();
+  await expect(told).toContainText(
+    'Connection recommends host, port, proto, region, session, severity, tenant and zone; the rows lack them.',
+  );
+  await admin.screenshot({ path: 'results/review-more-shown.png' });
+});

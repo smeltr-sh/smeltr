@@ -549,6 +549,8 @@ struct SchemaFindingOut {
     step: Option<String>,
     message: String,
     breaks: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recommended: Option<smeltr::schema::Recommended>,
 }
 
 #[derive(serde::Deserialize)]
@@ -585,6 +587,7 @@ async fn schema_findings(State(service): State<Service>, Json(body): Json<Findin
                             step: f.step,
                             message: f.message,
                             breaks: f.breaks,
+                            recommended: f.recommended,
                         })
                         .collect(),
                 })

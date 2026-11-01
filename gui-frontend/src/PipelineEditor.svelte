@@ -13,9 +13,7 @@
   import StateMark from './StateMark.svelte';
   import InlineError from './InlineError.svelte';
   import { tick, untrack } from 'svelte';
-  import { SvelteSet } from 'svelte/reactivity';
-  import MoreButton from './MoreButton.svelte';
-  import { RECOMMENDED_NAMED } from './schemas';
+  import Recommends from './Recommends.svelte';
   import { opening } from './StepEditor.svelte';
   import { store, stored } from './stored';
   import StepList from './StepList.svelte';
@@ -688,8 +686,6 @@
     }
     return out;
   });
-  /** The schemas whose recommended paths the author asked to see all of. */
-  const recommendedAll = new SvelteSet<string>();
   let running = $state(false);
   let autoRun = $state(true);
   let requestError = $state('');
@@ -1491,20 +1487,9 @@
         {#if recommendedBySchema.size > 0}
           <div class="recommended" role="status">
             {#each recommendedBySchema as [schema, paths] (schema)}
-              {@const named = recommendedAll.has(schema)
-                ? paths
-                : paths.slice(0, RECOMMENDED_NAMED)}
               <div class="recommended-note">
                 <span aria-hidden="true">ⓘ</span>
-                <span
-                  >{schema} recommends {#each named as p, i (p)}{#if i > 0}{i === paths.length - 1
-                        ? ' and '
-                        : ', '}{/if}<code>{p}</code>{/each}{#if named.length < paths.length}{' '}and
-                    <MoreButton
-                      count={paths.length - named.length}
-                      onclick={() => recommendedAll.add(schema)}
-                    />{/if}; the rows lack {paths.length === 1 ? 'it' : 'them'}.</span
-                >
+                <span><Recommends {schema} fields={paths} /></span>
               </div>
             {/each}
           </div>
@@ -1841,11 +1826,6 @@
     padding: 0.55rem 0.7rem;
     border: 1px solid var(--border);
     border-radius: var(--radius);
-  }
-
-  .recommended-note code {
-    font-family: var(--mono);
-    font-size: 0.92em;
   }
 
   .recommended-note {
