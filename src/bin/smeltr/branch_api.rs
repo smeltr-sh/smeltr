@@ -278,7 +278,7 @@ pub async fn list_branches(
                 {
                     Some(failed) => PushOut {
                         state: if failed.refused { "refused" } else { "waiting" },
-                        message: failed.message.clone(),
+                        message: failed.message.to_string(),
                         host_tip: failed.host_tip.clone(),
                     },
                     None => PushOut {

@@ -113,7 +113,7 @@ async fn read(state: &Acme) -> Result<AcmeDto, String> {
         not_after_millis: issued.not_after_millis,
         renew_after_millis: issued.renew_after_millis,
         last_attempt_millis: issued.last_attempt_millis,
-        last_error: issued.last_error,
+        last_error: issued.last_error.map(|e| e.to_string()),
         order_within_secs: acme::Challenge::ALL
             .iter()
             .map(|c| (c.as_str(), c.order_within().as_secs()))
@@ -403,9 +403,8 @@ async fn run(
         tracing::info!(target: "leader.acme_order_issued", names = %settings.names.join(","), "the certificate authority issued a certificate");
     }
     if let Err(e) = &outcome {
-        tracing::warn!(target: "leader.acme_order_failed", error = %e, "the certificate authority did not issue a certificate");
         let _writes = settings_writes(auth, progress).await;
-        if let Err(e) = acme::failed(&serving.dir, now_ms, e) {
+        if let Err(e) = acme::failed(&serving.dir, now_ms, &settings.directory, e) {
             outcome = Err(e);
         }
     }
