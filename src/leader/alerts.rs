@@ -950,8 +950,21 @@ pub async fn put_channels(
         };
         let mut secrets: Vec<(String, String)> = Vec::new();
         for put in &sent {
+            let key = secret_key(&put.channel.id);
             let moved = was.get(&put.channel.id).is_none_or(|w| url(w) != url(&put.channel));
-            secrets.extend(SecretSave::sent(put.secret.clone(), moved).entry(s, secret_key(&put.channel.id))?);
+            let save = SecretSave::sent(put.secret.clone(), moved);
+            let held = s.setting(&key)?.filter(|v| !v.is_empty());
+            if matches!(
+                &put.channel.kind,
+                Kind::Webhook {
+                    format: Format::PagerDuty,
+                    ..
+                }
+            ) && save.held(held.as_deref()).is_none()
+            {
+                return Ok(Err(format!("{}: give the routing key", put.channel.name)));
+            }
+            secrets.extend(save.entry(s, key)?);
         }
         for id in was.keys().filter(|id| !sent.iter().any(|p| &p.channel.id == *id)) {
             secrets.push((secret_key(id), String::new()));
@@ -962,10 +975,11 @@ pub async fn put_channels(
         entries.extend(secrets.iter().map(|(k, v)| (k.as_str(), v.clone())));
         s.put_settings(&entries, Some(&event))?;
         s.forget_alert_channels(&kept.iter().map(|c| c.id.clone()).collect::<Vec<_>>())?;
-        read_settings(s, &alerts)
+        read_settings(s, &alerts).map(Ok)
     })
     .await
-    .map_err(Refusal::from);
+    .map_err(Refusal::from)
+    .and_then(|refused| refused.map_err(Refusal::invalid));
     if written.is_ok() {
         state.alerts.settings_changed.notify_one();
     }

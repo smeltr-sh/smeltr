@@ -3669,6 +3669,48 @@ fn an_alert_channel_keeps_its_secret_and_takes_a_test() {
     );
 }
 
+/// PagerDuty takes nothing without its routing key, so a PagerDuty channel is not saved without one. Saved, it
+/// keeps it while its URL stays the same, and goes back to wanting one when the URL changes.
+#[test]
+fn a_pagerduty_channel_is_saved_only_with_its_routing_key() {
+    let leader = start("alerts-pagerduty");
+    let op = operator(&leader);
+    let channel = serde_json::json!({
+        "id": "",
+        "name": "On call",
+        "kind": { "type": "webhook", "url": "https://events.pagerduty.com/v2/enqueue", "format": "pagerDuty" },
+        "conditions": ["sourceUnreachable"],
+    });
+    let put = |channel: serde_json::Value| {
+        leader.put_as(
+            &op,
+            "/api/settings/alerts/channels",
+            serde_json::json!({ "channels": [channel] }),
+        )
+    };
+    for secret in [None, Some("")] {
+        let mut without = channel.clone();
+        if let Some(secret) = secret {
+            without["secret"] = secret.into();
+        }
+        let (status, body) = put(without);
+        assert_eq!(status, 422, "{body}");
+        assert!(body.to_string().contains("On call: give the routing key"), "{body}");
+    }
+    let mut with_key = channel.clone();
+    with_key["secret"] = "routing-key".into();
+    let (status, body) = put(with_key);
+    assert_eq!(status, 200, "{body}");
+
+    let mut kept = channel.clone();
+    kept["id"] = body["settings"]["channels"][0]["id"].clone();
+    let (status, body) = put(kept.clone());
+    assert_eq!(status, 200, "the stored routing key is kept: {body}");
+    kept["kind"]["url"] = "https://events.eu.pagerduty.com/v2/enqueue".into();
+    let (status, body) = put(kept);
+    assert_eq!(status, 422, "a new URL forgets the stored key: {body}");
+}
+
 /// What a channel is, and the mail server's, is the administrator's: a viewer reads none of it.
 #[test]
 fn only_an_administrator_reads_the_alert_settings() {
