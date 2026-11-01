@@ -2051,9 +2051,6 @@ export interface PreviewResult {
   warnings?: ApiError[];
   /** How many of `warnings` are where the rows break the schemas the pipeline produces. */
   schema_findings?: number;
-  /** What the schemas the pipeline produces recommend and its rows lack, a sentence for each schema. Not among
-   * `warnings`: the rows still keep the schema. */
-  recommended?: string[];
   /** The fields the schemas the pipeline produces require or recommend and its rows lack. */
   missing?: MissingField[];
 }
@@ -5576,6 +5573,8 @@ export interface SchemaFindingDto {
   message: string;
   /** False for recommended fields the rows lack, which review shows and does not count. */
   breaks: boolean;
+  /** For recommended fields the rows lack, the schema's title and those fields' paths. */
+  recommended?: { schema: string; fields: string[] };
 }
 
 /** What breaks a schema at `branch`'s tip, in every group its change reaches. */

@@ -449,14 +449,22 @@ pub struct Told {
     pub message: String,
     /// Whether it says the rows break a schema. A recommended field they lack does not.
     pub breaks: bool,
+    /// For a sentence of recommended fields the rows lack, those fields, for a reader that lists them itself.
+    pub recommended: Option<Recommended>,
 }
 
-/// The recommended fields a sentence names before it counts the rest, so a standard's long list stays one line.
-const RECOMMENDED_NAMED: usize = 5;
+/// The fields a schema recommends and the rows lack, which review lists, a long list cut short.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Recommended {
+    /// The schema's title.
+    pub schema: String,
+    /// Each field's path.
+    pub fields: Vec<String>,
+}
 
 /// What a check's `findings` against `schemas` say to a pipeline's author: a sentence for each field whose type
 /// misfits, with the field's keys, one for each schema's required fields the record lacks, and after them one for
-/// each schema's recommended fields it lacks, which names the first few and counts the rest.
+/// each schema's recommended fields it lacks, which names every one and carries them, for a reader to cut short.
 pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
     let title = |id: &str| (schemas.iter().find(|s| s.id == id)).map_or(id.to_string(), |s| s.title.clone());
     let mut out = Vec::new();
@@ -479,42 +487,48 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
                         ty.spell()
                     ),
                     breaks: true,
+                    recommended: None,
                 });
             }
             Misfit::Missing => missing.entry(&f.schema).or_default().push(format!("`{}`", f.path())),
-            Misfit::Recommended => recommended
-                .entry(&f.schema)
-                .or_default()
-                .push(format!("`{}`", f.path())),
+            Misfit::Recommended => recommended.entry(&f.schema).or_default().push(f.path()),
         }
     }
     let lack = |paths: &[String]| if paths.len() == 1 { "it" } else { "them" };
+    // `a`, `b` and `c`: "and" before the last, as a sentence lists.
+    let listed = |paths: &[String]| match paths.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    };
     for (schema, paths) in missing {
         out.push(Told {
             keys: None,
             message: format!(
                 "{} requires {}; the rows lack {}.",
                 title(schema),
-                paths.join(", "),
+                listed(&paths),
                 lack(&paths)
             ),
             breaks: true,
+            recommended: None,
         });
     }
     for (schema, paths) in recommended {
-        let named = paths[..paths.len().min(RECOMMENDED_NAMED)].join(", ");
-        let more = match paths.len().saturating_sub(RECOMMENDED_NAMED) {
-            0 => String::new(),
-            n => format!(" and {n} more"),
-        };
+        let ticked: Vec<String> = paths.iter().map(|p| format!("`{p}`")).collect();
         out.push(Told {
             keys: None,
             message: format!(
-                "{} recommends {named}{more}; the rows lack {}.",
+                "{} recommends {}; the rows lack {}.",
                 title(schema),
+                listed(&ticked),
                 lack(&paths)
             ),
             breaks: false,
+            recommended: Some(Recommended {
+                schema: title(schema),
+                fields: paths,
+            }),
         });
     }
     out
@@ -719,11 +733,13 @@ mod tests {
                         "`time` is datetime, but Login has it as i64. Write it as i64: `.epochMillis()` gives one."
                             .to_string(),
                     breaks: true,
+                    recommended: None,
                 },
                 Told {
                     keys: None,
-                    message: "Login requires `activity_id`, `user`, `metadata`; the rows lack them.".to_string(),
+                    message: "Login requires `activity_id`, `user` and `metadata`; the rows lack them.".to_string(),
                     breaks: true,
+                    recommended: None,
                 },
             ]
         );
@@ -771,10 +787,18 @@ mod tests {
             [
                 ("Audit requires `time`; the rows lack it.", true),
                 (
-                    "Audit recommends `a`, `b`, `c`, `d`, `e` and 2 more; the rows lack them.",
+                    "Audit recommends `a`, `b`, `c`, `d`, `e`, `f` and `src.ip`; the rows lack them.",
                     false
                 ),
             ]
+        );
+        assert_eq!(
+            told[1].recommended,
+            Some(Recommended {
+                schema: "Audit".to_string(),
+                fields: ["a", "b", "c", "d", "e", "f", "src.ip"].map(String::from).to_vec(),
+            }),
+            "the recommended fields are carried whole, for a reader to cut short"
         );
         let lacking = missing(schemas, &findings);
         assert_eq!(lacking.len(), 8, "{lacking:?}");
