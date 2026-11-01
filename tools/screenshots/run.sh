@@ -25,7 +25,7 @@ capture | demo | "") ;;
     ;;
 esac
 
-python3 -c 'import confluent_kafka, PIL' 2>/dev/null || {
+python3 -c 'import PIL' 2>/dev/null || {
     cat >&2 <<SETUP
 Python packages missing. Run the one-time setup from $PWD/README.md:
   pip install -r $PWD/requirements.txt
@@ -35,6 +35,8 @@ SETUP
     exit 1
 }
 [ -d node_modules/playwright ] || npm ci
+# The traffic, the samples, the lookup tables (bundle.py) and the recording's fingerprint.
+(cd "$REPO" && cargo build --release --example demo-traffic)
 
 if [ "${1:-}" = "" ] || { [ "${1:-}" = demo ] && ! curl -sk -o /dev/null https://127.0.0.1:8443/; }; then
     [ -x "${CARGO_TARGET_DIR:-$REPO/target}/release/smeltr" ] || { echo "no release binary: just build" >&2; exit 1; }
@@ -48,6 +50,9 @@ fi
 [ -f state/sessions.json ] || { echo "no fleet staged here: run $0 without \`capture\` first" >&2; exit 1; }
 if [ "${1:-}" = demo ]; then
     node demo.mjs "$REPO/gui-frontend/src/demo/recorded.json"
+    # What the generators made, so a test says when the recording no longer shows it.
+    "${CARGO_TARGET_DIR:-$REPO/target}/release/examples/demo-traffic" fingerprint \
+        >"$REPO/gui-frontend/src/demo/recorded.fingerprint"
     exit 0
 fi
 mkdir -p "$OUT"

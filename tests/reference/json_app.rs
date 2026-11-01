@@ -5,7 +5,7 @@
 //! with the keys the mapping computes with declared, an `if` that drops
 //! debug lines, and the moves from the app's names to ECS ones. No lookup.
 
-use super::Pipeline;
+use super::{Pipeline, mix};
 
 pub const PIPELINE: Pipeline = Pipeline {
     name: "json_app",
@@ -13,15 +13,6 @@ pub const PIPELINE: Pipeline = Pipeline {
     bundle,
     check,
 };
-
-/// splitmix64. A record is a pure function of its index, so a run is
-/// reproducible and two runs of different lengths agree row for row.
-fn mix(i: u64) -> u64 {
-    let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
 
 /// The services one log stream carries, with whether their lines name an
 /// order. A shared topic for a handful of services is the common

@@ -7,7 +7,7 @@
 //! The pipeline is `docs/examples.md` section 2 in the GUI's steps: parse
 //! the envelope, parse the app's line, map both to ECS, drop the rest.
 
-use super::Pipeline;
+use super::{Pipeline, mix, pick};
 
 pub const PIPELINE: Pipeline = Pipeline {
     name: "k8s",
@@ -15,19 +15,6 @@ pub const PIPELINE: Pipeline = Pipeline {
     bundle,
     check,
 };
-
-/// splitmix64. A record is a pure function of its index, so a run is
-/// reproducible and two runs of different lengths agree row for row.
-fn mix(i: u64) -> u64 {
-    let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-fn pick<T: Copy>(pool: &[T], h: u64) -> T {
-    pool[(h % pool.len() as u64) as usize]
-}
 
 /// What a service writes when it does not write JSON: its runtime's stack
 /// trace lines, or a component that only logs text.

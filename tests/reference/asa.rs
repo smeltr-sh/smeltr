@@ -6,7 +6,7 @@
 //! becomes a document. Two regex lookups map the interface names to the
 //! site's policy zones, then the mapping moves vendor names to ECS ones.
 
-use super::Pipeline;
+use super::{Clock, Pipeline, mix, pick};
 
 pub const PIPELINE: Pipeline = Pipeline {
     name: "asa",
@@ -16,23 +16,6 @@ pub const PIPELINE: Pipeline = Pipeline {
 };
 
 // -- the record ---------------------------------------------------------------
-
-/// splitmix64. A record is a pure function of its index, so a run is
-/// reproducible and two runs of different lengths agree row for row.
-fn mix(i: u64) -> u64 {
-    let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-fn pick<'a>(pool: &[&'a str], r: u64) -> &'a str {
-    pool[(r % pool.len() as u64) as usize]
-}
-
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
 
 /// The message ids, each with its share of the stream in thousandths. An
 /// ASA logging at informational is mostly connection build and teardown;
@@ -419,22 +402,23 @@ fn body(code: &str, a: u64, b: u64, c: u64) -> String {
 /// timestamp` and `logging device-id hostname` set: a PRI, the box's own
 /// timestamp with the year, its name, and `%ASA-<severity>-<id>:`.
 pub fn line(i: u64) -> String {
+    record(i, &Clock::of(i))
+}
+
+/// Message `i`, sent at `at`.
+pub fn record(i: u64, at: &Clock) -> String {
     let a = mix(i);
     let b = mix(i ^ 0x5DEE_CE66);
     let c = mix(i.wrapping_mul(31));
     let code = code(c >> 20);
     let sev = severity(code);
-    let month = (a >> 20) as usize % 12;
-    let day = 1 + (b >> 20) % 28;
-    let (hh, mm, ss) = ((a >> 28) % 24, (b >> 28) % 60, (c >> 28) % 60);
     format!(
-        "<{}>{} {:02} 2026 {:02}:{:02}:{:02} fw-{}-0{} : %ASA-{sev}-{code}: {}",
+        "<{}>{} {:02} {} {} fw-{}-0{} : %ASA-{sev}-{code}: {}",
         FACILITY * 8 + sev,
-        MONTHS[month],
-        day,
-        hh,
-        mm,
-        ss,
+        at.mon(),
+        at.day,
+        at.year,
+        at.hms(),
         ["nyc", "lon", "fra", "sin"][(a >> 60) as usize % 4],
         1 + (b >> 60) % 2,
         body(code, a, b, c),

@@ -17,7 +17,7 @@ The PNGs land in `shots/` as `<nn>-<page>-<light|dark>.png`, 1440 px wide at 2x 
 
 ```mermaid
 graph LR
-  gen[gen.py] --> pa([panw-firewalls]) & fg([fortigate-firewalls]) & ng([nginx-access]) & au([linux-auth]) & ct([aws-cloudtrail]) & asa([cisco-asa])
+  gen[demo-traffic] --> pa([panw-firewalls]) & fg([fortigate-firewalls]) & ng([nginx-access]) & au([linux-auth]) & ct([aws-cloudtrail]) & asa([cisco-asa])
   subgraph network [Network security: fw-collector-01, -02]
     pa --> pp[panos-traffic] --> esn([es-network])
     fg --> fp[fortigate-traffic] --> esn
@@ -32,19 +32,19 @@ graph LR
   end
 ```
 
-- **Traffic.** `gen.py` writes about 1,600 records a second to Kafka, in the shapes of the sample logs in
-  elastic/integrations: PAN-OS TRAFFIC over syslog, FortiGate key=value, nginx access, sshd and sudo, and
-  CloudTrail JSON, and Cisco ASA connection builds and teardowns. Every value is synthetic; addresses outside
-  10/8 come from the MaxMind test ranges. Now and then an nginx line is cut short and fails to parse; it reaches
-  es-web tagged with its exception.
-- **Something to fix.** No route takes cisco-asa, so the leader warns that its stream is unrouted. FGT-SIN-01
+- **Traffic.** `demo-traffic` (`examples/demo-traffic.rs`) writes about 1,600 records a second to Kafka from the
+  reference generators the benchmark runs (`tests/reference`, `tests/panos`): PAN-OS TRAFFIC over syslog, FortiGate
+  traffic and UTM key=value, nginx access, sshd and sudo, CloudTrail deliveries, and Cisco ASA's many messages. The
+  samples and the lookup tables come from the same generators, so the pipelines join on what the logs carry. Every
+  value is synthetic; addresses outside 10/8 come from the MaxMind test ranges and the documentation ranges. Now
+  and then an nginx line is cut short and fails to parse; it reaches es-web tagged with its exception.
+- **Something to fix.** No route takes cisco-asa, so the leader warns that its stream is unrouted. FGT-SIN
   names `proto` (`tcp`) where the FortiGate pipeline declares the protocol number, so the leader warns that the
   field is not its declared type.
 - **Pipelines** (`bundle.py`), each normalizing to ECS: grok and a positional CSV table for PAN-OS, with CIDR,
-  directory and App-ID lookups; key=value for FortiGate; grok with a custom pattern for nginx; grok and a code
-  step for auth.log; JSON with nested structs for CloudTrail. Each has a sample and a locked test. Each group
-  holds its own tables, pipelines and destinations: the editor cannot preview a group's pipeline that reads
-  from `shared/`.
+  directory and App-ID lookups; grok and key=value for FortiGate; grok with a custom pattern for nginx; grok and a
+  code step for auth.log; JSON with nested structs for CloudTrail, unrolled to a document per event. Each has a
+  sample and a locked test. Each group holds its own tables, pipelines and destinations.
 - **History** (`stage.py`). Three accounts write it through the leader's API. The admin adds a worker group,
   Priya Raman onboards the firewalls, Marcus Webb onboards the web and cloud feeds and adds a 5xx alert, and
   the admin rotates the Elasticsearch key. Priya's App-ID risk change stays open for review; Marcus's Cisco ASA

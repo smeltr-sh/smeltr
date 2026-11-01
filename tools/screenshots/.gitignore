@@ -4,5 +4,5 @@ state/
 shots/
 node_modules/
 __pycache__/
-.gen.pid
-gen.log
+.traffic.pid
+traffic.log
