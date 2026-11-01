@@ -32,3 +32,9 @@ export function suggestBranchName(who: string, what: string, taken: Iterable<str
   if (!names.has(base)) return base;
   for (let n = 2; ; n++) if (!names.has(`${base}-${n}`)) return `${base}-${n}`;
 }
+
+/** Whose branch `name` is, by the owner/what convention: what comes before its first `/`, or nothing. */
+export function ownerOf(name: string): string {
+  const slash = name.indexOf('/');
+  return slash < 0 ? '' : name.slice(0, slash);
+}
