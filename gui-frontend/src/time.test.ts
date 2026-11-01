@@ -7,7 +7,7 @@ import {
   countdown,
   dateTime,
   isPipelinePath,
-  pathSummary,
+  pathParts,
   shortCommit,
   shortPath,
   expiry,
@@ -88,43 +88,46 @@ describe('shortPath', () => {
   });
 });
 
-describe('pathSummary', () => {
+describe('pathParts', () => {
   it('names the first few and counts the rest', () => {
-    expect(pathSummary([])).toBe('—');
-    expect(pathSummary(['groups/west/sources.json'])).toBe('sources');
-    expect(pathSummary(['a.json', 'b.json', 'c.json'])).toBe('a · b · c');
-    expect(pathSummary(['a.json', 'b.json', 'c.json', 'd.json'])).toBe('a · b · c · 1 more');
+    expect(pathParts([])).toEqual({ text: '—', more: 0 });
+    expect(pathParts(['groups/west/sources.json'])).toEqual({ text: 'sources', more: 0 });
+    expect(pathParts(['a.json', 'b.json', 'c.json'])).toEqual({ text: 'a · b · c', more: 0 });
+    expect(pathParts(['a.json', 'b.json', 'c.json', 'd.json'])).toEqual({
+      text: 'a · b · c',
+      more: 1,
+    });
   });
 
   it('names a pipeline file by its kind, never by the id its stem is', () => {
-    expect(pathSummary(['groups/west/pipelines/pipeline-x7k2m9q1.json'])).toBe('pipeline');
+    expect(pathParts(['groups/west/pipelines/pipeline-x7k2m9q1.json']).text).toBe('pipeline');
     expect(
-      pathSummary([
+      pathParts([
         'groups/west/sources.json',
         'groups/west/pipelines/pipeline-x7k2m9q1.json',
         'shared/pipelines/pipeline-a1b2c3d4.json',
         'groups/west/routes.json',
       ]),
-    ).toBe('sources · 2 pipelines · routes');
+    ).toEqual({ text: 'sources · 2 pipelines · routes', more: 0 });
   });
 
   it('counts the files behind the entries it does not show', () => {
     expect(
-      pathSummary([
+      pathParts([
         'a.json',
         'b.json',
         'c.json',
         'pipelines/pipeline-1.json',
         'pipelines/pipeline-2.json',
       ]),
-    ).toBe('a · b · c · 2 more');
+    ).toEqual({ text: 'a · b · c', more: 2 });
   });
 
   it('names a path the way `label` does, where it does', () => {
     const label = (path: string) =>
       path === 'groups/west/pipelines/pipeline-x7k2m9q1.json' ? 'pipeline orders' : undefined;
     expect(
-      pathSummary(
+      pathParts(
         [
           'groups/west/pipelines/pipeline-x7k2m9q1.json',
           'groups/west/pipelines/pipeline-a1b2c3d4.json',
@@ -132,7 +135,7 @@ describe('pathSummary', () => {
         ],
         label,
       ),
-    ).toBe('pipeline orders · pipeline · sources');
+    ).toEqual({ text: 'pipeline orders · pipeline · sources', more: 0 });
   });
 });
 
