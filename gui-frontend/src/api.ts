@@ -48,9 +48,9 @@ export interface MutationResult {
   conflict?: SaveConflict;
 }
 
-import { funnyBranchName } from './branchNames';
+import { editedBy, suggestBranchName } from './branchNames';
 import { store, stored } from './stored';
-import { csrf, recheck, signedOut, type AccessDto, type AccessLevel } from './session';
+import { csrf, recheck, session, signedOut, type AccessDto, type AccessLevel } from './session';
 import { bareError, errors, Reported, type Call, type Weight } from './errors.svelte';
 
 export function errorText(errors: ApiError[]): string {
@@ -1357,6 +1357,20 @@ export function onBranchNeeded(ask: (suggested: string) => Promise<string | null
   askForBranch = ask;
 }
 
+/** The name the branch prompt offers for an edit of `what`: whoever is signed in, and `what`, numbered past any
+ * branch that already has it. Unnumbered when the branches cannot be read; the prompt still checks. */
+async function branchFor(what: string): Promise<string> {
+  const me = session();
+  const who = me.username ?? me.providerLogin?.split('@')[0] ?? '';
+  let taken: string[] = [];
+  try {
+    taken = (await listBranches()).branches?.map((b) => b.name) ?? [];
+  } catch {
+    // Offered as it is; answering with a branch that exists already takes the ordinary switch.
+  }
+  return suggestBranchName(who, what, taken);
+}
+
 /** What a write refused for want of a branch answers. Not a failure: nothing
  * broke, and the writer is the one who said no. */
 function noBranchChosen<T>(): T {
@@ -1485,7 +1499,7 @@ async function configJson<T extends { commit?: string | null }>(
   const method = init?.method;
   const write = !!method && method !== 'GET';
   if (needsBranch(branch, method)) {
-    const chosen = askForBranch ? await askForBranch(funnyBranchName()) : null;
+    const chosen = askForBranch ? await askForBranch(await branchFor(editedBy(url))) : null;
     if (!chosen) {
       const refused = noBranchChosen<T>();
       answered(errors.call(method ?? 'GET', url, weight ?? 'bar'), refused);
@@ -3569,7 +3583,7 @@ export async function pointSecretNow(name: string, version: number): Promise<Poi
     // something to move: a value nothing names needs no branch.
     const onMain = await pointSecretAt(name, version, MAIN_BRANCH);
     if (onMain.ok) return onMain;
-    const chosen = askForBranch ? await askForBranch(funnyBranchName()) : null;
+    const chosen = askForBranch ? await askForBranch(await branchFor(`secret-${name}`)) : null;
     if (!chosen) {
       return {
         ...noBranchChosen<PointSecretResult>(),
