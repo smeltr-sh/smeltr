@@ -33,14 +33,14 @@
       source="feed-health-issues"
       height={1800}
       crop={{ x: 472, y: 758, width: 2360, height: 176 }}
-      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 421,715 rows in 30 minutes where 736,846 to 968,182 is normal at this time of day."
+      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 420,808 rows in 30 minutes where 735,037 to 965,805 is normal at this time of day."
       caption="The Issues page names the source, what it read and what is normal."
     />
     <ProductScreenshot
       source="feed-health-volume"
       height={1800}
       crop={{ x: 2150, y: 470, width: 690, height: 950 }}
-      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 246 rows a second, expected 409 to 538. Its 24-hour chart follows the expected band through the day, then falls to half."
+      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 245 rows a second, expected 408 to 537. Its 24-hour chart follows the expected band through the day, then falls to half."
       caption="Over the last 24 hours the source reads within its band, until it falls to half."
     />
     <p>
@@ -92,6 +92,3 @@
     </div>
   </section>
 </div>
-
-<style>
-</style>
