@@ -3657,6 +3657,16 @@ fn an_alert_channel_keeps_its_secret_and_takes_a_test() {
         "{request}"
     );
     assert!(request.contains(r#""status":"test""#), "{request}");
+
+    let mut elsewhere = channel.clone();
+    elsewhere["id"] = saved["id"].clone();
+    elsewhere["kind"]["url"] = "https://elsewhere.example.com/hook".into();
+    let (status, body) = leader.post_as(&op, "/api/settings/alerts/test", elsewhere);
+    assert_eq!(status, 422, "the stored secret is sent only to its own URL: {body}");
+    assert!(
+        body.to_string().contains("enter the secret header value again"),
+        "{body}"
+    );
 }
 
 /// What a channel is, and the mail server's, is the administrator's: a viewer reads none of it.

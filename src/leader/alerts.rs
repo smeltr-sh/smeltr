@@ -159,9 +159,22 @@ impl Alerts {
         self.held().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
-    fn failed(&self, channel: &Channel, message: crate::logs::Noted, now: i64) {
+    /// Record that `channel` did not take a send, and log why, once for each new reason: a channel that stays down
+    /// for the same reason is not logged again every look.
+    fn failed(&self, channel: &Channel, why: String, now: i64) {
         let mut held = self.held();
-        let since = held.get(&channel.id).map_or(now, |f| f.since);
+        let (since, message) = match held.remove(&channel.id) {
+            Some(was) if *was.message == why => (was.since, was.message),
+            was => {
+                let message = crate::noted!(
+                    target: "alerts.send_failed",
+                    "an alert channel did not take what was sent",
+                    why,
+                    channel = %channel.name
+                );
+                (was.map_or(now, |w| w.since), message)
+            }
+        };
         let failing = Failing {
             channel: channel.name.clone(),
             since,
@@ -256,16 +269,21 @@ pub fn changes(channel: &Channel, now: i64, warnings: &[Warning], told: &[AlertT
         .map(|(_, t)| (*t).clone())
         .collect();
     cleared.sort_by(|a, b| a.warning.cmp(&b.warning));
+    // One that still holds but the channel no longer takes, since its groups or issues changed, has not cleared: it
+    // is forgotten, so a paging tool is not told an incident it holds open is over.
+    let standing: std::collections::HashSet<String> = warnings.iter().map(key).collect();
+    let (untaken, cleared): (Vec<AlertTold>, Vec<AlertTold>) =
+        cleared.into_iter().partition(|t| standing.contains(&t.warning));
     match muted {
         true => Changes {
             raised: Vec::new(),
             cleared: Vec::new(),
-            dropped: cleared,
+            dropped: [cleared, untaken].concat(),
         },
         false => Changes {
             raised,
             cleared,
-            dropped: Vec::new(),
+            dropped: untaken,
         },
     }
 }
@@ -348,6 +366,34 @@ pub fn webhook_body(format: Format, status: Status, told: &AlertTold, routing_ke
     }
 }
 
+/// Why a send was not taken.
+#[derive(Debug)]
+enum Unsent {
+    /// The far end asked to be sent it later (429): it is busy, not failing, so the channel is not marked failing.
+    Later(String),
+    Failed(String),
+}
+
+impl From<String> for Unsent {
+    fn from(why: String) -> Self {
+        Unsent::Failed(why)
+    }
+}
+
+impl From<&str> for Unsent {
+    fn from(why: &str) -> Self {
+        Unsent::Failed(why.to_string())
+    }
+}
+
+impl From<Unsent> for String {
+    fn from(unsent: Unsent) -> Self {
+        match unsent {
+            Unsent::Later(why) | Unsent::Failed(why) => why,
+        }
+    }
+}
+
 /// Post one change to a webhook.
 async fn post(
     url: &str,
@@ -355,7 +401,7 @@ async fn post(
     secret: Option<(&str, &str)>,
     status: Status,
     told: &AlertTold,
-) -> Result<u16, String> {
+) -> Result<u16, Unsent> {
     // The client is judged by the webhook's origin: its query, which Teams and others sign, is the webhook's own.
     let origin = reqwest::Url::parse(url)
         .map_err(|e| format!("{url:?} is not a URL: {e}"))?
@@ -378,10 +424,27 @@ async fn post(
         .send()
         .await
         .map_err(|e| format!("could not reach the webhook: {e}"))?;
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(Unsent::Later(format!("the webhook answered {}", response.status())));
+    }
     if !response.status().is_success() {
-        return Err(format!("the webhook answered {}", response.status()));
+        return Err(format!("the webhook answered {}", response.status()).into());
     }
     Ok(response.status().as_u16())
+}
+
+/// The mail server's password, when it signs in: refused rather than sent empty when it cannot be opened.
+async fn mail_password(state: &AppState, mail: &Mail) -> Result<Option<String>, String> {
+    if mail.username.is_none() {
+        return Ok(None);
+    }
+    let password = run_store(state.store.clone(), |s| s.opened_setting(MAIL_PASSWORD_KEY))
+        .await
+        .map_err(|e| e.message)?;
+    match password {
+        Some(password) if !password.is_empty() => Ok(Some(password)),
+        _ => Err("Enter the mail server's password again".to_string()),
+    }
 }
 
 /// One email that tells of every change in `changes`: its subject and its body.
@@ -455,7 +518,7 @@ async fn send_mail(
 
 /// Tell `channel` of `changes`, one at a time, recording each as it is taken. Stops at the first that fails, so
 /// what follows it is tried again on the next look, in order.
-async fn tell(state: &AppState, channel: &Channel, mail: Option<&Mail>, changes: Changes) -> Result<(), String> {
+async fn tell(state: &AppState, channel: &Channel, mail: Option<&Mail>, changes: Changes) -> Result<(), Unsent> {
     match &channel.kind {
         Kind::Webhook {
             url,
@@ -490,16 +553,11 @@ async fn tell(state: &AppState, channel: &Channel, mail: Option<&Mail>, changes:
         // Every change in one email, so a fleet that falls over at once fills nobody's inbox.
         Kind::Email { to } => {
             let mail = mail.ok_or("Turn the mail server on first")?;
-            let password = match mail.username {
-                Some(_) => run_store(state.store.clone(), |s| s.opened_setting(MAIL_PASSWORD_KEY))
-                    .await
-                    .map_err(|e| e.message)?,
-                None => None,
-            };
+            let password = mail_password(state, mail).await?;
             let (subject, body) = email(&changes);
             send_mail(mail, password, to, subject, body).await?;
             let cleared = changes.cleared.into_iter().map(|t| (t.channel, t.warning)).collect();
-            record(state, changes.raised, cleared).await
+            Ok(record(state, changes.raised, cleared).await?)
         }
     }
 }
@@ -542,15 +600,10 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
         }
         match tell(state, channel, mail.as_ref(), changes).await {
             Ok(()) => state.alerts.took(&channel.id),
-            Err(why) => {
-                let why = crate::noted!(
-                    target: "alerts.send_failed",
-                    "an alert channel did not take what was sent",
-                    why,
-                    channel = %channel.name
-                );
-                state.alerts.failed(channel, why, now);
+            Err(Unsent::Later(why)) => {
+                tracing::info!(target: "alerts.later", channel = %channel.name, "an alert channel asked to be sent it later: {why}");
             }
+            Err(Unsent::Failed(why)) => state.alerts.failed(channel, why, now),
         }
     }
     Ok(())
@@ -560,7 +613,7 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
 pub async fn run(state: AppState) {
     loop {
         if let Err(e) = look(&state).await {
-            tracing::warn!("could not look for alerts to send: {}", e.message);
+            tracing::warn!(target: "alerts.look", "could not look for alerts to send: {}", e.message);
         }
         tokio::select! {
             _ = tokio::time::sleep(EVERY) => {}
@@ -889,7 +942,7 @@ pub async fn post_test(State(state): State<AppState>, Json(request): Json<PutCha
     match test(&state, &channel, request.secret).await {
         Ok(tested) => Envelope::ok(tested),
         Err(why) => {
-            tracing::warn!(channel = %channel.name, "the test send to the alert channel failed: {why}");
+            tracing::warn!(target: "alerts.test", channel = %channel.name, "the test send to the alert channel failed: {why}");
             Envelope::refused(Refusal::invalid(why))
         }
     }
@@ -910,11 +963,28 @@ async fn test(state: &AppState, channel: &Channel, secret: Option<String>) -> Re
         } => {
             let secret = match secret {
                 Some(secret) => Some(secret).filter(|s| !s.is_empty()),
+                // The stored secret is for the URL it was saved with, and is sent nowhere else.
                 None => {
-                    let key = secret_key(&channel.id);
-                    run_store(state.store.clone(), move |s| s.opened_setting(&key))
-                        .await
-                        .map_err(|e| e.message)?
+                    let id = channel.id.clone();
+                    let key = secret_key(&id);
+                    let (saved, stored) = run_store(state.store.clone(), move |s| {
+                        Ok((channels(s)?.into_iter().find(|c| c.id == id), s.opened_setting(&key)?))
+                    })
+                    .await
+                    .map_err(|e| e.message)?;
+                    let saved_url = saved.and_then(|c| match c.kind {
+                        Kind::Webhook { url, .. } => Some(url),
+                        Kind::Email { .. } => None,
+                    });
+                    match stored {
+                        Some(_) if saved_url.as_deref() != Some(url.as_str()) => {
+                            return Err(match format {
+                                Format::PagerDuty => format!("{}: enter the routing key again", channel.name),
+                                _ => format!("{}: enter the secret header value again", channel.name),
+                            });
+                        }
+                        stored => stored.filter(|s| !s.is_empty()),
+                    }
                 }
             };
             let name = match format {
@@ -925,9 +995,13 @@ async fn test(state: &AppState, channel: &Channel, secret: Option<String>) -> Re
                 .as_deref()
                 .filter(|_| *format == Format::PagerDuty || !name.is_empty());
             let secret = secret.map(|value| (name, value));
-            let status = post(url, *format, secret, Status::Test, &told).await?;
+            let status = post(url, *format, secret, Status::Test, &told)
+                .await
+                .map_err(String::from)?;
             if *format == Format::PagerDuty {
-                post(url, *format, secret, Status::Cleared, &told).await?;
+                post(url, *format, secret, Status::Cleared, &told)
+                    .await
+                    .map_err(String::from)?;
             }
             let host = reqwest::Url::parse(url)
                 .ok()
@@ -939,12 +1013,11 @@ async fn test(state: &AppState, channel: &Channel, secret: Option<String>) -> Re
             })
         }
         Kind::Email { to } => {
-            let (mail, password) = run_store(state.store.clone(), |s| {
-                Ok((mail(s)?, s.opened_setting(MAIL_PASSWORD_KEY)?))
-            })
-            .await
-            .map_err(|e| e.message)?;
-            let mail = mail.ok_or("Turn the mail server on first")?;
+            let mail = run_store(state.store.clone(), mail)
+                .await
+                .map_err(|e| e.message)?
+                .ok_or("Turn the mail server on first")?;
+            let password = mail_password(state, &mail).await?;
             let line = summary(Status::Test, &serde_json::Value::Null);
             send_mail(&mail, password, to, format!("Smeltr: {line}"), format!("{line}\n")).await?;
             Ok(Tested {
@@ -1049,6 +1122,17 @@ mod tests {
     }
 
     #[test]
+    fn a_warning_a_channel_stops_taking_is_forgotten_rather_than_cleared() {
+        let mut c = channel(None);
+        let up = [warning(Condition::SourceUnreachable, "orders", None)];
+        let told = changes(&c, 5, &up, &[]).raised;
+        c.conditions.clear();
+        let after = changes(&c, 6, &up, &told);
+        assert!(after.cleared.is_empty(), "{after:?}");
+        assert_eq!(after.dropped, told);
+    }
+
+    #[test]
     fn a_channel_is_told_the_message_only_when_it_takes_messages() {
         let mut c = channel(None);
         let up = [warning(Condition::SourceUnreachable, "orders", None)];
@@ -1145,20 +1229,17 @@ mod tests {
     fn a_channel_fails_from_its_first_failed_send_until_one_is_taken() {
         let alerts = Alerts::default();
         let c = channel(None);
-        alerts.failed(
-            &c,
-            crate::noted!(target: "test", "failed", "the webhook answered 500".to_string()),
-            5,
-        );
-        alerts.failed(
-            &c,
-            crate::noted!(target: "test", "failed", "the webhook answered 503".to_string()),
-            9,
+        alerts.failed(&c, "the webhook answered 500".to_string(), 5);
+        alerts.failed(&c, "the webhook answered 503".to_string(), 9);
+        let logged = crate::logs::said(|| alerts.failed(&c, "the webhook answered 503".to_string(), 10));
+        assert!(
+            logged.is_empty(),
+            "the same reason again is not logged again: {logged:?}"
         );
         let failing = alerts.failing().remove("c1").unwrap();
         assert_eq!(
             (failing.since, failing.last, failing.message.as_str()),
-            (5, 9, "the webhook answered 503")
+            (5, 10, "the webhook answered 503")
         );
         let w = crate::leader::warnings::alert_channel_failing(&failing.channel, &failing);
         assert_eq!(
