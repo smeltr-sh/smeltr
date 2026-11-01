@@ -47,11 +47,7 @@
 {:else if findings.length === 0}
   <p class="dim">The rows fit every schema their pipelines produce.</p>
 {:else}
-  {#if breaking}
-    <p class="dim">
-      Where a pipeline's rows do not fit a schema it produces. None of these block the deploy.
-    </p>
-  {:else}
+  {#if !breaking}
     <p class="dim">
       The rows fit every schema their pipelines produce. They lack fields a schema recommends:
     </p>
