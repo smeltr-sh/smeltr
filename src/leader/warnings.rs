@@ -141,6 +141,48 @@ impl Condition {
         Condition::IssuedCertificateNotRenewed,
     ];
 
+    /// What a person reads for it: the page's own label (`conditionLabel`), for what is sent where the page is not.
+    pub fn label(self) -> &'static str {
+        match self {
+            Condition::WorkerSilent => "Worker silent",
+            Condition::WorkerNeverHeartbeated => "Never heartbeated",
+            Condition::SourceBlocked => "Source blocked",
+            Condition::SourceRefused => "Blocked by destination refusals",
+            Condition::SourceWaiting => "Waiting on destination",
+            Condition::SourceUnreachable => "Source unreachable",
+            Condition::DestinationRefusing => "Refusing writes",
+            Condition::DestinationUnreachable => "Destination unreachable",
+            Condition::LagClimbing => "Lag climbing",
+            Condition::DestinationMemoryBound => "Held back by memory",
+            Condition::SourceRowsBelow => "Rows below normal",
+            Condition::SourceRowsAbove => "Rows above normal",
+            Condition::GroupNotDeployed => "Group not deployed",
+            Condition::WorkerNotDeployingItsTarget => "Not deploying its target",
+            Condition::WorkerOnAnotherBuild => "On another build",
+            Condition::WorkerMemoryHigh => "Memory near its limit",
+            Condition::AuthorityExpiring => "Authority expiring",
+            Condition::AuthorityAging => "Authority running out",
+            Condition::EnrollmentCodeNamesOutgoingAuthority => "Enrollment code names the outgoing authority",
+            Condition::CertificateExpiring => "Certificate expiring",
+            Condition::WorkerLoggedWarnings => "Logged a warning",
+            Condition::DeployHeld => "Deploy held",
+            Condition::RemoteNotFollowed => "Remote not followed",
+            Condition::DeployDoesNotLoad => "Deployed config does not load",
+            Condition::DeployFailsTests => "Test failing",
+            Condition::DeployBreaksSchemas => "Rows do not fit a schema",
+            Condition::DeclaredFieldFailing => "Field not its declared type",
+            Condition::DeclaredFieldGone => "Field no longer arriving",
+            Condition::StreamUnrouted => "Stream unrouted",
+            Condition::NewerRelease => "Newer release",
+            Condition::WorkerOnAnotherRelease => "On another release",
+            Condition::SecretsKeyUnusable => "Secrets encryption key unusable",
+            Condition::SecretNeedsValue => "Secret or certificate needs a new value",
+            Condition::AcmeRenewalFailing => "ACME renewal failing",
+            Condition::LeaderCertificateRunningOut => "Leader certificate running out",
+            Condition::IssuedCertificateNotRenewed => "Certificate not renewed",
+        }
+    }
+
     /// What this is called on the wire. The match is what makes a new entry a compile error here.
     pub fn name(self) -> &'static str {
         match self {
@@ -3104,8 +3146,9 @@ mod tests {
                 "WarningCondition does not list {name}"
             );
             assert!(
-                api.contains(&format!("case '{name}':")),
-                "conditionLabel has no label for {name}"
+                api.contains(&format!("case '{name}':\n      return '{}';", condition.label())),
+                "conditionLabel does not label {name} as {:?}, which is what is sent for it",
+                condition.label()
             );
         }
     }

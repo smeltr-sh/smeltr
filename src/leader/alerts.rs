@@ -76,6 +76,13 @@ pub enum Kind {
 pub enum Format {
     /// Each warning as a JSON object, its fields as the catalog names them.
     GenericJson,
+    /// A Slack incoming webhook's message.
+    Slack,
+    /// A Microsoft Teams workflow's adaptive card.
+    Teams,
+    /// A PagerDuty Events API v2 event, which opens an incident and resolves it. The channel's secret is its
+    /// routing key, sent in the body rather than as a header.
+    PagerDuty,
 }
 
 /// A send that failed, kept until the channel takes one, for the channel's own warning and the page.
@@ -216,16 +223,69 @@ pub enum Status {
     Cleared,
 }
 
-/// A webhook's body for one change, in `format`.
-pub fn webhook_body(format: Format, status: Status, told: &AlertTold) -> serde_json::Value {
+/// One line that says what changed, for a reader rather than a program: the issue as the Issues page names it, its
+/// subject and group, and the message where the channel takes it.
+pub fn summary(status: Status, body: &serde_json::Value) -> String {
+    let label = serde_json::from_value::<Condition>(body["condition"].clone()).map_or("Issue", Condition::label);
+    let mut line = match status {
+        Status::Raised => format!("{label}: {}", body["subjectId"].as_str().unwrap_or_default()),
+        Status::Cleared => format!("Cleared: {label}: {}", body["subjectId"].as_str().unwrap_or_default()),
+    };
+    if let Some(group) = body["group"].as_str() {
+        line.push_str(&format!(" in {group}"));
+    }
+    if let Some(message) = body["message"].as_str() {
+        line.push_str(&format!(". {message}"));
+    }
+    line
+}
+
+/// A webhook's body for one change, in `format`. `routing_key` is a PagerDuty channel's secret.
+pub fn webhook_body(format: Format, status: Status, told: &AlertTold, routing_key: Option<&str>) -> serde_json::Value {
+    let mut value: serde_json::Value = serde_json::from_str(&told.body).unwrap_or_default();
     match format {
         Format::GenericJson => {
-            let mut value: serde_json::Value = serde_json::from_str(&told.body).unwrap_or_default();
             if let Some(fields) = value.as_object_mut() {
                 fields.insert("status".into(), serde_json::json!(status));
                 fields.insert("key".into(), serde_json::json!(told.warning));
             }
             value
+        }
+        Format::Slack => serde_json::json!({ "text": summary(status, &value) }),
+        Format::Teams => serde_json::json!({
+            "type": "message",
+            "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                    "type": "AdaptiveCard",
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "version": "1.4",
+                    "body": [{ "type": "TextBlock", "text": summary(status, &value), "wrap": true }],
+                },
+            }],
+        }),
+        Format::PagerDuty => {
+            let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, told.warning.as_bytes());
+            let dedup_key: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+            let severity = match value["severity"].as_str() {
+                Some("failed") => "critical",
+                _ => "warning",
+            };
+            let action = match status {
+                Status::Raised => "trigger",
+                Status::Cleared => "resolve",
+            };
+            serde_json::json!({
+                "routing_key": routing_key.unwrap_or_default(),
+                "event_action": action,
+                "dedup_key": dedup_key,
+                "payload": {
+                    "summary": summary(Status::Raised, &value),
+                    "source": "smeltr",
+                    "severity": severity,
+                    "custom_details": value,
+                },
+            })
         }
     }
 }
@@ -239,11 +299,12 @@ async fn post(
     told: &AlertTold,
 ) -> Result<(), String> {
     let client = super::outbound::client(url, "the webhook", TIMEOUT, reqwest::redirect::Policy::none())?;
+    let routing_key = secret.filter(|_| format == Format::PagerDuty).map(|(_, value)| value);
     let mut request = client
         .post(url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(webhook_body(format, status, told).to_string());
-    if let Some((name, value)) = secret {
+        .body(webhook_body(format, status, told, routing_key).to_string());
+    if let Some((name, value)) = secret.filter(|_| format != Format::PagerDuty) {
         request = request.header(name, value);
     }
     let response = request
@@ -455,13 +516,58 @@ mod tests {
             &[],
         )
         .raised;
-        let body = webhook_body(Format::GenericJson, Status::Cleared, &told[0]);
+        let body = webhook_body(Format::GenericJson, Status::Cleared, &told[0], None);
         assert_eq!(body["status"], "cleared");
         assert_eq!(body["condition"], "sourceUnreachable");
         assert_eq!(body["subjectId"], "orders");
         assert_eq!(body["group"], "payments");
         assert_eq!(body["key"], told[0].warning);
         assert!(body.get("message").is_none());
+    }
+
+    #[test]
+    fn slack_and_teams_are_sent_a_line_a_person_reads() {
+        let mut c = channel(None);
+        c.include_message = true;
+        let told = changes(
+            &c,
+            5,
+            &[warning(Condition::SourceUnreachable, "orders", Some("payments"))],
+            &[],
+        )
+        .raised;
+        let line = "Source unreachable: orders in payments. orders: connection refused for row 42";
+        assert_eq!(
+            webhook_body(Format::Slack, Status::Raised, &told[0], None),
+            serde_json::json!({ "text": line })
+        );
+        let teams = webhook_body(Format::Teams, Status::Cleared, &told[0], None);
+        assert_eq!(
+            teams["attachments"][0]["content"]["body"][0]["text"],
+            format!("Cleared: {line}")
+        );
+    }
+
+    #[test]
+    fn pagerduty_opens_an_incident_and_resolves_the_same_one() {
+        let told = changes(
+            &channel(None),
+            5,
+            &[warning(Condition::SourceUnreachable, "orders", None)],
+            &[],
+        )
+        .raised;
+        let open = webhook_body(Format::PagerDuty, Status::Raised, &told[0], Some("R0UT1NG"));
+        let close = webhook_body(Format::PagerDuty, Status::Cleared, &told[0], Some("R0UT1NG"));
+        assert_eq!(open["routing_key"], "R0UT1NG");
+        assert_eq!(
+            (open["event_action"].as_str(), close["event_action"].as_str()),
+            (Some("trigger"), Some("resolve"))
+        );
+        assert_eq!(open["dedup_key"], close["dedup_key"]);
+        assert_eq!(open["dedup_key"].as_str().unwrap().len(), 64);
+        assert_eq!(open["payload"]["severity"], "critical");
+        assert_eq!(open["payload"]["summary"], "Source unreachable: orders");
     }
 
     #[test]
