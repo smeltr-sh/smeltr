@@ -226,11 +226,11 @@
           <span class="dim">no tests reach this change</span>
         {:else if tests.passed === tests.total}
           <span class="pass"
-            ><StateMark state="ok" /> {tests.passed} of {count(tests.total, 'test')} pass</span
+            ><StateMark state="ok" /> {tests.passed} of {count(tests.total, 'test')} passing</span
           >
         {:else}
           {#if tests.failed}
-            <span class="fail">{tests.failed} of {count(tests.total, 'test')} fail</span>
+            <span class="fail">{tests.failed} of {count(tests.total, 'test')} failing</span>
           {/if}
           {#if tests.errored}
             <span class="dim">{count(tests.errored, 'test')} could not run</span>

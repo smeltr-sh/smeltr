@@ -83,7 +83,7 @@
         <span class="dim">No tests</span>
       {:else if tests.failed > 0}
         <StateMark state="error" size={17} />
-        {@render opens('tests', `${tests.failed} of ${count(tests.total, 'test')} fail`)}
+        {@render opens('tests', `${tests.failed} of ${count(tests.total, 'test')} failing`)}
       {:else if tests.couldNotRun > 0}
         <StateMark state="warning" size={17} />
         {@render opens(
@@ -92,7 +92,7 @@
         )}
       {:else}
         <StateMark state="ok" size={17} />
-        {@render opens('tests', `${tests.passed} of ${count(tests.total, 'test')}`)}
+        {@render opens('tests', `${tests.passed} of ${count(tests.total, 'test')} passing`)}
       {/if}
     </span>
 
