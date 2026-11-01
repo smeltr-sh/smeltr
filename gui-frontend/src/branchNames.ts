@@ -1,8 +1,9 @@
 import { slugify } from './slugify';
 
 // The name the branch prompt offers when a first edit starts on `main`: who is editing and what the edit is
-// about, as `owner/what-they-are-doing` (`check_branch_name`), so the Branches page answers both at a glance. A name already taken gets a number, so two people
-// who both accept it start branches of their own rather than landing on one another's.
+// about, as `owner/what-they-are-doing` (`check_branch_name`), so the Branches page answers both at a glance.
+// A name already taken gets a number, so two people who both accept it start branches of their own rather
+// than landing on one another's.
 
 /** What a write to `url` changes, in a few words: `sources`, `pipeline-fortigate`, `network-routes`.
  * The worker group leads when it is not the shared configuration. */
