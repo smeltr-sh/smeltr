@@ -881,6 +881,49 @@ test('review lists where the rows do not fit a schema, and the dock counts them 
   await admin.screenshot({ path: 'results/schemas-review-opens.png' });
 });
 
+test("review's pipeline card shows its schema findings, each under the step that caused it", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await arrangeMisfit(api, 'logins');
+  await api.put('/api/areas/default/pipelines/logins?branch=logins', {
+    id: 'logins',
+    name: 'logins',
+    produces: ['login'],
+    steps: [
+      {
+        type: 'eval',
+        id: 'map',
+        disabled: false,
+        filter: 'true',
+        assignments: [{ target: 'time', expr: '"yesterday"' }],
+      },
+    ],
+  });
+  await api.openChange('logins', 'Logins as Login');
+  await goto(admin, leader, '#/changes/review/logins');
+
+  const card = admin.locator('.card').filter({ hasText: 'pipeline · default' });
+  const step = card.locator('.step');
+  await expect(
+    step.getByText('time is str, but Login has it as i64. Write it as i64.'),
+  ).toBeVisible({
+    timeout: 15_000,
+  });
+  const below = card.getByRole('status').first();
+  await expect(
+    below.getByText('Login requires activity_id and user; the rows lack them.'),
+  ).toBeVisible();
+  await expect(
+    below.getByText('Pipeline logins produces no schema that destination search accepts (Audit).'),
+  ).toBeVisible();
+  await expect(step.getByText('Pipeline logins produces no schema')).toHaveCount(0);
+  await expect(card.getByText('Login recommends src_endpoint; the rows lack it.')).toBeVisible();
+  await card.scrollIntoViewIfNeeded();
+  await admin.screenshot({ path: 'results/schemas-review-card.png' });
+});
+
 test('a field the schema requires and the rows lack is a column of its own, with its type', async ({
   admin,
   leader,
