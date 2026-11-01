@@ -119,7 +119,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/areas/:area/pipelines/:id",
-        what: "One pipeline's config. Query: branch.",
+        what: "One pipeline's config, and the commit it was read at. Query: branch, at.",
         body: "",
     },
     Route {

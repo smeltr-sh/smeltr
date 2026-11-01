@@ -63,7 +63,7 @@
     putPipeline,
     getConfig,
     listBranches,
-    configAt,
+    pipelineAt,
     undoChanges,
     currentBranch,
     currentScope,
@@ -424,13 +424,14 @@
       return;
     }
     const scope = currentScope();
-    Promise.all([configAt(editingBranch, scope, base), configAt(editingBranch, scope, at)])
-      .then(([was, now]) => {
+    Promise.all([
+      pipelineAt(editingBranch, scope, pipelineId, base),
+      pipelineAt(editingBranch, scope, pipelineId, at),
+    ])
+      .then(([before, after]) => {
         if (mine !== compares) return;
-        const before = was.config?.pipelines.find((p) => p.id === pipelineId);
-        const after = now.config?.pipelines.find((p) => p.id === pipelineId);
-        existedAtBase = before !== undefined;
-        changedOnBranch = canonicalJson(before ?? null) !== canonicalJson(after ?? null);
+        existedAtBase = before !== null;
+        changedOnBranch = canonicalJson(before) !== canonicalJson(after);
       })
       .catch(() => {
         if (mine === compares) changedOnBranch = false;
