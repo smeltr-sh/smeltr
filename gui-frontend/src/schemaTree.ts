@@ -24,8 +24,29 @@ export interface SchemaChild {
 const RANK: Record<Requirement, number> = { required: 0, recommended: 1, optional: 2 };
 
 /** The strongest of two requirements: a field two schemas declare is held to the stricter. */
-function stronger(a: Requirement | undefined, b: Requirement | undefined): Requirement {
-  return RANK[a ?? 'optional'] <= RANK[b ?? 'optional'] ? (a ?? 'optional') : (b ?? 'optional');
+function stronger(a: Requirement = 'optional', b: Requirement = 'optional'): Requirement {
+  return RANK[a] <= RANK[b] ? a : b;
+}
+
+/** A requirement, as the lists of a schema's fields mark it. */
+export const REQUIREMENT_MARK: Record<Requirement, string> = {
+  required: '* required',
+  recommended: '° recommended',
+  optional: 'optional',
+};
+
+/** A count as a list writes it: 56,056. */
+export const fmt = (n: number) => n.toLocaleString('en-US');
+
+/** `n` fields, counted as a list writes them. */
+export const fields = (n: number) => `${fmt(n)} ${n === 1 ? 'field' : 'fields'}`;
+
+/** What of an object's fields the schemas ask for: "3 required", "8 recommended", each where there are any. */
+export function askedUnder(c: SchemaChild): string[] {
+  return [
+    c.required > 0 ? `${fmt(c.required)} required` : '',
+    c.recommended > 0 ? `${fmt(c.recommended)} recommended` : '',
+  ].filter(Boolean);
 }
 
 /** `child`'s own requirement: optional where the schemas declare no field there. */

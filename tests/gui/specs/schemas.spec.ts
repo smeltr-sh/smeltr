@@ -1087,14 +1087,13 @@ test("the Fields menu lists the produced schema's fields the rows lack, and assi
   await goto(admin, leader, '#/build/pipelines/logins/for/logins-sample');
   await admin.getByRole('button', { name: /^Eval time/ }).click();
   await admin.getByRole('button', { name: 'Choose fields' }).click();
-  await admin.getByRole('radio', { name: 'Not set' }).click();
+  await admin.getByRole('button', { name: 'Not set' }).click();
 
   await expect(admin.locator('.tally')).toHaveText(
     /Login\s+Required 2 of 3 set\s*·\s*Recommended 0 of 1 set\s*·\s*Optional 0 of 4 set/,
   );
   const rows = admin.locator('.row.unset');
   await expect(rows.locator('.path')).toHaveText(['user.…', 'src_endpoint.…']);
-  await expect(admin.getByText('Showing 2 of 2 fields not set')).toBeVisible();
 
   await rows
     .filter({ hasText: 'src_endpoint' })
@@ -1102,7 +1101,6 @@ test("the Fields menu lists the produced schema's fields the rows lack, and assi
     .click();
   await expect(admin.getByLabel('Find a field')).toHaveValue('src_endpoint.');
   await expect(rows.locator('.path')).toHaveText(['src_endpoint.ip', 'src_endpoint.port']);
-  await expect(admin.getByText('Showing 2 of 2 fields not set under src_endpoint')).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-fields-menu.png' });
 
   await admin.getByRole('button', { name: 'assign src_endpoint.ip' }).click();

@@ -62,10 +62,15 @@
   import { formatCode, type DotAnswer } from './api';
   import { beginReconcile, endReconcile } from './grokFields';
   import { producedSchemas } from './producedSchemas.svelte';
+  import ShowAll from './ShowAll.svelte';
   import {
+    askedUnder,
+    fields,
     firstOf,
+    fmt,
     groupOf,
     matching,
+    REQUIREMENT_MARK,
     requirementOf,
     typedPath,
     type SchemaChild,
@@ -341,34 +346,27 @@
   });
   // -- schema paths -----------------------------------------------------------
 
-  // svelte-ignore state_referenced_locally
-  const produced = schemaPaths ? producedSchemas() : undefined;
+  const produced = producedSchemas();
   /** The most schema fields the list names before it counts the rest. */
   const PATHS_NAMED = 10;
-  const fmt = (n: number) => n.toLocaleString('en-US');
   /** The path the text stands under and the key being typed, where the pipeline produces a schema. */
-  let pathAt = $derived(produced?.tree ? typedPath(value) : null);
+  let pathAt = $derived(schemaPaths && produced?.tree ? typedPath(value) : null);
+  /** The list shows every field at the path, not only its first. */
+  let pathsAll = $state(false);
   let pathChoices = $derived.by(() => {
     const tree = produced?.tree;
     if (!pathAt || !tree) return null;
     const all = tree.children(pathAt.parent, produced!.held);
     const found = matching(all, pathAt.key);
+    const shown = pathsAll ? found : firstOf(found, PATHS_NAMED);
     return {
       all,
-      shown: firstOf(found, PATHS_NAMED),
-      more: Math.max(0, found.length - PATHS_NAMED),
+      shown,
+      more: found.length - shown.length,
       nested: tree.nestedUnder(pathAt.parent),
       titles: tree.titles,
     };
   });
-  /** How many fields an object holds, and what of them the schemas ask for. */
-  function heldUnder(c: SchemaChild): string {
-    const asked = [
-      c.required > 0 ? `${fmt(c.required)} required` : '',
-      c.recommended > 0 ? `${fmt(c.recommended)} recommended` : '',
-    ].filter(Boolean);
-    return [`${fmt(c.nested)} ${c.nested === 1 ? 'field' : 'fields'}`, ...asked].join(', ');
-  }
   /** How many the list offers: the schema's fields in a name box, else the functions or patterns. */
   let offered = $derived(pathChoices ? pathChoices.shown.length : suggestions.length);
 
@@ -378,6 +376,7 @@
     const opens = c.nested > 0;
     value = (parent ? `${parent}.` : '') + c.name + (opens ? '.' : '');
     open = opens;
+    pathsAll = false;
     highlighted = 0;
     await tick();
     inputEl?.setSelectionRange(value.length, value.length);
@@ -396,6 +395,7 @@
   function onInput() {
     if (pathChoices) {
       open = true;
+      pathsAll = false;
     } else if (functions) {
       // A dot is where a list helps most: what can follow it depends on what is before it.
       open = currentWordText.length > 0 || member !== null;
@@ -643,10 +643,8 @@
         <li class="path-head" aria-hidden="true">
           <span><strong>{pathChoices.titles}</strong>{at ? ` · ${at}` : ''}</span>
           <span class="path-count"
-            >{fmt(pathChoices.all.length)}
-            {pathChoices.all.length === 1 ? 'field' : 'fields'}{at ? ` in ${at}` : ''} · {fmt(
-              pathChoices.nested,
-            )} including nested fields</span
+            >{fields(pathChoices.all.length)}{at ? ` in ${at}` : ''} · {fmt(pathChoices.nested)} including
+            nested fields</span
           >
         </li>
         {#each pathChoices.shown as c, i (c.path)}
@@ -668,18 +666,16 @@
             <span class="fn-head">
               <span class="fn-sig"
                 >{c.name}{c.nested > 0 ? '.' : ''}
-                <span class="path-type">{c.nested > 0 ? heldUnder(c) : c.field?.type}</span></span
+                <span class="path-type"
+                  >{c.nested > 0
+                    ? [fields(c.nested), ...askedUnder(c)].join(', ')
+                    : c.field?.type}</span
+                ></span
               >
               {#if c.set}
                 <span class="path-req held">✓ set above</span>
               {:else if c.nested === 0 || c.field?.requirement}
-                <span class="path-req {req}"
-                  >{req === 'required'
-                    ? '* required'
-                    : req === 'recommended'
-                      ? '° recommended'
-                      : 'optional'}</span
-                >
+                <span class="path-req {req}">{REQUIREMENT_MARK[req]}</span>
               {/if}
             </span>
             {#if c.field?.description && !c.set}
@@ -688,8 +684,9 @@
           </li>
         {/each}
         {#if pathChoices.more > 0}
-          <li class="path-more" aria-hidden="true">
-            and {fmt(pathChoices.more)} more: keep typing to narrow
+          <!-- A press keeps the focus in the box, which closes the list when it leaves. -->
+          <li class="path-more" role="none" onmousedown={(e) => e.preventDefault()}>
+            <ShowAll more={pathChoices.more} onshowall={() => (pathsAll = true)} />
           </li>
         {/if}
       {:else if suggestions.length === 0}
@@ -1122,7 +1119,6 @@
     max-width: 100%;
   }
 
-  /* A schema's fields: where the list is, and how many it holds. */
   /* A schema's paths and the counts beside them need more room than a function's name. */
   .suggestions.paths {
     max-width: min(520px, calc(100vw - 2rem));
