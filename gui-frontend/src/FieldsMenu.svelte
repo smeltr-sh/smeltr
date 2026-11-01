@@ -26,6 +26,8 @@
   import Toggle from './Toggle.svelte';
   import type { DictionaryOut } from './api';
   import { producedSchemas } from './producedSchemas.svelte';
+  import { SvelteSet } from 'svelte/reactivity';
+  import FieldDoc from './FieldDoc.svelte';
   import Segmented from './Segmented.svelte';
   import ShowAll from './ShowAll.svelte';
   import {
@@ -68,6 +70,8 @@
   let open = $state(false);
   let query = $state('');
   let all = $state(false);
+  /** The paths whose documentation shows under their row. */
+  const detailed = new SvelteSet<string>();
   let matches = $derived.by(() => {
     const q = query.trim().toLowerCase();
     return q ? fields.filter((f) => f.path.toLowerCase().includes(q)) : fields;
@@ -222,7 +226,18 @@
               class:after-fields={(i === 0 && setListed.length > 0) ||
                 (before <= 2 && groupOf(c) > 2)}
             >
-              <span></span>
+              {#if c.field}
+                {@const shows = detailed.has(c.path)}
+                <button
+                  type="button"
+                  class="toggle"
+                  title={shows ? 'Hide details' : 'Show details'}
+                  aria-label={shows ? 'Hide details' : 'Show details'}
+                  aria-expanded={shows}
+                  onclick={() => (shows ? detailed.delete(c.path) : detailed.add(c.path))}
+                  >{shows ? '▾' : '▸'}</button
+                >
+              {:else}<span></span>{/if}
               <span class="mono path" class:object={c.nested > 0}
                 >{c.path}{c.nested > 0 ? '.…' : ''}</span
               >
@@ -264,6 +279,9 @@
                 >
               {:else}<span></span>{/if}
             </div>
+            {#if c.field && detailed.has(c.path)}
+              <div class="details"><FieldDoc field={c.field} /></div>
+            {/if}
           {/each}
         {/if}
         {#if setListed.length < matches.length && which !== 'unset'}
@@ -360,6 +378,23 @@
   .req.recommended {
     color: var(--warn);
     font-weight: 600;
+  }
+
+  .toggle {
+    border: none;
+    background: none;
+    padding: 0;
+    font: inherit;
+    color: var(--dim);
+    cursor: pointer;
+  }
+
+  /* A field's documentation, under its row and indented to its path. */
+  .details {
+    margin: 0.15rem 0 0.4rem 1.6rem;
+    padding: 0.5rem 0.75rem;
+    border-left: 2px solid var(--border);
+    background: color-mix(in srgb, var(--ink) 4%, var(--panel));
   }
 
   .row.unset {

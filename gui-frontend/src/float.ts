@@ -16,6 +16,9 @@ export type FloatOptions = {
   matchWidth?: boolean;
   /** The least room under the anchor the piece takes before it goes over it. By default, all of its height. */
   floor?: number;
+  /** The piece stands beside the anchor, level with its top: to its right, or to its left where the right has no
+   * room. A pane that tells more of what a list beside it has chosen. */
+  beside?: boolean;
 };
 
 /** Between the piece and its anchor, and between the piece and the window's edge. */
@@ -42,6 +45,20 @@ export function follow(
     if (options.matchWidth) {
       el.style.boxSizing = 'border-box';
       el.style.width = `${a.right - a.left}px`;
+    }
+    if (options.beside) {
+      const width = el.offsetWidth;
+      const right = a.right + GAP;
+      const fits = right + width + MARGIN <= window.innerWidth;
+      el.style.left = `${fits ? right : Math.max(MARGIN, a.left - GAP - width)}px`;
+      const top = Math.max(MARGIN, Math.min(a.top, window.innerHeight - el.offsetHeight - MARGIN));
+      const room = window.innerHeight - top - MARGIN;
+      Object.assign(el.style, {
+        top: `${top}px`,
+        bottom: 'auto',
+        maxHeight: cap === 'none' ? `${room}px` : `min(${cap}, ${room}px)`,
+      });
+      return;
     }
     const below = window.innerHeight - a.bottom - GAP - MARGIN;
     const above = a.top - GAP - MARGIN;

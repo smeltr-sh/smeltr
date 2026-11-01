@@ -10,7 +10,8 @@
   import Help from './Help.svelte';
   import Segmented from './Segmented.svelte';
   import ShowAll, { SHOWN } from './ShowAll.svelte';
-  import { elasticsearchTypes, REQUIREMENTS } from './schemas';
+  import { elasticsearchTypes, ownElasticsearchType, REQUIREMENTS } from './schemas';
+  import FieldDescription from './FieldDescription.svelte';
   import { count } from './time';
 
   let {
@@ -33,12 +34,6 @@
     { value: 'elasticsearch', label: 'Elasticsearch' },
   ] as const;
   let view: (typeof VIEWS)[number]['value'] = $state('schema');
-
-  /** What a field maps to when it says nothing: a variant's type, or its elements', is Elasticsearch's to find from
-   * the first value. */
-  function ownType(f: SchemaFieldDto): string {
-    return /^(array<)*variant>*$/.test(f.type) ? 'dynamic' : (elasticsearchTypes(f.type)[0] ?? '');
-  }
 
   /** An integer read as a date counts milliseconds, Elasticsearch's own reading of a number, or seconds, which its
    * mapping's format says. */
@@ -74,7 +69,7 @@
 
   /** The type a field maps as, as the dropdown holds it: a variant's own is the empty choice, Elasticsearch's to find. */
   function mapsAs(f: SchemaFieldDto): string {
-    const own = ownType(f);
+    const own = ownElasticsearchType(f.type);
     const type = f.elasticsearch?.type ?? (own === 'dynamic' ? '' : own);
     const format = f.elasticsearch?.format;
     if (type !== 'date' || format === undefined) return type;
@@ -87,7 +82,7 @@
   function choose(f: SchemaFieldDto, type: string) {
     // The same type keeps its other parameters.
     if (mapsAs(f) === type) return;
-    const own = ownType(f);
+    const own = ownElasticsearchType(f.type);
     // A date in one unit or the other is the same type, and keeps its other parameters.
     const { format: _, ...date } =
       f.elasticsearch?.type === 'date' ? f.elasticsearch : { type: 'date' };
@@ -189,7 +184,8 @@
                   value={mapsAs(f)}
                   onchange={(e) => choose(f, e.currentTarget.value)}
                 >
-                  {#if ownType(f) === 'dynamic'}<option value="">dynamic</option>{/if}
+                  {#if ownElasticsearchType(f.type) === 'dynamic'}<option value="">dynamic</option
+                    >{/if}
                   {#each choices(f, types) as c (c.value)}<option value={c.value}>{c.label}</option
                     >{/each}
                 </select>
@@ -197,7 +193,7 @@
                 <span class="mono"
                   >{choices(f, types).find((c) => c.value === mapsAs(f))?.label ??
                     f.elasticsearch?.type ??
-                    ownType(f)}</span
+                    ownElasticsearchType(f.type)}</span
                 >
               {/if}
               {#if others.length > 0}<span class="dim"
@@ -219,7 +215,7 @@
                 {f.requirement ?? 'optional'}
               {/if}
             </td>
-            <td class="about">{f.description ?? ''}</td>
+            <td class="about"><FieldDescription text={f.description ?? ''} /></td>
             {#if examples}<td class="example mono" title={f.example}
                 ><div>{f.example ?? ''}</div></td
               >{/if}
