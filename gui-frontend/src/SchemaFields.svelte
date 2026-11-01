@@ -10,7 +10,12 @@
   import Help from './Help.svelte';
   import Segmented from './Segmented.svelte';
   import ShowAll, { SHOWN } from './ShowAll.svelte';
-  import { elasticsearchTypes, ownElasticsearchType, REQUIREMENT_MARK, REQUIREMENTS } from './schemas';
+  import {
+    elasticsearchTypes,
+    ownElasticsearchType,
+    REQUIREMENT_MARK,
+    REQUIREMENTS,
+  } from './schemas';
   import FieldDescription from './FieldDescription.svelte';
   import RequirementMark from './RequirementMark.svelte';
   import { count } from './time';
@@ -199,9 +204,8 @@
           {:else}
             <td class="requirement">
               {#if onrequire}
-                <!-- Colored as RequirementMark colors it, so a chosen requirement reads as a shown one. -->
                 <select
-                  class={f.requirement ?? 'optional'}
+                  class="requirement-mark {f.requirement ?? 'optional'}"
                   aria-label={`Requirement of ${f.field}`}
                   value={f.requirement ?? 'optional'}
                   onchange={(e) => onrequire(f.field, e.currentTarget.value as Requirement)}
@@ -248,16 +252,6 @@
 
   .mapping {
     white-space: nowrap;
-  }
-
-  .requirement select.required {
-    color: var(--error);
-    font-weight: 600;
-  }
-
-  .requirement select.recommended {
-    color: var(--warn);
-    font-weight: 600;
   }
 
   .requirement select {

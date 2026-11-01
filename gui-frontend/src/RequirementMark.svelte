@@ -9,20 +9,6 @@
   let { of, text }: { of: Requirement; text?: string } = $props();
 </script>
 
-<span class="requirement {of}">{text ?? REQUIREMENT_MARK[of]}</span>
-
-<style>
-  .requirement {
-    color: var(--dim);
-  }
-
-  .required {
-    color: var(--error);
-    font-weight: 600;
-  }
-
-  .recommended {
-    color: var(--warn);
-    font-weight: 600;
-  }
-</style>
+<span class="requirement-mark {of}" class:dim={of === 'optional'}
+  >{text ?? REQUIREMENT_MARK[of]}</span
+>
