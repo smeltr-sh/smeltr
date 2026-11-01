@@ -30,6 +30,11 @@
       free plan has no support.
     </p>
     <h2 id="download">Download</h2>
+    <p>
+      These are the files of the latest release. <a href="/releases"
+        >What changed in each release →</a
+      >
+    </p>
     <div class="table-scroll">
       <table>
         <thead>
