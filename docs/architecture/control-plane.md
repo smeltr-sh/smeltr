@@ -357,12 +357,17 @@ flowchart TD
 - **Each release is kept.** `just cut-release` stores the data directory
   and the messages a release writes, and every later build must start on them,
   load the deployment they hold, and read every message.
+- **Each release says what it changed.** Its notes are written in
+  `website/src/lib/releases.json`, which the release pages on smeltr.sh show.
+  `just cut-release` refuses a release without dated notes there, and the
+  GitHub release carries the same notes.
 - **Nothing from before the first release is upgraded.** A store with no
   record of its steps is refused, with a message to move it aside.
 - **A leader says when a newer release is out.** A release leader reads the
   releases published on GitHub, through smeltr.sh, when it starts and once a
   day after, unless an administrator turns that off. The highest release that is
-  no pre-release, when it is newer than the leader's, is a notice. The request
+  no pre-release, when it is newer than the leader's, is a notice that links
+  its page on smeltr.sh. The request
   names the leader's release and nothing else about the install, and smeltr.sh
   counts leaders by release from it. A look that fails raises nothing, so a
   leader that cannot reach smeltr.sh is never noisy.

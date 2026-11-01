@@ -23,8 +23,8 @@
   <p>Complete this checklist in order:</p>
   <ul class="checklist">
     <li>
-      Record the installed version, checksum or image digest, and configuration. Read the new
-      version’s release notes before upgrading.
+      Record the installed version, checksum or image digest, and configuration. Read what the new
+      version changed on the <a href="/releases">Releases page</a> before upgrading.
     </li>
     <li>
       Test the upgrade on an isolated copy of your backup. Check worker enrollment, certificates,
