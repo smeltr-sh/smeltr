@@ -3101,6 +3101,7 @@ mod tests {
                     step: None,
                     message: "Login requires `x`; the rows lack it.".to_string(),
                     breaks: true,
+                    recommended: None,
                 },
             )],
         };

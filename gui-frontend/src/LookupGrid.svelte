@@ -9,6 +9,7 @@
   import { count } from './time';
   import { tick } from 'svelte';
   import CrossButton from './CrossButton.svelte';
+  import ShowAll from './ShowAll.svelte';
   import Locked from './Locked.svelte';
   import { editable } from './access';
 
@@ -34,6 +35,9 @@
   let pages = $derived(Math.max(1, Math.ceil(matches.length / PAGE)));
   let shown = $derived(matches.slice(page * PAGE, (page + 1) * PAGE));
   let ragged = $derived(rows.flatMap((r, i) => (r.length === headers.length ? [] : [i])));
+  /** The ragged rows listed before a button lists the rest. */
+  const RAGGED_NAMED = 5;
+  let raggedAll = $state(false);
 
   function edit(f: () => void) {
     f();
@@ -143,15 +147,19 @@
   {count(rows.length, 'row')} · {count(headers.length, 'column')}
 </div>
 
-{#each ragged.slice(0, 5) as r (r)}
+{#each raggedAll ? ragged : ragged.slice(0, RAGGED_NAMED) as r (r)}
   <p class="bar">
     <InlineError inline
-      >row {r + 1} has {rows[r].length} fields; the header has {headers.length}.</InlineError
+      >row {r + 1} has {count(rows[r].length, 'field')}; the header has {headers.length}.</InlineError
     >
     <button type="button" class="quiet" onclick={() => show(r)}>show</button>
   </p>
 {/each}
-{#if ragged.length > 5}<p class="dim">and {ragged.length - 5} more rows like it</p>{/if}
+{#if !raggedAll && ragged.length > RAGGED_NAMED}
+  <p class="bar">
+    <ShowAll more={ragged.length - RAGGED_NAMED} what="row" onshowall={() => (raggedAll = true)} />
+  </p>
+{/if}
 
 <style>
   .scroll {

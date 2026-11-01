@@ -13,6 +13,7 @@
   import StateMark from './StateMark.svelte';
   import InlineError from './InlineError.svelte';
   import { tick, untrack } from 'svelte';
+  import Recommends from './Recommends.svelte';
   import { opening } from './StepEditor.svelte';
   import { store, stored } from './stored';
   import StepList from './StepList.svelte';
@@ -675,6 +676,16 @@
   // the sample away from under whoever is fixing it. `result` still drives
   // the error itself -- this only decides what the grid below it shows.
   let lastGoodResult = $state<PreviewResult | null>(null);
+  /** The paths each schema recommends and the run's rows lack, by the schema's title: no warning, told. */
+  let recommendedBySchema = $derived.by(() => {
+    const out = new Map<string, string[]>();
+    if (!result?.ok) return out;
+    for (const m of result.missing ?? []) {
+      if (m.requirement === 'recommended')
+        out.set(m.schema, [...(out.get(m.schema) ?? []), m.path]);
+    }
+    return out;
+  });
   let running = $state(false);
   let autoRun = $state(true);
   let requestError = $state('');
@@ -1473,12 +1484,12 @@
           </div>
         {/if}
 
-        {#if result?.ok && result.recommended?.length}
+        {#if recommendedBySchema.size > 0}
           <div class="recommended" role="status">
-            {#each result.recommended as told (told)}
+            {#each recommendedBySchema as [schema, paths] (schema)}
               <div class="recommended-note">
                 <span aria-hidden="true">ⓘ</span>
-                <span>{told}</span>
+                <span><Recommends {schema} fields={paths} /></span>
               </div>
             {/each}
           </div>

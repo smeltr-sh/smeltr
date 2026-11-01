@@ -5,8 +5,7 @@ import type { DestinationDto, ExportFormat, PipelineDto, Requirement, SchemaDto 
 /** A field's requirements, in order: what a schema asks of a row, and OCSF's levels. */
 export const REQUIREMENTS: Requirement[] = ['required', 'recommended', 'optional'];
 
-/** The recommended fields a list names before it counts the rest, as the sentence the leader tells does
- * (`schema::told`), so a standard's long list stays short. */
+/** The recommended fields a list names before a button shows the rest, so a standard's long list stays short. */
 export const RECOMMENDED_NAMED = 5;
 
 /** One object naming a schema: a pipeline producing it, or a destination accepting it. */
