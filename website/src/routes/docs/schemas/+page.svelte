@@ -110,10 +110,18 @@
   </p>
   <p>
     Under <strong>Requirements</strong>, choose whose rules the fields follow.
-    <strong>ECS</strong> requires @timestamp and ecs.version, and recommends ECS's core fields.
-    <strong>Elastic Security</strong> requires @timestamp, ecs.version, event.kind, event.category and
-    event.type. It recommends the other fields its field reference lists, such as host.name and source.ip.
-    Choose Elastic Security if the records feed Elastic Security.
+    <strong>ECS</strong> requires <code>@timestamp</code> and <code>ecs.version</code>, and
+    recommends
+    <a href="https://www.elastic.co/guide/en/ecs/current/ecs-guidelines.html#_ecs_field_levels"
+      >ECS's core fields</a
+    >. <strong>Elastic Security</strong> requires <code>@timestamp</code>, <code>ecs.version</code>,
+    <code>event.kind</code>, <code>event.category</code> and <code>event.type</code>. It recommends
+    the other fields its
+    <a href="https://www.elastic.co/guide/en/security/current/siem-field-reference.html"
+      >field reference</a
+    >
+    lists, such as <code>host.name</code> and <code>source.ip</code>. Choose Elastic Security if the
+    records feed Elastic Security.
   </p>
 
   <h2 id="ocsf">Read an OCSF class</h2>
@@ -152,8 +160,8 @@
   <ProductScreenshot
     source="schema-csv"
     height={1800}
-    crop={{ x: 600, y: 352, width: 1680, height: 1100 }}
-    alt="The New schema from a CSV of fields dialog: the columns for field, type, required and description, and how each type reads."
+    crop={{ x: 606, y: 352, width: 1668, height: 1100 }}
+    alt="The New schema from a CSV of fields dialog: the columns for field, type, requirement and description, and how each type reads."
     caption="A CSV of fields, with the column each part comes from and how each type reads."
   />
 
@@ -194,15 +202,15 @@
   </p>
   <p>
     A recommended field the records lack is not a finding. The editor tells you of it under the
-    steps, and the bar still says <strong>the rows fit</strong>. In review it comes after the
-    pipeline's findings.
+    steps, and the bar still says <strong>the rows fit</strong>. In review, that note comes after
+    the pipeline's findings.
   </p>
   <ProductScreenshot
     source="schema-review"
     height={1800}
-    crop={{ x: 446, y: 410, width: 980, height: 640 }}
-    alt="A change's Schemas tab with two findings for the logins pipeline."
-    caption="Two findings in review: fields Login requires, and a destination that accepts Audit."
+    crop={{ x: 446, y: 410, width: 980, height: 700 }}
+    alt="A change's Schemas tab with two findings for the logins pipeline, and a field Login recommends."
+    caption="Two findings in review: fields Login requires, and a destination that accepts Audit. After them, a field Login recommends."
   />
 
   <h2 id="export">Export an Elasticsearch mapping</h2>
