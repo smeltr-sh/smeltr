@@ -17,11 +17,13 @@ The PNGs land in `shots/` as `<nn>-<page>-<light|dark>.png`, 1440 px wide at 2x 
 
 ```mermaid
 graph LR
-  gen[demo-traffic] --> pa([panw-firewalls]) & fg([fortigate-firewalls]) & ng([nginx-access]) & au([linux-auth]) & ct([aws-cloudtrail])
+  gen[demo-traffic] --> pa([panw-firewalls]) & ps([panw-siem]) & fg([fortigate-firewalls]) & ng([nginx-access]) & au([linux-auth]) & ct([aws-cloudtrail])
   gen --> asa([cisco-asa]) & pt([panw-threats]) & vs([versa-sdwan]) & aed([netscout-aed]) & snmp([router-snmp])
   gen --> eal([elastic-agent-linux]) & eaw([elastic-agent-windows]) & sen([sentinel-eventhub])
   subgraph network [Network security: fw-collector-01, -02]
     pa --> pp[panos-traffic] --> esn([es-network])
+    ps --> pt2[panos-trim] --> spl([splunk])
+    ps --> arc([s3-archive])
     fg --> fp[fortigate-traffic] --> esn
     asa & pt & vs & aed & snmp
   end
@@ -54,9 +56,9 @@ graph LR
   code step for auth.log; JSON with nested structs for CloudTrail, unrolled to a document per event. Each has a
   sample and a locked test. Each group holds its own tables, pipelines and destinations.
 - **History** (`stage.py`). Three accounts write it through the leader's API. The admin adds a worker group,
-  Priya Raman onboards the firewalls, Marcus Webb onboards the web and cloud feeds and adds a 5xx alert, and
-  the admin rotates the Elasticsearch key. Priya's App-ID risk change stays open for review; Marcus's Cisco ASA
-  draft stays a branch.
+  Priya Raman onboards the firewalls, Marcus Webb onboards the web and cloud feeds and adds a 5xx alert, Priya
+  sends PAN-OS to Splunk trimmed and to an S3 archive whole, and the admin rotates the Elasticsearch key. Priya's
+  App-ID risk change stays open for review; Marcus's Cisco ASA draft stays a branch.
 - **A week before it** (`demo-traffic history`). Once staged, every throughput series is extended back eight days
   at the rate it has read, on a daily curve, so the charts span a week and each source shows the band it is
   expected to read in. The leader refuses a few heartbeats while it writes; their warnings fade in five minutes,

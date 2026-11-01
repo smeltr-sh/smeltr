@@ -33,6 +33,10 @@
 .marketing p {
   max-width: 43rem;
 }
+/* The space a paragraph's margin gives a screenshot that follows one. */
+.marketing h2 + figure {
+  margin-top: 1rem;
+}
 .marketing .lede {
   max-width: 39rem;
   font-size: 1.15rem;

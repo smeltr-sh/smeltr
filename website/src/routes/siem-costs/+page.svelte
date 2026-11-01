@@ -1,7 +1,7 @@
 <script lang="ts">
   import SiemSteps from '#lib/components/SiemSteps.svelte';
   import SiemCutExample from '#lib/components/SiemCutExample.svelte';
-  import WorkflowDiagram from '#lib/components/WorkflowDiagram.svelte';
+  import ProductScreenshot from '#lib/components/ProductScreenshot.svelte';
 </script>
 
 <svelte:head
@@ -36,9 +36,14 @@
     <SiemCutExample />
   </section>
   <section aria-labelledby="copy-heading">
-    <h2 id="copy-heading">Keep everything, somewhere cheaper.</h2>
-    <p>Send the same records to your SIEM trimmed and to object storage whole.</p>
-    <WorkflowDiagram kind="siem" />
+    <h2 id="copy-heading">Trim it for the SIEM.<br />Keep it whole in object storage.</h2>
+    <ProductScreenshot
+      source="siem-routes"
+      height={2800}
+      crop={{ x: 507, y: 877, width: 2323, height: 830 }}
+      alt="The Routes page: the panw-siem source feeds two pipelines, panos-trim to splunk and as-sent to s3-archive."
+      caption="One source, two routes. Every route whose condition matches runs, so Splunk gets the trimmed lines and S3 keeps each line as it was sent."
+    />
     <p>
       <a href="/docs/destinations/s3">Amazon S3</a> ·
       <a href="/docs/destinations/gcs">Google Cloud Storage</a> ·
@@ -50,9 +55,9 @@
   <section aria-labelledby="fit-heading">
     <h2 id="fit-heading">Fits in front of the SIEM you have.</h2>
     <p>
-      Point your senders at Smeltr instead of the SIEM. They keep their own protocol and change only
-      where they send: Splunk forwarders, HEC senders, Filebeat and Fluent Bit. Smeltr sends on to
-      Splunk, Elasticsearch or a Log Analytics workspace.
+      Change only where your senders send. Splunk forwarders, HEC senders, Filebeat and Fluent Bit
+      send to Smeltr as they did to your SIEM, and Smeltr sends on to Splunk, Elasticsearch or a Log
+      Analytics workspace.
     </p>
     <p>
       <a href="/docs/sources/s2s-receiver">S2S receiver</a> ·
