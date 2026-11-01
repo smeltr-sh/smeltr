@@ -11,20 +11,16 @@ export type Release = {
   sections: { title: string; items: string[] }[];
 };
 
-function parts(version: string): number[] {
-  return version.split('.').map(Number);
-}
-
-function newerFirst(a: Release, b: Release): number {
-  const [x, y] = [parts(a.version), parts(b.version)];
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    if ((x[i] ?? 0) !== (y[i] ?? 0)) return (y[i] ?? 0) - (x[i] ?? 0);
-  }
-  return 0;
+/** A release's major, minor and patch: `just cut-release` names every release so. */
+function parts(release: Release): number[] {
+  return release.version.split('.').map(Number);
 }
 
 /** Every release, newest first, whatever order the file holds them in. */
-export const releases: Release[] = [...(notes as Release[])].sort(newerFirst);
+export const releases: Release[] = [...(notes as Release[])].sort((a, b) => {
+  const [x, y] = [parts(a), parts(b)];
+  return y[0] - x[0] || y[1] - x[1] || y[2] - x[2];
+});
 
 /** The newest release that has shipped: the one the download links serve. */
 export const latest: Release | undefined = releases.find((r) => r.date);
@@ -34,7 +30,7 @@ export function downloadHref(release: Release): string {
   return release === latest ? '/get#download' : `${source}/releases/tag/v${release.version}`;
 }
 
-/** The rail's groups: one per major, the newest open and older ones folded, a heading per minor over its releases. */
+/** The rail's groups: one per major, with a heading per minor over its releases. */
 export function railGroups(): Group[] {
   const majors = new Map<string, Map<string, Link[]>>();
   for (const r of releases) {
@@ -47,9 +43,8 @@ export function railGroups(): Group[] {
       { href: `/releases/${r.version}`, title: r.version },
     ]);
   }
-  return [...majors].map(([major, minors], i) => ({
+  return [...majors].map(([major, minors]) => ({
     title: `Smeltr ${major}`,
-    open: i === 0,
     links: [...minors].map(([title, links]) => ({ title, links })),
   }));
 }
