@@ -35,7 +35,7 @@ graph LR
   end
 ```
 
-- **Traffic.** `demo-traffic` (`examples/demo-traffic.rs`) writes about 1,600 records a second to Kafka from the
+- **Traffic.** `demo-traffic` (`examples/demo-traffic.rs`) writes about 2,100 records a second to Kafka from the
   reference generators the benchmark runs (`tests/reference`, `tests/panos`): PAN-OS TRAFFIC over syslog, FortiGate
   traffic and UTM key=value, nginx access, sshd and sudo, CloudTrail deliveries, and Cisco ASA's many messages. Seven
   more feeds are there for a visitor to normalize: PAN-OS THREAT, Versa SD-WAN, NETSCOUT Arbor Edge Defense CEF, router
