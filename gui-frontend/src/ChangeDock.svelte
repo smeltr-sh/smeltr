@@ -17,6 +17,7 @@
     behind,
     leftOut = 0,
     schemaFindings,
+    onopen,
     bringingCurrent,
     bringCurrentDisabled,
     onbringcurrent,
@@ -36,6 +37,8 @@
     leftOut?: number;
     /** Where the rows do not fit a schema their pipeline produces, absent while they are read. */
     schemaFindings?: number;
+    /** Opens the page's tab that lists what a count counts. */
+    onopen: (tab: 'tests' | 'schemas') => void;
     bringingCurrent: boolean;
     bringCurrentDisabled: boolean;
     onbringcurrent: () => void;
@@ -52,61 +55,68 @@
   } = $props();
 </script>
 
-<Locked refusedInDemo>
-  <div class="dock" bind:clientHeight={height}>
-    <div class="dock-row">
-      <span class="item">
-        {#if reviews.state === 'changes-requested'}
-          <StateMark state="warning" size={17} />
-          <span>{reviews.names.join(', ')} requested changes</span>
-        {:else if reviews.state === 'approved'}
-          <StateMark state="ok" size={17} />
-          <span>Approved by {reviews.names.join(', ')}</span>
-        {:else}
-          <StateMark state="info" size={17} />
-          <span class="dim">No reviews yet</span>
-        {/if}
-      </span>
+{#snippet opens(tab: 'tests' | 'schemas', text: string)}
+  <button type="button" class="link-button" onclick={() => onopen(tab)}>{text}</button>
+{/snippet}
 
-      <span class="item">
-        {#if testsLoading}
-          <StateMark state="info" size={17} />
-          <span class="dim">Running tests&hellip;</span>
-        {:else if tests.total === 0}
-          <StateMark state="info" size={17} />
-          <span class="dim">No tests</span>
-        {:else if tests.failed > 0}
-          <StateMark state="error" size={17} />
-          <span>{tests.failed} of {count(tests.total, 'test')} fail</span>
-        {:else if tests.couldNotRun > 0}
-          <StateMark state="warning" size={17} />
-          <span>{tests.couldNotRun} of {count(tests.total, 'test')} could not run</span>
-        {:else}
-          <StateMark state="ok" size={17} />
-          <span>{tests.passed} of {count(tests.total, 'test')}</span>
-        {/if}
-      </span>
-
-      {#if leftOut > 0}
-        <span class="item">
-          <!-- Nothing to fix: what stays on the branch is said, not warned about. -->
-          <StateMark state="info" size={17} />
-          <span>{count(leftOut, 'sample')} left out</span>
-        </span>
+<div class="dock" bind:clientHeight={height}>
+  <div class="dock-row">
+    <span class="item">
+      {#if reviews.state === 'changes-requested'}
+        <StateMark state="warning" size={17} />
+        <span>{reviews.names.join(', ')} requested changes</span>
+      {:else if reviews.state === 'approved'}
+        <StateMark state="ok" size={17} />
+        <span>Approved by {reviews.names.join(', ')}</span>
+      {:else}
+        <StateMark state="info" size={17} />
+        <span class="dim">No reviews yet</span>
       {/if}
+    </span>
 
-      {#if schemaFindings}
-        <span class="item">
-          <!-- Said, never blocking: a schema finding does not block the deploy. -->
-          <StateMark state="warning" size={17} />
-          <span>{count(schemaFindings, 'schema finding')}</span>
-        </span>
+    <span class="item">
+      {#if testsLoading}
+        <StateMark state="info" size={17} />
+        <span class="dim">Running tests&hellip;</span>
+      {:else if tests.total === 0}
+        <StateMark state="info" size={17} />
+        <span class="dim">No tests</span>
+      {:else if tests.failed > 0}
+        <StateMark state="error" size={17} />
+        {@render opens('tests', `${tests.failed} of ${count(tests.total, 'test')} fail`)}
+      {:else if tests.couldNotRun > 0}
+        <StateMark state="warning" size={17} />
+        {@render opens(
+          'tests',
+          `${tests.couldNotRun} of ${count(tests.total, 'test')} could not run`,
+        )}
+      {:else}
+        <StateMark state="ok" size={17} />
+        {@render opens('tests', `${tests.passed} of ${count(tests.total, 'test')}`)}
       {/if}
+    </span>
 
+    {#if leftOut > 0}
       <span class="item">
-        {#if behind > 0}
-          <StateMark state="warning" size={17} />
-          <span>Behind <span class="mono">main</span> by {count(behind, 'commit')}</span>
+        <!-- Nothing to fix: what stays on the branch is said, not warned about. -->
+        <StateMark state="info" size={17} />
+        <span>{count(leftOut, 'sample')} left out</span>
+      </span>
+    {/if}
+
+    {#if schemaFindings}
+      <span class="item">
+        <!-- Said, never blocking: a schema finding does not block the deploy. -->
+        <StateMark state="warning" size={17} />
+        {@render opens('schemas', count(schemaFindings, 'schema finding'))}
+      </span>
+    {/if}
+
+    <span class="item">
+      {#if behind > 0}
+        <StateMark state="warning" size={17} />
+        <span>Behind <span class="mono">main</span> by {count(behind, 'commit')}</span>
+        <Locked refusedInDemo>
           <button
             type="button"
             class="compact"
@@ -115,15 +125,17 @@
           >
             {bringingCurrent ? 'Bringing current…' : 'Bring current'}
           </button>
-        {:else}
-          <StateMark state="ok" size={17} />
-          <span>Current with <span class="mono">main</span></span>
-        {/if}
-      </span>
+        </Locked>
+      {:else}
+        <StateMark state="ok" size={17} />
+        <span>Current with <span class="mono">main</span></span>
+      {/if}
+    </span>
 
-      {#if approvable}
-        <span class="act">
-          {#if deployDisabledReason}<span class="blocked">{deployDisabledReason}</span>{/if}
+    {#if approvable}
+      <span class="act">
+        {#if deployDisabledReason}<span class="blocked">{deployDisabledReason}</span>{/if}
+        <Locked refusedInDemo>
           <button
             type="button"
             class="primary"
@@ -139,11 +151,11 @@
                 ? 'Approve'
                 : 'Approve & deploy'}
           </button>
-        </span>
-      {/if}
-    </div>
+        </Locked>
+      </span>
+    {/if}
   </div>
-</Locked>
+</div>
 
 <style>
   /* The page's bottom bar, drawn as `SaveBar` draws its own (STYLE_GUIDE.md, "Bottom save bar"). */
