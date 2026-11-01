@@ -528,7 +528,7 @@
   }
 
   .required-by {
-    font-family: var(--sans);
+    font-family: var(--font-body);
     font-size: var(--text-micro);
   }
 </style>
