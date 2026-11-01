@@ -223,14 +223,14 @@ pub struct Changes {
     pub raised: Vec<AlertTold>,
     /// Warnings it was told of that no longer hold.
     pub cleared: Vec<AlertTold>,
+    /// Warnings it was told of that cleared while it is muted: forgotten without telling it.
+    pub dropped: Vec<AlertTold>,
 }
 
 /// What `channel` must be told at `now`, given the warnings that hold and what every channel was told. A muted
-/// channel is told nothing; once its mute ends, what then holds and what has cleared since are told.
+/// channel is told nothing: what clears meanwhile is forgotten, and once the mute ends, what then holds is told.
 pub fn changes(channel: &Channel, now: i64, warnings: &[Warning], told: &[AlertTold]) -> Changes {
-    if channel.muted_until.is_some_and(|until| until > now) {
-        return Changes::default();
-    }
+    let muted = channel.muted_until.is_some_and(|until| until > now);
     let told: HashMap<&str, &AlertTold> = told
         .iter()
         .filter(|t| t.channel == channel.id)
@@ -256,7 +256,18 @@ pub fn changes(channel: &Channel, now: i64, warnings: &[Warning], told: &[AlertT
         .map(|(_, t)| (*t).clone())
         .collect();
     cleared.sort_by(|a, b| a.warning.cmp(&b.warning));
-    Changes { raised, cleared }
+    match muted {
+        true => Changes {
+            raised: Vec::new(),
+            cleared: Vec::new(),
+            dropped: cleared,
+        },
+        false => Changes {
+            raised,
+            cleared,
+            dropped: Vec::new(),
+        },
+    }
 }
 
 /// Whether a send says a warning was raised or has cleared.
@@ -515,7 +526,14 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
         if matches!(channel.kind, Kind::Email { .. }) && mail.is_none() {
             continue;
         }
-        let changes = changes(channel, now, &warnings, &told);
+        let mut changes = changes(channel, now, &warnings, &told);
+        if !changes.dropped.is_empty() {
+            let dropped: Vec<(String, String)> = std::mem::take(&mut changes.dropped)
+                .into_iter()
+                .map(|t| (t.channel, t.warning))
+                .collect();
+            run_store(state.store.clone(), move |s| s.record_alerts_told(&[], &dropped)).await?;
+        }
         if changes.raised.is_empty() && changes.cleared.is_empty() {
             continue;
         }
@@ -576,7 +594,13 @@ pub struct AlertSettingsDto {
     /// `None` until a mail server is saved.
     mail: Option<MailDto>,
     channels: Vec<ChannelDto>,
+    /// What a channel can take, in the catalog's order: every entry but those only ever raised as info, which no
+    /// channel is sent.
+    conditions: Vec<Condition>,
 }
+
+/// The catalog entries raised only as info.
+const ONLY_INFO: &[Condition] = &[Condition::WorkerOnAnotherRelease, Condition::DestinationMemoryBound];
 
 /// What `GET /api/settings/alerts` answers, read from the store and the failures held.
 fn read_settings(store: &dyn Store, alerts: &Alerts) -> Result<AlertSettingsDto, StoreError> {
@@ -598,7 +622,16 @@ fn read_settings(store: &dyn Store, alerts: &Alerts) -> Result<AlertSettingsDto,
             })
         })
         .collect::<Result<_, StoreError>>()?;
-    Ok(AlertSettingsDto { mail, channels })
+    let conditions = Condition::ALL
+        .iter()
+        .copied()
+        .filter(|c| !ONLY_INFO.contains(c))
+        .collect();
+    Ok(AlertSettingsDto {
+        mail,
+        channels,
+        conditions,
+    })
 }
 
 fn answer(read: Result<AlertSettingsDto, Refusal>) -> Envelope<AlertSettings> {
@@ -994,16 +1027,14 @@ mod tests {
         let up = [warning(Condition::SourceUnreachable, "orders", None)];
         let told = changes(&channel(None), 1, &up, &[]).raised;
         assert_eq!(changes(&c, 5, &[up[0].clone()], &[]), Changes::default());
-        assert_eq!(
-            changes(&c, 5, &[], &told),
-            Changes::default(),
+        let meanwhile = changes(&c, 5, &[], &told);
+        assert!(
+            meanwhile.raised.is_empty() && meanwhile.cleared.is_empty(),
             "nor of what cleared meanwhile"
         );
-        assert_eq!(
-            changes(&c, 10, &[], &told).cleared,
-            told,
-            "and once it ends, of what cleared"
-        );
+        assert_eq!(meanwhile.dropped, told, "which is forgotten");
+        let after = changes(&c, 10, &up, &[]);
+        assert_eq!(after.raised.len(), 1, "once it ends, it is told of what still holds");
     }
 
     #[test]
