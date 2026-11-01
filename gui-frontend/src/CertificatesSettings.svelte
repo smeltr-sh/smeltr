@@ -350,11 +350,15 @@
 
   /** Orders a certificate with what the form says, and serves it. */
   async function order() {
-    if (!(await saveAcme())) return;
-    message = '';
+    // From the save on: it waits as well while an earlier order holds the leader's settings.
     ordering = true;
-    await act(() => orderAcme(), switched(ISSUED));
-    ordering = false;
+    try {
+      if (!(await saveAcme())) return;
+      message = '';
+      await act(() => orderAcme(), switched(ISSUED));
+    } finally {
+      ordering = false;
+    }
     // What the order left, however it went: the failure it recorded, or when the next renewal is due.
     getAcme().then(showAcme).catch(reported);
   }
@@ -784,7 +788,7 @@
         </div>
       {:else if source === 'acme' && acme && (!switching || newRoot)}
         <div class="setting">
-          {#if acme.lastError && !formError}
+          {#if acme.lastError && !formError && !ordering}
             <InlineError>
               The order of {on(acme.lastAttemptMillis ?? Date.now())} failed: {acme.lastError}
               {#if inForce === 'acme'}Tried again every hour.{/if}
@@ -899,12 +903,7 @@
               </Field>
             </div>
           </Advanced>
-          {#if inForce !== 'acme' && challenge === 'dns-01'}
-            <p class="critical">
-              The zones that hold {nameList.join(', ') || 'the names above'} must be in this Cloudflare
-              account.
-            </p>
-          {:else if inForce !== 'acme'}
+          {#if inForce !== 'acme' && challenge !== 'dns-01'}
             <p class="critical">
               Port {challenge === 'tls-alpn-01' ? 443 : 80} on {nameList.join(', ') ||
                 'the names above'} must reach this leader.

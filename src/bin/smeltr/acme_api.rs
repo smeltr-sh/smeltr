@@ -208,7 +208,7 @@ async fn put_settings(
         return refuse(StatusCode::UNPROCESSABLE_ENTITY, &e);
     }
 
-    let _ordered = state.auth.settings_writes.lock().await;
+    let _ordered = settings_writes(&state.auth).await;
     let was = match settings(&state.auth).await {
         Ok(was) => was,
         Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
@@ -301,7 +301,7 @@ async fn order(State(state): State<Acme>, actor: axum::Extension<Actor>, headers
         Ok(serving) => serving,
         Err(response) => return *response,
     };
-    let _ordered = state.auth.settings_writes.lock().await;
+    let _ordered = settings_writes(&state.auth).await;
     let settings = match settings(&state.auth).await {
         Ok(settings) => settings,
         Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
@@ -319,6 +319,18 @@ async fn order(State(state): State<Acme>, actor: axum::Extension<Actor>, headers
     }
 }
 
+/// `settings_writes`, saying so in the log when it has to wait: an order holds it for as long as the authority
+/// takes, minutes for DNS-01.
+async fn settings_writes(auth: &Auth) -> tokio::sync::MutexGuard<'_, ()> {
+    match auth.settings_writes.try_lock() {
+        Ok(held) => held,
+        Err(_) => {
+            tracing::info!(target: "leader.acme_queued", "waiting for another change to the settings to finish, an order included");
+            auth.settings_writes.lock().await
+        }
+    }
+}
+
 /// One order, start to finish, under `settings_writes`: ordered, recorded, stored in the list, and where `serve`
 /// says to, served or rotated to, with the socket reloaded where it is served at once. A failure is recorded in the
 /// state the page reads.
@@ -331,7 +343,11 @@ async fn run(
     serve: bool,
 ) -> Result<(), String> {
     let now_ms = smeltr::leader::warnings::now_millis();
+    tracing::info!(target: "leader.acme_order_started", names = %settings.names.join(","), challenge = settings.challenge.as_str(), "ordering a certificate");
     let outcome = order_once(auth, serving, settings, actor, required, serve, now_ms).await;
+    if outcome.is_ok() {
+        tracing::info!(target: "leader.acme_order_issued", names = %settings.names.join(","), "the certificate authority issued a certificate");
+    }
     if let Err(e) = &outcome {
         tracing::warn!(target: "leader.acme_order_failed", error = %e, "the certificate authority did not issue a certificate");
         acme::failed(&serving.dir, now_ms, e)?;
@@ -405,7 +421,7 @@ pub(crate) async fn renew_if_due(auth: &Auth, serving: &Arc<Tls>) {
     if !settings.enabled || acme::orderable(&settings.directory, &settings.names).is_err() {
         return;
     }
-    let _ordered = auth.settings_writes.lock().await;
+    let _ordered = settings_writes(auth).await;
     let now_ms = smeltr::leader::warnings::now_millis();
     let (due, served) = match (acme::state(&serving.dir), acme::source(&serving.dir)) {
         (Ok(state), Ok(source)) => (acme::renews(&state, now_ms), source == acme::Source::Acme),

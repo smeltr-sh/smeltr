@@ -402,8 +402,14 @@ describe('ACME', () => {
     await vi.waitFor(() => expect(posts).toEqual(['/api/settings/tls/acme/order']));
   });
 
-  it('says an order is running until the leader answers', async () => {
-    await show(IN_FORCE, 'Save', { ...ORDERED, challenge: 'dns-01' });
+  it('says an order is running until the leader answers, in place of the last failure', async () => {
+    await show(IN_FORCE, 'Save', {
+      ...ORDERED,
+      challenge: 'dns-01',
+      lastAttemptMillis: Date.now(),
+      lastError: 'no answer on port 443',
+    });
+    expect(target.textContent).toContain('no answer on port 443');
     const answered = vi.mocked(fetch).getMockImplementation()!;
     let answer!: () => void;
     vi.mocked(fetch).mockImplementation(async (url, init) => {
@@ -415,6 +421,7 @@ describe('ACME', () => {
     button('Renew now')!.click();
     await vi.waitFor(() => expect(button('Renewing…')?.disabled).toBe(true));
     expect(target.textContent).toContain('This can take up to 15 minutes.');
+    expect(target.textContent).not.toContain('no answer on port 443');
     answer();
     await vi.waitFor(() => expect(button('Renew now')?.disabled).toBe(false));
     expect(target.textContent).not.toContain('This can take up to');
@@ -439,7 +446,7 @@ describe('ACME', () => {
     expect(button('Renew now')).toBeDefined();
   });
 
-  it('asks DNS-01 for its provider and token, and names the zones instead of a port', async () => {
+  it('asks DNS-01 for its provider and token, and for no port', async () => {
     await show(IN_FORCE, 'Save', { ...ORDERED, challenge: 'dns-01' });
     expect(target.textContent).toContain('DNS provider');
     expect(target.querySelector('[aria-label="API token"]')).not.toBeNull();

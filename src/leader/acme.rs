@@ -524,6 +524,7 @@ struct SavedAccount {
 impl Issuer for Directory {
     async fn issue(&self, names: &[String], csr_der: &[u8], prover: &dyn Prover) -> Result<String, String> {
         let account = self.account().await?;
+        tracing::info!(target: "leader.acme_account", directory = %self.settings.directory, "holding an account at the certificate authority");
         let identifiers: Vec<Identifier> = names
             .iter()
             .map(|name| match name.parse() {
@@ -535,6 +536,7 @@ impl Issuer for Directory {
             .new_order(&NewOrder::new(&identifiers))
             .await
             .map_err(|e| format!("the order was refused: {e}"))?;
+        tracing::info!(target: "leader.acme_order_placed", names = %names.join(","), "the certificate authority took the order");
 
         let kind = match self.settings.challenge {
             Challenge::TlsAlpn01 => ChallengeType::TlsAlpn01,
@@ -554,6 +556,7 @@ impl Issuer for Directory {
                     self.settings.challenge.as_str()
                 )
             })?;
+            tracing::info!(target: "leader.acme_proving", %name, challenge = self.settings.challenge.as_str(), "proving a name to the certificate authority");
             let key_authorization = challenge.key_authorization();
             match self.settings.challenge {
                 Challenge::TlsAlpn01 => prover.tls_alpn(&name, key_authorization.digest().as_ref()).await?,
@@ -564,6 +567,7 @@ impl Issuer for Directory {
                 .set_ready()
                 .await
                 .map_err(|e| format!("the challenge for {name}: {e}"))?;
+            tracing::info!(target: "leader.acme_proof_ready", %name, "told the certificate authority to check the proof");
         }
 
         let retries = RetryPolicy::new().timeout(ORDER_TIMEOUT);
@@ -577,6 +581,7 @@ impl Issuer for Directory {
             }
             Err(e) => return Err(format!("waiting for the authority to validate: {e}")),
         }
+        tracing::info!(target: "leader.acme_validated", "the certificate authority validated every name");
         order
             .finalize_csr(csr_der)
             .await
