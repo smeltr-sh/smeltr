@@ -2085,7 +2085,7 @@ fn refused_enrollment(subject: &str, error: String, retry: bool) -> Json<EnrollR
     // per change and on the interval. A settled refusal is each worker's own, and is said each time.
     if !retry {
         tracing::warn!(target: "leader.enrollment_refused", %subject, %error, retry, "an enrollment was refused");
-    } else if let Some(error) = relog(&ENROLLMENT_RETRIED, error) {
+    } else if let Some(error) = relog(&ENROLLMENT_RETRIED, error.clone()) {
         tracing::warn!(target: "leader.enrollment_refused", %subject, error, retry, "an enrollment was refused");
     }
     Json(EnrollResult {
