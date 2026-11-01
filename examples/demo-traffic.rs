@@ -6,6 +6,7 @@
 //! demo-traffic sample <stream> <n> <seed> # n lines of a stream at the samples' instant, one per line
 //! demo-traffic tables                     # the lookup tables, as JSON
 //! demo-traffic fingerprint                # a digest of what the generators make (`reference::demo::fingerprint`)
+//! demo-traffic history <registry.db>      # a week of the fleet's throughput before what it has read so far
 //! ```
 //!
 //! `SMELTR_DEMO_KAFKA` names the brokers, `localhost:19092` (`tests/live/compose.live.yaml`'s) when unset.
@@ -24,12 +25,14 @@ use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::producer::{BaseProducer, BaseRecord};
 use reference::demo::{self, STREAMS, Stream};
 use reference::{Clock, mix};
+use smeltr::leader::series::{RegistryStore, Tier};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["tables"] => println!("{}", demo::tables()),
         ["fingerprint"] => println!("{}", demo::fingerprint()),
+        ["history", registry] => history(std::path::Path::new(registry)),
         ["sample", topic, n, seed] => {
             for line in demo::sample(stream(topic), number(n), number(seed)) {
                 println!("{line}");
@@ -42,7 +45,9 @@ fn main() {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: demo-traffic [scale] | sample <stream> <n> <seed> | tables | fingerprint");
+    eprintln!(
+        "usage: demo-traffic [scale] | sample <stream> <n> <seed> | tables | fingerprint | history <registry.db>"
+    );
     std::process::exit(2)
 }
 
@@ -128,4 +133,78 @@ fn send(producer: &BaseProducer, topic: &str, line: &str) {
             Err((e, _)) => panic!("sending to {topic}: {e}"),
         }
     }
+}
+
+/// The counters the fleet's throughput charts and each source's expected band are drawn from.
+const THROUGHPUT: &[&str] = &[
+    "smeltr_rows_polled_total",
+    "smeltr_bytes_polled_total",
+    "smeltr_rows_sent_total",
+    "smeltr_rows_delivered_total",
+    "smeltr_bytes_delivered_total",
+    "smeltr_rows_unmatched_total",
+    "smeltr_route_matched_total",
+    "smeltr_rows_dropped_total",
+    "smeltr_rows_errored_total",
+];
+
+/// How far back the history goes: the week a source's expected band learns from, and the day before it that its
+/// oldest windows reach into.
+const HISTORY_MS: i64 = 8 * 86_400_000;
+
+/// Writes into a staged leader's registry the throughput its fleet would have had over the last [`HISTORY_MS`]: each
+/// series of [`THROUGHPUT`] at the rate it has read since it started, on a daily curve that is at its mean now, up to
+/// its first point. Each bucket is the width the registry keeps at its age, so a chart of any range is as smooth as
+/// a fleet that ran all week.
+fn history(registry: &std::path::Path) {
+    let store = RegistryStore::open(registry).expect("the leader's registry");
+    let now = now().unix * 1_000;
+    const DAY: f64 = 86_400_000.0;
+    let mut written = 0;
+    for metric in THROUGHPUT {
+        let fine = store
+            .series_since_at(metric, &[Tier::TenSeconds, Tier::OneMinute], 0)
+            .expect("the series");
+        let mut subjects = std::collections::BTreeMap::<String, Vec<(i64, f64)>>::new();
+        for (subject, points) in fine.into_iter().flatten() {
+            subjects.entry(subject).or_default().extend(points);
+        }
+        for (subject, points) in subjects {
+            let first = points.iter().map(|p| p.0).min().expect("a series has a point");
+            let read: f64 = points.iter().map(|p| p.1).sum();
+            let rate = read / (now - first).max(60_000) as f64;
+            let salt = subject.bytes().fold(0u64, |h, b| mix(h ^ u64::from(b)));
+            let mut at = first;
+            while at > now - HISTORY_MS {
+                let width = match now - at {
+                    age if age <= 3_600_000 => Tier::TenSeconds,
+                    age if age <= 86_400_000 => Tier::OneMinute,
+                    _ => Tier::FiveMinutes,
+                }
+                .bucket_ms();
+                at -= width;
+                // A day's curve, at its mean at this time of day, with each bucket's own noise.
+                let curve = 1.0 + 0.3 * (TAU * (at - now) as f64 / DAY).sin();
+                let noise = 0.8 + 0.4 * (mix(salt ^ at as u64) % 1_000) as f64 / 1_000.0;
+                let delta = (rate * width as f64 * curve * noise).round();
+                if delta > 0.0 {
+                    write(|| store.record_delta(metric, &subject, at, delta));
+                    written += 1;
+                }
+            }
+        }
+    }
+    write(|| store.maintain(now));
+    println!("{written} buckets of history");
+}
+
+/// Runs a write to the registry, again while the leader holds it.
+fn write(mut attempt: impl FnMut() -> Result<(), smeltr::leader::store::StoreError>) {
+    for _ in 0..50 {
+        match attempt() {
+            Ok(()) => return,
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    attempt().expect("a write to the registry");
 }

@@ -367,6 +367,7 @@ def apps():
     for s in bundle.samples()["apps"]:
         c.put_sample(s, b, "apps")
     c.put("routes", routes, b, "apps")
+    c.put("manifest", {"exceptions": bundle.APPS_EXCEPTIONS}, b, "apps")
     lock_tests(c, b, "apps", [
         ("nginx-access maps requests, drops health checks", "nginx-access", "nginx-sample", 12),
         ("linux-auth classifies logins and sudo", "linux-auth", "auth-sample", 10),
@@ -429,6 +430,14 @@ def open_change():
                   "the alerts topic. The PAN-OS test is re-locked with the two new fields.")
 
 
+def waiting():
+    log("samples for the feeds waiting on pipelines")
+    c = as_("admin")
+    for scope, samples in bundle.waiting().items():
+        for s in samples:
+            c.put_sample(s, "work", scope)
+
+
 def draft():
     log("draft branch")
     c = as_("marcus")
@@ -479,6 +488,13 @@ def main():
     pause(1)
     open_change()
     draft()
+    waiting()
+    # A week of throughput before what the fleet has read so far, so each source's chart shows the band it is
+    # expected to read in. The leader refuses a heartbeat or two while this writes, and the warnings that leaves
+    # fade before a settled fleet is captured.
+    log("history")
+    subprocess.run([bundle.TRAFFIC, "history", os.path.join(STATE, "leader", "smeltr-leader-data", "registry.db")],
+                   check=True)
     log("staged")
 
 

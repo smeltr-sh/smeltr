@@ -227,7 +227,7 @@ FORTIGATE = {
             ("dstintf", "observer.egress.interface.name"), ("policyid", "rule.id"), ("policyname", "rule.name"),
             ("app", "network.application"), ("appcat", "fortinet.firewall.appcat"),
             ("apprisk", "fortinet.firewall.apprisk"), ("sessionid", "fortinet.firewall.sessionid"),
-            ("dstcountry", "destination.geo.country_name"),
+            ("dstcountry", "destination.geo.country_name"), ("url", "url.original"),
         ]]},
         {"type": "eval", "id": "prune", "assignments": ev([(n, "null") for n in [
             "_raw", "pri", "body", "date", "time", "type", "subtype", "level", "action", "proto", "service", "duration",
@@ -417,6 +417,9 @@ APPS_SOURCES = [
 ]
 
 # Answers for a category and for one kind in it, so the Routes page shows the matrix's range.
+# The feeds no route takes yet are dropped, not blocked: a source that blocks stops reading, and the leader would
+# show it failed rather than waiting for a pipeline.
+APPS_EXCEPTIONS = {"kinds": {"Unmatched": "drop"}}
 NETWORK_EXCEPTIONS = {"categories": {"math": "drop", "limits": "block"},
                       "kinds": {"Overflow": "tag", "Unmatched": {"deliver": ["kafka-dlq"]}}}
 
@@ -467,6 +470,23 @@ def samples():
              "records": panos_sample()},
             {"id": "fortigate-sample", "name": "FortiGate forward traffic", "source": "fortigate-firewalls",
              "records": records("syslog.fortigate", 10, 21)},
+        ],
+        "apps": [
+            {"id": "nginx-sample", "name": "Storefront access log", "source": "nginx-access",
+             "records": records("web.nginx.access", 12, 31)},
+            {"id": "auth-sample", "name": "Bastion auth.log", "source": "linux-auth",
+             "records": records("syslog.auth", 10, 41)},
+            {"id": "cloudtrail-sample", "name": "CloudTrail management and data events", "source": "aws-cloudtrail",
+             "records": records("aws.cloudtrail", 8, 51)},
+        ],
+    }
+
+
+def waiting():
+    """Samples of the feeds no route takes yet. A deploy leaves out a sample no test names, so these stay on the
+    branch a visitor builds on, ready for the pipeline they write."""
+    return {
+        "network": [
             {"id": "panos-threat-sample", "name": "PAN-OS threats", "source": "panw-threats",
              "records": records("syslog.panos.threat", 10, 61)},
             {"id": "versa-sample", "name": "Versa flow, access, IDP and SLA logs", "source": "versa-sdwan",
@@ -477,12 +497,6 @@ def samples():
              "records": records("metrics.snmp.interface", 10, 91)},
         ],
         "apps": [
-            {"id": "nginx-sample", "name": "Storefront access log", "source": "nginx-access",
-             "records": records("web.nginx.access", 12, 31)},
-            {"id": "auth-sample", "name": "Bastion auth.log", "source": "linux-auth",
-             "records": records("syslog.auth", 10, 41)},
-            {"id": "cloudtrail-sample", "name": "CloudTrail management and data events", "source": "aws-cloudtrail",
-             "records": records("aws.cloudtrail", 8, 51)},
             {"id": "elastic-agent-linux-sample", "name": "Elastic Agent, Linux hosts", "source": "elastic-agent-linux",
              "records": records("elastic.agent.linux", 10, 101)},
             {"id": "elastic-agent-windows-sample", "name": "Elastic Agent, Windows hosts",

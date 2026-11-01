@@ -94,7 +94,7 @@ for (const s of spec) {
     const ctx = await browser.newContext({
       ignoreHTTPSErrors: true,
       viewport: { width: s.width || 1440, height: s.height || 900 },
-      deviceScaleFactor: 2,
+      deviceScaleFactor: s.scale || 2,
       colorScheme: theme,
     });
     await ctx.addCookies([

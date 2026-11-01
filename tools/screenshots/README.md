@@ -45,9 +45,10 @@ graph LR
   value is synthetic; addresses outside 10/8 come from the MaxMind test ranges and the documentation ranges. Now
   and then an nginx line is cut short and fails to parse; it reaches es-web tagged with its exception.
 - **Something to fix.** No route takes cisco-asa or the seven feeds after it, so the leader warns that their streams
-  are unrouted. FGT-SIN
-  names `proto` (`tcp`) where the FortiGate pipeline declares the protocol number, so the leader warns that the
-  field is not its declared type.
+  are unrouted. The network group sends what no route takes to kafka-dlq and the apps group drops it. The seven
+  feeds' samples wait on the `work` branch, since a deploy leaves out a sample no test names. FGT-SIN names
+  `proto` (`tcp`) where the FortiGate pipeline declares the protocol number, so the leader warns that the field is
+  not its declared type.
 - **Pipelines** (`bundle.py`), each normalizing to ECS: grok and a positional CSV table for PAN-OS, with CIDR,
   directory and App-ID lookups; grok and key=value for FortiGate; grok with a custom pattern for nginx; grok and a
   code step for auth.log; JSON with nested structs for CloudTrail, unrolled to a document per event. Each has a
@@ -56,6 +57,10 @@ graph LR
   Priya Raman onboards the firewalls, Marcus Webb onboards the web and cloud feeds and adds a 5xx alert, and
   the admin rotates the Elasticsearch key. Priya's App-ID risk change stays open for review; Marcus's Cisco ASA
   draft stays a branch.
+- **A week before it** (`demo-traffic history`). Once staged, every throughput series is extended back eight days
+  at the rate it has read, on a daily curve, so the charts span a week and each source shows the band it is
+  expected to read in. The leader refuses a few heartbeats while it writes; their warnings fade in five minutes,
+  within the settle.
 - **Incident** (`incident.py`). Issues and a Status that needs attention need something wrong: it freezes
   fw-collector-02 until the leader reports it silent, captures those two pages, and thaws it.
 
