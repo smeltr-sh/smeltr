@@ -9,6 +9,8 @@
   import { afterNavigate, beforeNavigate } from '$app/navigation';
   import { page } from '$app/state';
   import DocsSearchForm from './DocsSearchForm.svelte';
+  import NavGroups from './NavGroups.svelte';
+  import type { Entry, Group } from '#lib/nav.ts';
   import { stepPages } from '#lib/step-pages.ts';
   import {
     byCategory,
@@ -18,11 +20,6 @@
     type Connection,
   } from '#lib/connections.ts';
 
-  type Link = { href: string; title: string };
-  /** A sidebar entry: a page, or a category heading over its pages. */
-  type Entry = Link | { title: string; links: Link[] };
-  /** A sidebar group. Each folds on a click. A closed one starts folded, except on its own pages. */
-  type Group = { title: string; closed?: boolean; links: Entry[] };
   const groups: Group[] = [
     {
       title: 'Getting started',
@@ -128,22 +125,6 @@
     },
   );
 
-  function holds(group: Group, path: string): boolean {
-    return group.links.some((e) => ('href' in e ? [e] : e.links).some((l) => l.href === path));
-  }
-  /** The groups a reader folded or opened, by title. */
-  let flipped = $state(new Set<string>());
-  function isOpen(group: Group): boolean {
-    const starts = !group.closed || holds(group, page.url.pathname);
-    return starts !== flipped.has(group.title);
-  }
-  function flip(group: Group) {
-    const next = new Set(flipped);
-    if (next.has(group.title)) next.delete(group.title);
-    else next.add(group.title);
-    flipped = next;
-  }
-
   let {
     sections,
     entries = [],
@@ -237,12 +218,6 @@
   }}
 />
 
-{#snippet navLink(link: Link)}
-  <a href={link.href} aria-current={page.url.pathname === link.href ? 'page' : undefined}
-    >{link.title}</a
-  >
-{/snippet}
-
 <div class="docs-layout" class:no-tools={sections.length === 0 && entries.length === 0}>
   <aside class="manual-nav" bind:this={manualNavigation}>
     <DocsSearchForm />
@@ -255,32 +230,7 @@
       Documentation <span aria-hidden="true">{expanded ? '−' : '+'}</span>
     </button>
     <div id="docs-navigation" class:expanded>
-      <nav aria-label="Documentation">
-        <p class="nav-label">Documentation</p>
-        <a href="/docs" aria-current={page.url.pathname === '/docs' ? 'page' : undefined}
-          >Overview</a
-        >
-        {#each groups as group (group.title)}
-          <button
-            class="nav-label group-label fold"
-            aria-expanded={isOpen(group)}
-            onclick={() => flip(group)}
-            >{group.title} <span aria-hidden="true">{isOpen(group) ? '▾' : '▸'}</span></button
-          >
-          {#each isOpen(group) ? group.links : [] as entry ('href' in entry ? entry.href : entry.title)}
-            {#if 'href' in entry}
-              {@render navLink(entry)}
-            {:else}
-              <p class="sub-label">{entry.title}</p>
-              <div class="sub-links">
-                {#each entry.links as link (link.href)}
-                  {@render navLink(link)}
-                {/each}
-              </div>
-            {/if}
-          {/each}
-        {/each}
-      </nav>
+      <NavGroups label="Documentation" links={[{ href: '/docs', title: 'Overview' }]} {groups} />
     </div>
   </aside>
   <div class="docs-content" data-pagefind-body={searchable ? '' : undefined}>
@@ -388,48 +338,6 @@
   }
   nav > .nav-label:first-child {
     margin-top: 0;
-  }
-  .sub-label {
-    margin: 0.35rem 0 0;
-    padding: 0.2rem 0.65rem;
-    font-size: 0.87rem;
-    font-weight: 600;
-    color: var(--ink);
-  }
-  /* A category's pages hang off a guide line; the current page's marker covers it. */
-  .sub-links {
-    display: grid;
-    gap: 0.1rem;
-    margin-left: 0.9rem;
-    border-left: 1px solid var(--border);
-  }
-  .sub-links a {
-    margin-left: -1px;
-    padding-left: 0.75rem;
-  }
-  .group-label {
-    border-top: 1px solid var(--border);
-    padding-top: 0.9rem;
-  }
-  nav .fold {
-    display: block;
-    width: auto;
-    border: 0;
-    border-top: 1px solid var(--border);
-    border-radius: 0;
-    padding: 0.9rem 0 0;
-    background: none;
-    color: var(--dim);
-    font: inherit;
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    text-align: left;
-    cursor: pointer;
-  }
-  nav .fold:hover {
-    color: var(--ink);
   }
   nav a {
     padding: 0.32rem 0.65rem;
