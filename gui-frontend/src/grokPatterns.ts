@@ -81,7 +81,7 @@ export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
     name: 'HOSTNAME',
     signature: '%{HOSTNAME}',
     description:
-      'A DNS-style hostname or FQDN, dot-separated labels up to 63 characters each of letters, digits, `_` and inner `-`. Matches `web-01.internal.example.com`, `localhost`, `build_01`; not a label starting or ending with `-`. Regex: `\\b[0-9A-Za-z_](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z_])?(?:\\.[0-9A-Za-z_](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z_])?)*\\b`',
+      'A hostname or FQDN. Each dot-separated label is up to 63 letters, digits, `_` or `-`, and cannot start or end with `-`. Matches `web-01.internal.example.com`, `localhost`, `build_01`; not `-web` or `web-`. Regex: `\\b[0-9A-Za-z_](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z_])?(?:\\.[0-9A-Za-z_](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z_])?)*\\b`',
   },
   {
     name: 'IPORHOST',
