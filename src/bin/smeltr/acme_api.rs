@@ -356,8 +356,9 @@ async fn order(State(state): State<Acme>, actor: axum::Extension<Actor>, headers
 }
 
 const ALREADY_ORDERING: &str = "A certificate is already being ordered. Wait for that order to finish.";
+const TURNED_OFF: &str = "ACME was turned off while this order ran, so its certificate was not installed.";
 const SETTINGS_MOVED: &str = "The names, directory or challenge changed while this order ran, so its certificate \
-                              is not served. Order again.";
+                              was not installed. Get a certificate again.";
 
 /// Clears the step said when it is dropped, however the order ended, a panic included.
 struct Cleared<'a>(&'a acme::Progress);
@@ -435,6 +436,9 @@ async fn order_once(
     let _writes = settings_writes(auth, progress).await;
     progress.set(acme::Step::Installing);
     let now = self::settings(auth).await?;
+    if !now.enabled {
+        return Err(TURNED_OFF.to_string());
+    }
     if (&now.names, &now.directory, now.challenge) != (&settings.names, &settings.directory, settings.challenge) {
         return Err(SETTINGS_MOVED.to_string());
     }
