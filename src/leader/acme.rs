@@ -585,7 +585,6 @@ struct SavedAccount {
 #[async_trait]
 impl Issuer for Directory {
     async fn issue(&self, names: &[String], csr_der: &[u8], prover: &dyn Prover) -> Result<String, String> {
-        self.progress.set(Step::Account);
         let account = self.account().await?;
         tracing::info!(target: "leader.acme_account", directory = %self.settings.directory, "holding an account at the certificate authority");
         let identifiers: Vec<Identifier> = names

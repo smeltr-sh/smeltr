@@ -961,7 +961,7 @@
               <button
                 class="primary"
                 type="button"
-                disabled={busy || !orderable}
+                disabled={busy || ordering || !orderable}
                 onclick={() => save()}
               >
                 Save
