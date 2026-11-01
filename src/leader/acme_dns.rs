@@ -248,7 +248,9 @@ impl ZoneNameservers {
 impl Nameservers for ZoneNameservers {
     async fn all_answer(&self, record: &Record) -> Result<bool, String> {
         for (host, addresses) in ZoneNameservers::of(&record.zone).await? {
-            let at: Vec<_> = addresses.into_iter().map(|ip| SocketAddr::new(ip, 53)).collect();
+            let mut at: Vec<_> = addresses.into_iter().map(|ip| SocketAddr::new(ip, 53)).collect();
+            // IPv4 first: a host with no IPv6 route waits out each IPv6 address.
+            at.sort_by_key(SocketAddr::is_ipv6);
             if !one_answers(&host, &at, record).await? {
                 return Ok(false);
             }
@@ -387,8 +389,7 @@ impl Cloudflare {
             reqwest::Url::parse(&format!("{}/zones/{zone_id}/dns_records", self.api)).map_err(|e| e.to_string())?;
         url.query_pairs_mut()
             .append_pair("type", "TXT")
-            .append_pair("name", name)
-            .append_pair("content", value);
+            .append_pair("name", name);
         let found = self
             .call(self.client.get(url), &format!("looking up the TXT record {name}"))
             .await?;
@@ -396,7 +397,10 @@ impl Cloudflare {
             .as_array()
             .into_iter()
             .flatten()
-            .find(|r| r["name"].as_str() == Some(name) && r["content"].as_str() == Some(value))
+            // Cloudflare may answer a TXT record's content quoted.
+            .find(|r| {
+                r["name"].as_str() == Some(name) && r["content"].as_str().map(|c| c.trim_matches('"')) == Some(value)
+            })
             .and_then(|r| r["id"].as_str())
             .map(str::to_string)
             .ok_or_else(|| format!("Cloudflare said the TXT record {name} is already there, but lists none"))
@@ -580,10 +584,10 @@ mod tests {
                             let found: Vec<_> = held
                                 .records
                                 .iter()
-                                .filter(|(_, (z, n, c))| {
-                                    *z == zone && Some(n) == q.get("name") && Some(c) == q.get("content")
+                                .filter(|(_, (z, n, _))| {
+                                    *z == zone && Some(n) == q.get("name")
                                 })
-                                .map(|(id, (_, n, c))| serde_json::json!({ "id": id, "name": n, "content": c }))
+                                .map(|(id, (_, n, c))| serde_json::json!({ "id": id, "name": n, "content": format!("\"{c}\"") }))
                                 .collect();
                             ok(serde_json::json!(found))
                         },
