@@ -280,6 +280,8 @@
   let lookupTables = $derived([...sharedLookupTables, ...ownLookupTables]);
   let grokPatterns = $derived([...sharedGrokPatterns, ...ownGrokPatterns]);
   let configLoaded = $state(false);
+  /** The bundle's read has answered, loaded or not: the preview waits for it. */
+  let configRead = $state(false);
 
   // The trail names a pipeline by what was last saved, here and on a locked
   // test reached from here (`nav.ts`, `trail`).
@@ -289,21 +291,23 @@
   });
   // Read on the same branch as the scope's own, so the two halves are one
   // branch's view.
-  Promise.all([getConfig(), sharedConfig()]).then(([res, shared]) => {
-    if (res.config) {
-      ownPipelines = res.config.pipelines.filter((p) => p.id !== id);
-      ownLookupTables = res.config.lookupTables;
-      ownGrokPatterns = res.config.grokPatterns ?? [];
-      ownSchemas = res.config.schemas ?? [];
-    }
-    if (shared) {
-      sharedPipelines = shared.pipelines;
-      sharedLookupTables = shared.lookupTables;
-      sharedGrokPatterns = shared.grokPatterns ?? [];
-      sharedSchemas = shared.schemas ?? [];
-    }
-    configLoaded = true;
-  });
+  Promise.all([getConfig(), sharedConfig()])
+    .then(([res, shared]) => {
+      if (res.config) {
+        ownPipelines = res.config.pipelines.filter((p) => p.id !== id);
+        ownLookupTables = res.config.lookupTables;
+        ownGrokPatterns = res.config.grokPatterns ?? [];
+        ownSchemas = res.config.schemas ?? [];
+      }
+      if (shared) {
+        sharedPipelines = shared.pipelines;
+        sharedLookupTables = shared.lookupTables;
+        sharedGrokPatterns = shared.grokPatterns ?? [];
+        sharedSchemas = shared.schemas ?? [];
+      }
+      configLoaded = true;
+    })
+    .finally(() => (configRead = true));
 
   // Enforced only once the tables have loaded: before that every
   // reference would read as unknown.
@@ -847,7 +851,8 @@
         ownPipelines,
         ownLookupTables,
         ownGrokPatterns,
-        ownSchemas,
+        // The leader holds the rows to the branch's schemas: a standard's megabytes are not sent with every edit.
+        [],
         produces,
       ),
     );
@@ -921,7 +926,7 @@
           ownPipelines,
           ownLookupTables,
           ownGrokPatterns,
-          ownSchemas,
+          [],
           produces,
         ),
       ),
@@ -967,10 +972,8 @@
   $effect(() => {
     const key = signature;
     void selectedSample;
-    // A run before the scope's schemas load finds the produced ones missing: a standard's takes seconds to load.
-    void ownSchemas;
-    // A viewer is shown the steps alone.
-    if (readOnly || !autoRun || key === '') return;
+    // A viewer is shown the steps alone. A run before the scope's bundle loads finds the pipelines it calls missing.
+    if (readOnly || !autoRun || key === '' || !configRead) return;
     const timer = setTimeout(() => void run(), RECOMPUTE_MS);
     return () => clearTimeout(timer);
   });
