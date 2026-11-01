@@ -263,6 +263,10 @@ them.
 **S15 — Sending credentials stay sealed.** A mail password or a webhook's
 secret is set once and never read back, as any credential is (S8).
 
+**S16 — Quiet during planned work.** While I restart or move things on
+purpose, the people who would be told are not, and what is still wrong
+when I am done is told then.
+
 ## Groups
 
 **G5 — Bring your own git.** As an administrator, I want the option of
