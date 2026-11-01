@@ -829,11 +829,12 @@ fn refused_push(branch: &str) -> crate::logs::Noted {
     )
 }
 
-/// Whether two of git's failures say the same thing. curl's text says how long its connect took, which differs
-/// from one try to the next where refusing a connect takes time, as it does on Windows.
+/// Whether two of git's failures say the same thing. curl's text says how long it took, and on a timeout how much
+/// came, which differ from one try to the next where refusing a connect takes time, as it does on Windows.
 fn same_failure(a: &str, b: &str) -> bool {
-    static TOOK: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r" after \d+ ms").unwrap());
+    static TOOK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r" after \d+ (ms|milliseconds)( with \d+ (out of \d+ )?bytes received)?").unwrap()
+    });
     TOOK.replace_all(a, "") == TOOK.replace_all(b, "")
 }
 
@@ -1947,6 +1948,9 @@ mod tests {
         };
         assert!(same_failure(&at(0), &at(2041)));
         assert!(!same_failure(&at(0), "unable to access: Could not resolve host"));
+        let timed_out =
+            |ms: u32, got: u32| format!("Operation timed out after {ms} milliseconds with {got} bytes received");
+        assert!(same_failure(&timed_out(30000, 0), &timed_out(30004, 12)));
     }
 
     #[test]
