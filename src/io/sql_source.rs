@@ -522,11 +522,7 @@ impl<D: Driver + 'static> SqlSource<D> {
             // retried like any other. The driver is kept: a connection it left broken is opened again on its next run.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| driver.run(&statement, &values)))
                 .unwrap_or_else(|panic| {
-                    let said = panic
-                        .downcast_ref::<&str>()
-                        .map(|s| s.to_string())
-                        .or_else(|| panic.downcast_ref::<String>().cloned())
-                        .unwrap_or_default();
+                    let said = crate::logs::panic_text(&*panic);
                     Err(format!("the driver panicked running the statement: {said}"))
                 });
             // The source may be gone; the answer then has no one to go to.

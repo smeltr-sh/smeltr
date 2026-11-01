@@ -185,12 +185,7 @@ fn log_panics() {
                     .downcast_ref::<crate::core::buffer::OverBudget>()
                     .is_none()
             {
-                let panic = info
-                    .payload()
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| info.payload().downcast_ref::<String>().cloned())
-                    .unwrap_or_default();
+                let panic = panic_text(info.payload());
                 let thread = std::thread::current();
                 tracing::error!(
                     target: "process.panicked",
@@ -535,6 +530,16 @@ pub fn report_losses() {
             tracing::info!(target: "logs.events_kept_again", "no log event has been lost since the last report");
         });
     }
+}
+
+/// What a panic said, for a line or an error: its message when it has one, as `panic!` and `expect` leave it,
+/// and nothing otherwise.
+pub fn panic_text(payload: &dyn std::any::Any) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_default()
 }
 
 /// Run `f` with everything this thread reports marked console-only.

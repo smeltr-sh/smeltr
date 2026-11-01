@@ -2801,11 +2801,7 @@ fn arrived_unchecked(
 /// starts anything, so a commit that panics it is refused like any other rather than ending it.
 fn unpanicked<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)).unwrap_or_else(|panic| {
-        let said = panic
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| panic.downcast_ref::<String>().cloned())
-            .unwrap_or_default();
+        let said = crate::logs::panic_text(&*panic);
         Err(format!("reading the commit panicked: {said}"))
     })
 }

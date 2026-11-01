@@ -1033,11 +1033,7 @@ impl Transform {
                 // what became of the batch.
                 self.metrics
                     .incr("smeltr_batches_poisoned_total", &[("source", source_label.as_str())], 1);
-                let panic = panic
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                    .unwrap_or_default();
+                let panic = crate::logs::panic_text(&*panic);
                 tracing::error!(
                     target: "runtime.batch_poisoned",
                     subject = %source_label,
