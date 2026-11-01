@@ -544,7 +544,7 @@ test('a review sets apart the samples no test uses, which the deploy leaves out'
   expect(main.samples).toEqual([]);
 });
 
-test('a review names the first three objects it touches, and a button shows the rest', async ({
+test('a review and History name the first three objects a change touches, and a button shows the rest', async ({
   admin,
   api,
   leader,
@@ -572,4 +572,13 @@ test('a review names the first three objects it touches, and a button shows the 
   await more.click();
   await expect(more).toHaveCount(0);
   await expect(header).toContainText('schemas');
+
+  await api.deploy('five-files');
+  await goto(admin, leader, '#/changes/history');
+  const files = historyRow(admin, 'Touch five files').locator('.change');
+  const rest = files.getByRole('button', { name: '2 more', exact: true });
+  await expect(files).not.toContainText('schemas');
+  await rest.click();
+  await expect(rest).toHaveCount(0);
+  await expect(files).toContainText('schemas');
 });

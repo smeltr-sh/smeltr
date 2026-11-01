@@ -120,21 +120,10 @@ export function isPipelinePath(path: string): boolean {
   return /^(?:groups\/[^/]+\/|shared\/)?pipelines\/[^/]+\.json$/.test(path);
 }
 
-/** The first `limit` of `paths`, named as objects, with a count of the rest. `label` names a path when it
- * can -- a pipeline file by its pipeline's name, on a page that holds the names -- and a path it does not
- * name is its `shortPath`, except that every unnamed pipeline file is one entry, `pipeline` or `2 pipelines`,
- * where the first of them stood. */
-export function pathSummary(
-  paths: string[],
-  label: (path: string) => string | undefined = () => undefined,
-  limit = 3,
-): string {
-  const { text, more } = pathParts(paths, label, limit);
-  return more > 0 ? `${text} · ${more} more` : text;
-}
-
-/** `pathSummary`'s two parts, for a page that shows the rest on a click: the objects named, and how many
- * files it leaves out. */
+/** The first `limit` of `paths`, named as objects, and how many files it leaves out. `label` names a path
+ * when it can -- a pipeline file by its pipeline's name, on a page that holds the names -- and a path it
+ * does not name is its `shortPath`, except that every unnamed pipeline file is one entry, `pipeline` or
+ * `2 pipelines`, where the first of them stood. */
 export function pathParts(
   paths: string[],
   label: (path: string) => string | undefined = () => undefined,
