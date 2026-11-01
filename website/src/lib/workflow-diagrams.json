@@ -1099,7 +1099,7 @@
             "y": 20,
             "w": 220,
             "title": "Schema",
-            "detail": ["Fields · types · required"]
+            "detail": ["Fields · types · requirement"]
           },
           {
             "x": 660,
@@ -1141,7 +1141,7 @@
             "y": 150,
             "w": 240,
             "title": "Schema",
-            "detail": ["Fields · types · required"]
+            "detail": ["Fields · types · requirement"]
           },
           {
             "x": 60,

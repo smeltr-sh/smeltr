@@ -29,8 +29,8 @@
 
   <h2 id="how">How schemas work</h2>
   <p>
-    A schema lists fields, their types, and which are required. It sits between a pipeline and what
-    reads its records.
+    A schema lists fields, their types, and whether each is required, recommended or optional. It
+    sits between a pipeline and what reads its records.
   </p>
   <WorkflowDiagram kind="schemas" />
   <p>A pipeline names the schemas it produces. A destination may name the schemas it accepts.</p>
@@ -79,7 +79,9 @@
       <strong>Import</strong> runs one of your pipelines over a file in any other format. Each
       record the pipeline writes becomes a field: <code>field</code> and <code>type</code>, and
       optionally
-      <code>required</code>, <code>description</code> and <code>elasticsearch</code>.
+      <code>requirement</code>, <code>description</code> and <code>elasticsearch</code>. A
+      <code>requirement</code> is <code>required</code>, <code>recommended</code> or
+      <code>optional</code>. A field with none is optional.
     </li>
     <li><strong>Empty schema</strong> starts with no fields.</li>
   </ul>
@@ -91,8 +93,9 @@
     caption="Each way a schema can start."
   />
   <p>
-    Select a schema's field count to open its fields. Change them with <strong>Edit JSON</strong>. A
-    schema in
+    Select a schema's field count to open its fields. Choose each field's requirement in the table,
+    or edit the schema with <strong>Edit JSON</strong>. A starred field is required, and one marked
+    ° is recommended. A schema in
     <code>shared/</code> can be named by every group.
   </p>
 
@@ -104,6 +107,21 @@
     <a href="https://github.com/elastic/ecs/tree/main/generated"><code>generated/</code></a> folder
     of the <a href="https://github.com/elastic/ecs">ECS repository</a>, at that release. Each field
     keeps the Elasticsearch type ECS gives it, such as <code>ip</code> for an address.
+  </p>
+  <p>
+    Under <strong>Requirements</strong>, choose whose rules the fields follow.
+    <strong>ECS</strong> requires <code>@timestamp</code> and <code>ecs.version</code>, and
+    recommends
+    <a href="https://www.elastic.co/guide/en/ecs/current/ecs-guidelines.html#_ecs_field_levels"
+      >ECS's core fields</a
+    >. <strong>Elastic Security</strong> requires <code>@timestamp</code>, <code>ecs.version</code>,
+    <code>event.kind</code>, <code>event.category</code> and <code>event.type</code>. It recommends
+    the other fields its
+    <a href="https://www.elastic.co/guide/en/security/current/siem-field-reference.html"
+      >field reference</a
+    >
+    lists, such as <code>host.name</code> and <code>source.ip</code>. Choose Elastic Security if the
+    records feed Elastic Security.
   </p>
 
   <h2 id="ocsf">Read an OCSF class</h2>
@@ -135,14 +153,15 @@
   <h2 id="csv">Read a CSV of fields</h2>
   <p>
     Choose <strong>CSV of fields</strong> and the file. The file needs a header row. Choose the column
-    that holds each field's name and the one that holds its type. Columns for required, description, example
-    and elasticsearch are optional. If a type value is not one Smeltr knows, choose how to read it.
+    that holds each field's name and the one that holds its type. Columns for its requirement (required,
+    recommended or optional, or yes and no), description, example value and Elasticsearch type are optional.
+    If a type value is not one Smeltr knows, choose how to read it.
   </p>
   <ProductScreenshot
     source="schema-csv"
     height={1800}
-    crop={{ x: 600, y: 352, width: 1680, height: 1100 }}
-    alt="The New schema from a CSV of fields dialog: the columns for field, type, required and description, and how each type reads."
+    crop={{ x: 606, y: 352, width: 1668, height: 1100 }}
+    alt="The New schema from a CSV of fields dialog: the columns for field, type, requirement and description, and how each type reads."
     caption="A CSV of fields, with the column each part comes from and how each type reads."
   />
 
@@ -181,12 +200,17 @@
     In review, the change's <strong>Schemas</strong> tab lists the findings by pipeline, with the step
     that wrote each field. It shows only what the change adds. None of them block the deploy.
   </p>
+  <p>
+    A recommended field the records lack is not a finding. The editor tells you of it under the
+    steps, and the bar still says <strong>the rows fit</strong>. In review, that note comes after
+    the pipeline's findings.
+  </p>
   <ProductScreenshot
     source="schema-review"
     height={1800}
-    crop={{ x: 446, y: 410, width: 980, height: 640 }}
-    alt="A change's Schemas tab with two findings for the logins pipeline."
-    caption="Two findings in review: fields Login requires, and a destination that accepts Audit."
+    crop={{ x: 446, y: 410, width: 980, height: 700 }}
+    alt="A change's Schemas tab with two findings for the logins pipeline, and a field Login recommends."
+    caption="Two findings in review: fields Login requires, and a destination that accepts Audit. After them, a field Login recommends."
   />
 
   <h2 id="export">Export an Elasticsearch mapping</h2>

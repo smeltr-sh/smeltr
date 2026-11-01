@@ -58,7 +58,7 @@ fn from_csv(text: &str) -> Result<Vec<Ecs>, String> {
         Ok(Ecs {
             requirement: requirement(REQUIRED.contains(&name.as_str()), &cell(level)),
             name,
-            ty: cell(ty),
+            ty: cell(ty).to_ascii_lowercase(),
             array: cell(normalization).split(',').any(|n| n.trim() == "array"),
             description: cell(description),
             example: cell(example),
@@ -78,7 +78,7 @@ fn from_yaml(text: &str) -> Result<Vec<Ecs>, String> {
         .iter()
         .map(|(name, f)| {
             let text = |key: &str| f.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
-            let ty = text("type");
+            let ty = text("type").to_ascii_lowercase();
             if ty.is_empty() {
                 return Err(format!("`{name}`: no `type`"));
             }
@@ -280,6 +280,17 @@ mod tests {
         assert_eq!(messages.ty, "variant");
         assert_eq!(messages.elasticsearch, mapped(json!({ "type": "flattened" })));
         assert!(messages.example.contains("Weather in Paris?"));
+    }
+
+    #[test]
+    fn an_ecs_type_reads_in_any_case() {
+        let fields = read("source.ip:\n  type: IP\nsource.domain:\n  type: Keyword\n").unwrap();
+        assert_eq!(get(&fields, "source.ip").elasticsearch, mapped(json!({ "type": "ip" })));
+        assert_eq!(
+            get(&fields, "source.domain").elasticsearch,
+            None,
+            "a keyword is a str's own mapping"
+        );
     }
 
     #[test]

@@ -1,214 +1,40 @@
-// The name the branch prompt offers when a first edit starts on `main`. A fresh one each time, so two
-// people who both accept it start branches of their own rather than landing on one another's.
+import { slugify } from './slugify';
 
-const ADJECTIVES = [
-  'absurd',
-  'bashful',
-  'befuddled',
-  'bewildered',
-  'blustery',
-  'bouncy',
-  'bumbling',
-  'caffeinated',
-  'cantankerous',
-  'cheeky',
-  'chonky',
-  'chubby',
-  'clumsy',
-  'confused',
-  'cranky',
-  'crunchy',
-  'dapper',
-  'dizzy',
-  'dopey',
-  'dramatic',
-  'drowsy',
-  'eccentric',
-  'fancy',
-  'fidgety',
-  'flamboyant',
-  'fluffy',
-  'flustered',
-  'frazzled',
-  'frumpy',
-  'fuzzy',
-  'gangly',
-  'giddy',
-  'giggly',
-  'goofy',
-  'gregarious',
-  'grouchy',
-  'grumpy',
-  'hangry',
-  'hapless',
-  'hasty',
-  'hiccuping',
-  'hungry',
-  'impatient',
-  'indignant',
-  'jazzy',
-  'jiggly',
-  'jolly',
-  'jumpy',
-  'kooky',
-  'lanky',
-  'lumpy',
-  'majestic',
-  'melodramatic',
-  'mischievous',
-  'moody',
-  'nervous',
-  'noisy',
-  'nosy',
-  'overcaffeinated',
-  'peckish',
-  'perplexed',
-  'persnickety',
-  'pompous',
-  'portly',
-  'prancing',
-  'puzzled',
-  'quirky',
-  'rambunctious',
-  'rowdy',
-  'rumpled',
-  'sassy',
-  'scruffy',
-  'shifty',
-  'silly',
-  'sleepy',
-  'smug',
-  'sneaky',
-  'snooty',
-  'soggy',
-  'sparkly',
-  'spunky',
-  'squeaky',
-  'squishy',
-  'startled',
-  'sulky',
-  'suspicious',
-  'swaggering',
-  'tipsy',
-  'tubby',
-  'twitchy',
-  'unbothered',
-  'upbeat',
-  'wacky',
-  'waddling',
-  'whimsical',
-  'wiggly',
-  'wobbly',
-  'woozy',
-  'yodeling',
-  'zany',
-  'zealous',
-];
+// The name the branch prompt offers when a first edit starts on `main`: who is editing and what the edit is
+// about, as `owner/what-they-are-doing` (`check_branch_name`), so the Branches page answers both at a glance.
+// A name already taken gets a number, so two people who both accept it start branches of their own rather
+// than landing on one another's.
 
-const ANIMALS = [
-  'aardvark',
-  'albatross',
-  'alpaca',
-  'anteater',
-  'armadillo',
-  'axolotl',
-  'baboon',
-  'badger',
-  'beaver',
-  'bison',
-  'blobfish',
-  'bullfrog',
-  'camel',
-  'capybara',
-  'caribou',
-  'chameleon',
-  'chinchilla',
-  'chipmunk',
-  'cockatoo',
-  'coyote',
-  'crab',
-  'dingo',
-  'dodo',
-  'donkey',
-  'dugong',
-  'echidna',
-  'eel',
-  'emu',
-  'ferret',
-  'flamingo',
-  'gecko',
-  'gerbil',
-  'gibbon',
-  'gnu',
-  'goat',
-  'goose',
-  'gopher',
-  'hamster',
-  'hedgehog',
-  'heron',
-  'hippo',
-  'hyena',
-  'ibex',
-  'iguana',
-  'jackal',
-  'jellyfish',
-  'kakapo',
-  'kangaroo',
-  'kiwi',
-  'koala',
-  'kookaburra',
-  'lemur',
-  'llama',
-  'lobster',
-  'loris',
-  'manatee',
-  'marmot',
-  'meerkat',
-  'mole',
-  'mongoose',
-  'moose',
-  'narwhal',
-  'newt',
-  'numbat',
-  'ocelot',
-  'octopus',
-  'okapi',
-  'opossum',
-  'ostrich',
-  'otter',
-  'owl',
-  'panda',
-  'pangolin',
-  'parrot',
-  'pelican',
-  'penguin',
-  'platypus',
-  'porcupine',
-  'possum',
-  'puffin',
-  'quail',
-  'quokka',
-  'raccoon',
-  'reindeer',
-  'skunk',
-  'sloth',
-  'squid',
-  'tapir',
-  'toucan',
-  'turkey',
-  'vulture',
-  'wallaby',
-  'walrus',
-  'warthog',
-  'weasel',
-  'wildebeest',
-  'wombat',
-  'yak',
-  'zebra',
-];
+/** What a write to `url` changes, in a few words: `sources`, `pipeline-fortigate`, `network-routes`.
+ * The worker group leads when it is not the shared configuration. */
+export function editedBy(url: string): string {
+  const path = url.split('?')[0].split('/').filter(Boolean).map(decodeURIComponent);
+  // /api/areas/<area>/<kind>[/<id>...]
+  if (path[1] === 'areas') {
+    const [area, kind = '', ...rest] = path.slice(2);
+    const within = kind === 'files' ? (rest.at(-1) ?? 'files').replace(/\.[^.]*$/, '') : kind;
+    const what =
+      kind !== 'files' && rest.length ? `${kind.replace(/s$/, '')}-${rest.join('-')}` : within;
+    return [area === 'shared' ? '' : area, what].filter(Boolean).join('-');
+  }
+  // /api/<kind>[/<id>]
+  const [kind = '', id] = path.slice(1);
+  return id ? `${kind.replace(/s$/, '')}-${id}` : kind;
+}
 
-/** Something like `caffeinated-walrus`. `random` stands in for `Math.random`. */
-export function funnyBranchName(random: () => number = Math.random): string {
-  const pick = (words: string[]) => words[Math.floor(random() * words.length)];
-  return `${pick(ADJECTIVES)}-${pick(ANIMALS)}`;
+/** Something like `dana/routes`, or `dana/routes-2` when `dana/routes` is taken. Just `routes` when nobody is
+ * named. */
+export function suggestBranchName(who: string, what: string, taken: Iterable<string>): string {
+  const base =
+    [slugify(who), slugify(what).slice(0, 60).replace(/-+$/, '')].filter(Boolean).join('/') ||
+    'edit';
+  const names = new Set(taken);
+  if (!names.has(base)) return base;
+  for (let n = 2; ; n++) if (!names.has(`${base}-${n}`)) return `${base}-${n}`;
+}
+
+/** Whose branch `name` is, by the owner/what convention: what comes before its first `/`, or nothing. */
+export function ownerOf(name: string): string {
+  const slash = name.indexOf('/');
+  return slash < 0 ? '' : name.slice(0, slash);
 }
