@@ -388,25 +388,47 @@ impl LoadedSystem {
                     });
                 }
             }
-            for dest in route.deliver.iter().flat_map(|rule| &rule.to) {
-                let Some(accepts) = self.accepts.get(dest) else {
-                    continue;
-                };
-                if accepts.iter().any(|a| produces.iter().any(|p| p.id == a.id)) {
-                    continue;
-                }
-                let name = (self.topology.destinations.iter().find(|d| d.id == *dest)).map_or("", |d| d.name.as_str());
-                let titles: Vec<&str> = accepts.iter().map(|a| a.title.as_str()).collect();
-                push(SchemaFinding {
-                    pipeline: pipeline.clone(),
-                    step: None,
-                    message: format!(
-                        "destination {name:?} accepts {}, but pipeline {pipeline:?} produces no schema it accepts",
-                        titles.join(", ")
-                    ),
-                    breaks: true,
-                    recommended: None,
-                });
+            let produces: Vec<&str> = produces.iter().map(|s| s.id.as_str()).collect();
+            for f in self.refused_by_destinations(&pipeline, &produces) {
+                push(f);
+            }
+        }
+        out
+    }
+
+    /// A finding for each destination the routes of pipeline `id` deliver to that accepts none of `produces`, the ids
+    /// of the schemas it produces. Review tells these with the pipeline's own; the pipeline editor's preview with the
+    /// ones it is editing, against the branch's routes.
+    pub fn refused_by_destinations(&self, id: &str, produces: &[&str]) -> Vec<SchemaFinding> {
+        let Some(pipeline) = self.pipeline_ids.iter().position(|p| p == id) else {
+            return Vec::new();
+        };
+        let named = (self.pipelines.iter().find(|p| p.id == pipeline)).map_or(id, |p| p.name.as_str());
+        let mut out: Vec<SchemaFinding> = Vec::new();
+        let delivered = (self.topology.routes.iter())
+            .filter(|route| route.pipeline == pipeline)
+            .flat_map(|route| route.deliver.iter().flat_map(|rule| &rule.to));
+        for dest in delivered {
+            let Some(accepts) = self.accepts.get(dest) else {
+                continue;
+            };
+            if accepts.iter().any(|a| produces.contains(&a.id.as_str())) {
+                continue;
+            }
+            let name = (self.topology.destinations.iter().find(|d| d.id == *dest)).map_or("", |d| d.name.as_str());
+            let titles: Vec<&str> = accepts.iter().map(|a| a.title.as_str()).collect();
+            let found = SchemaFinding {
+                pipeline: id.to_string(),
+                step: None,
+                message: format!(
+                    "Pipeline {named} produces no schema that destination {name} accepts ({}).",
+                    titles.join(", ")
+                ),
+                breaks: true,
+                recommended: None,
+            };
+            if !out.contains(&found) {
+                out.push(found);
             }
         }
         out
@@ -691,7 +713,7 @@ mod tests {
                 (
                     "p".to_string(),
                     None,
-                    "destination \"out\" accepts Login, but pipeline \"p\" produces no schema it accepts".to_string(),
+                    "Pipeline p produces no schema that destination out accepts (Login).".to_string(),
                     true
                 ),
             ]

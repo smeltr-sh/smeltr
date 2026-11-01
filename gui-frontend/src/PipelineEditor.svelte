@@ -13,7 +13,7 @@
   import StateMark from './StateMark.svelte';
   import InlineError from './InlineError.svelte';
   import { tick, untrack } from 'svelte';
-  import Recommends from './Recommends.svelte';
+  import PipelineFindings from './PipelineFindings.svelte';
   import Ticked from './Ticked.svelte';
   import { loadExpanded, opening, saveExpanded } from './StepEditor.svelte';
   import { store, stored } from './stored';
@@ -1500,31 +1500,10 @@
           />
         </div>
 
-        {#if unplacedWarnings.length > 0}
-          <div class="unplaced-warnings" role="status">
-            {#each unplacedWarnings as w, n (n)}
-              <div class="unplaced-warning">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
-                  <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
-                  <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
-                </svg>
-                <span><Ticked text={w.message} /></span>
-              </div>
-            {/each}
-          </div>
-        {/if}
-
-        {#if recommendedBySchema.size > 0}
-          <div class="recommended" role="status">
-            {#each recommendedBySchema as [schema, paths] (schema)}
-              <div class="recommended-note">
-                <span aria-hidden="true">ⓘ</span>
-                <span><Recommends {schema} fields={paths} /></span>
-              </div>
-            {/each}
-          </div>
-        {/if}
+        <PipelineFindings
+          warnings={unplacedWarnings.map((w) => w.message)}
+          recommended={[...recommendedBySchema].map(([schema, fields]) => ({ schema, fields }))}
+        />
 
         {#if !readOnly}
           <div class="run-row">
@@ -1816,56 +1795,5 @@
   .editor {
     min-width: 0;
     overflow-x: auto;
-  }
-
-  /* A warning about the whole pipeline, under its steps: the step-placed ones' look, in a box of its own. */
-  .unplaced-warnings {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    margin-top: 0.6rem;
-    padding: 0.55rem 0.7rem;
-    background: color-mix(in oklab, var(--warn) 12%, var(--panel));
-    border-radius: var(--radius);
-  }
-
-  .unplaced-warning {
-    display: flex;
-    gap: 0.5rem;
-    align-items: flex-start;
-    font-size: var(--text-note);
-    color: var(--warn);
-    line-height: 1.45;
-  }
-
-  .unplaced-warning svg {
-    width: 15px;
-    height: 15px;
-    flex-shrink: 0;
-    margin-top: 0.1rem;
-  }
-
-  .unplaced-warning .cutout {
-    fill: var(--field);
-  }
-
-  /* What the schemas recommend and the rows lack: told under the warnings, and no warning itself. */
-  .recommended {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    margin-top: 0.4rem;
-    padding: 0.55rem 0.7rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-  }
-
-  .recommended-note {
-    display: flex;
-    gap: 0.5rem;
-    align-items: flex-start;
-    font-size: var(--text-note);
-    color: var(--dim);
-    line-height: 1.45;
   }
 </style>

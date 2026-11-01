@@ -617,6 +617,7 @@
             {testSummaryByKey}
             {testsLoading}
             threads={threadList}
+            {schemaFindings}
             onundone={refresh}
             ontimeline={loadTimeline}
             onobjects={(c) => (objects = c)}

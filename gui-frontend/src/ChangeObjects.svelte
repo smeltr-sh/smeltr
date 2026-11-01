@@ -25,6 +25,7 @@
     type CommentAnchor,
     type TimelineEvent,
     type UndoTarget,
+    type SchemaFindingDto,
   } from './api';
   import {
     LOOKUPS,
@@ -55,6 +56,8 @@
   import ChangeFiles from './ChangeFiles.svelte';
   import CommentComposer from './CommentComposer.svelte';
   import ThreadView from './ThreadView.svelte';
+  import WarningLine from './WarningLine.svelte';
+  import PipelineFindings from './PipelineFindings.svelte';
   import SortButton from './SortButton.svelte';
   import { TableSort } from './sort.svelte';
   import { anchorLabel, elsewhere, threadsOnObject, type Thread } from './threads';
@@ -66,6 +69,7 @@
     testSummaryByKey,
     testsLoading,
     threads,
+    schemaFindings,
     onundone,
     ontimeline,
     onobjects,
@@ -78,6 +82,8 @@
     testsLoading: boolean;
     /** The change's comment threads. */
     threads: Thread[];
+    /** Where the rows of the change's pipelines break their schemas at the branch's tip (Schemas tab). */
+    schemaFindings: SchemaFindingDto[];
     /** An undo landed: the branch has a new head. */
     onundone: () => void;
     /** A comment, reply, resolve or reopen landed: the timeline has it. */
@@ -99,6 +105,38 @@
     if (!save?.commit) return { from: branch.base, to: branch.head, whole: true };
     return { from: save.parent ?? branch.base, to: save.commit, whole: false };
   });
+
+  /** The schema findings of pipeline card `c`. They are of the branch's tip, so only the whole change shows them. */
+  function findingsOf(c: ObjectChange): SchemaFindingDto[] {
+    if (!span.whole || c.section !== 'pipelines' || c.status === 'removed') return [];
+    return schemaFindings.filter((f) => f.group === c.scope && f.pipeline === c.id);
+  }
+
+  /** The ids of `steps` and of the steps inside them. */
+  function stepIds(steps: StepChange[]): Set<string> {
+    const out = new Set<string>();
+    const walk = (list: StepChange[]) => {
+      for (const s of list) {
+        if (s.id !== undefined) out.add(s.id);
+        walk(s.then ?? []);
+        walk(s.else ?? []);
+      }
+    };
+    walk(steps);
+    return out;
+  }
+
+  /** What card `c` shows under its steps: the findings no step it shows caused, and the recommended fields. */
+  function belowSteps(c: ObjectChange) {
+    const found = findingsOf(c);
+    const shown = stepIds(c.steps ?? []);
+    return {
+      warnings: found
+        .filter((f) => f.breaks && !(f.step && shown.has(f.step)))
+        .map((f) => f.message),
+      recommended: found.flatMap((f) => (!f.breaks && f.recommended ? [f.recommended] : [])),
+    };
+  }
 
   let scopes = $derived([...new Set(branch.touches.map(scopeOf))].sort());
 
@@ -476,6 +514,14 @@
         {#if step.status !== 'same' && step.summary}
           <div class="step-body mono" class:struck={step.status === 'removed'}>{step.summary}</div>
         {/if}
+        {#if step.id !== undefined && step.status !== 'removed'}
+          {@const found = findingsOf(c).filter((f) => f.breaks && f.step === step.id)}
+          {#if found.length > 0}
+            <div class="step-body">
+              {#each found as f, n (n)}<WarningLine message={f.message} />{/each}
+            </div>
+          {/if}
+        {/if}
         {#if step.id !== undefined}
           {@render threadsOn(c, step.id)}
         {/if}
@@ -585,6 +631,12 @@
       {/if}
       {#if c.steps && isSectionChange(c)}
         {@render stepList(c, c.steps)}
+      {/if}
+      {#if findingsOf(c).length > 0}
+        {@const below = belowSteps(c)}
+        <div class="card-findings">
+          <PipelineFindings warnings={below.warnings} recommended={below.recommended} />
+        </div>
       {/if}
       {#if c.rows}
         {@const moved = c.rows.filter((r) => r.status !== 'same')}
@@ -835,6 +887,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     min-width: 0;
+  }
+  .card-findings {
+    padding: 0 0.8rem 0.8rem;
+  }
+  .card-findings > :global(:first-child) {
+    margin-top: 0;
   }
   .step-body {
     border-top: 1px solid var(--border);
