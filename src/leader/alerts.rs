@@ -138,7 +138,7 @@ pub struct Failing {
     pub since: i64,
     /// When the last one did.
     pub last: i64,
-    pub message: String,
+    pub message: crate::logs::Noted,
 }
 
 /// What the leader holds about its alerts between looks.
@@ -159,7 +159,7 @@ impl Alerts {
         self.held().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
-    fn failed(&self, channel: &Channel, message: String, now: i64) {
+    fn failed(&self, channel: &Channel, message: crate::logs::Noted, now: i64) {
         let mut held = self.held();
         let since = held.get(&channel.id).map_or(now, |f| f.since);
         let failing = Failing {
@@ -543,7 +543,12 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
         match tell(state, channel, mail.as_ref(), changes).await {
             Ok(()) => state.alerts.took(&channel.id),
             Err(why) => {
-                tracing::warn!(channel = %channel.name, "could not send to the alert channel: {why}");
+                let why = crate::noted!(
+                    target: "alerts.send_failed",
+                    "an alert channel did not take what was sent",
+                    why,
+                    channel = %channel.name
+                );
                 state.alerts.failed(channel, why, now);
             }
         }
@@ -1140,8 +1145,16 @@ mod tests {
     fn a_channel_fails_from_its_first_failed_send_until_one_is_taken() {
         let alerts = Alerts::default();
         let c = channel(None);
-        alerts.failed(&c, "the webhook answered 500".into(), 5);
-        alerts.failed(&c, "the webhook answered 503".into(), 9);
+        alerts.failed(
+            &c,
+            crate::noted!(target: "test", "failed", "the webhook answered 500".to_string()),
+            5,
+        );
+        alerts.failed(
+            &c,
+            crate::noted!(target: "test", "failed", "the webhook answered 503".to_string()),
+            9,
+        );
         let failing = alerts.failing().remove("c1").unwrap();
         assert_eq!(
             (failing.since, failing.last, failing.message.as_str()),
