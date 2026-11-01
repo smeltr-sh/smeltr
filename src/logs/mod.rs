@@ -173,7 +173,7 @@ impl Relog {
 pub fn steady(text: &str) -> std::borrow::Cow<'_, str> {
     static VARYING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
-            r"(, \d+ identical error\(s\) suppressed)|( ?after \d+ ?(milliseconds|ms)( with \d+ (out of \d+ )?bytes received)?)",
+            r"(, \d+ identical error\(s\) suppressed)|( ?after \d+ ?(milliseconds|ms)\b( with \d+ (out of \d+ )?bytes received)?)",
         )
         .unwrap()
     });
