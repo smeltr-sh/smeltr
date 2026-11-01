@@ -707,8 +707,7 @@
                   ><SortButton sort={workerSort} key="worker">Worker</SortButton></th
                 >
                 <th aria-sort={workerSort.aria('group')}
-                  ><SortButton sort={workerSort} key="group"
-                    ><span class="glyphed"><WorkerGroupIcon />Group</span></SortButton
+                  ><SortButton sort={workerSort} key="group"><WorkerGroupIcon />Group</SortButton
                   ></th
                 >
                 <th aria-sort={workerSort.aria('kind')}
@@ -909,9 +908,7 @@
             <thead>
               <tr>
                 <th aria-sort={codeSort.aria('group')}
-                  ><SortButton sort={codeSort} key="group"
-                    ><span class="glyphed"><WorkerGroupIcon />Group</span></SortButton
-                  ></th
+                  ><SortButton sort={codeSort} key="group"><WorkerGroupIcon />Group</SortButton></th
                 >
                 <th aria-sort={codeSort.aria('kind')}
                   ><SortButton sort={codeSort} key="kind">Kind</SortButton></th
@@ -1230,12 +1227,6 @@
 </SectionShell>
 
 <style>
-  .glyphed {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-  }
-
   /* A group's color, opened from its row. */
   .toolbar {
     display: flex;

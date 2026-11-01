@@ -1146,8 +1146,7 @@
                 ><th aria-sort={rankedSort.aria('kind')}
                   ><SortButton sort={rankedSort} key="kind">Kind</SortButton></th
                 ><th aria-sort={rankedSort.aria('group')}
-                  ><SortButton sort={rankedSort} key="group"
-                    ><span class="glyphed"><WorkerGroupIcon />Group</span></SortButton
+                  ><SortButton sort={rankedSort} key="group"><WorkerGroupIcon />Group</SortButton
                   ></th
                 ><th class="num" aria-sort={rankedSort.aria('now')}
                   ><SortButton sort={rankedSort} key="now">Now, rows/s</SortButton></th
@@ -1230,12 +1229,6 @@
 </SectionShell>
 
 <style>
-  .glyphed {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-  }
-
   .rollout {
     margin-bottom: 0.75rem;
   }
