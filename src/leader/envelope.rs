@@ -133,7 +133,32 @@ impl<T: serde::Serialize> IntoResponse for Envelope<T> {
                     .into_response();
             }
         };
-        (self.status, [(header::CONTENT_TYPE, "application/json")], json).into_response()
+        let mut response = (self.status, [(header::CONTENT_TYPE, "application/json")], json).into_response();
+        if !self.succeeded() {
+            response.extensions_mut().insert(Said(
+                self.errors
+                    .iter()
+                    .map(|e| e.message.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ));
+        }
+        response
+    }
+}
+
+/// What a refused answer said, carried on the response for the layer that logs every refusal
+/// ([`log_refused`]), so it is not read back out of the body.
+#[derive(Debug, Clone)]
+pub struct Said(pub String);
+
+/// Logs a refused `/api/` call, the one place every refusal is written down: a 4xx at debug, since a caller's
+/// mistake is theirs and only worth reading when looking for it, and a 5xx at error, since that one is the leader's.
+pub fn log_refused(method: &str, path: &str, status: StatusCode, error: &str) {
+    if status.is_server_error() {
+        tracing::error!(target: "api.failed", method, path, status = status.as_u16(), error, "an API call failed");
+    } else if status.is_client_error() {
+        tracing::debug!(target: "api.refused", method, path, status = status.as_u16(), error, "an API call was refused");
     }
 }
 
@@ -352,6 +377,40 @@ impl From<super::git::GitError> for Refusal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_answer_says_why_on_the_response_and_a_good_one_does_not() {
+        let refused = Refusal::conflict("the name exists").into_response();
+        assert_eq!(
+            refused.extensions().get::<Said>().map(|s| s.0.as_str()),
+            Some("the name exists")
+        );
+        let fine = Envelope::ok(Empty).into_response();
+        assert!(fine.extensions().get::<Said>().is_none());
+    }
+
+    #[test]
+    fn a_refusal_is_logged_at_debug_and_a_failure_at_error() {
+        let seen = crate::logs::said(|| {
+            log_refused("POST", "/api/branches/x/deploy", StatusCode::CONFLICT, "a stale base");
+            log_refused(
+                "GET",
+                "/api/logs",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the store is unavailable",
+            );
+            log_refused("GET", "/api/logs", StatusCode::OK, "");
+        });
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        let field = |i: usize, k: &str| seen[i].2.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        assert_eq!((seen[0].0, seen[0].1.as_str()), (tracing::Level::DEBUG, "api.refused"));
+        assert_eq!(field(0, "status").as_deref(), Some("409"));
+        assert_eq!(field(0, "error").as_deref(), Some("a stale base"));
+        assert_eq!(field(0, "message").as_deref(), Some("an API call was refused"));
+        assert_eq!((seen[1].0, seen[1].1.as_str()), (tracing::Level::ERROR, "api.failed"));
+        assert_eq!(field(1, "path").as_deref(), Some("/api/logs"));
+        assert_eq!(field(1, "message").as_deref(), Some("an API call failed"));
+    }
 
     #[test]
     fn body_fields_sit_beside_ok_and_errors() {

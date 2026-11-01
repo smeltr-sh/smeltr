@@ -29,7 +29,7 @@ use axum::response::{IntoResponse, Response};
 use smeltr::leader::access::{Access, ByAgent, Level, given_by};
 use smeltr::leader::auth::hash_secret;
 use smeltr::leader::blocking;
-use smeltr::leader::envelope::Refusal;
+use smeltr::leader::envelope::{Refusal, Said, log_refused};
 use smeltr::leader::sessions::{Refused, Sessions};
 use smeltr::leader::store::{Actor, AuthSource, Store, StoreError, UserRecord};
 use smeltr::leader::throttle::LoginThrottle;
@@ -420,15 +420,26 @@ pub async fn uncached(req: axum::extract::Request, next: axum::middleware::Next)
 /// handler's own failure already is one. The worker family carries no envelope (`docs/architecture/api.md`), so it
 /// is left as it is.
 pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    let path = req.uri().path();
-    let enveloped = path.starts_with("/api/") && !path.starts_with("/api/worker/");
+    let path = req.uri().path().to_string();
+    let method = req.method().to_string();
+    let api = path.starts_with("/api/");
+    let enveloped = api && !path.starts_with("/api/worker/");
     let response = next.run(req).await;
+    let status = response.status();
+    if !api || !(status.is_client_error() || status.is_server_error()) {
+        return response;
+    }
+    // A handler's own refusal says why on the response (`Envelope`), and is answered as it is.
+    if let Some(said) = response.extensions().get::<Said>() {
+        log_refused(&method, &path, status, &said.0);
+        return response;
+    }
     let json = response
         .headers()
         .get(header::CONTENT_TYPE)
         .is_some_and(|t| t.as_bytes().starts_with(b"application/json"));
-    let status = response.status();
-    if !enveloped || json || !(status.is_client_error() || status.is_server_error()) {
+    if !enveloped || json {
+        log_refused(&method, &path, status, status.canonical_reason().unwrap_or_default());
         return response;
     }
     // A rejection's text is a line. Anything longer is not one, and is answered by its status alone.
@@ -440,6 +451,7 @@ pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) ->
         "" => status.canonical_reason().unwrap_or("refused").to_lowercase(),
         text => text.to_string(),
     };
+    log_refused(&method, &path, status, &message);
     refuse(status, &message)
 }
 
