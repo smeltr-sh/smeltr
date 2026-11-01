@@ -483,7 +483,7 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 0.75rem;
-    margin-top: 1.25rem;
+    margin-top: 0.75rem;
   }
   .tools + .card {
     margin-top: 0.5rem;
