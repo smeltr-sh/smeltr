@@ -201,6 +201,7 @@ arrow-select = "60"
 apache-avro = { version = "0.22", default-features = false }
 # OTLP/HTTP's protobuf bodies, decoded into the few log messages `io::otlp` declares by hand.
 prost = { version = "0.14", default-features = false, features = ["derive", "std"] }
+lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls", "rustls-no-provider", "rustls-native-certs", "builder"] }
 
 # No `[features]`: every module compiles in every build, and the role a
 # process plays is configuration (`src/bin/smeltr/main.rs`).

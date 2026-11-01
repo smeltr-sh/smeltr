@@ -1090,11 +1090,13 @@ async fn setup_leader(
         origin_hosts: hosts,
         remote: Default::default(),
         updates: Default::default(),
+        alerts: Default::default(),
         directives: Default::default(),
     };
     state.deploy_checks.set_runner(Arc::new(test_api::failing_at));
     tokio::spawn(smeltr::leader::remote::poll(state.clone()));
     tokio::spawn(smeltr::leader::updates::poll(state.clone()));
+    tokio::spawn(smeltr::leader::alerts::run(state.clone()));
     tokio::spawn(smeltr::leader::remote::push_saves(state.clone()));
     // Without a worker in this process, what the leader's threads did not raise is the leader's too.
     if !smeltr::startup_config::worker_enabled() {
@@ -1744,6 +1746,7 @@ fn stop_on_signal() {
 
 /// Never returns. Typed `()` rather than `!` so a thread can be spawned on it.
 fn exit_after_stopping() {
+    tracing::info!(target: "process.stopping", "Smeltr is stopping: a stop was requested");
     smeltr::worker::stop_before_exit();
     smeltr::logs::stop();
     service::stopped();
@@ -1891,7 +1894,7 @@ fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path:
         std::process::exit(1);
     }
     if let Some(problem) = standing.problem() {
-        tracing::error!(target: "secrets.key_unusable", path = %path.display(), "{problem}");
+        tracing::error!(target: "secrets.key_unusable", path = %path.display(), %problem, "the secrets encryption key is not usable");
     }
 }
 
@@ -1947,6 +1950,13 @@ fn admit_an_administrator(store: &dyn smeltr::leader::store::Store) {
 }
 
 async fn run_leader() {
+    tracing::info!(
+        target: "leader.starting",
+        version = smeltr::version::VERSION,
+        release = smeltr::version::RELEASE,
+        data_dir = %smeltr::startup_config::leader_data_dir().display(),
+        "the leader is starting"
+    );
     if assets::is_placeholder_only() {
         tracing::warn!(
             target: "leader.gui_missing",
@@ -2273,6 +2283,7 @@ async fn run_leader() {
             names: smeltr::startup_config::leader_certificate_names(&origin_hosts(&auth.origin)),
             from_inside: embedded_worker_reaches_us_at(&origin_hosts(&auth.origin)),
             validity: smeltr::startup_config::leader_ca_validity(),
+            ordering: acme_api::Ordering::default(),
             leader,
         })
     });

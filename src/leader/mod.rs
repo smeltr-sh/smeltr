@@ -22,6 +22,7 @@ pub mod accounts;
 pub mod acme;
 pub mod acme_dns;
 pub mod agent;
+pub mod alerts;
 pub mod auth;
 pub mod capture;
 pub mod connections;
@@ -63,14 +64,14 @@ pub mod updates;
 pub mod warnings;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Extension, Json, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 
 use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
 use envelope::{Empty, Envelope, Refusal};
@@ -104,6 +105,8 @@ pub struct AppState {
     pub remote: Arc<remote::Syncing>,
     /// The look for a newer release (`updates`), and what the last one found.
     pub updates: Arc<updates::Updates>,
+    /// What the leader holds about its alert channels between looks (`alerts`).
+    pub alerts: Arc<alerts::Alerts>,
     /// What operators have asked of workers and the workers have not yet taken.
     pub directives: Arc<directives::Directives>,
 }
@@ -216,7 +219,10 @@ fn entitled(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) ->
     {
         return names.clone();
     }
-    let names = secrets_at(&repo, &head, group_id).unwrap_or_default();
+    let names = secrets_at(&repo, &head, group_id).unwrap_or_else(|e| {
+        tracing::debug!(target: "leader.bundle_unentitled", group = %group_id, commit = %head, error = %e, "a group's bundle does not load at the deployed commit, so it is entitled to no secret");
+        Default::default()
+    });
     cache
         .0
         .lock()
@@ -439,7 +445,12 @@ async fn heartbeat(
             at_newest(
                 &entitled(&data_dir, &entitlements, &for_group),
                 // Unreadable, a beat entitles no certificate and the next one tries again.
-                &certificate_versions(&*store).unwrap_or_default(),
+                &certificate_versions(&*store).unwrap_or_else(|e| {
+                    if let Some(error) = relog(&CERTIFICATES_UNREADABLE, e) {
+                        tracing::warn!(target: "leader.certificates_unreadable", subject = %for_group, error, "the certificate versions could not be read, so this heartbeat is answered with none");
+                    }
+                    Default::default()
+                }),
             ),
             checks.findings(&data_dir),
         )
@@ -502,7 +513,12 @@ async fn heartbeat(
         let secrets = state
             .store
             .secrets_for_delivery(&entitled, &req.secret_versions)
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                if let Some(error) = relog(&SECRETS_NOT_DELIVERED, e.to_string()) {
+                    tracing::warn!(target: "leader.secrets_not_delivered", subject = %worker_id, group = %group_id, error, "the secrets a worker is entitled to could not be read, so this heartbeat delivers none");
+                }
+                Default::default()
+            });
         (captures_for, secrets)
     })
     .await
@@ -651,6 +667,9 @@ async fn ledger(
             let page = match store.ledger_page(&group, &key, after.as_deref(), LEDGER_PAGE) {
                 Ok(page) => page,
                 Err(e) => {
+                    if let Some(error) = relog(&LEDGER_UNREADABLE, e.to_string()) {
+                        tracing::warn!(target: "leader.ledger_unreadable", %group, source = %key.source, place = %key.place, error, "what a source has already read could not be listed in full, so the worker may read some of it again");
+                    }
                     let _ = pages.blocking_send(Err(std::io::Error::other(e.to_string())));
                     return;
                 }
@@ -856,10 +875,16 @@ fn read_sources(
     }
     // A group whose bundle does not load at a commit reads nothing there: its workers refuse it, and `running` keeps
     // what they read instead.
+    let mut unread = 0;
     for rev in [git::deployed(&repo), git::main_head(&repo)].into_iter().flatten() {
         for group in tree::groups_at(&repo, &rev).unwrap_or_default() {
-            let _ = add(&rev, &group);
+            if add(&rev, &group).is_err() {
+                unread += 1;
+            }
         }
+    }
+    if unread > 0 {
+        tracing::debug!(target: "leader.sources_unread", bundles = unread, "bundles that do not load were left out of what the fleet reads");
     }
     Ok(ReadSources {
         single: out,
@@ -1090,10 +1115,15 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
         &recovering,
         heartbeat_interval,
     ));
-    let (key, kept) = run_store(state.store.clone(), |s| Ok((s.key_standing()?, s.kept_certificates()?))).await?;
-    active_facts.extend(warnings::encryption_key_facts(&key));
+    let (key, kept, channels) = run_store(state.store.clone(), |s| {
+        Ok((s.key_standing()?, s.kept_certificates()?, alerts::channels(s)))
+    })
+    .await?;
+    // Only to name a channel's secret: unreadable channels are the alerts loop's to report, not every warning's.
+    let channels = channels.unwrap_or_default();
+    active_facts.extend(warnings::encryption_key_facts(&key, &channels));
     let starts = state.registry.observe_facts(&active_facts, now_ms);
-    let key_warnings = warnings::encryption_key_warnings(&key, &kept, &starts);
+    let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
     let normal_warnings =
         warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
@@ -1148,6 +1178,13 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     out.extend(warnings::certificate_expiring(&certificates, now_ms));
     out.extend(held.as_ref().map(warnings::deploy_held));
     out.extend(remote_failure.as_ref().map(warnings::remote_not_followed));
+    out.extend(
+        state
+            .alerts
+            .failing()
+            .values()
+            .map(|f| warnings::alert_channel_failing(&f.channel, f)),
+    );
     out.extend(
         newer_release
             .as_ref()
@@ -1354,6 +1391,19 @@ async fn list_warnings(
     Ok(Envelope::ok(WarningList {
         warnings: all.into_iter().filter(|w| w.visible_to(&access)).collect(),
     }))
+}
+
+/// `GET /api/metrics`: the warnings `access` may see, as Prometheus scrapes them (`warnings::as_metrics`), so an
+/// alert manager pages on what the Issues page shows. A scraper comes in as a key account, with its key.
+async fn warning_metrics(State(state): State<AppState>, Extension(access): Extension<access::Access>) -> Response {
+    match warnings_snapshot(&state).await {
+        Ok(all) => {
+            let visible: Vec<_> = all.into_iter().filter(|w| w.visible_to(&access)).collect();
+            let text = warnings::as_metrics(&visible);
+            ([(header::CONTENT_TYPE, crate::metrics::exposition::CONTENT_TYPE)], text).into_response()
+        }
+        Err(e) => Refusal::internal(e.to_string()).into_response(),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -1869,24 +1919,11 @@ pub(crate) struct EnrollResult {
 async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -> Json<EnrollResult> {
     // The enrollment code will be refused the same way however long the worker waits. Every one of these names
     // something an operator has to change: an enrollment code to mint, or an id to free.
-    let settled = |error: String| {
-        Json(EnrollResult {
-            ok: false,
-            error: Some(error),
-            retry: false,
-            token: None,
-        })
-    };
+    let subject = req.worker_id.clone();
+    let settled = |error: String| refused_enrollment(&subject, error, false);
     // This leader could not answer. The enrollment code may be perfectly good, and a worker at a first boot is racing a
     // leader that is still coming up.
-    let refuse = |error: String| {
-        Json(EnrollResult {
-            ok: false,
-            error: Some(error),
-            retry: true,
-            token: None,
-        })
-    };
+    let refuse = |error: String| refused_enrollment(&subject, error, true);
 
     let code = match req.code.parse::<crate::enrollment_code::EnrollmentCode>() {
         Ok(code) => code,
@@ -1953,6 +1990,7 @@ async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -
                 None => (false, false),
             };
             if usable {
+                tracing::info!(target: "leader.worker_enrolled", subject = %worker_id, "a worker enrolled");
                 return Json(EnrollResult {
                     ok: true,
                     error: None,
@@ -2048,6 +2086,44 @@ async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -
     }
 }
 
+/// A fault a request path meets on every request while it lasts, said once per change and on the interval
+/// (`logs::Relog`): what is due its log now, with the fault under way as `why`.
+fn relog(failing: &'static Mutex<crate::logs::Relog>, why: String) -> Option<String> {
+    failing
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .fail_due(why)
+        .map(str::to_string)
+}
+
+const fn relogged() -> Mutex<crate::logs::Relog> {
+    Mutex::new(crate::logs::Relog::new())
+}
+
+static CERTIFICATES_UNREADABLE: Mutex<crate::logs::Relog> = relogged();
+static SECRETS_NOT_DELIVERED: Mutex<crate::logs::Relog> = relogged();
+static LEDGER_UNREADABLE: Mutex<crate::logs::Relog> = relogged();
+static ROTATION_UNREADABLE: Mutex<crate::logs::Relog> = relogged();
+static ENROLLMENT_RETRIED: Mutex<crate::logs::Relog> = relogged();
+
+/// An enrollment refused, said here: the worker holding the enrollment code reads it in its own log, and an operator
+/// reading the leader's sees which worker is stuck and whether waiting will help (`retry`).
+fn refused_enrollment(subject: &str, error: String, retry: bool) -> Json<EnrollResult> {
+    // A worker told to retry does, on a backoff, and is refused the same way until this leader mends: said once
+    // per change and on the interval. A settled refusal is each worker's own, and is said each time.
+    if !retry {
+        tracing::warn!(target: "leader.enrollment_refused", %subject, %error, retry, "an enrollment was refused");
+    } else if let Some(error) = relog(&ENROLLMENT_RETRIED, error.clone()) {
+        tracing::warn!(target: "leader.enrollment_refused", %subject, error, retry, "an enrollment was refused");
+    }
+    Json(EnrollResult {
+        ok: false,
+        error: Some(error),
+        retry,
+        token: None,
+    })
+}
+
 /// Asks a heartbeating worker to end its deployment and start it again, on its next heartbeat.
 async fn restart_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Envelope {
     ask_worker(&state, &worker_id, crate::heartbeat::DirectiveAction::Restart).await
@@ -2111,6 +2187,7 @@ async fn remove_worker(State(state): State<AppState>, Path(worker_id): Path<Stri
     let now_ms = warnings::now_millis();
     match run_store(state.store.clone(), move |s| s.remove_worker(&id, now_ms)).await {
         Ok(true) => {
+            tracing::info!(target: "leader.worker_removed", subject = %worker_id, "a worker was removed");
             state.registry.forget_worker(&worker_id);
             state.directives.forget(&worker_id);
             forget::free_holds(&state, &worker_id).await;
@@ -2134,6 +2211,7 @@ async fn revoke_worker(State(state): State<AppState>, Path(worker_id): Path<Stri
     let result = run_store(state.store.clone(), move |s| s.revoke_worker_credential(&id)).await;
     match result {
         Ok(true) => {
+            tracing::info!(target: "leader.worker_revoked", subject = %worker_id, "a worker was revoked");
             forget::free_holds(&state, &worker_id).await;
             Envelope::done()
         }
@@ -2344,8 +2422,9 @@ pub struct UnopenableOut {
     pub label: String,
 }
 
-impl From<store::KeyStanding> for EncryptionKeyOut {
-    fn from(standing: store::KeyStanding) -> EncryptionKeyOut {
+impl EncryptionKeyOut {
+    /// `channels` are the alert channels, whose secrets are named for them.
+    fn new(standing: store::KeyStanding, channels: &[alerts::Channel]) -> EncryptionKeyOut {
         let (state, key_id) = match standing.key {
             store::KeyState::Absent => ("absent", None),
             store::KeyState::Held { key_id } => ("held", Some(key_id)),
@@ -2372,7 +2451,7 @@ impl From<store::KeyStanding> for EncryptionKeyOut {
                     },
                     store::Unopenable::Setting(name) => UnopenableOut {
                         kind: "setting",
-                        label: warnings::sealed_setting_place(&name).0.to_string(),
+                        label: warnings::sealed_setting_place(&name, channels).0.into_owned(),
                         name,
                     },
                 })
@@ -2382,10 +2461,11 @@ impl From<store::KeyStanding> for EncryptionKeyOut {
 }
 
 async fn encryption_key(State(state): State<AppState>) -> Envelope<EncryptionKeyOut> {
-    run_store(state.store, |s| s.key_standing())
-        .await
-        .map(EncryptionKeyOut::from)
-        .into()
+    run_store(state.store, |s| {
+        Ok(EncryptionKeyOut::new(s.key_standing()?, &alerts::channels(s)?))
+    })
+    .await
+    .into()
 }
 
 async fn regenerate_encryption_key(
@@ -2394,11 +2474,15 @@ async fn regenerate_encryption_key(
     axum::Extension(actor): axum::Extension<store::Actor>,
 ) -> Envelope<EncryptionKeyOut> {
     let event = accounts::event_for(&actor, "key-regenerate", "", "ok");
-    let regenerated = run_store(state.store, move |s| s.regenerate_key(&event)).await;
+    let regenerated = run_store(state.store, move |s| {
+        let channels = alerts::channels(s)?;
+        Ok(EncryptionKeyOut::new(s.regenerate_key(&event)?, &channels))
+    })
+    .await;
     if regenerated.is_ok() {
         RENEW_NOW.notify_one();
     }
-    regenerated.map(EncryptionKeyOut::from).into()
+    regenerated.into()
 }
 
 /// Stores a new value and forgets what retention no longer keeps.
@@ -3356,7 +3440,8 @@ async fn require_worker_auth(
     State(state): State<AppState>,
     mut req: axum::extract::Request,
     next: axum::middleware::Next,
-) -> Result<axum::response::Response, axum::http::StatusCode> {
+) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
+    use axum::http::StatusCode;
     let token = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -3364,7 +3449,10 @@ async fn require_worker_auth(
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::to_string);
     let Some(token) = token else {
-        return Err(axum::http::StatusCode::UNAUTHORIZED);
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "no worker token was sent; send the credential the worker enrolled with".to_string(),
+        ));
     };
 
     let token_hash = auth::hash_secret(&token);
@@ -3377,24 +3465,32 @@ async fn require_worker_auth(
     .await
     {
         Ok(credential) => credential,
-        Err(_) => return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE),
+        Err(e) => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("could not read the worker's credential: {e}"),
+            ));
+        }
     };
     let Some(credential) = credential else {
-        return Err(axum::http::StatusCode::UNAUTHORIZED);
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "this worker token is not known; enroll the worker again".to_string(),
+        ));
     };
     if credential.revoked {
-        return Err(axum::http::StatusCode::FORBIDDEN);
+        return Err((StatusCode::FORBIDDEN, "this worker is revoked".to_string()));
     }
     // The first request a credential authenticates closes the window in which a retried enrollment may replace
     // it. Refused rather than let through when that cannot be written down: a credential in use that a retry can
     // still replace is one a replayed enrollment code could take over.
     if !credential.used {
         let token_hash = credential.token_hash.clone();
-        if run_store(state.store.clone(), move |s| s.mark_credential_used(&token_hash))
-            .await
-            .is_err()
-        {
-            return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        if let Err(e) = run_store(state.store.clone(), move |s| s.mark_credential_used(&token_hash)).await {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("could not record the worker's credential as used: {e}"),
+            ));
         }
     }
     req.extensions_mut().insert(AuthenticatedWorker(credential.worker_id));
@@ -3539,8 +3635,15 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
     let dir = tls::dir_of(&state.data_dir);
     // Asked first, and cheaply: no rotation is the ordinary state, and everything below -- a roster read included
     // -- is worth doing only while one is open.
-    let Ok(Some(rotation)) = tls::rotation(&dir) else {
-        return;
+    let rotation = match tls::rotation(&dir) {
+        Ok(Some(rotation)) => rotation,
+        Ok(None) => return,
+        Err(e) => {
+            if let Some(error) = relog(&ROTATION_UNREADABLE, e) {
+                tracing::warn!(target: "leader.rotation_unreadable", error, "the fleet's certificate authority rotation could not be read, so it does not cut over");
+            }
+            return;
+        }
     };
     let holders = expected_workers(state)
         .await
@@ -3618,6 +3721,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/health", get(health))
         .route("/api/system", get(system_info))
         .route("/api/warnings", get(list_warnings))
+        .route("/api/metrics", get(warning_metrics))
         .route("/api/flow", get(get_flow))
         .route("/api/streams", get(get_streams))
         .route("/api/logs", get(get_logs))
@@ -3650,6 +3754,10 @@ pub fn admin_router() -> Router<AppState> {
             "/api/settings/git-remote",
             get(remote::get_settings).put(remote::put_settings),
         )
+        .route("/api/settings/alerts", get(alerts::get_settings))
+        .route("/api/settings/alerts/mail", put(alerts::put_mail))
+        .route("/api/settings/alerts/channels", put(alerts::put_channels))
+        .route("/api/settings/alerts/test", post(alerts::post_test))
         .route("/api/settings/git-remote/sync", post(remote::post_sync))
         .route("/api/branches/:name/overwrite", post(remote::overwrite))
         .route("/api/secrets", get(list_secrets).post(create_secret))
@@ -4174,6 +4282,7 @@ mod secrets_delivery_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir,
         }
@@ -4661,6 +4770,7 @@ mod warnings_endpoint_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir,
         }
@@ -4893,6 +5003,7 @@ mod logs_endpoint_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         }
@@ -5118,6 +5229,7 @@ mod flow_endpoint_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         }
@@ -5146,6 +5258,7 @@ mod flow_endpoint_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         };
@@ -5511,6 +5624,7 @@ mod authority_delivery_tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir,
         };

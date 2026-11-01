@@ -96,6 +96,7 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
                 origin_hosts: Vec::new(),
                 remote: Default::default(),
                 updates: Default::default(),
+                alerts: Default::default(),
                 data_dir,
                 directives: Default::default(),
             };

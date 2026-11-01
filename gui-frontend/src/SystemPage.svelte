@@ -22,6 +22,7 @@
   import CertificatesSettings from './CertificatesSettings.svelte';
   import GitRemoteSettings from './GitRemoteSettings.svelte';
   import LicenseSettings from './LicenseSettings.svelte';
+  import AlertsSettings from './AlertsSettings.svelte';
   import AgentSettings from './AgentSettings.svelte';
   import SecondaryTabs from './SecondaryTabs.svelte';
   import { SYSTEM_SECTIONS, type SystemSection } from './nav';
@@ -330,6 +331,8 @@
       <AgentSettings />
     {:else if section === 'license'}
       <LicenseSettings />
+    {:else if section === 'alerts'}
+      <AlertsSettings />
     {:else if loadFailed}
       <!-- The error bar says why. -->
     {:else if settings === null}

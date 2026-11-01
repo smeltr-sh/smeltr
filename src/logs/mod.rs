@@ -27,6 +27,7 @@
 mod console;
 mod event;
 mod layer;
+mod noted;
 
 pub(crate) use console::{render_fields, render_value, stamp};
 #[cfg(test)]
@@ -39,7 +40,45 @@ use std::sync::{Condvar, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 pub use event::{Event, Value};
+pub use noted::Noted;
 pub use tracing::Level;
+
+/// One event as a test reads it: its level, its target, and its fields with the sentence under `message`.
+#[cfg(test)]
+pub(crate) type Said = (Level, String, Vec<(String, String)>);
+
+/// Every event raised on this thread while `f` runs.
+#[cfg(test)]
+pub(crate) fn said(f: impl FnOnce()) -> Vec<Said> {
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[derive(Default)]
+    struct Catch(std::sync::Arc<Mutex<Vec<Said>>>);
+    struct Fields(Vec<(String, String)>);
+    impl tracing::field::Visit for Fields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.push((
+                field.name().to_string(),
+                format!("{value:?}").trim_matches('"').to_string(),
+            ));
+        }
+    }
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Catch {
+        fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+            let mut fields = Fields(Vec::new());
+            event.record(&mut fields);
+            self.0.lock().unwrap().push((
+                *event.metadata().level(),
+                event.metadata().target().to_string(),
+                fields.0,
+            ));
+        }
+    }
+    let catch = Catch::default();
+    let seen = catch.0.clone();
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(catch), f);
+    seen.lock().unwrap().clone()
+}
 
 /// Events held between drains. Reached only when the drain thread is behind, so it buys time rather than storage.
 ///
@@ -83,12 +122,26 @@ pub struct Relog {
 }
 
 impl Relog {
+    /// No fault under way. `const`, so a static can hold one.
+    pub const fn new() -> Relog {
+        Relog {
+            why: None,
+            logged: None,
+        }
+    }
+
     /// Keeps `why` as the fault under way. A changed message is due its log at once.
     pub fn fail(&mut self, why: String) {
         if self.why.as_deref() != Some(&why) {
             self.logged = None;
         }
         self.why = Some(why);
+    }
+
+    /// [`Relog::fail`] and [`Relog::due`] in one, for a site with nothing to do between them.
+    pub fn fail_due(&mut self, why: String) -> Option<&str> {
+        self.fail(why);
+        self.due()
     }
 
     /// The fault under way, when it is due its log now, and counts it logged.
@@ -111,6 +164,45 @@ impl Relog {
         self.logged = None;
         self.why.take().is_some()
     }
+}
+
+thread_local! {
+    /// Whether this thread is inside [`take`], where a panic must not be logged through it again.
+    static WRITING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Every panic in the process is logged before the default hook prints it, so a thread or task that dies says so
+/// here and not only on a console nobody reads. A panic that budget handling expects is quiet.
+fn log_panics() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let writing = WRITING.with(std::cell::Cell::get);
+            if !writing
+                && info
+                    .payload()
+                    .downcast_ref::<crate::core::buffer::OverBudget>()
+                    .is_none()
+            {
+                let panic = info
+                    .payload()
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                let thread = std::thread::current();
+                tracing::error!(
+                    target: "process.panicked",
+                    thread = thread.name().unwrap_or_default(),
+                    location = info.location().map(|l| l.to_string()).unwrap_or_default(),
+                    %panic,
+                    "a thread panicked"
+                );
+            }
+            previous(info);
+        }));
+    });
 }
 
 /// What the channel carries. `Stop` rides it so that it arrives behind every event already sent.
@@ -474,6 +566,7 @@ fn hand_off(event: Event) {
 /// everything else -- axum, tower and h2 instrument with it, and with no subscriber installed all of that went
 /// nowhere too.
 pub fn start() {
+    log_panics();
     let (sender, receiver) = sync_channel::<Message>(CAPACITY);
     if SENDER.set(sender).is_err() {
         return;
@@ -563,6 +656,15 @@ fn drain(receiver: Receiver<Message>) {
 /// Counted after the write and only when it landed: a count of what was said is worth nothing if it also counts
 /// what nobody could hear.
 fn take(event: Event, leader: bool) {
+    // A panic in here would re-enter through the hook and take a lock this thread holds.
+    WRITING.with(|w| w.set(true));
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            WRITING.with(|w| w.set(false));
+        }
+    }
+    let _done = Done;
     // Counted first, and against the console alone: whether the leader hears about this is a separate question
     // from whether anybody here did, and gating one on the other means a daemon with a closed stderr tells the
     // leader nothing -- the one shape where its console was already useless.
@@ -800,6 +902,39 @@ mod tests {
         assert!(
             reader.drain(8).iter().all(|e| e.site != "mirror.before_open.test"),
             "a reader was handed what was said before it opened"
+        );
+    }
+
+    /// A fault is said when it begins, when its message changes, and again each [`RELOG_EVERY`] while it lasts;
+    /// its end is said once, and a fault after that is a new one.
+    #[test]
+    fn a_relog_says_a_fault_when_it_begins_changes_or_lasts_and_its_end_once() {
+        let mut relog = Relog::new();
+        assert_eq!(relog.fail_due("away".into()), Some("away"));
+        assert_eq!(
+            relog.fail_due("away".into()),
+            None,
+            "the same fault is not said again at once"
+        );
+        assert_eq!(relog.why(), Some("away"), "the fault stands while it is not said");
+        relog.logged = Some(std::time::Instant::now() - RELOG_EVERY);
+        assert_eq!(
+            relog.fail_due("away".into()),
+            Some("away"),
+            "a fault that lasts is said again on the interval"
+        );
+        assert_eq!(
+            relog.fail_due("gone".into()),
+            Some("gone"),
+            "a changed message is said at once"
+        );
+        assert!(relog.clear(), "a fault under way ends");
+        assert!(!relog.clear(), "its end is said once");
+        assert_eq!(relog.due(), None, "nothing is due after the fault ends");
+        assert_eq!(
+            relog.fail_due("away".into()),
+            Some("away"),
+            "a fault after a recovery is new"
         );
     }
 }

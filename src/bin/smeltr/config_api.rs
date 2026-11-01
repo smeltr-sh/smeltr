@@ -791,8 +791,14 @@ fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(),
         Ok(groups) => groups,
         // The group list is unreadable, so there is nothing to check against. The scope's own validation still
         // ran; refusing here would block every save on a repository this cannot enumerate.
-        Err(_) if writing_shared => return Ok(()),
-        Err(_) => written.map(|id| vec![id.to_string()]).unwrap_or_default(),
+        Err(e) if writing_shared => {
+            tracing::debug!(target: "config.merge_unchecked", error = %e, "the group list could not be read, so a save to shared was not checked against the groups");
+            return Ok(());
+        }
+        Err(e) => {
+            tracing::debug!(target: "config.merge_unchecked", error = %e, "the group list could not be read, so a save was checked against its own group only");
+            written.map(|id| vec![id.to_string()]).unwrap_or_default()
+        }
     };
     if !writing_shared && written.is_none() {
         return Ok(());

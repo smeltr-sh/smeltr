@@ -44,6 +44,7 @@ fn app_state(store: SqliteStore, data_dir: std::path::PathBuf) -> AppState {
         origin_hosts: Vec::new(),
         remote: Default::default(),
         updates: Default::default(),
+        alerts: Default::default(),
         data_dir,
         directives: Default::default(),
     }

@@ -9,6 +9,7 @@
 //! acknowledge, and an entry is forgotten the instant its fact is.
 
 use crate::handoff::BlockCause;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ use serde::Serialize;
 
 use crate::heartbeat::{MetricValueDto, ThreadKind};
 use crate::leader::access::{Access, Level};
+use crate::leader::alerts::{self, Channel};
 use crate::leader::deploy_checks::{FailingTest, Findings};
 use crate::leader::registry::{FactKey, ThreadHealth};
 use crate::leader::series::{DRIFT_WINDOW, DeclaredField, LoggedSite, RegistryStore, Tier};
@@ -58,7 +60,7 @@ pub enum SubjectKind {
 
 /// Which catalog entry raised this warning. The catalog is fixed (design doc, Control plane), so a reader can
 /// switch on it and a new entry is a compile error rather than a blank label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Condition {
     WorkerSilent,
@@ -97,6 +99,8 @@ pub enum Condition {
     AcmeRenewalFailing,
     LeaderCertificateRunningOut,
     IssuedCertificateNotRenewed,
+    /// An alert channel did not take the last send (`leader::alerts`).
+    AlertChannelFailing,
 }
 
 impl Condition {
@@ -139,7 +143,51 @@ impl Condition {
         Condition::AcmeRenewalFailing,
         Condition::LeaderCertificateRunningOut,
         Condition::IssuedCertificateNotRenewed,
+        Condition::AlertChannelFailing,
     ];
+
+    /// What a person reads for it: the page's own label (`conditionLabel`), for what is sent where the page is not.
+    pub fn label(self) -> &'static str {
+        match self {
+            Condition::WorkerSilent => "Worker silent",
+            Condition::WorkerNeverHeartbeated => "Never heartbeated",
+            Condition::SourceBlocked => "Source blocked",
+            Condition::SourceRefused => "Blocked by destination refusals",
+            Condition::SourceWaiting => "Waiting on destination",
+            Condition::SourceUnreachable => "Source unreachable",
+            Condition::DestinationRefusing => "Refusing writes",
+            Condition::DestinationUnreachable => "Destination unreachable",
+            Condition::LagClimbing => "Lag climbing",
+            Condition::DestinationMemoryBound => "Held back by memory",
+            Condition::SourceRowsBelow => "Rows below normal",
+            Condition::SourceRowsAbove => "Rows above normal",
+            Condition::GroupNotDeployed => "Group not deployed",
+            Condition::WorkerNotDeployingItsTarget => "Not deploying its target",
+            Condition::WorkerOnAnotherBuild => "On another build",
+            Condition::WorkerMemoryHigh => "Memory near its limit",
+            Condition::AuthorityExpiring => "Authority expiring",
+            Condition::AuthorityAging => "Authority running out",
+            Condition::EnrollmentCodeNamesOutgoingAuthority => "Enrollment code names the outgoing authority",
+            Condition::CertificateExpiring => "Certificate expiring",
+            Condition::WorkerLoggedWarnings => "Logged a warning",
+            Condition::DeployHeld => "Deploy held",
+            Condition::RemoteNotFollowed => "Remote not followed",
+            Condition::DeployDoesNotLoad => "Deployed config does not load",
+            Condition::DeployFailsTests => "Test failing",
+            Condition::DeployBreaksSchemas => "Rows do not fit a schema",
+            Condition::DeclaredFieldFailing => "Field not its declared type",
+            Condition::DeclaredFieldGone => "Field no longer arriving",
+            Condition::StreamUnrouted => "Stream unrouted",
+            Condition::NewerRelease => "Newer release",
+            Condition::WorkerOnAnotherRelease => "On another release",
+            Condition::SecretsKeyUnusable => "Secrets encryption key unusable",
+            Condition::SecretNeedsValue => "Secret or certificate needs a new value",
+            Condition::AcmeRenewalFailing => "ACME renewal failing",
+            Condition::LeaderCertificateRunningOut => "Leader certificate running out",
+            Condition::IssuedCertificateNotRenewed => "Certificate not renewed",
+            Condition::AlertChannelFailing => "Alert channel failing",
+        }
+    }
 
     /// What this is called on the wire. The match is what makes a new entry a compile error here.
     pub fn name(self) -> &'static str {
@@ -180,6 +228,7 @@ impl Condition {
             Condition::AcmeRenewalFailing => "acmeRenewalFailing",
             Condition::LeaderCertificateRunningOut => "leaderCertificateRunningOut",
             Condition::IssuedCertificateNotRenewed => "issuedCertificateNotRenewed",
+            Condition::AlertChannelFailing => "alertChannelFailing",
         }
     }
 }
@@ -252,6 +301,46 @@ impl Warning {
     }
 }
 
+/// `warnings` in the text format Prometheus scrapes (`metrics::exposition`): for each, `smeltr_warning` at 1, and
+/// `smeltr_warning_start_time_seconds` where its start is known, labeled by its condition, severity and subject. A
+/// warning that clears leaves the scrape, which is what tells an alert manager it resolved.
+pub fn as_metrics(warnings: &[Warning]) -> String {
+    use crate::metrics::{MetricKey, MetricSample, MetricValue};
+    /// The name serde gives `value`, as the API names it.
+    fn named(value: impl Serialize) -> String {
+        serde_json::to_value(value)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+    let samples = warnings.iter().flat_map(|w| {
+        let labels = vec![
+            ("condition", named(w.condition)),
+            ("severity", named(w.severity)),
+            ("subject_kind", named(w.subject_kind)),
+            ("subject", w.subject_id.clone()),
+            ("group", w.group.clone().unwrap_or_default()),
+            ("site", w.site.clone().unwrap_or_default()),
+        ];
+        let started = w.since_millis.map(|ms| MetricSample {
+            key: MetricKey {
+                name: "smeltr_warning_start_time_seconds",
+                labels: labels.clone(),
+            },
+            value: MetricValue::Gauge(ms as f64 / 1000.0),
+        });
+        std::iter::once(MetricSample {
+            key: MetricKey {
+                name: "smeltr_warning",
+                labels,
+            },
+            value: MetricValue::Gauge(1.0),
+        })
+        .chain(started)
+    });
+    crate::metrics::exposition::render(samples)
+}
+
 const SOURCE_BLOCKED: &str = "source_blocked";
 const SOURCE_REFUSED: &str = "source_refused";
 const SOURCE_WAITING: &str = "source_waiting";
@@ -264,6 +353,62 @@ const GROUP_NOT_DEPLOYED: &str = "group_not_deployed";
 const DEPLOY_DOES_NOT_LOAD: &str = "deploy_does_not_load";
 const DEPLOY_FAILS_TESTS: &str = "deploy_fails_tests";
 const DEPLOY_BREAKS_SCHEMAS: &str = "deploy_breaks_schemas";
+
+/// An issue as its log line names it (`Registry::observe_facts`): the condition by the name `GET /api/warnings`
+/// gives it, and the fact's subject taken apart the way this module packed it.
+pub struct LoggedIssue<'a> {
+    pub issue: &'a str,
+    pub group: Option<&'a str>,
+    pub subject: &'a str,
+    /// The commit a worker is not deploying, for that one issue.
+    pub commit: Option<&'a str>,
+}
+
+/// What an issue's log line says of the fact `entry` about `subject`.
+pub fn logged_issue<'a>(entry: &'a str, subject: &'a str) -> LoggedIssue<'a> {
+    let issue = issue_of_fact(entry);
+    let pair = serde_json::from_str::<(&str, &str)>(subject).ok();
+    match (entry, pair) {
+        (NOT_DEPLOYING, Some((worker, commit))) => LoggedIssue {
+            issue,
+            group: None,
+            subject: worker,
+            commit: Some(commit),
+        },
+        (_, Some((group, object))) => LoggedIssue {
+            issue,
+            group: Some(group),
+            subject: object,
+            commit: None,
+        },
+        (_, None) => LoggedIssue {
+            issue,
+            group: None,
+            subject,
+            commit: None,
+        },
+    }
+}
+
+/// The issue a fact clock entry is, by the name `GET /api/warnings` gives its condition. An entry keyed by a
+/// condition's name already is one.
+fn issue_of_fact(entry: &str) -> &str {
+    match entry {
+        SOURCE_BLOCKED => Condition::SourceBlocked.name(),
+        SOURCE_REFUSED => Condition::SourceRefused.name(),
+        SOURCE_WAITING => Condition::SourceWaiting.name(),
+        SOURCE_UNREACHABLE => Condition::SourceUnreachable.name(),
+        DESTINATION_REFUSING => Condition::DestinationRefusing.name(),
+        DESTINATION_UNREACHABLE => Condition::DestinationUnreachable.name(),
+        SOURCE_ROWS_BELOW => Condition::SourceRowsBelow.name(),
+        SOURCE_ROWS_ABOVE => Condition::SourceRowsAbove.name(),
+        GROUP_NOT_DEPLOYED => Condition::GroupNotDeployed.name(),
+        DEPLOY_DOES_NOT_LOAD => Condition::DeployDoesNotLoad.name(),
+        DEPLOY_FAILS_TESTS => Condition::DeployFailsTests.name(),
+        DEPLOY_BREAKS_SCHEMAS => Condition::DeployBreaksSchemas.name(),
+        other => other,
+    }
+}
 
 /// A source blocked on `cause`: its condition, its severity, and its fact-clock entry -- each cause its own, so a
 /// source whose block changes cause is dated from the change.
@@ -2267,6 +2412,8 @@ fn recent_logs(store: Option<&RegistryStore>, credentials: &[WorkerCredentialRec
                 .collect();
             Logged { row, fields }
         })
+        // A line that is an issue's own history (`Registry::observe_facts`) is that issue, not a second one.
+        .filter(|logged| logged.field("issue").is_none())
         .collect()
 }
 
@@ -2534,6 +2681,25 @@ pub fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning 
     }
 }
 
+/// An alert channel that did not take the last send, and why. Raised until one is taken: until then, whoever the
+/// channel reaches is not told of what it takes.
+pub fn alert_channel_failing(channel: &str, failing: &crate::leader::alerts::Failing) -> Warning {
+    Warning {
+        area: None,
+        condition: Condition::AlertChannelFailing,
+        subject_kind: SubjectKind::Leader,
+        site: None,
+        subject_id: channel.to_string(),
+        group: None,
+        severity: Severity::Warning,
+        since_millis: Some(failing.since),
+        message: format!(
+            "The alert channel {channel} did not take what was sent: {}. Smeltr sends it again every minute",
+            failing.message
+        ),
+    }
+}
+
 /// A published release newer than this leader's own (`leader::updates`). Info: running an older release is no fault.
 pub fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
     Warning {
@@ -2626,14 +2792,14 @@ pub fn issued_certificates_not_renewed(issued: &[IssuedChain], signing: &str, no
 const KEY_SUBJECT: &str = "secrets encryption key";
 
 /// The facts the secrets encryption key's warnings start from, so each says how long it has held.
-pub fn encryption_key_facts(standing: &KeyStanding) -> HashSet<FactKey> {
+pub fn encryption_key_facts(standing: &KeyStanding, channels: &[Channel]) -> HashSet<FactKey> {
     if standing.broken() {
         return HashSet::from([FactKey::new("secretsKeyUnusable", KEY_SUBJECT)]);
     }
     standing
         .unopenable
         .iter()
-        .map(|u| FactKey::new("secretNeedsValue", unopenable_id(u)))
+        .map(|u| FactKey::new("secretNeedsValue", unopenable_id(u, channels)))
         .collect()
 }
 
@@ -2643,6 +2809,7 @@ pub fn encryption_key_facts(standing: &KeyStanding) -> HashSet<FactKey> {
 /// `issued` names the certificates this leader issued, which are renewed rather than replaced.
 pub fn encryption_key_warnings(
     standing: &KeyStanding,
+    channels: &[Channel],
     kept: &std::collections::BTreeMap<String, crate::leader::store::Kept>,
     starts: &HashMap<FactKey, i64>,
 ) -> Vec<Warning> {
@@ -2694,7 +2861,7 @@ pub fn encryption_key_warnings(
                     SubjectKind::Leader,
                     format!(
                         "encrypted with a key this leader no longer has. Enter it again under {}",
-                        sealed_setting_place(key).1
+                        sealed_setting_place(key, channels).1
                     ),
                 ),
             };
@@ -2702,7 +2869,7 @@ pub fn encryption_key_warnings(
                 subject_kind,
                 ..leader(
                     Condition::SecretNeedsValue,
-                    unopenable_id(u),
+                    unopenable_id(u, channels),
                     Severity::Warning,
                     message,
                 )
@@ -2711,23 +2878,32 @@ pub fn encryption_key_warnings(
         .collect()
 }
 
-fn unopenable_id(u: &Unopenable) -> String {
+fn unopenable_id(u: &Unopenable, channels: &[Channel]) -> String {
     match u {
         Unopenable::Secret(name) | Unopenable::Certificate(name) => name.clone(),
-        Unopenable::Setting(key) => sealed_setting_place(key).0.to_string(),
+        Unopenable::Setting(key) => sealed_setting_place(key, channels).0.into_owned(),
     }
 }
 
 /// What a sealed leader setting is called, and where it is entered.
-pub(crate) fn sealed_setting_place(key: &str) -> (&str, &'static str) {
-    match key {
+/// `channels` are the alert channels, whose secrets are named for them.
+pub(crate) fn sealed_setting_place<'a>(key: &'a str, channels: &[Channel]) -> (Cow<'a, str>, &'static str) {
+    let (name, place) = match key {
         crate::leader::remote::TOKEN_KEY => ("Git remote token", "System, Git remote"),
         crate::leader::oidc::CLIENT_SECRET_KEY => ("Single sign-on client secret", "Accounts, Single sign-on"),
         crate::leader::model::API_KEY_KEY => ("AI agents API key", "System, AI agents"),
         crate::leader::acme::EAB_HMAC_KEY => ("ACME EAB HMAC key", "System, Certificates"),
         crate::leader::acme::CLOUDFLARE_TOKEN_KEY => ("Cloudflare API token", "System, Certificates"),
-        other => (other, "System"),
-    }
+        alerts::MAIL_PASSWORD_KEY => ("Mail server password", "System, Alerts"),
+        other => {
+            let channel = channels.iter().find(|c| alerts::secret_key(&c.id) == other);
+            return match channel.and_then(alerts::secret_label) {
+                Some(label) => (Cow::Owned(label), "System, Alerts"),
+                None => (Cow::Borrowed(other), "System"),
+            };
+        }
+    };
+    (Cow::Borrowed(name), place)
 }
 
 /// What is wrong with the deployed commit, as warnings: [`derive`]'s catalog takes these beside its own.
@@ -3064,8 +3240,9 @@ mod tests {
                 "WarningCondition does not list {name}"
             );
             assert!(
-                api.contains(&format!("case '{name}':")),
-                "conditionLabel has no label for {name}"
+                api.contains(&format!("case '{name}':\n      return '{}';", condition.label())),
+                "conditionLabel does not label {name} as {:?}, which is what is sent for it",
+                condition.label()
             );
         }
     }
@@ -3455,7 +3632,7 @@ mod tests {
 
     /// The last try, at `NOW`, failed with `error`.
     fn failing(mut serving: Serving, error: &str) -> Serving {
-        serving.acme.last_error = Some(error.to_string());
+        serving.acme.last_error = Some(crate::logs::Noted::unlogged(error));
         serving.acme.last_attempt_millis = Some(NOW);
         serving
     }
@@ -4492,6 +4669,21 @@ mod tests {
         )
     }
 
+    /// An issue's own history line (`Registry::observe_facts`) is not a second issue about the leader.
+    #[test]
+    fn an_issues_own_log_line_raises_nothing() {
+        let store = RegistryStore::open(Path::new(":memory:")).unwrap();
+        let mut event = log_event(0, NOW - 60_000, "warn", "an issue began");
+        event.site = "issues.began".to_string();
+        event.fields = vec![(
+            "issue".to_string(),
+            crate::heartbeat::FieldValueDto::Str("sourceBlocked".to_string()),
+        )];
+        store.record_logs("leader", 1, None, &[event]).unwrap();
+
+        assert!(log_warnings(&store).is_empty());
+    }
+
     #[test]
     fn a_warn_log_in_the_window_raises() {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
@@ -4767,6 +4959,30 @@ mod tests {
             since_millis: Some(NOW - 90_000),
             message: "it is wrong".to_string(),
         }
+    }
+
+    /// Each warning is a series a scraper can page on, labeled by what it is and what it is about, with its start
+    /// where known. One about the leader names no group, and the label is left out rather than empty.
+    #[test]
+    fn a_warning_is_a_series_a_scraper_pages_on() {
+        let blocked = catalog(Condition::SourceBlocked, SubjectKind::Source, "orders", "payments");
+        let leader = Warning {
+            group: None,
+            since_millis: None,
+            ..catalog(Condition::RemoteNotFollowed, SubjectKind::Leader, "leader", "")
+        };
+        let text = as_metrics(&[blocked, leader]);
+        let start = (NOW - 90_000) as f64 / 1000.0;
+        assert_eq!(
+            text,
+            format!(
+                "# TYPE smeltr_warning gauge\n\
+                 smeltr_warning{{condition=\"remoteNotFollowed\",severity=\"failed\",subject=\"leader\",subject_kind=\"leader\"}} 1\n\
+                 smeltr_warning{{condition=\"sourceBlocked\",group=\"payments\",severity=\"failed\",subject=\"orders\",subject_kind=\"source\"}} 1\n\
+                 # TYPE smeltr_warning_start_time_seconds gauge\n\
+                 smeltr_warning_start_time_seconds{{condition=\"sourceBlocked\",group=\"payments\",severity=\"failed\",subject=\"orders\",subject_kind=\"source\"}} {start}\n"
+            )
+        );
     }
 
     /// A viewer sees the warnings of the groups they hold. One about the leader itself names no group, and only an
@@ -6271,9 +6487,9 @@ mod tests {
                 Unopenable::Setting(crate::leader::remote::TOKEN_KEY.to_string()),
             ],
         );
-        let facts = encryption_key_facts(&broken);
+        let facts = encryption_key_facts(&broken, &[]);
         let starts: HashMap<FactKey, i64> = facts.iter().map(|f| (f.clone(), NOW)).collect();
-        let said = encryption_key_warnings(&broken, &Default::default(), &starts);
+        let said = encryption_key_warnings(&broken, &[], &Default::default(), &starts);
         assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(said[0].condition, Condition::SecretsKeyUnusable);
         assert_eq!(said[0].severity, Severity::Failed);
@@ -6318,7 +6534,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let said = encryption_key_warnings(&held, &kept, &HashMap::new());
+        let said = encryption_key_warnings(&held, &[], &kept, &HashMap::new());
         assert_eq!(said.len(), 5);
         assert!(
             said.iter()
@@ -6368,10 +6584,47 @@ mod tests {
         assert!(
             encryption_key_warnings(
                 &standing(crate::leader::store::KeyState::Absent, vec![]),
+                &[],
                 &Default::default(),
                 &HashMap::new()
             )
             .is_empty()
+        );
+    }
+
+    /// An alert channel's secret is named for its channel, as its row names it, and the mail password for the server.
+    #[test]
+    fn an_alert_secret_to_enter_again_is_named_for_its_channel() {
+        use crate::leader::alerts::{Channel, Format, Kind, MAIL_PASSWORD_KEY, secret_key};
+        let channel = Channel {
+            id: "c1".into(),
+            name: "On call".into(),
+            kind: Kind::Webhook {
+                url: "https://events.pagerduty.com/v2/enqueue".into(),
+                format: Format::PagerDuty,
+                secret_header: None,
+            },
+            groups: None,
+            include_message: false,
+            conditions: Vec::new(),
+            muted_until: None,
+        };
+        let held = standing(
+            crate::leader::store::KeyState::Held {
+                key_id: "5be1a09c44d7f312".to_string(),
+            },
+            vec![
+                Unopenable::Setting(MAIL_PASSWORD_KEY.to_string()),
+                Unopenable::Setting(secret_key("c1")),
+            ],
+        );
+        let said = encryption_key_warnings(&held, &[channel], &Default::default(), &HashMap::new());
+        let named: Vec<&str> = said.iter().map(|w| w.subject_id.as_str()).collect();
+        assert_eq!(named, ["Mail server password", "On call: routing key"]);
+        assert!(
+            said.iter()
+                .all(|w| w.message.ends_with("Enter it again under System, Alerts")),
+            "{said:?}"
         );
     }
 }

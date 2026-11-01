@@ -51,8 +51,9 @@ pub struct Newer {
 pub struct Looked {
     /// Unix millis.
     pub checked_at: i64,
+    /// Why the list was not read, logged when it was recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub failure: Option<String>,
+    pub failure: Option<crate::logs::Noted>,
 }
 
 /// The leader's looks: what the last found, and what wakes the timer.
@@ -87,6 +88,11 @@ impl Updates {
                 .filter(|n| n.release == release)
                 .map_or(now, |n| n.since)
         };
+        if let Some((release, _)) = &newest
+            && held.0.as_ref().is_none_or(|n| n.release != *release)
+        {
+            tracing::info!(target: "leader.release_available", %release, "a newer release of Smeltr is out");
+        }
         held.0 = newest.map(|(release, url)| Newer {
             since: since(&release),
             release,
@@ -103,7 +109,11 @@ impl Updates {
     fn failed(&self, why: String, now: i64) {
         self.held().1 = Some(Looked {
             checked_at: now,
-            failure: Some(why),
+            failure: Some(crate::noted!(
+                target: "leader.release_check_failed",
+                "the list of releases could not be read",
+                why
+            )),
         });
     }
 
@@ -124,7 +134,11 @@ pub async fn poll(state: AppState) {
         return;
     };
     loop {
-        if !run_store(state.store.clone(), checking).await.unwrap_or(true) {
+        let checking = run_store(state.store.clone(), checking).await.unwrap_or_else(|e| {
+            tracing::debug!(target: "updates.setting_unreadable", error = %e, "the update-check setting could not be read, so the check runs");
+            true
+        });
+        if !checking {
             state.updates.forget();
             state.updates.settings_changed.notified().await;
             continue;
@@ -328,13 +342,8 @@ mod tests {
         assert_eq!(updates.newer().unwrap().since, 10);
         updates.failed("down".into(), 30);
         assert_eq!(updates.newer().unwrap().release, "1.3.0", "the release is still out");
-        assert_eq!(
-            updates.looked().unwrap(),
-            Looked {
-                checked_at: 30,
-                failure: Some("down".into())
-            }
-        );
+        let looked = updates.looked().unwrap();
+        assert_eq!((looked.checked_at, looked.failure.as_deref()), (30, Some("down")));
         updates.found(v("1.4.0"), 40);
         assert_eq!(updates.newer().unwrap().since, 40, "another release is news again");
         updates.found(None, 50);

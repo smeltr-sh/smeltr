@@ -13,11 +13,18 @@
     checked = $bindable(false),
     disabled = false,
     ariaLabel,
-  }: { checked?: boolean; disabled?: boolean; ariaLabel?: string } = $props();
+    onchange,
+  }: {
+    checked?: boolean;
+    disabled?: boolean;
+    ariaLabel?: string;
+    /** After a person flips it, with `checked` already the new value. */
+    onchange?: () => void;
+  } = $props();
 </script>
 
 <span class="toggle">
-  <input type="checkbox" role="switch" bind:checked {disabled} aria-label={ariaLabel} />
+  <input type="checkbox" role="switch" bind:checked {disabled} aria-label={ariaLabel} {onchange} />
   <span class="track" aria-hidden="true"><span class="thumb"></span></span>
 </span>
 

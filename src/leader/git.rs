@@ -2189,7 +2189,9 @@ pub fn deploy_squash(data_dir: &Path, squash: &Squash, author: &Actor) -> Result
     // Approval merges and deletes the branch: what it held is on `main` now, under one commit (W5). The deploy has
     // already happened by here -- workers take it on their next heartbeat -- so a branch that will not go is
     // reported by it staying on the list rather than by an error that reads as "it did not deploy".
-    let _ = delete_branch(data_dir, branch, Some(&squash.tip));
+    if let Err(e) = delete_branch(data_dir, branch, Some(&squash.tip)) {
+        tracing::debug!(target: "git.branch_not_deleted", %branch, error = %e.message, "a merged branch was not deleted");
+    }
     Ok(())
 }
 
@@ -2368,6 +2370,16 @@ fn deploy_in(
     repo.edit_references(edits)
         .map_err(|e| GitError::failed(format!("the fleet did not move: {e}")))?;
     forget_advertisement();
+    let from = running.map(|id| id.to_string());
+    tracing::info!(
+        target: "deploy.moved",
+        commit = %new,
+        from = from.as_deref(),
+        %subject,
+        hold,
+        author = %author.id,
+        "the fleet was deployed to a commit"
+    );
     Ok(())
 }
 

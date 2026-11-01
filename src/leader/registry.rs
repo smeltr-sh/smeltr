@@ -150,6 +150,10 @@ pub struct Registry {
     authorities: Mutex<HashMap<String, (Vec<String>, bool)>>,
     /// When each currently-true catalog fact was first observed, in epoch milliseconds. See [`Registry::observe_facts`].
     fact_clock: Mutex<HashMap<FactKey, i64>>,
+    /// The durable mirror refusing heartbeats, and refusing logs: each said once per change and then on the
+    /// interval, not on every beat of every worker, and said over when it takes them again.
+    mirror_failing: Mutex<crate::logs::Relog>,
+    logs_failing: Mutex<crate::logs::Relog>,
     /// The durable mirror. `None` for `Registry::default` -- every read and write above stays in-memory-only, as
     /// it always has; `Registry::open` is what wires this in.
     store: Option<Arc<RegistryStore>>,
@@ -170,6 +174,8 @@ impl Default for Registry {
             threads: Default::default(),
             authorities: Default::default(),
             fact_clock: Default::default(),
+            mirror_failing: Default::default(),
+            logs_failing: Default::default(),
             store: None,
             next_sweep_ms: Default::default(),
             next_prune_ms: Default::default(),
@@ -190,6 +196,7 @@ impl Registry {
         let now_ms = warnings::now_millis();
 
         let mut threads = HashMap::new();
+        let mut unreadable = (0usize, String::new());
         for row in store.load_latest_state()? {
             match serde_json::from_str::<ThreadHeartbeat>(&row.report_json) {
                 Ok(report) => {
@@ -215,14 +222,21 @@ impl Registry {
                         },
                     );
                 }
-                Err(e) => tracing::warn!(
-                    target: "registry.latest_state_unreadable",
-                    subject = %row.worker_id,
-                    thread_id = %row.thread_id,
-                    error = %e,
-                    "dropping an unreadable latest-state row"
-                ),
+                Err(e) => {
+                    if unreadable.0 == 0 {
+                        unreadable.1 = format!("{}/{}: {e}", row.worker_id, row.thread_id);
+                    }
+                    unreadable.0 += 1;
+                }
             }
+        }
+        if unreadable.0 > 0 {
+            tracing::warn!(
+                target: "registry.latest_state_unreadable",
+                rows = unreadable.0,
+                first = %unreadable.1,
+                "dropping saved worker status rows that could not be read"
+            );
         }
 
         let mut fact_clock = HashMap::new();
@@ -234,6 +248,8 @@ impl Registry {
             threads: Mutex::new(threads),
             authorities: Mutex::new(HashMap::new()),
             fact_clock: Mutex::new(fact_clock),
+            mirror_failing: Default::default(),
+            logs_failing: Default::default(),
             store: Some(Arc::new(store)),
             next_sweep_ms: Default::default(),
             next_prune_ms: Default::default(),
@@ -284,7 +300,15 @@ impl Registry {
     ) -> Result<(), StoreError> {
         let stopping = worker.stopped_at_ms.is_some();
         let persisted = match &self.store {
-            Some(store) => persist_heartbeat(store, worker_id, &reports, &worker, window, now_ms),
+            Some(store) => persist_heartbeat(
+                store,
+                &self.mirror_failing,
+                worker_id,
+                &reports,
+                &worker,
+                window,
+                now_ms,
+            ),
             None => Ok(()),
         };
         let mut threads = self.threads.lock().unwrap();
@@ -469,15 +493,26 @@ impl Registry {
         // Console-only for the duration: a store that will not take a batch says so, and that saying must not
         // join the queue it was failing to empty.
         crate::logs::while_delivering(|| {
-            if let Err(e) = store.record_logs(worker_id, boot_id, group_id, events) {
-                tracing::warn!(
-                    target: "registry.logs_not_persisted",
-                    subject = %worker_id,
-                    events = events.len(),
-                    error = %e,
-                    "logs from a heartbeat could not be persisted, so that much of the fleet's record is \
-                     missing"
-                );
+            let mut failing = self.logs_failing.lock().unwrap_or_else(|e| e.into_inner());
+            match store.record_logs(worker_id, boot_id, group_id, events) {
+                Err(e) => {
+                    failing.fail(e.to_string());
+                    if let Some(error) = failing.due() {
+                        tracing::warn!(
+                            target: "registry.logs_not_persisted",
+                            subject = %worker_id,
+                            events = events.len(),
+                            error,
+                            "logs from a heartbeat could not be persisted, so that much of the fleet's record is \
+                             missing"
+                        );
+                    }
+                }
+                Ok(()) => {
+                    if failing.clear() {
+                        tracing::info!(target: "registry.logs_persisted_again", "the fleet's logs are being persisted again");
+                    }
+                }
             }
         });
     }
@@ -500,7 +535,11 @@ impl Registry {
     /// heartbeat").
     pub fn observe_facts(&self, active: &HashSet<FactKey>, now_ms: i64) -> HashMap<FactKey, i64> {
         let mut clock = self.fact_clock.lock().unwrap();
-        let removed: Vec<FactKey> = clock.keys().filter(|k| !active.contains(k)).cloned().collect();
+        let removed: Vec<(FactKey, i64)> = clock
+            .iter()
+            .filter(|(k, _)| !active.contains(k))
+            .map(|(k, start)| (k.clone(), *start))
+            .collect();
         clock.retain(|k, _| active.contains(k));
         let mut inserted: Vec<FactKey> = Vec::new();
         for k in active {
@@ -509,8 +548,34 @@ impl Registry {
                 inserted.push(k.clone());
             }
         }
+        // The one place every issue with a start time begins and ends, so the log has each one's history once
+        // the Issues page no longer shows it. `issue` marks the line as an issue's own, which the catalog's
+        // "worker logged warnings" entry leaves out (`warnings::recent_logs`): it would be the same issue twice.
+        for k in &inserted {
+            let it = super::warnings::logged_issue(&k.entry, &k.subject);
+            tracing::warn!(
+                target: "issues.began",
+                issue = it.issue,
+                group = it.group,
+                subject = it.subject,
+                commit = it.commit,
+                "an issue began"
+            );
+        }
+        for (k, start) in &removed {
+            let it = super::warnings::logged_issue(&k.entry, &k.subject);
+            tracing::info!(
+                target: "issues.cleared",
+                issue = it.issue,
+                group = it.group,
+                subject = it.subject,
+                commit = it.commit,
+                held_secs = (now_ms - start).max(0) / 1000,
+                "an issue cleared"
+            );
+        }
         if let Some(store) = &self.store {
-            let removed: Vec<(String, String)> = removed.into_iter().map(|k| (k.entry, k.subject)).collect();
+            let removed: Vec<(String, String)> = removed.into_iter().map(|(k, _)| (k.entry, k.subject)).collect();
             let inserted: Vec<(String, String)> = inserted.into_iter().map(|k| (k.entry, k.subject)).collect();
             if let Err(e) = store.sync_fact_clock(&removed, &inserted, now_ms) {
                 tracing::warn!(
@@ -589,6 +654,7 @@ fn about_the_worker(report: &ThreadHeartbeat) -> bool {
 /// the transaction and stores both opaquely.
 fn persist_heartbeat(
     store: &RegistryStore,
+    failing: &Mutex<crate::logs::Relog>,
     worker_id: &str,
     reports: &[ThreadHeartbeat],
     worker: &WorkerFacts,
@@ -634,21 +700,32 @@ fn persist_heartbeat(
         stopped_at_ms: worker.stopped_at_ms,
         now_ms,
     });
-    if let Err(e) = &recorded {
-        // One transaction, so this is the whole heartbeat's mirror rather than a count of the rows that failed. An
-        // example row rides along: a store that refuses the same point every beat is diagnosable only by what it
-        // refused, and the counts alone cannot name it.
-        tracing::warn!(
-            target: "registry.heartbeat_not_persisted",
-            subject = %worker_id,
-            threads = threads.len(),
-            points = points.len(),
-            metric = points.first().map(|p| p.metric).unwrap_or_default(),
-            subject_key = points.first().map(|p| p.subject_key.as_str()).unwrap_or_default(),
-            error = %e,
-            "a heartbeat's durable mirror could not be written, so the worker is refused and sends its window \
-             again. `metric` and `subject_key` are the first point it carried, as an example of the shape"
-        );
+    let mut failing = failing.lock().unwrap_or_else(|e| e.into_inner());
+    match &recorded {
+        Err(e) => {
+            // One transaction, so this is the whole heartbeat's mirror rather than a count of the rows that failed.
+            // An example row rides along: a store that refuses the same point every beat is diagnosable only by what
+            // it refused, and the counts alone cannot name it.
+            failing.fail(e.to_string());
+            if let Some(error) = failing.due() {
+                tracing::warn!(
+                    target: "registry.heartbeat_not_persisted",
+                    subject = %worker_id,
+                    threads = threads.len(),
+                    points = points.len(),
+                    metric = points.first().map(|p| p.metric).unwrap_or_default(),
+                    subject_key = points.first().map(|p| p.subject_key.as_str()).unwrap_or_default(),
+                    error,
+                    "a heartbeat's durable mirror could not be written, so the worker is refused and sends its window \
+                     again. `metric` and `subject_key` are the first point it carried, as an example of the shape"
+                );
+            }
+        }
+        Ok(()) => {
+            if failing.clear() {
+                tracing::info!(target: "registry.heartbeats_persisted_again", "heartbeats are being mirrored to disk again");
+            }
+        }
     }
 
     store.maybe_maintain(now_ms);
@@ -954,6 +1031,35 @@ mod tests {
             starts[&key], 9_000,
             "gone once, so this is a new occurrence, not the old one continuing"
         );
+    }
+
+    #[test]
+    fn an_issue_is_logged_when_it_begins_and_when_it_clears() {
+        let r = Registry::default();
+        let key = FactKey::new("source_blocked", r#"["prod","syslog"]"#);
+        let began = crate::logs::said(|| {
+            r.observe_facts(&HashSet::from([key.clone()]), 1_000);
+            // Still active: nothing new to say.
+            r.observe_facts(&HashSet::from([key.clone()]), 2_000);
+        });
+        assert_eq!(began.len(), 1, "{began:?}");
+        let (level, site, fields) = &began[0];
+        assert_eq!((*level, site.as_str()), (tracing::Level::WARN, "issues.began"));
+        let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(field("issue"), Some("sourceBlocked"));
+        assert_eq!(field("group"), Some("prod"));
+        assert_eq!(field("subject"), Some("syslog"));
+        assert_eq!(field("message"), Some("an issue began"));
+
+        let cleared = crate::logs::said(|| {
+            r.observe_facts(&HashSet::new(), 61_000);
+        });
+        assert_eq!(cleared.len(), 1, "{cleared:?}");
+        let (level, site, fields) = &cleared[0];
+        assert_eq!((*level, site.as_str()), (tracing::Level::INFO, "issues.cleared"));
+        let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(field("held_secs"), Some("60"));
+        assert_eq!(field("message"), Some("an issue cleared"));
     }
 
     #[test]

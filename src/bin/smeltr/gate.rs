@@ -29,7 +29,7 @@ use axum::response::{IntoResponse, Response};
 use smeltr::leader::access::{Access, ByAgent, Level, given_by};
 use smeltr::leader::auth::hash_secret;
 use smeltr::leader::blocking;
-use smeltr::leader::envelope::Refusal;
+use smeltr::leader::envelope::{Reason, Refusal, log_refused};
 use smeltr::leader::sessions::{Refused, Sessions};
 use smeltr::leader::store::{Actor, AuthSource, Store, StoreError, UserRecord};
 use smeltr::leader::throttle::LoginThrottle;
@@ -161,6 +161,14 @@ pub fn store_unavailable() -> Response {
     refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable")
 }
 
+/// [`store_unavailable`], with `what` failed and how as the answer's reason: the layer that shapes the answer logs
+/// it with the call, once a minute while it repeats, and the body still names no file.
+pub fn store_unavailable_because(what: &str, e: &dyn std::fmt::Display) -> Response {
+    let mut response = store_unavailable();
+    response.extensions_mut().insert(Reason(format!("{what}: {e}")));
+    response
+}
+
 /// The session token this request carries, if any.
 ///
 /// Every `Cookie` header line, not just the first: HTTP/2 lets a client send more than one, and Firefox does --
@@ -268,10 +276,7 @@ pub async fn require_principal(
     .await;
     let user = match looked_up {
         Ok(user) => user,
-        Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "the account store could not be read");
-            return store_unavailable();
-        }
+        Err(e) => return store_unavailable_because("the account store could not be read", &e),
     };
 
     let Some((user, access)) = user.filter(|(u, _)| admitted(u) && u.generation == session.generation) else {
@@ -377,10 +382,10 @@ async fn key_account_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Act
             "this key was revoked or has expired, or its account is disabled",
         ))),
         Ok(None) => Err(Box::new(refuse(StatusCode::UNAUTHORIZED, "this key is not known"))),
-        Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "the account store could not be read");
-            Err(Box::new(store_unavailable()))
-        }
+        Err(e) => Err(Box::new(store_unavailable_because(
+            "the account store could not be read",
+            &e,
+        ))),
     }
 }
 
@@ -420,28 +425,56 @@ pub async fn uncached(req: axum::extract::Request, next: axum::middleware::Next)
 /// handler's own failure already is one. The worker family carries no envelope (`docs/architecture/api.md`), so it
 /// is left as it is.
 pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    let path = req.uri().path();
-    let enveloped = path.starts_with("/api/") && !path.starts_with("/api/worker/");
+    let path = req.uri().path().to_string();
+    let method = req.method().to_string();
+    let api = path.starts_with("/api/");
+    let enveloped = api && !path.starts_with("/api/worker/");
     let response = next.run(req).await;
+    let status = response.status();
+    if !api || !(status.is_client_error() || status.is_server_error()) {
+        return response;
+    }
+    // A handler's own refusal says why on the response (`Envelope`), and is answered as it is.
+    if let Some(said) = response.extensions().get::<Reason>() {
+        log_refused(&method, &path, status, &said.0);
+        return response;
+    }
     let json = response
         .headers()
         .get(header::CONTENT_TYPE)
         .is_some_and(|t| t.as_bytes().starts_with(b"application/json"));
-    let status = response.status();
-    if !enveloped || json || !(status.is_client_error() || status.is_server_error()) {
+    if json {
+        log_refused(&method, &path, status, status.canonical_reason().unwrap_or_default());
         return response;
     }
-    // A rejection's text is a line. Anything longer is not one, and is answered by its status alone.
-    let text = axum::body::to_bytes(response.into_body(), 4096)
-        .await
-        .unwrap_or_default();
-    let text = String::from_utf8_lossy(&text);
+    // A rejection's text is a line. Anything longer is not one, and is answered by its status alone. A worker
+    // route's answer is read only when its length says it is a line, and goes out as the bytes it was: its family
+    // carries no envelope, and a body this did not read is not one it may answer for.
+    let line = response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|l| l.to_str().ok()?.parse::<usize>().ok())
+        .is_some_and(|l| l <= LINE_AT_MOST);
+    if !enveloped && !line {
+        log_refused(&method, &path, status, status.canonical_reason().unwrap_or_default());
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, LINE_AT_MOST).await.unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes);
     let message = match text.trim() {
         "" => status.canonical_reason().unwrap_or("refused").to_lowercase(),
         text => text.to_string(),
     };
+    log_refused(&method, &path, status, &message);
+    if !enveloped {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    }
     refuse(status, &message)
 }
+
+/// The most a refusal's text may be to count as a line, in bytes.
+const LINE_AT_MOST: usize = 4096;
 
 /// Whether `user` may hold a session at all: any enabled account that signs in, and what it may then do is the
 /// policy's to decide. A key account never holds one: it calls with a key.
@@ -703,6 +736,63 @@ mod tests {
             assert_eq!(body["errors"].as_array().map(Vec::len), Some(1), "{body}");
             assert_eq!(body["errors"][0]["message"], message);
         }
+    }
+
+    /// A worker route's refusal goes out as the bytes the handler wrote, whether or not `shape` read it for its
+    /// reason: its family carries no envelope, and a worker reads the body. The length header must say what goes
+    /// out, or the worker reads a body that ends early. An operator route's refusal is answered in the envelope.
+    #[tokio::test]
+    async fn a_refusal_goes_out_as_it_was_on_a_worker_route_and_enveloped_elsewhere() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use tower_service::Service;
+
+        let line = "could not record this heartbeat: the store is away".to_string();
+        let long = "x".repeat(LINE_AT_MOST + 1);
+        let refusing = |text: String| move || async move { (StatusCode::SERVICE_UNAVAILABLE, text) };
+        let mut app = Router::new()
+            .route("/api/worker/line", get(refusing(line.clone())))
+            .route("/api/worker/long", get(refusing(long.clone())))
+            .route("/api/operator", get(refusing(line.clone())))
+            .layer(axum::middleware::from_fn(shape));
+        let mut answer = |path: &'static str| {
+            let request = Request::get(path).body(Body::empty()).unwrap();
+            let call = app.call(request);
+            async move {
+                let response = call.await.unwrap();
+                let status = response.status();
+                let content_type = response.headers().get(header::CONTENT_TYPE).cloned();
+                let length = response
+                    .headers()
+                    .get(header::CONTENT_LENGTH)
+                    .and_then(|l| l.to_str().ok()?.parse::<usize>().ok());
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                (status, content_type, length, body)
+            }
+        };
+
+        for (path, text) in [("/api/worker/line", &line), ("/api/worker/long", &long)] {
+            let (status, content_type, length, body) = answer(path).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
+            assert_eq!(body, text.as_bytes(), "{path}: the body is the handler's");
+            assert_eq!(length, Some(text.len()), "{path}: the length says what goes out");
+            assert_ne!(
+                content_type.as_ref().map(|t| t.as_bytes()),
+                Some(b"application/json".as_slice()),
+                "{path}: a worker route carries no envelope"
+            );
+        }
+
+        let (status, content_type, _, body) = answer("/api/operator").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            content_type.as_ref().map(|t| t.as_bytes()),
+            Some(b"application/json".as_slice())
+        );
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("an operator refusal is JSON");
+        assert_eq!(body["errors"][0]["message"], line);
     }
 
     /// The gate over real routes and a real store, with roles: what an OIDC account holds is what it may do.

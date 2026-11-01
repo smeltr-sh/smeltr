@@ -147,7 +147,7 @@ pub fn ensure(dir: &Path, sans: Vec<String>, validity: Duration, required: &[Str
             });
         }
     };
-    tracing::warn!(target: "leader.certificate_unserved", "{why}");
+    tracing::warn!(target: "leader.certificate_unserved", why = %why, "the leader is not serving its own certificate");
     // Parted until something is served again: everything that reads what is in force waits for that.
     with_generations(dir, |held| {
         held.disk += 1;
@@ -183,7 +183,7 @@ fn serve_temporary(dir: &Path, sans: &[String], validity: Duration, failed: Stri
         "This leader is serving a temporary certificate, because {problem}. Once the key is restored or regenerated, \
          it serves the certificate \"{OWN_ENTRY}\" again."
     );
-    tracing::warn!(target: "leader.certificate_unserved", "{why}");
+    tracing::warn!(target: "leader.certificate_unserved", why = %why, "the leader is not serving its own certificate");
     with_generations(dir, |held| {
         held.disk += 1;
         held.unserved = Some(why);
@@ -1098,9 +1098,12 @@ pub fn begin_rotation(dir: &Path, validity: Duration, deadline_millis: i64, now_
         // A rotation whose root reached no file is one nothing can finish: promoting its key would leave
         // `ca-key.pem` signing for an authority `ca.pem` does not hold, and every path out of that reads the same
         // way. Nothing was promised to anybody yet, so the whole of it goes back.
-        let _ = remove_file_durably(&dir.join(NEXT_CA_KEY));
+        if let Err(cleanup) = remove_file_durably(&dir.join(NEXT_CA_KEY)) {
+            tracing::debug!(target: "leader.rotation_not_cleaned", error = %cleanup, "a rotation that did not begin left its key behind");
+        }
         return Err(e);
     }
+    tracing::info!(target: "leader.rotation_begun", incoming = %state.incoming, outgoing = %state.outgoing, cuts_over_in_secs = (deadline_millis - now_ms) / 1000, "a rotation of the fleet's certificate authority began");
     Ok(state)
 }
 
@@ -1126,7 +1129,9 @@ fn open(dir: &Path, state: &Rotation, now_ms: i64) -> Result<(), String> {
         .and_then(|serving| retire_expired(&serving, &state.outgoing, now_ms))
         .and_then(|kept| publish_bundle(&bundle_path, &kept, state));
     if let Err(e) = published {
-        let _ = remove_rotation(dir);
+        if let Err(cleanup) = remove_rotation(dir) {
+            tracing::debug!(target: "leader.rotation_not_cleaned", error = %cleanup, "a rotation that did not open left its intent behind");
+        }
         return Err(e);
     }
     Ok(())

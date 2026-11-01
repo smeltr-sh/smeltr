@@ -82,6 +82,16 @@ pub enum Challenge {
 }
 
 impl Challenge {
+    pub const ALL: [Challenge; 3] = [Challenge::TlsAlpn01, Challenge::Http01, Challenge::Dns01];
+
+    /// How long an order over it may take before it is given up on.
+    pub fn order_within(self) -> std::time::Duration {
+        match self {
+            Challenge::Dns01 => DNS_ORDER_TIMEOUT,
+            Challenge::TlsAlpn01 | Challenge::Http01 => ORDER_TIMEOUT,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Challenge::TlsAlpn01 => "tls-alpn-01",
@@ -169,9 +179,9 @@ pub struct State {
     pub renew_after_millis: Option<i64>,
     #[serde(default)]
     pub last_attempt_millis: Option<i64>,
-    /// Why the last attempt failed. Cleared by one that succeeds.
+    /// Why the last attempt failed, logged when it was recorded. Cleared by one that succeeds.
     #[serde(default)]
-    pub last_error: Option<String>,
+    pub last_error: Option<crate::logs::Noted>,
 }
 
 pub fn dir_of(tls_dir: &Path) -> PathBuf {
@@ -309,10 +319,7 @@ pub async fn order(
         .serialize_request(&key)
         .map_err(|e| format!("the certificate request: {e}"))?;
 
-    let within = match settings.challenge {
-        Challenge::Dns01 => DNS_ORDER_TIMEOUT,
-        Challenge::TlsAlpn01 | Challenge::Http01 => ORDER_TIMEOUT,
-    };
+    let within = settings.challenge.order_within();
     let issued = tokio::time::timeout(within, issuer.issue(&settings.names, csr.der(), prover)).await;
     prover.done().await;
     let chain = match issued {
@@ -325,20 +332,28 @@ pub async fn order(
     let (chain, ca) = root_of(&chain, &settings.authority)?;
     let ca = ca.into_bytes();
     tls::check_supplied(&chain, &key, &ca, names, required)?;
-    let rotates = tls::supplying_changes_root(tls_dir, &chain, &ca)?;
-    // Under another root, it would begin a rotation while one is open: refused here, before a caller records one
-    // beginning. The order is spent, since only the issued certificate says which root it is under.
-    if rotates {
-        tls::rotation_may_begin(tls_dir, tls::Installs::Supplied).map_err(|e| e.message().to_string())?;
-    }
     let certificate = tls::describe(&chain, "the certificate")?;
-    Ok(Issued {
+    let mut issued = Issued {
         chain,
         key,
         ca,
         certificate,
-        rotates,
-    })
+        rotates: false,
+    };
+    against_served(tls_dir, &mut issued)?;
+    Ok(issued)
+}
+
+/// Sets whether `issued` changes the root, against what is served now. A caller that waited since the order
+/// asks again under its lock on what is served, before it writes.
+pub fn against_served(tls_dir: &Path, issued: &mut Issued) -> Result<(), String> {
+    issued.rotates = tls::supplying_changes_root(tls_dir, &issued.chain, &issued.ca)?;
+    // Under another root, it would begin a rotation while one is open: refused here, before a caller records one
+    // beginning. The order is spent, since only the issued certificate says which root it is under.
+    if issued.rotates {
+        tls::rotation_may_begin(tls_dir, tls::Installs::Supplied).map_err(|e| e.message().to_string())?;
+    }
+    Ok(())
 }
 
 /// `chain` as it is served, and the root that signed it, PEM: as [`tls::split_root`] finds it, from `authority`
@@ -418,20 +433,66 @@ pub fn abandoned(tls_dir: &Path) -> Result<(), String> {
     )
 }
 
-/// Records that an attempt at `now_ms` failed with `error`, keeping what the last success left.
-pub fn failed(tls_dir: &Path, now_ms: i64, error: &str) -> Result<(), String> {
+/// Records that an attempt at `now_ms` against `directory` failed with `error`, keeping what the last success left.
+pub fn failed(tls_dir: &Path, now_ms: i64, directory: &str, error: &str) -> Result<(), String> {
     let mut state = state(tls_dir)?;
     state.last_attempt_millis = Some(now_ms);
-    state.last_error = Some(error.to_string());
+    state.last_error = Some(crate::noted!(
+        target: "leader.acme_order_failed",
+        "ordering a certificate failed",
+        error.to_string(),
+        directory
+    ));
     write_state(tls_dir, &state)
 }
 
 // -- the authority, over ACME -------------------------------------------------------------------------------------
 
+/// Where an order is, for a page that shows it while it runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Step {
+    /// Waiting for an earlier change to the settings to finish.
+    Queued,
+    /// Reaching the authority and the account this leader holds there.
+    Account,
+    /// Giving the authority the proof for each name.
+    Proving,
+    /// Publishing a DNS-01 record through the provider.
+    Publishing,
+    /// Waiting for the zone's nameservers to answer the record.
+    Propagating,
+    /// Waiting for the authority to check the proofs and issue.
+    Validating,
+    /// Storing and serving what was issued.
+    Installing,
+}
+
+/// The step the running order is on, and since when, or none while no order runs. One per leader, shared by
+/// whatever takes part in an order.
+#[derive(Default)]
+pub struct Progress(Mutex<Option<(Step, i64)>>);
+
+impl Progress {
+    pub fn set(&self, step: Step) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some((step, crate::leader::warnings::now_millis()));
+    }
+
+    pub fn clear(&self) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// The step and when it began, in milliseconds.
+    pub fn now(&self) -> Option<(Step, i64)> {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// A certificate authority reached at its directory URL, with the account this leader holds there.
 pub struct Directory {
     settings: Settings,
     tls_dir: PathBuf,
+    progress: Arc<Progress>,
 }
 
 impl Directory {
@@ -439,7 +500,13 @@ impl Directory {
         Directory {
             settings,
             tls_dir: tls_dir.to_path_buf(),
+            progress: Arc::default(),
         }
+    }
+
+    /// Saying each step to `progress`.
+    pub fn reporting(self, progress: Arc<Progress>) -> Directory {
+        Directory { progress, ..self }
     }
 
     /// A client for the authority: TLS through this process's provider, trusting the platform's roots and the
@@ -524,6 +591,7 @@ struct SavedAccount {
 impl Issuer for Directory {
     async fn issue(&self, names: &[String], csr_der: &[u8], prover: &dyn Prover) -> Result<String, String> {
         let account = self.account().await?;
+        tracing::info!(target: "leader.acme_account", directory = %self.settings.directory, "holding an account at the certificate authority");
         let identifiers: Vec<Identifier> = names
             .iter()
             .map(|name| match name.parse() {
@@ -535,6 +603,7 @@ impl Issuer for Directory {
             .new_order(&NewOrder::new(&identifiers))
             .await
             .map_err(|e| format!("the order was refused: {e}"))?;
+        tracing::info!(target: "leader.acme_order_placed", names = %names.join(","), "the certificate authority took the order");
 
         let kind = match self.settings.challenge {
             Challenge::TlsAlpn01 => ChallengeType::TlsAlpn01,
@@ -554,6 +623,8 @@ impl Issuer for Directory {
                     self.settings.challenge.as_str()
                 )
             })?;
+            self.progress.set(Step::Proving);
+            tracing::info!(target: "leader.acme_proving", %name, challenge = self.settings.challenge.as_str(), "proving a name to the certificate authority");
             let key_authorization = challenge.key_authorization();
             match self.settings.challenge {
                 Challenge::TlsAlpn01 => prover.tls_alpn(&name, key_authorization.digest().as_ref()).await?,
@@ -564,8 +635,10 @@ impl Issuer for Directory {
                 .set_ready()
                 .await
                 .map_err(|e| format!("the challenge for {name}: {e}"))?;
+            tracing::info!(target: "leader.acme_proof_ready", %name, "told the certificate authority to check the proof");
         }
 
+        self.progress.set(Step::Validating);
         let retries = RetryPolicy::new().timeout(ORDER_TIMEOUT);
         match order.poll_ready(&retries).await {
             Ok(OrderStatus::Ready) => {}
@@ -577,6 +650,7 @@ impl Issuer for Directory {
             }
             Err(e) => return Err(format!("waiting for the authority to validate: {e}")),
         }
+        tracing::info!(target: "leader.acme_validated", "the certificate authority validated every name");
         order
             .finalize_csr(csr_der)
             .await
@@ -727,7 +801,12 @@ impl Prover for Proving {
             let _ = listening.stop.send(());
             // Until the port is free again, so a renewal that follows at once can bind it. A validator still mid-
             // request holds it a moment; one that never let go is not waited for.
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), listening.stopped).await;
+            if tokio::time::timeout(std::time::Duration::from_secs(5), listening.stopped)
+                .await
+                .is_err()
+            {
+                tracing::debug!(target: "leader.acme_http_not_stopped", "the HTTP-01 listener did not stop within 5s, so the next order may find its port held");
+            }
         }
     }
 }
@@ -1161,7 +1240,7 @@ mod tests {
             },
         )
         .unwrap();
-        failed(&dir, NOW, "the authority is down").unwrap();
+        failed(&dir, NOW, "https://acme.test/dir", "the authority is down").unwrap();
         let state = state(&dir).unwrap();
         assert_eq!(state.renew_after_millis, Some(NOW));
         assert_eq!(state.last_attempt_millis, Some(NOW));
@@ -1180,7 +1259,7 @@ mod tests {
         assert!(renews(&issued, NOW));
         assert!(!renews(&issued, NOW - 1));
         let never = State {
-            last_error: Some("the authority is down".to_string()),
+            last_error: Some(crate::logs::Noted::unlogged("the authority is down")),
             ..State::default()
         };
         assert!(!renews(&never, NOW));

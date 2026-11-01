@@ -253,6 +253,7 @@ fn status_of(result: Result<ureq::http::Response<ureq::Body>, ureq::Error>, what
 const OPERATOR_ROUTES: &[&str] = &[
     "/api/health",
     "/api/warnings",
+    "/api/metrics",
     "/api/flow",
     "/api/streams",
     "/api/logs",
@@ -2162,6 +2163,28 @@ fn key_for(leader: &Leader, op: &Operator, id: &str) -> (String, String) {
     )
 }
 
+/// A scraper comes in as a key account, with its key, and is answered in the format Prometheus scrapes.
+#[test]
+fn a_key_scrapes_the_warnings_as_prometheus_reads_them() {
+    let leader = start("key-scrape");
+    let op = operator(&leader);
+    let id = key_account(
+        &leader,
+        &op,
+        serde_json::json!({ "displayName": "prometheus", "roles": ["administrator"] }),
+    );
+    let (key, _) = key_for(&leader, &op, &id);
+    let response = ureq::get(format!("{}/api/metrics", leader.base))
+        .header("authorization", format!("Bearer {key}"))
+        .call()
+        .expect("the scrape was answered");
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response.headers().get("content-type").and_then(|v| v.to_str().ok()),
+        Some("text/plain; version=0.0.4; charset=utf-8")
+    );
+}
+
 /// A key holds what its account's roles give, and nothing it does not.
 #[test]
 fn a_key_calls_the_api_with_what_its_accounts_roles_give() {
@@ -3554,4 +3577,115 @@ fn live_keycloak_refreshes_and_ends_sessions() {
     eventually("ending the session at Keycloak ending it here", || {
         !signed_in(&leader, &second)
     });
+}
+
+/// One request a local webhook took: its head and its body, as text.
+fn webhook_once() -> (String, std::sync::mpsc::Receiver<String>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let url = format!(
+        "http://127.0.0.1:{}/hook?sig=abc",
+        listener.local_addr().unwrap().port()
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("the leader called");
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut head = String::new();
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = n.trim().parse().unwrap();
+            }
+            if line == "\r\n" {
+                break;
+            }
+            head.push_str(&line);
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        (&stream)
+            .write_all(b"HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\n\r\n")
+            .unwrap();
+        tx.send(format!("{head}\r\n{}", String::from_utf8_lossy(&body)))
+            .unwrap();
+    });
+    (url, rx)
+}
+
+/// An administrator saves a webhook with its secret, reads it back without the secret, and sends it a test that
+/// carries the secret header to the URL as given, query and all.
+#[test]
+fn an_alert_channel_keeps_its_secret_and_takes_a_test() {
+    let leader = start("alerts");
+    let op = operator(&leader);
+    let (url, took) = webhook_once();
+    let channel = serde_json::json!({
+        "id": "",
+        "name": "Tines paging",
+        "kind": { "type": "webhook", "url": url, "format": "genericJson", "secretHeader": "X-Tines-Secret" },
+        "includeMessage": false,
+        "conditions": ["sourceUnreachable"],
+    });
+    let mut with_secret = channel.clone();
+    with_secret["secret"] = "s3cr3t-value".into();
+    let (status, body) = leader.put_as(
+        &op,
+        "/api/settings/alerts/channels",
+        serde_json::json!({ "channels": [with_secret] }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (_, read) = leader.get_as(&op.session, "/api/settings/alerts");
+    let saved = &read["settings"]["channels"][0];
+    assert_eq!(saved["secretSet"], true, "{read}");
+    assert_ne!(saved["id"], "", "a new channel is given its id");
+    assert!(!read.to_string().contains("s3cr3t-value"), "{read}");
+
+    let mut saved_channel = channel.clone();
+    saved_channel["id"] = saved["id"].clone();
+    let (status, body) = leader.post_as(&op, "/api/settings/alerts/test", saved_channel);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], 202, "{body}");
+    let request = took
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the webhook was called");
+    assert!(request.starts_with("POST /hook?sig=abc "), "{request}");
+    assert!(
+        request.to_ascii_lowercase().contains("x-tines-secret: s3cr3t-value"),
+        "{request}"
+    );
+    assert!(request.contains(r#""status":"test""#), "{request}");
+
+    let mut elsewhere = channel.clone();
+    elsewhere["id"] = saved["id"].clone();
+    elsewhere["kind"]["url"] = "https://elsewhere.example.com/hook".into();
+    let (status, body) = leader.post_as(&op, "/api/settings/alerts/test", elsewhere);
+    assert_eq!(status, 422, "the stored secret is sent only to its own URL: {body}");
+    assert!(
+        body.to_string().contains("enter the secret header value again"),
+        "{body}"
+    );
+}
+
+/// What a channel is, and the mail server's, is the administrator's: a viewer reads none of it.
+#[test]
+fn only_an_administrator_reads_the_alert_settings() {
+    let leader = start("alerts-viewer");
+    let op = operator(&leader);
+    let (status, body) = leader.put_as(
+        &op,
+        "/api/roles/smeltr-readers",
+        serde_json::json!({ "areas": { "shared": "viewer" } }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let id = key_account(
+        &leader,
+        &op,
+        serde_json::json!({ "displayName": "reader", "roles": ["smeltr-readers"] }),
+    );
+    let (key, _) = key_for(&leader, &op, &id);
+    let (status, body) = with_key(&leader, &key, "GET", "/api/settings/alerts", None);
+    assert_eq!(status, 403, "{body}");
 }

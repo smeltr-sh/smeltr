@@ -101,6 +101,28 @@ about to exit prints and goes, since a buffer has nothing to offer a process
 that will not outlive the handoff; an orderly exit empties the buffer first,
 bounded so that logs delay an exit no more than they may block a write.
 
+### What a line says
+
+A line's severity is what it asks of whoever reads it:
+
+| Level | What it is |
+|---|---|
+| error | Data was lost or may have been, or the process cannot do its job until a person acts. |
+| warn | Something failed that the process retries, degrades under or refuses, and an operator should know. |
+| info | A state change an operator wants in the record: started, deployed, connected, recovered, changed by whom. |
+| debug | A decision taken on the way, and a step skipped: what it chose, what it saw, what it left out. |
+| trace | Per row, per frame, per request. |
+
+A failure that begins has a line that ends it: the `cleared` or `recovered`
+line carries how long it held, so a reader of the log alone can see the
+outage whole. A failure that repeats is said once, with its count, not once
+per retry; what a loop refuses it reports once with a count. A site
+is a literal `subsystem.event` with one constant sentence, and what varies
+rides in fields: `subject` names the thing the line is about, `error` carries
+what failed. Every refused answer the leader gives is logged by the layer
+that shapes it, and every audit row by the store that writes it, so neither
+depends on the handler remembering to.
+
 ## What a heartbeat carries
 
 A heartbeat is fresh state and one window. The state -- what each thread is
@@ -265,7 +287,22 @@ counts; the newest suggestion is the one served.
 
 A leader writes its own logs into the same table, under the
 name `leader`, so an administrator reads them where they read the fleet's, and
-they count against the same cap.
+they count against the same cap. Among them is every issue's history: the
+fact clock that times an issue logs its beginning and its end, so what the
+Issues page no longer shows can still be read. Such a line is the issue
+itself, and the catalog's "a worker logged warnings" entry leaves it out.
+A failure a page shows from the leader's own state -- why the last ACME order
+failed, why the remote is not followed, why a save is not on the host, why the
+list of releases was not read -- is logged where it is recorded, by
+construction: the message is held as a `Noted`, which only the line that logs
+it can make, so a stored failure that was never logged does not compile; past
+the store, where one is read back, the guarantee holds by convention. A line
+that is a catalog issue's own carries the issue's name, as an issue's lines do,
+so the catalog says it once.
+Every refused API call is logged by the layer that shapes every answer
+(`docs/architecture/api.md`, The answer): a 4xx at debug, since it is the
+caller's and read only when looked for, and a 5xx at error, since it is the
+leader's.
 
 ## Seams
 

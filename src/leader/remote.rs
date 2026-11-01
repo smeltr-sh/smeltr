@@ -22,7 +22,7 @@ use axum::extract::State;
 use crate::lookup::store::{self, Pointer};
 
 use super::envelope::{Envelope, Refusal};
-use super::store::{Actor, Store, StoreError};
+use super::store::{Actor, SecretSave, Store, StoreError};
 use super::{AppState, git, run_store, tree};
 
 pub const URL_KEY: &str = "git.remote.url";
@@ -122,7 +122,8 @@ fn is_plain(url: &str) -> bool {
 pub struct Failure {
     /// The remote's head it was about, when the fetch got that far.
     pub commit: Option<String>,
-    pub message: String,
+    /// Logged when the sync first failed this way.
+    pub message: crate::logs::Noted,
     /// When syncs began failing, unix millis.
     pub since: i64,
 }
@@ -163,8 +164,9 @@ pub fn sync(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>
     if let Some(running) = git::deployed(repo).filter(|running| *running != head) {
         fetch_lookup_files(repo, &running, remote).map_err(refused)?;
     }
-    if git::main_head(repo).as_deref() != Some(head.as_str()) {
+    if let Some(from) = git::main_head(repo).filter(|main| *main != head) {
         git::follow(repo, &head).map_err(|e| refused(e.message))?;
+        tracing::info!(target: "remote.followed", %from, to = %head, "main followed the remote");
     }
     // Asked on every sync, not only the one that moved `main`: the fleet stays held until the remote mends it.
     if let Some(why) = git::worse_than_running(repo, &head).map_err(|e| refused(e.message))?
@@ -659,6 +661,9 @@ pub async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
     let mut held = state.remote.state.lock().unwrap_or_else(|e| e.into_inner());
     match synced {
         Ok(head) => {
+            if let Some(failure) = held.failure.take() {
+                tracing::info!(target: "remote.sync_recovered", failed_secs = (now - failure.since) / 1000, "syncing the remote works again");
+            }
             *held = SyncState {
                 synced_at: Some(now),
                 remote_head: head,
@@ -672,6 +677,19 @@ pub async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
                 held.remote_head = commit.clone();
             }
             let since = held.failure.as_ref().map_or(now, |f| f.since);
+            // A sync failing the same way as the last is the same failure, logged once.
+            let message = match held.failure.take() {
+                Some(f) if f.message == *message => f.message,
+                // The failure is the catalog's "remote not followed" issue, which `issue` says, so the catalog's
+                // "leader logged warnings" entry leaves this line out rather than raising the same thing twice.
+                _ => crate::noted!(
+                    target: "remote.sync_failed",
+                    "syncing the remote failed",
+                    message,
+                    issue = super::warnings::Condition::RemoteNotFollowed.name(),
+                    commit = commit.as_deref()
+                ),
+            };
             held.failure = Some(Failure { commit, message, since });
         }
     }
@@ -682,11 +700,14 @@ pub async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
 /// for the settings to change.
 pub async fn poll(state: AppState) {
     loop {
-        let every = run_store(state.store.clone(), configured)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|remote| remote.poll);
+        let every = match run_store(state.store.clone(), configured).await {
+            Ok(remote) => remote.and_then(|remote| remote.poll),
+            // Tried again on the default interval: a store that could not say is not one that said "no remote".
+            Err(e) => {
+                tracing::warn!(target: "remote.settings_unreadable", error = %e, "the git remote settings could not be read, so the sync is tried again later");
+                Some(DEFAULT_POLL)
+            }
+        };
         let Some(every) = every else {
             state.remote.settings_changed.notified().await;
             continue;
@@ -707,7 +728,8 @@ pub async fn poll(state: AppState) {
 pub struct PushFailure {
     /// The save that did not go out; `None` is the branch's deletion. A newer save is pushed afresh.
     pub tip: Option<String>,
-    pub message: String,
+    /// Logged when the push failed.
+    pub message: crate::logs::Noted,
     /// The host's branch is not what this leader last pushed, so the lease refused the push. It stays refused until
     /// the host's branch is overwritten ([`overwrite`]) or the branch is saved again.
     pub refused: bool,
@@ -723,21 +745,43 @@ const PUSH_SCAN: Duration = Duration::from_secs(2);
 /// Push every save to the host for as long as the leader runs. A push that fails is tried again at the poll
 /// interval, so a host that was down gets the save once it is back.
 pub async fn push_saves(state: AppState) {
+    // The scan itself failing -- the settings or the branch list unreadable -- is said once per change and on the
+    // interval, not every two seconds, and said over when a scan works again.
+    let mut failing = crate::logs::Relog::default();
     loop {
         tokio::time::sleep(PUSH_SCAN).await;
         let _pushing = state.remote.pushing.lock().await;
-        let Ok(Some(remote)) = run_store(state.store.clone(), configured).await else {
-            continue;
+        let remote = match run_store(state.store.clone(), configured).await {
+            Ok(Some(remote)) => remote,
+            Ok(None) => continue,
+            Err(e) => {
+                scan_failed(&mut failing, e.to_string());
+                continue;
+            }
         };
         let retry = remote.poll.unwrap_or(DEFAULT_POLL).as_millis() as i64;
         let repo = git::repo_path(&state.data_dir);
         let failures = state.remote.push_failures();
         let now = super::warnings::now_millis();
-        if let Ok(Ok(failures)) =
-            tokio::task::spawn_blocking(move || push_all(&repo, &remote, &failures, now, retry)).await
-        {
-            *state.remote.pushes.lock().unwrap_or_else(|e| e.into_inner()) = failures;
+        let pushed = tokio::task::spawn_blocking(move || push_all(&repo, &remote, &failures, now, retry))
+            .await
+            .unwrap_or_else(|e| Err(format!("internal error: {e}")));
+        match pushed {
+            Ok(failures) => {
+                if failing.clear() {
+                    tracing::info!(target: "remote.push_scan_recovered", "branches are being checked for pushes again");
+                }
+                *state.remote.pushes.lock().unwrap_or_else(|e| e.into_inner()) = failures;
+            }
+            Err(e) => scan_failed(&mut failing, e),
         }
+    }
+}
+
+fn scan_failed(failing: &mut crate::logs::Relog, why: String) {
+    failing.fail(why);
+    if let Some(error) = failing.due() {
+        tracing::warn!(target: "remote.push_scan_failed", error, "branches could not be checked for pushes, so none is pushed until the check works again");
     }
 }
 
@@ -770,12 +814,17 @@ pub fn push_all(
             continue;
         }
         let tip = tip.map(String::as_str);
-        let failed = |message: String, refused: bool, host_tip: Option<String>| PushFailure {
+        let failed = |message: crate::logs::Noted, refused: bool, host_tip: Option<String>| PushFailure {
             tip: tip.map(str::to_string),
             message,
             refused,
             host_tip,
             at: now,
+        };
+        // A push failing the way the last try did is the same failure, logged once, not once per retry.
+        let not_pushed = |message: String| match failures.get(branch) {
+            Some(f) if f.tip.as_deref() == tip && same_failure(&f.message, &message) => f.message.clone(),
+            _ => failed_push(branch, message),
         };
         match push_branch(repo, remote, branch, tip, last.map(String::as_str)) {
             Ok(git::Pushed::Done) => {}
@@ -786,21 +835,41 @@ pub fn push_all(
             // Refused only once the host has said where its branch is: that is what an overwrite leases on.
             Ok(git::Pushed::Refused) => {
                 let failure = match git::host_branch(repo, &remote.url, remote.authorization().as_deref(), branch) {
-                    Ok(host_tip) => failed(refused_message(branch), true, host_tip),
-                    Err(e) => failed(e.message, false, None),
+                    Ok(host_tip) => failed(refused_push(branch), true, host_tip),
+                    Err(e) => failed(not_pushed(e.message), false, None),
                 };
                 still.insert(branch.clone(), failure);
             }
             Err(message) => {
-                still.insert(branch.clone(), failed(message, false, None));
+                still.insert(branch.clone(), failed(not_pushed(message), false, None));
             }
         }
     }
     Ok(still)
 }
 
-fn refused_message(branch: &str) -> String {
-    format!("{branch} on the remote has commits this leader did not push")
+/// The host's branch has moved past what this leader pushed, so the lease refused the push.
+fn refused_push(branch: &str) -> crate::logs::Noted {
+    crate::noted!(
+        target: "remote.push_refused",
+        "the host refused a push: its branch has commits this leader did not push",
+        format!("{branch} on the remote has commits this leader did not push"),
+        %branch
+    )
+}
+
+/// Whether two of git's failures say the same thing. curl's text says how long it took, and on a timeout how much
+/// came, which differ from one try to the next where refusing a connect takes time, as it does on Windows.
+fn same_failure(a: &str, b: &str) -> bool {
+    static TOOK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r" after \d+ (ms|milliseconds)( with \d+ (out of \d+ )?bytes received)?").unwrap()
+    });
+    TOOK.replace_all(a, "") == TOOK.replace_all(b, "")
+}
+
+/// The push did not reach the host, or the host would not take it, for `message`.
+fn failed_push(branch: &str, message: String) -> crate::logs::Noted {
+    crate::noted!(target: "remote.push_failed", "a branch was not pushed", message, %branch)
 }
 
 /// Push `tip` to `branch` on the host, or delete it there for `None`, while the host's branch is at `lease`. Lookup
@@ -881,7 +950,7 @@ pub async fn overwrite(
         Ok(Some((tip, host_tip))) => {
             let failed = PushFailure {
                 tip: Some(tip),
-                message: refused_message(&branch),
+                message: refused_push(&branch),
                 refused: true,
                 host_tip,
                 at: super::warnings::now_millis(),
@@ -948,7 +1017,9 @@ pub fn approve_at(
     }
     // The host has it, so the change is merged whatever happens here; a sync follows it.
     if let Err(e) = git::deploy_squash(data_dir, &squash, author) {
-        let _ = git::delete_branch(data_dir, branch, Some(&squash.tip));
+        if let Err(e) = git::delete_branch(data_dir, branch, Some(&squash.tip)) {
+            tracing::debug!(target: "git.branch_not_deleted", %branch, error = %e.message, "a merged branch was not deleted");
+        }
         return Err(Refusal::internal(format!(
             "{branch} is on the remote's main, but this leader did not deploy it ({}); the next sync follows it",
             e.message
@@ -1059,19 +1130,7 @@ pub async fn put_settings(
             (POLL_KEY, poll.as_secs().to_string()),
             (APPROVE_KEY, request.approve_pushes.to_string()),
         ];
-        // A token is for the remote it was saved with: a new URL, or none, forgets it unless a new one is given.
-        let token = match request.token {
-            None if url != was => Some(String::new()),
-            token => token,
-        };
-        if let Some(token) = token {
-            let stored = if token.is_empty() {
-                token
-            } else {
-                s.sealed_setting(TOKEN_KEY, &token)?
-            };
-            entries.push((TOKEN_KEY, stored));
-        }
+        entries.extend(SecretSave::sent(request.token, url != was).entry(s, TOKEN_KEY)?);
         s.put_settings(&entries, Some(&event))?;
         Ok((url != was, configured(s)?))
     })
@@ -1914,6 +1973,18 @@ mod tests {
     }
 
     #[test]
+    fn a_failure_differing_only_in_how_long_curl_took_to_connect_is_the_same() {
+        let at = |ms: u32| {
+            format!("unable to access: Failed to connect to 127.0.0.1 port 9 after {ms} ms: Couldn't connect")
+        };
+        assert!(same_failure(&at(0), &at(2041)));
+        assert!(!same_failure(&at(0), "unable to access: Could not resolve host"));
+        let timed_out =
+            |ms: u32, got: u32| format!("Operation timed out after {ms} milliseconds with {got} bytes received");
+        assert!(same_failure(&timed_out(30000, 0), &timed_out(30004, 12)));
+    }
+
+    #[test]
     fn a_host_that_is_down_gets_the_save_once_it_is_back() {
         let host = Host::start("down-host");
         let repo = following(&host, "down");
@@ -1927,6 +1998,17 @@ mod tests {
         let failed = push_all(&repo, &down, &HashMap::new(), 1_000, 60_000).unwrap();
         assert!(!failed["al/fix"].refused);
         assert_eq!(failed["al/fix"].tip.as_deref(), Some(tip.as_str()));
+
+        // Tried again once the retry is due and failing the same way: the same failure, not logged again.
+        let said = crate::logs::said(|| {
+            let again = push_all(&repo, &down, &failed, 61_000, 60_000).unwrap();
+            assert_eq!(again["al/fix"].message, failed["al/fix"].message);
+            assert_eq!(again["al/fix"].at, 61_000);
+        });
+        assert!(
+            !said.iter().any(|(_, site, _)| site == "remote.push_failed"),
+            "{said:?}"
+        );
 
         // Not tried again before the retry is due, then pushed once it is.
         assert_eq!(push_all(&repo, &host.remote(), &failed, 2_000, 60_000).unwrap(), failed);
@@ -2080,6 +2162,7 @@ mod tests {
             origin_hosts: Vec::new(),
             remote: Default::default(),
             updates: Default::default(),
+            alerts: Default::default(),
             directives: Default::default(),
             data_dir,
         }
