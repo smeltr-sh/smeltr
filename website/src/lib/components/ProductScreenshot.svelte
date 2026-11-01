@@ -22,6 +22,16 @@
      * would be too small to read. */
     phone?: Shot;
   } = $props();
+
+  let views = $derived.by(() => {
+    const main = { source, height, width, crop };
+    return phone
+      ? [
+          { shot: main, view: 'wide' },
+          { shot: phone, view: 'narrow' },
+        ]
+      : [{ shot: main, view: '' }];
+  });
 </script>
 
 {#snippet image(shot: Shot, theme: string)}
@@ -58,21 +68,22 @@
 
 <figure>
   {#each ['light', 'dark'] as theme}
-    <a
-      class="shot"
-      class:shot-light={theme === 'light'}
-      class:shot-dark={theme === 'dark'}
-      href={`/${source}-${theme}.png`}
-      aria-label={`Open full-size screenshot: ${alt}`}
-    >
-      {#if phone}
-        <div class="wide">{@render image({ source, height, width, crop }, theme)}</div>
-        <div class="narrow">{@render image(phone, theme)}</div>
-      {:else}
-        {@render image({ source, height, width, crop }, theme)}
-      {/if}
-      <span>Open complete screenshot ↗</span>
-    </a>
+    {#each views as { shot, view }}
+      <!-- Each view opens its own shot: the phone's stays readable at full size. The view picks
+           the screen and the link the theme, each by its own `display`. -->
+      <div class={view}>
+        <a
+          class="shot"
+          class:shot-light={theme === 'light'}
+          class:shot-dark={theme === 'dark'}
+          href={`/${shot.source}-${theme}.png`}
+          aria-label={`Open full-size screenshot: ${alt}`}
+        >
+          {@render image(shot, theme)}
+          <span>Open complete screenshot ↗</span>
+        </a>
+      </div>
+    {/each}
   {/each}
   <figcaption>{caption}</figcaption>
 </figure>
