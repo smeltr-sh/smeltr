@@ -42,7 +42,6 @@ const NOT_DEFINED_HERE: &[(&str, &str)] = &[
     ),
     ("sasl_gssapi", "a librdkafka `builtin.features` value"),
     // The operating system's own calls.
-    ("System32", "the Windows directory a service starts in"),
     (
         "setpgid",
         "the unix call a process leaves its group by, escaping a tree kill",
