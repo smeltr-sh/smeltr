@@ -3227,7 +3227,8 @@ mod tests {
     #[test]
     fn the_page_labels_every_condition() {
         let api = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("gui-frontend/src/api.ts"))
-            .expect("the typed client");
+            .expect("the typed client")
+            .replace("\r\n", "\n");
         for condition in Condition::ALL {
             let name = condition.name();
             assert_eq!(
