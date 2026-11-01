@@ -3,13 +3,15 @@
   there when clicked: the steps a refused save or a failed preview points at.
 -->
 <script lang="ts">
+  import Ticked from './Ticked.svelte';
+
   let { links }: { links: { label: string; onClick: () => void }[] } = $props();
 </script>
 
 <div class="links">
   {#each links as link}
     <button type="button" class="link-row" onclick={link.onClick}>
-      <span class="link-label">{link.label}</span>
+      <span class="link-label"><Ticked text={link.label} /></span>
       <span class="link-go">Jump &rarr;</span>
     </button>
   {/each}

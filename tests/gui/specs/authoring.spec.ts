@@ -776,7 +776,7 @@ test('a sample of more than 100 records shows the first 100 until Show all', asy
   const records = admin.getByRole('group', { name: 'Records' });
   const ticks = records.getByRole('checkbox', { name: /^Select record \d/ });
   await expect(ticks).toHaveCount(100);
-  await expect(records.getByText('100 of 150 shown', { exact: true })).toBeVisible();
+  await expect(records.getByText('Showing 100 of 150', { exact: true })).toBeVisible();
   await records.getByRole('button', { name: 'Show all' }).click();
   await expect(ticks).toHaveCount(150);
   await expect(records.getByRole('button', { name: 'Show all' })).toBeHidden();
@@ -1210,7 +1210,7 @@ test('A4: a compile error is written once, on its step, and the error chip jumps
   const body = admin.locator('textarea').last();
   await body.fill('x = ipVersion();');
 
-  const message = '`ipVersion` takes 1 argument, found 0';
+  const message = 'ipVersion takes 1 argument, found 0';
   const failed = admin.getByRole('button', { name: /Compile failed · 1/ });
   await expect(failed).toBeVisible();
   // Focus is where the field's popup used to repeat it.
@@ -1377,7 +1377,7 @@ test('A4: after a refused save, a new compile error is still shown', async ({
   await body.fill('x = ipVersion(1, 2);');
   await admin.getByRole('button', { name: /Compile failed · 1/ }).click();
   await expect(
-    admin.getByText('`ipVersion` takes 1 argument, found 2', { exact: true }),
+    admin.getByText('ipVersion takes 1 argument, found 2', { exact: true }),
   ).toBeVisible();
 });
 
@@ -1409,7 +1409,7 @@ test('A4: a code field is laid out when it is left, and a warning is written on 
   await body.blur();
 
   await expect(body).toHaveValue('let n = 1;\nif (_raw != "") {\n  x = 1;\n} else {\n  x = 2;\n}');
-  await expect(admin.getByText('the local `n` is never read', { exact: true })).toBeVisible();
+  await expect(admin.getByText('the local n is never read', { exact: true })).toBeVisible();
 });
 
 // A4, the whole trip. Save pressed straight from a code field saves the field as it is laid out, however slowly the

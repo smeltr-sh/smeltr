@@ -71,6 +71,7 @@
   import { SvelteMap } from 'svelte/reactivity';
   import StepGlyph from './StepGlyph.svelte';
   import StateMark from './StateMark.svelte';
+  import Ticked from './Ticked.svelte';
   import { errorText, grokCaptures, type GrokPatternDto, type LookupTableDto } from './api';
   import { sharedGrokSuggestions } from './grokPatterns';
   import { beginReconcile, endReconcile } from './grokFields';
@@ -486,7 +487,7 @@
 {#snippet stepMessage(message: string, warn: boolean)}
   <div class="step-error-msg" class:warn>
     <StateMark state={warn ? 'warning' : 'error'} size={15} />
-    <span>{message}</span>
+    <span><Ticked text={message} /></span>
   </div>
 {/snippet}
 

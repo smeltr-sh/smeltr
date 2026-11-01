@@ -14,6 +14,7 @@
   import InlineError from './InlineError.svelte';
   import { tick, untrack } from 'svelte';
   import Recommends from './Recommends.svelte';
+  import Ticked from './Ticked.svelte';
   import { loadExpanded, opening, saveExpanded } from './StepEditor.svelte';
   import { store, stored } from './stored';
   import StepList from './StepList.svelte';
@@ -1342,7 +1343,7 @@
               {#if unplacedErrors.length > 0}
                 <ul>
                   {#each unplacedErrors as e}
-                    <li>{e.message}</li>
+                    <li><Ticked text={e.message} /></li>
                   {/each}
                 </ul>
               {/if}
@@ -1507,7 +1508,7 @@
                   <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
                   <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
                 </svg>
-                <span>{w.message}</span>
+                <span><Ticked text={w.message} /></span>
               </div>
             {/each}
           </div>
