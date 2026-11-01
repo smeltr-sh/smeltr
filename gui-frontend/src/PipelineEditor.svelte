@@ -14,7 +14,7 @@
   import InlineError from './InlineError.svelte';
   import { tick, untrack } from 'svelte';
   import Recommends from './Recommends.svelte';
-  import { opening } from './StepEditor.svelte';
+  import { loadExpanded, opening, saveExpanded } from './StepEditor.svelte';
   import { store, stored } from './stored';
   import StepList from './StepList.svelte';
   import Connections from './Connections.svelte';
@@ -42,6 +42,7 @@
     type StepDiffRow,
     declareProposed,
     PROPOSED_FORMAT_NAMES,
+    newStep,
   } from './pipeline';
   import {
     productionOf,
@@ -52,6 +53,7 @@
   } from './proposal';
   import { fieldsSettled } from './grokFields';
   import { provideUnfinishedRows } from './unfinished.svelte';
+  import { provideProducedSchemas } from './producedSchemas.svelte';
   import RemovableChip from './RemovableChip.svelte';
   import { declaredRecord, type Declared } from './recordDiff';
   import {
@@ -676,6 +678,18 @@
   // the sample away from under whoever is fixing it. `result` still drives
   // the error itself -- this only decides what the grid below it shows.
   let lastGoodResult = $state<PreviewResult | null>(null);
+  // The name boxes and the Fields menu offer the produced schemas' fields, each marked where the record holds it.
+  const produced = provideProducedSchemas();
+  $effect(() => {
+    const declared = [...sharedSchemas, ...ownSchemas];
+    produced.setSchemas(produces.flatMap((sid) => declared.filter((s) => s.id === sid).slice(-1)));
+  });
+  $effect(() => {
+    const d = lastGoodResult?.dictionary;
+    produced.held = new Set(
+      [...(d?.compiled.fields ?? []), ...(d?.sampled?.fields ?? [])].map(([path]) => path),
+    );
+  });
   /** The paths each schema recommends and the run's rows lack, by the schema's title: no warning, told. */
   let recommendedBySchema = $derived.by(() => {
     const out = new Map<string, string[]>();
@@ -952,6 +966,8 @@
   $effect(() => {
     const key = signature;
     void selectedSample;
+    // A run before the scope's schemas load finds the produced ones missing: a standard's takes seconds to load.
+    void ownSchemas;
     // A viewer is shown the steps alone.
     if (readOnly || !autoRun || key === '') return;
     const timer = setTimeout(() => void run(), RECOMPUTE_MS);
@@ -1188,6 +1204,19 @@
   let selectedSampleName = $derived(
     samples.find((s) => s.id === selectedSample)?.name ?? selectedSample,
   );
+
+  /** Writes `path` in the last open eval step, or in a new one at the end, and opens that step for its value. */
+  function assignField(path: string) {
+    const assignment = { target: path, expr: '' };
+    let step = steps.findLast((s) => s.type === 'eval' && loadExpanded(s.id));
+    if (step?.type === 'eval') step.assignments.push(assignment);
+    else {
+      step = { ...newStep('eval'), assignments: [assignment] } as Step;
+      saveExpanded(step.id, true);
+      steps.push(step);
+    }
+    jumpToStepId = step.id;
+  }
 
   async function proposeFields(step: Step) {
     proposalStep = step;
@@ -1552,6 +1581,7 @@
           canLock={canLockTest}
           onlock={goLockTest}
           onjump={(step) => (jumpToStepId = step.id)}
+          onassign={readOnly ? undefined : assignField}
           preview={(steps, sample, filter) => fetchPreview(steps, sample, { filter })}
         >
           {#snippet head()}<InlineError message={proposeError} />{/snippet}

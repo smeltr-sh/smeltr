@@ -79,6 +79,7 @@
     canLock,
     onlock,
     onjump,
+    onassign,
     preview,
     head,
     sampleMenu,
@@ -109,6 +110,8 @@
     canLock: boolean;
     onlock: () => void;
     onjump: (step: Step) => void;
+    /** Writes a field in an eval step; absent where the pipeline is read only. */
+    onassign?: (path: string) => void;
     /** The rows `filter` keeps of `sample` run through `steps`. */
     preview: (steps: Step[], sample: string, filter: string) => Promise<PreviewResult>;
     head?: Snippet;
@@ -685,6 +688,7 @@
       {dictionary}
       onshow={showFields}
       ondefault={() => chosenFields.clear()}
+      {onassign}
       onhas={(path) => {
         showFields([path], true);
         addChip({ kind: 'has', path });
