@@ -47,6 +47,15 @@ async function publishing(served: Locator, heading: RegExp) {
   await expect(served.getByText(/Not waited for/)).toHaveCount(0);
 }
 
+/** Waits for the page to read that an order ended in a certificate. It reads that on its next poll, by when a
+ * fleet may have taken a new root already, so the switch is said as published or as served. */
+async function ordered(served: Locator) {
+  await expect(served.getByRole('status')).toHaveText(
+    /^(the incoming authority is being published to the fleet|this leader is serving the certificate the authority issued)$/,
+    { timeout: 60_000 },
+  );
+}
+
 let uploads = 0;
 
 /** Adds `pki` to the certificate list through the chooser's add link, which comes back to the Leader certificate
@@ -141,7 +150,7 @@ export async function switchToAcme(page: Page, authority: Authority, names: stri
   await fillAcme(served, authority, names);
   await served.getByRole('checkbox', { name: /^I agree/ }).check();
   await served.getByRole('button', { name: 'Get certificate' }).click();
-  await publishing(served, /^Switch to ACME in progress/);
+  await ordered(served);
   await inForce(served, 'ACME');
 }
 
@@ -187,6 +196,6 @@ export async function acmeNewRoot(page: Page, authority: Authority) {
   await advanced(served);
   await served.getByRole('textbox', { name: /^Authority/ }).fill(authority.roots.join(''));
   await served.getByRole('button', { name: 'Renew now' }).click();
-  await publishing(served, /^Moving workers to a new root/);
+  await ordered(served);
   await inForce(served, 'ACME');
 }
