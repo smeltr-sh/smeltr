@@ -382,8 +382,9 @@ flowchart TD
   day after, unless an administrator turns that off. The highest release that is
   no pre-release, when it is newer than the leader's, is announced in a notice
   that links that release's page on smeltr.sh. The request
-  names the leader's release and nothing else about the install, and smeltr.sh
-  counts leaders by release from it. A look that fails raises nothing, so a
+  names the leader's release, operating system and CPU architecture and nothing
+  else about the install. smeltr.sh counts leaders by those, and by the country
+  and network the request comes from, never keeping its address. A look that fails raises nothing, so a
   leader that cannot reach smeltr.sh is never noisy.
 
 ## Damaged stores

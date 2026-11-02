@@ -1,7 +1,8 @@
 //! The look for a newer smeltr: at startup and once a day after, the leader reads the releases published on GitHub,
-//! through smeltr.sh, and keeps the newest that is newer than its own. The request names this leader's release in its
-//! `User-Agent` and nothing else; smeltr.sh counts leaders by release from it (`website/worker`). A look that fails
-//! says why on Admin -> System -> General and raises nothing, so a leader that cannot reach smeltr.sh is never noisy.
+//! through smeltr.sh, and keeps the newest that is newer than its own. The request names this leader's release,
+//! operating system and CPU architecture in its `User-Agent` and nothing else; smeltr.sh counts leaders by them
+//! (`website/worker`). A look that fails says why on Admin -> System -> General and raises nothing, so a leader that
+//! cannot reach smeltr.sh is never noisy.
 //! A build that is no release has nothing to compare and never looks.
 
 use std::time::Duration;
@@ -155,12 +156,17 @@ pub async fn poll(state: AppState) {
     }
 }
 
+/// What the look names itself: `smeltr/1.2.0 (linux; x86_64)`. smeltr.sh reads this shape (`website/worker`).
+fn user_agent(own: &str) -> String {
+    format!("smeltr/{own} ({}; {})", std::env::consts::OS, std::env::consts::ARCH)
+}
+
 /// The newest published release newer than `own`, with its page.
 async fn fetch(own: &str) -> Result<Option<(String, String)>, String> {
     let client = super::outbound::client(RELEASES, "smeltr.sh", TIMEOUT, reqwest::redirect::Policy::limited(3))?;
     let response = client
         .get(RELEASES)
-        .header(reqwest::header::USER_AGENT, format!("smeltr/{own}"))
+        .header(reqwest::header::USER_AGENT, user_agent(own))
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await
@@ -281,6 +287,12 @@ mod tests {
             })
             .collect();
         serde_json::to_vec(&entries).unwrap()
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn the_user_agent_names_the_release_operating_system_and_architecture() {
+        assert_eq!(user_agent("1.2.0"), "smeltr/1.2.0 (linux; x86_64)");
     }
 
     #[test]

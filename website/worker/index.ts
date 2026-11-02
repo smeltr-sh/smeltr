@@ -1,7 +1,9 @@
 // The site's Worker. Every page is an asset; this runs only for /api/* (`run_worker_first` in wrangler.jsonc).
 //
 // /api/releases is the list a leader reads to say a newer release is out (`src/leader/updates.rs`). A leader names
-// its release in its User-Agent, `smeltr/1.2.0`, and nothing else, so a count by release is all this keeps.
+// its release, operating system and CPU architecture in its User-Agent, `smeltr/1.2.0 (linux; x86_64)`, and nothing
+// else; a v1.0.0 leader names only its release. Each look is kept with those and the country and network Cloudflare
+// places the request in, never its address.
 
 interface Env {
   RELEASES: AnalyticsEngineDataset;
@@ -27,8 +29,18 @@ export default {
     if (url.pathname !== '/api/releases' || request.method !== 'GET') {
       return new Response(null, { status: 404 });
     }
-    const release = /^smeltr\/(\S{1,64})$/.exec(request.headers.get('user-agent') ?? '')?.[1];
-    if (release) env.RELEASES.writeDataPoint({ blobs: [release], indexes: [release] });
+    const agent = /^smeltr\/([^\s;()]{1,64})(?: \(([^\s;()]{1,32}); ([^\s;()]{1,32})\))?$/.exec(
+      request.headers.get('user-agent') ?? '',
+    );
+    if (agent) {
+      const [, release, os = '', arch = ''] = agent;
+      const cf = request.cf;
+      env.RELEASES.writeDataPoint({
+        indexes: [release],
+        blobs: [release, os, arch, String(cf?.country ?? ''), String(cf?.asOrganization ?? '')],
+        doubles: [Number(cf?.asn ?? 0)],
+      });
+    }
     return releases(env, ctx);
   },
 };

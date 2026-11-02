@@ -15,9 +15,10 @@
   <h1>Upgrade Smeltr</h1>
   <h2 id="new-release">Know when a release is out</h2>
   <p>
-    Once a day, the leader asks <code>smeltr.sh</code> whether a newer release is out. A newer
-    release shows next to Version on <strong>Admin → System → General</strong>, and on the Issues
-    page. To stop these checks, turn off <strong>Check for new releases</strong> there.
+    Once a day, the leader asks <code>smeltr.sh</code> whether a newer release is out. The check
+    sends the leader's version, operating system and CPU architecture. A newer release shows next to
+    Version on <strong>Admin → System → General</strong>, and on the Issues page. To stop these
+    checks, turn off <strong>Check for new releases</strong> there.
   </p>
   <h2 id="executable">Upgrade the executable</h2>
   <p>Complete this checklist in order:</p>
