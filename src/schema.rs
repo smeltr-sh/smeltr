@@ -7,7 +7,7 @@
 //! one, so a key holding a dot is no schema's to name. A type is spelled as a declaration spells one, so a schema, a
 //! parser and a declaration read the same.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::config_file::{Requirement, SchemaDto, SchemaFieldDto};
@@ -330,15 +330,38 @@ fn fields_of(ty: &DataType) -> Option<&[(String, DataType)]> {
 }
 
 impl Schema {
-    /// Where a record may break the schema: each field whose type the schema's does not hold, and each field the
-    /// schema requires or recommends that the record lacks, in the schema's order. A field the schema does not name
+    /// Where a record may break the schema: each field whose type the schema's does not hold, a key only the fields
+    /// under it name holding anything but an object among them, and each field the schema requires or recommends that
+    /// the record lacks, in the schema's order. A field the schema does not name
     /// keeps it, as does one whose type only the row knows. A field is lacking where the object it sits in is there
     /// and does not declare it: an open object may carry the key, but the pipeline has not shown that it does.
     pub fn check(&self, record: &DataType) -> Vec<Finding> {
         let shape = Shape::of(record);
+        let declared: HashSet<&str> = self.fields.iter().map(|f| f.path.as_str()).collect();
+        let object = DataType::Struct(Vec::new(), true);
         let mut out = Vec::new();
         for f in &self.fields {
             let keys = f.keys();
+            // A key only the fields under it name is an object all the same: a value that is not one breaks it.
+            for under in 1..keys.len() {
+                let at = &keys[..under];
+                let Some(ty) = shape.at.get(at) else { continue };
+                if declared.contains(at.join(".").as_str())
+                    || holds_an_object(ty)
+                    || holds(&object, ty)
+                    || out.iter().any(|o: &Finding| o.keys == at)
+                {
+                    continue;
+                }
+                out.push(Finding {
+                    keys: at.to_vec(),
+                    schema: self.id.clone(),
+                    misfit: Misfit::Type {
+                        ty: (*ty).clone(),
+                        wants: object.spell(),
+                    },
+                });
+            }
             match shape.at.get(&keys) {
                 Some(ty) => {
                     if !holds(&f.ty, ty) {
@@ -882,6 +905,33 @@ mod tests {
                 "login observables.name: i64 not str",
             ],
             "a field under an array is each element's"
+        );
+    }
+
+    #[test]
+    fn a_key_only_the_fields_under_it_name_breaks_where_the_record_holds_no_object_there() {
+        let people = declared("people", "People", vec![row("user.name", "str", false)]);
+        let at_user = |ty: DataType| shown(&people.check(&st(&[("user", ty)])));
+        assert_eq!(at_user(DataType::Str), ["people user: str not {...}"]);
+        assert_eq!(
+            at_user(DataType::Array(Box::new(DataType::Str))),
+            ["people user: array<str> not {...}"]
+        );
+        for fits in [
+            st(&[("name", DataType::Str)]),
+            DataType::Array(Box::new(st(&[("name", DataType::Str)]))),
+            DataType::Null,
+            DataType::Variant,
+        ] {
+            assert!(at_user(fits.clone()).is_empty(), "{}", fits.spell());
+        }
+        let told = told(
+            std::slice::from_ref(&people),
+            &people.check(&st(&[("user", DataType::Str)])),
+        );
+        assert_eq!(
+            told[0].message,
+            "`user` is str, but People has it as {...}. Write it as {...}."
         );
     }
 
