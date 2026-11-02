@@ -1209,6 +1209,16 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
             false => w.group.clone(),
         };
     }
+    let mut by_condition = std::collections::BTreeMap::new();
+    for w in &out {
+        *by_condition.entry(w.condition.name()).or_insert(0usize) += 1;
+    }
+    tracing::trace!(
+        target: "warnings.derived",
+        warnings = out.len(),
+        by_condition = ?by_condition,
+        "the current issues were worked out"
+    );
     Ok(out)
 }
 
