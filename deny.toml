@@ -13,11 +13,6 @@ ignore = [
     # 2026-10-09: the Marvin timing attack on `rsa`, through russh's RSA host and user keys for SFTP. No fixed
     # release exists. Recovering a key needs many timed decryptions; an SSH client only signs, once per sign-in.
     { id = "RUSTSEC-2023-0071", reason = "no fixed rsa release; SFTP's RSA keys need it" },
-    # 2026-10-26: zstd 0.14.3 fixes these, and smeltr is on it. apache-avro 0.22, the newest, still takes zstd 0.13,
-    # which has no fixed release, and only the tests use it, to read Avro files. Each leaves once apache-avro moves.
-    { id = "RUSTSEC-2026-0391", reason = "zstd 0.13, through apache-avro in the tests only" },
-    { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7, through apache-avro in the tests only" },
-    { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7, through apache-avro in the tests only" },
 ]
 
 [licenses]
@@ -55,14 +50,14 @@ skip = [
     { crate = "nom@7.1.3", reason = "asn1-rs, through x509-parser" },
     { crate = "sha2@0.10.9", reason = "mysql_common 0.37, through mysql_async" },
     { crate = "cpufeatures@0.2.17", reason = "sha1 and sha2 0.10, through mysql_async" },
-    { crate = "sha3@0.11.0", reason = "ml-kem, through russh" },
     { crate = "getrandom@0.3.4", reason = "ahash, through arrow" },
     { crate = "hashbrown@0.14.5", reason = "dashmap, through gix-tempfile" },
     { crate = "hashbrown@0.16.1", reason = "clru through gix-pack, and rsqlite-vfs through rusqlite" },
     { crate = "itertools@0.13.0", reason = "prost-derive" },
     { crate = "heck@0.4.1", reason = "ouroboros_macro, through apache-avro" },
-    { crate = "zstd@0.13.3", reason = "apache-avro's zstandard, in the tests" },
-    { crate = "zstd-safe@7.3.0", reason = "zstd 0.13, through apache-avro in the tests" },
+    { crate = "zstd@0.13.4", reason = "apache-avro's zstandard, in the tests" },
+    { crate = "zstd-safe@7.4.0", reason = "zstd 0.13, through apache-avro in the tests" },
+    { crate = "synstructure@0.13.2", reason = "asn1-rs-derive, through x509-parser" },
     { crate = "syn@2.0.119", reason = "gix-macros, tracing-attributes and other proc macros not yet on syn 3" },
     { crate = "num-bigint@0.4.8", reason = "der-parser, through x509-parser" },
     { crate = "spin@0.9.9", reason = "multer, through axum" },

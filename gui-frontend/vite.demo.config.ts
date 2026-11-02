@@ -24,11 +24,12 @@ const gzipRecording: Plugin = {
     for (const [name, asset] of Object.entries(bundle)) {
       if (asset.type === 'asset' && RECORDING.test(name)) {
         delete bundle[name];
-        this.emitFile({
-          type: 'asset',
-          fileName: `${name}.gz`,
-          source: gzipSync(asset.source, { level: 9 }),
-        });
+        const source = gzipSync(asset.source, { level: 9 });
+        if (source.length > 25 * 1024 * 1024)
+          this.error(
+            `${name}.gz is ${source.length} bytes, over the 25 MiB Cloudflare Workers takes`,
+          );
+        this.emitFile({ type: 'asset', fileName: `${name}.gz`, source });
       }
     }
   },
