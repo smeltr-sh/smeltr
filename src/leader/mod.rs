@@ -1076,9 +1076,9 @@ pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning
     Ok(out)
 }
 
-/// What `GET /api/warnings?info=true`, `GET /api/metrics` and the alert channels are given: the fixed catalog (design doc, Control plane), info entries and all,
-/// derived fresh from the registry and the worker roster on every call -- there is no warning table, so this is the
-/// only place the answer lives.
+/// What `GET /api/warnings?info=true`, `GET /api/metrics` and the alert channels are given: the fixed catalog (design
+/// doc, Control plane), info entries and all, derived fresh from the registry and the worker roster on every call --
+/// there is no warning table, so this is the only place the answer lives.
 ///
 /// A route of its own rather than a field on [`HealthResponse`]: the "enrolled, never heartbeating" entry needs the
 /// worker roster, which lives in `Store` and so must be read on the blocking pool ([`run_store`]) -- and
