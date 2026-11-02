@@ -16,7 +16,7 @@ use axum::response::{IntoResponse, Response};
 use smeltr::config_file;
 use smeltr::leader::access::{Access, Level};
 use smeltr::leader::store::Actor;
-use smeltr::leader::{blocking, git, tree};
+use smeltr::leader::{accounts, blocking, git, tree};
 use smeltr::startup_config::leader_data_dir;
 
 use smeltr::leader::envelope::{Envelope, Refusal};
@@ -510,18 +510,37 @@ impl BranchMutation {
 /// comes to exist (design doc, Config plane); this is the one the GUI offers when an author parks one piece of work
 /// and picks
 /// up another.
-pub async fn create_branch(Json(req): Json<CreateBranchRequest>) -> Envelope<BranchMutation> {
-    let created = blocking(move || git::create_branch(&leader_data_dir(), &req.name).map_err(Refusal::from)).await;
+///
+/// A branch is a ref, not a commit, so nothing signs it: the audit row says who started it.
+pub async fn create_branch(
+    axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
+    Extension(actor): Extension<Actor>,
+    Json(req): Json<CreateBranchRequest>,
+) -> Envelope<BranchMutation> {
+    let created = blocking(move || {
+        let head = git::create_branch(&leader_data_dir(), &req.name).map_err(Refusal::from)?;
+        accounts::record(state.store.as_ref(), &actor, "branch-create", &req.name, "ok");
+        Ok::<_, Refusal>(head)
+    })
+    .await;
     created.map_or_else(Envelope::refused, |head| BranchMutation::done(Some(head)))
 }
 
 /// Delete a branch. Work it carries goes with it: a branch is how nothing is lost
 /// while it exists, and deleting one is the deliberate end of that (W10). `main` is refused.
-pub async fn delete_branch(Extension(access): Extension<Access>, AxPath(name): AxPath<String>) -> Response {
+///
+/// The commits it carried go with it, so the audit row is what still says who ended it.
+pub async fn delete_branch(
+    axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
+    Extension(access): Extension<Access>,
+    Extension(actor): Extension<Actor>,
+    AxPath(name): AxPath<String>,
+) -> Response {
     answered(
         blocking(move || {
             refused_to_change(&access, &leader_data_dir(), &name, Level::Editor)?;
             git::delete_branch(&leader_data_dir(), &name, None)?;
+            accounts::record(state.store.as_ref(), &actor, "branch-delete", &name, "ok");
             Ok(BranchMutation::done(None))
         })
         .await,
@@ -1443,6 +1462,7 @@ mod tests {
         let left_at = git::main_head(&repo);
         let commit = save(&data, "work", &[("groups/west/routes.json", b"[]")], "edit west");
         let ann = Actor {
+            recorded: Default::default(),
             id: "u-ann".into(),
             display_name: "Ann".into(),
         };
@@ -1475,6 +1495,7 @@ mod tests {
         let repo = repo_at(&data).unwrap();
         let head = save(&data, "work", &[("groups/west/routes.json", b"[]")], "edit west");
         let ann = Actor {
+            recorded: Default::default(),
             id: "u-ann".into(),
             display_name: "Ann".into(),
         };
@@ -1533,10 +1554,12 @@ mod tests {
         let repo = repo_at(&data).unwrap();
         save(&data, "work", &[("groups/west/routes.json", b"[]")], "edit west");
         let ann = Actor {
+            recorded: Default::default(),
             id: "u-ann".into(),
             display_name: "Ann".into(),
         };
         let bob = Actor {
+            recorded: Default::default(),
             id: "u-bob".into(),
             display_name: "Bob".into(),
         };

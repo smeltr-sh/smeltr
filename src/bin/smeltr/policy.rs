@@ -57,6 +57,19 @@ impl From<Need> for Refusal {
     }
 }
 
+/// Whether `method` on `path` is a request that changes nothing although its method could, and so owes the audit
+/// nothing: a preview, a test run, a turn in a person's own conversation with their agent. What that agent then
+/// changes comes through the gate as its own request. Deleting a conversation is recorded. A route not named here that changes nothing is recorded by the gate
+/// as a change, and warns, until it is named.
+pub fn changes_nothing(method: &Method, path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/") else {
+        return false;
+    };
+    let segments: Vec<&str> = rest.split('/').collect();
+    let looked = segments.contains(&"preview") || segments.last() == Some(&"test-runs");
+    *method == Method::POST && (looked || segments.starts_with(&["agent", "conversations"]))
+}
+
 /// What `method` on `path` needs.
 pub fn need(method: &Method, path: &str) -> Need {
     let Some(rest) = path.strip_prefix("/api/") else {
@@ -204,6 +217,17 @@ mod tests {
         let refused = Refusal::from(area("payments", Level::Editor));
         assert_eq!(refused.status, axum::http::StatusCode::FORBIDDEN);
         assert_eq!(refused.message(), "this needs editor in payments");
+    }
+
+    /// A turn in a conversation, a preview and a test run owe the audit nothing. Deleting a conversation, or any
+    /// route nobody listed, does.
+    #[test]
+    fn only_what_changes_nothing_is_exempt_from_the_audit() {
+        assert!(changes_nothing(&Method::POST, "/api/agent/conversations/c1/messages"));
+        assert!(changes_nothing(&Method::POST, "/api/areas/shared/preview/routes"));
+        assert!(changes_nothing(&Method::POST, "/api/areas/shared/test-runs"));
+        assert!(!changes_nothing(&Method::DELETE, "/api/agent/conversations/c1"));
+        assert!(!changes_nothing(&Method::POST, "/api/something-new"));
     }
 
     #[test]
