@@ -47,9 +47,6 @@ pub const CONTACT_KEY: &str = "acme.contact";
 pub const NAMES_KEY: &str = "acme.names";
 /// How the authority is to prove the leader holds a name: `tls-alpn-01`, `http-01` or `dns-01`.
 pub const CHALLENGE_KEY: &str = "acme.challenge";
-
-/// How long the HTTP-01 listener is given to stop once an order is done, before the next order may find its port held.
-const LISTENER_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Which provider publishes a DNS-01 record (`acme_dns::Kind`), and Cloudflare's API token, sealed.
 pub const DNS_PROVIDER_KEY: &str = "acme.dns.provider";
 pub const CLOUDFLARE_TOKEN_KEY: &str = "acme.dns.cloudflare.token";
@@ -69,6 +66,8 @@ const STATE: &str = "state.json";
 /// How long an order may take, the authority's validation included. Let's Encrypt validates within seconds; a
 /// minute is for an authority that queues.
 const ORDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long the HTTP-01 listener is given to stop once an order is done, before the next order may find its port held.
+const LISTENER_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// A DNS-01 order also waits for each record to reach the zone's nameservers, which a provider may take minutes
 /// over.
 const DNS_ORDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
