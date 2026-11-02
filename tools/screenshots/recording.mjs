@@ -3,7 +3,7 @@
 // (`gui-frontend/src/demo/parts.ts`, which the demo finds them by), under `recorded/` beside it.
 import fs from 'node:fs';
 import path from 'node:path';
-import { partFile } from '../../gui-frontend/src/demo/parts.ts';
+import { partFile } from '../../gui-frontend/src/demo/parts.js';
 
 export const STATS = /^\/api\/areas\/[^/]+\/stats$/;
 /** The answers the fleet moves in, read again over a minute so the demo moves as the fleet did. */
