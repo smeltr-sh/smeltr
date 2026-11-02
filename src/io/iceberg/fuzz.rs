@@ -731,16 +731,19 @@ fn writer(
     runtime: &Arc<tokio::runtime::Runtime>,
 ) -> Result<FileDestination, IoError> {
     let mut catalog = client(config, secrets);
-    let (loaded, schema) = open(&mut catalog, config, record)?;
-    assemble(
-        config,
-        record,
+    let (loaded, schema) = open(&mut catalog, "d", config, record)?;
+    let refused = |why: String| IoError::transient(format!("iceberg table {}: {why}", config.table));
+    let committer = IcebergCommitter::new(
         catalog,
+        "d",
+        config,
         loaded.metadata,
         schema,
         store.clone(),
         runtime.clone(),
     )
+    .map_err(refused)?;
+    assemble(config, "d", record, committer, store.clone(), runtime.clone())
 }
 
 fn stored(name: &str) -> SecretRef {
@@ -1164,7 +1167,8 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
             ..config.clone()
         };
         let mut catalog = client(&earlier_config, &secrets);
-        open(&mut catalog, &earlier_config, &record_of(&earlier)).map_err(|e| format!("the earlier table: {e:?}"))?;
+        open(&mut catalog, "d", &earlier_config, &record_of(&earlier))
+            .map_err(|e| format!("the earlier table: {e:?}"))?;
         // As an engine of format version 3 made it, or upgraded it, its row ids already counted up to somewhere.
         if rng.chance(2) {
             let mut fake = fake.lock().unwrap();

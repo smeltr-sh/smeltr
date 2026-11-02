@@ -65,6 +65,7 @@ const UNDATED_LIFE: Duration = Duration::from_secs(15 * 60);
 /// table cannot take the record, which a restart asks again.
 pub fn destination(
     config: &IcebergDestinationConfig,
+    subject: &str,
     records: Option<&Records>,
     secrets: &HeldSecrets,
 ) -> Result<FileDestination, IoError> {
@@ -72,7 +73,7 @@ pub fn destination(
     let record = one_record(records).map_err(refused)?;
     let runtime = objects::runtime()?;
     let mut catalog = catalog(config, secrets, &runtime)?;
-    let (loaded, schema) = open(&mut catalog, config, record)?;
+    let (loaded, schema) = open(&mut catalog, subject, config, record)?;
     let location = Location::parse(&loaded.metadata.location).map_err(refused)?;
     let (data, meta) = location.places(&loaded.metadata).map_err(refused)?;
     let (access, credentials) = storage(
@@ -96,22 +97,29 @@ pub fn destination(
         secrets,
         &runtime,
     )?;
-    assemble(config, record, catalog, loaded.metadata, schema, store, runtime)
+    let committer = IcebergCommitter::new(
+        catalog,
+        subject,
+        config,
+        loaded.metadata,
+        schema,
+        store.clone(),
+        runtime.clone(),
+    )
+    .map_err(refused)?;
+    assemble(config, subject, record, committer, store, runtime)
 }
 
-/// The destination writing `record` into the opened table through `catalog`, its files into `store`.
+/// The destination writing `record` into the table `committer` commits to, its files into `store`.
 fn assemble(
     config: &IcebergDestinationConfig,
+    subject: &str,
     record: &DataType,
-    catalog: Catalog,
-    metadata: TableMetadata,
-    schema: Schema,
+    committer: IcebergCommitter,
     store: Arc<dyn ObjectStore>,
     runtime: Arc<tokio::runtime::Runtime>,
 ) -> Result<FileDestination, IoError> {
     let refused = |why: String| IoError::transient(format!("iceberg table {}: {why}", config.table));
-    let committer =
-        IcebergCommitter::new(catalog, config, metadata, schema, store.clone(), runtime.clone()).map_err(refused)?;
     let partitioner = TablePartitioner::new(&committer.spec, &committer.schema).map_err(refused)?;
     let file_schema = parquet::Schema::new(record).map_err(refused)?;
     let (written, defaults) = with_field_ids(file_schema.arrow(), &committer.schema).map_err(refused)?;
@@ -132,6 +140,7 @@ fn assemble(
     };
     Ok(FileDestination::new(
         "iceberg",
+        subject,
         files,
         store,
         runtime,
@@ -228,12 +237,13 @@ impl Signer for AwsSigner {
 /// The table, created from `record` when missing, with `record`'s new columns added, and its schema for `record`.
 fn open(
     catalog: &mut Catalog,
+    subject: &str,
     config: &IcebergDestinationConfig,
     record: &DataType,
 ) -> Result<(Loaded, Schema), IoError> {
     let loaded = match catalog.load_table(&config.namespace, &config.table)? {
         Some(loaded) => loaded,
-        None => create(catalog, config, record)?,
+        None => create(catalog, subject, config, record)?,
     };
     let table = &loaded.metadata;
     let refused = |why: String| IoError::transient(format!("iceberg table {}: {why}", config.table));
@@ -268,7 +278,7 @@ fn open(
             field.name
         )));
     }
-    evolve(catalog, config, record, loaded)
+    evolve(catalog, subject, config, record, loaded)
 }
 
 /// How the table asks its data files written, as its `write.*` properties say; what they leave unsaid is the
@@ -339,7 +349,12 @@ fn codec(name: &str) -> Option<Compression> {
 
 /// Creates the table with the record as its schema and `partitionBy` as its spec. A table another writer created
 /// first is loaded instead.
-fn create(catalog: &mut Catalog, config: &IcebergDestinationConfig, record: &DataType) -> Result<Loaded, IoError> {
+fn create(
+    catalog: &mut Catalog,
+    subject: &str,
+    config: &IcebergDestinationConfig,
+    record: &DataType,
+) -> Result<Loaded, IoError> {
     let refused = |why: String| IoError::transient(format!("creating the iceberg table {}: {why}", config.table));
     let fresh = table_schema(record, None, 0, FORMAT_VERSION).map_err(refused)?;
     let spec = spec_of(&config.partition_by, &fresh.schema).map_err(refused)?;
@@ -349,7 +364,9 @@ fn create(catalog: &mut Catalog, config: &IcebergDestinationConfig, record: &Dat
         // So that every writer after this one writes as it does.
         (CODEC.to_string(), codec_name(config.compression).to_string()),
     ]);
-    catalog.create_table(&config.namespace, &config.table, &fresh.schema, &spec, &properties)
+    let created = catalog.create_table(&config.namespace, &config.table, &fresh.schema, &spec, &properties)?;
+    tracing::info!(target: "iceberg.table_created", subject, table = %config.table, partition_by = config.partition_by.len(), "an Iceberg table was created, its schema the record the pipeline writes");
+    Ok(created)
 }
 
 /// The partition spec `terms` make over `schema`, its fields numbered from [`FIRST_PARTITION_ID`]. Err when a term
@@ -396,6 +413,7 @@ fn column_id(fields: &[NestedField], path: &[String]) -> Option<i32> {
 /// its schema for the record. Err when the table holds a column as another type than the record, or keeps changing.
 fn evolve(
     catalog: &mut Catalog,
+    subject: &str,
     config: &IcebergDestinationConfig,
     record: &DataType,
     mut loaded: Loaded,
@@ -426,7 +444,10 @@ fn evolve(
             Update::SetCurrentSchema(-1),
         ];
         match catalog.commit(&config.namespace, &config.table, &requirements, &updates) {
-            Ok(committed) => loaded.metadata = committed.metadata,
+            Ok(committed) => {
+                tracing::info!(target: "iceberg.schema_evolved", subject, table = %config.table, schema_id = committed.metadata.current_schema_id, "an Iceberg table's schema took the columns of the record the pipeline writes");
+                loaded.metadata = committed.metadata
+            }
             // Another writer changed the table, or the change's answer was lost: the table as it is now says which.
             Err(CommitFailure::Conflict | CommitFailure::Unknown(_)) => {
                 loaded = catalog
@@ -673,6 +694,8 @@ impl Location {
 /// manifests, the small ones merged as the table's settings say.
 struct IcebergCommitter {
     catalog: Catalog,
+    /// The destination, as its author named it, for its lines.
+    subject: String,
     namespace: Vec<String>,
     table: String,
     /// The table the destination started on. One replaced since is another table, whose ids the files do not carry.
@@ -769,6 +792,7 @@ impl Committer for IcebergCommitter {
                 self.reload().map_err(CommitError::Transient)?;
                 // The conflict may be a lost commit of these files that landed late.
                 if self.landed() {
+                    tracing::debug!(target: "iceberg.commit_found", subject = %self.subject, table = %self.table, "a commit whose answer was lost had landed");
                     return Ok(());
                 }
                 Err(CommitError::Conflict)
@@ -792,6 +816,7 @@ impl IcebergCommitter {
     /// spec cannot be followed or its files are not in one S3 bucket.
     fn new(
         catalog: Catalog,
+        subject: &str,
         config: &IcebergDestinationConfig,
         metadata: TableMetadata,
         schema: Schema,
@@ -821,6 +846,7 @@ impl IcebergCommitter {
         }
         Ok(IcebergCommitter {
             catalog,
+            subject: subject.to_string(),
             namespace: config.namespace.clone(),
             table: config.table.clone(),
             uuid: metadata.table_uuid.clone(),
@@ -1420,9 +1446,10 @@ mod tests {
         store: &Arc<InMemory>,
     ) -> IcebergCommitter {
         let mut catalog = client(url);
-        let (loaded, schema) = open(&mut catalog, config, record).unwrap();
+        let (loaded, schema) = open(&mut catalog, "d", config, record).unwrap();
         IcebergCommitter::new(
             catalog,
+            "d",
             config,
             loaded.metadata,
             schema,
@@ -1463,7 +1490,7 @@ mod tests {
         let url = serve(fake.clone());
         let config = config(&url, &[]);
         let mut catalog = client(&url);
-        let (loaded, schema) = open(&mut catalog, &config, &st(&[("a", DataType::Str)])).unwrap();
+        let (loaded, schema) = open(&mut catalog, "d", &config, &st(&[("a", DataType::Str)])).unwrap();
         // A location whose key leaves a name exactly the room it needs, or a byte less.
         let at = |property: &str, short: usize| {
             let mut metadata = loaded.metadata.clone();
@@ -1480,6 +1507,7 @@ mod tests {
             let store = Arc::new(InMemory::new());
             IcebergCommitter::new(
                 client(&url),
+                "d",
                 &config,
                 metadata,
                 schema.clone(),
@@ -1562,7 +1590,7 @@ mod tests {
         );
 
         let mut catalog = client(&url);
-        let Err(e) = open(&mut catalog, &config, &st(&[("a", DataType::I64)])) else {
+        let Err(e) = open(&mut catalog, "d", &config, &st(&[("a", DataType::I64)])) else {
             panic!("a column of another type must be refused");
         };
         assert!(e.message.contains('a'), "{e}");
@@ -1577,7 +1605,7 @@ mod tests {
         committer(&url, &config, &record, &Arc::new(InMemory::new()));
 
         fake.lock().unwrap().table.as_mut().unwrap().format_version = 4;
-        let Err(e) = open(&mut client(&url), &config, &record) else {
+        let Err(e) = open(&mut client(&url), "d", &config, &record) else {
             panic!("a version 4 table must be refused");
         };
         assert!(
@@ -1586,7 +1614,7 @@ mod tests {
         );
 
         fake.lock().unwrap().table.as_mut().unwrap().format_version = 1;
-        let Err(e) = open(&mut client(&url), &config, &record) else {
+        let Err(e) = open(&mut client(&url), "d", &config, &record) else {
             panic!("a version 1 table must be refused");
         };
         assert!(
@@ -1600,7 +1628,7 @@ mod tests {
         table.format_version = 2;
         table.properties.insert("encryption.key-id".into(), "k".into());
         drop(held);
-        let Err(e) = open(&mut client(&url), &config, &record) else {
+        let Err(e) = open(&mut client(&url), "d", &config, &record) else {
             panic!("an encrypted table must be refused");
         };
         assert!(e.message.contains("encrypted"), "{e}");
@@ -1614,7 +1642,7 @@ mod tests {
             json!([{"key-id": "k", "encrypted-key-metadata": "AA=="}]),
         );
         drop(held);
-        let Err(e) = open(&mut client(&url), &config, &record) else {
+        let Err(e) = open(&mut client(&url), "d", &config, &record) else {
             panic!("a version 3 table with encryption keys must be refused");
         };
         assert!(e.message.contains("encrypted"), "{e}");
@@ -1630,7 +1658,7 @@ mod tests {
             field_id: 1000,
         });
         drop(held);
-        let Err(e) = open(&mut client(&url), &config, &record) else {
+        let Err(e) = open(&mut client(&url), "d", &config, &record) else {
             panic!("a partition field of several columns must be refused");
         };
         assert!(
@@ -2214,7 +2242,7 @@ mod tests {
             ("tags", DataType::Array(Box::new(DataType::Str))),
         ]);
         for term in ["day(host)", "bucket(16, ratio)", "tags"] {
-            let Err(e) = create(&mut client(&url), &config(&url, &[term]), &record) else {
+            let Err(e) = create(&mut client(&url), "d", &config(&url, &[term]), &record) else {
                 panic!("{term} must be refused");
             };
             assert!(e.message.contains(term), "{e}");

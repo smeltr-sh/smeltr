@@ -1083,7 +1083,7 @@ fn mismatch_option(c: &SplunkHecDestinationConfig) -> &'static str {
 
 fn build(c: &SplunkHecDestinationConfig, secrets: &HeldSecrets) -> Result<Box<dyn Destination>, String> {
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
-    smeltr::io::build_destination(&DestinationKind::SplunkHec(c.clone()), 0, metrics, secrets, None)
+    smeltr::io::build_destination(&DestinationKind::SplunkHec(c.clone()), 0, "d", metrics, secrets, None)
         .map_err(|e| e.to_string())
 }
 

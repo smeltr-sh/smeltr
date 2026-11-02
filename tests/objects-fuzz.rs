@@ -1029,7 +1029,7 @@ fn offline_seed(
 
     let store = Arc::new(InMemory::new());
     let parquet = c.format.writes_columns();
-    let mut d = smeltr::io::objects::destination(&c, parquet.then_some(records), store.clone(), runtime.clone())
+    let mut d = smeltr::io::objects::destination(&c, "d", parquet.then_some(records), store.clone(), runtime.clone())
         .map_err(|e| format!("no destination: {e}\n{json}"))?;
     let sent = batches_for(&mut rng, reached, &c, Some(plan));
     let batches: Vec<Vec<OwnedRecord>> = sent.iter().map(|b| b.iter().map(|s| s.row.clone()).collect()).collect();
@@ -1088,6 +1088,7 @@ fn live_fuzz(
         let mut d = smeltr::io::build_destination(
             &DestinationKind::Objects(c.clone()),
             0,
+            "d",
             metrics,
             &secrets,
             parquet.then_some(&records),
