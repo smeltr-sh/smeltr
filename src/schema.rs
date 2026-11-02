@@ -332,9 +332,9 @@ fn fields_of(ty: &DataType) -> Option<&[(String, DataType)]> {
 impl Schema {
     /// Where a record may break the schema: each field whose type the schema's does not hold, a key only the fields
     /// under it name holding anything but an object among them, and each field the schema requires or recommends that
-    /// the record lacks, in the schema's order. A field the schema does not name
-    /// keeps it, as does one whose type only the row knows. A field is lacking where the object it sits in is there
-    /// and does not declare it: an open object may carry the key, but the pipeline has not shown that it does.
+    /// the record lacks, in the schema's order. A field the schema does not name keeps it, as does one whose type only
+    /// the row knows. A field is lacking where the object it sits in is there and does not declare it: an open object
+    /// may carry the key, but the pipeline has not shown that it does.
     pub fn check(&self, record: &DataType) -> Vec<Finding> {
         let shape = Shape::of(record);
         let declared: HashSet<&str> = self.fields.iter().map(|f| f.path.as_str()).collect();
