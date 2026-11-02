@@ -463,7 +463,7 @@
             </div>
             {#if !administrator}
               <div class="held">
-                <span class="dim held-head">Areas</span>
+                <span class="dim held-head">Permissions</span>
                 {#each heldAreas() as area (area)}
                   {@const level = levelIn(area)}
                   {#if level}<span class="mono">{area}</span><span class="dim"
