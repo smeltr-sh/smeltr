@@ -71,8 +71,7 @@ COPY UBI-EULA.txt /UBI-EULA.txt
 # that copy alone. The binary links nothing but glibc, so git is the whole surface: it serves the leader's config
 # repository through `git http-backend`, and libcurl carries its push to a host, which is HTTPS only
 # (src/leader/remote.rs). git-core goes in without its package's requirements, which bring ssh, a pager, PAM and
-# util-linux that nothing here runs; libcurl is what its binaries link. expat stays out: only `git-http-push` links
-# it, the push to a host without smart HTTP, which smeltr never makes. ca-certificates verifies the TLS at the far
+# util-linux that nothing here runs; libcurl is what its binaries link. ca-certificates verifies the TLS at the far
 # end. A worker fetches in-process through gix and spawns no git.
 FROM registry.access.redhat.com/ubi9/ubi-micro:9.8 AS micro
 FROM registry.access.redhat.com/ubi9/ubi:9.8 AS rootfs
