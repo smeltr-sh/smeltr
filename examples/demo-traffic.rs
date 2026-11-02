@@ -201,9 +201,10 @@ fn history(registry: &std::path::Path) {
             while at > now - HISTORY_MS {
                 let width = Tier::for_window(Duration::from_millis((now - at) as u64)).bucket_ms();
                 at -= width;
-                // A day's curve, at its mean at this time of day, with each bucket's own noise.
+                // A day's curve, at its mean at this time of day, with each bucket's own noise: ±3%, as the live
+                // jitter averages out over a bucket, so the history reads as the same feed.
                 let curve = 1.0 + 0.3 * (TAU * (at - now) as f64 / DAY).sin();
-                let noise = 0.8 + 0.4 * (mix(salt ^ at as u64) % 1_000) as f64 / 1_000.0;
+                let noise = 0.97 + 0.06 * (mix(salt ^ at as u64) % 1_000) as f64 / 1_000.0;
                 let delta = (rate * width as f64 * curve * noise).round();
                 if delta > 0.0 {
                     write(|| store.record_delta(metric, &subject, at, delta));
