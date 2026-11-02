@@ -32,6 +32,7 @@
   import FieldDoc from './FieldDoc.svelte';
   import Segmented from './Segmented.svelte';
   import ShowAll from './ShowAll.svelte';
+  import { fromRecord } from './recordDiff';
   import {
     askedUnder,
     fields as countFields,
@@ -186,7 +187,7 @@
         </div>
         {#each setListed as f (f.path)}
           {@const req = tree?.requirement(f.path)}
-          {@const [before, match, after] = parts(f.path)}
+          {@const [before, match, after] = parts(fromRecord(f.path))}
           <label class="row">
             <input
               type="checkbox"
@@ -211,7 +212,7 @@
                 type="button"
                 class="count link-button"
                 class:none={f.count === 0}
-                aria-label={`records with ${f.path}`}
+                aria-label={`records with ${fromRecord(f.path)}`}
                 disabled={f.count === 0}
                 onclick={(e) => {
                   e.preventDefault();
