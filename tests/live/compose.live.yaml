@@ -268,7 +268,8 @@ services:
       retries: 30
 
   # PostgreSQL 17, for the SQL source. `smeltr` owns the database and writes the rows a test reads; the source signs
-  # in as `smeltr_reader`, which may only SELECT. The init script runs once, on an empty data directory.
+  # in as `smeltr_reader`, which may only SELECT. The init scripts run once, on an empty data directory; `tls.sh`
+  # turns on TLS beside plain connections.
   postgres:
     image: postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
     environment:

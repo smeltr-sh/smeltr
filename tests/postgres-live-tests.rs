@@ -17,9 +17,10 @@ use smeltr::io::postgres::{PostgresConnection, PostgresDriver};
 use smeltr::io::sql::{Dialect, Poll, Query, Statement};
 use smeltr::io::sql_source::Encrypted;
 use smeltr::io::sql_source::{Driver, Mode, Position, SqlSource, SqlSourceConfig, Start, Verdict};
+use smeltr::io::trust::Side;
 use smeltr::io::values::Value;
 use smeltr::io::{CommitMap, Progress, RecordObject, Source, SourceRecord, TopicPartition};
-use smeltr::plan::topology::{HeldSecrets, SecretRef, SourceMeta};
+use smeltr::plan::topology::{HeldSecrets, SecretRef, SourceMeta, Tls};
 
 const OWNER: &str = "smeltr";
 const READER: &str = "smeltr_reader";
@@ -38,8 +39,14 @@ fn unique(prefix: &str) -> String {
     )
 }
 
-/// A driver signed in as `user`, its password a stored secret.
+/// A driver signed in as `user`, its password a stored secret, in the clear.
 fn driver(host: &str, port: u16, user: &str) -> PostgresDriver {
+    driver_with(host, port, user, Encrypted::Disable, None)
+}
+
+/// A driver signed in as `user` under `encrypted`, trusting `authorities` (PEM) alone when given, the default roots
+/// otherwise.
+fn driver_with(host: &str, port: u16, user: &str, encrypted: Encrypted, authorities: Option<String>) -> PostgresDriver {
     let mut secrets = HeldSecrets::default();
     secrets.set_stored([("postgres-password".to_string(), 1, PASSWORD.to_string())]);
     let connection = PostgresConnection {
@@ -51,8 +58,14 @@ fn driver(host: &str, port: u16, user: &str) -> PostgresDriver {
             name: "postgres-password".to_string(),
             version: 1,
         }),
-        encrypted: Encrypted::Disable,
-        tls: None,
+        encrypted,
+        tls: authorities.map(|authorities| Tls {
+            of: "source \"pg\"".to_string(),
+            certificate: None,
+            authorities: Some(authorities),
+            trust_public: false,
+            side: Side::Client,
+        }),
     };
     PostgresDriver::new(connection, &secrets).expect("a driver")
 }
@@ -483,6 +496,26 @@ fn plain_statement(query: &str) -> Statement {
             fields: &[],
         },
     )
+}
+
+#[test]
+fn require_tls_verifies_the_server_and_binds_the_channel_to_its_certificate() {
+    let Some((host, port)) = live::postgres("require_tls_verifies_the_server_and_binds_the_channel_to_its_certificate")
+    else {
+        return;
+    };
+    // The server signs its own certificate at its first start (`tests/live/postgres/tls.sh`), which no root here trusts.
+    let certificate = Owner::connect(&host, port).one("SELECT pg_read_file('server.crt')");
+    let one = plain_statement("SELECT 1 AS one");
+    let mut unverified = driver_with(&host, port, READER, Encrypted::Require, None);
+    let err = unverified.run(&one, &[]).expect_err("an unverified server");
+    assert!(err.contains("TLS handshake"), "{err}");
+
+    // The certificate is signed with SHA-384, so a binding hashed any other way fails the sign-in.
+    let mut verified = driver_with(&host, port, READER, Encrypted::Require, Some(certificate));
+    verified
+        .run(&one, &[])
+        .expect("a server its root signed, the channel bound");
 }
 
 #[test]
