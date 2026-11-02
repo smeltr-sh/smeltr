@@ -65,7 +65,10 @@ struct State {
     looked: Option<Instant>,
     /// A sender is looking up now; the others go on with what is known.
     looking: bool,
+    /// Sniffing never worked: said once per change and on the interval, until it does.
     failing: Relog,
+    /// A refresh failing while nodes are known: said the same way, cleared by one that lands.
+    refreshing: Relog,
 }
 
 struct Live {
@@ -110,10 +113,10 @@ impl Nodes {
         let now = Instant::now();
         if let Some(why) = state.failing.due() {
             tracing::warn!(
-                target: "elasticsearch.sniff",
+                target: "elasticsearch.sniff_failed",
                 subject = %self.subject,
                 error = %why,
-                "an Elasticsearch destination could not learn the cluster's nodes, so it sends to its url"
+                "an Elasticsearch destination could not learn the cluster's nodes, so it sends to the URL it was given"
             );
         }
         let alive: Vec<usize> = (0..state.nodes.len()).filter(|&i| state.nodes[i].alive(now)).collect();
@@ -132,6 +135,9 @@ impl Nodes {
         let mut state = self.state();
         let until = Instant::now() + DEAD_FOR;
         for live in state.nodes.iter_mut().filter(|l| l.node.url == url) {
+            if live.dead_until.is_none_or(|at| at <= Instant::now()) {
+                tracing::debug!(target: "elasticsearch.node_passed_over", subject = %self.subject, node = %url, for_secs = DEAD_FOR.as_secs(), "a node did not answer, so it is passed over for a while");
+            }
             live.dead_until = Some(until);
         }
     }
@@ -186,10 +192,13 @@ impl Nodes {
         match learned {
             Ok(nodes) => {
                 state.failing.clear();
+                if state.refreshing.clear() {
+                    tracing::info!(target: "elasticsearch.refresh_recovered", subject = %self.subject, "an Elasticsearch destination learns the cluster's nodes again");
+                }
                 let before: Vec<&Node> = state.nodes.iter().map(|l| &l.node).collect();
                 if before != nodes.iter().collect::<Vec<_>>() {
                     tracing::info!(
-                        target: "elasticsearch.sniff",
+                        target: "elasticsearch.nodes_learned",
                         subject = %self.subject,
                         nodes = nodes.len(),
                         in_zone = nodes.iter().filter(|n| n.in_zone).count(),
@@ -215,12 +224,16 @@ impl Nodes {
             // With no node known, sniffing has never worked, which is the admin's to fix. A refresh that fails
             // leaves the nodes already learned taking requests.
             Err(why) if state.nodes.is_empty() => state.failing.fail(why),
-            Err(why) => tracing::info!(
-                target: "elasticsearch.sniff",
-                subject = %self.subject,
-                error = %why,
-                "an Elasticsearch destination could not learn the cluster's nodes again, so it sends to those it knew"
-            ),
+            Err(why) => {
+                if let Some(error) = state.refreshing.fail_due(why) {
+                    tracing::warn!(
+                        target: "elasticsearch.refresh_failed",
+                        subject = %self.subject,
+                        error,
+                        "an Elasticsearch destination could not refresh the cluster's nodes, so it sends to those it knew"
+                    );
+                }
+            }
         }
     }
 

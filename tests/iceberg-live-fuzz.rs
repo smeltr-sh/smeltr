@@ -532,6 +532,7 @@ fn run(catalog: &str, s3: &str, seed: u64, case: &Case) -> Seen {
         let d = smeltr::io::build_destination(
             &DestinationKind::Iceberg(config.clone()),
             0,
+            "d",
             metrics.clone(),
             &secrets,
             Some(&records),

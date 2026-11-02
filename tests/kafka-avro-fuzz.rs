@@ -689,8 +689,15 @@ fn seed(
         .collect();
     let secrets = secrets();
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
-    let mut d = smeltr::io::build_destination(&DestinationKind::Kafka(destination_config), 0, metrics, &secrets, None)
-        .map_err(|e| fail(format!("does not build: {e:?}")))?;
+    let mut d = smeltr::io::build_destination(
+        &DestinationKind::Kafka(destination_config),
+        0,
+        "d",
+        metrics,
+        &secrets,
+        None,
+    )
+    .map_err(|e| fail(format!("does not build: {e:?}")))?;
     if faults.busy_destination {
         registry.unwrap().fail(1);
         match d.deliver(99, std::borrow::Cow::Borrowed(&rows)) {

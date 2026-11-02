@@ -149,15 +149,22 @@
   }
 
   /* Its own scroll region, rather than the dialog's: the header rule and the footer stay reachable
-     however much the body holds. */
+     however much the body holds. It grows to the screen, and where it must still scroll, a shadow at
+     the cut says more lies past it: an overlay scrollbar shows nothing until it is used. The two
+     covers scroll with the content and hide each shadow at the matching end. */
   .body {
     padding: 0.85rem;
     min-height: 0;
     overflow-y: auto;
-  }
-
-  dialog:not(.wide) .body {
-    max-height: min(22rem, 60vh);
+    background:
+      linear-gradient(var(--panel) 30%, transparent) top / 100% 2rem no-repeat local,
+      linear-gradient(transparent, var(--panel) 70%) bottom / 100% 2rem no-repeat local,
+      radial-gradient(farthest-side at 50% 0, var(--shadow-edge), transparent) top / 100% 0.6rem
+        no-repeat scroll,
+      radial-gradient(farthest-side at 50% 100%, var(--shadow-edge), transparent) bottom / 100%
+        0.6rem no-repeat scroll,
+      var(--panel);
+    --shadow-edge: color-mix(in oklch, var(--ink) 22%, transparent);
   }
 
   /* The footer rule: the refusal first and plain, the answer last and accented -- or in `--error`

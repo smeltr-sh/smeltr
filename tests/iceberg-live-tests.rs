@@ -146,8 +146,15 @@ fn live_rows_are_committed_as_snapshots_of_a_table_it_creates() {
     ]);
     let metrics = smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "live");
     let records = smeltr::plan::topology::Records::from([(None, record)]);
-    let mut d = smeltr::io::build_destination(&DestinationKind::Iceberg(config), 0, metrics, &secrets, Some(&records))
-        .expect("built");
+    let mut d = smeltr::io::build_destination(
+        &DestinationKind::Iceberg(config),
+        0,
+        "d",
+        metrics,
+        &secrets,
+        Some(&records),
+    )
+    .expect("built");
 
     let rows = |texts: &[&str]| {
         let chunk = harness::cut(&plan, texts);
@@ -316,8 +323,15 @@ fn live_a_table_made_with_narrower_columns_takes_rows_as_its_types() {
     ]);
     let metrics = smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "live");
     let records = smeltr::plan::topology::Records::from([(None, record)]);
-    let mut d = smeltr::io::build_destination(&DestinationKind::Iceberg(config), 0, metrics, &secrets, Some(&records))
-        .expect("built");
+    let mut d = smeltr::io::build_destination(
+        &DestinationKind::Iceberg(config),
+        0,
+        "d",
+        metrics,
+        &secrets,
+        Some(&records),
+    )
+    .expect("built");
 
     let texts = [
         r#"{"n":7,"ratio":0.1,"day":"2026-10-30T23:59:59Z","at":"2026-10-30T01:02:03.000004Z"}"#,

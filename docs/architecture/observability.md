@@ -94,6 +94,10 @@ it, and a thread moving data must never wait on that. What the buffer drops
 it counts per site, which is the only thing that can say whether one site is
 drowning the rest.
 
+A library's line is kept one step below what it says: its info is debug here
+and its debug is trace, since what a library reports at those levels Smeltr
+says better itself. Its warn and error are what they say.
+
 What bounds output is the call site. A loop that refuses a thousand rows
 reports once, with a thousand in a field; occupancy is then a property of the
 code, which can be read, rather than of the traffic, which cannot. A path

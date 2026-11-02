@@ -14,7 +14,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::http::{HttpDestination, HttpTransport, Outcome, Protocol, Response, SharedSignIn, push_json_string};
+use super::http::{HttpDestination, HttpTransport, Outcome, Protocol, Response, push_json_string};
 use super::{IoError, OwnedRecord, Payload};
 use crate::format::bytes_text::BytesForm;
 use crate::plan::topology::{Compression, HttpDestinationConfig, RequestBody};
@@ -61,33 +61,27 @@ impl Post {
     }
 }
 
-/// A transport to `config.url`, carrying its committed headers and `credentials`, each a header's name and its
-/// value as this worker resolved it.
-/// The destination posting to `config`'s URL: as `name` in what it says of itself, with `credentials` on every
-/// request, and signed in with `sign_in` when there is one. `agent` is [`super::http::agent_config`]'s answer for it.
+/// The destination posting to `config`'s URL: as `name` in what it says of itself and as `subject` in its lines,
+/// over the transports `make` makes ([`transport`], signed in where the service asks), counting into `metrics` as
+/// destination `id`.
 pub fn destination(
     config: &HttpDestinationConfig,
-    credentials: &[(String, String)],
-    sign_in: Option<SharedSignIn>,
+    make: impl Fn() -> HttpTransport,
     name: &'static str,
-    agent: &ureq::config::Config,
+    subject: &str,
     metrics: crate::metrics::MetricsHandle,
     id: crate::core::id::DestId,
 ) -> HttpDestination<Post, HttpTransport> {
-    let make = || {
-        let transport = transport(config, credentials, agent);
-        match &sign_in {
-            Some(sign_in) => transport.signed_in(sign_in.clone()),
-            None => transport,
-        }
-    };
     HttpDestination::new(make(), Post::new(config).named(name))
+        .with_subject(subject)
         .with_metrics(metrics, id)
         .with_max_request_bytes(config.max_request_bytes)
         .with_stall_after(config.stall_after)
         .with_senders_from(make, config.max_in_flight(), config.in_flight)
 }
 
+/// A transport to `config.url`, carrying its committed headers and `credentials`, each a header's name and its
+/// value as this worker resolved it. `agent` is [`super::http::agent_config`]'s answer for the destination.
 pub fn transport(
     config: &HttpDestinationConfig,
     credentials: &[(String, String)],

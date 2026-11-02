@@ -53,8 +53,11 @@ impl Outcome {
 #[derive(Clone)]
 pub struct Unwritten {
     metrics: MetricsHandle,
+    /// The destination's id, the metric's label.
     destination: String,
-    warned: Arc<Mutex<Option<Instant>>>,
+    /// The destination as its author named it, for its lines.
+    subject: String,
+    warned: Arc<Mutex<crate::logs::Repeat>>,
 }
 
 impl std::fmt::Debug for Unwritten {
@@ -66,12 +69,18 @@ impl std::fmt::Debug for Unwritten {
 }
 
 impl Unwritten {
-    pub fn new(metrics: MetricsHandle, id: DestId) -> Unwritten {
+    pub fn new(metrics: MetricsHandle, id: DestId, subject: &str) -> Unwritten {
         Unwritten {
             metrics,
             destination: id.to_string(),
+            subject: subject.to_string(),
             warned: Arc::default(),
         }
+    }
+
+    /// The destination as its author named it.
+    pub fn subject(&self) -> &str {
+        &self.subject
     }
 
     /// Counts `count` of `kind` unwritten, and warns, saying `why`, when no warning of this destination's is recent.
@@ -81,17 +90,16 @@ impl Unwritten {
         }
         let labels = [("destination", self.destination.as_str()), ("kind", kind)];
         self.metrics.incr("smeltr_destination_unwritten_total", &labels, count);
-        let mut warned = self.warned.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if warned.is_some_and(|at| at.elapsed() < crate::logs::RELOG_EVERY) {
+        if !(self.warned.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).due() {
             return;
         }
-        *warned = Some(Instant::now());
         tracing::warn!(
             target: "egress.destination_unwritten",
-            subject = %self.destination,
+            subject = %self.subject,
             kind,
             count,
-            "a destination's store took what it was sent but did not store all of it as sent: {why}"
+            error = why,
+            "a destination's store took a request, but its answer says it stored fewer rows than it was sent"
         );
     }
 }
@@ -224,6 +232,8 @@ pub struct HttpDestination<P: Protocol, T: Transport> {
     /// Present once the destination has senders; without it `deliver` posts each batch and waits.
     pool: Option<Pool<HttpSender<P, T>>>,
     throttle: Option<Throttle>,
+    /// The destination as its author named it, for its lines. The service's name until [`HttpDestination::with_subject`].
+    subject: Arc<str>,
 }
 
 /// Where a destination counts the time it held its sends back because the service asked it to slow down, as
@@ -248,6 +258,7 @@ impl Throttle {
 
 impl<P: Protocol, T: Transport> HttpDestination<P, T> {
     pub fn new(transport: T, protocol: P) -> Self {
+        let subject = Arc::from(protocol.name());
         HttpDestination {
             protocol,
             transport,
@@ -255,7 +266,15 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
             stall_after: DEFAULT_STALL_AFTER,
             pool: None,
             throttle: None,
+            subject,
         }
+    }
+
+    /// Name the destination as its author did in its lines. Before [`HttpDestination::with_senders`], which hands
+    /// each sender the name.
+    pub fn with_subject(mut self, subject: &str) -> Self {
+        self.subject = Arc::from(subject);
+        self
     }
 
     /// Count throttled time into `metrics` under `destination`. Before [`HttpDestination::with_senders`], which hands
@@ -306,6 +325,7 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
                     transport,
                     stall_after: self.stall_after,
                     throttle: self.throttle.clone(),
+                    subject: self.subject.clone(),
                 })
                 .collect(),
             start,
@@ -342,7 +362,7 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
     /// One round on this thread, with retries, against `group`: the refusals, each carrying its row out of `rows`.
     fn post(&mut self, rows: &[OwnedRecord], group: &mut Group<P::Item>) -> Result<Vec<Rejection>, IoError> {
         group.bytes = 0;
-        let mut round = Round::new(self.stall_after);
+        let mut round = Round::new(self.stall_after, self.subject.clone());
         let delivered = deliver(&self.protocol, &mut self.transport, group, &mut round);
         Throttle::note(&self.throttle, round.waited);
         delivered?;
@@ -366,16 +386,22 @@ struct Round {
     waited: Duration,
     /// Refusals, as they are answered, so a failure keeps those already seen.
     rejections: Vec<Rejection>,
+    /// The destination as its author named it, for the round's lines.
+    subject: Arc<str>,
+    /// Whether this round has said the service asked it to slow down.
+    throttle_said: bool,
 }
 
 impl Round {
-    fn new(stall_after: Duration) -> Round {
+    fn new(stall_after: Duration, subject: Arc<str>) -> Round {
         Round {
             stall_after,
             deadline: Instant::now() + stall_after,
             throttled: false,
             waited: Duration::ZERO,
             rejections: Vec::new(),
+            subject,
+            throttle_said: false,
         }
     }
 }
@@ -393,6 +419,7 @@ fn in_halves<P: Protocol, T: Transport>(
         return None;
     }
     let half = group.pending.len() / 2;
+    tracing::debug!(target: "http.request_halved", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
     let mut tail = Group {
         route: group.route.clone(),
         part: group.part,
@@ -443,6 +470,7 @@ fn deliver<P: Protocol, T: Transport>(
                     return halves;
                 }
                 // One document whose answer alone is past the bound: refused, since asking again reads the same answer.
+                tracing::debug!(target: "http.answer_too_large", subject = %round.subject, service = protocol.name(), limit_mib = MAX_ANSWER_BYTES >> 20, "the answer to one document was larger than the worker holds, so the worker rejects the document and the destination's Refused answer decides what happens to it");
                 round.rejections.push(Rejection {
                     doc: group.sent_index[0],
                     reason: format!(
@@ -506,6 +534,10 @@ fn deliver<P: Protocol, T: Transport>(
         if nap.is_zero() {
             continue;
         }
+        if !round.throttle_said {
+            round.throttle_said = true;
+            tracing::debug!(target: "http.throttled", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so this round backs off");
+        }
         std::thread::sleep(nap);
         round.waited += nap;
         backoff = (backoff * 2).min(Duration::from_secs(5));
@@ -543,6 +575,7 @@ struct HttpSender<P: Protocol, T: Transport> {
     transport: T,
     stall_after: Duration,
     throttle: Option<Throttle>,
+    subject: Arc<str>,
 }
 
 impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
@@ -550,7 +583,7 @@ impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
     type Job = Group<P::Item>;
 
     fn send_one(&mut self, mut group: Group<P::Item>) -> pipelined::Delivered {
-        let mut round = Round::new(self.stall_after);
+        let mut round = Round::new(self.stall_after, self.subject.clone());
         let delivered = deliver(&self.protocol, &mut self.transport, &mut group, &mut round);
         Throttle::note(&self.throttle, round.waited);
         pipelined::Delivered {

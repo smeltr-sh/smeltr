@@ -1366,7 +1366,14 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     let (secrets, unheld) = secrets_held(&draw, pki);
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let metrics = smeltr::metrics::MetricsHandle::new(registry.clone(), "fuzz");
-    let built = smeltr::io::build_destination(&DestinationKind::Elasticsearch(c.clone()), 0, metrics, &secrets, None);
+    let built = smeltr::io::build_destination(
+        &DestinationKind::Elasticsearch(c.clone()),
+        0,
+        "d",
+        metrics,
+        &secrets,
+        None,
+    );
     if let Some(value) = draw.held.as_ref().filter(|v| v.ends_with('\n')) {
         // Refused where it is built, naming the reference and never the value.
         let why = match built {
@@ -1941,8 +1948,15 @@ fn live_seed(seed: u64, url: &str, reached: &mut Reached, pki: &Pki) -> Result<(
 
     let (secrets, _) = secrets_held(&draw, pki);
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
-    let mut d = smeltr::io::build_destination(&DestinationKind::Elasticsearch(c.clone()), 0, metrics, &secrets, None)
-        .map_err(|e| fail(format!("does not build: {e:?}")))?;
+    let mut d = smeltr::io::build_destination(
+        &DestinationKind::Elasticsearch(c.clone()),
+        0,
+        "d",
+        metrics,
+        &secrets,
+        None,
+    )
+    .map_err(|e| fail(format!("does not build: {e:?}")))?;
     let rows = Rows {
         policy: c.doc_id,
         default_index: &c.default_index,

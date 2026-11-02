@@ -1360,8 +1360,15 @@ fn deploy(
             }
             kind => std::borrow::Cow::Borrowed(kind),
         };
-        let client = crate::io::build_destination(&kind, d.id, handle.clone(), secrets, topology.records.get(&d.id))
-            .map_err(|e| format!("destination {:?} could not be built: {e}", d.name))?;
+        let client = crate::io::build_destination(
+            &kind,
+            d.id,
+            &d.name,
+            handle.clone(),
+            secrets,
+            topology.records.get(&d.id),
+        )
+        .map_err(|e| format!("destination {:?} could not be built: {e}", d.name))?;
         let stage = Egress::start(d.id, &d.name, client, d.kind.stall_after(), queue_budget(d), handle)
             .with_pool(ready.clone())
             .with_captures(captures.clone());

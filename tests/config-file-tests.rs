@@ -1171,12 +1171,12 @@ fn an_answer_a_delivery_kind_cannot_carry_out_is_refused() {
         (
             "Unmatched",
             r#""ignore""#,
-            "the group answers Unmatched with ignore, but an Unmatched row has no route",
+            "the worker group answers Unmatched with ignore, but an Unmatched row has no route",
         ),
         (
             "Unmatched",
             r#""tag""#,
-            "the group answers Unmatched with tag, but an Unmatched row has no route",
+            "the worker group answers Unmatched with tag, but an Unmatched row has no route",
         ),
         (
             "Unprocessable",
@@ -1627,7 +1627,7 @@ fn a_missing_credential_environment_variable_is_refused_at_construction() {
             stall_after: std::time::Duration::from_secs(30),
         });
     let metrics = smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "test");
-    let Err(e) = smeltr::io::build_destination(&cfg, 0, metrics, &Default::default(), None) else {
+    let Err(e) = smeltr::io::build_destination(&cfg, 0, "d", metrics, &Default::default(), None) else {
         panic!("an unset credential variable must not construct one");
     };
     assert!(e.to_string().contains("SMELTR_ES_AUTH_DEFINITELY_NOT_SET"), "{e}");
@@ -1702,7 +1702,7 @@ fn a_delivery_answer_round_trips_and_must_name_real_destinations() {
             (json.replace(r#"["leftovers", "spare"]"#, "[]"), "no destination"),
         ] {
             let err = load_str(&bad).unwrap_err().to_string();
-            assert!(err.contains("the group's") && err.contains(says), "{label}: {err}");
+            assert!(err.contains("the worker group's") && err.contains(says), "{label}: {err}");
         }
     }
 }
