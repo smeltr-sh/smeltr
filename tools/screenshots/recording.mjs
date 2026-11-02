@@ -1,6 +1,6 @@
 // How the website demo's recording is written: what every page reads in one file, and each part a page reads only
 // once the visitor asks for it -- a chart at another window, a capture -- in a file of its own, named for its key
-// (`gui-frontend/src/demo/parts.ts`, which the demo finds them by), under `recorded/` beside it.
+// (`gui-frontend/src/demo/parts.js`, which the demo finds them by), under `recorded/` beside it.
 import fs from 'node:fs';
 import path from 'node:path';
 import { partFile } from '../../gui-frontend/src/demo/parts.js';
