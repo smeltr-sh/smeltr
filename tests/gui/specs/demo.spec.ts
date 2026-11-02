@@ -9,7 +9,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUN_DIR, recordPid } from '../run';
-import { navPages } from '../../../tools/screenshots/navPages.mjs';
+import { reachable } from '../../../tools/screenshots/reach.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const TARGET = path.resolve(REPO, process.env.CARGO_TARGET_DIR ?? 'target');
@@ -146,7 +146,22 @@ test('a visitor captures a sample, saves it on a branch and previews a pipeline 
   await expect(page.getByText('panw-firewalls, captured', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Choose a sample' })).toContainText('50 records');
   // The directory table is a CSV under the service's bundle: a department in the output is a lookup that read it.
-  await expect(page.getByText('Engineering').first()).toBeVisible();
+  const lookups = path.join(REPO, 'gui-frontend', 'src', 'demo', 'lookups');
+  const directory = fs.readdirSync(lookups).find((f) => f.endsWith('directory.csv'))!;
+  const departments = new Set(
+    fs
+      .readFileSync(path.join(lookups, directory), 'utf8')
+      .trim()
+      .split('\n')
+      .slice(1)
+      .map((line) => line.split(',')[1]),
+  );
+  await expect(
+    page
+      .getByRole('cell')
+      .filter({ hasText: new RegExp(`^(${[...departments].join('|')})$`) })
+      .first(),
+  ).toBeVisible();
 });
 
 test('the map draws the fleet from the service', async ({ page }) => {
@@ -185,19 +200,22 @@ test('the Schemas page reads a schema through the service', async ({ page }) => 
 });
 
 // A page that reads what the recording does not hold shows "not found": `just demo-fixtures` records it again.
-test('the recording answers every read of every page the navigation reaches', async ({
-  browser,
-}) => {
-  // It opens every page the navigation reaches, which under a full run's load passes the default.
-  test.setTimeout(300_000);
+test('the recording answers every read of everything a visitor reaches', async ({ browser }) => {
+  // It opens every page a link reaches and makes every choice on it, which passes the default by far.
+  test.setTimeout(900_000);
   const unrecorded = new Set<string>();
   const open = async (hash: string) => {
     const page = await browser.newPage();
     // The demo's leader answers in the page, so its answers are read where it is installed.
     await page.addInitScript(() => {
-      let fetch = window.fetch;
+      const native = window.fetch.bind(window);
+      let fetch = native;
       Object.defineProperty(window, 'fetch', {
         get: () => async (input: RequestInfo | URL, init?: RequestInit) => {
+          // The leader passes on what is not its own through the fetch it found, which is this one.
+          const href = input instanceof Request ? input.url : String(input);
+          if (!new URL(href, location.href).pathname.startsWith('/api/'))
+            return native(input, init);
           const answer = await fetch(input, init);
           if (answer.status === 404) {
             const body = await answer
@@ -217,7 +235,8 @@ test('the recording answers every read of every page the navigation reaches', as
     });
     return page;
   };
-  const pages = await navPages(open, base);
+  const pages = await reachable(open, base);
   expect(pages).toContain('#/status/issues');
+  expect(pages.filter((p) => p.includes('range=7d')).length).toBeGreaterThan(0);
   expect([...unrecorded]).toEqual([]);
 });

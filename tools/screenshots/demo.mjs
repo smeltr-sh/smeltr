@@ -2,7 +2,7 @@
 //
 //   node demo.mjs ../../gui-frontend/src/demo/recorded.json
 //
-// Opens every page `shots.json` names and every page the GUI's navigation reaches (`navPages.mjs`), as the signed-in
+// Opens every page `shots.json` names and everything the GUI reaches by reading (`reach.mjs`), as the signed-in
 // administrator, and keeps the last answer to every GET under `/api/`, keyed by its path and sorted query. Then reads
 // the live answers over a minute, so the demo's fleet moves as the staged one did, and captures what each of main's
 // sources reads and destinations are sent, so a capture in the demo draws from what the fleet did. `stage.py` must
@@ -11,7 +11,7 @@ import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { navPages } from './navPages.mjs';
+import { reachable } from './reach.mjs';
 
 const BASE = 'https://127.0.0.1:8443';
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -52,16 +52,15 @@ await ctx.addCookies([
 // A page that fails to load fails the recording: a partial one would answer its missing reads as not found.
 const failed = [];
 
-// One visit per page, scope and branch: a page's answers do not depend on the shot's steps.
-const visits = new Map();
-for (const s of shots) visits.set(`${s.hash}|${s.scope || 'shared'}|${s.branch || 'main'}`, s);
-// And every page the GUI's navigation reaches, on both branches, so the demo answers each one.
-for (const hash of await navPages(() => ctx.newPage(), BASE + '/')) {
-  for (const branch of ['main', 'work']) visits.set(`${hash}|shared|${branch}`, { hash });
-}
+const STATS = /^\/api\/areas\/[^/]+\/stats$/;
+/** The windows each chart opens on (`DEFAULT_CHART_RANGE` in `map.ts`, `DEFAULT_WINDOW_MINUTES` in `flow.ts`). */
+const OPENS_ON = [
+  [STATS, '10'],
+  [/^\/api\/flow$/, '60'],
+];
 
-for (const [visit] of visits) {
-  const [hash, scope, branch] = visit.split('|');
+/** A page that records every GET answer it reads, opened on `scope` and `branch`. */
+async function recording(scope, branch) {
   const page = await ctx.newPage();
   await page.addInitScript(
     ([scope, branch]) => {
@@ -70,15 +69,36 @@ for (const [visit] of visits) {
     },
     [scope, branch],
   );
-  page.on('response', async (res) => {
+  // Each answer's body is read after it arrives; closing the page waits for them, or one read last is lost.
+  const reads = [];
+  page.on('response', (res) => {
     const req = res.request();
-    if (req.method() !== 'GET' || !new URL(res.url()).pathname.startsWith('/api/')) return;
-    try {
-      answers[keyOf(res.url())] = { status: res.status(), body: await res.json() };
-    } catch {
-      // A body that is not JSON (a lookup file's bytes) is not the demo's to answer.
-    }
+    const url = new URL(res.url());
+    if (req.method() !== 'GET' || !url.pathname.startsWith('/api/')) return;
+    // A node's stats are the fleet's, whichever branch draws it: the demo answers them from main's.
+    if (STATS.test(url.pathname) && url.searchParams.get('branch') !== 'main') return;
+    reads.push(
+      res.json().then(
+        (body) => (answers[keyOf(res.url())] = { status: res.status(), body }),
+        // A body that is not JSON (a lookup file's bytes) is not the demo's to answer.
+        () => {},
+      ),
+    );
   });
+  const close = page.close.bind(page);
+  page.close = async () => {
+    await Promise.all(reads);
+    await close();
+  };
+  return page;
+}
+
+// One visit per page, scope and branch: a page's answers do not depend on the shot's steps.
+const visits = new Map();
+for (const s of shots) visits.set(`${s.hash}|${s.scope || 'shared'}|${s.branch || 'main'}`, s);
+for (const [visit] of visits) {
+  const [hash, scope, branch] = visit.split('|');
+  const page = await recording(scope, branch);
   try {
     await page.goto(`${BASE}/${hash}`, { waitUntil: 'networkidle' });
     await page.waitForTimeout(1500);
@@ -87,6 +107,17 @@ for (const [visit] of visits) {
   }
   await page.close();
   console.log(`${visit}: ${Object.keys(answers).length} answers so far`);
+}
+// And everything the GUI reaches by reading, on both branches, so the demo answers each one.
+for (const branch of ['main', 'work']) {
+  try {
+    const reached = await reachable(() => recording('shared', branch), BASE + '/');
+    console.log(
+      `${branch}: ${reached.length} pages reached, ${Object.keys(answers).length} answers so far`,
+    );
+  } catch (e) {
+    failed.push(`${branch}: ${String(e).split('\n')[0]}`);
+  }
 }
 if (failed.length) {
   await browser.close();
@@ -156,23 +187,22 @@ answers['/api/streams'] = {
   status: 200,
   body: await reader.evaluate(() => fetch('/api/streams').then((r) => r.json())),
 };
-// Every object's panel on the Map, whether or not a page opened it. The demo answers other branches from main's.
-for (const node of answers['/api/map?branch=main'].body.nodes) {
-  const { group, kind, authorId: id } = node;
-  const q = new URLSearchParams({ branch: 'main', kind, id, windowMinutes: '10' });
-  const key = keyOf(`/api/areas/${group}/stats?${q}`);
-  answers[key] = {
-    status: 200,
-    body: await reader.evaluate((u) => fetch(u).then((r) => r.json()), key),
-  };
-}
 await reader.close();
 
 // The fleet moving: every live answer read again every five seconds for a minute, so the demo's Map, charts and
 // counters move as the fleet's did. A config read is not live; the demo's own edits change those.
 const LIVE =
   /^\/api\/(map\/measurements|areas\/[^/?]+\/stats|flow|cluster|workers|warnings|streams)\b/;
-const live = Object.keys(answers).filter((k) => LIVE.test(k));
+// A chart moves on the window it opens on; on any other it stands still, as recorded.
+const live = Object.keys(answers).filter((k) => {
+  const url = new URL(k, BASE);
+  const window = url.searchParams.get('windowMinutes');
+  return (
+    LIVE.test(k) &&
+    (window === null ||
+      OPENS_ON.some(([path, opens]) => path.test(url.pathname) && opens === window))
+  );
+});
 const api = await ctx.newPage();
 await api.goto(`${BASE}/#/map`, { waitUntil: 'networkidle' });
 const moving = {};
@@ -256,6 +286,14 @@ for (const scope of ['network', 'apps']) {
 // The branch the pools were saved on is the recorder's, not the fleet's.
 const branches = answers['/api/branches'].body;
 branches.branches = branches.branches.filter((b) => b.name !== POOLS);
+// The demo answers a branch it holds no answer on with main's, so an answer on `work` that is main's is left out.
+for (const key of Object.keys(answers)) {
+  const url = new URL(key, BASE);
+  if (url.searchParams.get('branch') !== 'work') continue;
+  url.searchParams.set('branch', 'main');
+  const onMain = answers[keyOf(url.href)];
+  if (onMain && JSON.stringify(onMain) === JSON.stringify(answers[key])) delete answers[key];
+}
 // The demo's visitor signs nothing: a session's token is the staged fleet's alone.
 delete answers['/api/auth/session'].body.csrf;
 // What every recorded time is relative to: the demo moves them to the visitor's now.

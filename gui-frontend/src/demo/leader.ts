@@ -728,11 +728,11 @@ export class DemoLeader {
     return { status: 403, body: { ok: false, errors: [bareError(DEMO_REFUSAL)], results: [] } };
   }
 
-  /** A live answer, as the fleet moved when it was recorded, round and round. The map's measurements on a branch the
-   * recording did not watch are main's: one fleet runs whichever branch it is drawn from. */
+  /** A live answer, as the fleet moved when it was recorded, round and round. The map's measurements and a node's
+   * stats on a branch the recording did not watch are main's: one fleet runs whichever branch it is drawn from. */
   private live(url: URL, branch: Branch | undefined): Answer | undefined {
     const onMain = new URL(url);
-    if (url.pathname === '/api/map/measurements') onMain.searchParams.set('branch', 'main');
+    if (onMain.searchParams.has('branch')) onMain.searchParams.set('branch', 'main');
     const series = this.recording.moving[keyOf(url)] ?? this.recording.moving[keyOf(onMain)];
     if (!series?.length) return undefined;
     const at = Math.floor((this.now() - this.started) / MOVING_EVERY_MS) % series.length;

@@ -259,6 +259,14 @@ describe('DemoLeader', () => {
     const head = (branches.body as { branches: { head: string }[] }).branches[0].head;
     expect(m.body).toEqual({ commit: head, nodes: [{ id: 'fw' }] });
   });
+  it("answers a node's stats on a branch it never watched with main's, moving", async () => {
+    const r = recording();
+    const key = '/api/areas/network/stats?branch=main&id=fw&kind=source&windowMinutes=10';
+    r.moving[key] = [{ rate: 1 }];
+    const leader = new DemoLeader(r, 'http://service', null, () => RECORDED);
+    const stats = await leader.answer('GET', at(key.replace('branch=main', 'branch=work')), null);
+    expect(stats.body).toEqual({ rate: 1 });
+  });
 
   it("answers a visitor's branch read at its own commit or at main's", async () => {
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
