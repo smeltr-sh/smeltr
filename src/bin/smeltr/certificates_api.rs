@@ -404,6 +404,7 @@ pub async fn keep_renewed(auth: Auth, serving: Arc<Tls>, leader: smeltr::leader:
             _ = tokio::time::sleep(crate::acme_api::RENEWAL_TICK) => {}
             _ = smeltr::leader::RENEW_NOW.notified() => {}
         }
+        let _pass = smeltr::logs::Pass::begin("renew certificates");
         renew_issued(&state, &serving).await;
         crate::acme_api::renew_if_due(&auth, &serving).await;
     }

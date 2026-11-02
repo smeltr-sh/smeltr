@@ -644,6 +644,7 @@ impl Syncing {
 
 /// Sync now, after any sync already running. Answers what it found; with no remote set, nothing is done.
 pub async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
+    let _pass = crate::logs::Pass::begin("sync with the git remote");
     let _turn = state.remote.turn.lock().await;
     let Some(remote) = run_store(state.store.clone(), configured).await? else {
         return Err(Refusal::conflict("no remote is set"));
@@ -750,6 +751,7 @@ pub async fn push_saves(state: AppState) {
     let mut failing = crate::logs::Relog::default();
     loop {
         tokio::time::sleep(PUSH_SCAN).await;
+        let _pass = crate::logs::Pass::begin("push saves to the git remote");
         let _pushing = state.remote.pushing.lock().await;
         let remote = match run_store(state.store.clone(), configured).await {
             Ok(Some(remote)) => remote,

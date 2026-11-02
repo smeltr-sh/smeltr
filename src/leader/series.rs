@@ -1201,6 +1201,7 @@ impl RegistryStore {
     ///
     /// Also trims the logs table to its row cap, since that is the other thing here that grows.
     pub fn maintain(&self, now_ms: i64) -> Result<(), StoreError> {
+        let _pass = crate::logs::Pass::begin("trim the registry's logs and series");
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction()?;
 

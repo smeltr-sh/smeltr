@@ -631,6 +631,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
 /// gate. A provider that refuses a grant, or whose answer no longer admits the person, ends that session. A provider
 /// that cannot be reached leaves every session as it is, to be tried again one interval later.
 pub async fn refresh_due(auth: &Auth, every: Duration) {
+    let _pass = smeltr::logs::Pass::begin("refresh OIDC sessions");
     let due = auth.sessions.due_grants(Instant::now(), every);
     if due.is_empty() {
         return;

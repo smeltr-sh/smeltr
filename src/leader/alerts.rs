@@ -615,6 +615,7 @@ async fn record(state: &AppState, told: Vec<AlertTold>, cleared: Vec<(String, St
 
 /// One look: tell every channel what has changed since it was last told.
 pub async fn look(state: &AppState) -> Result<(), StoreError> {
+    let _pass = crate::logs::Pass::begin("check alerts");
     let now = super::warnings::now_millis();
     let (channels, mail, told) =
         run_store(state.store.clone(), |s| Ok((channels(s)?, mail(s)?, s.alerts_told()?))).await?;
