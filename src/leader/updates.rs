@@ -1,8 +1,8 @@
 //! The look for a newer smeltr: at startup and once a day after, the leader reads the releases published on GitHub,
 //! through smeltr.sh, and keeps the newest that is newer than its own. The request names this leader's release,
 //! operating system and CPU architecture in its `User-Agent` and nothing else; smeltr.sh counts leaders by them
-//! (`website/worker`). A look that fails
-//! says why on Admin -> System -> General and raises nothing, so a leader that cannot reach smeltr.sh is never noisy.
+//! (`website/worker`). A look that fails says why on Admin -> System -> General and raises nothing, so a leader that
+//! cannot reach smeltr.sh is never noisy.
 //! A build that is no release has nothing to compare and never looks.
 
 use std::time::Duration;
