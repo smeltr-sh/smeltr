@@ -44,7 +44,7 @@ def smtp(tls):
                 verb = line[:4].upper()
                 if verb == b"EHLO":
                     await say(b"250-localhost")
-                    await say(b"250-AUTH PLAIN LOGIN")
+                    await say(b"250-AUTH PLAIN")
                     await say(b"250 STARTTLS")
                 elif verb == b"STAR":
                     await say(b"220 ready")
