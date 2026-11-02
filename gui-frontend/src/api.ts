@@ -2587,7 +2587,8 @@ export type WarningCondition =
   | 'alertChannelFailing';
 
 /** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
- * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
+ * knowing that asks nothing; the views that judge health leave it out, and the Issues page asks for it
+ * (`listWarnings({ info: true })`). */
 export type WarningSeverity = 'failed' | 'warning' | 'info';
 
 /** A named condition about one object, derived fresh by the leader on every poll. Nothing
