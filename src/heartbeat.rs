@@ -798,6 +798,49 @@ pub struct HeartbeatResponse {
     /// is deployed, and from a leader too old to say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployed: Option<String>,
+    /// The levels this worker keeps its lines at, whole on every answer. Absent while an operator has set nothing,
+    /// and from a leader too old to say: every area is then at the worker's own `SMELTR_LOG_LEVEL`.
+    #[serde(default, skip_serializing_if = "LogLevels::is_empty")]
+    pub log_levels: LogLevels,
+}
+
+/// The levels lines are kept at, by area (`crate::logs::levels`), each a label of [`crate::logs::LEVEL_LABELS`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogLevels {
+    /// Every area `areas` does not name. Absent is the process's own `SMELTR_LOG_LEVEL`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub areas: std::collections::BTreeMap<String, String>,
+}
+
+impl LogLevels {
+    pub fn is_empty(&self) -> bool {
+        self.default.is_none() && self.areas.is_empty()
+    }
+
+    /// What a process keeps its lines at, `fallback` where these name nothing. A label this build does not know is
+    /// one it cannot keep, so that area stays at the default.
+    pub fn levels(&self, fallback: tracing::Level) -> crate::logs::levels::Levels {
+        let default = self
+            .default
+            .as_deref()
+            .and_then(crate::logs::level_for_label)
+            .unwrap_or(fallback);
+        let mut levels = crate::logs::levels::Levels::at(default);
+        for (area, label) in &self.areas {
+            if let Some(level) = crate::logs::level_for_label(label) {
+                levels.areas.insert(area.clone(), level);
+            }
+        }
+        levels
+    }
+
+    /// Keep this process's lines at these levels from now on.
+    pub fn apply(&self) {
+        crate::logs::levels::set(self.levels(crate::startup_config::log_level()));
+    }
 }
 
 /// One thing an operator asked of one worker. The id tells a repeat from a new request: a worker acts on each id
@@ -2092,6 +2135,7 @@ mod tests {
             captures: Vec::new(),
             secrets: Vec::new(),
             directive: None,
+            log_levels: LogLevels::default(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, r#"{}"#);
@@ -2339,6 +2383,7 @@ mod tests {
             captures: vec![Invited::Readable(Box::new(invitation))],
             secrets: vec![delivery.clone()],
             directive: None,
+            log_levels: LogLevels::default(),
         };
         assert!(!format!("{response:?}").contains("hunter2"));
         assert!(!format!("{:?}", Some(vec![delivery])).contains("hunter2"));

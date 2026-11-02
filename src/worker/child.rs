@@ -148,6 +148,9 @@ pub enum ToRuntime {
     /// Whether the progress the supervisor holds for the leader is past its bound. While it is, held sources read
     /// nothing new (`super::held::BACKLOG_FULL`). Sent when it changes, and to a runtime as it starts.
     Backlogged { full: bool },
+    /// The levels this runtime keeps its lines at, as the leader last sent them. Sent when they change, and to a
+    /// runtime as it starts.
+    LogLevels { levels: crate::heartbeat::LogLevels },
     /// Drain and exit. The supervisor kills the process tree if this is not answered in time.
     Stop,
 }
@@ -408,7 +411,8 @@ impl Frame for ToRuntime {
             | ToRuntime::Listed { .. }
             | ToRuntime::Mirror { .. }
             | ToRuntime::Holds { .. }
-            | ToRuntime::Backlogged { .. } => MAX_FRAME,
+            | ToRuntime::Backlogged { .. }
+            | ToRuntime::LogLevels { .. } => MAX_FRAME,
         }
     }
 }
@@ -733,6 +737,7 @@ fn obey(frame: ToRuntime, runtime: &Runtime) -> bool {
         }
         ToRuntime::Holds { seq, holds } => held.apply(seq, holds),
         ToRuntime::Backlogged { full } => held.set_upstream_backlogged(full),
+        ToRuntime::LogLevels { levels } => levels.apply(),
         ToRuntime::Start(_) => {}
     }
     true
@@ -1031,6 +1036,12 @@ impl RuntimeHandle {
     pub fn backlogged(&mut self, full: bool) -> std::io::Result<()> {
         self.control
             .send_within(ToRuntime::Backlogged { full }, CONTROL_FRAME_BUDGET)
+    }
+
+    /// Tell this runtime the levels to keep its lines at.
+    pub fn log_levels(&mut self, levels: crate::heartbeat::LogLevels) -> std::io::Result<()> {
+        self.control
+            .send_within(ToRuntime::LogLevels { levels }, CONTROL_FRAME_BUDGET)
     }
 
     /// Hand this runtime what the supervisor recorded and said, to mirror.

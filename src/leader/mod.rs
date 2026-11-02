@@ -36,6 +36,7 @@ pub mod git;
 pub mod holds;
 pub mod listen;
 pub mod lock;
+pub mod log_levels;
 pub mod lookups;
 pub mod map;
 pub mod measurements;
@@ -518,10 +519,12 @@ async fn heartbeat(
     // The whole of what this worker should run: it lets go of a session still filling that this leaves out
     // (`Captures::invitations_for`). On the blocking pool, because `holder` waits on any beat in progress, which
     // holds the holds lock across its store writes; an async thread parked on that would stall every handler.
-    let (captures_for, secrets) = tokio::task::spawn_blocking(move || {
+    let (captures_for, secrets, log_levels) = tokio::task::spawn_blocking(move || {
         let captures_for = state.captures.invitations_for(&worker_id, &group_id, |source| {
             state.registry.holds.holder(&group_id, source)
         });
+        // Whole on every answer, so a worker that missed a change has it on its next beat.
+        let log_levels = log_levels::stored(&*state.store).unwrap_or_default();
         let secrets = state
             .store
             .secrets_for_delivery(&entitled, &req.secret_versions)
@@ -531,7 +534,7 @@ async fn heartbeat(
                 }
                 Default::default()
             });
-        (captures_for, secrets)
+        (captures_for, secrets, log_levels)
     })
     .await
     .unwrap_or_default();
@@ -556,6 +559,7 @@ async fn heartbeat(
             .map(|invitation| crate::heartbeat::Invited::Readable(Box::new(invitation)))
             .collect(),
         secrets,
+        log_levels,
     }))
 }
 
@@ -3893,6 +3897,10 @@ pub fn admin_router() -> Router<AppState> {
         .route(
             "/api/settings/workers",
             get(forget::get_settings).put(forget::put_settings),
+        )
+        .route(
+            "/api/settings/log-levels",
+            get(log_levels::get_settings).put(log_levels::put_settings),
         )
         .route(
             "/api/settings/warnings",

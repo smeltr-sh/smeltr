@@ -2317,6 +2317,7 @@ pub fn run_worker(mut config: WorkerConfig) {
         secrets: Mutex::new(crate::plan::topology::HeldSecrets::default()),
         last_contact: Mutex::new(None),
         heartbeat_failing: Default::default(),
+        log_levels: Default::default(),
         deployed_cue: Mutex::new(None),
         target: Mutex::new(None),
         arrived: Condvar::new(),
@@ -2550,6 +2551,8 @@ struct Supervisor {
     last_contact: Mutex<Option<Instant>>,
     /// The heartbeat failing, and since when: said once per change and on the interval, not on every beat.
     heartbeat_failing: Mutex<(crate::logs::Relog, Option<Instant>)>,
+    /// The levels the leader last sent, and whether the running runtime has them.
+    log_levels: Mutex<(heartbeat::LogLevels, bool)>,
     /// The commit the leader's last answer said it deploys. `None` when the last beat went unanswered or the leader
     /// did not say, and then discovery fetches to find out.
     deployed_cue: Mutex<Option<String>>,
@@ -3124,6 +3127,7 @@ impl Supervisor {
                     self.hand_back_captures();
                     self.follow_captures(resp.captures);
                     self.follow_holds(resp.holds);
+                    self.follow_log_levels(resp.log_levels);
                     if let Some(directive) = resp.directive {
                         self.follow_directive(directive);
                     }
@@ -3806,7 +3810,8 @@ impl Supervisor {
             let wedged = self.route_invitations(running.as_mut())
                 || self.mirror_to(running.as_mut())
                 || self.route_holds(running.as_mut())
-                || self.route_backlog(running.as_mut());
+                || self.route_backlog(running.as_mut())
+                || self.route_log_levels(running.as_mut());
 
             // A control pipe that has stopped taking frames: every capture forwarded to it from here on fails
             // the same way. `send_within`'s caller owes the tree a kill, and this is where that is paid -- the
@@ -4125,6 +4130,7 @@ impl Supervisor {
                     // It holds nothing yet. Its first turn tells it what the leader holds here, each ledger
                     // fetched afresh: the last runtime's reports have moved them since.
                     self.holds.lock().unwrap().restarted();
+                    self.log_levels.lock().unwrap().1 = false;
                     running = Some(handle);
                     content = Some(arriving.clone());
                     last_good = Some((commit.clone(), arriving));
@@ -4649,6 +4655,45 @@ impl Supervisor {
     /// bounds this backlog through an outage: their commits still arrive, and are kept.
     ///
     /// `true` is a control pipe that would not take the frame, as for [`Supervisor::route_invitations`].
+    /// Keep this process's lines at the levels the leader sent, and have the runtime keep its at them too.
+    fn follow_log_levels(&self, levels: heartbeat::LogLevels) {
+        let mut held = self.log_levels.lock().unwrap();
+        if held.0 == levels {
+            return;
+        }
+        levels.apply();
+        *held = (levels, false);
+        drop(held);
+        self.arrived.notify_all();
+    }
+
+    /// Hand the running runtime the levels the leader last sent, when it does not have them. Whether the control
+    /// pipe has stopped taking frames.
+    fn route_log_levels(&self, running: Option<&mut child::RuntimeHandle>) -> bool {
+        let Some(handle) = running else { return false };
+        let levels = {
+            let held = self.log_levels.lock().unwrap();
+            if held.1 {
+                return false;
+            }
+            held.0.clone()
+        };
+        match handle.log_levels(levels) {
+            Ok(()) => {
+                self.log_levels.lock().unwrap().1 = true;
+                false
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "worker.log_levels_not_forwarded",
+                    error = %e,
+                    "could not pass the log levels to the runtime, so it is being ended"
+                );
+                true
+            }
+        }
+    }
+
     fn route_backlog(&self, running: Option<&mut child::RuntimeHandle>) -> bool {
         // What the owed window took waits for the leader as much as what the runtime's report still holds. Both
         // under the window's lock, taken first as `next_beat` takes it, so no progress moves between the two reads.
@@ -6327,6 +6372,7 @@ mod tests {
             secrets: Mutex::new(crate::plan::topology::HeldSecrets::default()),
             last_contact: Mutex::new(None),
             heartbeat_failing: Default::default(),
+            log_levels: Default::default(),
             deployed_cue: Mutex::new(None),
             target: Mutex::new(None),
             arrived: Condvar::new(),
@@ -8004,6 +8050,47 @@ mod tests {
 
     /// The runtime hears when the progress waiting here passes its bound and when it has eased, once each, and a
     /// runtime that starts hears it again.
+    #[test]
+    fn the_runtime_is_told_the_log_levels_once_each_time_they_change_and_again_when_it_restarts() {
+        let dir = temp_dir("runtime-log-levels");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("frames");
+        let inbox = Arc::new(child::RuntimeInbox::default());
+        let mut handle = recording_runtime(&file, &inbox);
+        let supervisor = supervisor_for(temp_dir("runtime-log-levels-supervisor"));
+        let frames = |count: usize| {
+            recorded_until(&file, |lines| {
+                lines.iter().filter(|l| l.contains(r#""kind":"log_levels""#)).count() >= count
+            })
+            .into_iter()
+            .filter(|l| l.contains(r#""kind":"log_levels""#))
+            .collect::<Vec<_>>()
+        };
+        let kafka = heartbeat::LogLevels {
+            default: None,
+            areas: [("kafka".to_string(), "trace".to_string())].into(),
+        };
+
+        assert!(!supervisor.route_log_levels(Some(&mut handle)));
+        assert_eq!(frames(1), [r#"{"kind":"log_levels","levels":{}}"#]);
+        supervisor.follow_log_levels(kafka.clone());
+        assert_eq!(
+            crate::logs::levels::kept_at("kafka.lag_unmeasured"),
+            tracing::Level::TRACE
+        );
+        assert!(!supervisor.route_log_levels(Some(&mut handle)));
+        assert!(!supervisor.route_log_levels(Some(&mut handle)));
+        supervisor.follow_log_levels(kafka);
+        assert!(!supervisor.route_log_levels(Some(&mut handle)));
+        assert_eq!(
+            frames(2)[1],
+            r#"{"kind":"log_levels","levels":{"areas":{"kafka":"trace"}}}"#
+        );
+        supervisor.log_levels.lock().unwrap().1 = false;
+        assert!(!supervisor.route_log_levels(Some(&mut handle)));
+        assert_eq!(frames(3).len(), 3, "a runtime that restarted is told again");
+    }
+
     #[test]
     fn the_runtime_is_told_when_the_progress_waiting_for_the_leader_is_backlogged() {
         let dir = temp_dir("runtime-backlog");

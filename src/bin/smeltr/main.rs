@@ -1094,6 +1094,7 @@ async fn setup_leader(
         directives: Default::default(),
     };
     state.deploy_checks.set_runner(Arc::new(test_api::failing_at));
+    smeltr::leader::log_levels::keep_stored(&state).await;
     tokio::spawn(smeltr::leader::remote::poll(state.clone()));
     tokio::spawn(smeltr::leader::updates::poll(state.clone()));
     tokio::spawn(smeltr::leader::alerts::run(state.clone()));
