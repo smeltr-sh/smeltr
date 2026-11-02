@@ -1398,9 +1398,10 @@ fn resolve_origin(configured: Option<&str>, bind: &str, port: u16, tls: bool) ->
         let scheme = if origin.secure { "https" } else { "http" };
         // A bind of `::` is reached at `[::1]` too, which is where the worker inside this process calls it
         // (`reached_at`), so its certificate has to carry that name as well.
-        let v6_loopback = (ip.is_ipv6() && ip.is_unspecified()).then_some("[::1]");
-        for host in smeltr::startup_config::LOOPBACK_NAMES.into_iter().chain(v6_loopback) {
-            let alias = origin_url(scheme, host, port);
+        let v6_loopback = (ip.is_ipv6() && ip.is_unspecified()).then(|| format!("[{}]", reached_at(bind)));
+        let loopback = smeltr::startup_config::LOOPBACK_NAMES.into_iter().map(str::to_string);
+        for host in loopback.chain(v6_loopback) {
+            let alias = origin_url(scheme, &host, port);
             if !origin.accepts(&alias) {
                 origin.aliases.push(alias);
             }
