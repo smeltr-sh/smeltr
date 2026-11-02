@@ -229,6 +229,10 @@
       as described above.
     </li>
   </ol>
+  <p>
+    While the order runs, the page says which step it is on. A DNS-01 order waits for Cloudflare to
+    serve the new DNS record, so it can take several minutes.
+  </p>
   <h3>Renewal</h3>
   <p>With ACME in force, the page shows when the certificate renews.</p>
   <ul>

@@ -70,6 +70,10 @@
       row's fields to open them. The filters are in the page's address, so you can share a view as a link.
     </li>
     <li>
+      To see who changed what, enter <code>audit.</code> as the site. Every change made through the leader
+      logs a line there, naming who made it and what they did.
+    </li>
+    <li>
       <strong>Status</strong> shows Rows in and out, Errors and Furthest from normal, from the metrics
       the heartbeat carries. Choose the window of Rows in and out: 15m, 60m, 24h, 7d or 30d. A gap in
       a line is missing history, not zero.
