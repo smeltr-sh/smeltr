@@ -2455,14 +2455,15 @@ fn insert_event(conn: &Connection, event: &SecurityEvent) -> Result<(), StoreErr
             event.outcome
         ],
     )?;
-    // Logged where it is written, so every audited action reaches the log without its handler saying so. A refused
-    // one is already said at warn where it was refused. The row holds ids; the line names whom they belong to.
+    // Logged where it is written, so every audited action reaches the log without its handler saying so. The row
+    // holds ids; the line names whom they belong to. An outcome other than "refused" is a success, some of which
+    // keep their detail there.
     let (actor_name, subject_name) = (account_name(conn, &event.actor), account_name(conn, &event.target));
     let (actor_name, subject_name) = (actor_name.as_deref(), subject_name.as_deref());
-    if event.outcome == "ok" {
-        tracing::info!(target: "audit.recorded", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, "an audited action was recorded");
+    if event.outcome == "refused" {
+        tracing::warn!(target: "audit.recorded", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, outcome = %event.outcome, "an audited action was recorded");
     } else {
-        tracing::debug!(target: "audit.recorded", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, outcome = %event.outcome, "an audited action was recorded");
+        tracing::info!(target: "audit.recorded", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, outcome = %event.outcome, "an audited action was recorded");
     }
     Ok(())
 }
@@ -4586,6 +4587,34 @@ mod tests {
         assert_eq!(named(fields[0], "actor_name").as_deref(), Some("Dana"));
         assert_eq!(named(fields[0], "subject_name").as_deref(), Some("Dana"));
         assert_eq!(named(fields[1], "actor_name"), None, "a reserved actor is no account");
+    }
+
+    /// A refusal is said at warn. Every other outcome is a success, said at info, its detail with it.
+    #[test]
+    fn an_audited_refusal_is_a_warning_and_anything_else_is_news() {
+        let s = store();
+        let said = crate::logs::said(|| {
+            for outcome in ["ok", "refused", "rotation-begun"] {
+                s.record_security_event(&SecurityEvent {
+                    id: format!("e-{outcome}"),
+                    at: 1,
+                    actor: "system".into(),
+                    action: "authority-rotation".into(),
+                    target: "leader".into(),
+                    outcome: outcome.into(),
+                })
+                .unwrap();
+            }
+        });
+        let levels: Vec<_> = said
+            .iter()
+            .filter(|(_, site, _)| site == "audit.recorded")
+            .map(|(level, _, _)| *level)
+            .collect();
+        assert_eq!(
+            levels,
+            vec![tracing::Level::INFO, tracing::Level::WARN, tracing::Level::INFO]
+        );
     }
 
     // -- schema ------------------------------------------------------------
