@@ -399,8 +399,9 @@ fn issue_held(dir: &Path, names: Vec<String>, validity: Duration, unusable: &str
     cap_at(&mut params, &authority)?;
     let (leaf, key) = sign(params, &ca_key_pem, "the certificate")?;
     let (_, root) = signing_root_pem(&ca_pem, leaf.as_bytes())?;
-    // Issuing is rare, so reading back what was signed costs nothing worth gating.
-    let described = describe(leaf.as_bytes(), "the certificate").ok();
+    let described = tracing::enabled!(target: "tls.issued", tracing::Level::TRACE)
+        .then(|| describe(leaf.as_bytes(), "the certificate").ok())
+        .flatten();
     tracing::trace!(
         target: "tls.issued",
         names = ?described.as_ref().map(|d| &d.names),
