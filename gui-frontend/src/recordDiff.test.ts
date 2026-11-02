@@ -227,7 +227,12 @@ describe('recordLines', () => {
 
   it('starts a top-level key in brackets at the record', () => {
     const after = { 'x.c': 1, a: { 'y.d': 2, e: 3 } };
-    expect(shape(recordLines(diffTree(null, after)))).toEqual(['a', '  e', '  ["y.d"]', '$["x.c"]']);
+    expect(shape(recordLines(diffTree(null, after)))).toEqual([
+      'a',
+      '  e',
+      '  ["y.d"]',
+      '$["x.c"]',
+    ]);
     expect(pathLines(diffTree(null, after)).map((l) => l.kind === 'field' && l.label)).toEqual([
       'a.e',
       'a["y.d"]',
