@@ -225,13 +225,13 @@ function declaredChild(d: DeclaredAt, key: string | null): DeclaredAt {
   return d.kind === 'struct' ? (d.fields.get(key) ?? 'undeclared') : 'undeclared';
 }
 
-/** A type as a line shows it: a struct by its kind alone, since its fields
+/** A type as a line shows it: an object by its kind alone, since its fields
  * are drawn beneath it. */
 function typeLabel(d: DeclaredAt): string | null {
   if (d === 'unknown') return null;
   if (d === 'undeclared') return 'undeclared';
   if (d.kind === 'scalar') return d.name;
-  if (d.kind === 'struct') return 'struct';
+  if (d.kind === 'struct') return 'object';
   return `array<${typeLabel(d.of)}>`;
 }
 

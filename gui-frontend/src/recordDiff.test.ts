@@ -105,7 +105,7 @@ describe('diffTree', () => {
       ['url.path', 'str'],
     ]);
     expect(typeAt(declared, 'url.path')).toBe('str');
-    expect(typeAt(declared, 'url')).toBe('struct');
+    expect(typeAt(declared, 'url')).toBe('object');
     expect(typeAt(declared, 'hits[0]["a.b"]')).toBe('i64');
     expect(typeAt(declared, 'loose')).toBe('undeclared');
     expect(typeAt(null, 'url.path')).toBeNull();
@@ -135,15 +135,15 @@ describe('diffTree', () => {
     );
     expect(types).toEqual({
       _raw: 'str',
-      hits: 'array<struct>',
-      'hits[0]': 'struct',
+      hits: 'array<object>',
+      'hits[0]': 'object',
       'hits[0]["a.b"]': 'i64',
       'hits[0].extra': 'undeclared',
       'hits[0].host': 'str',
       loose: 'undeclared',
       tags: 'variant',
       'tags[0]': 'undeclared',
-      url: 'struct',
+      url: 'object',
       'url.path': 'str',
       'url.query': 'undeclared',
     });
