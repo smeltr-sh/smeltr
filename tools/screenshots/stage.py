@@ -456,6 +456,18 @@ def open_change():
                   "the alerts topic. The PAN-OS test is re-locked with the two new fields.")
 
 
+def ecs():
+    log("open change: hold the firewalls to ECS")
+    c = as_("priya")
+    b = "hold-firewalls-to-ecs"
+    schema = c.ok(c.call("POST", "/api/preview/schema-read", {"id": "ecs", "format": "ecs", "builtIn": True}))["schema"]
+    c.put("schemas", [schema], b, "network")
+    for p in (bundle.PANOS, bundle.FORTIGATE):
+        c.put_pipeline({**p, "produces": ["ecs"]}, b, "network")
+    c.open_change(b, "Hold both firewall pipelines to ECS",
+                  "Both firewalls' rows go to logs-network, where the SOC searches them by ECS field.")
+
+
 def waiting():
     log("samples for the feeds waiting on pipelines")
     c = as_("admin")
@@ -512,6 +524,8 @@ def main():
     pause(2)
     rotate()
     pause(1)
+    # Before the App-ID change, which How it works shows atop Branches.
+    ecs()
     open_change()
     draft()
     waiting()

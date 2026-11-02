@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ProductScreenshot from '#lib/components/ProductScreenshot.svelte';
   import example from '#lib/one-schema-example.json';
 </script>
 
@@ -43,6 +44,29 @@
         </table>
       </div>
     </article>
+  </section>
+  <section aria-labelledby="fit-heading">
+    <h2 id="fit-heading">Declare ECS. See what doesn't fit.</h2>
+    <p>
+      Set a pipeline to produce ECS. Each field that doesn't fit shows on the step that writes it,
+      with the fix.
+    </p>
+    <ProductScreenshot
+      source="schema-findings-editor"
+      height={2000}
+      crop={{ x: 490, y: 420, width: 2350, height: 1340 }}
+      alt="The panos-traffic pipeline produces ecs. Its eval step writes event.category as str, where ECS has array<str>."
+      caption="The PAN-OS pipeline writes event.category as text, where ECS has a list."
+    />
+    <p>Review shows every finding beside Approve &amp; deploy, before the change runs.</p>
+    <ProductScreenshot
+      source="schema-findings-review"
+      width={2400}
+      height={1400}
+      crop={{ x: 0, y: 1300, width: 2400, height: 100 }}
+      alt="A change's review bar: 2 of 2 tests passing, 3 schema findings, and Approve & deploy."
+      caption="The change holds both firewall pipelines to ECS: 3 findings in all."
+    />
     <p><a href="/how-it-works">How it works →</a></p>
   </section>
   <section class="next-step">
