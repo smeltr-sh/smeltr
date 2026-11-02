@@ -281,7 +281,12 @@ pub async fn put_settings(
         Ok(forget_after) => forget_after,
         Err(e) => return WorkerSettings::answer(Err(Refusal::invalid(e))),
     };
-    let event = super::accounts::event_for(&actor, "worker-settings-change", "", "ok");
+    let event = super::accounts::event_for(
+        &actor,
+        "worker-settings-change",
+        &format!("{}s", forget_after.as_secs()),
+        "ok",
+    );
     let written = run_store(state.store, move |s| {
         s.put_settings(&[(FORGET_AFTER_KEY, forget_after.as_secs().to_string())], Some(&event))
     })
