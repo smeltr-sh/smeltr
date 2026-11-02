@@ -16,6 +16,7 @@ import {
   pathsOf,
   PAGE_LINES,
   recordLines,
+  fromRecord,
   splitPath,
   withoutRemoved,
   type FieldLeaf,
@@ -435,6 +436,11 @@ describe('splitPath', () => {
     });
     expect(splitPath('["say \\"hi\\""]')).toEqual({ prefix: '', leaf: '["say \\"hi\\""]' });
     expect(splitPath('["a.b"].c')).toEqual({ prefix: '["a.b"].', leaf: 'c' });
+  });
+
+  it('splits a whole path from the record at the $ before a key in brackets', () => {
+    expect(splitPath(fromRecord('["x.c"]'))).toEqual({ prefix: '$', leaf: '["x.c"]' });
+    expect(splitPath(fromRecord('a["y.d"]'))).toEqual({ prefix: 'a', leaf: '["y.d"]' });
   });
 });
 

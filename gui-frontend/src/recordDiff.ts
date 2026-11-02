@@ -461,7 +461,7 @@ function chain(n: DiffNode): { label: string; node: DiffNode } {
 
 /** `name`, a whole name from the record's top, as a person writes it: one that starts with a key in brackets starts
  * at `$`, the record, as in `$["x.c"]`. */
-const fromRecord = (name: string) => (name.startsWith('[') ? `$${name}` : name);
+export const fromRecord = (name: string) => (name.startsWith('[') ? `$${name}` : name);
 
 /** Whether a node holds anything a step added, changed or removed. */
 const changed = (n: DiffNode) =>

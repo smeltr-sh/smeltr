@@ -46,6 +46,7 @@
   import {
     countStates,
     fieldAt,
+    fromRecord,
     leafMap,
     pathsOf,
     splitPath,
@@ -801,8 +802,8 @@
                     ><SortButton sort={gridSort} key={ROW_KEY}>#</SortButton></th
                   >
                   {#each columns as path (path)}
-                    {@const name = splitPath(path)}
-                    <th class="cell" title={path} aria-sort={gridSort.aria(path)}
+                    {@const name = splitPath(fromRecord(path))}
+                    <th class="cell" title={fromRecord(path)} aria-sort={gridSort.aria(path)}
                       ><SortButton sort={gridSort} key={path}
                         ><span class="head-name"
                           ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
@@ -813,10 +814,10 @@
                     >
                   {/each}
                   {#each missingColumns as m (m.path)}
-                    {@const name = splitPath(m.path)}
+                    {@const name = splitPath(fromRecord(m.path))}
                     <th
                       class="cell missing-head"
-                      title="{m.schema} requires {m.path}; the rows lack it"
+                      title="{m.schema} requires {fromRecord(m.path)}; the rows lack it"
                       ><span class="missing-name"
                         ><span class="head-name"
                           ><span aria-hidden="true">⚠&nbsp;</span><span class="path-prefix"
