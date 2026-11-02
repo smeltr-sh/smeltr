@@ -3173,7 +3173,7 @@ impl Supervisor {
             let down_for_secs = failing.1.take().map_or(0, |since| since.elapsed().as_secs());
             tracing::info!(target: "worker.heartbeat_recovered", down_for_secs, "the leader answers heartbeats again");
         }
-        tracing::debug!(
+        tracing::trace!(
             target: "worker.heartbeat_answered",
             holds = resp.holds.len(),
             captures = resp.captures.len(),
