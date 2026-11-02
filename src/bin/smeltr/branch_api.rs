@@ -1146,7 +1146,7 @@ fn lacking_for_fleet(access: &Access, data_dir: &Path, commit: &str) -> Result<O
     Ok(std::iter::once(config_file::SHARED_DIR.to_string())
         .chain(groups)
         .find(|area| !access.allows(area, Level::Deployer))
-        .map(|area| format!("deploying a commit moves every group, and this needs deployer in {area}")))
+        .map(|area| format!("deploying a commit moves every worker group, and this needs deployer in {area}")))
 }
 
 fn would_not_load(commit: &str, broken: Vec<(String, String)>) -> Envelope<BranchMutation> {

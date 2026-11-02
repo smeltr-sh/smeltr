@@ -47,9 +47,9 @@
 
   <p>
     Workers clone the whole configuration repository, including other groups. The leader also trusts
-    an enrolled worker with every credential it stores. A group selects what a worker runs; it does
-    not restrict what that worker can access. Use separate clusters for workloads that require this
-    isolation.
+    an enrolled worker with every credential it stores. A worker group selects what a worker runs;
+    it does not restrict what that worker can access. Use separate clusters for workloads that
+    require this isolation.
   </p>
   <h2 id="publish">From a branch to main</h2>
   <WorkflowDiagram kind="review" />

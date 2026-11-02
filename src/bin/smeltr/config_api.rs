@@ -1211,7 +1211,7 @@ pub async fn put_manifest(
 ) -> Envelope<Save> {
     if at.area == config_file::SHARED_DIR {
         return Envelope::refused(Refusal::invalid(
-            "shared/ has no manifest: each group answers for its own rows",
+            "shared/ has no manifest: each worker group answers for its own rows",
         ));
     }
     at.save(actor, Touches::OnlyManifest, "edit manifest".into(), |file| {
@@ -2275,7 +2275,7 @@ fn does_not_load(files: &mut dyn config_file::FileSet, within: &str) -> bool {
 fn refuse_removing_manifest(writing: &Writing, within: &str, path: &str) -> Result<(), Refusal> {
     if writing.prefix != config_file::SHARED_DIR && within == "system.json" {
         return Err(Refusal::invalid(format!(
-            "{path} is what makes its directory a group: deleting it breaks the group -- edit it instead"
+            "{path} is what makes its directory a worker group: deleting it breaks the worker group -- edit it instead"
         )));
     }
     Ok(())

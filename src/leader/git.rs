@@ -2272,7 +2272,7 @@ pub fn worse_than_running(repo_path: &Path, commit: &str) -> Result<Option<Strin
     Ok(groups_that_do_not_load(repo_path, commit)?
         .into_iter()
         .find(|(group, _)| !broken_now.iter().any(|(was, _)| was == group))
-        .map(|(group, why)| format!("group {group:?} does not load at {}: {why}", short(commit))))
+        .map(|(group, why)| format!("worker group {group:?} does not load at {}: {why}", short(commit))))
 }
 
 /// What the leader knows of each branch on the remote it follows, under this prefix: `main` as last fetched, and every

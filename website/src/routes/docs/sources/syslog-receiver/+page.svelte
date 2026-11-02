@@ -118,7 +118,7 @@ log { source(s_src); destination(d_smeltr); };`;
     <li>
       Pick TCP or UDP. See <a href="#transport">TCP or UDP</a>.
     </li>
-    <li>Pick a port no other receiver of that transport in the group uses.</li>
+    <li>Pick a port no other receiver of that transport in the worker group uses.</li>
     <li>
       Decide how senders are admitted: the networks they connect from, a client certificate, or
       both. See <a href="#senders">Who it admits</a>.
@@ -156,8 +156,8 @@ log { source(s_src); destination(d_smeltr); };`;
     </li>
   </ul>
   <p>
-    A TCP and a UDP receiver may share a port number, so one group can take syslog on TCP 514 and
-    UDP 514.
+    A TCP and a UDP receiver may share a port number, so one worker group can take syslog on TCP 514
+    and UDP 514.
   </p>
 
   <h2 id="settings">Settings</h2>
@@ -166,8 +166,8 @@ log { source(s_src); destination(d_smeltr); };`;
 
   <h2 id="senders">Who it admits</h2>
   <p>
-    Anyone a receiver admits can put records into the group's pipelines. Syslog carries no token, so
-    a receiver needs <code>allowFrom</code>, an <code>certificate</code> and
+    Anyone a receiver admits can put records into the worker group's pipelines. Syslog carries no
+    token, so a receiver needs <code>allowFrom</code>, an <code>certificate</code> and
     <code>trustedAuthorities</code>, or both. The leader refuses a receiver with neither.
   </p>
   <ul>

@@ -2,7 +2,7 @@
   import { image } from '#lib/release.ts';
   import GuideLayout from '#lib/components/GuideLayout.svelte';
   const sections = [
-    { id: 'before', title: 'Prepare the group and host' },
+    { id: 'before', title: 'Prepare the worker group and host' },
     { id: 'create', title: 'Create an enrollment code' },
     { id: 'configure', title: 'Configure and start' },
     { id: 'verify', title: 'Verify and handle failures' },
@@ -31,11 +31,11 @@
     own commit.
   </p>
   <p>
-    The leader trusts an enrolled worker with every group's configuration and every credential it
-    stores. Worker groups organize processing; use separate Smeltr clusters when you must isolate
-    hosts from one another's configuration or credentials.
+    The leader trusts an enrolled worker with every worker group's configuration and every
+    credential it stores. Worker groups organize processing; use separate Smeltr clusters when you
+    must isolate hosts from one another's configuration or credentials.
   </p>
-  <h2 id="before">Prepare the group and host</h2>
+  <h2 id="before">Prepare the worker group and host</h2>
   <p>
     Install that Smeltr executable or image on the worker host. Its built-in Git client fetches
     configuration from the leader. For a container, mount the configuration read-only and the worker
@@ -44,16 +44,17 @@
     must be able to connect to the leader, sources, and destinations.
   </p>
   <p>
-    Use the default group for a first installation. For another group, open Admin → Worker groups,
-    choose <strong>+ Add group</strong>, enter Name and Id, then choose <strong>Add</strong>. Review
-    and deploy that change: a Pending group is not live until you deploy it.
+    Use the default worker group for a first installation. For another worker group, open Admin →
+    Worker groups, choose <strong>+ Add group</strong>, enter Name and Id, then choose
+    <strong>Add</strong>. Review and deploy that change: a Pending worker group is not live until
+    you deploy it.
   </p>
   <p>
-    Group name changes also need deployment; group colors apply immediately. Deleting a group also
-    needs deployment. Once it deploys, workers still in that group stop all their pipelines until
-    you move them to another group or shut them down. Set
-    <code>worker.group</code> to the group ID. Shared configuration can affect more than one group, so
-    inspect the full change before deploying.
+    Worker group name changes also need deployment; worker group colors apply immediately. Deleting
+    a worker group also needs deployment. Once it deploys, workers still in that group stop all
+    their pipelines until you move them to another group or shut them down. Set
+    <code>worker.group</code> to the group ID. Shared configuration can affect more than one worker group,
+    so inspect the full change before deploying.
   </p>
   <h2 id="create">Create an enrollment code</h2>
   <p>

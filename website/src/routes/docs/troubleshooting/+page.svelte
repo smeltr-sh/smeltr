@@ -120,10 +120,10 @@
         <tr
           ><td>Enrollment refused</td><td
             >Enrollment code expiry, remaining uses, withdrawal, a replaced leader authority and
-            deployed group</td
+            deployed worker group</td
           ><td
-            >Correct the group or create a new enrollment code; read the error before replacing
-            credentials.</td
+            >Correct the worker group or create a new enrollment code; read the error before
+            replacing credentials.</td
           ></tr
         >
         <tr

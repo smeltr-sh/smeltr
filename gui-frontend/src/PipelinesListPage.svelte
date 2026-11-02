@@ -152,7 +152,8 @@
         </thead>
         <tbody>
           {#if sortedSharedPipelines.length > 0}
-            <tr class="bandrow"><td colspan="3">from shared/ &mdash; every group runs these</td></tr
+            <tr class="bandrow"
+              ><td colspan="3">from shared/ &mdash; every worker group runs these</td></tr
             >
             {#each sortedSharedPipelines as p (p.id)}
               <tr class="fromshared">
@@ -166,7 +167,7 @@
                 </td>
               </tr>
             {/each}
-            <tr class="bandrow"><td colspan="3">this group</td></tr>
+            <tr class="bandrow"><td colspan="3">this worker group</td></tr>
           {/if}
           {#each sortedPipelines as p (p.id)}
             <tr>

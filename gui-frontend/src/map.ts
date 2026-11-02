@@ -772,8 +772,8 @@ const KNOWN_FIELDS = new Set(['calls', 'id', ...TERM_FIELDS]);
 const UNSUPPORTED_FIELDS: Record<string, string> = {
   tag: "object tags aren't built in this codebase yet",
   tags: "object tags aren't built in this codebase yet",
-  group: 'search does not filter by group yet -- use the group filter above the map',
-  groups: 'search does not filter by group yet -- use the group filter above the map',
+  group: 'search does not filter by worker group yet -- use the worker group filter above the map',
+  groups: 'search does not filter by worker group yet -- use the worker group filter above the map',
   topic: "a source's topics aren't carried onto the map yet",
   topics: "a source's topics aren't carried onto the map yet",
 };

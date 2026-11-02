@@ -61,7 +61,7 @@
 
   <h2 id="before-you-start">Before you start</h2>
   <ul>
-    <li>Pick a port no other receiver of the group listens on.</li>
+    <li>Pick a port no other receiver of the worker group listens on.</li>
     <li>
       Decide how senders prove who they are: a token, a client certificate, or both. See
       <a href="#senders">Tokens and certificates</a>.
@@ -87,7 +87,7 @@
 
   <h2 id="senders">Tokens and certificates</h2>
   <p>
-    Whoever a receiver admits puts records into the group's pipelines, so a receiver needs
+    Whoever a receiver admits puts records into the worker group's pipelines, so a receiver needs
     <code>tokens</code>, an <code>certificate</code> and <code>trustedAuthorities</code>, or both. A
     receiver with neither is refused at load.
   </p>

@@ -1,6 +1,6 @@
 <!--
   A route's or a destination's own `exceptions` layer, over the group's, folded as Advanced is: open when it
-  answers anything itself. Reset to group clears it.
+  answers anything itself. Reset to worker group clears it.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
@@ -40,7 +40,7 @@
   {/if}
   {#if !readOnly && value}
     <div>
-      <button type="button" onclick={() => (value = undefined)}>Reset to group</button>
+      <button type="button" onclick={() => (value = undefined)}>Reset to worker group</button>
     </div>
   {/if}
 </Advanced>

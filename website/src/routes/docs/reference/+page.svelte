@@ -91,7 +91,7 @@
           ></tr
         >
         <tr
-          ><td>Pipelines and group configuration</td><td
+          ><td>Pipelines and worker group configuration</td><td
             >A branch → Open for review → Approve &amp; deploy</td
           ><td>When workers adopt the deployment</td></tr
         >

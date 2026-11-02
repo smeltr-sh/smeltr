@@ -328,7 +328,8 @@ pub(crate) fn from_file_config_at(
     let mut errors = Vec::new();
     let mut group = OnException::default();
     if let Some(layer) = &file.on_exception {
-        lay_answers(&mut group, layer, Layer::Group, &maps).unwrap_or_else(|e| errors.push(format!("the group's {e}")));
+        lay_answers(&mut group, layer, Layer::Group, &maps)
+            .unwrap_or_else(|e| errors.push(format!("the worker group's {e}")));
     }
     let mut destinations: Vec<DestinationConfig> = file
         .destinations
@@ -414,7 +415,7 @@ pub(crate) fn from_file_config_at(
 fn impossible_answers_of(system: &super::LoadedSystem) -> Vec<String> {
     let topology = &system.topology;
     let group = &topology.on_exception;
-    let mut errors = impossible_answers("the group", group, None, Layer::Group);
+    let mut errors = impossible_answers("the worker group", group, None, Layer::Group);
     for (at, r) in topology.routes.iter().enumerate() {
         let what = format!("route {}", system.route_name(at));
         errors.extend(impossible_answers(&what, &r.on_exception, Some(group), Layer::Route));

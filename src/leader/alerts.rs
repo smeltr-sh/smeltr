@@ -325,7 +325,7 @@ pub fn summary(status: Status, body: &serde_json::Value) -> String {
         Status::Test => return "Test from Smeltr.".to_string(),
     };
     if let Some(group) = body["group"].as_str() {
-        line.push_str(&format!(" in {group}"));
+        line.push_str(&format!(" in worker group {group}"));
     }
     if let Some(message) = body["message"].as_str() {
         line.push_str(&format!(". {message}"));
@@ -862,7 +862,9 @@ fn check_channel(channel: &Channel) -> Result<(), String> {
         return Err("give each channel a name".into());
     }
     if channel.groups.as_ref().is_some_and(Vec::is_empty) {
-        return Err(format!("{name}: choose at least one group, or all groups"));
+        return Err(format!(
+            "{name}: choose at least one worker group, or all worker groups"
+        ));
     }
     match &channel.kind {
         Kind::Webhook { url, secret_header, .. } => {
@@ -1235,7 +1237,7 @@ mod tests {
             &[],
         )
         .raised;
-        let line = "Source unreachable: orders in payments. orders: connection refused for row 42";
+        let line = "Source unreachable: orders in worker group payments. orders: connection refused for row 42";
         assert_eq!(
             webhook_body(Format::Slack, Status::Raised, &told[0], None),
             serde_json::json!({ "text": line })
@@ -1281,7 +1283,7 @@ mod tests {
         assert_eq!(subject, "Smeltr: 2 raised, 0 cleared");
         assert_eq!(
             body,
-            "Source unreachable: orders in payments\nSource unreachable: clicks\n"
+            "Source unreachable: orders in worker group payments\nSource unreachable: clicks\n"
         );
         let one = changes(&c, 6, &ws[..1], &both.raised);
         assert_eq!(email(&one).0, "Smeltr: Cleared: Source unreachable: clicks");

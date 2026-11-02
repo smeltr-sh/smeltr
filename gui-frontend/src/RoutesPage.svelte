@@ -570,7 +570,7 @@
       <OnlyNotice {narrowing} ids={[...sharedRoutes, ...routes].map((r) => r.id)} />
 
       {#if sharedRoutes.some((r) => kept(r.id))}
-        <div class="band">from shared/ &mdash; every group runs these</div>
+        <div class="band">from shared/ &mdash; every worker group runs these</div>
         {#each sharedRoutes.filter((r) => kept(r.id)) as route (route.id)}
           <div class="rest fromshared">
             <span class="rest-meta">{flow(route)}</span>
@@ -579,7 +579,7 @@
             <EditInShared hash="#/build/routes" />
           </div>
         {/each}
-        <div class="band">this group</div>
+        <div class="band">this worker group</div>
       {/if}
 
       {#each sourceCards as card (card.source)}
@@ -662,8 +662,8 @@
           modified={answersModified}
           bind:open={() => answersOpen, (v) => (answersOpen = !!v || groupRefusals.length > 0)}
         >
-          {#snippet help()}The answer every route in this group gives each exception, unless the
-            route overrides it.{/snippet}
+          {#snippet help()}The answer every route in this worker group gives each exception, unless
+            the route overrides it.{/snippet}
           <ExceptionMatrix
             bind:value={exceptions}
             rows={GROUP_ROWS}

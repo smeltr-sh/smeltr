@@ -67,8 +67,8 @@
   <h3 id="lookup-tables">Lookup tables</h3>
   <p>
     A lookup table is shared by id: any Lookup step in any pipeline can name it. Manage tables under
-    <strong>Build</strong>, <strong>Resources</strong>, <strong>Lookup tables</strong>. A group also
-    sees the tables of <code>shared/</code>. A table is one of three types:
+    <strong>Build</strong>, <strong>Resources</strong>, <strong>Lookup tables</strong>. A worker
+    group also sees the tables of <code>shared/</code>. A table is one of three types:
   </p>
   <div class="table-scroll">
     <table>

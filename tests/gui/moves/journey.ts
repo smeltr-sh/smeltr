@@ -722,7 +722,7 @@ const fillAvro: Move = {
     await form.getByRole('button', { name: 'Fill from a message' }).click();
     const capture = page.getByRole('dialog', { name: 'Fill the Avro fields from a message' });
     // The capture runs on a group's workers, and `default` is where the journey's are.
-    await capture.getByRole('combobox', { name: 'Group' }).selectOption('default');
+    await capture.getByRole('combobox', { name: 'Worker group' }).selectOption('default');
     await capture.getByRole('button', { name: 'Start' }).click();
     const take = capture.getByRole('button', { name: 'Fill fields' });
     await expect(take).toBeVisible({ timeout: 60_000 });
