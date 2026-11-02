@@ -51,7 +51,7 @@ impl Pacer {
     pub fn relog(&mut self) {
         let kind = self.kind;
         if let Some(why) = self.failing.due() {
-            tracing::warn!(target: "source.poll", subject = %self.subject, source = kind, error = %why, "a source could not read; asking again");
+            tracing::warn!(target: "source.poll_failed", subject = %self.subject, source = kind, error = %why, "a source could not read; trying again");
         }
     }
 

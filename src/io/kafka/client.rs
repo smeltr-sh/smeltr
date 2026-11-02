@@ -410,7 +410,7 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
             Some(Err(KafkaError::MessageConsumption(_) | KafkaError::PartitionEOF(_))) => {}
             Some(Err(e)) => {
                 if let Some(error) = polling.fail_due(e.to_string()) {
-                    tracing::warn!(target: "kafka.poll", group = %routes.group(), error, "could not read from Kafka; trying again");
+                    tracing::warn!(target: "kafka.poll_failed", group = %routes.group(), error, "a source could not read from Kafka; trying again");
                 }
             }
         }
@@ -947,7 +947,7 @@ impl Routes {
         };
         match sent {
             Err(e) => {
-                tracing::warn!(target: "kafka.subscribe", group = %self.group(), error = %e, "could not subscribe; trying again");
+                tracing::warn!(target: "kafka.subscribe_failed", group = %self.group(), error = %e, "a source could not subscribe to its topics; trying again");
                 self.changed();
             }
             Ok(()) => {
@@ -1049,9 +1049,9 @@ impl Routes {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        target: "kafka.placement",
+                        target: "kafka.placement_failed",
                         error = %e,
-                        "could not place newly assigned partitions; they wait, paused, and are placed again on a later poll"
+                        "a source could not place the partitions it was assigned; they wait, paused, and are placed again on a later poll"
                     );
                     unplaced.extend(query.into_iter().map(|(key, _)| key));
                 }
@@ -1084,7 +1084,7 @@ impl ClientContext for Routes {
             }
             Err(e) => {
                 if let Some(error) = self.0.sign_in.lock().unwrap().fail_due(e.to_string()) {
-                    tracing::warn!(target: "kafka.sign_in", group = %self.group(), error, "could not sign in to Kafka as the pod's workload identity");
+                    tracing::warn!(target: "kafka.sign_in_failed", group = %self.group(), error, "could not sign in to Kafka as the pod's workload identity");
                 }
                 Err(e)
             }
@@ -1163,7 +1163,7 @@ impl ConsumerContext for Routes {
         }
         for slot in touched {
             if let Err(e) = slot.sync(base_consumer, &slot.lock()) {
-                tracing::warn!(target: "kafka.placement", error = %e, "could not hold newly assigned partitions");
+                tracing::warn!(target: "kafka.placement_failed", error = %e, "a source could not hold the partitions it was assigned; they are placed again on a later poll");
             }
             slot.arrived.notify_all();
         }
@@ -1480,7 +1480,7 @@ fn list_topics(consumer: &BaseConsumer<Routes>, routes: &Routes, clients: &Weak<
     let metadata = match consumer.fetch_metadata(None, LAG_QUERY_TIMEOUT) {
         Ok(metadata) => metadata,
         Err(e) => {
-            tracing::debug!(target: "kafka.topic_list", group = %routes.group(), error = %e, "could not list the cluster's topics");
+            tracing::debug!(target: "kafka.topic_list_failed", group = %routes.group(), error = %e, "the cluster's topics could not be listed, so sources on other clients are not checked against them this round");
             return;
         }
     };

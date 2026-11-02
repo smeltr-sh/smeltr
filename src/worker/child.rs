@@ -584,7 +584,7 @@ pub fn run_runtime_child() -> ! {
         target: "runtime.tls_offered",
         suites = suites.join(", "),
         groups = groups.join(", "),
-        "TLS algorithms offered"
+        "this runtime offers these TLS algorithms"
     );
 
     while !stopping.load(Ordering::Relaxed) && !SIGNALED.load(Ordering::Relaxed) {

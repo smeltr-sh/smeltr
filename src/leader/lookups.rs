@@ -82,7 +82,7 @@ pub fn prune(repo: &Path, keep: usize, running: &HashSet<(String, String)>) {
         }
     }
     if forgotten > 0 {
-        tracing::debug!(target: "lookups.pruned", forgotten, "stored lookup file versions retention no longer keeps were forgotten");
+        tracing::debug!(target: "lookups.pruned", forgotten, "stored lookup file versions past their retention were forgotten");
     }
 }
 

@@ -199,7 +199,7 @@ impl StorageQueue {
             Ok(_) => None,
             Err(f) if f.status == Some(http::StatusCode::NOT_FOUND) => {
                 tracing::warn!(
-                    target: "object_source.delete",
+                    target: "object_source.delete_failed",
                     id,
                     error = %f.why,
                     "a finished message had already lapsed back onto the queue; it will be read again"

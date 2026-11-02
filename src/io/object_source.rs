@@ -432,7 +432,7 @@ impl ObjectSource {
     fn tend(&mut self) {
         if let Err(e) = self.receive(Duration::ZERO, false) {
             if let Some(error) = self.receive_failing.fail_due(e.message.clone()) {
-                tracing::warn!(target: "object_source.receive", queue = %self.queue.name(), error, "a receive failed; trying again");
+                tracing::warn!(target: "object_source.receive_failed", queue = %self.queue.name(), error, "a source could not receive from its queue; trying again");
             }
         } else if self.receive_failing.clear() {
             tracing::info!(target: "object_source.receive_recovered", queue = %self.queue.name(), "the queue answers receives again");
@@ -451,11 +451,11 @@ impl ObjectSource {
             Some((_, why)) => {
                 if let Some(error) = self.delete_failing.fail_due(why.clone()) {
                     tracing::warn!(
-                        target: "object_source.delete",
+                        target: "object_source.delete_failed",
                         queue = %self.queue.name(),
                         count = failed.len(),
                         error,
-                        "finished messages were not deleted; trying again"
+                        "a source could not delete its finished messages; trying again"
                     );
                 }
             }

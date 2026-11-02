@@ -1897,7 +1897,7 @@ fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path:
         std::process::exit(1);
     }
     if let Some(problem) = standing.problem() {
-        tracing::error!(target: "secrets.key_unusable", path = %path.display(), %problem, "the secrets encryption key is not usable");
+        tracing::error!(target: "secrets.key_unusable", path = %path.display(), %problem, "the secrets encryption key is not usable, so secrets cannot be read or stored until it is");
     }
 }
 

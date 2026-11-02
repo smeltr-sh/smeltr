@@ -3755,7 +3755,7 @@ impl Supervisor {
             return;
         }
         let generation = target.as_ref().map_or(1, |t| t.generation + 1);
-        tracing::debug!(target: "worker.target_discovered", subject = %commit, generation, "discovery saw a new commit");
+        tracing::debug!(target: "worker.target_discovered", subject = %commit, generation, "the worker saw a new commit to deploy");
         *target = Some(Target { generation, commit });
         drop(target);
         self.arrived.notify_all();
