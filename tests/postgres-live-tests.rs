@@ -509,7 +509,7 @@ fn require_tls_verifies_the_server_and_binds_the_channel_to_its_certificate() {
     let one = plain_statement("SELECT 1 AS one");
     let mut unverified = driver_with(&host, port, READER, Encrypted::Require, None);
     let err = unverified.run(&one, &[]).expect_err("an unverified server");
-    assert!(err.contains("TLS handshake"), "{err}");
+    assert!(err.contains("invalid peer certificate"), "{err}");
 
     // The certificate is signed with SHA-384, so a binding hashed any other way fails the sign-in.
     let mut verified = driver_with(&host, port, READER, Encrypted::Require, Some(certificate));

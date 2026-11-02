@@ -422,7 +422,8 @@ fn server_end_point(der: &[u8]) -> Option<Vec<u8>> {
     Some(digest::digest(hash, der).as_ref().to_vec())
 }
 
-/// The database's own words for `e`: its message, then its detail and hint when it gave them.
+/// The database's own words for `e`: its message, then its detail and hint when it gave them. Without one, the cause
+/// beneath tokio-postgres's own wrappers, a [`Refusal`] among them.
 fn message(e: &tokio_postgres::Error) -> String {
     if let Some(db) = e.as_db_error() {
         let mut text = db.message().to_string();
@@ -432,10 +433,7 @@ fn message(e: &tokio_postgres::Error) -> String {
         }
         return text;
     }
-    match e.source().and_then(|s| s.downcast_ref::<Refusal>()) {
-        Some(refusal) => refusal.0.clone(),
-        None => e.to_string(),
-    }
+    super::sql_source::cause(e)
 }
 
 /// Why a value could not be bound or read, in words that already name what is wrong.
