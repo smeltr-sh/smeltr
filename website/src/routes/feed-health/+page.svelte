@@ -39,14 +39,14 @@
         width: 1440,
         crop: { x: 472, y: 922, width: 920, height: 299 },
       }}
-      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 418,174 rows in 30 minutes where 729,828 to 958,960 is normal at this time of day."
+      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 564,427 rows in 30 minutes where 686,163 to 840,639 is normal at this time of day."
       caption="The Issues page names the source, what it read and what is normal."
     />
     <ProductScreenshot
       source="feed-health-volume"
       height={1800}
       crop={{ x: 2150, y: 470, width: 690, height: 950 }}
-      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 243 rows a second, expected 405 to 533. Its 24-hour chart follows the expected band through the day, then falls to half."
+      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 171 rows a second, expected 378 to 465. Its 24-hour chart follows the expected band through the day, then falls to half."
       caption="Over the last 24 hours the source reads within its band, until it falls to half."
     />
     <p>
@@ -70,7 +70,7 @@
         source: 'feed-health-issues-phone',
         height: 2200,
         width: 1440,
-        crop: { x: 472, y: 601, width: 920, height: 299 },
+        crop: { x: 472, y: 572, width: 920, height: 318 },
       }}
       alt="The Issues page: Field not its declared type, for the fortigate-traffic pipeline, whose field proto has failed to read as its declared type in the last hour."
       caption="The Issues page names the pipeline, the field and the step."
@@ -85,7 +85,7 @@
     </p>
     <ProductScreenshot
       source="feed-health-alerts"
-      height={4486}
+      height={4506}
       crop={{ x: 472, y: 1152, width: 1664, height: 594 }}
       alt="Admin, System, Alerts: three channels. Network on-call is a PagerDuty webhook for the network worker group, #siem-pipelines a Slack webhook for every worker group, and SOC engineering an email to soc-eng@example.com."
       caption="PagerDuty pages the network on-call, Slack tells the pipeline team, and email reaches SOC engineering."
@@ -96,8 +96,8 @@
     </p>
     <ProductScreenshot
       source="feed-health-alerts"
-      height={4486}
-      crop={{ x: 472, y: 1746, width: 1664, height: 914 }}
+      height={4506}
+      crop={{ x: 472, y: 1766, width: 1664, height: 914 }}
       alt="What each channel gets: a row for each kind of issue and a column for each channel. Network on-call takes Source unreachable, Destination unreachable and Rows below normal; #siem-pipelines takes Rows below normal and Rows above normal."
       caption="A row for each kind of issue, a column for each channel."
     />
@@ -110,9 +110,9 @@
     <ProductScreenshot
       source="feed-health-alert-channel"
       height={1800}
-      crop={{ x: 992, y: 464, width: 896, height: 871 }}
-      alt="Editing the Network on-call channel: format PagerDuty, URL https://events.pagerduty.com/v2/enqueue, routing key stored, groups only these."
-      caption="The network on-call's channel: PagerDuty's events URL and a stored routing key."
+      crop={{ x: 992, y: 390, width: 896, height: 1020 }}
+      alt="Editing the Network on-call channel: format PagerDuty, URL https://events.pagerduty.com/v2/enqueue, routing key stored, worker groups only network, message included."
+      caption="The network on-call channel pages through PagerDuty, for the network worker group only."
     />
     <p><a href="/docs/operations">Operate a fleet →</a></p>
   </section>
