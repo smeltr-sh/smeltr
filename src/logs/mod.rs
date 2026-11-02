@@ -361,6 +361,11 @@ fn level_of(ord: usize) -> Level {
     }
 }
 
+/// `took` in whole milliseconds, as a line's `ms` says how long something took.
+pub fn millis(took: Duration) -> u64 {
+    u64::try_from(took.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// The threshold every call site is measured against.
 pub fn max_level() -> Level {
     level_of(MAX_LEVEL.load(Ordering::Relaxed))

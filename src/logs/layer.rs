@@ -97,7 +97,7 @@ where
         for outer in span.scope().skip(1) {
             lend(&outer.extensions(), &mut fields);
         }
-        let ms = u64::try_from(took.as_millis()).unwrap_or(u64::MAX);
+        let ms = super::millis(took);
         // The duration wins over a span field of the same name, so `ms` always means how long it was open.
         fields.retain(|(name, _)| name != "ms");
         fields.push(("ms".into(), super::event::Value::Uint(ms)));
