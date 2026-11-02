@@ -5,6 +5,7 @@
   const sections = [
     { id: 'where', title: 'Where logs and metrics go' },
     { id: 'gui', title: 'Read them in the GUI' },
+    { id: 'who', title: 'See who changed what' },
     { id: 'route', title: 'Send them to a destination' },
     { id: 'metrics', title: 'What metrics exist' },
     { id: 'lost', title: 'Check for lost logs' },
@@ -70,10 +71,6 @@
       row's fields to open them. The filters are in the page's address, so you can share a view as a link.
     </li>
     <li>
-      To see who changed what, enter <code>audit.</code> as the site. Every change made through the leader
-      logs a line there, naming who made it and what they did.
-    </li>
-    <li>
       <strong>Status</strong> shows Rows in and out, Errors and Furthest from normal, from the metrics
       the heartbeat carries. Choose the window of Rows in and out: 15m, 60m, 24h, 7d or 30d. A gap in
       a line is missing history, not zero.
@@ -85,6 +82,20 @@
     leader holds the oldest 4,096 of its own events and the newest 2,048 from the process running
     its pipelines.
   </p>
+
+  <h2 id="who">See who changed what</h2>
+  <p>Smeltr records who made each change, in one of two places.</p>
+  <ul>
+    <li>
+      A change to config, such as a pipeline, source or route, is a commit. Branches → History shows
+      its <strong>Author</strong>, and who deployed it under <strong>Deployed by</strong>.
+    </li>
+    <li>
+      A sign-in, or a change to accounts, secrets, certificates, workers or settings, is a line in
+      the log. In Status → Logs, enter <code>audit.</code> as the site. Each line names who did it and
+      what they did.
+    </li>
+  </ul>
 
   <h2 id="route">Send them to a destination</h2>
   <ol>
