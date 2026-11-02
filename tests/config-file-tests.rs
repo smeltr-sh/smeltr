@@ -1171,12 +1171,12 @@ fn an_answer_a_delivery_kind_cannot_carry_out_is_refused() {
         (
             "Unmatched",
             r#""ignore""#,
-            "the group answers Unmatched with ignore, but an Unmatched row has no route",
+            "the worker group answers Unmatched with ignore, but an Unmatched row has no route",
         ),
         (
             "Unmatched",
             r#""tag""#,
-            "the group answers Unmatched with tag, but an Unmatched row has no route",
+            "the worker group answers Unmatched with tag, but an Unmatched row has no route",
         ),
         (
             "Unprocessable",
@@ -1702,7 +1702,7 @@ fn a_delivery_answer_round_trips_and_must_name_real_destinations() {
             (json.replace(r#"["leftovers", "spare"]"#, "[]"), "no destination"),
         ] {
             let err = load_str(&bad).unwrap_err().to_string();
-            assert!(err.contains("the group's") && err.contains(says), "{label}: {err}");
+            assert!(err.contains("the worker group's") && err.contains(says), "{label}: {err}");
         }
     }
 }
