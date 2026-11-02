@@ -12,7 +12,8 @@ import type { ApiError, CaptureBatchDto, CaptureEndDto, CaptureStatusDto, Sample
 import { CHANGED_EVENT } from './guide';
 import { bareError } from '../errors.svelte';
 
-/** What `tools/screenshots/demo.mjs` recorded. */
+/** What `tools/screenshots/demo.mjs` recorded and every page reads. The rest it recorded is in parts of their own,
+ * each read the first time it is asked for (`Parts`). */
 export interface Recording {
   /** What every recorded time is relative to. */
   recordedAt: number;
@@ -22,12 +23,18 @@ export interface Recording {
   moving: Record<string, unknown[]>;
   /** When each of `moving`'s reads was made: the times in a read are relative to it, not to `recordedAt`. */
   movingAt: number[];
-  /** By `<group>/source/<id>` or `<group>/destination/<id>`: what main's capture of it took. A source's carries the
-   * sample a save made of it too, record for row. */
-  captures: Record<string, { batches: CaptureBatchDto[]; sample?: Pool }>;
 }
 
-type Pool = Required<Pick<SampleDto, 'columns' | 'records'>>;
+/** The recording's parts, by key: an answer by `keyOf`, as `Recording.answers` holds one, or by
+ * `<group>/source/<id>` or `<group>/destination/<id>` what main's capture of it took (`Pool`). Undefined for a key no
+ * part holds. */
+export type Parts = (key: string) => Promise<unknown>;
+
+/** What one capture of main's took. A source's carries the sample a save made of it too, record for row. */
+export interface Pool {
+  batches: CaptureBatchDto[];
+  sample?: Required<Pick<SampleDto, 'columns' | 'records'>>;
+}
 type Bundle = Record<string, unknown> & { pipelines?: { id: string; steps?: unknown[] }[] };
 
 const SHARED = 'shared';
@@ -272,8 +279,25 @@ export class DemoLeader {
     private readonly service: string,
     private readonly store: Storage | null = null,
     private readonly now: () => number = Date.now,
+    private readonly parts: Parts = async () => undefined,
   ) {
     this.state = this.load() ?? this.seed();
+  }
+
+  /** Each part asked for, read once. */
+  private readonly read = new Map<string, Promise<unknown>>();
+
+  private part(key: string): Promise<unknown> {
+    let found = this.read.get(key);
+    if (!found) {
+      found = this.parts(key);
+      this.read.set(key, found);
+    }
+    return found;
+  }
+
+  private async pool(key: string | null): Promise<Pool | undefined> {
+    return key === null ? undefined : ((await this.part(key)) as Pool | undefined);
   }
 
   private load(): State | null {
@@ -293,20 +317,22 @@ export class DemoLeader {
     }
   }
 
-  private recorded(key: string): Answer | undefined {
-    const answer = this.recording.answers[key];
+  private async recorded(key: string): Promise<Answer | undefined> {
+    const answer =
+      this.recording.answers[key] ??
+      ((await this.part(key)) as Recording['answers'][string] | undefined);
     return answer && { status: answer.status, body: this.moved(answer.body) };
   }
 
   /** What the recording answered to `url`, or to the same question on another branch it read, which is the nearest
    * the demo holds to a branch it never saw. */
-  private nearest(url: URL): Answer {
-    const found = this.recorded(keyOf(url));
+  private async nearest(url: URL): Promise<Answer> {
+    const found = await this.recorded(keyOf(url));
     if (found || !url.searchParams.has('branch')) return found ?? NOT_RECORDED;
     for (const branch of ['main', 'work']) {
       const other = new URL(url);
       other.searchParams.set('branch', branch);
-      const answer = this.recorded(keyOf(other));
+      const answer = await this.recorded(keyOf(other));
       if (answer) return answer;
     }
     // A scope the fleet had no tests in.
@@ -947,20 +973,16 @@ export class DemoLeader {
   }
 
   /** The recorded capture a source's capture reads: its own, or one of main's sources reading the same topics. */
-  private poolFor(group: string, source: Record<string, unknown>): string | null {
+  private async poolFor(group: string, source: Record<string, unknown>): Promise<string | null> {
     const own = `${group}/source/${source.id}`;
-    if (this.recording.captures[own]) return own;
+    if (await this.pool(own)) return own;
     const topics = new Set((source.topics as string[] | undefined) ?? []);
     const main = this.state.branches.main;
     for (const g of this.groups()) {
       for (const s of (main.bundles[g]?.sources as Record<string, unknown>[] | undefined) ?? []) {
         const key = `${g}/source/${s.id}`;
         const read = (s.topics as string[] | undefined) ?? [];
-        if (
-          s.type === source.type &&
-          read.some((t) => topics.has(t)) &&
-          this.recording.captures[key]
-        ) {
+        if (s.type === source.type && read.some((t) => topics.has(t)) && (await this.pool(key))) {
           return key;
         }
       }
@@ -968,9 +990,8 @@ export class DemoLeader {
     return null;
   }
 
-  private rowsOf(pool: string | null): number {
-    if (!pool) return 0;
-    return this.recording.captures[pool].batches.reduce((n, b) => n + b.rows.length, 0);
+  private async rowsOf(pool: string | null): Promise<number> {
+    return ((await this.pool(pool))?.batches ?? []).reduce((n, b) => n + b.rows.length, 0);
   }
 
   private async startCapture(req: {
@@ -986,8 +1007,8 @@ export class DemoLeader {
     let pool: string | null;
     let kept: number[];
     if (req.source) {
-      pool = this.poolFor(req.group, req.source);
-      kept = [...Array(this.rowsOf(pool)).keys()];
+      pool = await this.poolFor(req.group, req.source);
+      kept = [...Array(await this.rowsOf(pool)).keys()];
       if (pool && req.filter?.trim()) {
         // The filter runs over the source as the visitor has it, in the bundle as the branch holds it.
         const main = this.state.branches.main;
@@ -1002,7 +1023,7 @@ export class DemoLeader {
           ...this.bundleOf(main, req.group, own),
           source: req.source.id,
           filter: req.filter,
-          sample: { id: 'pool', name: 'pool', ...this.recording.captures[pool].sample },
+          sample: { id: 'pool', name: 'pool', ...(await this.pool(pool))!.sample },
         });
         const a = answer.body as { ok?: boolean; errors?: ApiError[]; kept?: number[] };
         if (!a.ok) return refused(422, a.errors ?? []);
@@ -1010,8 +1031,8 @@ export class DemoLeader {
       }
     } else {
       pool = `${req.group}/destination/${req.destination}`;
-      if (!this.recording.captures[pool]) pool = null;
-      kept = [...Array(this.rowsOf(pool)).keys()];
+      if (!(await this.pool(pool))) pool = null;
+      kept = [...Array(await this.rowsOf(pool)).keys()];
     }
     const session = newCommit().slice(0, 16);
     this.state.captures[session] = {
@@ -1031,10 +1052,12 @@ export class DemoLeader {
   }
 
   /** What `capture` holds now: the kept rows that have arrived, as their batches had them. */
-  private held(capture: Capture): { batches: CaptureBatchDto[]; done: boolean; full: boolean } {
+  private async held(
+    capture: Capture,
+  ): Promise<{ batches: CaptureBatchDto[]; done: boolean; full: boolean }> {
     const until = capture.stoppedAt ?? this.now();
     const elapsed = until - capture.startedAt;
-    const total = this.rowsOf(capture.pool);
+    const total = await this.rowsOf(capture.pool);
     // The pool's records arrive spread over its span, as the fleet read them.
     const arrived = Math.floor((Math.min(elapsed, POOL_SPAN_MS) / POOL_SPAN_MS) * total);
     const rows = new Set(capture.kept.filter((i) => i < arrived));
@@ -1046,7 +1069,7 @@ export class DemoLeader {
       elapsed >= capture.deadlineSecs * 1000;
     const batches: CaptureBatchDto[] = [];
     let at = 0;
-    for (const batch of capture.pool ? this.recording.captures[capture.pool].batches : []) {
+    for (const batch of (await this.pool(capture.pool))?.batches ?? []) {
       const taken = batch.rows.filter((_, i) => rows.has(at + i));
       at += batch.rows.length;
       if (taken.length) batches.push({ columns: batch.columns, rows: taken });
@@ -1054,11 +1077,11 @@ export class DemoLeader {
     return { batches, done, full };
   }
 
-  private captureStatus(session: string): Answer {
+  private async captureStatus(session: string): Promise<Answer> {
     const capture = this.state.captures[session];
     if (!capture)
       return refused(404, [bareError('no capture by that id -- it may already have been saved')]);
-    const { batches, done, full } = this.held(capture);
+    const { batches, done, full } = await this.held(capture);
     const workers = [
       ...new Set(batches.flatMap((b) => b.rows.map((r) => r.worker ?? '')).filter(Boolean)),
     ].sort();
@@ -1079,9 +1102,9 @@ export class DemoLeader {
     return ok({ capture: status });
   }
 
-  private stopCapture(session: string): Answer {
+  private async stopCapture(session: string): Promise<Answer> {
     const capture = this.state.captures[session];
-    if (capture && capture.stoppedAt === null && !this.held(capture).done) {
+    if (capture && capture.stoppedAt === null && !(await this.held(capture)).done) {
       capture.stoppedAt = this.now();
       this.save();
     }
@@ -1104,13 +1127,12 @@ export class DemoLeader {
     const capture = this.state.captures[session];
     if (!capture)
       return refused(404, [bareError('no capture by that id -- it may already have been saved')]);
-    const { done } = this.held(capture);
-    const pool = capture.pool ? this.recording.captures[capture.pool].sample : undefined;
+    const { done, batches } = await this.held(capture);
+    const pool = (await this.pool(capture.pool))?.sample;
     if (!done)
       return refused(409, [
         bareError('this capture is still running. Stop it first to save what it holds'),
       ]);
-    const { batches } = this.held(capture);
     if (!pool || !batches.length) {
       return refused(409, [
         bareError(
@@ -1118,7 +1140,7 @@ export class DemoLeader {
         ),
       ]);
     }
-    const arrived = this.held(capture).batches.reduce((n, b) => n + b.rows.length, 0);
+    const arrived = batches.reduce((n, b) => n + b.rows.length, 0);
     // How it was taken, on every record as its `__source` fields are (`Captures::capture_fields`).
     const taken: Record<string, [string, string]> = {
       timestamp: ['datetime', new Date(capture.startedAt).toISOString()],
