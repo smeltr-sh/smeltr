@@ -344,13 +344,8 @@ async fn admit(
     let unrecorded = !is_safe(method) && response.status().is_success() && !actor.recorded.is_marked();
     if unrecorded && !policy::changes_nothing(method, path) {
         tracing::warn!(target: "audit.unrecorded", actor = %actor.id, method = %method, path, "a change recorded nothing, so the gate recorded it");
-        let (store, what) = (auth.store.clone(), format!("{method} {path}"));
-        let actor = actor.clone();
-        let _ = blocking(move || {
-            accounts::record(store.as_ref(), &actor, "unrecorded", &what, "ok");
-            Ok::<(), StoreError>(())
-        })
-        .await;
+        let what = format!("{method} {path}");
+        accounts::record_async(auth.store.clone(), &actor, "unrecorded", &what, "ok").await;
     }
     // For the line that says what was answered, and to whom (`traced`).
     response.extensions_mut().insert(actor);

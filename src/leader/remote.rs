@@ -945,12 +945,7 @@ pub async fn overwrite(
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&branch);
             // The host's branch was replaced, which no commit of ours records.
-            let what = branch.clone();
-            let _ = run_store(state.store.clone(), move |s| {
-                super::accounts::record(s, &actor, "branch-overwrite", &what, "ok");
-                Ok(())
-            })
-            .await;
+            super::accounts::record_async(state.store.clone(), &actor, "branch-overwrite", &branch, "ok").await;
             Envelope::done()
         }
         Ok(Some((tip, host_tip))) => {
@@ -1174,11 +1169,7 @@ pub async fn post_sync(
     }
     // A sync that moves nothing signs nothing, so who asked for it is recorded here.
     let actor = actor.map_or_else(Actor::system, |a| a.0);
-    let _ = run_store(state.store.clone(), move |s| {
-        super::accounts::record(s, &actor, "git-sync", "", "ok");
-        Ok(())
-    })
-    .await;
+    super::accounts::record_async(state.store.clone(), &actor, "git-sync", "", "ok").await;
     get_settings(State(state)).await
 }
 

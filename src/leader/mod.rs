@@ -2182,12 +2182,7 @@ async fn ask_worker(
     match revoked {
         Ok(Some(false)) => match state.directives.ask(worker_id, action) {
             Ok(()) => {
-                let (actor, worker_id) = (actor.clone(), worker_id.to_string());
-                let _ = run_store(state.store.clone(), move |s| {
-                    accounts::record(s, &actor, what, &worker_id, "ok");
-                    Ok(())
-                })
-                .await;
+                accounts::record_async(state.store.clone(), actor, what, worker_id, "ok").await;
                 Envelope::done()
             }
             Err(e) => Envelope::refused(Refusal::conflict(e)),

@@ -1013,12 +1013,8 @@ pub async fn post_test(
     match test(&state, &channel, request.secret).await {
         Ok(tested) => {
             // A message left the leader, so who sent it is recorded.
-            let (actor, name) = (actor.map_or_else(Actor::system, |a| a.0), channel.name.clone());
-            let _ = super::run_store(state.store.clone(), move |s| {
-                super::accounts::record(s, &actor, "alerts-test", &name, "ok");
-                Ok(())
-            })
-            .await;
+            let actor = actor.map_or_else(Actor::system, |a| a.0);
+            super::accounts::record_async(state.store.clone(), &actor, "alerts-test", &channel.name, "ok").await;
             Envelope::ok(tested)
         }
         Err(why) => {
