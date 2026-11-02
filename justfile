@@ -42,9 +42,9 @@ need-rust: (need "cargo" "Install Rust from https://rustup.rs") (need "cmake" "R
 
 [private]
 need-node: (need "node" node_hint) (need "npm" node_hint)
-    @node -e "if (+process.versions.node.split('.')[0] < 22) { console.error('Node ' + process.versions.node + ' is too old. ' + process.argv[1]); process.exit(1) }" "{{node_hint}}"
+    @node -e "if (+process.versions.node.split('.')[0] < 26) { console.error('Node ' + process.versions.node + ' is too old. ' + process.argv[1]); process.exit(1) }" "{{node_hint}}"
 
-node_hint := if os_family() == "windows" { "Install Node 22 or later: winget install OpenJS.NodeJS.LTS" } else { "Install Node 22 or later from https://nodejs.org" }
+node_hint := if os_family() == "windows" { "Install Node 26 or later: winget install OpenJS.NodeJS.LTS" } else { "Install Node 26 or later from https://nodejs.org" }
 
 [private]
 need-nextest: (need "cargo-nextest" "Run: cargo install cargo-nextest --locked")
