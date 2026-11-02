@@ -97,38 +97,29 @@ pub fn destination(
         secrets,
         &runtime,
     )?;
-    assemble(
-        config,
-        subject,
-        record,
-        catalog,
-        loaded.metadata,
-        schema,
-        (store, runtime),
-    )
-}
-
-/// The destination writing `record` into the opened table through `catalog`, its files into `store`.
-fn assemble(
-    config: &IcebergDestinationConfig,
-    subject: &str,
-    record: &DataType,
-    catalog: Catalog,
-    metadata: TableMetadata,
-    schema: Schema,
-    (store, runtime): (Arc<dyn ObjectStore>, Arc<tokio::runtime::Runtime>),
-) -> Result<FileDestination, IoError> {
-    let refused = |why: String| IoError::transient(format!("iceberg table {}: {why}", config.table));
     let committer = IcebergCommitter::new(
         catalog,
         subject,
         config,
-        metadata,
+        loaded.metadata,
         schema,
         store.clone(),
         runtime.clone(),
     )
     .map_err(refused)?;
+    assemble(config, subject, record, committer, store, runtime)
+}
+
+/// The destination writing `record` into the table `committer` commits to, its files into `store`.
+fn assemble(
+    config: &IcebergDestinationConfig,
+    subject: &str,
+    record: &DataType,
+    committer: IcebergCommitter,
+    store: Arc<dyn ObjectStore>,
+    runtime: Arc<tokio::runtime::Runtime>,
+) -> Result<FileDestination, IoError> {
+    let refused = |why: String| IoError::transient(format!("iceberg table {}: {why}", config.table));
     let partitioner = TablePartitioner::new(&committer.spec, &committer.schema).map_err(refused)?;
     let file_schema = parquet::Schema::new(record).map_err(refused)?;
     let (written, defaults) = with_field_ids(file_schema.arrow(), &committer.schema).map_err(refused)?;

@@ -2284,7 +2284,7 @@ pub struct RefusalRing {
     by_dest: Mutex<HashMap<DestId, VecDeque<Refusal>>>,
     /// When each destination's refusals were last logged: once per [`crate::logs::RELOG_EVERY`] while they go on,
     /// since every batch a blocking destination sends again is refused again.
-    said: Mutex<HashMap<DestId, crate::logs::Relog>>,
+    said: Mutex<HashMap<DestId, crate::logs::Repeat>>,
 }
 
 impl RefusalRing {
@@ -2306,7 +2306,7 @@ impl RefusalRing {
     /// Whether `dest`'s refusals are due their line now.
     fn due(&self, dest: DestId) -> bool {
         let mut said = self.said.lock().unwrap_or_else(|e| e.into_inner());
-        said.entry(dest).or_default().fail_due("refusing".to_string()).is_some()
+        said.entry(dest).or_default().due()
     }
 
     /// `dest`'s refusals, oldest first. Empty for a destination that has refused nothing.

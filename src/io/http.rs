@@ -57,7 +57,7 @@ pub struct Unwritten {
     destination: String,
     /// The destination as its author named it, for its lines.
     subject: String,
-    warned: Arc<Mutex<Option<Instant>>>,
+    warned: Arc<Mutex<crate::logs::Repeat>>,
 }
 
 impl std::fmt::Debug for Unwritten {
@@ -90,11 +90,9 @@ impl Unwritten {
         }
         let labels = [("destination", self.destination.as_str()), ("kind", kind)];
         self.metrics.incr("smeltr_destination_unwritten_total", &labels, count);
-        let mut warned = self.warned.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if warned.is_some_and(|at| at.elapsed() < crate::logs::RELOG_EVERY) {
+        if !(self.warned.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).due() {
             return;
         }
-        *warned = Some(Instant::now());
         tracing::warn!(
             target: "egress.destination_unwritten",
             subject = %self.subject,

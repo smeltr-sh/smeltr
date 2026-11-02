@@ -111,6 +111,32 @@ pub const WARNING_FADES_AFTER: Duration = Duration::from_secs(5 * 60);
 /// while the condition does and fades once it stops.
 pub const RELOG_EVERY: Duration = Duration::from_secs(4 * 60);
 
+/// When a thing was last said, so a site says it once, then again every [`RELOG_EVERY`] while it goes on, and
+/// once more as soon as it starts again after [`Repeat::clear`].
+#[derive(Debug, Default)]
+pub struct Repeat(Option<std::time::Instant>);
+
+impl Repeat {
+    /// Not said yet. `const`, so a static can hold one.
+    pub const fn new() -> Repeat {
+        Repeat(None)
+    }
+
+    /// Whether the thing is due to be said now, and counts it said.
+    pub fn due(&mut self) -> bool {
+        if self.0.is_none_or(|at| at.elapsed() >= RELOG_EVERY) {
+            self.0 = Some(std::time::Instant::now());
+            return true;
+        }
+        false
+    }
+
+    /// The thing stopped: it is said again as soon as it starts.
+    pub fn clear(&mut self) {
+        self.0 = None;
+    }
+}
+
 /// A fault that lasts, and when to log it: when it begins, when its message changes, and again every
 /// [`RELOG_EVERY`] while it lasts, so its warning stands as long as the fault does. The log line itself stays with
 /// the caller, which knows what to say.
@@ -118,7 +144,7 @@ pub const RELOG_EVERY: Duration = Duration::from_secs(4 * 60);
 pub struct Relog {
     why: Option<String>,
     /// When `why` was last logged.
-    logged: Option<std::time::Instant>,
+    logged: Repeat,
 }
 
 impl Relog {
@@ -126,7 +152,7 @@ impl Relog {
     pub const fn new() -> Relog {
         Relog {
             why: None,
-            logged: None,
+            logged: Repeat::new(),
         }
     }
 
@@ -134,7 +160,7 @@ impl Relog {
     /// [`steady`] drops is the same fault.
     pub fn fail(&mut self, why: String) {
         if self.why.as_deref().is_none_or(|old| steady(old) != steady(&why)) {
-            self.logged = None;
+            self.logged.clear();
         }
         self.why = Some(why);
     }
@@ -147,12 +173,10 @@ impl Relog {
 
     /// The fault under way, when it is due its log now, and counts it logged.
     pub fn due(&mut self) -> Option<&str> {
-        let why = self.why.as_deref()?;
-        if self.logged.is_none_or(|at| at.elapsed() >= RELOG_EVERY) {
-            self.logged = Some(std::time::Instant::now());
-            return Some(why);
+        if self.why.is_none() || !self.logged.due() {
+            return None;
         }
-        None
+        self.why.as_deref()
     }
 
     /// The fault under way.
@@ -162,7 +186,7 @@ impl Relog {
 
     /// The fault is over. Whether one was under way, for a caller that says so.
     pub fn clear(&mut self) -> bool {
-        self.logged = None;
+        self.logged.clear();
         self.why.take().is_some()
     }
 }
@@ -807,6 +831,15 @@ mod tests {
             .any(|e| e.site == site)
     }
 
+    #[test]
+    fn a_thing_is_said_once_until_it_stops_and_starts_again() {
+        let mut said = Repeat::new();
+        assert!(said.due(), "said the first time");
+        assert!(!said.due(), "not again inside the interval");
+        said.clear();
+        assert!(said.due(), "said again once it starts again");
+    }
+
     /// What a thread of the leader's raises is kept for the leader's own store and never rides a worker's beat,
     /// though a worker runs in the same process; what any other thread raises is never the leader's.
     #[test]
@@ -997,7 +1030,7 @@ mod tests {
             "the same fault is not said again at once"
         );
         assert_eq!(relog.why(), Some("away"), "the fault stands while it is not said");
-        relog.logged = std::time::Instant::now().checked_sub(RELOG_EVERY);
+        relog.logged = Repeat(std::time::Instant::now().checked_sub(RELOG_EVERY));
         assert_eq!(
             relog.fail_due("away".into()),
             Some("away"),

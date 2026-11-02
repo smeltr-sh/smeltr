@@ -191,8 +191,8 @@ pub fn build_destination(
         DestinationKind::Http(c) => {
             let credentials = http::credential_headers("http destination", &c.credentials, secrets)?;
             let config = http::agent_config(c.tls.as_ref(), secrets)?;
-            let d = http_post::destination(c, &credentials, None, "http", &config, (metrics, id), name);
-            Ok(Box::new(d))
+            let make = || http_post::transport(c, &credentials, &config);
+            Ok(Box::new(http_post::destination(c, make, "http", name, metrics, id)))
         }
         DestinationKind::LogAnalytics(c) => {
             let what = "Log Analytics destination";
@@ -201,16 +201,15 @@ pub fn build_destination(
                 &c.sign_in, resource, secrets, what,
             )?)));
             let config = http::agent_config(c.http.tls.as_ref(), secrets)?;
-            let d = http_post::destination(
+            let make = || http_post::transport(&c.http, &[], &config).signed_in(sign_in.clone());
+            Ok(Box::new(http_post::destination(
                 &c.http,
-                &[],
-                Some(sign_in),
+                make,
                 "logAnalytics",
-                &config,
-                (metrics, id),
                 name,
-            );
-            Ok(Box::new(d))
+                metrics,
+                id,
+            )))
         }
         DestinationKind::Prometheus(c) => {
             let credentials = http::credential_headers("prometheus destination", &c.credentials, secrets)?;

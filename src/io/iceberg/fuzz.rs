@@ -732,15 +732,18 @@ fn writer(
 ) -> Result<FileDestination, IoError> {
     let mut catalog = client(config, secrets);
     let (loaded, schema) = open(&mut catalog, "d", config, record)?;
-    assemble(
-        config,
-        "d",
-        record,
+    let refused = |why: String| IoError::transient(format!("iceberg table {}: {why}", config.table));
+    let committer = IcebergCommitter::new(
         catalog,
+        "d",
+        config,
         loaded.metadata,
         schema,
-        (store.clone(), runtime.clone()),
+        store.clone(),
+        runtime.clone(),
     )
+    .map_err(refused)?;
+    assemble(config, "d", record, committer, store.clone(), runtime.clone())
 }
 
 fn stored(name: &str) -> SecretRef {
