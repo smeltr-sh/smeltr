@@ -59,8 +59,8 @@ impl From<Need> for Refusal {
 
 /// Whether `method` on `path` is a request that changes nothing although its method could, and so owes the audit
 /// nothing: a preview, a test run, a turn in a person's own conversation with their agent. What that agent then
-/// changes comes through the gate as its own request. Deleting a conversation is recorded. A route not named here that changes nothing is recorded by the gate
-/// as a change, and warns, until it is named.
+/// changes comes through the gate as its own request. Deleting a conversation is recorded. A route not named here
+/// that changes nothing is recorded by the gate as a change, and warns, until it is named.
 pub fn changes_nothing(method: &Method, path: &str) -> bool {
     let Some(rest) = path.strip_prefix("/api/") else {
         return false;
