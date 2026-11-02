@@ -20,6 +20,10 @@ export function setFraming(d: { framing?: Framing; lineBreaker?: string }, frami
 export const LEVELS = ['error', 'warn', 'info', 'debug'];
 /** What a source carries when it names no level. Mirrors `LevelLabel::DEFAULT`. */
 export const DEFAULT_LEVEL = 'info';
+/** The lowest level a logs source reads: what it names, with trace read as debug. */
+export function readLevel(minLevel: string | undefined): string {
+  return minLevel === 'trace' ? 'debug' : (minLevel ?? DEFAULT_LEVEL);
+}
 
 /** A source that reads the objects a queue announces. */
 export type ObjectSource = Extract<SourceDto, { type: 's3Sqs' | 'azureBlobQueue' | 'gcsPubSub' }>;
@@ -152,7 +156,7 @@ export function reads(s: SourceDto): string {
   if (s.type === 'oktaLogs') return 'System Log';
   if (isSql(s)) return `${s.database}: ${s.mode.type}`;
   if (isReceiver(s)) return `:${s.port}${RECEIVER_PATHS[s.type](s)}`;
-  return `${s.minLevel ?? DEFAULT_LEVEL} and above`;
+  return `${readLevel(s.minLevel)} and above`;
 }
 
 /** Every type a source may be, with the category the add dialog lists it under. */

@@ -3149,10 +3149,15 @@ test('A10: a logs source never offers trace, and one set to trace shows debug', 
     { id: 'own-logs', type: 'logs', minLevel: 'trace' },
   ]);
   await goto(admin, leader, '#/build/sources');
-  await admin.getByRole('button', { name: /^own-logs\b/ }).click();
+  const row = admin.getByRole('button', { name: /^own-logs\b/ });
+  await expect(row).toContainText('debug and above');
+  await row.click();
   const level = admin.getByRole('combobox', { name: /^min level/ });
   await expect(level).toHaveValue('debug');
   await expect(level.locator('option')).toHaveText(['error', 'warn', 'info', 'debug']);
+  await admin.getByRole('button', { name: 'About min level' }).click();
+  await expect(admin.getByText('never reads trace')).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('logs-min-level.png'), fullPage: true });
 });
 
 test('A6: the lock page shows five rows a side, and a button shows the rest', async ({
