@@ -834,14 +834,14 @@
         <Field
           label="Group"
           icon={WorkerGroupIcon}
-          help="Only live groups can receive new workers."
+          help="Only live worker groups can receive new workers."
           note={mintableGroups.length === 0
             ? 'Add a worker group on Worker groups and deploy it, then mint.'
             : undefined}
         >
           <select bind:value={mintGroup} disabled={mintableGroups.length === 0}>
             {#if mintableGroups.length === 0}
-              <option value="">No live group</option>
+              <option value="">No live worker group</option>
             {/if}
             {#each mintableGroups as group (group.id)}
               <option value={group.id}>{group.name}</option>

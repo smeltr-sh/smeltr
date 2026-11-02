@@ -734,7 +734,7 @@
           </Help>
         </div>
         <p>
-          {workerRows.length} workers across {status.workerGroups?.length ?? 0} groups
+          {count(workerRows.length, 'worker')} across {count(status.workerGroups?.length ?? 0, 'worker group')}
           <span>·</span>
           refreshed every {POLL_MS / 1000}s
         </p>
@@ -809,7 +809,7 @@
             ><span aria-hidden="true">⌕</span><input
               type="search"
               bind:value={workerQuery}
-              placeholder="Search workers, groups, commits…"
+              placeholder="Search workers, worker groups, commits…"
               aria-label="Search workers"
             /></label
           >
