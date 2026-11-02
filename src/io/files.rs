@@ -423,6 +423,7 @@ impl FileDestination {
                     pending: Vec::new(),
                     held: 0,
                     next_commit: Instant::now(),
+                    reset_said: None,
                     seen: 0,
                     ended: None,
                     open_bytes: measured,
@@ -618,6 +619,9 @@ struct Writer {
     ended: Option<u64>,
     /// Where it reports what its open files buffer.
     open_bytes: Arc<AtomicUsize>,
+    /// When a reset was last said. Each reset's error names its own file, so the fault is told by time: once, then
+    /// every [`crate::logs::RELOG_EVERY`] until a commit lands.
+    reset_said: Option<Instant>,
 }
 
 impl Writer {
@@ -847,6 +851,7 @@ impl Writer {
                         "files were committed to the table"
                     );
                     self.closed.clear();
+                    self.reset_said = None;
                     return Ok(());
                 }
                 Err(e) => e,
@@ -909,15 +914,21 @@ impl Writer {
     /// The destination failed: aborts and forgets everything, so the batches sent again start clean. A closed file is
     /// deleted, best effort; one the store keeps is an orphan the table's own cleanup removes.
     fn fail(&mut self, why: String) -> IoError {
-        tracing::warn!(
-            target: "files.writer_reset",
-            subject = %self.subject,
-            files_aborted = self.open.len(),
-            files_deleted = self.closed.len(),
-            batches = self.pending.len(),
-            error = %why,
-            "the writer started over: its open uploads are aborted, its closed files deleted and its batches sent again"
-        );
+        if self
+            .reset_said
+            .is_none_or(|at| at.elapsed() >= crate::logs::RELOG_EVERY)
+        {
+            self.reset_said = Some(Instant::now());
+            tracing::warn!(
+                target: "files.writer_reset",
+                subject = %self.subject,
+                files_aborted = self.open.len(),
+                files_deleted = self.closed.len(),
+                batches = self.pending.len(),
+                error = %why,
+                "the writer started over: its open uploads are aborted, its closed files deleted and its batches sent again"
+            );
+        }
         self.abort_open();
         self.delete_closed();
         self.ended = Some(self.seen);

@@ -472,7 +472,7 @@ fn deliver<P: Protocol, T: Transport>(
                     return halves;
                 }
                 // One document whose answer alone is past the bound: refused, since asking again reads the same answer.
-                tracing::debug!(target: "http.answer_too_large", subject = %round.subject, service = protocol.name(), limit_mib = MAX_ANSWER_BYTES >> 20, "the answer to one document was larger than the worker holds, so the worker refuses the document; it is counted under Refused answers");
+                tracing::debug!(target: "http.answer_too_large", subject = %round.subject, service = protocol.name(), limit_mib = MAX_ANSWER_BYTES >> 20, "the answer to one document was larger than the worker holds, so the worker rejects the document and the destination's Refused answer decides what happens to it");
                 round.rejections.push(Rejection {
                     doc: group.sent_index[0],
                     reason: format!(

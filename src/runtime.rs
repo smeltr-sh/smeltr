@@ -2363,7 +2363,7 @@ fn report_rejections(
             rows = rows.len(),
             reasons = reasons.len(),
             reason = %rows[0].1,
-            "a destination refused rows it will refuse again as sent, so its answer to Refused answers for them"
+            "a destination rejected rows for good, and its Refused answer decides what happens to them"
         );
     }
     ring.record(dest, &rows[0].1);
