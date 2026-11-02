@@ -54,9 +54,9 @@
     <ProductScreenshot
       source="schema-findings-editor"
       height={2000}
-      crop={{ x: 490, y: 420, width: 2350, height: 1340 }}
-      alt="The panos-traffic pipeline produces ecs. Its eval step writes event.category as str, where ECS has array<str>."
-      caption="The PAN-OS pipeline writes event.category as text, where ECS has a list."
+      crop={{ x: 490, y: 420, width: 2350, height: 1000 }}
+      alt="The panos-threats pipeline produces ecs. Its rename step writes user as str, where ECS has an object with fields such as user.id."
+      caption="The PAN-OS threats pipeline writes user as text, where ECS has an object."
     />
     <p>Review counts the findings beside Approve &amp; deploy, before the change runs.</p>
     <ProductScreenshot
@@ -64,8 +64,8 @@
       width={2400}
       height={1400}
       crop={{ x: 0, y: 1300, width: 2400, height: 100 }}
-      alt="A change's review bar: 2 of 2 tests passing, 3 schema findings, and Approve & deploy."
-      caption="The change holds both firewall pipelines to ECS: 3 findings in all."
+      alt="A change's review bar: 1 of 1 test passing, 1 schema finding, and Approve & deploy."
+      caption="The change that sends PAN-OS threats to ECS has 1 schema finding."
     />
     <p><a href="/how-it-works">How it works →</a></p>
   </section>

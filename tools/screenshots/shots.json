@@ -926,9 +926,9 @@
   {
     "name": "19b-editor-ecs-findings",
     "site": "schema-findings-editor",
-    "hash": "#/build/pipelines/panos-traffic/for/panos-traffic-sample",
+    "hash": "#/build/pipelines/panos-threats/for/panos-threat-sample",
     "scope": "network",
-    "branch": "hold-firewalls-to-ecs",
+    "branch": "onboard-panos-threats",
     "themes": ["light", "dark"],
     "height": 1000,
     "wait": "button.expander",
@@ -937,7 +937,7 @@
   {
     "name": "19c-review-ecs-findings",
     "site": "schema-findings-review",
-    "hash": "#/changes/review/hold-firewalls-to-ecs",
+    "hash": "#/changes/review/onboard-panos-threats",
     "themes": ["light", "dark"],
     "width": 1200,
     "height": 700,
