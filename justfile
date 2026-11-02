@@ -265,7 +265,7 @@ cut-release release: (has-notes release) (record-release if release =~ '^[0-9]+\
 # A release is cut only once its notes are written and dated in `website/src/lib/releases.json`.
 [private]
 has-notes release: need-node
-    node website/scripts/release-notes.js {{release}} > /dev/null
+    node website/scripts/release-notes.js {{release}} > {{ if os_family() == "windows" { "NUL" } else { "/dev/null" } }}
 
 # Run from the commit being released, once. Every later build must start on
 # what this one leaves and still read what it sends (`src/releases.rs`).
