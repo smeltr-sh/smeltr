@@ -80,10 +80,8 @@
   <section aria-labelledby="where-heading">
     <h2 id="where-heading">Sent where your team looks.</h2>
     <p>
-      Smeltr shows each issue on the Status and Issues pages and on the Map. Under Admin → System →
-      Alerts, send issues to a webhook in Generic JSON, Slack, Microsoft Teams or PagerDuty format,
-      or by email, and choose which kinds of issue each channel gets. Prometheus can also scrape
-      them from <code>/api/metrics</code>.
+      Every issue shows on the Status and Issues pages and on the Map. For the hours nobody is
+      looking, Admin → System → Alerts sends issues to the teams you choose.
     </p>
     <ProductScreenshot
       source="feed-health-alerts"
@@ -91,6 +89,30 @@
       crop={{ x: 472, y: 1152, width: 1664, height: 594 }}
       alt="Admin, System, Alerts: three channels. Network on-call is a PagerDuty webhook for the network group, #siem-pipelines a Slack webhook for every group, and SOC engineering an email to soc-eng@example.com."
       caption="PagerDuty pages the network on-call, Slack tells the pipeline team, and email reaches SOC engineering."
+    />
+    <p>
+      Each channel takes only the issues ticked for it. Here the network on-call is paged when a
+      firewall feed drops. The pipeline team hears about it in Slack too.
+    </p>
+    <ProductScreenshot
+      source="feed-health-alerts"
+      height={4486}
+      crop={{ x: 472, y: 1746, width: 1664, height: 914 }}
+      alt="What each channel gets: a row for each kind of issue and a column for each channel. Network on-call takes Source unreachable, Destination unreachable and Rows below normal; #siem-pipelines takes Rows below normal and Rows above normal."
+      caption="A row for each kind of issue, a column for each channel."
+    />
+    <p>
+      A channel is a webhook, in PagerDuty, Slack, Microsoft Teams or generic JSON format, or an
+      email through your mail server. Prometheus can also scrape the same issues from <code
+        >/api/metrics</code
+      >.
+    </p>
+    <ProductScreenshot
+      source="feed-health-alert-channel"
+      height={1800}
+      crop={{ x: 992, y: 464, width: 896, height: 871 }}
+      alt="Editing the Network on-call channel: format PagerDuty, URL https://events.pagerduty.com/v2/enqueue, routing key stored, groups only these."
+      caption="The network on-call's channel: PagerDuty's events URL and a stored routing key."
     />
     <p><a href="/docs/operations">Operate a fleet →</a></p>
   </section>
