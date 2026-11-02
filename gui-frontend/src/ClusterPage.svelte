@@ -734,7 +734,10 @@
           </Help>
         </div>
         <p>
-          {count(workerRows.length, 'worker')} across {count(status.workerGroups?.length ?? 0, 'worker group')}
+          {count(workerRows.length, 'worker')} across {count(
+            status.workerGroups?.length ?? 0,
+            'worker group',
+          )}
           <span>·</span>
           refreshed every {POLL_MS / 1000}s
         </p>
