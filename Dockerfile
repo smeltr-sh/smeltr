@@ -2,7 +2,7 @@
 # The stages split so that nothing which compiled the binary ships with it.
 
 # ---- frontend: gui-frontend/dist, embedded into the binary at compile time (build.rs) -------------------------
-FROM node:22-bookworm-slim AS frontend
+FROM node:26-bookworm-slim AS frontend
 WORKDIR /src/gui-frontend
 COPY gui-frontend/package.json gui-frontend/package-lock.json ./
 RUN npm ci

@@ -25,7 +25,7 @@ Linux and Windows archives, checksums and the SBOM, STIG and CVE reports are on 
 
 ## Build from source
 
-Stable Rust, Node 22 and [`just`](https://just.systems); the native dependencies also need a C and C++ compiler, CMake and Go, as the [`Dockerfile`](Dockerfile) installs them. Docker runs the live checks and builds the release archives.
+Stable Rust, Node 26 and [`just`](https://just.systems); the native dependencies also need a C and C++ compiler, CMake and Go, as the [`Dockerfile`](Dockerfile) installs them. Docker runs the live checks and builds the release archives.
 
 ```sh
 just build        # frontend, then an optimized binary with it embedded
