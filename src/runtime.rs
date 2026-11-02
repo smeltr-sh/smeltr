@@ -1036,7 +1036,10 @@ impl Transform {
                     }
                     // Parked, not blocked: the reader learns of a wait only once it has become a stall.
                     Ok(HandOff::Parked) => {
-                        tracing::trace!(target: "runtime.parked", "a destination has no room, so the batch waits for it");
+                        tracing::trace!(
+                            target: "runtime.parked",
+                            "a destination has no room, so the batch waits for it"
+                        );
                         self.metrics.incr(
                             "smeltr_batches_waiting_for_room_total",
                             &[("source", source_label.as_str())],
@@ -1059,7 +1062,11 @@ impl Transform {
             }
             // Only a new config clears it: the same rows meet the same routes and pipelines, and block the same way.
             Ok(Err(held)) => {
-                tracing::trace!(target: "runtime.held", rows = row_count, "a pipeline blocked a batch, so it is held until a new config is deployed");
+                tracing::trace!(
+                    target: "runtime.held",
+                    rows = row_count,
+                    "a pipeline blocked a batch, so it is held until a new config is deployed"
+                );
                 lane.park_held(
                     batch,
                     turn.records,
@@ -2427,7 +2434,13 @@ impl Reader {
 
     /// One turn of ingest: apply what transform reported, commit what that completes, and poll -- or, past the depth
     /// limit, wait up to `timeout` for an acknowledgment instead.
-    #[tracing::instrument(level = "trace", target = "runtime.read", name = "a source read", skip_all, fields(source = %self.subject))]
+    #[tracing::instrument(
+        level = "trace",
+        target = "runtime.read",
+        name = "a source read",
+        skip_all,
+        fields(source = %self.subject)
+    )]
     pub fn step(
         &mut self,
         batches: &Handoff,
@@ -2595,7 +2608,11 @@ impl Reader {
         match batches.push(Handed { batch: id, records }, timeout) {
             Ok(()) => Ok(Polled::Handed),
             Err(unsent) => {
-                tracing::trace!(target: "runtime.queue_full", batch = id, "the transform's queue is full, so the batch waits in the reader");
+                tracing::trace!(
+                    target: "runtime.queue_full",
+                    batch = id,
+                    "the transform's queue is full, so the batch waits in the reader"
+                );
                 self.pending = Some(unsent.batch);
                 Ok(Polled::Full)
             }

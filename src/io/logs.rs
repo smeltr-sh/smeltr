@@ -59,7 +59,8 @@ impl LogsSource {
             tracing::warn!(
                 target: "logs_source.trace_not_carried",
                 min_level = %config.min_level,
-                "a logs source is set to trace, but that would feed its own reading back into it, so it reads debug and above"
+                "a logs source is set to trace, but that would feed its own reading back into it, so it reads debug \
+                 and above"
             );
         }
         LogsSource {
