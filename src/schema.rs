@@ -503,12 +503,23 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
                     (DataType::DateTime, "i64") => ": `.epochMillis()` gives one",
                     _ => "",
                 };
-                out.push(Told {
-                    keys: Some(f.keys.clone()),
-                    message: format!(
+                let message = match wants.starts_with('{') {
+                    // An object's spelling is no fix to write: the fields under it are.
+                    true => match under(schemas, f) {
+                        Some(field) => format!(
+                            "`{path}` is {}, but {schema} has it as an object. Write the fields under it, such as `{field}`.",
+                            ty.spell()
+                        ),
+                        None => format!("`{path}` is {}, but {schema} has it as an object.", ty.spell()),
+                    },
+                    false => format!(
                         "`{path}` is {}, but {schema} has it as {wants}. Write it as {wants}{how}.",
                         ty.spell()
                     ),
+                };
+                out.push(Told {
+                    keys: Some(f.keys.clone()),
+                    message,
                     breaks: true,
                     recommended: None,
                 });
@@ -555,6 +566,16 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
         });
     }
     out
+}
+
+/// The path of the first field the finding's schema names directly under the finding's field, else of any under it.
+fn under(schemas: &[Arc<Schema>], finding: &Finding) -> Option<String> {
+    let schema = schemas.iter().find(|s| s.id == finding.schema)?;
+    let depth = finding.keys.len();
+    let below = |f: &&Field| f.keys().starts_with(&finding.keys) && f.keys().len() > depth;
+    let fields: Vec<&Field> = schema.fields.iter().filter(below).collect();
+    let direct = fields.iter().find(|f| f.keys().len() == depth + 1);
+    direct.or(fields.first()).map(|f| f.path.clone())
 }
 
 fn same_kind(a: &Misfit, b: &Misfit) -> bool {
@@ -931,7 +952,7 @@ mod tests {
         );
         assert_eq!(
             told[0].message,
-            "`user` is str, but People has it as {...}. Write it as {...}."
+            "`user` is str, but People has it as an object. Write the fields under it, such as `user.name`."
         );
     }
 
