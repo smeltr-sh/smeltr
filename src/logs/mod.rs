@@ -27,6 +27,7 @@
 mod console;
 mod event;
 mod layer;
+pub mod levels;
 mod noted;
 
 pub(crate) use console::{render_fields, render_value, stamp};
@@ -679,7 +680,7 @@ pub fn start() {
         .expect("start the logs drain thread (called once, at startup)");
 
     let level = crate::startup_config::log_level();
-    MAX_LEVEL.store(level_ord(level), Ordering::Relaxed);
+    levels::set(levels::Levels::at(level));
 
     // A second installation is somebody else's subscriber, not a failure of ours: leave it alone and keep our own
     // call sites working.

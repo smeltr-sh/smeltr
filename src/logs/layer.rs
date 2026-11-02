@@ -9,7 +9,7 @@ use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
 use super::event::{Collect, Event};
-use super::{hand_off, max_level};
+use super::hand_off;
 
 /// Every `tracing` event in the process arrives here -- our own call sites, and anything a library reports
 /// through the `log` facade.
@@ -31,10 +31,12 @@ impl<S> Layer<S> for LogLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    /// Asked once per callsite and cached, so a site below the threshold costs its caller nothing at all: the
-    /// field expressions and the message are never evaluated.
+    /// Asked once per callsite and cached until the levels change, so a site below its area's level costs its
+    /// caller nothing at all: the field expressions and the message are never evaluated. A library's line through
+    /// the `log` facade is asked each time, with the library's own target.
     fn enabled(&self, metadata: &tracing::Metadata<'_>, _: Context<'_, S>) -> bool {
-        as_said_here(metadata.target(), *metadata.level()) <= max_level()
+        let target = metadata.target();
+        as_said_here(target, *metadata.level()) <= super::levels::kept_at(target)
     }
 
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
@@ -145,9 +147,9 @@ fn shaped(
     }
 }
 
-/// Whether `target` is a library's: a module path, or the `log` facade's relay.
+/// Whether `target` is a library's: a module path, the `log` facade's relay, or librdkafka, which names itself.
 fn is_library(target: &str) -> bool {
-    target == "log" || target.contains("::")
+    target == "log" || target == "librdkafka" || target.contains("::")
 }
 
 /// `level` as a line from `target` is kept: a library's info is debug here and its debug is trace, since what a
@@ -181,10 +183,7 @@ mod tests {
     /// What the layer hands on while `f` runs, everything kept.
     fn handed(f: impl FnOnce()) -> Vec<Event> {
         use tracing_subscriber::layer::SubscriberExt;
-        super::super::MAX_LEVEL.store(
-            super::super::level_ord(Level::TRACE),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        super::super::levels::set(super::super::levels::Levels::at(Level::TRACE));
         let tap = super::super::tap();
         tracing::subscriber::with_default(tracing_subscriber::registry().with(LogLayer), f);
         tap.drain(100)
@@ -255,6 +254,30 @@ mod tests {
             &mut found,
         );
         assert!(found.is_empty(), "instrumented without skip_all:\n{}", found.join("\n"));
+    }
+
+    /// Turning an area up opens its call sites at once, the same sites that were closed, and leaves the rest shut.
+    #[test]
+    fn an_area_turned_up_is_said_from_then_on() {
+        use super::super::levels::{self, Levels};
+        use tracing_subscriber::layer::SubscriberExt;
+        let tap = super::super::tap();
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(LogLayer), || {
+            let say = || {
+                tracing::trace!(target: "kafka.lag_unmeasured", "lag cannot be measured");
+                tracing::trace!(target: "store.statement", "a store ran a statement");
+            };
+            levels::set(Levels::at(Level::INFO));
+            say();
+            let mut up = Levels::at(Level::INFO);
+            up.areas.insert("kafka".into(), Level::TRACE);
+            levels::set(up);
+            say();
+            levels::set(Levels::at(Level::INFO));
+            say();
+        });
+        let sites: Vec<String> = tap.drain(100).into_iter().map(|e| e.site.to_string()).collect();
+        assert_eq!(sites, ["kafka.lag_unmeasured"]);
     }
 
     /// A library's span lends nothing and says nothing.
