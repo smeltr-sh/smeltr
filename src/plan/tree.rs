@@ -166,6 +166,18 @@ fn json_string(s: &str) -> Option<(Cow<'_, str>, usize)> {
     Some((key, close + 2))
 }
 
+/// The string `s` starts with, in single or double quotes as an expression writes one, decoded, and its length with
+/// its quotes.
+fn string_literal(s: &str) -> Option<(String, usize)> {
+    if !s.starts_with(['"', '\'']) {
+        return None;
+    }
+    match crate::expr::lex::Lexer::new(s).next_token().ok()? {
+        crate::expr::lex::Spanned { token: crate::expr::lex::Token::Str(key), span } => Some((key, span.end as usize)),
+        _ => None,
+    }
+}
+
 /// Each key of `name` with the byte its spelling ends at, `MAX_NESTING` keys at most: past the bound the rest of a
 /// name is one key, as the serializer writes it.
 fn keys(name: &str) -> impl Iterator<Item = (Cow<'_, str>, usize)> {
@@ -267,7 +279,7 @@ pub fn parse_name(text: &str) -> Result<String, String> {
     let mut rest = under_record(text);
     while !rest.is_empty() {
         if let Some(quoted) = rest.strip_prefix('[') {
-            let Some((key, len)) = json_string(quoted).filter(|(_, len)| quoted.as_bytes().get(*len) == Some(&b']'))
+            let Some((key, len)) = string_literal(quoted).filter(|(_, len)| quoted.as_bytes().get(*len) == Some(&b']'))
             else {
                 return Err(format!(
                     "`{text}`: a key in brackets is a string in quotes, as in `a[\"b.c\"]`"
@@ -564,6 +576,14 @@ mod tests {
             assert!(parse_name(bad).is_err(), "{bad}");
         }
         assert_eq!(parse_name(r#"a["b"]"#).as_deref(), Ok("a.b"));
+    }
+
+    /// A key in brackets takes single quotes as well as double, as an expression does.
+    #[test]
+    fn parse_name_reads_a_key_in_single_quotes() {
+        assert_eq!(parse_name("$['x.c']").as_deref(), Ok(r#"["x.c"]"#));
+        assert_eq!(parse_name(r"a['it\'s'].b").as_deref(), Ok("a.it's.b"));
+        assert!(parse_name("a['b\"]").is_err());
     }
 
     #[test]

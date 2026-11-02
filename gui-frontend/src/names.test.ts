@@ -19,6 +19,13 @@ describe('parsePath', () => {
     expect(parsePath('["say \\"hi\\""]')).toEqual({ ok: true, name: '["say \\"hi\\""]' });
   });
 
+  it('takes a key in single quotes as an expression does', () => {
+    expect(parsePath("['x.c']")).toEqual({ ok: true, name: '["x.c"]' });
+    expect(parsePath("a['it\\'s'].b")).toEqual({ ok: true, name: "a.it's.b" });
+    expect(parsePath("['\\u{1F600}']")).toEqual({ ok: true, name: '\u{1F600}' });
+    expect(parsePath("a['b\"]").ok).toBe(false);
+  });
+
   it('spells a bracketed plain key bare', () => {
     expect(parsePath('a["b"]')).toEqual({ ok: true, name: 'a.b' });
     expect(parsePath('["\\u0061"].b')).toEqual({ ok: true, name: 'a.b' });

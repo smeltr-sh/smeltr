@@ -40,6 +40,37 @@ function jsonString(s: string): { key: string; len: number } | null {
   return null;
 }
 
+const ESCAPES: Record<string, string> = { n: '\n', t: '\t', r: '\r', '0': '\0', '\\': '\\', "'": "'", '"': '"' };
+
+/** The string `s` starts with, in single or double quotes as an expression writes one, decoded, and its length with
+ * its quotes. Mirrors the expression lexer's `lex_string`. */
+function stringLiteral(s: string): { key: string; len: number } | null {
+  const quote = s[0];
+  if (quote !== '"' && quote !== "'") return null;
+  let key = '';
+  for (let i = 1; i < s.length; ) {
+    const c = s[i++];
+    if (c === quote) return { key, len: i };
+    if (c !== '\\') {
+      key += c;
+      continue;
+    }
+    const esc = s[i++];
+    if (esc === 'u') {
+      const hex = s[i] === '{' ? /^\{([0-9a-fA-F]+)\}/.exec(s.slice(i)) : /^[0-9a-fA-F]{4}/.exec(s.slice(i));
+      const code = hex ? parseInt(hex[1] ?? hex[0], 16) : NaN;
+      if (!hex || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return null;
+      key += String.fromCodePoint(code);
+      i += hex[0].length;
+    } else if (esc !== undefined && esc in ESCAPES) {
+      key += ESCAPES[esc];
+    } else {
+      return null;
+    }
+  }
+  return null;
+}
+
 /** One key of a name: decoded, and where its spelling starts and ends. */
 export interface KeySpan {
   key: string;
@@ -82,7 +113,7 @@ export function parsePath(
   let rest = text;
   while (rest !== '') {
     if (rest.startsWith('[')) {
-      const quoted = jsonString(rest.slice(1));
+      const quoted = stringLiteral(rest.slice(1));
       if (!quoted || rest[quoted.len + 1] !== ']') {
         return fail(`\`${text}\`: a key in brackets is a string in quotes, as in \`a["b.c"]\``);
       }
