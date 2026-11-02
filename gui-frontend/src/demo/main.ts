@@ -3,7 +3,7 @@ import recordingUrl from './recorded.json?url';
 import { DemoLeader, WAKING_EVENT, install, waking, type Recording } from './leader';
 import { partFile } from './parts';
 
-/** Each part's URL, by its file's name (`parts.ts`). */
+/** Each part's URL, by its file's name (`parts.js`). */
 const PARTS: Record<string, string> = import.meta.glob('./recorded/*.json', {
   query: '?url',
   import: 'default',
