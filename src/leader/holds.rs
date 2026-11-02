@@ -175,6 +175,13 @@ impl Holds {
             .retain(|_, &mut at| clock.now.saturating_duration_since(at) <= hold_time);
         heard.listed.extend(runs.into_iter().map(|key| (key, clock.now)));
         heard.answered = answered.clone();
+        tracing::trace!(
+            target: "leader.holds_settled",
+            %worker,
+            %group,
+            holds = answered.len(),
+            "the leader settled the holds a heartbeat listed"
+        );
         Ok(answered)
     }
 
@@ -290,16 +297,38 @@ fn settle(workers: &Workers, store: &dyn Store, beat: &mut Beat<'_>, clock: Cloc
                 cursor: hold.cursor,
             }),
             Some(hold) if workers.reading(&hold.holder, group, key, clock) => {}
-            hold => free.push((key, hold.and_then(|h| h.cursor))),
+            hold => free.push((
+                key,
+                hold.as_ref().map(|h| h.holder.clone()),
+                hold.and_then(|h| h.cursor),
+            )),
         }
     }
     // After every source this worker keeps, so the count it is compared by is what it already reads.
-    for (key, cursor) in free {
+    for (key, from, cursor) in free {
         let fewer = workers.heard.iter().any(|(other, w)| {
             other != worker && workers.reading(other, group, key, clock) && w.answered.len() < held.len()
         });
         if !fewer {
             store.set_source_holder(group, key, worker)?;
+            match &from {
+                Some(from) if from != worker => tracing::info!(
+                    target: "leader.hold_moved",
+                    source = %key.source,
+                    %group,
+                    %from,
+                    to = %worker,
+                    "a source moved to another worker, which resumes from the saved progress"
+                ),
+                Some(_) => {}
+                None => tracing::info!(
+                    target: "leader.hold_granted",
+                    source = %key.source,
+                    %group,
+                    %worker,
+                    "a worker was given a source to read"
+                ),
+            }
             held.push(Hold {
                 key: key.clone(),
                 cursor,
