@@ -1269,10 +1269,11 @@
     <Field field="minLevel" label="min level">
       {#snippet help()}
         The lowest severity this source carries. Below the worker's own <code>SMELTR_LOG_LEVEL</code
-        >, <code>info</code> unless set, it gets nothing more.
+        >, <code>info</code> unless set, it gets nothing more. It never carries trace, which would feed its own reading
+        back into it.
       {/snippet}
       <select
-        value={source.minLevel ?? DEFAULT_LEVEL}
+        value={source.minLevel === 'trace' ? 'debug' : (source.minLevel ?? DEFAULT_LEVEL)}
         onchange={(e) => {
           // Absent is the default, so choosing it writes nothing: a file states what an author
           // decided, and `info` here is what they left alone.
