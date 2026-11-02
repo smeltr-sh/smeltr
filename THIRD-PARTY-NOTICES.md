@@ -264,8 +264,8 @@ license is https://mozilla.org/MPL/2.0/.
 
 ## Rust crates
 
-- Apache License 2.0 (395)
-- MIT License (94)
+- Apache License 2.0 (389)
+- MIT License (93)
 - Unicode License v3 (20)
 - BSD 3-Clause "New" or "Revised" License (13)
 - ISC License (7)
@@ -758,7 +758,6 @@ Used by:
 - [cmov 0.5.4](https://github.com/RustCrypto/utils)
 - [ctutils 0.4.6](https://github.com/RustCrypto/utils)
 - [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs)
-- [flagset 0.4.7](https://github.com/enarx/flagset)
 - [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op)
 - [parquet 60.0.0](https://github.com/apache/arrow-rs)
 - [siphasher 1.0.4](https://github.com/jedisct1/rust-siphash)
@@ -7916,7 +7915,6 @@ Used by:
 - [chacha20 0.10.2](https://github.com/RustCrypto/stream-ciphers)
 - [cipher 0.5.2](https://github.com/RustCrypto/traits)
 - [const-oid 0.10.2](https://github.com/RustCrypto/formats)
-- [const-oid 0.9.6](https://github.com/RustCrypto/formats/tree/master/const-oid)
 - [cpubits 0.1.1](https://github.com/RustCrypto/utils)
 - [cpufeatures 0.2.17](https://github.com/RustCrypto/utils)
 - [cpufeatures 0.3.1](https://github.com/RustCrypto/utils)
@@ -7924,9 +7922,7 @@ Used by:
 - [crypto-common 0.1.7](https://github.com/RustCrypto/traits)
 - [crypto-common 0.2.2](https://github.com/RustCrypto/traits)
 - [ctr 0.10.1](https://github.com/RustCrypto/block-modes)
-- [der 0.7.10](https://github.com/RustCrypto/formats/tree/master/der)
 - [der 0.8.2](https://github.com/RustCrypto/formats)
-- [der_derive 0.7.3](https://github.com/RustCrypto/formats/tree/master/der/derive)
 - [digest 0.10.7](https://github.com/RustCrypto/traits)
 - [digest 0.11.3](https://github.com/RustCrypto/traits)
 - [elliptic-curve 0.14.1](https://github.com/RustCrypto/traits)
@@ -7964,7 +7960,6 @@ Used by:
 - [sha3 0.12.0](https://github.com/RustCrypto/hashes)
 - [shake 0.1.0](https://github.com/RustCrypto/XOFs)
 - [signature 3.0.0](https://github.com/RustCrypto/traits)
-- [spki 0.7.3](https://github.com/RustCrypto/formats/tree/master/spki)
 - [spki 0.8.1](https://github.com/RustCrypto/formats)
 - [sponge-cursor 0.1.0](https://github.com/RustCrypto/utils)
 - [ssh-cipher 0.3.0](https://github.com/RustCrypto/SSH)
@@ -7972,7 +7967,6 @@ Used by:
 - [ssh-key 0.7.0-rc.11](https://github.com/RustCrypto/SSH)
 - [universal-hash 0.6.1](https://github.com/RustCrypto/traits)
 - [wnaf 0.14.1](https://github.com/RustCrypto/elliptic-curves)
-- [x509-cert 0.2.5](https://github.com/RustCrypto/formats/tree/master/x509-cert)
 
 ```
                               Apache License
@@ -10957,14 +10951,13 @@ Used by:
 - [aws-lc-sys 0.46.0](https://github.com/aws/aws-lc-rs)
 
 ```
-ISC License:
+ISC License
 
-Copyright (c) 2004-2010 by Internet Systems Consortium, Inc. ("ISC")
-Copyright (c) 1995-2003 by Internet Software Consortium
+Copyright <year> <owner> 
 
 Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.
 
-THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL ISC BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ```
 
@@ -12517,37 +12510,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-
-```
-
-### MIT License
-
-Used by:
-
-- [tokio-postgres-rustls 0.14.0](https://github.com/jbg/tokio-postgres-rustls)
-
-```
-MIT License
-
-Copyright (c) 2019 Jasper Hugo
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 
 ```
 
