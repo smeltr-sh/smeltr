@@ -204,10 +204,10 @@ pub fn recover_admin() -> bool {
 /// leader with more than one name -- a proxy reached under two hostnames, say -- takes a comma-separated list.
 ///
 /// It decides three things a socket cannot: which `Origin` header a request is allowed to carry -- beside the
-/// [`LOOPBACK_NAMES`] a leader serving its own TLS on a bind that reaches loopback also answers to -- whether the
-/// session cookie is marked `Secure`, and therefore whether the cookie is host-locked. A leader behind a proxy
-/// that terminates TLS serves plain HTTP and is still reached over `https`, so the socket is the wrong thing to
-/// ask.
+/// [`LOOPBACK_NAMES`] a leader serving its own TLS on a bind that reaches loopback also answers to, and `[::1]` on
+/// a bind of `::` -- whether the session cookie is marked `Secure`, and therefore whether the cookie is
+/// host-locked. A leader behind a proxy that terminates TLS serves plain HTTP and is still reached over `https`,
+/// so the socket is the wrong thing to ask.
 ///
 /// `None` derives it from the TLS setting and the bind address, which is right for a laptop and for the leader's
 /// own certificate, and wrong for anything behind a proxy.
