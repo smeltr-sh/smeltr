@@ -1084,7 +1084,7 @@ impl ClientContext for Routes {
             }
             Err(e) => {
                 if let Some(error) = self.0.sign_in.lock().unwrap().fail_due(e.to_string()) {
-                    tracing::warn!(target: "kafka.sign_in_failed", group = %self.group(), error, "could not sign in to Kafka as the pod's workload identity");
+                    tracing::warn!(target: "kafka.sign_in_failed", group = %self.group(), error, "a source could not sign in to Kafka as the pod's workload identity, so it cannot connect until a sign-in works");
                 }
                 Err(e)
             }

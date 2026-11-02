@@ -1702,7 +1702,10 @@ fn a_delivery_answer_round_trips_and_must_name_real_destinations() {
             (json.replace(r#"["leftovers", "spare"]"#, "[]"), "no destination"),
         ] {
             let err = load_str(&bad).unwrap_err().to_string();
-            assert!(err.contains("the worker group's") && err.contains(says), "{label}: {err}");
+            assert!(
+                err.contains("the worker group's") && err.contains(says),
+                "{label}: {err}"
+            );
         }
     }
 }
