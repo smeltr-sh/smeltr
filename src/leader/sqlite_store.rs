@@ -2456,13 +2456,27 @@ fn insert_event(conn: &Connection, event: &SecurityEvent) -> Result<(), StoreErr
         ],
     )?;
     // Logged where it is written, so every audited action reaches the log without its handler saying so. A refused
-    // one is already said at warn where it was refused.
+    // one is already said at warn where it was refused. The row holds ids; the line names whom they belong to.
+    let (actor_name, subject_name) = (account_name(conn, &event.actor), account_name(conn, &event.target));
+    let (actor_name, subject_name) = (actor_name.as_deref(), subject_name.as_deref());
     if event.outcome == "ok" {
-        tracing::info!(target: "audit.recorded", actor = %event.actor, action = %event.action, subject = %event.target, "an audited action was recorded");
+        tracing::info!(target: "audit.recorded", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, "an audited action was recorded");
     } else {
-        tracing::debug!(target: "audit.recorded", actor = %event.actor, action = %event.action, subject = %event.target, outcome = %event.outcome, "an audited action was recorded");
+        tracing::debug!(target: "audit.recorded", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, outcome = %event.outcome, "an audited action was recorded");
     }
     Ok(())
+}
+
+/// What the account `id` is called, a deleted one included. None for an id that names no account: a reserved
+/// actor, or a target that is not an account.
+fn account_name(conn: &Connection, id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT display_name FROM users WHERE id = ?1
+         UNION ALL SELECT display_name FROM deleted_accounts WHERE id = ?1 LIMIT 1",
+        (id,),
+        |row| row.get(0),
+    )
+    .ok()
 }
 
 // -- account helpers --------------------------------------------------------
@@ -4537,6 +4551,41 @@ mod tests {
             listed.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(),
             vec!["logout", "login"]
         );
+    }
+
+    #[test]
+    fn an_audited_action_names_whom_its_ids_belong_to() {
+        let s = store();
+        s.bootstrap_administrator(NewLocalUser {
+            id: "u_admin",
+            username: "admin",
+            display_name: "Dana",
+            password_hash: "x",
+            must_change: false,
+        })
+        .unwrap();
+        let said = crate::logs::said(|| {
+            for (actor, target) in [("u_admin", "u_admin"), ("system", "")] {
+                s.record_security_event(&SecurityEvent {
+                    id: format!("e-{actor}"),
+                    at: 1,
+                    actor: actor.into(),
+                    action: "login".into(),
+                    target: target.into(),
+                    outcome: "ok".into(),
+                })
+                .unwrap();
+            }
+        });
+        let fields: Vec<_> = said
+            .iter()
+            .filter(|(_, site, _)| site == "audit.recorded")
+            .map(|(_, _, f)| f)
+            .collect();
+        let named = |f: &Vec<(String, String)>, key: &str| f.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        assert_eq!(named(fields[0], "actor_name").as_deref(), Some("Dana"));
+        assert_eq!(named(fields[0], "subject_name").as_deref(), Some("Dana"));
+        assert_eq!(named(fields[1], "actor_name"), None, "a reserved actor is no account");
     }
 
     // -- schema ------------------------------------------------------------
