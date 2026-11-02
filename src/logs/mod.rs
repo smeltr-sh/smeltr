@@ -635,10 +635,10 @@ pub fn start() {
     use tracing_subscriber::layer::SubscriberExt;
     let subscriber = tracing_subscriber::registry().with(layer::LogLayer);
     if tracing::subscriber::set_global_default(subscriber).is_ok() {
-        // The facade's own ceiling, checked inside the library before it formats anything. Set below our
-        // threshold it would hide records we asked for; set above it, libraries render text we then discard.
+        // The facade's own ceiling, checked inside the library before it formats anything. Set below what is kept
+        // it would hide records we asked for; set above it, libraries render text we then discard.
         let _ = tracing_log::LogTracer::builder()
-            .with_max_level(as_log_filter(level))
+            .with_max_level(as_log_filter(layer::facade_ceiling(level)))
             .init();
     }
 }
