@@ -81,6 +81,7 @@ pub const AREAS: &[&str] = &[
     "store",
     "throughput",
     "tls",
+    "trust",
     "updates",
     "warnings",
     "worker",
@@ -161,7 +162,7 @@ mod tests {
     #[test]
     fn every_area_a_line_names_is_listed() {
         fn walk(dir: &std::path::Path, found: &mut std::collections::BTreeSet<String>) {
-            let named = regex::Regex::new(r#"target(: | = )"([a-z_]+)\."#).unwrap();
+            let named = regex::Regex::new(r#"target(: | = )"([a-z_]+)(\.[a-z_.]*)?"\s*[,)]"#).unwrap();
             for entry in std::fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
                 if path.is_dir() {

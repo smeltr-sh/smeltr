@@ -36,7 +36,9 @@ where
     /// the `log` facade is asked each time, with the library's own target.
     fn enabled(&self, metadata: &tracing::Metadata<'_>, _: Context<'_, S>) -> bool {
         let target = metadata.target();
-        as_said_here(target, *metadata.level()) <= super::levels::kept_at(target)
+        let level = as_said_here(target, *metadata.level());
+        // The highest any area keeps first, which needs no lock: a library's line through the facade asks every time.
+        level <= super::max_level() && level <= super::levels::kept_at(target)
     }
 
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {

@@ -362,7 +362,7 @@ fn level_of(ord: usize) -> Level {
     }
 }
 
-/// The threshold every call site is measured against.
+/// The highest level any area keeps (`levels`): no line below it is kept anywhere.
 pub fn max_level() -> Level {
     level_of(MAX_LEVEL.load(Ordering::Relaxed))
 }
