@@ -452,13 +452,22 @@ impl Captures {
     /// from anyone else is not a late answer -- it is records the leader never asked for, from a credential that
     /// has no part in this capture.
     pub fn record(&self, report: CaptureReport) {
+        // Late reports come in runs as a capture ends, so one is said at debug every RELOG_EVERY and the rest at trace.
+        static DROPPED: std::sync::Mutex<crate::logs::Repeat> = std::sync::Mutex::new(crate::logs::Repeat::new());
+        let dropped = |why: &str| {
+            if DROPPED.lock().unwrap().due() {
+                tracing::debug!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
+            } else {
+                tracing::trace!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
+            }
+        };
         let mut sessions = self.0.lock().unwrap();
         let Some(session) = sessions.get_mut(&report.session) else {
-            tracing::trace!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why = "no such session", "a capture report was dropped");
+            dropped("no such session");
             return;
         };
         if !session.invited.contains(&report.worker_id) || session.answered.contains(&report.worker_id) {
-            tracing::trace!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why = "not invited, or answered already", "a capture report was dropped");
+            dropped("not invited, or answered already");
             return;
         }
         // Checked before this report's own answer is noted, so the final that completes the capture is folded.

@@ -234,6 +234,15 @@ pub struct HttpDestination<P: Protocol, T: Transport> {
     throttle: Option<Throttle>,
     /// The destination as its author named it, for its lines. The service's name until [`HttpDestination::with_subject`].
     subject: Arc<str>,
+    said: Arc<Said>,
+}
+
+/// When a destination last said at debug what goes on for as long as its service is under load, shared by its
+/// senders. Each time is said at trace, and at debug once every [`crate::logs::RELOG_EVERY`].
+#[derive(Default)]
+struct Said {
+    throttled: std::sync::Mutex<crate::logs::Repeat>,
+    halved: std::sync::Mutex<crate::logs::Repeat>,
 }
 
 /// Where a destination counts the time it held its sends back because the service asked it to slow down, as
@@ -267,6 +276,7 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
             pool: None,
             throttle: None,
             subject,
+            said: Arc::default(),
         }
     }
 
@@ -326,6 +336,7 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
                     stall_after: self.stall_after,
                     throttle: self.throttle.clone(),
                     subject: self.subject.clone(),
+                    said: self.said.clone(),
                 })
                 .collect(),
             start,
@@ -362,7 +373,7 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
     /// One round on this thread, with retries, against `group`: the refusals, each carrying its row out of `rows`.
     fn post(&mut self, rows: &[OwnedRecord], group: &mut Group<P::Item>) -> Result<Vec<Rejection>, IoError> {
         group.bytes = 0;
-        let mut round = Round::new(self.stall_after, self.subject.clone());
+        let mut round = Round::new(self.stall_after, self.subject.clone(), self.said.clone());
         let delivered = deliver(&self.protocol, &mut self.transport, group, &mut round);
         Throttle::note(&self.throttle, round.waited);
         delivered?;
@@ -388,12 +399,13 @@ struct Round {
     rejections: Vec<Rejection>,
     /// The destination as its author named it, for the round's lines.
     subject: Arc<str>,
+    said: Arc<Said>,
     /// Whether this round has said the service asked it to slow down.
     throttle_said: bool,
 }
 
 impl Round {
-    fn new(stall_after: Duration, subject: Arc<str>) -> Round {
+    fn new(stall_after: Duration, subject: Arc<str>, said: Arc<Said>) -> Round {
         Round {
             stall_after,
             deadline: Instant::now() + stall_after,
@@ -401,6 +413,7 @@ impl Round {
             waited: Duration::ZERO,
             rejections: Vec::new(),
             subject,
+            said,
             throttle_said: false,
         }
     }
@@ -419,7 +432,11 @@ fn in_halves<P: Protocol, T: Transport>(
         return None;
     }
     let half = group.pending.len() / 2;
-    tracing::trace!(target: "http.request_halved", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
+    if round.said.halved.lock().unwrap().due() {
+        tracing::debug!(target: "http.request_halved", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
+    } else {
+        tracing::trace!(target: "http.request_halved", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
+    }
     let mut tail = Group {
         route: group.route.clone(),
         part: group.part,
@@ -536,7 +553,11 @@ fn deliver<P: Protocol, T: Transport>(
         }
         if !round.throttle_said {
             round.throttle_said = true;
-            tracing::trace!(target: "http.throttled", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
+            if round.said.throttled.lock().unwrap().due() {
+                tracing::debug!(target: "http.throttled", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
+            } else {
+                tracing::trace!(target: "http.throttled", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
+            }
         }
         std::thread::sleep(nap);
         round.waited += nap;
@@ -576,6 +597,7 @@ struct HttpSender<P: Protocol, T: Transport> {
     stall_after: Duration,
     throttle: Option<Throttle>,
     subject: Arc<str>,
+    said: Arc<Said>,
 }
 
 impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
@@ -583,7 +605,7 @@ impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
     type Job = Group<P::Item>;
 
     fn send_one(&mut self, mut group: Group<P::Item>) -> pipelined::Delivered {
-        let mut round = Round::new(self.stall_after, self.subject.clone());
+        let mut round = Round::new(self.stall_after, self.subject.clone(), self.said.clone());
         let delivered = deliver(&self.protocol, &mut self.transport, &mut group, &mut round);
         Throttle::note(&self.throttle, round.waited);
         pipelined::Delivered {
