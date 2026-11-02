@@ -2,7 +2,13 @@
 import recordingUrl from './recorded.json?url';
 import { DemoLeader, WAKING_EVENT, install, waking, type Recording } from './leader';
 
-const recording = (await fetch(recordingUrl).then((r) => r.json())) as Recording;
+// The build ships the recording gzipped (`vite.demo.config.ts`). A host may still undo that on the way, so the bytes
+// say which they are.
+const bytes = new Uint8Array(await (await fetch(recordingUrl)).arrayBuffer());
+const gzipped = bytes[0] === 0x1f && bytes[1] === 0x8b;
+const recording = (await new Response(
+  gzipped ? new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip')) : bytes,
+).json()) as Recording;
 const BUILD = 'smeltr-demo-build';
 let store: Storage | null = null;
 try {
