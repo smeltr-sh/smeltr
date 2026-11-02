@@ -710,6 +710,7 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
         &c.syms.local_slots,
         &c.syms.deleted_slots,
         &c.syms.nulls,
+        &c.syms.blends,
         &plan.aliases,
     );
     plan.warnings.extend(unread);
@@ -773,7 +774,8 @@ fn same(a: &Ir, b: &Ir) -> bool {
 
 /// A warning for each value a statement writes that nothing reads: no instruction reads it and the record does not
 /// hold it at the end. A local is never read; a field is written again, or deleted, first. Only an expression's own
-/// write counts, under a name code can spell, so a parse's outputs and the engine's own slots are never named. A copy
+/// write counts, under a name code can spell, so a parse's outputs, its blends over a prior included (`blends`), and
+/// the engine's own slots are never named. A copy
 /// shares its value's slot (`aliases`), so the name a warning gives is the last one to let the value go. Null written
 /// where nothing was, as a declaration writes it, loses no value.
 fn unread_writes(
@@ -781,6 +783,7 @@ fn unread_writes(
     locals: &HashSet<SlotId>,
     deleted: &HashSet<SlotId>,
     nulls: &HashSet<SlotId>,
+    blends: &HashSet<SlotId>,
     aliases: &[(SlotId, String, usize, FunctionId)],
 ) -> Vec<CompileError> {
     let mut read = HashSet::new();
@@ -801,7 +804,12 @@ fn unread_writes(
     for slot in written {
         let o = &plan.provenance[slot];
         let Origin::Function(f) = o.origin else { continue };
-        if !spelled(&o.name) || read.contains(&slot) || held.contains(&slot) || nulls.contains(&slot) {
+        if !spelled(&o.name)
+            || read.contains(&slot)
+            || held.contains(&slot)
+            || nulls.contains(&slot)
+            || blends.contains(&slot)
+        {
             continue;
         }
         // Each name the value was put at, from the slot after which a write of that name replaces it.
@@ -3620,6 +3628,7 @@ impl Compiler<'_> {
             false,
             Here { guard, ..here },
         );
+        self.syms.blends.extend(self.syms.lookup(name));
         true
     }
 
@@ -4866,6 +4875,8 @@ mod tests {
             "x = null; x = 2",
             // Replaced with the record, not deleted.
             "x = 1; $ = {y: 2}",
+            // A parse into the record writes each field it holds, its own input too, with what it finds there.
+            "body = _raw; Object.assign($, json(body)); body = null",
         ] {
             assert_eq!(warnings(body), Vec::<String>::new(), "{body}");
         }
