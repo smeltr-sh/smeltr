@@ -15,7 +15,8 @@ use super::{hand_off, max_level};
 /// through the `log` facade.
 ///
 /// A span of ours lends its fields to every line raised inside it, so a line deep in a commit says which source
-/// and batch it was about without its call site knowing. When one closes it is said, at its own level, with how
+/// and batch it was about without its call site knowing. Only while the span is enabled: the data path opens its
+/// spans at trace, so below trace a line names what it is about itself. When one closes it is said, at its own level, with how
 /// long it was open. A library's spans are neither: what it names in them is its own business, and it opens far
 /// too many to say.
 pub struct LogLayer;
@@ -97,6 +98,8 @@ where
             lend(&outer.extensions(), &mut fields);
         }
         let ms = u64::try_from(took.as_millis()).unwrap_or(u64::MAX);
+        // The duration wins over a span field of the same name, so `ms` always means how long it was open.
+        fields.retain(|(name, _)| name != "ms");
         fields.push(("ms".into(), super::event::Value::Uint(ms)));
         let message = format!("{} finished", metadata.name());
         hand_off(shaped(
