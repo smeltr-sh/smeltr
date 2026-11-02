@@ -365,6 +365,8 @@ pub struct KafkaSource {
     stop: Option<StopPosition>,
     /// When `place_held` may next ask the broker.
     place_retry_at: Instant,
+    /// Placement that keeps failing, said at debug once in a while rather than every poll.
+    place_failing: crate::logs::Relog,
     /// Commits dropped because the group had moved on (`is_stale_commit`). Logged once per burst rather than per
     /// commit.
     stale_commits: u64,
@@ -432,6 +434,7 @@ impl KafkaSource {
             revoked: Vec::new(),
             stop: config.stop,
             place_retry_at: Instant::now(),
+            place_failing: crate::logs::Relog::new(),
             stale_commits: 0,
             stale_burst_at: None,
             stale_commit_logged: false,
@@ -495,6 +498,7 @@ impl KafkaSource {
             Ok(resolved) => resolved,
             Err(e) => {
                 tracing::trace!(target: "kafka.placement_failed", error = %e, "a source still cannot place its held partitions; they wait for the next poll");
+                self.placement_failed(format!("its partitions' starts could not be resolved: {e}"));
                 return Ok(());
             }
         };
@@ -522,11 +526,15 @@ impl KafkaSource {
                     }
                 }
                 Err(e) => {
-                    tracing::trace!(target: "kafka.placement_failed", group = %self.client.routes.group(), error = %e, "a source could not seek its held partitions; they wait for the next poll")
+                    tracing::trace!(target: "kafka.placement_failed", group = %self.client.routes.group(), error = %e, "a source could not seek its held partitions; they wait for the next poll");
+                    self.placement_failed(format!("its partitions could not be sought: {e}"));
                 }
             }
         }
         let mut state = self.slot.lock();
+        if state.unplaced.iter().all(|k| placed.contains(k)) {
+            self.place_failing.clear();
+        }
         for (topic, partition) in placed {
             // Revoked meanwhile: no longer this source's to place.
             if !state.unplaced.remove(&(topic.clone(), partition)) {
@@ -537,6 +545,14 @@ impl KafkaSource {
             state.tags.insert(key, tag);
         }
         self.slot.sync(self.consumer(), &state)
+    }
+
+    /// Placement failed again: said at debug when it starts, and again every [`crate::logs::RELOG_EVERY`] while it goes
+    /// on.
+    fn placement_failed(&mut self, why: String) {
+        if let Some(why) = self.place_failing.fail_due(why) {
+            tracing::debug!(target: "kafka.placement_failed", group = %self.client.routes.group(), topic = %self.topic, why, "a source cannot place its held partitions");
+        }
     }
 
     /// Marks a partition exhausted and pauses it so librdkafka stops fetching from it. Idempotent.

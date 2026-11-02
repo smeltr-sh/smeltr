@@ -220,7 +220,7 @@ fn entitled(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) ->
         return names.clone();
     }
     let names = secrets_at(&repo, &head, group_id).unwrap_or_else(|e| {
-        tracing::trace!(target: "leader.bundle_unentitled", group = %group_id, commit = %head, error = %e, "a group's bundle does not load at the deployed commit, so it is entitled to no secret");
+        tracing::debug!(target: "leader.bundle_unentitled", group = %group_id, commit = %head, error = %e, "a group's bundle does not load at the deployed commit, so it is entitled to no secret");
         Default::default()
     });
     cache
