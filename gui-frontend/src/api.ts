@@ -3492,11 +3492,37 @@ export type AlertMail = {
   username?: string;
 };
 
+/** A heading the issues a channel can take are listed under. */
+export type AlertSection =
+  | 'workers'
+  | 'sourcesAndDestinations'
+  | 'deploys'
+  | 'pipelines'
+  | 'certificatesAndSecrets'
+  | 'leader';
+
+export function sectionLabel(section: AlertSection): string {
+  switch (section) {
+    case 'workers':
+      return 'Workers';
+    case 'sourcesAndDestinations':
+      return 'Sources and destinations';
+    case 'deploys':
+      return 'Deploys';
+    case 'pipelines':
+      return 'Pipelines';
+    case 'certificatesAndSecrets':
+      return 'Certificates and secrets';
+    case 'leader':
+      return 'Leader';
+  }
+}
+
 export type AlertSettingsDto = {
   mail: (AlertMail & { passwordSet: boolean }) | null;
   channels: AlertChannelDto[];
-  /** What a channel can take, in the catalog's order. */
-  conditions: WarningCondition[];
+  /** What a channel can take, by section, each in the catalog's order. */
+  sections: { section: AlertSection; conditions: WarningCondition[] }[];
 };
 
 export type AlertSettingsResult = {

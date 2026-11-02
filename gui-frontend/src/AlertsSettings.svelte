@@ -15,6 +15,7 @@
     listWorkerGroups,
     putAlertChannels,
     putAlertMail,
+    sectionLabel,
     testAlertChannel,
     type AlertChannel,
     type AlertChannelDto,
@@ -167,10 +168,18 @@
       ),
   );
 
-  function tick(channel: string, condition: WarningCondition, on: boolean) {
-    const now = ticks[channel] ?? [];
-    ticks[channel] = on ? [...now, condition] : now.filter((c) => c !== condition);
+  /** Ticks or clears every one of `conditions` for `channel`. */
+  function tick(channel: string, conditions: WarningCondition[], on: boolean) {
+    const rest = (ticks[channel] ?? []).filter((c) => !conditions.includes(c));
+    ticks[channel] = on ? [...rest, ...conditions] : rest;
   }
+
+  /** How many of `conditions` `channel` takes as ticked. */
+  function ticked(channel: string, conditions: WarningCondition[]): number {
+    return conditions.filter((c) => (ticks[channel] ?? []).includes(c)).length;
+  }
+
+  const everyCondition = $derived((settings?.sections ?? []).flatMap((s) => s.conditions));
 
   async function saveTicks(event: SubmitEvent) {
     event.preventDefault();
@@ -501,20 +510,49 @@
             </tr>
           </thead>
           <tbody>
-            {#each settings.conditions as condition (condition)}
-              <tr>
-                <th scope="row">{conditionLabel(condition)}</th>
-                {#each settings.channels as c (c.id)}
+            {#snippet heading(
+              channels: AlertChannelDto[],
+              label: string,
+              conditions: WarningCondition[],
+            )}
+              <tr class="heading">
+                <th scope="row">{label}</th>
+                {#each channels as c (c.id)}
+                  {@const n = ticked(c.id, conditions)}
                   <td class="tick"
                     ><input
                       type="checkbox"
-                      aria-label="{c.name}: {conditionLabel(condition)}"
-                      checked={(ticks[c.id] ?? []).includes(condition)}
-                      onchange={(e) => tick(c.id, condition, e.currentTarget.checked)}
+                      aria-label="{c.name}: {label}"
+                      checked={n === conditions.length}
+                      indeterminate={n > 0 && n < conditions.length}
+                      onchange={(e) => tick(c.id, conditions, e.currentTarget.checked)}
                     /></td
                   >
                 {/each}
               </tr>
+            {/snippet}
+            {@render heading(settings.channels, 'All issues', everyCondition)}
+            {#each settings.sections as section (section.section)}
+              {@render heading(
+                settings.channels,
+                sectionLabel(section.section),
+                section.conditions,
+              )}
+              {#each section.conditions as condition (condition)}
+                <tr>
+                  <th scope="row" class="issue">{conditionLabel(condition)}</th>
+                  {#each settings.channels as c (c.id)}
+                    <td class="tick"
+                      ><input
+                        type="checkbox"
+                        aria-label="{c.name}: {conditionLabel(condition)}"
+                        checked={(ticks[c.id] ?? []).includes(condition)}
+                        onchange={(e) => tick(c.id, [condition], e.currentTarget.checked)}
+                      /></td
+                    >
+                  {/each}
+                </tr>
+              {/each}
             {/each}
           </tbody>
         </table>
@@ -757,6 +795,14 @@
 
   tbody th {
     font-weight: 400;
+  }
+
+  tbody tr.heading th {
+    font-weight: 600;
+  }
+
+  .issue {
+    padding-left: 1.6rem;
   }
 
   .tick {

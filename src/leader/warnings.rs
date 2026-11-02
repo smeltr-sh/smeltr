@@ -103,6 +103,31 @@ pub enum Condition {
     AlertChannelFailing,
 }
 
+/// A heading the catalog's entries are listed under where a person picks among them, such as the issues an alert
+/// channel takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Section {
+    Workers,
+    SourcesAndDestinations,
+    Deploys,
+    Pipelines,
+    CertificatesAndSecrets,
+    Leader,
+}
+
+impl Section {
+    /// Every section, in the order they are listed.
+    pub const ALL: &'static [Section] = &[
+        Section::Workers,
+        Section::SourcesAndDestinations,
+        Section::Deploys,
+        Section::Pipelines,
+        Section::CertificatesAndSecrets,
+        Section::Leader,
+    ];
+}
+
 impl Condition {
     /// The whole catalog, so the page's copy of it can be checked against this one. The reader that switches on
     /// a condition is in another language, where a missing entry is a blank label rather than a compile error.
@@ -229,6 +254,47 @@ impl Condition {
             Condition::LeaderCertificateRunningOut => "leaderCertificateRunningOut",
             Condition::IssuedCertificateNotRenewed => "issuedCertificateNotRenewed",
             Condition::AlertChannelFailing => "alertChannelFailing",
+        }
+    }
+    /// The section it is listed under, or `None` for an entry only ever raised as info, which no alert channel is
+    /// sent. The match is what makes a new entry a compile error here.
+    pub fn section(self) -> Option<Section> {
+        match self {
+            Condition::WorkerSilent
+            | Condition::WorkerNeverHeartbeated
+            | Condition::WorkerMemoryHigh
+            | Condition::WorkerLoggedWarnings => Some(Section::Workers),
+            Condition::SourceBlocked
+            | Condition::SourceRefused
+            | Condition::SourceWaiting
+            | Condition::SourceUnreachable
+            | Condition::DestinationRefusing
+            | Condition::DestinationUnreachable
+            | Condition::LagClimbing
+            | Condition::SourceRowsBelow
+            | Condition::SourceRowsAbove
+            | Condition::StreamUnrouted => Some(Section::SourcesAndDestinations),
+            Condition::GroupNotDeployed
+            | Condition::WorkerNotDeployingItsTarget
+            | Condition::WorkerOnAnotherBuild
+            | Condition::DeployDoesNotLoad
+            | Condition::DeployHeld
+            | Condition::RemoteNotFollowed => Some(Section::Deploys),
+            Condition::DeployFailsTests
+            | Condition::DeployBreaksSchemas
+            | Condition::DeclaredFieldFailing
+            | Condition::DeclaredFieldGone => Some(Section::Pipelines),
+            Condition::AuthorityExpiring
+            | Condition::AuthorityAging
+            | Condition::CertificateExpiring
+            | Condition::EnrollmentCodeNamesOutgoingAuthority
+            | Condition::LeaderCertificateRunningOut
+            | Condition::IssuedCertificateNotRenewed
+            | Condition::AcmeRenewalFailing
+            | Condition::SecretsKeyUnusable
+            | Condition::SecretNeedsValue => Some(Section::CertificatesAndSecrets),
+            Condition::NewerRelease | Condition::AlertChannelFailing => Some(Section::Leader),
+            Condition::WorkerOnAnotherRelease | Condition::DestinationMemoryBound => None,
         }
     }
 }
@@ -3244,6 +3310,23 @@ mod tests {
                 regex::Regex::new(&labels).unwrap().is_match(&api),
                 "conditionLabel does not label {name} as {:?}, which is what is sent for it",
                 condition.label()
+            );
+        }
+    }
+
+    /// The page lists the sections in another language, where one it has never heard of has no label. Its switch on
+    /// them is exhaustive, so its type listing each is what keeps it whole.
+    #[test]
+    fn the_page_lists_every_section() {
+        let api = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("gui-frontend/src/api.ts"))
+            .expect("the typed client");
+        let start = api.find("export type AlertSection =").expect("AlertSection");
+        let listed = &api[start..start + api[start..].find(';').unwrap()];
+        for section in Section::ALL {
+            let name = serde_json::to_string(section).unwrap().replace('"', "'");
+            assert!(
+                listed.contains(&format!("| {name}")),
+                "AlertSection does not list {name}"
             );
         }
     }

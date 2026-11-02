@@ -548,13 +548,27 @@ test('a webhook added under System → Alerts takes a test, the issues ticked fo
     await expect(dialog).toBeHidden();
 
     await admin.getByRole('checkbox', { name: 'Paging: Worker silent' }).check();
+    await expect(admin.getByRole('checkbox', { name: 'Paging: Workers' })).toHaveJSProperty(
+      'indeterminate',
+      true,
+    );
+    await admin.getByRole('checkbox', { name: 'Paging: Pipelines' }).check();
+    await expect(
+      admin.getByRole('checkbox', { name: 'Paging: Field no longer arriving' }),
+    ).toBeChecked();
     await admin
       .getByRole('form', { name: 'What each channel gets' })
       .getByRole('button', { name: 'Save' })
       .click();
     await expect
       .poll(async () => (await api.get('/api/settings/alerts')).settings.channels[0].conditions)
-      .toEqual(['workerSilent']);
+      .toEqual([
+        'workerSilent',
+        'deployFailsTests',
+        'deployBreaksSchemas',
+        'declaredFieldFailing',
+        'declaredFieldGone',
+      ]);
     const saved = (await api.get('/api/settings/alerts')).settings.channels[0];
     expect(saved.secretSet).toBe(true);
     expect(JSON.stringify(saved)).not.toContain('s3cr3t');
