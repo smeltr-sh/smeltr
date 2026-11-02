@@ -37,6 +37,20 @@
 .marketing h2 + figure {
   margin-top: 1rem;
 }
+/* A screenshot narrower than the page starts where the text does, and so do its
+   link and caption: one left edge down the page. */
+.marketing figure .crop {
+  margin-inline: 0;
+}
+.marketing figure .shot span,
+.marketing figure figcaption {
+  margin-inline: 0;
+  text-align: left;
+}
+/* A caption belongs to the shot above it, not the one below. */
+.marketing figure + figure {
+  margin-top: 2.5rem;
+}
 .marketing .lede {
   max-width: 39rem;
   font-size: 1.15rem;

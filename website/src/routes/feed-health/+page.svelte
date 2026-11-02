@@ -26,8 +26,19 @@
     <h2 id="volume-heading">Too quiet, or too loud.</h2>
     <p>
       Smeltr learns how many rows each source reads at each time of day, from its last seven days.
-      In the demo, FortiGate's logs reach Smeltr through two syslog relays. One goes down, the
-      source reads half of what it should, and within ten minutes Smeltr warns:
+      In the demo, FortiGate's logs reach Smeltr through two syslog relays. When one goes down, the
+      source falls to half of what it should read:
+    </p>
+    <ProductScreenshot
+      source="feed-health-volume"
+      height={1800}
+      crop={{ x: 2150, y: 470, width: 690, height: 950 }}
+      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 171 rows a second, expected 378 to 465. Its 24-hour chart follows the expected band through the day, then falls to half."
+      caption="Over the last 24 hours the source reads within its band, until it falls to half."
+    />
+    <p>
+      Within ten minutes, Smeltr raises an issue. It shows on the Issues page and the Map, and goes
+      to every alert channel that takes it.
     </p>
     <ProductScreenshot
       source="feed-health-issues"
@@ -41,13 +52,6 @@
       }}
       alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 564,427 rows in 30 minutes where 686,163 to 840,639 is normal at this time of day."
       caption="The Issues page names the source, what it read and what is normal."
-    />
-    <ProductScreenshot
-      source="feed-health-volume"
-      height={1800}
-      crop={{ x: 2150, y: 470, width: 690, height: 950 }}
-      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 171 rows a second, expected 378 to 465. Its 24-hour chart follows the expected band through the day, then falls to half."
-      caption="Over the last 24 hours the source reads within its band, until it falls to half."
     />
     <p>
       Smeltr starts warning once a source has three days of history. You set how wide the range is,
