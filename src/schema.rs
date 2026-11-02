@@ -7,7 +7,7 @@
 //! one, so a key holding a dot is no schema's to name. A type is spelled as a declaration spells one, so a schema, a
 //! parser and a declaration read the same.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::config_file::{Requirement, SchemaDto, SchemaFieldDto};
@@ -330,15 +330,38 @@ fn fields_of(ty: &DataType) -> Option<&[(String, DataType)]> {
 }
 
 impl Schema {
-    /// Where a record may break the schema: each field whose type the schema's does not hold, and each field the
-    /// schema requires or recommends that the record lacks, in the schema's order. A field the schema does not name
-    /// keeps it, as does one whose type only the row knows. A field is lacking where the object it sits in is there
-    /// and does not declare it: an open object may carry the key, but the pipeline has not shown that it does.
+    /// Where a record may break the schema: each field whose type the schema's does not hold, a key only the fields
+    /// under it name holding anything but an object among them, and each field the schema requires or recommends that
+    /// the record lacks, in the schema's order. A field the schema does not name keeps it, as does one whose type only
+    /// the row knows. A field is lacking where the object it sits in is there and does not declare it: an open object
+    /// may carry the key, but the pipeline has not shown that it does.
     pub fn check(&self, record: &DataType) -> Vec<Finding> {
         let shape = Shape::of(record);
+        let declared: HashSet<&str> = self.fields.iter().map(|f| f.path.as_str()).collect();
+        let object = DataType::Struct(Vec::new(), true);
         let mut out = Vec::new();
         for f in &self.fields {
             let keys = f.keys();
+            // A key only the fields under it name is an object all the same: a value that is not one breaks it.
+            for under in 1..keys.len() {
+                let at = &keys[..under];
+                let Some(ty) = shape.at.get(at) else { continue };
+                if declared.contains(at.join(".").as_str())
+                    || holds_an_object(ty)
+                    || holds(&object, ty)
+                    || out.iter().any(|o: &Finding| o.keys == at)
+                {
+                    continue;
+                }
+                out.push(Finding {
+                    keys: at.to_vec(),
+                    schema: self.id.clone(),
+                    misfit: Misfit::Type {
+                        ty: (*ty).clone(),
+                        wants: object.spell(),
+                    },
+                });
+            }
             match shape.at.get(&keys) {
                 Some(ty) => {
                     if !holds(&f.ty, ty) {
@@ -480,12 +503,23 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
                     (DataType::DateTime, "i64") => ": `.epochMillis()` gives one",
                     _ => "",
                 };
-                out.push(Told {
-                    keys: Some(f.keys.clone()),
-                    message: format!(
+                let message = match wants.starts_with('{') {
+                    // An object's spelling is no fix to write: the fields under it are.
+                    true => match under(schemas, f) {
+                        Some(field) => format!(
+                            "`{path}` is {}, but {schema} has it as an object. Write the fields under it, such as `{field}`.",
+                            ty.spell()
+                        ),
+                        None => format!("`{path}` is {}, but {schema} has it as an object.", ty.spell()),
+                    },
+                    false => format!(
                         "`{path}` is {}, but {schema} has it as {wants}. Write it as {wants}{how}.",
                         ty.spell()
                     ),
+                };
+                out.push(Told {
+                    keys: Some(f.keys.clone()),
+                    message,
                     breaks: true,
                     recommended: None,
                 });
@@ -532,6 +566,17 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
         });
     }
     out
+}
+
+/// The path of the field the finding's schema asks for most directly under the finding's field, else of any under
+/// it, the first of those it asks for alike: `user.id` under `user`, which ECS asks for over `user.domain`.
+fn under(schemas: &[Arc<Schema>], finding: &Finding) -> Option<String> {
+    let schema = schemas.iter().find(|s| s.id == finding.schema)?;
+    let depth = finding.keys.len();
+    let below = |f: &&Field| f.keys().starts_with(&finding.keys) && f.keys().len() > depth;
+    let fields: Vec<&Field> = schema.fields.iter().filter(below).collect();
+    let most = |of: &mut dyn Iterator<Item = &&Field>| of.min_by_key(|f| f.requirement).map(|f| f.path.clone());
+    most(&mut fields.iter().filter(|f| f.keys().len() == depth + 1)).or_else(|| most(&mut fields.iter()))
 }
 
 fn same_kind(a: &Misfit, b: &Misfit) -> bool {
@@ -882,6 +927,52 @@ mod tests {
                 "login observables.name: i64 not str",
             ],
             "a field under an array is each element's"
+        );
+    }
+
+    #[test]
+    fn a_key_only_the_fields_under_it_name_breaks_where_the_record_holds_no_object_there() {
+        let people = declared("people", "People", vec![row("user.name", "str", false)]);
+        let at_user = |ty: DataType| shown(&people.check(&st(&[("user", ty)])));
+        assert_eq!(at_user(DataType::Str), ["people user: str not {...}"]);
+        assert_eq!(
+            at_user(DataType::Array(Box::new(DataType::Str))),
+            ["people user: array<str> not {...}"]
+        );
+        for fits in [
+            st(&[("name", DataType::Str)]),
+            DataType::Array(Box::new(st(&[("name", DataType::Str)]))),
+            DataType::Null,
+            DataType::Variant,
+        ] {
+            assert!(at_user(fits.clone()).is_empty(), "{}", fits.spell());
+        }
+        let told = told(
+            std::slice::from_ref(&people),
+            &people.check(&st(&[("user", DataType::Str)])),
+        );
+        assert_eq!(
+            told[0].message,
+            "`user` is str, but People has it as an object. Write the fields under it, such as `user.name`."
+        );
+    }
+
+    #[test]
+    fn ecs_user_written_as_text_names_a_field_ecs_asks_for_under_it() {
+        let fields = ecs::with_requirements(ecs::read(standard::ECS).unwrap(), ecs::Requirements::Ecs);
+        let ecs = Arc::new(
+            read(&SchemaDto {
+                id: "ecs".to_string(),
+                title: "ECS".to_string(),
+                description: String::new(),
+                fields,
+            })
+            .unwrap(),
+        );
+        let told = told(std::slice::from_ref(&ecs), &ecs.check(&st(&[("user", DataType::Str)])));
+        assert_eq!(
+            told[0].message,
+            "`user` is str, but ECS has it as an object. Write the fields under it, such as `user.id`."
         );
     }
 

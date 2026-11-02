@@ -191,6 +191,55 @@ PANOS = {
     ],
 }
 
+# -- network: PAN-OS threats ------------------------------------------------------------------
+
+# THREAT shares TRAFFIC's columns up to the action; what the profile caught follows it.
+PANOS_THREAT_HEADERS = PANOS_HEADERS[:PANOS_HEADERS.index("action") + 1] + [
+    "misc", "threat", "threat_category", "severity", "direction",
+]
+PANOS_THREAT_KEEP = {
+    "serial", "type", "subtype", "source_address", "destination_address", "rule_name", "source_user", "application",
+    "source_port", "destination_port", "action", "threat", "threat_category", "severity",
+}
+
+# The pipeline the One schema page shows: the threats go to ECS beside the traffic, and its author renames the
+# source user to `user`, where ECS has an object.
+PANOS_THREAT = {
+    "id": "panos-threats", "name": "panos-threats",
+    "steps": [
+        {"type": "parser", "id": "syslog", "input": "_raw",
+         "kind": {"type": "grok", "patterns": ["<%{INT:pri}>%{SYSLOGTIMESTAMP:syslog_time} %{HOSTNAME:relay} %{GREEDYDATA:panos}"]},
+         "declared": [{"name": n, "type": "str"} for n in ["pri", "syslog_time", "relay", "panos"]]},
+        {"type": "parser", "id": "fields", "input": "panos", "kind": {"type": "csv", "delimiter": ","},
+         "declared": [{"name": "@timestamp", "type": "datetime"} if h == "receive_time" else
+                      {"name": h, "type": "i64" if h in PANOS_NUMERIC else "str"} if h in PANOS_THREAT_KEEP else
+                      {"name": h, "type": "skip"} for h in PANOS_THREAT_HEADERS]},
+        {"type": "eval", "id": "derive", "assignments": ev([
+            ("event.dataset", '"panw.panos"'),
+            ("event.kind", '"alert"'),
+            ("event.category", '["intrusion_detection"]'),
+            ("event.action", "action"),
+            ("source.port", "source_port"),
+            ("destination.port", "destination_port"),
+            ("observer.vendor", '"Palo Alto Networks"'),
+            ("observer.product", '"PAN-OS"'),
+        ])},
+        {"type": "rename", "id": "to-ecs", "pairs": [{"from": f, "to": t} for f, t in [
+            ("source_address", "source.ip"), ("destination_address", "destination.ip"), ("source_user", "user"),
+            ("application", "network.application"), ("rule_name", "rule.name"), ("serial", "observer.serial_number"),
+            ("threat", "panw.threat.name"), ("threat_category", "panw.threat.category"),
+            ("severity", "panw.threat.severity"), ("subtype", "panw.subtype"),
+        ]]},
+        {"type": "eval", "id": "prune", "assignments": ev([(n, "null") for n in [
+            "_raw", "panos", "pri", "syslog_time", "relay", "type", "action", "source_port", "destination_port",
+        ]])},
+        {"type": "call", "id": "common", "pipeline": "ecs-common"},
+    ],
+}
+
+THREAT_ROUTE = {"id": "panos-threats", "source": "panw-threats", "condition": None, "pipeline": "panos-threats",
+                "deliver": [{"to": ["es-network"]}]}
+
 # -- network: PAN-OS trimmed for the SIEM ------------------------------------------------------------
 
 # The pipeline the Cut SIEM costs page shows: the same line, with the columns no search uses left empty, and the
