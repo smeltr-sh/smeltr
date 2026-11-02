@@ -494,7 +494,7 @@ impl KafkaSource {
         let resolved = match client::resolve_starts(self.consumer(), &held) {
             Ok(resolved) => resolved,
             Err(e) => {
-                tracing::debug!(target: "kafka.placement_failed", error = %e, "a source still cannot place its held partitions; they wait for the next poll");
+                tracing::trace!(target: "kafka.placement_failed", error = %e, "a source still cannot place its held partitions; they wait for the next poll");
                 return Ok(());
             }
         };
@@ -522,7 +522,7 @@ impl KafkaSource {
                     }
                 }
                 Err(e) => {
-                    tracing::debug!(target: "kafka.placement_failed", group = %self.client.routes.group(), error = %e, "a source could not seek its held partitions; they wait for the next poll")
+                    tracing::trace!(target: "kafka.placement_failed", group = %self.client.routes.group(), error = %e, "a source could not seek its held partitions; they wait for the next poll")
                 }
             }
         }

@@ -1525,7 +1525,7 @@ fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn F
     let assignment = match consumer.assignment() {
         Ok(assignment) => assignment,
         Err(e) => {
-            tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the assignment could not be read, so lag is not measured this round");
+            tracing::trace!(target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the assignment could not be read, so lag is not measured this round");
             return;
         }
     };
@@ -1536,7 +1536,7 @@ fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn F
     let committed = match consumer.committed_offsets(assignment, LAG_QUERY_TIMEOUT) {
         Ok(committed) => committed,
         Err(e) => {
-            tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the committed offsets could not be read, so lag is not measured this round");
+            tracing::trace!(target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the committed offsets could not be read, so lag is not measured this round");
             return;
         }
     };
@@ -1570,7 +1570,7 @@ fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn F
             let (_, high) = match consumer.fetch_watermarks(&topic, partition, LAG_QUERY_TIMEOUT) {
                 Ok(marks) => marks,
                 Err(e) => {
-                    tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), %topic, partition, error = %e, "a partition's high watermark could not be read, so its lag is not measured this round");
+                    tracing::trace!(target: "kafka.lag_unmeasured", group = %routes.group(), %topic, partition, error = %e, "a partition's high watermark could not be read, so its lag is not measured this round");
                     continue;
                 }
             };

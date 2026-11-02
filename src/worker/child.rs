@@ -727,7 +727,7 @@ fn obey(frame: ToRuntime, runtime: &Runtime) -> bool {
             let offered = logs.len();
             let events: Vec<_> = logs.into_iter().filter_map(LogDto::into_event).collect();
             if events.len() < offered {
-                tracing::debug!(target: "runtime.mirror_skipped", count = offered - events.len(), "mirrored logs of a severity this build does not know were skipped");
+                tracing::trace!(target: "runtime.mirror_skipped", count = offered - events.len(), "mirrored logs of a severity this build does not know were skipped");
             }
             crate::logs::mirror(events);
         }

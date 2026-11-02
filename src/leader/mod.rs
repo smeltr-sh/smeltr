@@ -220,7 +220,7 @@ fn entitled(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) ->
         return names.clone();
     }
     let names = secrets_at(&repo, &head, group_id).unwrap_or_else(|e| {
-        tracing::debug!(target: "leader.bundle_unentitled", group = %group_id, commit = %head, error = %e, "a group's bundle does not load at the deployed commit, so it is entitled to no secret");
+        tracing::trace!(target: "leader.bundle_unentitled", group = %group_id, commit = %head, error = %e, "a group's bundle does not load at the deployed commit, so it is entitled to no secret");
         Default::default()
     });
     cache
@@ -884,7 +884,7 @@ fn read_sources(
         }
     }
     if unread > 0 {
-        tracing::debug!(target: "leader.sources_unread", bundles = unread, "bundles that do not load were left out of what the fleet reads");
+        tracing::trace!(target: "leader.sources_unread", bundles = unread, "bundles that do not load were left out of what the fleet reads");
     }
     Ok(ReadSources {
         single: out,
