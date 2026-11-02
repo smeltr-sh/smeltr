@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use super::envelope::{Envelope, Refusal};
 use super::store::{Actor, AlertTold, SecretSave, Store, StoreError};
-use super::warnings::{Condition, Warning};
+use super::warnings::{Condition, Section, Warning};
 use super::{AppState, run_store};
 
 /// How often the leader looks, and so how soon a failed send is made again.
@@ -717,13 +717,16 @@ pub struct AlertSettingsDto {
     /// `None` until a mail server is saved.
     mail: Option<MailDto>,
     channels: Vec<ChannelDto>,
-    /// What a channel can take, in the catalog's order: every entry but those only ever raised as info, which no
-    /// channel is sent.
-    conditions: Vec<Condition>,
+    /// What a channel can take, by section, each in the catalog's order.
+    sections: Vec<SectionDto>,
 }
 
-/// The catalog entries raised only as info.
-const ONLY_INFO: &[Condition] = &[Condition::WorkerOnAnotherRelease, Condition::DestinationMemoryBound];
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionDto {
+    section: Section,
+    conditions: Vec<Condition>,
+}
 
 /// What `GET /api/settings/alerts` answers, read from the store and the failures held.
 fn read_settings(store: &dyn Store, alerts: &Alerts) -> Result<AlertSettingsDto, StoreError> {
@@ -745,15 +748,21 @@ fn read_settings(store: &dyn Store, alerts: &Alerts) -> Result<AlertSettingsDto,
             })
         })
         .collect::<Result<_, StoreError>>()?;
-    let conditions = Condition::ALL
+    let sections = Section::ALL
         .iter()
-        .copied()
-        .filter(|c| !ONLY_INFO.contains(c))
+        .map(|&section| SectionDto {
+            section,
+            conditions: Condition::ALL
+                .iter()
+                .copied()
+                .filter(|c| c.section() == Some(section))
+                .collect(),
+        })
         .collect();
     Ok(AlertSettingsDto {
         mail,
         channels,
-        conditions,
+        sections,
     })
 }
 
