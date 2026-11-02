@@ -26,6 +26,10 @@ pub fn say_statements(conn: &Connection, store: Store) {
         said("registry.db", event);
     }
     fn said(store: &str, event: rusqlite::trace::TraceEvent<'_>) {
+        // SQLite calls this for every statement at every level, so the text is built only when it will be said.
+        if !tracing::enabled!(target: "store.statement", tracing::Level::TRACE) {
+            return;
+        }
         if let rusqlite::trace::TraceEvent::Profile(statement, took) = event {
             let sql = statement.sql().split_whitespace().collect::<Vec<_>>().join(" ");
             tracing::trace!(
