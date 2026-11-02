@@ -1,7 +1,7 @@
 [
   {
     "version": "1.0.0",
-    "date": null,
+    "date": "2026-11-01",
     "summary": "The first release. Build pipelines in a browser, test them on captured samples, review and deploy them as Git commits, and run them on a fleet of workers.",
     "highlights": [
       {

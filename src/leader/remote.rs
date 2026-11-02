@@ -903,9 +903,11 @@ pub struct Overwrite {
 /// has moved since, this is refused too, and what the admin is shown next is where the host's branch is now.
 pub async fn overwrite(
     State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
     axum::extract::Path(branch): axum::extract::Path<String>,
     Json(request): Json<Overwrite>,
 ) -> Envelope {
+    let actor = actor.map_or_else(Actor::system, |a| a.0);
     if branch == git::MAIN_BRANCH {
         return Envelope::refused(Refusal::invalid("main is the remote's, and comes back by fetching"));
     }
@@ -942,6 +944,8 @@ pub async fn overwrite(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&branch);
+            // The host's branch was replaced, which no commit of ours records.
+            super::accounts::record_async(state.store.clone(), &actor, "branch-overwrite", &branch, "ok").await;
             Envelope::done()
         }
         Ok(Some((tip, host_tip))) => {
@@ -1156,10 +1160,16 @@ pub async fn forget(state: &AppState) {
 }
 
 /// `POST /api/settings/git-remote/sync`: fetch and follow now, without waiting for the timer.
-pub async fn post_sync(State(state): State<AppState>) -> Envelope<RemoteSettings> {
+pub async fn post_sync(
+    State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
+) -> Envelope<RemoteSettings> {
     if let Err(e) = sync_now(&state).await {
         return RemoteSettings::answer(&state, Err(e));
     }
+    // A sync that moves nothing signs nothing, so who asked for it is recorded here.
+    let actor = actor.map_or_else(Actor::system, |a| a.0);
+    super::accounts::record_async(state.store.clone(), &actor, "git-sync", "", "ok").await;
     get_settings(State(state)).await
 }
 
@@ -1388,6 +1398,7 @@ mod tests {
                 })
                 .collect();
             let author = Actor {
+                recorded: Default::default(),
                 id: "u-ada".to_string(),
                 display_name: "Ada".to_string(),
             };
@@ -2207,6 +2218,7 @@ mod tests {
         let overwrite_with = |tip: &str, host_tip: &str| {
             overwrite(
                 State(state.clone()),
+                None,
                 axum::extract::Path("al/fix".to_string()),
                 Json(Overwrite {
                     tip: tip.to_string(),
@@ -2251,6 +2263,7 @@ mod tests {
         });
         let refused = overwrite(
             State(state.clone()),
+            None,
             axum::extract::Path(git::MAIN_BRANCH.to_string()),
             body,
         )
@@ -2279,7 +2292,7 @@ mod tests {
         let commit = host.commit(&LOADS, "orders");
         let repo = git::repo_path(&state.data_dir);
         assert_ne!(git::main_head(&repo).as_deref(), Some(commit.as_str()));
-        let synced = post_sync(State(state.clone())).await;
+        let synced = post_sync(State(state.clone()), None).await;
         assert_eq!(
             synced.body.settings.unwrap().sync.remote_head.as_deref(),
             Some(commit.as_str())
@@ -2289,7 +2302,7 @@ mod tests {
         // A commit that does not load is a warning until a sync succeeds.
         host.commit(&[("groups/standalone/sources.json", b"[{")], "break it");
         assert!(
-            post_sync(State(state.clone())).await.succeeded(),
+            post_sync(State(state.clone()), None).await.succeeded(),
             "a sync that reached the remote answers"
         );
         let warnings = crate::leader::warnings_snapshot(&state).await.unwrap();
@@ -2302,7 +2315,7 @@ mod tests {
 
         // Mended on the host: the warning clears on the next sync.
         let mended = host.commit(&LOADS, "mend it");
-        let synced = post_sync(State(state.clone())).await.body.settings.unwrap().sync;
+        let synced = post_sync(State(state.clone()), None).await.body.settings.unwrap().sync;
         assert_eq!((synced.remote_head, synced.failure), (Some(mended), None));
 
         // Saving with no token keeps the stored one for the same URL, and forgets it for another.

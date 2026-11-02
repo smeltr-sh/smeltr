@@ -759,7 +759,7 @@ pub async fn delete(
     if let Err(refused) = owned(&auth, &actor, &id).await {
         return *refused;
     }
-    let (chats, store) = (auth.chats.clone(), auth.store.clone());
+    let (chats, store, gone) = (auth.chats.clone(), auth.store.clone(), id.clone());
     let deleted = store_call(move || {
         let slot = chats.slot(&id);
         let mut run = hold(&slot);
@@ -772,7 +772,12 @@ pub async fn delete(
         Ok(deleted)
     });
     match deleted.await {
-        Ok(_) => Envelope::done().into_response(),
+        // That it was deleted is recorded; what it said is not kept.
+        Ok(_) => {
+            smeltr::leader::accounts::record_async(auth.store.clone(), &actor, "conversation-delete", &gone, "ok")
+                .await;
+            Envelope::done().into_response()
+        }
         Err(response) => *response,
     }
 }

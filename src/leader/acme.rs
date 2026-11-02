@@ -383,7 +383,7 @@ pub fn list(store: &dyn Store, issued: &Issued) -> Result<tls::Entry, String> {
         .into_iter()
         .any(|r| r.name == ENTRY);
     let version = match store.kept_certificates().map_err(|e| e.to_string())?.get(ENTRY) {
-        Some(Kept::Acme) => store.add_certificate_version(ENTRY, &chain, &key),
+        Some(Kept::Acme) => store.add_certificate_version(ENTRY, &chain, &key, None),
         _ if known => {
             return Err(format!(
                 "a certificate named {ENTRY:?} is already in the list and this leader did not order it. Delete \
@@ -391,7 +391,7 @@ pub fn list(store: &dyn Store, issued: &Issued) -> Result<tls::Entry, String> {
             ));
         }
         _ => store
-            .create_kept_certificate(ENTRY, "", &Kept::Acme, &chain, &key)
+            .create_kept_certificate(ENTRY, "", &Kept::Acme, &chain, &key, None)
             .map(|()| 1),
     }
     .map_err(|e| e.to_string())?;
@@ -1397,7 +1397,7 @@ mod tests {
         let other = scratch("listed-taken");
         let taken = tls::tests::list_in(&other);
         let (chain, key) = tls::issue(&other, names(), A_YEAR).unwrap();
-        taken.create_certificate(ENTRY, "", &chain, &key).unwrap();
+        taken.create_certificate(ENTRY, "", &chain, &key, None).unwrap();
         let issued = runtime
             .block_on(order(&other, &ordered, &issuer, &proving, &names(), &[]))
             .unwrap();

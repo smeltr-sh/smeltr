@@ -372,9 +372,9 @@ fn issue_own(dir: &Path, issued: &Issued) -> Result<(), String> {
     let stored = match kept.get(OWN_ENTRY) {
         // The version first: one stored under the old names is issued again by the next start.
         Some(Kept::Issued(_)) => list
-            .add_certificate_version(OWN_ENTRY, &chain, &key)
+            .add_certificate_version(OWN_ENTRY, &chain, &key, None)
             .and_then(|_| list.set_issued(OWN_ENTRY, issued)),
-        _ => list.create_kept_certificate(OWN_ENTRY, "", &Kept::Issued(issued.clone()), &chain, &key),
+        _ => list.create_kept_certificate(OWN_ENTRY, "", &Kept::Issued(issued.clone()), &chain, &key, None),
     };
     stored.map_err(|e| format!("this leader keeps its own certificate in the certificate list as {OWN_ENTRY:?}: {e}"))
 }
@@ -2158,10 +2158,11 @@ pub(crate) mod tests {
     pub(crate) fn listed(dir: &Path, chain: &[u8], key: &[u8], ca: &[u8]) -> Entry {
         let list = list_of(dir).expect("a list");
         let (chain, key) = (std::str::from_utf8(chain).unwrap(), std::str::from_utf8(key).unwrap());
-        let version = match list.add_certificate_version("supplied", chain, key) {
+        let version = match list.add_certificate_version("supplied", chain, key, None) {
             Ok(version) => version,
             Err(_) => {
-                list.create_certificate("supplied", "", chain, key).expect("an entry");
+                list.create_certificate("supplied", "", chain, key, None)
+                    .expect("an entry");
                 1
             }
         };
@@ -2585,7 +2586,9 @@ pub(crate) mod tests {
 
         // A version that has run out its renewal window, as one left by a leader stopped for months would be.
         let (chain, key) = issue(&dir, names(), Duration::from_secs(60)).unwrap();
-        list_in(&dir).add_certificate_version(OWN_ENTRY, &chain, &key).unwrap();
+        list_in(&dir)
+            .add_certificate_version(OWN_ENTRY, &chain, &key, None)
+            .unwrap();
         let third = ensure(&dir, names(), half, &[]).expect("a start with its newest due");
         assert_eq!(served(&dir).unwrap().unwrap().version, 4, "the due version was served");
         let lasts = describe(&third.served, "the certificate").unwrap().not_after_millis
@@ -2681,7 +2684,9 @@ pub(crate) mod tests {
         let (chain, key, ca) = elsewhere("unserved-theirs", names());
         let entry = listed(&dir, &chain, &key, &ca);
         serve(&dir, &entry, &names(), &[]).expect("served");
-        list_in(&dir).delete_secret_version(&entry.name, entry.version).unwrap();
+        list_in(&dir)
+            .delete_secret_version(&entry.name, entry.version, None)
+            .unwrap();
 
         let materials = ensure(&dir, names(), A_YEAR, &[]).expect("a start with its entry gone");
         assert!(!materials.supplied);
@@ -4463,8 +4468,8 @@ mod certificate_fuzz {
             "renew-own" => {
                 // As the renewal pass does: a new version, served where the leader serves its own.
                 let (chain, key) = issue(dir, names(), A_YEAR)?;
-                let version =
-                    (list_of(dir)?.add_certificate_version(OWN_ENTRY, &chain, &key)).map_err(|e| e.to_string())?;
+                let version = (list_of(dir)?.add_certificate_version(OWN_ENTRY, &chain, &key, None))
+                    .map_err(|e| e.to_string())?;
                 let (_, ca) = split_root(chain.as_bytes(), b"")?.ok_or("a renewal without its root")?;
                 let entry = Entry {
                     name: OWN_ENTRY.to_string(),

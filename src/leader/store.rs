@@ -293,6 +293,34 @@ pub struct SecurityEvent {
     /// What it was done to -- a user id, usually. Empty when the action names no object.
     pub target: String,
     pub outcome: String,
+    /// The request this row answers for, which writing it marks as recorded.
+    pub recorded: Recorded,
+}
+
+/// Whether what one request did has been recorded: an audit row written, or a commit signed, for its [`Actor`].
+/// The gate arms it for each request it admits and reads it once the handler has answered, so a change that
+/// records nothing is caught where every request passes rather than in each handler. Every clone of the request's
+/// actor shares it, onto whatever thread the work runs. An actor no request made carries none.
+#[derive(Clone, Debug, Default)]
+pub struct Recorded(Option<std::sync::Arc<std::sync::atomic::AtomicBool>>);
+
+impl Recorded {
+    /// One request's, not yet recorded.
+    pub fn armed() -> Recorded {
+        Recorded(Some(Default::default()))
+    }
+
+    pub fn mark(&self) {
+        if let Some(flag) = &self.0 {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    pub fn is_marked(&self) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 /// Who caused something. Constructed by the server and never from a request body, so a caller naming themselves
@@ -301,12 +329,23 @@ pub struct SecurityEvent {
 /// Carries a display name as well as an id because a git commit needs one, and the name a commit records is the
 /// one that was current when it was written. Renaming somebody later does not rewrite history, and should not:
 /// what the commit says is who wrote it, as they were called then.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Actor {
     /// A user id, or one of the reserved ids below. What an audit row is keyed by.
     pub id: String,
     pub display_name: String,
+    /// The request this actor made, when a request made it.
+    pub recorded: Recorded,
 }
+
+/// Who someone is, not which request they made.
+impl PartialEq for Actor {
+    fn eq(&self, other: &Actor) -> bool {
+        (&self.id, &self.display_name) == (&other.id, &other.display_name)
+    }
+}
+
+impl Eq for Actor {}
 
 impl Actor {
     /// The leader acting on its own behalf: seeding a repository, reconciling, expiring a session.
@@ -334,6 +373,7 @@ impl Actor {
         Actor {
             id: id.to_string(),
             display_name: display_name.to_string(),
+            recorded: Recorded::default(),
         }
     }
 
@@ -342,6 +382,7 @@ impl Actor {
         Actor {
             id: id.to_string(),
             display_name: display_name.to_string(),
+            recorded: Recorded::default(),
         }
     }
 
@@ -350,6 +391,7 @@ impl Actor {
         Actor {
             id: id.to_string(),
             display_name: format!("{display_name} (agent)"),
+            recorded: Recorded::default(),
         }
     }
 
@@ -787,7 +829,7 @@ pub trait Store: Send + Sync {
     /// enrollment may replace it.
     fn mark_credential_used(&self, token_hash: &str) -> Result<(), StoreError>;
     /// `false` if `worker_id` has never enrolled.
-    fn revoke_worker_credential(&self, worker_id: &str) -> Result<bool, StoreError>;
+    fn revoke_worker_credential(&self, worker_id: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError>;
     /// Every worker that has ever enrolled, revoked or not, ordered by `worker_id`, less those forgotten or removed. The only
     /// record of a worker that enrolled and never heartbeated.
     fn list_worker_credentials(&self) -> Result<Vec<WorkerCredentialRecord>, StoreError>;
@@ -797,7 +839,7 @@ pub trait Store: Send + Sync {
     fn forget_worker(&self, worker_id: &str) -> Result<bool, StoreError>;
     /// Removes a worker for good: revoked, and left out of [`Store::list_worker_credentials`] from now on. Its row
     /// stays, so its id is never enrolled again. `false` where no such worker has enrolled, or it is already removed.
-    fn remove_worker(&self, worker_id: &str, now_ms: i64) -> Result<bool, StoreError>;
+    fn remove_worker(&self, worker_id: &str, now_ms: i64, event: Option<&SecurityEvent>) -> Result<bool, StoreError>;
 
     // -- the secret catalog ------------------------------------------------
     //
@@ -815,11 +857,19 @@ pub trait Store: Send + Sync {
         custody: Custody,
         description: &str,
         value: Option<&str>,
+        event: Option<&SecurityEvent>,
     ) -> Result<(), StoreError>;
 
     /// Declares `name` as a certificate: a leader-stored secret holding `key`, with `chain` beside its first
     /// version. PEM both.
-    fn create_certificate(&self, name: &str, description: &str, chain: &str, key: &str) -> Result<(), StoreError>;
+    fn create_certificate(
+        &self,
+        name: &str,
+        description: &str,
+        chain: &str,
+        key: &str,
+        event: Option<&SecurityEvent>,
+    ) -> Result<(), StoreError>;
 
     /// [`Store::create_certificate`] for one this leader keeps up to date as `kept` says.
     fn create_kept_certificate(
@@ -829,6 +879,7 @@ pub trait Store: Send + Sync {
         kept: &Kept,
         chain: &str,
         key: &str,
+        event: Option<&SecurityEvent>,
     ) -> Result<(), StoreError>;
 
     /// The certificates this leader keeps up to date, each with how.
@@ -838,7 +889,13 @@ pub trait Store: Send + Sync {
     fn set_issued(&self, name: &str, issued: &Issued) -> Result<(), StoreError>;
 
     /// [`Store::add_secret_version`] for a certificate: `key` sealed as the new version, `chain` beside it.
-    fn add_certificate_version(&self, name: &str, chain: &str, key: &str) -> Result<i64, StoreError>;
+    fn add_certificate_version(
+        &self,
+        name: &str,
+        chain: &str,
+        key: &str,
+        event: Option<&SecurityEvent>,
+    ) -> Result<i64, StoreError>;
 
     /// The chain beside `name`'s `version`, PEM. `None` for a secret that is not a certificate, or a version not held.
     fn certificate_chain(&self, name: &str, version: i64) -> Result<Option<String>, StoreError>;
@@ -849,13 +906,18 @@ pub trait Store: Send + Sync {
     /// Adds; it replaces nothing. Which older versions stop being kept is a policy decision the caller makes and
     /// applies with [`Store::delete_secret_version`], because it depends on what the fleet is running and the
     /// store cannot see that.
-    fn add_secret_version(&self, name: &str, value: &str) -> Result<i64, StoreError>;
+    fn add_secret_version(&self, name: &str, value: &str, event: Option<&SecurityEvent>) -> Result<i64, StoreError>;
 
     /// `false` if `name` was not there. Takes every version with it.
-    fn delete_secret(&self, name: &str) -> Result<bool, StoreError>;
+    fn delete_secret(&self, name: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError>;
 
     /// Forgets one version. `false` if that version was not held.
-    fn delete_secret_version(&self, name: &str, version: i64) -> Result<bool, StoreError>;
+    fn delete_secret_version(
+        &self,
+        name: &str,
+        version: i64,
+        event: Option<&SecurityEvent>,
+    ) -> Result<bool, StoreError>;
 
     /// Whether `candidate` is the value stored as `version` -- the only question the leader answers about one, and
     /// what tells an admin a credential still needs rotating without showing it to them. `false` for an unknown
@@ -891,7 +953,7 @@ pub trait Store: Send + Sync {
     /// Chooses `group_id`'s color, in degrees, replacing whatever was there. Never refused: color rides on no
     /// group's existence, so setting one for an id that is `"shared"`, or one that never becomes a real group, is
     /// equally fine.
-    fn set_group_hue(&self, group_id: &str, hue: u16) -> Result<(), StoreError>;
+    fn set_group_hue(&self, group_id: &str, hue: u16, event: Option<&SecurityEvent>) -> Result<(), StoreError>;
 
     // -- single-worker sources ------------------------------------------------
     //

@@ -1,0 +1,149 @@
+{
+  "authorityExpiresMillis": 1700000000000,
+  "authorityFingerprints": [
+    "ab12"
+  ],
+  "bootId": 7,
+  "commit": "0000000000000000000000000000000000000000",
+  "groupId": "default",
+  "logs": [
+    {
+      "bootId": 7,
+      "fields": [
+        [
+          "n",
+          {
+            "kind": "uint",
+            "value": 3
+          }
+        ]
+      ],
+      "level": "info",
+      "message": "started",
+      "seq": 1,
+      "site": "worker.started",
+      "thread": "reader-0",
+      "timestampMs": 1700000000000
+    }
+  ],
+  "progress": [
+    {
+      "added": [
+        {
+          "entry": "e1",
+          "item": "app/1.log"
+        }
+      ],
+      "cursor": "c1",
+      "place": "s3://logs/app/",
+      "removed": [
+        "app/0.log"
+      ],
+      "source": "listing"
+    }
+  ],
+  "release": "1.0.0",
+  "resources": {
+    "cpuLimitCores": 2.0,
+    "cpuLimited": true,
+    "cpuPercent": 12.5,
+    "diskFreeBytes": 10,
+    "diskTotalBytes": 100,
+    "memoryLimitBytes": 4096,
+    "memoryLimited": true,
+    "memoryUsedBytes": 1024
+  },
+  "secretVersions": [
+    [
+      "kafka-cred",
+      4
+    ]
+  ],
+  "singleWorker": [
+    {
+      "place": "s3://logs/app/",
+      "source": "listing"
+    }
+  ],
+  "smeltrVersion": "2026.11.2+main.a39f73b5a12a",
+  "stopAfterUnreachableSecs": 300,
+  "stopping": true,
+  "streams": {
+    "parsers": [
+      {
+        "fields": [
+          {
+            "arrays": 0,
+            "bools": 0,
+            "declared": false,
+            "failed": 0,
+            "floats": 10,
+            "ints": 2,
+            "name": "order.total",
+            "objects": 0,
+            "present": 12,
+            "strings": 0,
+            "suggested": "f64"
+          }
+        ],
+        "fieldsDropped": 1,
+        "pipeline": "normalize",
+        "route": "orders-to-es",
+        "rows": 12,
+        "source": "orders",
+        "step": "parse"
+      }
+    ],
+    "unmatched": [
+      {
+        "keys": [
+          {
+            "key": "okta:system",
+            "rows": 7
+          }
+        ],
+        "rows": 7,
+        "source": "hec"
+      }
+    ]
+  },
+  "supervising": {
+    "attemptedMs": 1700000000000,
+    "desiredCommit": "0000000000000000000000000000000000000000",
+    "discoveredMs": 1700000000000,
+    "failure": "refused",
+    "incarnation": 2,
+    "phase": "starting",
+    "phaseSinceMs": 1700000000000
+  },
+  "takesAuthority": true,
+  "threads": [
+    {
+      "groupId": "default",
+      "kind": "reader",
+      "metrics": [
+        {
+          "labels": [
+            [
+              "source",
+              "0"
+            ]
+          ],
+          "metric": "smeltr_rows_polled_total",
+          "value": {
+            "kind": "counter",
+            "value": 12
+          }
+        }
+      ],
+      "partitionsOwned": [
+        {
+          "partition": 3,
+          "topic": "orders"
+        }
+      ],
+      "threadId": "reader-0"
+    }
+  ],
+  "workerId": "w1"
+}

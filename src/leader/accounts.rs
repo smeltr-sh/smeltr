@@ -420,6 +420,7 @@ pub fn event_for(actor: &Actor, action: &str, target: &str, outcome: &str) -> Se
         action: action.to_string(),
         target: target.to_string(),
         outcome: outcome.to_string(),
+        recorded: actor.recorded.clone(),
     }
 }
 
@@ -434,6 +435,22 @@ pub fn record(store: &dyn Store, actor: &Actor, action: &str, target: &str, outc
             "a security event could not be recorded"
         );
     }
+}
+
+/// [`record`] from async code: on the blocking pool, where the store is read and written, and awaited, so the row
+/// is there before the answer goes out.
+pub async fn record_async(store: std::sync::Arc<dyn Store>, actor: &Actor, action: &str, target: &str, outcome: &str) {
+    let (actor, action, target, outcome) = (
+        actor.clone(),
+        action.to_string(),
+        target.to_string(),
+        outcome.to_string(),
+    );
+    let _ = super::blocking(move || {
+        record(store.as_ref(), &actor, &action, &target, &outcome);
+        Ok::<(), StoreError>(())
+    })
+    .await;
 }
 
 #[cfg(test)]

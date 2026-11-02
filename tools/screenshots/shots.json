@@ -989,5 +989,21 @@
       { "fill": ["label:has(> .name:text-is('User')) input", "smeltr"] },
       { "blur": true }
     ]
+  },
+  {
+    "name": "40-alerts",
+    "site": "feed-health-alerts",
+    "hash": "#/admin/system/alerts",
+    "themes": ["light", "dark"],
+    "full": true,
+    "delay": 4000
+  },
+  {
+    "name": "41-alert-channel",
+    "site": "feed-health-alert-channel",
+    "hash": "#/admin/system/alerts",
+    "themes": ["light", "dark"],
+    "delay": 4000,
+    "steps": [{ "text": "Edit" }, { "delay": 1000 }, { "blur": true }]
   }
 ]

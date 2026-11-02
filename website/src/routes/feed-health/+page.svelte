@@ -26,8 +26,19 @@
     <h2 id="volume-heading">Too quiet, or too loud.</h2>
     <p>
       Smeltr learns how many rows each source reads at each time of day, from its last seven days.
-      In the demo, FortiGate's logs reach Smeltr through two syslog relays. One goes down, the
-      source reads half of what it should, and within ten minutes Smeltr warns:
+      In the demo, FortiGate's logs reach Smeltr through two syslog relays. When one goes down, the
+      source falls to half of what it should read:
+    </p>
+    <ProductScreenshot
+      source="feed-health-volume"
+      height={1800}
+      crop={{ x: 2150, y: 470, width: 690, height: 950 }}
+      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 171 rows a second, expected 378 to 465. Its 24-hour chart follows the expected band through the day, then falls to half."
+      caption="Over the last 24 hours the source reads within its band, until it falls to half."
+    />
+    <p>
+      Within ten minutes, Smeltr raises an issue. It shows on the Issues page and the Map, and goes
+      to every alert channel that takes it.
     </p>
     <ProductScreenshot
       source="feed-health-issues"
@@ -39,15 +50,8 @@
         width: 1440,
         crop: { x: 472, y: 922, width: 920, height: 299 },
       }}
-      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 418,174 rows in 30 minutes where 729,828 to 958,960 is normal at this time of day."
+      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 564,427 rows in 30 minutes where 686,163 to 840,639 is normal at this time of day."
       caption="The Issues page names the source, what it read and what is normal."
-    />
-    <ProductScreenshot
-      source="feed-health-volume"
-      height={1800}
-      crop={{ x: 2150, y: 470, width: 690, height: 950 }}
-      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 243 rows a second, expected 405 to 533. Its 24-hour chart follows the expected band through the day, then falls to half."
-      caption="Over the last 24 hours the source reads within its band, until it falls to half."
     />
     <p>
       Smeltr starts warning once a source has three days of history. You set how wide the range is,
@@ -70,7 +74,7 @@
         source: 'feed-health-issues-phone',
         height: 2200,
         width: 1440,
-        crop: { x: 472, y: 601, width: 920, height: 299 },
+        crop: { x: 472, y: 572, width: 920, height: 318 },
       }}
       alt="The Issues page: Field not its declared type, for the fortigate-traffic pipeline, whose field proto has failed to read as its declared type in the last hour."
       caption="The Issues page names the pipeline, the field and the step."
@@ -80,17 +84,39 @@
   <section aria-labelledby="where-heading">
     <h2 id="where-heading">Sent where your team looks.</h2>
     <p>
-      Smeltr shows each issue on the Status and Issues pages and on the Map. Under Admin → System →
-      Alerts, send issues to a webhook in Generic JSON, Slack, Microsoft Teams or PagerDuty format,
-      or by email, and choose which kinds of issue each channel gets. Prometheus can also scrape
-      them from <code>/api/metrics</code>.
+      Every issue shows on the Status and Issues pages and on the Map. For the hours nobody is
+      looking, Admin → System → Alerts sends issues to the teams you choose.
     </p>
     <ProductScreenshot
       source="feed-health-alerts"
-      height={4486}
-      crop={{ x: 472, y: 1152, width: 1664, height: 594 }}
+      height={5080}
+      crop={{ x: 472, y: 1152, width: 1664, height: 578 }}
       alt="Admin, System, Alerts: three channels. Network on-call is a PagerDuty webhook for the network worker group, #siem-pipelines a Slack webhook for every worker group, and SOC engineering an email to soc-eng@example.com."
       caption="PagerDuty pages the network on-call, Slack tells the pipeline team, and email reaches SOC engineering."
+    />
+    <p>
+      Each channel takes only the issues ticked for it. Here the network on-call is paged when a
+      firewall feed drops. The pipeline team hears about it in Slack too.
+    </p>
+    <ProductScreenshot
+      source="feed-health-alerts"
+      height={5080}
+      crop={{ x: 472, y: 1731, width: 1664, height: 1357 }}
+      alt="What each channel gets: a row for each kind of issue, in sections, and a column for each channel. Network on-call takes Source unreachable, Destination unreachable and Rows below normal; #siem-pipelines takes Rows below normal, Rows above normal and Stream unrouted."
+      caption="A row for each kind of issue, a column for each channel."
+    />
+    <p>
+      A channel is a webhook, in PagerDuty, Slack, Microsoft Teams or generic JSON format, or an
+      email through your mail server. Prometheus can also scrape the same issues from <code
+        >/api/metrics</code
+      >.
+    </p>
+    <ProductScreenshot
+      source="feed-health-alert-channel"
+      height={1800}
+      crop={{ x: 992, y: 390, width: 896, height: 1020 }}
+      alt="Editing the Network on-call channel: format PagerDuty, URL http://127.0.0.1:9099/pagerduty, the demo's receiver, routing key stored, worker groups only network, message included."
+      caption="The network on-call channel pages through PagerDuty, for the network worker group only."
     />
     <p><a href="/docs/operations">Operate a fleet →</a></p>
   </section>
