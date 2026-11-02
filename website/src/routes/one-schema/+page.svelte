@@ -46,7 +46,7 @@
     </article>
   </section>
   <section aria-labelledby="fit-heading">
-    <h2 id="fit-heading">Produce ECS. See what doesn't fit.</h2>
+    <h2 id="fit-heading">Produce your schema. See what doesn't fit.</h2>
     <p>
       Set a pipeline to produce ECS. Each field that doesn't fit shows on the step that writes it,
       with the fix.
