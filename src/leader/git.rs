@@ -146,15 +146,18 @@ fn build_bare_repo(path: &Path) -> Result<(), GitError> {
     let repo = gix::init_bare(path).map_err(|e| GitError::failed(format!("creating {}: {e}", path.display())))?;
 
     use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit};
-    repo.edit_reference(RefEdit {
-        change: Change::Update {
-            log: LogChange::default(),
-            expected: PreviousValue::Any,
-            new: gix::refs::Target::Symbolic(full_name(&format!("refs/heads/{MAIN_BRANCH}"))?),
-        },
-        name: full_name("HEAD")?,
-        deref: false,
-    })
+    edit_refs(
+        &repo,
+        vec![RefEdit {
+            change: Change::Update {
+                log: LogChange::default(),
+                expected: PreviousValue::Any,
+                new: gix::refs::Target::Symbolic(full_name(&format!("refs/heads/{MAIN_BRANCH}"))?),
+            },
+            name: full_name("HEAD")?,
+            deref: false,
+        }],
+    )
     .map_err(|e| GitError::failed(format!("pointing HEAD at {MAIN_BRANCH}: {e}")))?;
     // Unstamped with commits in it reads as pre-release on the next start, so it is stamped before it is in place.
     super::steps::stamp_new_repo(path).map_err(GitError::failed)
@@ -722,9 +725,19 @@ fn commit_tree_in(
         message: message.into(),
         extra_headers: Vec::new(),
     };
-    repo.write_object(&commit)
+    let id = repo
+        .write_object(&commit)
         .map(|id| id.detach())
-        .map_err(|e| GitError::failed(format!("writing a commit: {e}")))
+        .map_err(|e| GitError::failed(format!("writing a commit: {e}")))?;
+    tracing::trace!(
+        target: "git.commit_written",
+        commit = %id,
+        %tree,
+        parents = parents.len(),
+        author = %author.id,
+        "a commit was written"
+    );
+    Ok(id)
 }
 
 /// Point `reference` at `new`, but only while it still holds `old` -- `None` for "only if it does not exist". The
@@ -756,19 +769,51 @@ fn swap_ref_in(
         Some(old) => PreviousValue::MustExistAndMatch(gix::refs::Target::Object(old)),
         None => PreviousValue::MustNotExist,
     };
-    repo.edit_reference(RefEdit {
-        change: Change::Update {
-            log: LogChange {
-                message: "smeltr".into(),
-                ..Default::default()
+    edit_refs(
+        repo,
+        vec![RefEdit {
+            change: Change::Update {
+                log: LogChange {
+                    message: "smeltr".into(),
+                    ..Default::default()
+                },
+                expected,
+                new: gix::refs::Target::Object(new),
             },
-            expected,
-            new: gix::refs::Target::Object(new),
-        },
-        name: full_name(reference)?,
-        deref: false,
-    })
-    .map_err(|e| GitError::failed(format!("{reference} did not move: {e}")))?;
+            name: full_name(reference)?,
+            deref: false,
+        }],
+    )
+    .map_err(|e| GitError::failed(format!("{reference} did not move: {e}")))
+}
+
+/// Apply `edits` as one transaction. Every ref the leader moves moves here, so each move is said once, at trace, and
+/// the advertisement a worker fetches is made again.
+fn edit_refs(repo: &gix::Repository, edits: Vec<gix::refs::transaction::RefEdit>) -> Result<(), String> {
+    use gix::refs::transaction::Change;
+    fn named(target: &gix::refs::Target) -> String {
+        match target {
+            gix::refs::Target::Object(id) => id.to_string(),
+            gix::refs::Target::Symbolic(name) => name.as_bstr().to_string(),
+        }
+    }
+    for edit in repo.edit_references(edits).map_err(|e| e.to_string())? {
+        let reference = edit.name.as_bstr().to_string();
+        match &edit.change {
+            Change::Update { new, expected, .. } => tracing::trace!(
+                target: "git.ref_moved",
+                %reference,
+                from = match expected {
+                    gix::refs::transaction::PreviousValue::MustExistAndMatch(old)
+                    | gix::refs::transaction::PreviousValue::ExistingMustMatch(old) => Some(named(old)),
+                    _ => None,
+                },
+                to = %named(new),
+                "a ref moved"
+            ),
+            Change::Delete { .. } => tracing::trace!(target: "git.ref_deleted", %reference, "a ref was deleted"),
+        }
+    }
     forget_advertisement();
     Ok(())
 }
@@ -777,19 +822,20 @@ fn swap_ref_in(
 fn delete_ref(repo: &gix::Repository, reference: &str, at: Option<gix::ObjectId>) -> Result<(), GitError> {
     use gix::refs::transaction::{Change, PreviousValue, RefEdit, RefLog};
 
-    repo.edit_reference(RefEdit {
-        change: Change::Delete {
-            expected: at.map_or(PreviousValue::Any, |at| {
-                PreviousValue::MustExistAndMatch(gix::refs::Target::Object(at))
-            }),
-            log: RefLog::AndReference,
-        },
-        name: full_name(reference)?,
-        deref: false,
-    })
-    .map_err(|e| GitError::failed(format!("{reference} was not deleted: {e}")))?;
-    forget_advertisement();
-    Ok(())
+    edit_refs(
+        repo,
+        vec![RefEdit {
+            change: Change::Delete {
+                expected: at.map_or(PreviousValue::Any, |at| {
+                    PreviousValue::MustExistAndMatch(gix::refs::Target::Object(at))
+                }),
+                log: RefLog::AndReference,
+            },
+            name: full_name(reference)?,
+            deref: false,
+        }],
+    )
+    .map_err(|e| GitError::failed(format!("{reference} was not deleted: {e}")))
 }
 
 // -- reading a commit -------------------------------------------------------
@@ -2368,9 +2414,7 @@ fn deploy_in(
         Main::Created => edits.push(swap_edit(&main_ref, new, None)?),
         Main::MovesFrom(old) => edits.push(swap_edit(&main_ref, new, Some(old))?),
     }
-    repo.edit_references(edits)
-        .map_err(|e| GitError::failed(format!("the fleet did not move: {e}")))?;
-    forget_advertisement();
+    edit_refs(repo, edits).map_err(|e| GitError::failed(format!("the fleet did not move: {e}")))?;
     let from = running.map(|id| id.to_string());
     tracing::info!(
         target: "deploy.moved",
@@ -2452,13 +2496,14 @@ fn move_main_under(
     head: Option<gix::ObjectId>,
     held: gix::ObjectId,
 ) -> Result<(), GitError> {
-    git.edit_references([
-        swap_edit(&format!("refs/heads/{MAIN_BRANCH}"), new, head)?,
-        swap_edit(DEPLOYED_REF, held, Some(held))?,
-    ])
-    .map_err(|e| GitError::failed(e.to_string()))?;
-    forget_advertisement();
-    Ok(())
+    edit_refs(
+        git,
+        vec![
+            swap_edit(&format!("refs/heads/{MAIN_BRANCH}"), new, head)?,
+            swap_edit(DEPLOYED_REF, held, Some(held))?,
+        ],
+    )
+    .map_err(|e| GitError::failed(e.to_string()))
 }
 
 /// Whether the last move of the fleet was a rollback, which holds it until a release.
@@ -3172,6 +3217,7 @@ fn backend(
             && cached_repo == repo_path
             && made.elapsed() < ADVERTISEMENT_TTL
         {
+            tracing::trace!(target: "git.served", %path_info, method, push = receive, cached = true, "the leader's repository answered a git request");
             return Ok(response.clone());
         }
     }
@@ -3222,6 +3268,16 @@ fn backend(
 
     let out = run(cmd, &["http-backend"], body)?;
     let response = parse_cgi(&out)?;
+    tracing::trace!(
+        target: "git.served",
+        %path_info,
+        method,
+        status = response.status,
+        bytes = response.body.len(),
+        push = receive,
+        cached = false,
+        "the leader's repository answered a git request"
+    );
     if cacheable {
         *ADVERTISEMENT.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((repo_path.to_path_buf(), Instant::now(), response.clone()));
@@ -3474,20 +3530,22 @@ pub fn record_host_branch(repo_path: &Path, branch: &str, tip: Option<&str>) -> 
     match tip {
         Some(tip) => {
             use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit};
-            repo.edit_reference(RefEdit {
-                change: Change::Update {
-                    log: LogChange {
-                        message: "smeltr".into(),
-                        ..Default::default()
+            edit_refs(
+                &repo,
+                vec![RefEdit {
+                    change: Change::Update {
+                        log: LogChange {
+                            message: "smeltr".into(),
+                            ..Default::default()
+                        },
+                        expected: PreviousValue::Any,
+                        new: gix::refs::Target::Object(resolve(&repo, tip)?),
                     },
-                    expected: PreviousValue::Any,
-                    new: gix::refs::Target::Object(resolve(&repo, tip)?),
-                },
-                name: full_name(&name)?,
-                deref: false,
-            })
-            .map_err(|e| GitError::failed(format!("{name} did not move: {e}")))?;
-            Ok(())
+                    name: full_name(&name)?,
+                    deref: false,
+                }],
+            )
+            .map_err(|e| GitError::failed(format!("{name} did not move: {e}")))
         }
         None => delete_ref(&repo, &name, None),
     }
@@ -3574,6 +3632,13 @@ fn run(mut cmd: Command, args: &[&str], stdin_body: &[u8]) -> Result<Vec<u8>, Gi
         .map_err(|e| GitError::failed(format!("running git {args:?}: {e}")))?;
     let _ = writer.join();
 
+    tracing::trace!(
+        target: "git.ran",
+        args = ?args,
+        code = output.status.code(),
+        out_bytes = output.stdout.len(),
+        "the leader ran git"
+    );
     if !output.status.success() {
         return Err(GitError::failed(format!(
             "git {args:?} failed: {}",
@@ -3635,6 +3700,15 @@ pub(crate) fn commit_a_symlink(repo_path: &Path, branch: &str, path: &str, targe
 
 #[cfg(test)]
 mod tests {
+    /// Every ref moves through `edit_refs`, so every move is said. A second way to move one would move it unsaid.
+    #[test]
+    fn every_ref_moves_through_one_place() {
+        let source = include_str!("git.rs");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap_or(source.len())];
+        let call = concat!(".edit_", "reference");
+        assert_eq!(code.matches(call).count(), 1, "only edit_refs calls {call}");
+    }
+
     /// A worker's fetch carries its bearer token on the command line, so an error naming that command line would
     /// put a live credential on the Logs screen and in every store behind it.
     #[test]
