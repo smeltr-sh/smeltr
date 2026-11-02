@@ -87,7 +87,7 @@
       source="feed-health-alerts"
       height={4486}
       crop={{ x: 472, y: 1152, width: 1664, height: 594 }}
-      alt="Admin, System, Alerts: three channels. Network on-call is a PagerDuty webhook for the network group, #siem-pipelines a Slack webhook for every group, and SOC engineering an email to soc-eng@example.com."
+      alt="Admin, System, Alerts: three channels. Network on-call is a PagerDuty webhook for the network worker group, #siem-pipelines a Slack webhook for every worker group, and SOC engineering an email to soc-eng@example.com."
       caption="PagerDuty pages the network on-call, Slack tells the pipeline team, and email reaches SOC engineering."
     />
     <p>

@@ -522,6 +522,10 @@ fn listing_failed(e: &object_store::Error) -> String {
 }
 
 impl Queue for Listing {
+    fn name(&self) -> &str {
+        &self.bucket
+    }
+
     /// What the last listing found, or if nothing and one is due, what a new listing finds. Otherwise waits until one
     /// is due, up to `wait` or until the source closes, and answers nothing.
     fn receive(&self, max: usize, wait: Duration, visibility: Duration) -> Result<Vec<Message>, IoError> {

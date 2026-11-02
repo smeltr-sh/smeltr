@@ -469,7 +469,7 @@ pub fn group_subtree(group_id: &str) -> Result<String, String> {
     }
     if group_id == SHARED_DIR {
         return Err(format!(
-            "worker group id {group_id:?} is reserved: it names the subtree every group draws on"
+            "worker group id {group_id:?} is reserved: it names the subtree every worker group draws on"
         ));
     }
     Ok(format!("{GROUPS_DIR}/{group_id}"))

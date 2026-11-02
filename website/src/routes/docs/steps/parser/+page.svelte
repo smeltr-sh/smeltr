@@ -241,12 +241,13 @@
       that step can name it.
     </li>
     <li>
-      <strong>A group</strong>: defined under <strong>Build</strong>, <strong>Resources</strong>,
-      <strong>Grok patterns</strong>. Any Grok step in the group can name it. A group also sees the
-      patterns of <code>shared/</code>.
+      <strong>A worker group</strong>: defined under <strong>Build</strong>,
+      <strong>Resources</strong>,
+      <strong>Grok patterns</strong>. Any Grok step in the worker group can name it. A worker group
+      also sees the patterns of <code>shared/</code>.
     </li>
   </ul>
-  <p>A name is looked up in the step first, then the group, then the built-ins.</p>
+  <p>A name is looked up in the step first, then the worker group, then the built-ins.</p>
   <p>This step uses the custom pattern <code>AB</code> and the built-in <code>LOGLEVEL</code>:</p>
   <StepExample example={examples.grokCustom} />
 

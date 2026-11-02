@@ -34,7 +34,7 @@ describe('connections', () => {
 
   it("labels the editor's own kind by which side it sits on", () => {
     const pipeline = rows('pipeline', answer({ downstream: [at('pipeline', 'fw')] }));
-    expect(summary(pipeline, ['network', 'edge'])).toBe('called by fw · 2 groups');
+    expect(summary(pipeline, ['network', 'edge'])).toBe('called by fw · 2 worker groups');
     const destination = rows(
       'destination',
       answer({

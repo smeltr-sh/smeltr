@@ -13,6 +13,7 @@
   Closing this discards whatever session it still holds.
 -->
 <script lang="ts">
+  import WorkerGroupIcon from './WorkerGroupIcon.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import { onDestroy, onMount, untrack } from 'svelte';
@@ -333,9 +334,10 @@
       <p class="dim">No sources are configured yet.</p>
     {:else}
       <Field
-        label="Group"
+        label="Worker group"
+        icon={WorkerGroupIcon}
         error={groups.length === 0
-          ? "No worker groups yet — a capture is asked of a group's workers."
+          ? "No worker groups yet — a capture is asked of a worker group's workers."
           : null}
       >
         <select bind:value={group}>

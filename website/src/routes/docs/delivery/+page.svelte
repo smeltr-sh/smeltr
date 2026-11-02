@@ -56,8 +56,8 @@
     A record a destination cannot accept is <code>Refused</code>. Examples include a mapping
     conflict, an oversized message, or a text record missing its required field. An
     <strong>answer</strong> is the configured action for that refusal: block, deliver, or drop. Set
-    the group's answer under <strong>Exceptions</strong> on the Routes page, or one destination's
-    under <strong>Exceptions</strong> in its card.
+    the worker group's answer under <strong>Exceptions</strong> on the Routes page, or one
+    destination's under <strong>Exceptions</strong> in its card.
   </p>
   <ProductScreenshot
     source="destination-overrides"

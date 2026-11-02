@@ -262,7 +262,7 @@ pub fn bring_current(
         .into_iter()
         .next()
         .map(|(group, why)| {
-            format!("group {group:?} does not load on this branch now: {why}. Fix it here before deploying")
+            format!("worker group {group:?} does not load on this branch now: {why}. Fix it here before deploying")
         });
 
     let commit = commit_tree_in(

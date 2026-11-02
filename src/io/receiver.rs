@@ -319,14 +319,21 @@ pub(crate) fn serve_router(
     let _entered = runtime.enter();
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
     let handle = axum_server::Handle::new();
+    // A server that stops on its own leaves a receiver that reads nothing: said where it happens, since nothing
+    // else watches the task.
+    let stopped = move |served: std::io::Result<()>| {
+        if let Err(e) = served {
+            tracing::error!(target: "worker.receiver_stopped", listen = %address, error = %e, "a receiver stopped serving its address, so nothing it would take arrives until the deployment restarts");
+        }
+    };
     let served = match tls {
         Some(tls) => axum_server::tls_rustls::from_tcp_rustls(listener, tls).map(|server| {
             let server = server.handle(handle.clone());
-            runtime.spawn(async move { server.serve(service).await })
+            runtime.spawn(async move { stopped(server.serve(service).await) })
         }),
         None => axum_server::from_tcp(listener).map(|server| {
             let server = server.handle(handle.clone());
-            runtime.spawn(async move { server.serve(service).await })
+            runtime.spawn(async move { stopped(server.serve(service).await) })
         }),
     };
     served
@@ -2817,15 +2824,18 @@ where
     C: Fn(&[u8], std::net::IpAddr) -> Option<Cutter> + Send + 'static,
 {
     let mut buffer = vec![0; max.min(MAX_DATAGRAM) + 1];
+    let mut failing = crate::logs::Relog::default();
     loop {
         let (length, peer) = match socket.recv_from(&mut buffer).await {
             Ok(received) => received,
             Err(e) => {
-                tracing::warn!(
-                    target: "worker.receiver_datagram_failed",
-                    error = %e,
-                    "a receiver could not read a datagram"
-                );
+                if let Some(error) = failing.fail_due(e.to_string()) {
+                    tracing::warn!(
+                        target: "worker.receiver_datagram_failed",
+                        error,
+                        "a receiver could not read a datagram"
+                    );
+                }
                 continue;
             }
         };
@@ -2874,6 +2884,7 @@ async fn serve_streams<H, F>(
     });
     let handle = Arc::new(handle);
     let mut connections = tokio::task::JoinSet::new();
+    let mut accepting = crate::logs::Relog::default();
     loop {
         let accepted = tokio::select! {
             accepted = listener.accept() => accepted,
@@ -2882,11 +2893,13 @@ async fn serve_streams<H, F>(
         let (tcp, peer) = match accepted {
             Ok(accepted) => accepted,
             Err(e) => {
-                tracing::warn!(
-                    target: "worker.receiver_accept_failed",
-                    error = %e,
-                    "a receiver could not take a connection"
-                );
+                if let Some(error) = accepting.fail_due(e.to_string()) {
+                    tracing::warn!(
+                        target: "worker.receiver_accept_failed",
+                        error,
+                        "a receiver could not accept a connection"
+                    );
+                }
                 // Out of descriptors, accepting again at once fails again at once.
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;

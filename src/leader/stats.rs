@@ -426,7 +426,7 @@ pub fn build(
 }
 
 fn undeclared(group: &str, kind: &str, id: &str) -> String {
-    format!("group {group:?} declares no {kind} {id:?}")
+    format!("worker group {group:?} declares no {kind} {id:?}")
 }
 
 /// The pipeline at `index`, its steps in the order they run.

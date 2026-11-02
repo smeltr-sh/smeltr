@@ -116,6 +116,10 @@ impl Sqs {
 }
 
 impl Queue for Sqs {
+    fn name(&self) -> &str {
+        &self.queue_url
+    }
+
     fn receive(&self, max: usize, wait: Duration, visibility: Duration) -> Result<Vec<Message>, IoError> {
         let wait = wait.min(WAIT_MAX);
         let body = json!({

@@ -252,7 +252,7 @@ impl Handler {
                 subject = %remote,
                 forwarder,
                 why,
-                "a forwarder's connection is closed: {why}"
+                "a forwarder's connection is closed: its token was refused"
             ),
             End::Silent => tracing::debug!(
                 target: "worker.receiver_s2s_silent",

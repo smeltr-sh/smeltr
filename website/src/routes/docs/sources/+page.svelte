@@ -52,7 +52,7 @@
     <li>Select the worker group and work on a branch.</li>
     <li>Open Build → Sources and choose <strong>+ Add source</strong>.</li>
     <li>
-      Choose how the group reads it (<strong>Pull, all workers</strong>,
+      Choose how the worker group reads it (<strong>Pull, all workers</strong>,
       <strong>Pull, one worker</strong>, <strong>Push, all workers</strong> or
       <strong>Local, each worker</strong>), then its type. Give it a unique id and fill in its
       settings, then choose <strong>Add</strong>. Save the page.

@@ -161,7 +161,7 @@ impl Condition {
             Condition::DestinationMemoryBound => "Held back by memory",
             Condition::SourceRowsBelow => "Rows below normal",
             Condition::SourceRowsAbove => "Rows above normal",
-            Condition::GroupNotDeployed => "Group not deployed",
+            Condition::GroupNotDeployed => "Worker group not deployed",
             Condition::WorkerNotDeployingItsTarget => "Not deploying its target",
             Condition::WorkerOnAnotherBuild => "On another build",
             Condition::WorkerMemoryHigh => "Memory near its limit",
@@ -1971,7 +1971,7 @@ fn destinations_memory_bound(store: Option<&RegistryStore>, now_ms: i64) -> Vec<
                 severity: Severity::Info,
                 since_millis: read.first().map(|(at, _)| *at),
                 message: format!(
-                    "destination {destination} in group {group:?} has run for {} minutes with its buffer as large as \
+                    "destination {destination} in worker group {group:?} has run for {} minutes with its buffer as large as \
                      its workers' memory allows; if it should move faster, give its workers more memory",
                     MEMORY_BOUND_FOR.as_secs() / 60
                 ),
@@ -2287,7 +2287,7 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
             severity: Severity::Warning,
             since_millis: Some(since_millis),
             message: format!(
-                "source {source_id} {} in group {group:?} has lag climbing, {first_lag} to {last_lag} over the last \
+                "source {source_id} {} in worker group {group:?} has lag climbing, {first_lag} to {last_lag} over the last \
                  {run_len} samples, {}; add reader capacity or reduce what is published to it",
                 if queue {
                     format!("queue {topic}")
@@ -2963,7 +2963,7 @@ fn deploy_does_not_load(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Ve
             severity: Severity::Failed,
             since_millis: starts.get(&does_not_load_key(&n.group)).copied(),
             message: format!(
-                "group {:?} does not load at the deployed commit {short}: {}. Running workers keep their old config, \
+                "worker group {:?} does not load at the deployed commit {short}: {}. Running workers keep their old config, \
                  but a restarted worker stops processing. Deploy a fix, or roll back on the History page",
                 n.group, n.why
             ),
@@ -3051,10 +3051,10 @@ fn declared_fields_drifted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Wa
                 severity: Severity::Warning,
                 since_millis: since,
                 message: if gone {
-                    format!("pipeline {pipeline} in group {group:?}: no row has held {named} in the last hour.")
+                    format!("pipeline {pipeline} in worker group {group:?}: no row has held {named} in the last hour.")
                 } else {
                     format!(
-                        "pipeline {pipeline} in group {group:?}: {named} {} failed to read as {} declared type in the \
+                        "pipeline {pipeline} in worker group {group:?}: {named} {} failed to read as {} declared type in the \
                          last hour.",
                         if many { "have" } else { "has" },
                         if many { "their" } else { "its" },
@@ -3093,7 +3093,7 @@ fn streams_unrouted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> 
             severity: Severity::Warning,
             since_millis: s.since_ms,
             message: format!(
-                "source {} in group {:?}: no route took {} in the last hour.",
+                "source {} in worker group {:?}: no route took {} in the last hour.",
                 s.source,
                 s.group_id,
                 untaken(&s.keys)
@@ -3227,8 +3227,7 @@ mod tests {
     #[test]
     fn the_page_labels_every_condition() {
         let api = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("gui-frontend/src/api.ts"))
-            .expect("the typed client")
-            .replace("\r\n", "\n");
+            .expect("the typed client");
         for condition in Condition::ALL {
             let name = condition.name();
             assert_eq!(
@@ -3240,8 +3239,9 @@ mod tests {
                 api.contains(&format!("| '{name}'")),
                 "WarningCondition does not list {name}"
             );
+            let labels = format!(r"case '{name}':\s*return '{}';", regex::escape(condition.label()));
             assert!(
-                api.contains(&format!("case '{name}':\n      return '{}';", condition.label())),
+                regex::Regex::new(&labels).unwrap().is_match(&api),
                 "conditionLabel does not label {name} as {:?}, which is what is sent for it",
                 condition.label()
             );
@@ -4514,7 +4514,7 @@ mod tests {
         );
         assert_eq!(
             w.message,
-            "pipeline normalize in group \"prod\": ts in step parse has failed to read as its declared type in the last \
+            "pipeline normalize in worker group \"prod\": ts in step parse has failed to read as its declared type in the last \
              hour."
         );
         assert!(
@@ -4563,7 +4563,7 @@ mod tests {
             (Condition::StreamUnrouted, SubjectKind::Source, "hec", Some("prod"))
         );
         assert_eq!(
-            w.message, "source hec in group \"prod\": no route took stream pan:threat in the last hour.",
+            w.message, "source hec in worker group \"prod\": no route took stream pan:threat in the last hour.",
             "okta:system came an hour before, and is taken now"
         );
         assert_eq!(
@@ -4594,11 +4594,11 @@ mod tests {
         };
         assert_eq!(
             said(&[("", 2)]),
-            "source in in group \"prod\": no route took its rows in the last hour."
+            "source in in worker group \"prod\": no route took its rows in the last hour."
         );
         assert_eq!(
             said(&[("a", 1), ("b", 1)]),
-            "source in in group \"prod\": no route took streams a, b and rows under no stream in the last hour."
+            "source in in worker group \"prod\": no route took streams a, b and rows under no stream in the last hour."
         );
     }
 
@@ -4630,7 +4630,7 @@ mod tests {
         );
         assert_eq!(
             warnings[0].message,
-            "pipeline normalize in group \"prod\": no row has held ts in step parse in the last hour."
+            "pipeline normalize in worker group \"prod\": no row has held ts in step parse in the last hour."
         );
         assert!(
             declared_fields_drifted(Some(&store), 5_000 + 2 * HOUR).is_empty(),

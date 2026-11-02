@@ -895,7 +895,7 @@
     <div class="toolbar">
       <MapSearch bind:query items={offered} onselect={(n) => (location.hash = hashOf(n))} />
       <select bind:value={groupFilter} aria-label="filter by worker group">
-        <option value="all">All groups</option>
+        <option value="all">All worker groups</option>
         {#each allGroups as g (g)}
           <option value={g}>{groupLabel(g)}</option>
         {/each}

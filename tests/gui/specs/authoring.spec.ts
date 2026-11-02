@@ -141,7 +141,7 @@ test("A1: a capture from smeltr's own metrics source, read by a worker, is saved
   await expect(dialog.getByRole('combobox', { name: /^Capture target/ })).toHaveValue(
     'source:own-metrics',
   );
-  await expect(dialog.getByRole('combobox', { name: /^Group/ })).toHaveValue('default');
+  await expect(dialog.getByRole('combobox', { name: /^Worker group/ })).toHaveValue('default');
   await captureThree(admin, 'worker counters');
 
   const row = admin.getByRole('row', { name: /worker counters/ });
@@ -519,7 +519,7 @@ test('A1: a source with no route is routed from the map, its pipeline made from 
   await expect(dialog.getByRole('combobox', { name: /^Capture target/ })).toHaveValue(
     'source:own-metrics',
   );
-  await expect(dialog.getByRole('combobox', { name: /^Group/ })).toHaveValue('default');
+  await expect(dialog.getByRole('combobox', { name: /^Worker group/ })).toHaveValue('default');
   await captureThree(admin, 'own metrics');
 
   // A metrics record is a line of JSON: a JSON Parser is proposed, its fields declared from the capture.
@@ -583,7 +583,7 @@ test('A1: a capture of a Kafka source starts where it is asked to', async ({
   await expect(dialog.getByRole('combobox', { name: /^Capture target/ })).toHaveValue(
     'source:orders',
   );
-  await expect(dialog.getByRole('combobox', { name: /^Group/ })).toHaveValue('default');
+  await expect(dialog.getByRole('combobox', { name: /^Worker group/ })).toHaveValue('default');
   await expect(dialog.getByText('defaults', { exact: true })).toBeVisible();
   await dialog.getByRole('button', { name: /Advanced/ }).click();
   await dialog.getByRole('combobox', { name: /^Start at/ }).selectOption('timestamp');

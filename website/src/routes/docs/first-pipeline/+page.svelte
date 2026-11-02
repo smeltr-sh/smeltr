@@ -70,8 +70,8 @@ PY`;
     worker.
   </p>
   <p>
-    You'll need a running Smeltr installation, administrator access, and an online worker in a group
-    you can use for testing. If you're still setting up, start with
+    You'll need a running Smeltr installation, administrator access, and an online worker in a
+    worker group you can use for testing. If you're still setting up, start with
     <a href="/docs/getting-started">the setup guide</a>.
   </p>
 

@@ -115,7 +115,7 @@ test('a visitor captures a sample, saves it on a branch and previews a pipeline 
   await page.getByRole('button', { name: 'Add sample' }).click();
   const dialog = page.locator('dialog[open]');
   await dialog.locator('button.tile', { hasText: 'Capture' }).click();
-  await dialog.getByRole('combobox', { name: 'Group', exact: true }).selectOption('network');
+  await dialog.getByRole('combobox', { name: 'Worker group', exact: true }).selectOption('network');
   await dialog
     .getByRole('combobox', { name: 'Capture target', exact: true })
     .selectOption('panw-firewalls');

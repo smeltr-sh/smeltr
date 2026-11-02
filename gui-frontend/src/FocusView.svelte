@@ -356,8 +356,8 @@
         <span>
           Throughput
           <Help label="Throughput">
-            This object's rate in this group, from the newest closed bucket. Lines on the map show
-            connections, not volume.</Help
+            This object's rate in this worker group, from the newest closed bucket. Lines on the map
+            show connections, not volume.</Help
           >
         </span>
         <ChipPicker

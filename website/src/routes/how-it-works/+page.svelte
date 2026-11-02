@@ -60,7 +60,7 @@
       source="fleet-map"
       height={2440}
       crop={{ x: 40, y: 290, width: 2800, height: 2000 }}
-      alt="Smeltr Map showing sources connected through pipelines to destinations in the Applications and cloud and Network security groups."
+      alt="Smeltr Map showing sources connected through pipelines to destinations in the Applications and cloud and Network security worker groups."
       caption="A running installation with sample traffic."
     />
     <p><a href="/docs/operations">See where every record goes →</a></p>

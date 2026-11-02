@@ -62,6 +62,8 @@ pub trait Queue: Send + Sync {
 
     /// Deletes each of `handles`. Answers each handle it could not, and why.
     fn delete(&self, handles: &[String]) -> Vec<(String, String)>;
+    /// What an operator calls this queue: its URL or subscription, for the lines about it.
+    fn name(&self) -> &str;
 
     /// What this queue has had deleted since the last call, for [`Source::take_progress`]. None for a queue whose
     /// transport keeps its own progress.
@@ -358,6 +360,10 @@ pub struct ObjectSource {
     /// The one receive waiting on the queue. It waits on a thread of its own so an idle source asks rarely, while
     /// the reader keeps polling at its own pace.
     receiving: Option<Receiving>,
+    /// A receive failing, said once per change and on the interval.
+    receive_failing: Relog,
+    /// Deleting finished messages failing, said once per change and on the interval: every tend tries again.
+    delete_failing: Relog,
 }
 
 impl ObjectSource {
@@ -411,6 +417,8 @@ impl ObjectSource {
             unreadable: 0,
             receive_error: None,
             receiving: None,
+            receive_failing: Relog::default(),
+            delete_failing: Relog::default(),
         })
     }
 
@@ -423,7 +431,11 @@ impl ObjectSource {
     /// Takes a receive that answered meanwhile, and deletes what is finished.
     fn tend(&mut self) {
         if let Err(e) = self.receive(Duration::ZERO, false) {
-            tracing::warn!(target: "object_source.receive", error = %e.message, "a receive failed");
+            if let Some(error) = self.receive_failing.fail_due(e.message.clone()) {
+                tracing::warn!(target: "object_source.receive", queue = %self.queue.name(), error, "a receive failed; trying again");
+            }
+        } else if self.receive_failing.clear() {
+            tracing::info!(target: "object_source.receive_recovered", queue = %self.queue.name(), "the queue answers receives again");
         }
         self.delete_finished();
     }
@@ -435,12 +447,23 @@ impl ObjectSource {
         let finished = std::mem::take(&mut self.finished);
         let failed = self.queue.delete(&finished);
         self.messages_finished += finished.len().saturating_sub(failed.len()) as u64;
-        for (handle, why) in failed {
-            tracing::warn!(
-                target: "object_source.delete",
-                error = %why,
-                "a finished message was not deleted; trying again"
-            );
+        match failed.first() {
+            Some((_, why)) => {
+                if let Some(error) = self.delete_failing.fail_due(why.clone()) {
+                    tracing::warn!(
+                        target: "object_source.delete",
+                        queue = %self.queue.name(),
+                        count = failed.len(),
+                        error,
+                        "finished messages were not deleted; trying again"
+                    );
+                }
+            }
+            None => {
+                self.delete_failing.clear();
+            }
+        }
+        for (handle, _) in failed {
             self.finished.push(handle);
         }
     }
@@ -751,10 +774,11 @@ fn sample_lag(queue: &dyn Queue, lag: &Mutex<Vec<PartitionLag>>, stop: &Receiver
         match queue.depth() {
             None => return,
             Some(Err(Unread::Denied(why))) => {
-                tracing::info!(
+                tracing::warn!(
                     target: "object_source.depth",
+                    queue = %queue.name(),
                     error = %why,
-                    "the queue's depth may not be read, so its lag is not reported"
+                    "the queue's depth could not be read, so its lag is not reported"
                 );
                 return;
             }

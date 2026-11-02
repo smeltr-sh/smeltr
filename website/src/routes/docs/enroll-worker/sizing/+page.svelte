@@ -62,8 +62,8 @@
   </p>
   <p>
     Give a worker at least the sum of the parts below for the sources and destinations its group
-    runs. Every worker in a group runs the whole group's configuration, so size each one for all of
-    it.
+    runs. Every worker in a worker group runs the whole worker group's configuration, so size each
+    one for all of it.
   </p>
   <div class="table-scroll">
     <table>
@@ -84,8 +84,8 @@
     </table>
   </div>
   <p>
-    A group on four cores reading one Kafka topic from three brokers into Elasticsearch and S3 has
-    full batches at {mib(total)}:
+    A worker group on four cores reading one Kafka topic from three brokers into Elasticsearch and
+    S3 has full batches at {mib(total)}:
   </p>
   <div class="table-scroll">
     <table>

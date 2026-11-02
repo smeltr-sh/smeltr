@@ -233,7 +233,7 @@
         {/each}
       </select>
       <select name="group" value={filters.group ?? ''} onchange={onSelect}>
-        <option value="">group</option>
+        <option value="">worker group</option>
         {#each groupOptions as g (g.id)}
           <option value={g.id}>{g.name}</option>
         {/each}

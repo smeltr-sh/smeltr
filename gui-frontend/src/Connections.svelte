@@ -83,7 +83,7 @@
           {/each}
         </dd>
       {/each}
-      <dt>groups</dt>
+      <dt>worker groups</dt>
       <dd>{answer.groups.join(', ')}</dd>
       {#if onMap}
         <dt></dt>

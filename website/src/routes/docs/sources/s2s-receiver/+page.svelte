@@ -59,7 +59,7 @@ token = 0d2a5f6c-4b1e-4c3a-9f7d-2e8b6a1c5d40`;
 
   <h2 id="before-you-start">Before you start</h2>
   <ul>
-    <li>Pick a port no other receiver in the group uses.</li>
+    <li>Pick a port no other receiver in the worker group uses.</li>
     <li>
       Decide how forwarders prove who they are: a token, a client certificate, or both. See
       <a href="#senders">Tokens and certificates</a>.
@@ -150,7 +150,7 @@ token = 0d2a5f6c-4b1e-4c3a-9f7d-2e8b6a1c5d40`;
 
   <h2 id="senders">Tokens and certificates</h2>
   <p>
-    Anyone a receiver admits can put records into the group's pipelines, so a receiver needs
+    Anyone a receiver admits can put records into the worker group's pipelines, so a receiver needs
     <code>tokens</code>, an <code>certificate</code> and <code>trustedAuthorities</code>, or both.
     The leader refuses a receiver with neither.
   </p>

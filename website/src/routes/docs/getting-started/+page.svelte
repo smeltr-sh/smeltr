@@ -30,7 +30,7 @@
   <WorkflowDiagram kind="system" />
   <p>
     A <strong>worker group</strong> is a set of workers that run the same group configuration.
-    Groups let you manage different environments separately while sharing reusable pipelines.
+    Worker groups let you manage different environments separately while sharing reusable pipelines.
     <a href="/docs/git/configuration">Read how workers follow main →</a>
   </p>
 
@@ -54,14 +54,14 @@
   <aside class="callout">
     <p>
       <strong>Start small.</strong> One leader and one worker group suit an evaluation or small deployment.
-      Add groups to organize workloads and deployment policies.
+      Add worker groups to organize workloads and deployment policies.
     </p>
   </aside>
 
   <p>
     The leader trusts every enrolled worker with the whole cluster's configuration and leader-stored
-    credentials. Groups do not restrict that access. Use separate clusters when workloads require
-    separate trust boundaries.
+    credentials. Worker groups do not restrict that access. Use separate clusters when workloads
+    require separate trust boundaries.
   </p>
   <h2 id="connections">Connect your data systems</h2>
   <p>
@@ -146,7 +146,8 @@
       first-login password change. <a href="/docs/accounts#accounts">Create an account</a>.
     </li>
     <li>
-      <strong>An online worker.</strong> Status shows the expected group and a recent heartbeat.
+      <strong>An online worker.</strong> Status shows the expected worker group and a recent
+      heartbeat.
       <a href="/docs/enroll-worker/host#verify">Check worker status</a>.
     </li>
     <li>

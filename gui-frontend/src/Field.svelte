@@ -10,6 +10,7 @@
   it shows that setting's save errors (`validation.svelte.ts`).
   Where the page is not the person's to change (`access.ts`), the control is
   shown disabled: every form on such a page is read through this.
+  `icon` is a glyph before the name, for a field that picks one of the things the glyph stands for.
   `bare` hides the name from sight, for a field in a table cell whose column
   head shows it; it still names the control.
   `required` is a field the save refuses empty: a `*` after its name, and
@@ -22,7 +23,7 @@
 </script>
 
 <script lang="ts">
-  import type { Snippet } from 'svelte';
+  import type { Component, Snippet } from 'svelte';
   import Help from './Help.svelte';
   import Locked from './Locked.svelte';
   import StateMark from './StateMark.svelte';
@@ -30,6 +31,7 @@
 
   let {
     label,
+    icon: Icon,
     help,
     note,
     error = null,
@@ -42,6 +44,7 @@
     children,
   }: {
     label: string;
+    icon?: Component;
     help?: Snippet | string;
     note?: Snippet | string;
     error?: string | null;
@@ -97,7 +100,7 @@
 
 {#snippet name()}
   <span class="name" class:bare class:required
-    ><span id={nameId}>{label}</span>{#if help}<Help {label}
+    >{#if Icon}<Icon />{/if}<span id={nameId}>{label}</span>{#if help}<Help {label}
         >{#if required}<strong>Required.</strong>{' '}{:else if optional}<strong>Optional.</strong
           >{' '}{/if}{#if typeof help === 'string'}{help}{:else}{@render help()}{/if}</Help
       >{/if}</span
