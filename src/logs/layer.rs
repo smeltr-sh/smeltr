@@ -16,9 +16,9 @@ use super::{hand_off, max_level};
 ///
 /// A span of ours lends its fields to every line raised inside it, so a line deep in a commit says which source
 /// and batch it was about without its call site knowing. Only while the span is enabled: the data path opens its
-/// spans at trace, so below trace a line names what it is about itself. When one closes it is said, at its own level, with how
-/// long it was open. A library's spans are neither: what it names in them is its own business, and it opens far
-/// too many to say.
+/// spans at trace, so below trace a line names what it is about itself. When one closes it is said, at its own
+/// level, with how long it was open. A library's spans are neither: what it names in them is its own business, and
+/// it opens far too many to say.
 pub struct LogLayer;
 
 /// What a span of ours knew, kept on it for the lines raised inside it and for its own closing line.
