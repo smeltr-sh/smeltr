@@ -201,10 +201,23 @@ fn history(registry: &std::path::Path) {
             while at > now - HISTORY_MS {
                 let width = Tier::for_window(Duration::from_millis((now - at) as u64)).bucket_ms();
                 at -= width;
-                // A day's curve, at its mean at this time of day, with each bucket's own noise.
+                // A day's curve, at its mean at this time of day, with each bucket's own noise: ±3%, as the live
+                // jitter averages out over a bucket, so the history reads as the same feed. Each earlier day runs
+                // up to 12% above or below it, blended into the next, as a real feed's days differ: the spread
+                // at an hour across days is what sets the band. The last day is the live one's level.
                 let curve = 1.0 + 0.3 * (TAU * (at - now) as f64 / DAY).sin();
-                let noise = 0.8 + 0.4 * (mix(salt ^ at as u64) % 1_000) as f64 / 1_000.0;
-                let delta = (rate * width as f64 * curve * noise).round();
+                let noise = 0.97 + 0.06 * (mix(salt ^ at as u64) % 1_000) as f64 / 1_000.0;
+                let days = (now - at) as f64 / DAY;
+                let level = |d: u64| {
+                    if d == 0 {
+                        1.0
+                    } else {
+                        0.88 + 0.24 * (mix(salt ^ d.wrapping_mul(0x9e37)) % 1_000) as f64 / 1_000.0
+                    }
+                };
+                let blend = 0.5 - 0.5 * (std::f64::consts::PI * days.fract()).cos();
+                let day = level(days as u64) * (1.0 - blend) + level(days as u64 + 1) * blend;
+                let delta = (rate * width as f64 * curve * day * noise).round();
                 if delta > 0.0 {
                     write(|| store.record_delta(metric, &subject, at, delta));
                     written += 1;

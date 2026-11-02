@@ -243,7 +243,32 @@ def gui_port_taken():
         return s.connect_ex(("127.0.0.1", 8443)) == 0
 
 
-def start_leader():
+def start_receiver():
+    """`receiver.py`, where the alert channels send, with a certificate for localhost from a CA of its own. Returns
+    the trust store the leader reads: the host's roots and that CA."""
+    log("receiver")
+    certs = os.path.join(STATE, "receiver")
+    os.makedirs(certs)
+    def openssl(*args):
+        subprocess.run(["openssl", *args], cwd=certs, check=True, capture_output=True)
+    openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "30", "-subj", "/CN=smeltr demo receiver CA",
+            "-keyout", "ca-key.pem", "-out", "ca.pem")
+    openssl("req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost", "-keyout", "key.pem", "-out", "cert.csr")
+    with open(os.path.join(certs, "san.ext"), "w") as f:
+        f.write("subjectAltName=DNS:localhost,IP:127.0.0.1\n")
+    openssl("x509", "-req", "-in", "cert.csr", "-CA", "ca.pem", "-CAkey", "ca-key.pem", "-CAcreateserial", "-days",
+            "30", "-extfile", "san.ext", "-out", "cert.pem")
+    trust = os.path.join(certs, "trust.pem")
+    with open(trust, "w") as out:
+        for pem in ("/etc/ssl/certs/ca-certificates.crt", os.path.join(certs, "ca.pem")):
+            if os.path.exists(pem):
+                out.write(open(pem).read())
+    spawn(PIDS, "receiver", [sys.executable, os.path.join(DIR, "receiver.py"), certs], certs,
+          os.path.join(STATE, "receiver.log"))
+    return trust
+
+
+def start_leader(trust):
     # Checked before the reset as well; this catches whatever took the port while it ran.
     if gui_port_taken():
         raise SystemExit("something took 127.0.0.1:8443 during the reset; stop it and run again")
@@ -253,7 +278,8 @@ def start_leader():
     logfile = os.path.join(STATE, "leader.log")
     # No worker in this process; the group it names is the one a fresh leader seeds, so no `default` is left over.
     spawn(PIDS, "leader", [BINARY], wd, logfile, fleet_env(HOSTNAME="smeltr-leader", SMELTR_LEADER_ENABLED="1",
-                                                           SMELTR_GUI_PORT="8443", SMELTR_WORKER_GROUP="network"))
+                                                           SMELTR_GUI_PORT="8443", SMELTR_WORKER_GROUP="network",
+                                                           SSL_CERT_FILE=trust))
     for _ in range(60):
         with open(logfile) as f:
             text = f.read()
@@ -337,6 +363,29 @@ def secret():
         "name": "es-ingest-api-key", "custody": "leader-stored",
         "description": "API key the Elasticsearch destinations send. Write access to logs-* only.",
         "value": "ApiKey c21lbHRyLWluZ2VzdDpkZW1vLWtleS12MQ=="}))
+
+
+def alerts():
+    """Three teams' alert channels, sending to `receiver.py`: the network on-call paged for its own worker group's
+    feeds, the pipeline team told in Slack about any, and SOC engineering mailed when a field drifts."""
+    log("alerts")
+    admin = as_("admin")
+    admin.ok(admin.call("PUT", "/api/settings/alerts/mail", {
+        "enabled": True, "host": "localhost", "port": 2587, "encryption": "startTls", "from": "smeltr@example.com",
+        "username": "smeltr", "password": "demo"}))
+    hook = "http://127.0.0.1:9099"
+    admin.ok(admin.call("PUT", "/api/settings/alerts/channels", {"channels": [
+        {"id": "network-oncall", "name": "Network on-call",
+         "kind": {"type": "webhook", "url": f"{hook}/pagerduty", "format": "pagerDuty"}, "secret": "demo-routing-key",
+         "groups": ["network"], "includeMessage": True,
+         "conditions": ["sourceRowsBelow", "sourceUnreachable", "destinationUnreachable"]},
+        {"id": "siem-pipelines", "name": "#siem-pipelines",
+         "kind": {"type": "webhook", "url": f"{hook}/slack", "format": "slack"}, "includeMessage": True,
+         "conditions": ["sourceRowsBelow", "sourceRowsAbove", "declaredFieldFailing", "declaredFieldGone",
+                        "streamUnrouted"]},
+        {"id": "soc-engineering", "name": "SOC engineering", "kind": {"type": "email", "to": ["soc-eng@example.com"]},
+         "includeMessage": True, "conditions": ["declaredFieldFailing", "declaredFieldGone"]},
+    ]}))
 
 
 def firewalls():
@@ -509,13 +558,14 @@ def main():
         raise SystemExit("something other than this tool's leader listens on 127.0.0.1:8443; stop it and run again. "
                          "Nothing was reset.")
     reset()
-    one_time = start_leader()
+    one_time = start_leader(start_receiver())
     accounts(one_time)
     groups()
     start_workers()
     # Paced so History reads as work spread over a quarter of an hour, and each feed has come up before the next.
     pause(1)
     secret()
+    alerts()
     firewalls()
     pause(4)
     apps()
