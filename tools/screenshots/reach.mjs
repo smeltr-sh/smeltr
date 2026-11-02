@@ -1,5 +1,5 @@
 // Everything a visitor can reach in the GUI by reading, never by changing anything: every page a link in the app
-// leads to, and on each page every choice of a picker that only changes what the page reads. The demo's recorder
+// leads to, and on each page every choice of a picker that changes nothing but the page itself. The demo's recorder
 // records what this reaches, and `tests/gui/specs/demo.spec.ts` checks the demo answers every read it makes, so a
 // read the recording cannot answer fails that test until the recording is made again.
 
