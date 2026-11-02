@@ -775,9 +775,8 @@ fn same(a: &Ir, b: &Ir) -> bool {
 /// A warning for each value a statement writes that nothing reads: no instruction reads it and the record does not
 /// hold it at the end. A local is never read; a field is written again, or deleted, first. Only an expression's own
 /// write counts, under a name code can spell, so a parse's outputs, its blends over a prior included (`blends`), and
-/// the engine's own slots are never named. A copy
-/// shares its value's slot (`aliases`), so the name a warning gives is the last one to let the value go. Null written
-/// where nothing was, as a declaration writes it, loses no value.
+/// the engine's own slots are never named. A copy shares its value's slot (`aliases`), so the name a warning gives is
+/// the last one to let the value go. Null written where nothing was, as a declaration writes it, loses no value.
 fn unread_writes(
     plan: &Plan,
     locals: &HashSet<SlotId>,
@@ -3612,6 +3611,7 @@ impl Compiler<'_> {
     /// already and the guard is not needed. `false` means an error was recorded.
     fn write_over(&mut self, name: &str, slot: SlotId, prior: Option<Ir>, here: Here) -> bool {
         let Here { guard, .. } = here;
+        let blends = prior.is_some();
         let (value, guard) = match prior {
             None => (Resolved::Slot(slot), guard),
             Some(prior) => {
@@ -3628,7 +3628,9 @@ impl Compiler<'_> {
             false,
             Here { guard, ..here },
         );
-        self.syms.blends.extend(self.syms.lookup(name));
+        if blends {
+            self.syms.blends.extend(self.syms.lookup(name));
+        }
         true
     }
 
@@ -4828,6 +4830,11 @@ mod tests {
         assert_eq!(warnings("let n = 1; x = 2"), ["the local `n` is never read"]);
         assert_eq!(
             warnings("x = 1; x = 2"),
+            ["`x` is written again before anything reads it"]
+        );
+        // Beside a parse into the record, which writes `x` again with what it finds there.
+        assert_eq!(
+            warnings("x = 1; x = 2; Object.assign($, json(_raw))"),
             ["`x` is written again before anything reads it"]
         );
         assert_eq!(
