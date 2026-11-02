@@ -25,8 +25,8 @@ use crate::leader::store::{KeyStanding, Unopenable, WorkerCredentialRecord};
 use crate::leader::throughput;
 
 /// *Failed*: the thing is not doing its job. *Warning*: it is working and something is off. (design doc, Control
-/// plane). *Info*: a fact worth knowing that asks nothing of anyone, which only a caller that asks for it is given
-/// (`leader::catalog`), so no view that judges health can count one as trouble.
+/// plane). *Info*: a fact worth knowing that asks nothing of anyone. The views that judge health leave it out
+/// (`leader::warnings_snapshot`), so none of them counts one as trouble.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Severity {
@@ -256,14 +256,13 @@ impl Condition {
             Condition::AlertChannelFailing => "alertChannelFailing",
         }
     }
-    /// The section it is listed under, or `None` for an entry only ever raised as info, which no alert channel is
-    /// sent. The match is what makes a new entry a compile error here.
-    pub fn section(self) -> Option<Section> {
+    /// The section it is listed under. The match is what makes a new entry a compile error here.
+    pub fn section(self) -> Section {
         match self {
             Condition::WorkerSilent
             | Condition::WorkerNeverHeartbeated
             | Condition::WorkerMemoryHigh
-            | Condition::WorkerLoggedWarnings => Some(Section::Workers),
+            | Condition::WorkerLoggedWarnings => Section::Workers,
             Condition::SourceBlocked
             | Condition::SourceRefused
             | Condition::SourceWaiting
@@ -271,19 +270,21 @@ impl Condition {
             | Condition::DestinationRefusing
             | Condition::DestinationUnreachable
             | Condition::LagClimbing
+            | Condition::DestinationMemoryBound
             | Condition::SourceRowsBelow
             | Condition::SourceRowsAbove
-            | Condition::StreamUnrouted => Some(Section::SourcesAndDestinations),
+            | Condition::StreamUnrouted => Section::SourcesAndDestinations,
             Condition::GroupNotDeployed
             | Condition::WorkerNotDeployingItsTarget
             | Condition::WorkerOnAnotherBuild
+            | Condition::WorkerOnAnotherRelease
             | Condition::DeployDoesNotLoad
             | Condition::DeployHeld
-            | Condition::RemoteNotFollowed => Some(Section::Deploys),
+            | Condition::RemoteNotFollowed => Section::Deploys,
             Condition::DeployFailsTests
             | Condition::DeployBreaksSchemas
             | Condition::DeclaredFieldFailing
-            | Condition::DeclaredFieldGone => Some(Section::Pipelines),
+            | Condition::DeclaredFieldGone => Section::Pipelines,
             Condition::AuthorityExpiring
             | Condition::AuthorityAging
             | Condition::CertificateExpiring
@@ -292,9 +293,8 @@ impl Condition {
             | Condition::IssuedCertificateNotRenewed
             | Condition::AcmeRenewalFailing
             | Condition::SecretsKeyUnusable
-            | Condition::SecretNeedsValue => Some(Section::CertificatesAndSecrets),
-            Condition::NewerRelease | Condition::AlertChannelFailing => Some(Section::Leader),
-            Condition::WorkerOnAnotherRelease | Condition::DestinationMemoryBound => None,
+            | Condition::SecretNeedsValue => Section::CertificatesAndSecrets,
+            Condition::NewerRelease | Condition::AlertChannelFailing => Section::Leader,
         }
     }
 }

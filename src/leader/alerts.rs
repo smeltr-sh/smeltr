@@ -362,6 +362,7 @@ pub fn webhook_body(format: Format, status: Status, told: &AlertTold, routing_ke
             let dedup_key = super::auth::hex_encode(digest.as_ref());
             let severity = match value["severity"].as_str() {
                 Some("failed") => "critical",
+                Some("info") => "info",
                 _ => "warning",
             };
             let action = match status {
@@ -625,7 +626,7 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
     if channels.is_empty() {
         return Ok(());
     }
-    let warnings = super::warnings_snapshot(state).await?;
+    let warnings = super::catalog(state).await?;
     for channel in &channels {
         // What an email channel would be told waits for the mail server, which the page says is off.
         if matches!(channel.kind, Kind::Email { .. }) && mail.is_none() {
@@ -728,6 +729,21 @@ pub struct SectionDto {
     conditions: Vec<Condition>,
 }
 
+/// Every catalog entry, by section, each in the catalog's order: what a channel can be ticked to take.
+fn sections() -> Vec<SectionDto> {
+    Section::ALL
+        .iter()
+        .map(|&section| SectionDto {
+            section,
+            conditions: Condition::ALL
+                .iter()
+                .copied()
+                .filter(|c| c.section() == section)
+                .collect(),
+        })
+        .collect()
+}
+
 /// What `GET /api/settings/alerts` answers, read from the store and the failures held.
 fn read_settings(store: &dyn Store, alerts: &Alerts) -> Result<AlertSettingsDto, StoreError> {
     let mail = match store.setting(MAIL_KEY)? {
@@ -748,21 +764,10 @@ fn read_settings(store: &dyn Store, alerts: &Alerts) -> Result<AlertSettingsDto,
             })
         })
         .collect::<Result<_, StoreError>>()?;
-    let sections = Section::ALL
-        .iter()
-        .map(|&section| SectionDto {
-            section,
-            conditions: Condition::ALL
-                .iter()
-                .copied()
-                .filter(|c| c.section() == Some(section))
-                .collect(),
-        })
-        .collect();
     Ok(AlertSettingsDto {
         mail,
         channels,
-        sections,
+        sections: sections(),
     })
 }
 
@@ -1156,6 +1161,21 @@ mod tests {
         assert_eq!(gone.cleared, told);
     }
 
+    /// Every issue the leader can raise is one a channel can be ticked to take, once, so the page never drifts from
+    /// the catalog.
+    #[test]
+    fn the_page_offers_every_issue_once() {
+        let offered: Vec<Condition> = sections().into_iter().flat_map(|s| s.conditions).collect();
+        for condition in Condition::ALL {
+            assert_eq!(
+                offered.iter().filter(|c| *c == condition).count(),
+                1,
+                "{condition:?} is not offered exactly once"
+            );
+        }
+        assert_eq!(offered.len(), Condition::ALL.len());
+    }
+
     #[test]
     fn a_channel_takes_only_its_conditions_and_groups() {
         let c = channel(Some(&["payments"]));
@@ -1278,6 +1298,18 @@ mod tests {
         assert_eq!(open["dedup_key"].as_str().unwrap().len(), 64);
         assert_eq!(open["payload"]["severity"], "critical");
         assert_eq!(open["payload"]["summary"], "Source unreachable: orders");
+    }
+
+    /// A notice is ticked like any issue, and PagerDuty is told it is one rather than paged for it.
+    #[test]
+    fn a_notice_is_sent_to_pagerduty_as_info() {
+        let mut c = channel(None);
+        c.conditions = vec![Condition::NewerRelease];
+        let mut notice = warning(Condition::NewerRelease, "leader", None);
+        notice.severity = Severity::Info;
+        let told = changes(&c, 5, &[notice], &[]).raised;
+        let open = webhook_body(Format::PagerDuty, Status::Raised, &told[0], Some("R0UT1NG"));
+        assert_eq!(open["payload"]["severity"], "info");
     }
 
     #[test]

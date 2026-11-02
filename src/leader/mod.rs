@@ -1076,7 +1076,7 @@ pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning
     Ok(out)
 }
 
-/// What `GET /api/warnings?info=true` serves: the fixed catalog (design doc, Control plane), info entries and all,
+/// What `GET /api/warnings?info=true`, `GET /api/metrics` and the alert channels are given: the fixed catalog (design doc, Control plane), info entries and all,
 /// derived fresh from the registry and the worker roster on every call -- there is no warning table, so this is the
 /// only place the answer lives.
 ///
@@ -1396,7 +1396,7 @@ async fn list_warnings(
 /// `GET /api/metrics`: the warnings `access` may see, as Prometheus scrapes them (`warnings::as_metrics`), so an
 /// alert manager pages on what the Issues page shows. A scraper comes in as a key account, with its key.
 async fn warning_metrics(State(state): State<AppState>, Extension(access): Extension<access::Access>) -> Response {
-    match warnings_snapshot(&state).await {
+    match catalog(&state).await {
         Ok(all) => {
             let visible: Vec<_> = all.into_iter().filter(|w| w.visible_to(&access)).collect();
             let text = warnings::as_metrics(&visible);
