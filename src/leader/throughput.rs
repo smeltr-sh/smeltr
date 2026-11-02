@@ -9,7 +9,12 @@
 //! Only windows the source was running for throughout count, on either side. A bucket with no point means no worker
 //! reported the source then -- not deployed, or a worker gone -- which says nothing about how much it reads.
 //!
-//! Nothing here is stored. The answer is recomputed from the series once per [`BUCKET`], since nothing it reads
+//! A chart draws the band behind its points, and a point finer than a window swings wider than a window does. So
+//! each [`BUCKET`] also records how far each source's rate swung inside it at each of [`SWING_WIDTHS`]
+//! (`series::Swing`), while the ten-second tier still holds what it read. A chart's band at that width is learned
+//! from those swings, the same way the warning's is learned from windows.
+//!
+//! The warning's answer is not stored. It is recomputed from the series once per [`BUCKET`], since nothing it reads
 //! changes in between, and cached until the next.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -21,7 +26,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 
 use super::envelope::{Envelope, Refusal};
-use super::series::{RegistryStore, SubjectPoints, Tier};
+use super::series::{RegistryStore, SubjectPoints, Swing, Tier};
 use super::store::{Actor, Store};
 use super::warnings::label;
 use super::{AppState, ROWS_IN_METRIC, run_store};
@@ -135,6 +140,7 @@ impl Readings {
         if let Some(fresh) = self.fresh(ended_ms, share) {
             return fresh;
         }
+        record_swings(store, ended_ms);
         let readings = Arc::new(compute(store, ended_ms, share));
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((ended_ms, share.to_bits(), readings.clone()));
         readings
@@ -219,7 +225,7 @@ fn window_rows(buckets: &BTreeMap<i64, f64>, ended_ms: i64) -> Option<f64> {
 fn band(buckets: &BTreeMap<i64, f64>, ended_ms: i64, share: f64) -> Option<Band> {
     let width = BUCKET.bucket_ms();
     band_of(
-        |ended| window_rows(buckets, ended),
+        |ended| only(window_rows(buckets, ended)),
         ended_ms,
         width,
         NEIGHBORHOOD.as_millis() as i64 / width,
@@ -227,15 +233,18 @@ fn band(buckets: &BTreeMap<i64, f64>, ended_ms: i64, share: f64) -> Option<Band>
     )
 }
 
-/// The band of `rows` at `ended_ms` on each past day, `reach` steps of `step_ms` either side, or `None` while fewer
-/// than [`MIN_DAYS`] days have one. `rows` is what a window ending at a time read, if it was read throughout.
-fn band_of(rows: impl Fn(i64) -> Option<f64>, ended_ms: i64, step_ms: i64, reach: i64, share: f64) -> Option<Band> {
-    let mut samples = Vec::new();
+/// The band of `held` at `ended_ms` on each past day, `reach` steps of `step_ms` either side, or `None` while fewer
+/// than [`MIN_DAYS`] days have one. `held` is the band one past bucket ending at a time held, if it is known: a
+/// window read throughout holds only its own rows, and a bucket's swing holds its lowest and highest rate. The band
+/// is the share asked for of the lows and of the highs, cut from the bottom of the one and the top of the other.
+fn band_of(held: impl Fn(i64) -> Option<Band>, ended_ms: i64, step_ms: i64, reach: i64, share: f64) -> Option<Band> {
+    let (mut lows, mut highs) = (Vec::new(), Vec::new());
     let mut days = HashSet::new();
     for day in 1..=HISTORY_DAYS {
         for step in -reach..=reach {
-            if let Some(rows) = rows(ended_ms - day * DAY_MS + step * step_ms) {
-                samples.push(rows);
+            if let Some(band) = held(ended_ms - day * DAY_MS + step * step_ms) {
+                lows.push(band.low);
+                highs.push(band.high);
                 days.insert(day);
             }
         }
@@ -243,12 +252,18 @@ fn band_of(rows: impl Fn(i64) -> Option<f64>, ended_ms: i64, step_ms: i64, reach
     if days.len() < MIN_DAYS {
         return None;
     }
-    samples.sort_by(f64::total_cmp);
+    lows.sort_by(f64::total_cmp);
+    highs.sort_by(f64::total_cmp);
     let tail = (1.0 - share) / 2.0;
     Some(Band {
-        low: quantile(&samples, tail),
-        high: quantile(&samples, 1.0 - tail),
+        low: quantile(&lows, tail),
+        high: quantile(&highs, 1.0 - tail),
     })
+}
+
+/// A window's rows as the band it holds.
+fn only(rows: Option<f64>) -> Option<Band> {
+    rows.map(|rows| Band { low: rows, high: rows })
 }
 
 /// Each source's rows by bucket: (group, source) to bucket start to rows.
@@ -299,19 +314,25 @@ pub struct ExpectedPoint {
     pub high: f64,
 }
 
-/// `group`'s `source`'s band, as rows per second, for each bucket from `since_ms` to the one `now_ms` is in. Up to a
-/// day back the bucket is five minutes and its band the [`WINDOW`] ending with it, as the warning judges; further
-/// back, history this old is hourly, so the bucket is an hour and its band that hour on past days. A bucket with too
-/// little history before it has none. The band reads only past days, so the bucket still filling has one too.
+/// `group`'s `source`'s band, as rows per second, for each bucket from `since_ms` to the one `now_ms` is in, for a
+/// chart whose points are `width_ms` wide. Up to a day back the bucket is five minutes. Its band is where a point
+/// of the chart's width lay then on past days: for a point finer than five minutes, the source's swings at that
+/// width ([`record_swings`]); otherwise the [`WINDOW`] ending with it, as the warning judges. Further back, history
+/// this old is hourly, so the bucket is an hour and its band that hour on past days. A bucket with too little
+/// history before it has none. The band reads only past days, so the bucket still filling has one too.
 pub fn expected_over(
     store: &RegistryStore,
     group: &str,
     source: &str,
     since_ms: i64,
     now_ms: i64,
+    width_ms: i64,
     share: f64,
 ) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
     let hourly = now_ms - since_ms > DAY_MS;
+    if !hourly && width_ms < BUCKET.bucket_ms() {
+        return swung_over(store, group, source, since_ms, now_ms, width_ms, share);
+    }
     let (into, window_ms) = if hourly {
         (Tier::OneHour, HOUR_MS)
     } else {
@@ -362,7 +383,7 @@ pub fn expected_over(
     let mut ended_ms = into.align(since_ms) + width;
     let last = into.align(now_ms) + width;
     while ended_ms <= last {
-        if let Some(band) = band_of(rows, ended_ms, width, reach, share) {
+        if let Some(band) = band_of(|ended| only(rows(ended)), ended_ms, width, reach, share) {
             let seconds = window_ms as f64 / 1000.0;
             out.push(ExpectedPoint {
                 from_millis: ended_ms - width,
@@ -374,6 +395,135 @@ pub fn expected_over(
         ended_ms += width;
     }
     Ok(out)
+}
+
+/// [`expected_over`] for a chart finer than [`BUCKET`]: each bucket's band is how far the source's rate at
+/// `width_ms` swung in the buckets near that time of day on past days.
+fn swung_over(
+    store: &RegistryStore,
+    group: &str,
+    source: &str,
+    since_ms: i64,
+    now_ms: i64,
+    width_ms: i64,
+    share: f64,
+) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
+    let width = BUCKET.bucket_ms();
+    let reach = NEIGHBORHOOD.as_millis() as i64 / width;
+    let first = BUCKET.align(since_ms);
+    // By the end of the bucket each swung in, as a window is known by its end.
+    let swung: BTreeMap<i64, Band> = store
+        .swings_since(group, source, width_ms, first - HISTORY_DAYS * DAY_MS - reach * width)?
+        .into_iter()
+        .map(|s| {
+            (
+                s.bucket_ms + width,
+                Band {
+                    low: s.low,
+                    high: s.high,
+                },
+            )
+        })
+        .collect();
+    let mut out = Vec::new();
+    let mut ended_ms = first + width;
+    while ended_ms <= BUCKET.align(now_ms) + width {
+        if let Some(band) = band_of(|ended| swung.get(&ended).copied(), ended_ms, width, reach, share) {
+            out.push(ExpectedPoint {
+                from_millis: ended_ms - width,
+                to_millis: ended_ms,
+                low: band.low,
+                high: band.high,
+            });
+        }
+        ended_ms += width;
+    }
+    Ok(out)
+}
+
+/// The widths a source's swing is kept at: those a chart finer than [`BUCKET`] draws its points at
+/// (`Tier::for_window`).
+pub const SWING_WIDTHS: [Tier; 2] = [Tier::TenSeconds, Tier::OneMinute];
+
+/// How far back from the window's end a swing is still recorded. The ten-second tier holds an hour; this leaves
+/// `maintain` a margin before it rolls the oldest of it up.
+const SWING_REACH_MS: i64 = 50 * 60 * 1000;
+
+/// Records each source's swings for the buckets that ended before `ended_ms` and are not held yet, back as far as
+/// the ten-second tier still holds. A bucket is recorded once the bucket after it has ended too: whether its
+/// source read throughout it is known only from both sides. A failure is logged, and the next pass tries again.
+fn record_swings(store: &RegistryStore, ended_ms: i64) {
+    let width = BUCKET.bucket_ms();
+    let reached = BUCKET.align(ended_ms - SWING_REACH_MS);
+    let from = match store.last_swing_ms() {
+        Ok(last) => last.map_or(reached, |last| (last + width).max(reached)),
+        Err(e) => {
+            tracing::warn!(target: "throughput.swings_unreadable", error = %e, "could not read which swings are held, so none are recorded this pass");
+            return;
+        }
+    };
+    let until = ended_ms - width;
+    if from >= until {
+        return;
+    }
+    let fine = match history(store, &[Tier::TenSeconds], Tier::TenSeconds, from - width) {
+        Ok(fine) => fine,
+        Err(e) => {
+            tracing::warn!(target: "throughput.series_unreadable", error = %e, "could not read rows read, so no swing is recorded this pass");
+            return;
+        }
+    };
+    let swings: Vec<Swing> = fine
+        .into_iter()
+        .flat_map(|((group, source), slots)| {
+            swings_of(&slots, from, until)
+                .into_iter()
+                .map(move |(width_ms, bucket_ms, low, high)| Swing {
+                    group: group.clone(),
+                    source: source.clone(),
+                    width_ms,
+                    bucket_ms,
+                    low,
+                    high,
+                })
+        })
+        .collect();
+    if let Err(e) = store.record_swings(&swings) {
+        tracing::warn!(target: "throughput.swings_not_recorded", error = %e, "could not record how far sources' rates swung, so their charts' bands miss these buckets");
+    }
+}
+
+/// One source's swings, as (width, bucket start, low, high), for each bucket from `from` to `until`, from its rows
+/// in ten-second slots. A bucket counts only when the source read in it and in the buckets either side, as a window
+/// counts only when it was read throughout. A slot in it with no point read nothing.
+fn swings_of(slots: &BTreeMap<i64, f64>, from: i64, until: i64) -> Vec<(i64, i64, f64, f64)> {
+    let width = BUCKET.bucket_ms();
+    let ten = Tier::TenSeconds.bucket_ms();
+    let read = |start: i64| slots.range(start..start + width).next().is_some();
+    let mut out = Vec::new();
+    let mut bucket = from;
+    while bucket < until {
+        if read(bucket - width) && read(bucket) && read(bucket + width) {
+            for tier in SWING_WIDTHS {
+                let step = tier.bucket_ms();
+                let rates: Vec<f64> = (bucket..bucket + width)
+                    .step_by(step as usize)
+                    .map(|at| {
+                        let rows: f64 = (at..at + step)
+                            .step_by(ten as usize)
+                            .filter_map(|slot| slots.get(&slot))
+                            .sum();
+                        rows * 1000.0 / step as f64
+                    })
+                    .collect();
+                let low = rates.iter().copied().fold(f64::INFINITY, f64::min);
+                let high = rates.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                out.push((step, bucket, low, high));
+            }
+        }
+        bucket += width;
+    }
+    out
 }
 
 /// The `q` quantile of `sorted`, linear between the two nearest samples.
@@ -663,7 +813,7 @@ mod tests {
     const HOUR: i64 = 60 * 60 * 1000;
 
     fn expected(store: &RegistryStore, since_ms: i64) -> Vec<ExpectedPoint> {
-        expected_over(store, "g", "s", since_ms, END + 1000, 0.99).unwrap()
+        expected_over(store, "g", "s", since_ms, END + 1000, BUCKET.bucket_ms(), 0.99).unwrap()
     }
 
     #[test]
@@ -730,7 +880,88 @@ mod tests {
     #[test]
     fn a_source_never_read_has_no_band() {
         let store = store_with(7, |_| Some(100.0));
-        let none = expected_over(&store, "g", "other", END - HOUR, END + 1000, 0.99);
+        let none = expected_over(&store, "g", "other", END - HOUR, END + 1000, BUCKET.bucket_ms(), 0.99);
         assert_eq!(none.unwrap(), Vec::new());
+    }
+
+    /// Rows read every ten seconds from `from` to `until`, alternating 10 and 30: one and three rows a second, two
+    /// over any minute.
+    fn alternating(store: &RegistryStore, from: i64, until: i64) {
+        let key = serde_json::to_string(&[("group", "g"), ("source", "s"), ("worker", "w")]).unwrap();
+        for (i, at) in (from..until).step_by(10_000).enumerate() {
+            let rows = if i % 2 == 0 { 10.0 } else { 30.0 };
+            store.record_delta(ROWS_IN_METRIC, &key, at, rows).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_swing_is_the_lowest_and_highest_rate_at_each_width() {
+        let store = store_with(0, |_| None);
+        alternating(&store, END - 30 * 60_000, END);
+        record_swings(&store, END);
+        let swings = |width: Tier| -> Vec<(i64, f64, f64)> {
+            store
+                .swings_since("g", "s", width.bucket_ms(), 0)
+                .unwrap()
+                .into_iter()
+                .map(|s| (s.bucket_ms, s.low, s.high))
+                .collect()
+        };
+        // The first bucket has no read bucket before it, and the last none ended after it yet.
+        let buckets: Vec<i64> = (2..=5).rev().map(|i| END - i * FIVE).collect();
+        assert_eq!(
+            swings(Tier::TenSeconds),
+            buckets.iter().map(|&b| (b, 1.0, 3.0)).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            swings(Tier::OneMinute),
+            buckets.iter().map(|&b| (b, 2.0, 2.0)).collect::<Vec<_>>()
+        );
+
+        // Held, a bucket is not recorded again; the next bucket's end records the one after.
+        alternating(&store, END, END + FIVE);
+        record_swings(&store, END + FIVE);
+        assert_eq!(swings(Tier::TenSeconds).len(), 5);
+    }
+
+    /// A slot with no point in a bucket read on both sides read nothing, and pulls the low down to it.
+    #[test]
+    fn a_quiet_slot_inside_a_read_bucket_swings_to_zero() {
+        let mut slots: BTreeMap<i64, f64> = (0..3 * FIVE).step_by(10_000).map(|at| (END + at, 50.0)).collect();
+        slots.remove(&(END + FIVE + 20_000));
+        let swings = swings_of(&slots, END + FIVE, END + 2 * FIVE);
+        assert_eq!(
+            swings,
+            vec![
+                (10_000, END + FIVE, 0.0, 5.0),
+                (60_000, END + FIVE, 250.0 * 1000.0 / 60_000.0, 5.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_fine_chart_has_the_band_its_points_swung_in() {
+        let store = store_with(0, |_| None);
+        let mut swings = Vec::new();
+        let mut at = END - 8 * DAY_MS;
+        while at < END {
+            for (width, low, high) in [(10_000, 4.0, 16.0), (60_000, 8.0, 12.0)] {
+                swings.push(Swing {
+                    group: "g".into(),
+                    source: "s".into(),
+                    width_ms: width,
+                    bucket_ms: at,
+                    low,
+                    high,
+                });
+            }
+            at += FIVE;
+        }
+        store.record_swings(&swings).unwrap();
+        for (width, band) in [(10_000, (4.0, 16.0)), (60_000, (8.0, 12.0))] {
+            let points = expected_over(&store, "g", "s", END - HOUR, END + 1000, width, 0.99).unwrap();
+            assert_eq!(points.len(), 13);
+            assert!(points.iter().all(|p| (p.low, p.high) == band), "at {width}: {points:?}");
+        }
     }
 }
