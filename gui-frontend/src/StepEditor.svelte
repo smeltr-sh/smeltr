@@ -67,7 +67,7 @@
   import { fieldNotes, type OpenProposal, type Suggestion } from './proposal';
   import { fieldError } from './errorMarks';
   import { ago, count } from './time';
-  import { parsePath, pushKey } from './names';
+  import { pushKey } from './names';
   import { SvelteMap } from 'svelte/reactivity';
   import StepGlyph from './StepGlyph.svelte';
   import StateMark from './StateMark.svelte';
@@ -150,17 +150,9 @@
     if (!(from instanceof HTMLInputElement || from instanceof HTMLTextAreaElement)) return;
     unfinished?.left(row, from.closest('.target-field') ? 'target' : 'expr');
   }
-  /** Every message about this step, written once in its list: its compile
-   * errors, then what a field-name box's own check finds. The boxes only
-   * mark where. */
-  let listedErrors = $derived([
-    ...new Set([
-      ...stepErrorMessages,
-      ...nameFields(step)
-        .map(nameError)
-        .filter((m) => m !== null),
-    ]),
-  ]);
+  /** Every compile error of this step, written once in its list. The boxes
+   * only mark where. */
+  let listedErrors = $derived([...new Set(stepErrorMessages)]);
   function removeAssignment(i: number) {
     for (const e of stepErrors) {
       const row = rowOf(e);
@@ -222,37 +214,6 @@
     return columns.includes(keyColumn)
       ? [keyColumn, ...columns.filter((h) => h !== keyColumn)]
       : columns;
-  }
-
-  /** Why a box that holds a name refuses its text, or null. A blank box is not
-   * yet a name, and the compiler says so if it stays blank. */
-  function nameError(text: string): string | null {
-    if (text === '') return null;
-    const parsed = parsePath(text);
-    return parsed.ok ? null : parsed.message;
-  }
-
-  /** The text of every box whose own check is `nameError`, as the template
-   * gives them one. */
-  function nameFields(step: Step): string[] {
-    switch (step.type) {
-      case 'eval':
-        return step.assignments.map((a) => a.target);
-      case 'rename':
-        return step.pairs.flatMap((p) => [p.from, p.to]);
-      case 'parser':
-        return [
-          step.input,
-          step.into,
-          ...(step.kind.type === 'csv' || step.kind.type === 'grok'
-            ? []
-            : step.declared.map((d) => d.name)),
-        ];
-      case 'lookup':
-        return [step.input, ...step.outputs.map((o) => o.field)];
-      default:
-        return [];
-    }
   }
 
   /** Which parsers offer "split keys at dots". A CSV column's name is
@@ -423,8 +384,8 @@
 
   /** How many of a parser's Advanced boxes mark an error, as each box would. */
   function advancedErrors(ps: ParserStep): number {
-    const input = fieldError(ps.input, stepErrorMessages, nameError(ps.input));
-    const into = fieldError(ps.into, stepErrorMessages, nameError(ps.into));
+    const input = fieldError(ps.input, stepErrorMessages, null);
+    const into = fieldError(ps.into, stepErrorMessages, null);
     const filter = fieldError(ps.filter, stepErrorMessages, null);
     return (input ? 1 : 0) + (into ? 1 : 0) + (filter ? 1 : 0);
   }
@@ -791,9 +752,7 @@
                         bind:value={step.assignments[i].target}
                         errors={stepErrorMessages}
                         warnings={stepWarningMessages}
-                        forced={nameError(step.assignments[i].target) ??
-                          targetError?.message ??
-                          null}
+                        forced={targetError?.message ?? null}
                       />
                     </Locked>
                   </span>
@@ -869,7 +828,6 @@
                       bind:value={step.pairs[i].from}
                       errors={stepErrorMessages}
                       warnings={stepWarningMessages}
-                      forced={nameError(step.pairs[i].from)}
                     />
                   </Locked>
                   <span class="eq">→︎</span>
@@ -880,7 +838,6 @@
                       schemaPaths
                       errors={stepErrorMessages}
                       warnings={stepWarningMessages}
-                      forced={nameError(step.pairs[i].to)}
                     />
                   </Locked>
                   {#if !readOnly}
@@ -1114,7 +1071,6 @@
                             bind:value={ps.declared[i].name}
                             errors={stepErrorMessages}
                             warnings={stepWarningMessages}
-                            forced={isCsv ? null : nameError(ps.declared[i].name)}
                           />
                         </Locked>
                       {/if}
@@ -1154,7 +1110,6 @@
                   bind:value={ps.input}
                   errors={stepErrorMessages}
                   warnings={stepWarningMessages}
-                  forced={nameError(ps.input)}
                 />
               </Field>
               <Field
@@ -1166,7 +1121,6 @@
                   bind:value={ps.into}
                   errors={stepErrorMessages}
                   warnings={stepWarningMessages}
-                  forced={nameError(ps.into)}
                 />
               </Field>
               <Field optional label="filter">
@@ -1343,7 +1297,6 @@
                 bind:value={step.input}
                 errors={stepErrorMessages}
                 warnings={stepWarningMessages}
-                forced={nameError(step.input)}
               />
             </Field>
 
@@ -1438,7 +1391,6 @@
                           bind:value={existing.field}
                           errors={stepErrorMessages}
                           warnings={stepWarningMessages}
-                          forced={nameError(existing.field)}
                         />
                       </Locked>
                     {:else}
@@ -1501,7 +1453,6 @@
                         bind:value={step.outputs[i].field}
                         errors={stepErrorMessages}
                         warnings={stepWarningMessages}
-                        forced={nameError(step.outputs[i].field)}
                       />
                     </Locked>
                     <TypePicker
