@@ -503,7 +503,7 @@ pub async fn put_settings(
         Ok(percent) => percent,
         Err(e) => return WarningSettings::answer(Err(Refusal::invalid(e))),
     };
-    let event = super::accounts::event_for(&actor, "warning-settings-change", "", "ok");
+    let event = super::accounts::event_for(&actor, "warning-settings-change", &format!("{percent}%"), "ok");
     let written = run_store(state.store, move |s| {
         s.put_settings(&[(BAND_KEY, percent.to_string())], Some(&event))
     })

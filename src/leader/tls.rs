@@ -147,7 +147,7 @@ pub fn ensure(dir: &Path, sans: Vec<String>, validity: Duration, required: &[Str
             });
         }
     };
-    tracing::warn!(target: "leader.certificate_unserved", why = %why, "the leader is not serving its own certificate");
+    tracing::warn!(target: "leader.certificate_unserved", why = %why, "the leader could not serve the certificate chosen for it, so it serves a stand-in until that one can be served");
     // Parted until something is served again: everything that reads what is in force waits for that.
     with_generations(dir, |held| {
         held.disk += 1;

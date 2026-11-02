@@ -65,7 +65,7 @@ pub fn open_file_bytes(parts_in_flight: usize) -> usize {
 }
 
 /// Bounds of the wait between retries of a `Transient` commit failure.
-const BACKOFF_MIN: Duration = Duration::from_millis(200);
+pub const BACKOFF_MIN: Duration = Duration::from_millis(200);
 const BACKOFF_MAX: Duration = Duration::from_secs(5);
 
 /// Jobs the egress thread may hand over before `deliver` waits for the writer.
@@ -848,7 +848,7 @@ impl Writer {
                         files = self.closed.len(),
                         rows = self.closed.iter().map(|f| f.record_count).sum::<u64>(),
                         after_failure = warned.then_some(true),
-                        "files were committed to the table"
+                        "files were committed to the destination"
                     );
                     self.closed.clear();
                     self.reset_said.clear();

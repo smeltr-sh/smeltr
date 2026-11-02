@@ -100,7 +100,8 @@ Review shows the findings a change adds, not those main already had where the
 branch left it, field by field: a finding that names several fields names only
 those the change adds.
 The record's type is held to the table path by path: a field whose type only
-the row knows keeps any, an object keeps any object type, and a required or
+the row knows keeps any, an object keeps any object type, a key the table names
+only by the fields under it is an object all the same, and a required or
 recommended field is lacking where the object it sits in is there and does not
 declare it, so a standard's recommended fields inside an object are asked for
 only where a row has that object. A field several schemas name is a misfit

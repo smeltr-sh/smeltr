@@ -225,13 +225,13 @@ function declaredChild(d: DeclaredAt, key: string | null): DeclaredAt {
   return d.kind === 'struct' ? (d.fields.get(key) ?? 'undeclared') : 'undeclared';
 }
 
-/** A type as a line shows it: a struct by its kind alone, since its fields
+/** A type as a line shows it: an object by its kind alone, since its fields
  * are drawn beneath it. */
 function typeLabel(d: DeclaredAt): string | null {
   if (d === 'unknown') return null;
   if (d === 'undeclared') return 'undeclared';
   if (d.kind === 'scalar') return d.name;
-  if (d.kind === 'struct') return 'struct';
+  if (d.kind === 'struct') return 'object';
   return `array<${typeLabel(d.of)}>`;
 }
 
@@ -424,7 +424,7 @@ export function leafLines(nodes: DiffNode[]): RecordLine[] {
   const out: RecordLine[] = [];
   const walk = (n: DiffNode) => {
     if (n.kind === 'leaf')
-      out.push({ ...n.leaf!, kind: 'field', depth: 0, label: n.path, type: n.type });
+      out.push({ ...n.leaf!, kind: 'field', depth: 0, label: fromRecord(n.path), type: n.type });
     else n.children.forEach(walk);
   };
   nodes.forEach(walk);
@@ -458,6 +458,10 @@ function chain(n: DiffNode): { label: string; node: DiffNode } {
   }
   return { label, node: n };
 }
+
+/** `name`, a whole name from the record's top, as a person writes it: one that starts with a key in brackets starts
+ * at `$`, the record, as in `$["x.c"]`. */
+export const fromRecord = (name: string) => (name.startsWith('[') ? `$${name}` : name);
 
 /** Whether a node holds anything a step added, changed or removed. */
 const changed = (n: DiffNode) =>
@@ -499,7 +503,9 @@ export function recordLines(
   // opened takes one: what it draws is its own pages, so opening it does not
   // push its siblings off the parent's.
   const draw = (child: DiffNode, depth: number, left: number): number => {
-    const { label, node: n } = chain(child);
+    const chained = chain(child);
+    const n = chained.node;
+    const label = depth === 0 ? fromRecord(chained.label) : chained.label;
     if (n.kind === 'leaf') {
       out.push({ ...n.leaf!, kind: 'field', depth, label, type: n.type });
       return 1;
@@ -545,7 +551,7 @@ export function pathLines(
   const shown = Math.min(fields.length, PAGE_LINES * (1 + (choices.pages?.(root.path) ?? 0)));
   const out: RecordLine[] = fields
     .slice(0, shown)
-    .map((n) => ({ ...n.leaf!, kind: 'field', depth: 0, label: n.path, type: n.type }));
+    .map((n) => ({ ...n.leaf!, kind: 'field', depth: 0, label: fromRecord(n.path), type: n.type }));
   if (shown < fields.length)
     out.push({ kind: 'more', path: root.path, depth: 0, shown, total: fields.length });
   return out;

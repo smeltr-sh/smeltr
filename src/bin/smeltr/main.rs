@@ -1396,8 +1396,12 @@ fn resolve_origin(configured: Option<&str>, bind: &str, port: u16, tls: bool) ->
     let reaches_loopback = ip.is_loopback() || ip.is_unspecified();
     if reaches_loopback && (configured.is_none() || tls) {
         let scheme = if origin.secure { "https" } else { "http" };
-        for host in smeltr::startup_config::LOOPBACK_NAMES {
-            let alias = origin_url(scheme, host, port);
+        // A bind of `::` is reached at `[::1]` too, which is where the worker inside this process calls it
+        // (`reached_at`), so its certificate has to carry that name as well.
+        let v6_loopback = (ip.is_ipv6() && ip.is_unspecified()).then(|| format!("[{}]", reached_at(bind)));
+        let loopback = smeltr::startup_config::LOOPBACK_NAMES.into_iter().map(str::to_string);
+        for host in loopback.chain(v6_loopback) {
+            let alias = origin_url(scheme, &host, port);
             if !origin.accepts(&alias) {
                 origin.aliases.push(alias);
             }
@@ -1897,7 +1901,7 @@ fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path:
         std::process::exit(1);
     }
     if let Some(problem) = standing.problem() {
-        tracing::error!(target: "secrets.key_unusable", path = %path.display(), %problem, "the secrets encryption key is not usable");
+        tracing::error!(target: "secrets.key_unusable", path = %path.display(), %problem, "the secrets encryption key is not usable, so secrets cannot be read or stored until it is");
     }
 }
 
@@ -3689,6 +3693,23 @@ mod tests {
             v4.aliases,
             vec!["https://localhost:4000".to_string()],
             "its own value is not an alias"
+        );
+    }
+
+    /// A leader bound to `::` is reached at `[::1]` as well as at `127.0.0.1`, and its certificate carries both.
+    #[test]
+    fn a_bind_of_every_ipv6_address_answers_to_ipv6_loopback() {
+        let origin = resolve_origin(None, "::", 4000, true).unwrap();
+        assert!(origin.accepts("https://[::1]:4000"));
+        assert!(origin.accepts("https://127.0.0.1:4000"));
+        let names = smeltr::startup_config::leader_certificate_names(&origin_hosts(&origin));
+        assert!(names.contains(&"::1".to_string()), "{names:?}");
+        assert!(names.contains(&reached_at("::").to_string()), "{names:?}");
+
+        let v4 = resolve_origin(None, "0.0.0.0", 4000, true).unwrap();
+        assert!(
+            !v4.accepts("https://[::1]:4000"),
+            "a bind of every IPv4 address is not reached over IPv6"
         );
     }
 

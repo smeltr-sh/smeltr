@@ -3173,7 +3173,7 @@ impl Supervisor {
             let down_for_secs = failing.1.take().map_or(0, |since| since.elapsed().as_secs());
             tracing::info!(target: "worker.heartbeat_recovered", down_for_secs, "the leader answers heartbeats again");
         }
-        tracing::debug!(
+        tracing::trace!(
             target: "worker.heartbeat_answered",
             holds = resp.holds.len(),
             captures = resp.captures.len(),
@@ -3755,7 +3755,7 @@ impl Supervisor {
             return;
         }
         let generation = target.as_ref().map_or(1, |t| t.generation + 1);
-        tracing::debug!(target: "worker.target_discovered", subject = %commit, generation, "discovery saw a new commit");
+        tracing::debug!(target: "worker.target_discovered", subject = %commit, generation, "the worker saw a new commit to deploy");
         *target = Some(Target { generation, commit });
         drop(target);
         self.arrived.notify_all();

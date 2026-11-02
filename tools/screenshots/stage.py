@@ -505,6 +505,20 @@ def open_change():
                   "the alerts topic. The PAN-OS test is re-locked with the two new fields.")
 
 
+def threats():
+    log("open change: PAN-OS threats to ECS")
+    c = as_("priya")
+    b = "onboard-panos-threats"
+    schema = c.ok(c.call("POST", "/api/preview/schema-read", {"id": "ecs", "format": "ecs", "builtIn": True}))["schema"]
+    c.put("schemas", [schema], b, "network")
+    c.put_pipeline({**bundle.PANOS_THREAT, "produces": ["ecs"]}, b, "network")
+    c.put_sample(next(s for s in bundle.waiting()["network"] if s["id"] == "panos-threat-sample"), b, "network")
+    c.put("routes", bundle.NETWORK_ROUTES + bundle.SIEM_ROUTES + [bundle.THREAT_ROUTE], b, "network")
+    lock_tests(c, b, "network", [("panos-threats maps threats to ECS", "panos-threats", "panos-threat-sample", 10)])
+    c.open_change(b, "Send PAN-OS threats to logs-network as ECS",
+                  "Threats land beside the traffic, so the SOC finds both with one search.")
+
+
 def waiting():
     log("samples for the feeds waiting on pipelines")
     c = as_("admin")
@@ -562,6 +576,8 @@ def main():
     pause(2)
     rotate()
     pause(1)
+    # Before the App-ID change, which How it works shows atop Branches.
+    threats()
     open_change()
     draft()
     waiting()

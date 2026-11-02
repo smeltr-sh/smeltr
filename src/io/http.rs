@@ -536,7 +536,7 @@ fn deliver<P: Protocol, T: Transport>(
         }
         if !round.throttle_said {
             round.throttle_said = true;
-            tracing::debug!(target: "http.throttled", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so this round backs off");
+            tracing::debug!(target: "http.throttled", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
         }
         std::thread::sleep(nap);
         round.waited += nap;

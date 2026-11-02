@@ -66,6 +66,8 @@ const STATE: &str = "state.json";
 /// How long an order may take, the authority's validation included. Let's Encrypt validates within seconds; a
 /// minute is for an authority that queues.
 const ORDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long the HTTP-01 listener is given to stop once an order is done, before the next order may find its port held.
+const LISTENER_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// A DNS-01 order also waits for each record to reach the zone's nameservers, which a provider may take minutes
 /// over.
 const DNS_ORDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -801,11 +803,11 @@ impl Prover for Proving {
             let _ = listening.stop.send(());
             // Until the port is free again, so a renewal that follows at once can bind it. A validator still mid-
             // request holds it a moment; one that never let go is not waited for.
-            if tokio::time::timeout(std::time::Duration::from_secs(5), listening.stopped)
+            if tokio::time::timeout(LISTENER_STOP_WAIT, listening.stopped)
                 .await
                 .is_err()
             {
-                tracing::debug!(target: "leader.acme_http_not_stopped", "the HTTP-01 listener did not stop within 5s, so the next order may find its port held");
+                tracing::debug!(target: "leader.acme_http_not_stopped", within_secs = LISTENER_STOP_WAIT.as_secs(), "the HTTP-01 listener did not stop in time, so the next order may find its port held");
             }
         }
     }

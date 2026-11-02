@@ -302,9 +302,9 @@ itself a warning about the leader.
 
 An entry is a failure, a warning or a notice. A notice is a fact worth knowing
 that asks nothing of anyone, such as a worker on another release of the
-leader's major. The leader gives notices only to a reader that asks for them,
-which is the Issues page alone, so no view that judges health can count one as
-trouble.
+leader's major. The Issues page, a scraper and the alert channels that take it
+are given a notice, marked as one. The views that judge health leave notices
+out, so none of them counts one as trouble.
 
 A blocked source warns by what holds it, because each releases differently:
 rows only a new config lets through, rows a destination refused, or a

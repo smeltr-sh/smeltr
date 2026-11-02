@@ -254,7 +254,7 @@ pub async fn put_settings(
 ) -> Envelope<UpdateSettings> {
     let actor = actor.map(|a| a.0).unwrap_or_else(Actor::system);
     let check = request.check;
-    let event = super::accounts::event_for(&actor, "update-settings-change", "", "ok");
+    let event = super::accounts::event_for(&actor, "update-settings-change", if check { "on" } else { "off" }, "ok");
     let written = run_store(state.store.clone(), move |s| {
         s.put_settings(&[(CHECK_KEY, check.to_string())], Some(&event))
     })

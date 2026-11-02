@@ -16,8 +16,8 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::metadata::ParquetMetaData;
 use smeltr::core::column::DataType;
 use smeltr::io::files::{
-    CommitError, Committer, DataFile, FileConfig, FileDestination, FileEncoder, FileFormat, FileRow, ParquetFormat,
-    Partition, Partitioner, TAKE_BYTES, Unpartitioned,
+    BACKOFF_MIN, CommitError, Committer, DataFile, FileConfig, FileDestination, FileEncoder, FileFormat, FileRow,
+    ParquetFormat, Partition, Partitioner, TAKE_BYTES, Unpartitioned,
 };
 use smeltr::io::parquet::{Chunk, Columns, Schema};
 use smeltr::io::{BatchCompletion, Destination, Dispatched, IoError, OwnedRecord, Rejection, held_bytes};
@@ -131,6 +131,8 @@ enum Answer {
 struct Recorded {
     /// Every `commit` call's files, in order.
     commits: Vec<Vec<DataFile>>,
+    /// When each `commit` call came.
+    committed_at: Vec<Instant>,
     /// Every path `file_path` named, in order.
     paths: Vec<String>,
 }
@@ -159,7 +161,10 @@ impl Committer for Recording {
     }
 
     fn commit(&mut self, files: &[DataFile]) -> Result<(), CommitError> {
-        self.record.lock().unwrap().commits.push(files.to_vec());
+        let mut record = self.record.lock().unwrap();
+        record.commits.push(files.to_vec());
+        record.committed_at.push(Instant::now());
+        drop(record);
         let answer = match self.answers.len() {
             0 => Answer::Ok,
             1 => self.answers[0],
@@ -638,13 +643,11 @@ fn a_conflict_is_retried_at_once_and_the_commit_carries_every_file() {
     );
     let rows = partitioned_rows(&schema, &["alpha", "beta", "gamma"]);
     assert!(t.deliver(1, &rows).is_empty());
-    let started = Instant::now();
     assert_eq!(t.completed(1), vec![1]);
-    assert!(
-        started.elapsed() < INTERVAL * 3,
-        "a conflict waited: {:?}",
-        started.elapsed()
-    );
+    // A retry with backoff waits at least BACKOFF_MIN; two retries at once come sooner than one such wait.
+    let at = t.record.lock().unwrap().committed_at.clone();
+    let retried = at[at.len() - 1] - at[0];
+    assert!(retried < BACKOFF_MIN, "a conflict waited: {retried:?}");
 
     let commits = t.commits();
     assert_eq!(commits.len(), 3, "two conflicts and the commit: {commits:?}");

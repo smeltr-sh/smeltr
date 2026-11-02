@@ -578,7 +578,7 @@ pub fn startup_validate(reading: &Reading) {
             subject = %shown,
             errors = errors.len(),
             detail = %errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "),
-            "the branch the fleet runs does not currently compile -- open the GUI to fix it"
+            "the deployed branch does not compile, so the fleet keeps running what it ran; fix it in the GUI"
         );
     }
 }
@@ -792,11 +792,11 @@ fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(),
         // The group list is unreadable, so there is nothing to check against. The scope's own validation still
         // ran; refusing here would block every save on a repository this cannot enumerate.
         Err(e) if writing_shared => {
-            tracing::debug!(target: "config.merge_unchecked", error = %e, "the group list could not be read, so a save to shared was not checked against the groups");
+            tracing::debug!(target: "config.merge_unchecked", error = %e, "the worker group list could not be read, so a save to shared was not checked against the worker groups");
             return Ok(());
         }
         Err(e) => {
-            tracing::debug!(target: "config.merge_unchecked", error = %e, "the group list could not be read, so a save was checked against its own group only");
+            tracing::debug!(target: "config.merge_unchecked", error = %e, "the worker group list could not be read, so a save was checked against its own worker group only");
             written.map(|id| vec![id.to_string()]).unwrap_or_default()
         }
     };

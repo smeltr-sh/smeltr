@@ -254,11 +254,19 @@ describe('a box that holds a name', () => {
     pairs: [{ from, to: 'name' }],
   });
 
-  it('refuses text that is not a path, saying why', () => {
+  it("marks a box the compiler's error quotes, and lists the error", () => {
+    const text = 'labels["app.kubernetes.io/name';
+    const step = rename(text);
+    const message = `\`${text}\`: a key in brackets is a string in quotes, as in \`a["b.c"]\``;
     const body = render(StepEditor, {
-      props: { steps: [rename('labels["app.kubernetes.io/name')], index: 0 },
+      props: {
+        steps: [step],
+        index: 0,
+        errorsByStep: new Map([[step, [{ message } as PreviewError]]]),
+      },
     }).body;
     expect(body).toContain('a key in brackets is a string in quotes');
+    expect(body).toContain('field-error');
   });
 
   it('takes a key in brackets', () => {

@@ -25,8 +25,8 @@ use crate::leader::store::{KeyStanding, Unopenable, WorkerCredentialRecord};
 use crate::leader::throughput;
 
 /// *Failed*: the thing is not doing its job. *Warning*: it is working and something is off. (design doc, Control
-/// plane). *Info*: a fact worth knowing that asks nothing of anyone, which only a caller that asks for it is given
-/// (`leader::catalog`), so no view that judges health can count one as trouble.
+/// plane). *Info*: a fact worth knowing that asks nothing of anyone. The views that judge health leave it out
+/// (`leader::warnings_snapshot`), so none of them counts one as trouble.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Severity {
@@ -101,6 +101,31 @@ pub enum Condition {
     IssuedCertificateNotRenewed,
     /// An alert channel did not take the last send (`leader::alerts`).
     AlertChannelFailing,
+}
+
+/// A heading the catalog's entries are listed under where a person picks among them, such as the issues an alert
+/// channel takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Section {
+    Workers,
+    SourcesAndDestinations,
+    Deploys,
+    Pipelines,
+    CertificatesAndSecrets,
+    Leader,
+}
+
+impl Section {
+    /// Every section, in the order they are listed.
+    pub const ALL: &'static [Section] = &[
+        Section::Workers,
+        Section::SourcesAndDestinations,
+        Section::Deploys,
+        Section::Pipelines,
+        Section::CertificatesAndSecrets,
+        Section::Leader,
+    ];
 }
 
 impl Condition {
@@ -229,6 +254,47 @@ impl Condition {
             Condition::LeaderCertificateRunningOut => "leaderCertificateRunningOut",
             Condition::IssuedCertificateNotRenewed => "issuedCertificateNotRenewed",
             Condition::AlertChannelFailing => "alertChannelFailing",
+        }
+    }
+    /// The section it is listed under. The match is what makes a new entry a compile error here.
+    pub fn section(self) -> Section {
+        match self {
+            Condition::WorkerSilent
+            | Condition::WorkerNeverHeartbeated
+            | Condition::WorkerMemoryHigh
+            | Condition::WorkerLoggedWarnings => Section::Workers,
+            Condition::SourceBlocked
+            | Condition::SourceRefused
+            | Condition::SourceWaiting
+            | Condition::SourceUnreachable
+            | Condition::DestinationRefusing
+            | Condition::DestinationUnreachable
+            | Condition::LagClimbing
+            | Condition::DestinationMemoryBound
+            | Condition::SourceRowsBelow
+            | Condition::SourceRowsAbove
+            | Condition::StreamUnrouted => Section::SourcesAndDestinations,
+            Condition::GroupNotDeployed
+            | Condition::WorkerNotDeployingItsTarget
+            | Condition::WorkerOnAnotherBuild
+            | Condition::WorkerOnAnotherRelease
+            | Condition::DeployDoesNotLoad
+            | Condition::DeployHeld
+            | Condition::RemoteNotFollowed => Section::Deploys,
+            Condition::DeployFailsTests
+            | Condition::DeployBreaksSchemas
+            | Condition::DeclaredFieldFailing
+            | Condition::DeclaredFieldGone => Section::Pipelines,
+            Condition::AuthorityExpiring
+            | Condition::AuthorityAging
+            | Condition::CertificateExpiring
+            | Condition::EnrollmentCodeNamesOutgoingAuthority
+            | Condition::LeaderCertificateRunningOut
+            | Condition::IssuedCertificateNotRenewed
+            | Condition::AcmeRenewalFailing
+            | Condition::SecretsKeyUnusable
+            | Condition::SecretNeedsValue => Section::CertificatesAndSecrets,
+            Condition::NewerRelease | Condition::AlertChannelFailing => Section::Leader,
         }
     }
 }
@@ -3244,6 +3310,23 @@ mod tests {
                 regex::Regex::new(&labels).unwrap().is_match(&api),
                 "conditionLabel does not label {name} as {:?}, which is what is sent for it",
                 condition.label()
+            );
+        }
+    }
+
+    /// The page lists the sections in another language, where one it has never heard of has no label. Its switch on
+    /// them is exhaustive, so its type listing each is what keeps it whole.
+    #[test]
+    fn the_page_lists_every_section() {
+        let api = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("gui-frontend/src/api.ts"))
+            .expect("the typed client");
+        let start = api.find("export type AlertSection =").expect("AlertSection");
+        let listed = &api[start..start + api[start..].find(';').unwrap()];
+        for section in Section::ALL {
+            let name = serde_json::to_string(section).unwrap().replace('"', "'");
+            assert!(
+                listed.contains(&format!("| {name}")),
+                "AlertSection does not list {name}"
             );
         }
     }

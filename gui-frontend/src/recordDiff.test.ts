@@ -16,6 +16,7 @@ import {
   pathsOf,
   PAGE_LINES,
   recordLines,
+  fromRecord,
   splitPath,
   withoutRemoved,
   type FieldLeaf,
@@ -105,7 +106,7 @@ describe('diffTree', () => {
       ['url.path', 'str'],
     ]);
     expect(typeAt(declared, 'url.path')).toBe('str');
-    expect(typeAt(declared, 'url')).toBe('struct');
+    expect(typeAt(declared, 'url')).toBe('object');
     expect(typeAt(declared, 'hits[0]["a.b"]')).toBe('i64');
     expect(typeAt(declared, 'loose')).toBe('undeclared');
     expect(typeAt(null, 'url.path')).toBeNull();
@@ -135,15 +136,15 @@ describe('diffTree', () => {
     );
     expect(types).toEqual({
       _raw: 'str',
-      hits: 'array<struct>',
-      'hits[0]': 'struct',
+      hits: 'array<object>',
+      'hits[0]': 'object',
       'hits[0]["a.b"]': 'i64',
       'hits[0].extra': 'undeclared',
       'hits[0].host': 'str',
       loose: 'undeclared',
       tags: 'variant',
       'tags[0]': 'undeclared',
-      url: 'struct',
+      url: 'object',
       'url.path': 'str',
       'url.query': 'undeclared',
     });
@@ -223,6 +224,21 @@ describe('recordLines', () => {
   it('joins a key in brackets without a dot', () => {
     const lines = recordLines(diffTree(null, { labels: { 'a.b': 1 } }));
     expect(shape(lines)).toEqual(['labels["a.b"]']);
+  });
+
+  it('starts a top-level key in brackets at the record', () => {
+    const after = { 'x.c': 1, a: { 'y.d': 2, e: 3 } };
+    expect(shape(recordLines(diffTree(null, after)))).toEqual([
+      'a',
+      '  e',
+      '  ["y.d"]',
+      '$["x.c"]',
+    ]);
+    expect(pathLines(diffTree(null, after)).map((l) => l.kind === 'field' && l.label)).toEqual([
+      'a.e',
+      'a["y.d"]',
+      '$["x.c"]',
+    ]);
   });
 
   it("carries each field's type and state onto its line", () => {
@@ -420,6 +436,11 @@ describe('splitPath', () => {
     });
     expect(splitPath('["say \\"hi\\""]')).toEqual({ prefix: '', leaf: '["say \\"hi\\""]' });
     expect(splitPath('["a.b"].c')).toEqual({ prefix: '["a.b"].', leaf: 'c' });
+  });
+
+  it('splits a whole path from the record at the $ before a key in brackets', () => {
+    expect(splitPath(fromRecord('["x.c"]'))).toEqual({ prefix: '$', leaf: '["x.c"]' });
+    expect(splitPath(fromRecord('a["y.d"]'))).toEqual({ prefix: 'a', leaf: '["y.d"]' });
   });
 });
 

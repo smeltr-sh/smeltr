@@ -50,6 +50,9 @@ node_hint := if os_family() == "windows" { "Install Node 22 or later: winget ins
 need-nextest: (need "cargo-nextest" "Run: cargo install cargo-nextest --locked")
 
 [private]
+need-deny: (need "cargo-deny" "Run: cargo install cargo-deny --locked")
+
+[private]
 need-docker: (need "docker" "Install Docker from https://docs.docker.com/get-docker")
 
 # Frontend, then an optimized binary embedding it. Quick to rebuild; `dist` builds what you ship.
@@ -198,8 +201,13 @@ clean-main:
 # origin/main can break, down to the Rust tests of the modules they touch, and runs them side by side. It can miss a
 # test: `check-all` runs everything, before a merge to main.
 [doc("The check before every push, scoped to what changed since origin/main.")]
-check: need-rust need-nextest
+check: need-checks
     cargo run -q -p check-scope
+
+# Every tool a check calls, looked for before any check starts. The checks run side by side, so a tool found missing
+# by one of them is reported in the middle of the others' output, under thousands of test lines.
+[private]
+need-checks: need-rust need-nextest need-node need-deny
 
 # Kerberos is not in it, since it needs a KDC: after a change to `Cargo.toml`, `Cargo.lock` or the Kerberos tests,
 # run `just check-kerberos`. `just check-live` adds the live services. Windows is checked nowhere.
@@ -216,8 +224,11 @@ check: need-rust need-nextest
 # `--list` shows a recipe's last comment line, so `[doc]` supplies the
 # summary rather than this paragraph's tail.
 [doc("Every check but the fuzzers, whatever changed. The five run at once.")]
+check-all: need-checks every-check
+
+[private]
 [parallel]
-check-all: check-rust clippy check-frontend website deny
+every-check: check-rust clippy check-frontend website deny
 
 # What a change to documents alone can break.
 [private]
@@ -362,7 +373,7 @@ check-frontend: need-node
 
 # Advisories, licenses, bans and sources, against `deny.toml`.
 [private]
-deny: (need "cargo-deny" "Run: cargo install cargo-deny --locked") stable
+deny: need-deny stable
     cargo deny check
 
 # uap-core's current user-agent rules, which `parseUserAgent` compiles in. POSIX shell.

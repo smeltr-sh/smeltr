@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use super::envelope::{Envelope, Refusal};
 use super::store::{Actor, AlertTold, SecretSave, Store, StoreError};
-use super::warnings::{Condition, Warning};
+use super::warnings::{Condition, Section, Warning};
 use super::{AppState, run_store};
 
 /// How often the leader looks, and so how soon a failed send is made again.
@@ -362,6 +362,7 @@ pub fn webhook_body(format: Format, status: Status, told: &AlertTold, routing_ke
             let dedup_key = super::auth::hex_encode(digest.as_ref());
             let severity = match value["severity"].as_str() {
                 Some("failed") => "critical",
+                Some("info") => "info",
                 _ => "warning",
             };
             let action = match status {
@@ -625,7 +626,7 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
     if channels.is_empty() {
         return Ok(());
     }
-    let warnings = super::warnings_snapshot(state).await?;
+    let warnings = super::catalog(state).await?;
     for channel in &channels {
         // What an email channel would be told waits for the mail server, which the page says is off.
         if matches!(channel.kind, Kind::Email { .. }) && mail.is_none() {
@@ -662,7 +663,7 @@ pub async fn run(state: AppState) {
             Ok(()) => {
                 if failing.clear() {
                     let failed_secs = failed_since.take().map_or(0, |at| at.elapsed().as_secs());
-                    tracing::info!(target: "alerts.look", failed_secs, "checking for issues to send to the alert channels works again");
+                    tracing::info!(target: "alerts.look_recovered", failed_secs, "checking for issues to send to the alert channels works again");
                 }
             }
             Err(e) => {
@@ -672,7 +673,7 @@ pub async fn run(state: AppState) {
         }
         if let Some(why) = failing.due() {
             tracing::warn!(
-                target: "alerts.look",
+                target: "alerts.look_failed",
                 error = %why,
                 "could not check for issues to send to the alert channels, so none is sent until the check works"
             );
@@ -717,13 +718,31 @@ pub struct AlertSettingsDto {
     /// `None` until a mail server is saved.
     mail: Option<MailDto>,
     channels: Vec<ChannelDto>,
-    /// What a channel can take, in the catalog's order: every entry but those only ever raised as info, which no
-    /// channel is sent.
+    /// What a channel can take, by section, each in the catalog's order.
+    sections: Vec<SectionDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionDto {
+    section: Section,
     conditions: Vec<Condition>,
 }
 
-/// The catalog entries raised only as info.
-const ONLY_INFO: &[Condition] = &[Condition::WorkerOnAnotherRelease, Condition::DestinationMemoryBound];
+/// Every catalog entry, by section, each in the catalog's order: what a channel can be ticked to take.
+fn sections() -> Vec<SectionDto> {
+    Section::ALL
+        .iter()
+        .map(|&section| SectionDto {
+            section,
+            conditions: Condition::ALL
+                .iter()
+                .copied()
+                .filter(|c| c.section() == section)
+                .collect(),
+        })
+        .collect()
+}
 
 /// What `GET /api/settings/alerts` answers, read from the store and the failures held.
 fn read_settings(store: &dyn Store, alerts: &Alerts) -> Result<AlertSettingsDto, StoreError> {
@@ -745,15 +764,10 @@ fn read_settings(store: &dyn Store, alerts: &Alerts) -> Result<AlertSettingsDto,
             })
         })
         .collect::<Result<_, StoreError>>()?;
-    let conditions = Condition::ALL
-        .iter()
-        .copied()
-        .filter(|c| !ONLY_INFO.contains(c))
-        .collect();
     Ok(AlertSettingsDto {
         mail,
         channels,
-        conditions,
+        sections: sections(),
     })
 }
 
@@ -1009,7 +1023,7 @@ pub async fn post_test(State(state): State<AppState>, Json(request): Json<PutCha
     match test(&state, &channel, request.secret).await {
         Ok(tested) => Envelope::ok(tested),
         Err(why) => {
-            tracing::warn!(target: "alerts.test", channel = %channel.name, "the test send to the alert channel failed: {why}");
+            tracing::warn!(target: "alerts.test_failed", channel = %channel.name, "the test send to the alert channel failed: {why}");
             Envelope::refused(Refusal::invalid(why))
         }
     }
@@ -1147,6 +1161,21 @@ mod tests {
         assert_eq!(gone.cleared, told);
     }
 
+    /// Every issue the leader can raise is one a channel can be ticked to take, once, so the page never drifts from
+    /// the catalog.
+    #[test]
+    fn the_page_offers_every_issue_once() {
+        let offered: Vec<Condition> = sections().into_iter().flat_map(|s| s.conditions).collect();
+        for condition in Condition::ALL {
+            assert_eq!(
+                offered.iter().filter(|c| *c == condition).count(),
+                1,
+                "{condition:?} is not offered exactly once"
+            );
+        }
+        assert_eq!(offered.len(), Condition::ALL.len());
+    }
+
     #[test]
     fn a_channel_takes_only_its_conditions_and_groups() {
         let c = channel(Some(&["payments"]));
@@ -1269,6 +1298,18 @@ mod tests {
         assert_eq!(open["dedup_key"].as_str().unwrap().len(), 64);
         assert_eq!(open["payload"]["severity"], "critical");
         assert_eq!(open["payload"]["summary"], "Source unreachable: orders");
+    }
+
+    /// A notice is ticked like any issue, and PagerDuty is told it is one rather than paged for it.
+    #[test]
+    fn a_notice_is_sent_to_pagerduty_as_info() {
+        let mut c = channel(None);
+        c.conditions = vec![Condition::NewerRelease];
+        let mut notice = warning(Condition::NewerRelease, "leader", None);
+        notice.severity = Severity::Info;
+        let told = changes(&c, 5, &[notice], &[]).raised;
+        let open = webhook_body(Format::PagerDuty, Status::Raised, &told[0], Some("R0UT1NG"));
+        assert_eq!(open["payload"]["severity"], "info");
     }
 
     #[test]

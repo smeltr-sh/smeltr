@@ -2587,7 +2587,8 @@ export type WarningCondition =
   | 'alertChannelFailing';
 
 /** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
- * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
+ * knowing that asks nothing; the views that judge health leave it out, and the Issues page asks for it
+ * (`listWarnings({ info: true })`). */
 export type WarningSeverity = 'failed' | 'warning' | 'info';
 
 /** A named condition about one object, derived fresh by the leader on every poll. Nothing
@@ -3492,11 +3493,37 @@ export type AlertMail = {
   username?: string;
 };
 
+/** A heading the issues a channel can take are listed under. */
+export type AlertSection =
+  | 'workers'
+  | 'sourcesAndDestinations'
+  | 'deploys'
+  | 'pipelines'
+  | 'certificatesAndSecrets'
+  | 'leader';
+
+export function sectionLabel(section: AlertSection): string {
+  switch (section) {
+    case 'workers':
+      return 'Workers';
+    case 'sourcesAndDestinations':
+      return 'Sources and destinations';
+    case 'deploys':
+      return 'Deploys';
+    case 'pipelines':
+      return 'Pipelines';
+    case 'certificatesAndSecrets':
+      return 'Certificates and secrets';
+    case 'leader':
+      return 'Leader';
+  }
+}
+
 export type AlertSettingsDto = {
   mail: (AlertMail & { passwordSet: boolean }) | null;
   channels: AlertChannelDto[];
-  /** What a channel can take, in the catalog's order. */
-  conditions: WarningCondition[];
+  /** What a channel can take, by section, each in the catalog's order. */
+  sections: { section: AlertSection; conditions: WarningCondition[] }[];
 };
 
 export type AlertSettingsResult = {
