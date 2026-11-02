@@ -46,7 +46,7 @@
     </article>
   </section>
   <section aria-labelledby="fit-heading">
-    <h2 id="fit-heading">Declare ECS. See what doesn't fit.</h2>
+    <h2 id="fit-heading">Produce ECS. See what doesn't fit.</h2>
     <p>
       Set a pipeline to produce ECS. Each field that doesn't fit shows on the step that writes it,
       with the fix.
@@ -58,7 +58,7 @@
       alt="The panos-traffic pipeline produces ecs. Its eval step writes event.category as str, where ECS has array<str>."
       caption="The PAN-OS pipeline writes event.category as text, where ECS has a list."
     />
-    <p>Review shows every finding beside Approve &amp; deploy, before the change runs.</p>
+    <p>Review counts the findings beside Approve &amp; deploy, before the change runs.</p>
     <ProductScreenshot
       source="schema-findings-review"
       width={2400}
