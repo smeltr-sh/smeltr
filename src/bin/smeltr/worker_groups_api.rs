@@ -309,7 +309,7 @@ pub fn seed_default_group(
     // The manifest commit is what makes the group real; a color that fails to follow it is a group with no hue
     // yet, not a seed that did not happen -- retrying the whole seed on the next start would find `main` already
     // holds the manifest and stop here again.
-    if seeded && let Err(e) = store.set_group_hue(group_id, DEFAULT_HUES[0]) {
+    if seeded && let Err(e) = store.set_group_hue(group_id, DEFAULT_HUES[0], None) {
         tracing::warn!(
             target: "leader.seeded_group_color_unrecorded",
             subject = %group_id,
@@ -331,7 +331,7 @@ pub fn seed_shared_hue(store: &dyn smeltr::leader::store::Store) -> Result<bool,
     }
     let taken: Vec<u16> = hues.values().copied().collect();
     store
-        .set_group_hue(config_file::SHARED_DIR, next_hue(&taken))
+        .set_group_hue(config_file::SHARED_DIR, next_hue(&taken), None)
         .map_err(|e| e.to_string())?;
     Ok(true)
 }
@@ -377,7 +377,7 @@ fn create_group_in(
         Ok(commit) => {
             // Best-effort, same as the seeded group's own color: the group exists once the manifest commits, and
             // a store hiccup here is a color to pick again, not a failed create.
-            if let Err(e) = store.set_group_hue(&req.id, hue) {
+            if let Err(e) = store.set_group_hue(&req.id, hue, None) {
                 tracing::warn!(
                     target: "leader.created_group_color_unrecorded",
                     subject = %req.id,
@@ -498,11 +498,13 @@ pub struct SetGroupHueRequest {
 /// abandoned on an unmerged branch, is an orphan row that costs nothing.
 pub async fn set_group_hue(
     axum::extract::State(state): axum::extract::State<AppState>,
+    Extension(actor): Extension<Actor>,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(req): Json<SetGroupHueRequest>,
 ) -> Envelope {
     let store = state.store.clone();
-    let set = blocking(move || store.set_group_hue(&id, req.hue)).await;
+    let event = smeltr::leader::accounts::event_for(&actor, "group-hue", &format!("{id}: {}", req.hue), "ok");
+    let set = blocking(move || store.set_group_hue(&id, req.hue, Some(&event))).await;
     set.map(|()| Empty).into()
 }
 
@@ -721,10 +723,10 @@ mod tests {
         let store = test_store("hue-change");
         deploy_to_main(&data, "west", "West");
 
-        store.set_group_hue("west", 120).unwrap();
+        store.set_group_hue("west", 120, None).unwrap();
         assert_eq!(hue_of(&data, "work", "west", &store), Some(120));
 
-        store.set_group_hue("west", 300).unwrap();
+        store.set_group_hue("west", 300, None).unwrap();
         assert_eq!(
             hue_of(&data, "work", "west", &store),
             Some(300),
@@ -760,7 +762,7 @@ mod tests {
     #[test]
     fn shared_is_not_reseeded_once_an_admin_has_colored_it() {
         let store = test_store("shared-hue-chosen");
-        store.set_group_hue(config_file::SHARED_DIR, 42).unwrap();
+        store.set_group_hue(config_file::SHARED_DIR, 42, None).unwrap();
         assert!(!seed_shared_hue(&store).unwrap());
         assert_eq!(store.group_hues().unwrap().get(config_file::SHARED_DIR), Some(&42));
     }

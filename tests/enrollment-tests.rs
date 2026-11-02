@@ -143,10 +143,10 @@ fn listed(dir: &std::path::Path, chain: &[u8], key: &[u8], ca: &[u8]) -> smeltr:
         .map(|(_, list)| list.clone())
         .expect("a leader serving from this directory");
     let (chain, key) = (std::str::from_utf8(chain).unwrap(), std::str::from_utf8(key).unwrap());
-    let version = match list.add_certificate_version("theirs", chain, key) {
+    let version = match list.add_certificate_version("theirs", chain, key, None) {
         Ok(version) => version,
         Err(_) => {
-            list.create_certificate("theirs", "", chain, key).unwrap();
+            list.create_certificate("theirs", "", chain, key, None).unwrap();
             1
         }
     };

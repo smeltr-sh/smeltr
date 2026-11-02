@@ -454,8 +454,12 @@ async fn list(State(state): State<Certificates>) -> Response {
 }
 
 /// `POST /api/certificates`: a certificate supplied with its key, or one this leader issues.
-async fn create(State(state): State<Certificates>, request: Json<NewCertificate>) -> Response {
-    smeltr::leader::create_certificate(State(state.leader), request)
+async fn create(
+    State(state): State<Certificates>,
+    actor: axum::Extension<Actor>,
+    request: Json<NewCertificate>,
+) -> Response {
+    smeltr::leader::create_certificate(State(state.leader), Some(actor), request)
         .await
         .into_response()
 }
@@ -469,8 +473,14 @@ async fn replace(
     Path(name): Path<String>,
     Json(request): Json<CertificateRequest>,
 ) -> Response {
-    let store =
-        |request| smeltr::leader::replace_certificate(State(state.leader.clone()), Path(name.clone()), Json(request));
+    let store = |request| {
+        smeltr::leader::replace_certificate(
+            State(state.leader.clone()),
+            Some(actor.clone()),
+            Path(name.clone()),
+            Json(request),
+        )
+    };
     let Some(serving) = state.tls.clone() else {
         return store(request).await.into_response();
     };

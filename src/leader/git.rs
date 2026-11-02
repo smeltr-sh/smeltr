@@ -617,6 +617,7 @@ fn after_parents(repo: &gix::Repository, parents: &[gix::ObjectId]) -> Result<i6
 /// The id is what survives: a person renamed tomorrow keeps every commit they wrote, under the name they had and
 /// the address they still have.
 fn signature_for(actor: &Actor) -> (String, String) {
+    actor.recorded.mark();
     (
         sanitize_identity(&actor.display_name),
         format!("{}@smeltr.invalid", sanitize_identity(&actor.id)),
@@ -3016,8 +3017,13 @@ pub fn log_where(
 /// A signature this leader did not write has no account id, and the name is then whatever the commit says.
 fn actor_of(name: String, email: String) -> Actor {
     match account_of(&email) {
-        Some(id) => Actor { id, display_name: name },
+        Some(id) => Actor {
+            recorded: Default::default(),
+            id,
+            display_name: name,
+        },
         None => Actor {
+            recorded: Default::default(),
             id: String::new(),
             display_name: name,
         },
@@ -5624,6 +5630,7 @@ mod tests {
         let data = data_with_branch("comment-fold", "work");
         let repo = repo_path(&data);
         let author = Actor {
+            recorded: Default::default(),
             id: "u-ann".into(),
             display_name: "Ann".into(),
         };
@@ -5639,6 +5646,20 @@ mod tests {
         let closed = read_change(&repo, "work").unwrap().unwrap();
         comment_on_change(&repo, "work", "noted", None, None, &Actor::system()).unwrap();
         assert_eq!(read_change(&repo, "work").unwrap().unwrap(), closed);
+    }
+
+    /// A commit signed for a request records it, as an audit row does: the gate then owes it nothing.
+    #[test]
+    fn a_signed_commit_marks_its_request_recorded() {
+        let data = data_with_branch("signed-recorded", "work");
+        let repo = repo_path(&data);
+        let author = Actor {
+            recorded: crate::leader::store::Recorded::armed(),
+            ..Actor::account("u-ann", "Ann")
+        };
+        assert!(!author.recorded.is_marked());
+        open_change(&repo, "work", "Keep the vendor discount field", "why", &author).unwrap();
+        assert!(author.recorded.is_marked());
     }
 
     #[test]
@@ -5660,6 +5681,7 @@ mod tests {
 
     fn ann() -> Actor {
         Actor {
+            recorded: Default::default(),
             id: "u-ann".into(),
             display_name: "Ann".into(),
         }
@@ -5667,6 +5689,7 @@ mod tests {
 
     fn bob() -> Actor {
         Actor {
+            recorded: Default::default(),
             id: "u-bob".into(),
             display_name: "Bob".into(),
         }
@@ -5781,10 +5804,12 @@ mod tests {
         let data = data_with_branch("timeline", "work");
         let repo = repo_path(&data);
         let ann = Actor {
+            recorded: Default::default(),
             id: "u-ann".into(),
             display_name: "Ann".into(),
         };
         let bob = Actor {
+            recorded: Default::default(),
             id: "u-bob".into(),
             display_name: "Bob".into(),
         };
@@ -6406,6 +6431,7 @@ mod tests {
         let second = deploy_change(&data, "two", &Actor::system()).unwrap();
 
         let dana = Actor {
+            recorded: Default::default(),
             id: "u-dana".to_string(),
             display_name: "Dana".to_string(),
         };

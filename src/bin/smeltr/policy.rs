@@ -57,6 +57,19 @@ impl From<Need> for Refusal {
     }
 }
 
+/// Whether `method` on `path` is a request that changes nothing although its method could, and so owes the audit
+/// nothing: a preview, a test run, a person's own conversation with their agent. What that agent then changes
+/// comes through the gate as its own request. A route not named here that changes nothing is recorded by the gate
+/// as a change, and warns, until it is named.
+pub fn changes_nothing(method: &Method, path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/") else {
+        return false;
+    };
+    let segments: Vec<&str> = rest.split('/').collect();
+    let posted = *method == Method::POST && (segments.contains(&"preview") || segments.last() == Some(&"test-runs"));
+    posted || segments.starts_with(&["agent", "conversations"])
+}
+
 /// What `method` on `path` needs.
 pub fn need(method: &Method, path: &str) -> Need {
     let Some(rest) = path.strip_prefix("/api/") else {

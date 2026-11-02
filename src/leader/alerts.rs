@@ -1001,13 +1001,26 @@ pub struct Tested {
 
 /// `POST /api/settings/alerts/test`: send one test to the channel as the page holds it, saved or not. A secret not
 /// sent is the one stored for the channel. PagerDuty is sent a test incident and its resolution at once.
-pub async fn post_test(State(state): State<AppState>, Json(request): Json<PutChannel>) -> Envelope<Tested> {
+pub async fn post_test(
+    State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
+    Json(request): Json<PutChannel>,
+) -> Envelope<Tested> {
     let channel = tidy(request.channel);
     if let Err(e) = check_channel(&channel) {
         return Envelope::refused(Refusal::invalid(e));
     }
     match test(&state, &channel, request.secret).await {
-        Ok(tested) => Envelope::ok(tested),
+        Ok(tested) => {
+            // A message left the leader, so who sent it is recorded.
+            let (actor, name) = (actor.map_or_else(Actor::system, |a| a.0), channel.name.clone());
+            let _ = super::run_store(state.store.clone(), move |s| {
+                super::accounts::record(s, &actor, "alerts-test", &name, "ok");
+                Ok(())
+            })
+            .await;
+            Envelope::ok(tested)
+        }
         Err(why) => {
             tracing::warn!(target: "alerts.test_failed", channel = %channel.name, "the test send to the alert channel failed: {why}");
             Envelope::refused(Refusal::invalid(why))

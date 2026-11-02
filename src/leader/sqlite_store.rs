@@ -689,17 +689,18 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Declares `name` with its first value where it is leader-stored, and that value's certificate chain where it
-    /// is a certificate's private key.
+    /// Declares `name` with its first value where it is leader-stored, and what makes it a certificate where that
+    /// value is a certificate's private key.
     fn create(
         &self,
         name: &str,
         custody: Custody,
         description: &str,
         value: Option<&str>,
-        chain: Option<&str>,
-        kept: Option<&Kept>,
+        certificate: Option<CertificateParts>,
+        event: Option<&SecurityEvent>,
     ) -> Result<(), StoreError> {
+        let (chain, kept) = certificate.map_or((None, None), |c| (Some(c.chain), c.kept));
         if !crate::config_file::is_safe_secret_name(name) {
             return Err(StoreError::invalid(crate::config_file::unsafe_secret_name(name)));
         }
@@ -747,18 +748,38 @@ impl SqliteStore {
             }
             None => {}
         }
+        if let Some(event) = event {
+            insert_event(&tx, event)?;
+        }
         tx.commit()?;
         Ok(())
     }
 
     /// Seals `value` as a new version of `name`, with its certificate chain where it is a certificate's private key.
-    fn add_version(&self, name: &str, value: &str, chain: Option<&str>) -> Result<i64, StoreError> {
+    fn add_version(
+        &self,
+        name: &str,
+        value: &str,
+        chain: Option<&str>,
+        event: Option<&SecurityEvent>,
+    ) -> Result<i64, StoreError> {
         let sealed = self.key_for_sealing()?.seal(name, value.as_bytes());
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let version = Self::take_version(&tx, name)?
             .ok_or_else(|| StoreError::not_found(format!("no leader-stored secret named {name:?}")))?;
         Self::insert_version(&tx, name, version, &sealed, chain)?;
+        if let Some(event) = event {
+            // The version is the store's to take, so the row names it here.
+            let target = format!("{} version {version}", event.target);
+            insert_event(
+                &tx,
+                &SecurityEvent {
+                    target,
+                    ..event.clone()
+                },
+            )?;
+        }
         tx.commit()?;
         Ok(version)
     }
@@ -773,6 +794,13 @@ impl SqliteStore {
         )?;
         Ok(stmt.query_row((name,), |row| row.get(0)).optional()?)
     }
+}
+
+/// What a secret being declared as a certificate carries beside its key: the chain, and how this leader keeps it up
+/// to date where it does.
+struct CertificateParts<'a> {
+    chain: &'a str,
+    kept: Option<&'a Kept>,
 }
 
 /// Marks an enrollment code withdrawn, once. `withdrawn_at IS NULL` in the predicate is what makes a second withdrawal
@@ -1170,22 +1198,32 @@ impl Store for SqliteStore {
         Ok(forgotten)
     }
 
-    fn remove_worker(&self, worker_id: &str, now_ms: i64) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().unwrap();
-        let updated = conn.execute(
+    fn remove_worker(&self, worker_id: &str, now_ms: i64, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let updated = tx.execute(
             "UPDATE worker_credentials SET revoked = 1, removed_at = ?2 WHERE worker_id = ?1 AND removed_at IS NULL",
             (worker_id, now_ms),
-        )?;
-        Ok(updated > 0)
+        )? > 0;
+        if let (true, Some(event)) = (updated, event) {
+            insert_event(&tx, event)?;
+        }
+        tx.commit()?;
+        Ok(updated)
     }
 
-    fn revoke_worker_credential(&self, worker_id: &str) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().unwrap();
-        let updated = conn.execute(
+    fn revoke_worker_credential(&self, worker_id: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let updated = tx.execute(
             "UPDATE worker_credentials SET revoked = 1 WHERE worker_id = ?1",
             (worker_id,),
-        )?;
-        Ok(updated > 0)
+        )? > 0;
+        if let (true, Some(event)) = (updated, event) {
+            insert_event(&tx, event)?;
+        }
+        tx.commit()?;
+        Ok(updated)
     }
 
     fn list_secrets(&self) -> Result<Vec<SecretRecord>, StoreError> {
@@ -1246,12 +1284,27 @@ impl Store for SqliteStore {
         custody: Custody,
         description: &str,
         value: Option<&str>,
+        event: Option<&SecurityEvent>,
     ) -> Result<(), StoreError> {
-        self.create(name, custody, description, value, None, None)
+        self.create(name, custody, description, value, None, event)
     }
 
-    fn create_certificate(&self, name: &str, description: &str, chain: &str, key: &str) -> Result<(), StoreError> {
-        self.create(name, Custody::LeaderStored, description, Some(key), Some(chain), None)
+    fn create_certificate(
+        &self,
+        name: &str,
+        description: &str,
+        chain: &str,
+        key: &str,
+        event: Option<&SecurityEvent>,
+    ) -> Result<(), StoreError> {
+        self.create(
+            name,
+            Custody::LeaderStored,
+            description,
+            Some(key),
+            Some(CertificateParts { chain, kept: None }),
+            event,
+        )
     }
 
     fn create_kept_certificate(
@@ -1261,14 +1314,18 @@ impl Store for SqliteStore {
         kept: &Kept,
         chain: &str,
         key: &str,
+        event: Option<&SecurityEvent>,
     ) -> Result<(), StoreError> {
         self.create(
             name,
             Custody::LeaderStored,
             description,
             Some(key),
-            Some(chain),
-            Some(kept),
+            Some(CertificateParts {
+                chain,
+                kept: Some(kept),
+            }),
+            event,
         )
     }
 
@@ -1309,12 +1366,18 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn add_secret_version(&self, name: &str, value: &str) -> Result<i64, StoreError> {
-        self.add_version(name, value, None)
+    fn add_secret_version(&self, name: &str, value: &str, event: Option<&SecurityEvent>) -> Result<i64, StoreError> {
+        self.add_version(name, value, None, event)
     }
 
-    fn add_certificate_version(&self, name: &str, chain: &str, key: &str) -> Result<i64, StoreError> {
-        self.add_version(name, key, Some(chain))
+    fn add_certificate_version(
+        &self,
+        name: &str,
+        chain: &str,
+        key: &str,
+        event: Option<&SecurityEvent>,
+    ) -> Result<i64, StoreError> {
+        self.add_version(name, key, Some(chain), event)
     }
 
     fn certificate_chain(&self, name: &str, version: i64) -> Result<Option<String>, StoreError> {
@@ -1329,7 +1392,7 @@ impl Store for SqliteStore {
             .optional()?)
     }
 
-    fn delete_secret(&self, name: &str) -> Result<bool, StoreError> {
+    fn delete_secret(&self, name: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM certificate_chains WHERE name = ?1", (name,))?;
@@ -1337,11 +1400,19 @@ impl Store for SqliteStore {
         tx.execute("DELETE FROM acme_certificates WHERE name = ?1", (name,))?;
         tx.execute("DELETE FROM secret_versions WHERE name = ?1", (name,))?;
         let gone = tx.execute("DELETE FROM secrets WHERE name = ?1", (name,))? > 0;
+        if let (true, Some(event)) = (gone, event) {
+            insert_event(&tx, event)?;
+        }
         tx.commit()?;
         Ok(gone)
     }
 
-    fn delete_secret_version(&self, name: &str, version: i64) -> Result<bool, StoreError> {
+    fn delete_secret_version(
+        &self,
+        name: &str,
+        version: i64,
+        event: Option<&SecurityEvent>,
+    ) -> Result<bool, StoreError> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute(
@@ -1352,6 +1423,9 @@ impl Store for SqliteStore {
             "DELETE FROM secret_versions WHERE name = ?1 AND version = ?2",
             (name, version),
         )? > 0;
+        if let (true, Some(event)) = (gone, event) {
+            insert_event(&tx, event)?;
+        }
         tx.commit()?;
         Ok(gone)
     }
@@ -1479,13 +1553,18 @@ impl Store for SqliteStore {
         Ok(rows.into_iter().collect())
     }
 
-    fn set_group_hue(&self, group_id: &str, hue: u16) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
+    fn set_group_hue(&self, group_id: &str, hue: u16, event: Option<&SecurityEvent>) -> Result<(), StoreError> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO group_colors (group_id, hue) VALUES (?1, ?2)
              ON CONFLICT(group_id) DO UPDATE SET hue = excluded.hue",
             (group_id, hue),
         )?;
+        if let Some(event) = event {
+            insert_event(&tx, event)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -2022,6 +2101,7 @@ impl Store for SqliteStore {
         )?;
         let rows = stmt.query_map((limit as i64,), |row| {
             Ok(SecurityEvent {
+                recorded: Default::default(),
                 id: row.get(0)?,
                 at: row.get(1)?,
                 actor: row.get(2)?,
@@ -2455,6 +2535,7 @@ fn insert_event(conn: &Connection, event: &SecurityEvent) -> Result<(), StoreErr
             event.outcome
         ],
     )?;
+    event.recorded.mark();
     // Logged where it is written, so every audited action reaches the log without its handler saying so. The row
     // holds ids; the line names whom they belong to. An outcome other than "refused" is a success, some of which
     // keep their detail there.
@@ -2945,7 +3026,7 @@ mod tests {
             Spend::AlreadyEnrolled
         );
 
-        s.revoke_worker_credential("w1").unwrap();
+        s.revoke_worker_credential("w1", None).unwrap();
         assert_eq!(
             s.spend_enrollment_code("h1", "w1", "t3", NOW, "fp", &["fp"]).unwrap(),
             Spend::AlreadyEnrolled
@@ -3012,7 +3093,7 @@ mod tests {
         s.spend_enrollment_code("hf", "pod-2", "t2", NOW + 5, "fp", &["fp"])
             .unwrap();
         s.spend_enrollment_code("hv", "vm-1", "tv", NOW, "fp", &["fp"]).unwrap();
-        s.revoke_worker_credential("pod-2").unwrap();
+        s.revoke_worker_credential("pod-2", None).unwrap();
         assert_eq!(
             s.get_worker_credential_by_hash("t2").unwrap().unwrap().enrolled_at,
             Some(NOW + 5),
@@ -3137,6 +3218,7 @@ mod tests {
 
         let withdrawn = s
             .withdraw_enrollment_codes_not_naming(&[promoted, ""], NOW, &|id| SecurityEvent {
+                recorded: Default::default(),
                 id: format!("e-{id}"),
                 at: NOW,
                 actor: "system".to_string(),
@@ -3202,6 +3284,7 @@ mod tests {
         let s = store();
         s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR)).unwrap();
         let event = SecurityEvent {
+            recorded: Default::default(),
             id: "e1".to_string(),
             at: NOW,
             actor: "u_1".to_string(),
@@ -3294,7 +3377,7 @@ mod tests {
     fn a_revoked_worker_id_stays_revoked_after_an_enrollment_attempt() {
         let s = store();
         s.store_worker_credential("worker-1", "tokenhash1").unwrap();
-        s.revoke_worker_credential("worker-1").unwrap();
+        s.revoke_worker_credential("worker-1", None).unwrap();
         assert!(s.store_worker_credential("worker-1", "tokenhash2").is_err());
         let cred = s.get_worker_credential_by_hash("tokenhash1").unwrap().unwrap();
         assert!(cred.revoked);
@@ -3305,7 +3388,7 @@ mod tests {
     fn revoke_worker_credential_marks_it_revoked() {
         let s = store();
         s.store_worker_credential("worker-1", "tokenhash1").unwrap();
-        assert!(s.revoke_worker_credential("worker-1").unwrap());
+        assert!(s.revoke_worker_credential("worker-1", None).unwrap());
         let cred = s.get_worker_credential_by_hash("tokenhash1").unwrap().unwrap();
         assert!(cred.revoked);
     }
@@ -3313,14 +3396,14 @@ mod tests {
     #[test]
     fn revoke_worker_credential_on_an_unknown_worker_returns_false_not_an_error() {
         let s = store();
-        assert!(!s.revoke_worker_credential("nope").unwrap());
+        assert!(!s.revoke_worker_credential("nope", None).unwrap());
     }
 
     #[test]
     fn list_worker_credentials_includes_a_revoked_worker() {
         let s = store();
         s.store_worker_credential("worker-1", "hash1").unwrap();
-        s.revoke_worker_credential("worker-1").unwrap();
+        s.revoke_worker_credential("worker-1", None).unwrap();
         let creds = s.list_worker_credentials().unwrap();
         assert_eq!(creds.len(), 1);
         assert_eq!(creds[0].worker_id, "worker-1");
@@ -3345,7 +3428,8 @@ mod tests {
     // -- the secret catalog ------------------------------------------------
 
     fn leader_stored(s: &SqliteStore, name: &str, value: &str) {
-        s.create_secret(name, Custody::LeaderStored, "", Some(value)).unwrap();
+        s.create_secret(name, Custody::LeaderStored, "", Some(value), None)
+            .unwrap();
     }
 
     fn record(s: &SqliteStore, name: &str) -> SecretRecord {
@@ -3366,7 +3450,7 @@ mod tests {
     fn a_worker_local_secret_is_a_name_and_nothing_else() {
         let key = temp_key();
         let s = store_with_key(&key);
-        s.create_secret("KAFKA_WEST_SASL", Custody::WorkerLocal, "the west broker", None)
+        s.create_secret("KAFKA_WEST_SASL", Custody::WorkerLocal, "the west broker", None, None)
             .unwrap();
 
         let r = record(&s, "KAFKA_WEST_SASL");
@@ -3399,11 +3483,11 @@ mod tests {
             names: vec!["a.example.com".to_string(), "10.0.0.7".to_string()],
             validity_days: 90,
         });
-        s.create_kept_certificate("issued", "", &issued, "chain", "key")
+        s.create_kept_certificate("issued", "", &issued, "chain", "key", None)
             .unwrap();
-        s.create_kept_certificate("acme", "", &Kept::Acme, "chain", "key")
+        s.create_kept_certificate("acme", "", &Kept::Acme, "chain", "key", None)
             .unwrap();
-        s.create_certificate("uploaded", "", "chain", "key").unwrap();
+        s.create_certificate("uploaded", "", "chain", "key", None).unwrap();
         assert_eq!(
             s.kept_certificates().unwrap(),
             [("acme".to_string(), Kept::Acme), ("issued".to_string(), issued)]
@@ -3412,8 +3496,8 @@ mod tests {
         );
         assert!(record(&s, "issued").certificate);
 
-        s.delete_secret("issued").unwrap();
-        s.delete_secret("acme").unwrap();
+        s.delete_secret("issued", None).unwrap();
+        s.delete_secret("acme", None).unwrap();
         assert!(s.kept_certificates().unwrap().is_empty());
     }
 
@@ -3425,11 +3509,18 @@ mod tests {
             names: names.iter().map(|n| n.to_string()).collect(),
             validity_days: 90,
         };
-        s.create_kept_certificate("issued", "", &Kept::Issued(issued(&["a.example.com"])), "chain", "key")
+        s.create_kept_certificate(
+            "issued",
+            "",
+            &Kept::Issued(issued(&["a.example.com"])),
+            "chain",
+            "key",
+            None,
+        )
+        .unwrap();
+        s.create_kept_certificate("acme", "", &Kept::Acme, "chain", "key", None)
             .unwrap();
-        s.create_kept_certificate("acme", "", &Kept::Acme, "chain", "key")
-            .unwrap();
-        s.create_certificate("uploaded", "", "chain", "key").unwrap();
+        s.create_certificate("uploaded", "", "chain", "key", None).unwrap();
 
         s.set_issued("issued", &issued(&["b.example.com"])).unwrap();
         assert_eq!(
@@ -3446,9 +3537,13 @@ mod tests {
     #[test]
     fn a_certificate_is_a_secret_with_a_chain_beside_each_version() {
         let s = store();
-        s.create_certificate("leader", "served", "chain 1", "key 1").unwrap();
+        s.create_certificate("leader", "served", "chain 1", "key 1", None)
+            .unwrap();
         leader_stored(&s, "kafka-west-sasl", "hunter2");
-        assert_eq!(s.add_certificate_version("leader", "chain 2", "key 2").unwrap(), 2);
+        assert_eq!(
+            s.add_certificate_version("leader", "chain 2", "key 2", None).unwrap(),
+            2
+        );
 
         let r = record(&s, "leader");
         assert!(r.certificate);
@@ -3471,22 +3566,25 @@ mod tests {
             .unwrap();
         assert_eq!(plain[0].chain, None);
 
-        s.delete_secret_version("leader", 1).unwrap();
+        s.delete_secret_version("leader", 1, None).unwrap();
         assert_eq!(
             s.certificate_chain("leader", 1).unwrap(),
             None,
             "a chain goes with its version"
         );
-        s.delete_secret("leader").unwrap();
+        s.delete_secret("leader", None).unwrap();
         assert_eq!(s.certificate_chain("leader", 2).unwrap(), None);
     }
 
     #[test]
     fn custody_and_the_value_must_agree_at_creation() {
         let s = store();
-        assert!(s.create_secret("no-value", Custody::LeaderStored, "", None).is_err());
         assert!(
-            s.create_secret("not-mine", Custody::WorkerLocal, "", Some("hunter2"))
+            s.create_secret("no-value", Custody::LeaderStored, "", None, None)
+                .is_err()
+        );
+        assert!(
+            s.create_secret("not-mine", Custody::WorkerLocal, "", Some("hunter2"), None)
                 .is_err()
         );
         assert!(s.list_secrets().unwrap().is_empty(), "neither was written");
@@ -3497,7 +3595,7 @@ mod tests {
         let s = store();
         leader_stored(&s, "kafka-west-sasl", "hunter2");
         assert!(
-            s.create_secret("kafka-west-sasl", Custody::WorkerLocal, "", None)
+            s.create_secret("kafka-west-sasl", Custody::WorkerLocal, "", None, None)
                 .is_err()
         );
         assert!(s.verify_secret("kafka-west-sasl", 1, "hunter2").unwrap(), "unchanged");
@@ -3508,7 +3606,7 @@ mod tests {
         let s = store();
         for bad in ["", "has space", "quote\"", "../escape", "wide\u{00e9}"] {
             assert!(
-                s.create_secret(bad, Custody::WorkerLocal, "", None).is_err(),
+                s.create_secret(bad, Custody::WorkerLocal, "", None, None).is_err(),
                 "{bad:?} should be refused"
             );
         }
@@ -3526,7 +3624,7 @@ mod tests {
         );
         assert!(!s.verify_secret("never-declared", 1, "hunter2").unwrap());
 
-        s.create_secret("KAFKA_EAST_SASL", Custody::WorkerLocal, "", None)
+        s.create_secret("KAFKA_EAST_SASL", Custody::WorkerLocal, "", None, None)
             .unwrap();
         assert!(
             !s.verify_secret("KAFKA_EAST_SASL", 1, "hunter2").unwrap(),
@@ -3541,8 +3639,8 @@ mod tests {
         let s = store();
         leader_stored(&s, "kafka-west-sasl", "hunter2");
 
-        assert_eq!(s.add_secret_version("kafka-west-sasl", "hunter3").unwrap(), 2);
-        assert_eq!(s.add_secret_version("kafka-west-sasl", "hunter4").unwrap(), 3);
+        assert_eq!(s.add_secret_version("kafka-west-sasl", "hunter3", None).unwrap(), 2);
+        assert_eq!(s.add_secret_version("kafka-west-sasl", "hunter4", None).unwrap(), 3);
         assert_eq!(versions(&s, "kafka-west-sasl"), vec![1, 2, 3]);
         assert_eq!(record(&s, "kafka-west-sasl").current().unwrap().version, 3);
 
@@ -3557,14 +3655,17 @@ mod tests {
     fn a_forgotten_version_number_is_not_handed_out_again() {
         let s = store();
         leader_stored(&s, "kafka-west-sasl", "hunter2");
-        assert_eq!(s.add_secret_version("kafka-west-sasl", "hunter3").unwrap(), 2);
+        assert_eq!(s.add_secret_version("kafka-west-sasl", "hunter3", None).unwrap(), 2);
 
-        assert!(s.delete_secret_version("kafka-west-sasl", 2).unwrap());
-        assert!(!s.delete_secret_version("kafka-west-sasl", 2).unwrap(), "gone already");
+        assert!(s.delete_secret_version("kafka-west-sasl", 2, None).unwrap());
+        assert!(
+            !s.delete_secret_version("kafka-west-sasl", 2, None).unwrap(),
+            "gone already"
+        );
         assert_eq!(versions(&s, "kafka-west-sasl"), vec![1]);
 
         assert_eq!(
-            s.add_secret_version("kafka-west-sasl", "hunter4").unwrap(),
+            s.add_secret_version("kafka-west-sasl", "hunter4", None).unwrap(),
             3,
             "counts past what was forgotten"
         );
@@ -3575,10 +3676,10 @@ mod tests {
     #[test]
     fn only_a_leader_stored_secret_has_a_value_to_add() {
         let s = store();
-        s.create_secret("KAFKA_EAST_SASL", Custody::WorkerLocal, "", None)
+        s.create_secret("KAFKA_EAST_SASL", Custody::WorkerLocal, "", None, None)
             .unwrap();
-        assert!(s.add_secret_version("KAFKA_EAST_SASL", "hunter2").is_err());
-        assert!(s.add_secret_version("never-declared", "hunter2").is_err());
+        assert!(s.add_secret_version("KAFKA_EAST_SASL", "hunter2", None).is_err());
+        assert!(s.add_secret_version("never-declared", "hunter2", None).is_err());
 
         let r = record(&s, "KAFKA_EAST_SASL");
         assert_eq!(r.custody(), Custody::WorkerLocal);
@@ -3590,10 +3691,10 @@ mod tests {
     fn deleting_says_whether_there_was_one_and_takes_every_version() {
         let s = store();
         leader_stored(&s, "kafka-west-sasl", "hunter2");
-        s.add_secret_version("kafka-west-sasl", "hunter3").unwrap();
+        s.add_secret_version("kafka-west-sasl", "hunter3", None).unwrap();
 
-        assert!(s.delete_secret("kafka-west-sasl").unwrap());
-        assert!(!s.delete_secret("kafka-west-sasl").unwrap());
+        assert!(s.delete_secret("kafka-west-sasl", None).unwrap());
+        assert!(!s.delete_secret("kafka-west-sasl", None).unwrap());
         assert!(s.list_secrets().unwrap().is_empty());
         assert!(!s.verify_secret("kafka-west-sasl", 1, "hunter2").unwrap());
         assert!(!s.verify_secret("kafka-west-sasl", 2, "hunter3").unwrap());
@@ -3658,15 +3759,15 @@ mod tests {
             "{problem}"
         );
 
-        let refused = s.add_secret_version("kafka-west-sasl", "hunter3").unwrap_err();
+        let refused = s.add_secret_version("kafka-west-sasl", "hunter3", None).unwrap_err();
         assert_eq!(refused.message, problem);
         assert!(
-            s.create_secret("es-auth", Custody::LeaderStored, "", Some("x"))
+            s.create_secret("es-auth", Custody::LeaderStored, "", Some("x"), None)
                 .is_err()
         );
         assert!(s.sealed_setting("agents.api_key", "sk-1").is_err());
         assert!(!key.exists(), "a refused write does not write a key either");
-        s.create_secret("pg-replica", Custody::WorkerLocal, "", None)
+        s.create_secret("pg-replica", Custody::WorkerLocal, "", None, None)
             .expect("a worker-local secret seals nothing");
     }
 
@@ -3691,7 +3792,7 @@ mod tests {
                 .unwrap()
                 .contains("does not match the stored secrets")
         );
-        assert!(s.add_secret_version("kafka-west-sasl", "hunter3").is_err());
+        assert!(s.add_secret_version("kafka-west-sasl", "hunter3", None).is_err());
     }
 
     /// Regenerating keeps the old values and names each one to enter again; entering one clears it.
@@ -3701,7 +3802,7 @@ mod tests {
         let s = store_with_key(&key);
         leader_stored(&s, "kafka-west-sasl", "hunter2");
         leader_stored(&s, "es-auth", "changeme");
-        s.create_certificate("ingest-tls", "", "chain", "key").unwrap();
+        s.create_certificate("ingest-tls", "", "chain", "key", None).unwrap();
         std::fs::remove_file(&key).unwrap();
 
         let standing = s.regenerate_key(&regenerated()).unwrap();
@@ -3720,9 +3821,9 @@ mod tests {
             "the old value stays, unusable"
         );
 
-        s.add_secret_version("es-auth", "changeme2")
+        s.add_secret_version("es-auth", "changeme2", None)
             .expect("sealing works again");
-        s.add_certificate_version("ingest-tls", "chain2", "key2").unwrap();
+        s.add_certificate_version("ingest-tls", "chain2", "key2", None).unwrap();
         assert_eq!(s.key_standing().unwrap().unopenable, vec![secret("kafka-west-sasl")]);
         assert_eq!(
             s.list_security_events(10)
@@ -3740,7 +3841,7 @@ mod tests {
         let key = temp_key();
         let s = store_with_key(&key);
         leader_stored(&s, "kafka-west-sasl", "hunter2");
-        s.add_secret_version("kafka-west-sasl", "hunter3").unwrap();
+        s.add_secret_version("kafka-west-sasl", "hunter3", None).unwrap();
         s.conn
             .lock()
             .unwrap()
@@ -3823,7 +3924,7 @@ mod tests {
         leader_stored(&s, "kafka-west-sasl", "hunter2");
         leader_stored(&s, "es-auth", "ApiKey abc");
         leader_stored(&s, "not-ours", "swordfish");
-        s.add_secret_version("es-auth", "ApiKey def").unwrap();
+        s.add_secret_version("es-auth", "ApiKey def", None).unwrap();
 
         let entitled = [("kafka-west-sasl".to_string(), 1), ("es-auth".to_string(), 1)];
         let mut out = values(s.secrets_for_delivery(&entitled, &[]).unwrap());
@@ -3856,7 +3957,7 @@ mod tests {
     fn holding_another_version_does_not_satisfy_the_one_asked_for() {
         let s = store();
         leader_stored(&s, "es-auth", "ApiKey abc");
-        s.add_secret_version("es-auth", "ApiKey def").unwrap();
+        s.add_secret_version("es-auth", "ApiKey def", None).unwrap();
 
         assert_eq!(
             values(
@@ -3878,7 +3979,7 @@ mod tests {
     #[test]
     fn a_version_that_is_not_held_is_not_delivered() {
         let s = store();
-        s.create_secret("KAFKA_EAST_SASL", Custody::WorkerLocal, "", None)
+        s.create_secret("KAFKA_EAST_SASL", Custody::WorkerLocal, "", None, None)
             .unwrap();
         leader_stored(&s, "es-auth", "ApiKey abc");
         assert!(
@@ -3914,7 +4015,7 @@ mod tests {
     fn secrets_list_by_name() {
         let s = store();
         for name in ["zulu", "alpha", "mike"] {
-            s.create_secret(name, Custody::WorkerLocal, "", None).unwrap();
+            s.create_secret(name, Custody::WorkerLocal, "", None, None).unwrap();
         }
         let names: Vec<_> = s.list_secrets().unwrap().into_iter().map(|r| r.name).collect();
         assert_eq!(names, ["alpha", "mike", "zulu"]);
@@ -3925,8 +4026,8 @@ mod tests {
     #[test]
     fn setting_a_hue_twice_replaces_rather_than_duplicates() {
         let s = store();
-        s.set_group_hue("west", 120).unwrap();
-        s.set_group_hue("west", 200).unwrap();
+        s.set_group_hue("west", 120, None).unwrap();
+        s.set_group_hue("west", 200, None).unwrap();
         let hues = s.group_hues().unwrap();
         assert_eq!(hues.len(), 1);
         assert_eq!(hues.get("west"), Some(&200));
@@ -3935,8 +4036,8 @@ mod tests {
     #[test]
     fn two_groups_each_keep_their_own_hue() {
         let s = store();
-        s.set_group_hue("west", 120).unwrap();
-        s.set_group_hue("east", 300).unwrap();
+        s.set_group_hue("west", 120, None).unwrap();
+        s.set_group_hue("east", 300, None).unwrap();
         let hues = s.group_hues().unwrap();
         assert_eq!(hues.get("west"), Some(&120));
         assert_eq!(hues.get("east"), Some(&300));
@@ -4538,6 +4639,7 @@ mod tests {
         let s = store();
         for (i, action) in ["bootstrap", "login", "logout"].iter().enumerate() {
             s.record_security_event(&SecurityEvent {
+                recorded: Default::default(),
                 id: format!("e{i}"),
                 at: i as i64,
                 actor: "host".into(),
@@ -4568,6 +4670,7 @@ mod tests {
         let said = crate::logs::said(|| {
             for (actor, target) in [("u_admin", "u_admin"), ("system", "")] {
                 s.record_security_event(&SecurityEvent {
+                    recorded: Default::default(),
                     id: format!("e-{actor}"),
                     at: 1,
                     actor: actor.into(),
@@ -4589,6 +4692,46 @@ mod tests {
         assert_eq!(named(fields[1], "actor_name"), None, "a reserved actor is no account");
     }
 
+    /// A secret's life is in the audit: made, given a version (named by the number the store took), a version
+    /// forgotten, and deleted. Writing each row marks the request it answers as recorded.
+    #[test]
+    fn a_secret_s_life_is_audited() {
+        let s = store();
+        let actor = crate::leader::store::Actor {
+            recorded: crate::leader::store::Recorded::armed(),
+            ..crate::leader::store::Actor::account("u_dana", "Dana")
+        };
+        let event = |action: &str, target: &str| crate::leader::accounts::event_for(&actor, action, target, "ok");
+        s.create_secret(
+            "api",
+            Custody::LeaderStored,
+            "",
+            Some("v1"),
+            Some(&event("secret-create", "api")),
+        )
+        .unwrap();
+        assert!(actor.recorded.is_marked());
+        s.add_secret_version("api", "v2", Some(&event("secret-store", "api")))
+            .unwrap();
+        s.delete_secret_version("api", 1, Some(&event("secret-version-forget", "api version 1")))
+            .unwrap();
+        s.delete_secret("api", Some(&event("secret-delete", "api"))).unwrap();
+        let rows: Vec<(String, String)> = s
+            .list_security_events(10)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .map(|e| (e.action, e.target))
+            .collect();
+        let expected = [
+            ("secret-create", "api"),
+            ("secret-store", "api version 2"),
+            ("secret-version-forget", "api version 1"),
+            ("secret-delete", "api"),
+        ];
+        assert_eq!(rows, expected.map(|(a, t)| (a.to_string(), t.to_string())));
+    }
+
     /// A refusal is said at warn. Every other outcome is a success, said at info, its detail with it.
     #[test]
     fn an_audited_refusal_is_a_warning_and_anything_else_is_news() {
@@ -4596,6 +4739,7 @@ mod tests {
         let said = crate::logs::said(|| {
             for outcome in ["ok", "refused", "rotation-begun"] {
                 s.record_security_event(&SecurityEvent {
+                    recorded: Default::default(),
                     id: format!("e-{outcome}"),
                     at: 1,
                     actor: "system".into(),

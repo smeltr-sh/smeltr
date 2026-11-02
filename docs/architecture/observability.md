@@ -125,7 +125,12 @@ is a literal `subsystem.event` with one constant sentence, and what varies
 rides in fields: `subject` names the thing the line is about, `error` carries
 what failed. Every refused answer the leader gives is logged by the layer
 that shapes it, and every audit row by the store that writes it, so neither
-depends on the handler remembering to.
+depends on the handler remembering to. Every request a person or a key
+makes that changes something leaves a record of who made it: an audit row, or
+a commit signed for them. One that left neither is recorded by the gate, under
+the method and path it came by, and said at warn, so the handler that forgot
+is found. Every request and its answer are said at trace, with who asked, the
+status and how long it took, and never a body.
 
 ## What a heartbeat carries
 

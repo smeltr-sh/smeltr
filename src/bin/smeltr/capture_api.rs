@@ -10,9 +10,10 @@ use axum::response::{IntoResponse, Response};
 
 use smeltr::config_file;
 use smeltr::leader::access::{Access, Level};
+use smeltr::leader::accounts;
 use smeltr::leader::capture::{CaptureRequest, CaptureStatus, Captures};
 use smeltr::leader::envelope::{Envelope, Refusal};
-use smeltr::leader::store::Actor;
+use smeltr::leader::store::{Actor, StoreError};
 use smeltr::leader::{AppState, blocking};
 use smeltr::worker::capture::UNCLAIMED;
 
@@ -43,6 +44,7 @@ pub struct StartedCapture {
 pub async fn start_capture(
     State(state): State<AppState>,
     Extension(access): Extension<Access>,
+    Extension(actor): Extension<Actor>,
     Json(request): Json<CaptureRequest>,
 ) -> Response {
     let need = Need::Area {
@@ -52,7 +54,17 @@ pub async fn start_capture(
     if !need.met_by(&access) {
         return Refusal::from(need).into_response();
     }
-    open_capture(state, request).await.into_response()
+    let (store, group) = (state.store.clone(), request.group.clone());
+    let response = open_capture(state, request).await.into_response();
+    // A capture reads live records out of a group, so who opened one is recorded.
+    if response.status().is_success() {
+        let _ = blocking(move || {
+            accounts::record(store.as_ref(), &actor, "capture-start", &group, "ok");
+            Ok::<(), StoreError>(())
+        })
+        .await;
+    }
+    response
 }
 
 async fn open_capture(state: AppState, request: CaptureRequest) -> Envelope<StartedCapture> {
@@ -559,9 +571,25 @@ pub async fn save_capture(
 pub async fn stop_capture(
     State(state): State<AppState>,
     Extension(access): Extension<Access>,
+    Extension(actor): Extension<Actor>,
     AxPath(session): AxPath<String>,
 ) -> Envelope<Followed> {
-    stop(&state.captures, &access, &session)
+    let found = followed(&state.captures, &access, &session);
+    let stopped = stop(&state.captures, &access, &session);
+    if found {
+        recorded(&state, actor, "capture-stop", session).await;
+    }
+    stopped
+}
+
+/// What a person did to a capture, which lives in memory and so records nothing of its own.
+async fn recorded(state: &AppState, actor: Actor, what: &'static str, session: String) {
+    let store = state.store.clone();
+    let _ = blocking(move || {
+        accounts::record(store.as_ref(), &actor, what, &session, "ok");
+        Ok::<(), StoreError>(())
+    })
+    .await;
 }
 
 fn stop(captures: &Captures, access: &Access, session: &str) -> Envelope<Followed> {
@@ -573,10 +601,14 @@ fn stop(captures: &Captures, access: &Access, session: &str) -> Envelope<Followe
 pub async fn discard_capture(
     State(state): State<AppState>,
     Extension(access): Extension<Access>,
+    Extension(actor): Extension<Actor>,
     AxPath(session): AxPath<String>,
 ) -> Envelope {
     match discard(&state.captures, &access, &session) {
-        true => Envelope::done(),
+        true => {
+            recorded(&state, actor, "capture-discard", session).await;
+            Envelope::done()
+        }
         false => Envelope::refused(Refusal::not_found(NO_CAPTURE)),
     }
 }
@@ -704,8 +736,8 @@ mod tests {
         let key = std::env::temp_dir().join(format!("smeltr-capture-lent-{}.key", std::process::id()));
         let _ = std::fs::remove_file(&key);
         let store = SqliteStore::open(std::path::Path::new(":memory:"), &key).unwrap();
-        store.create_certificate("cli", "", "chain-1", "key-1").unwrap();
-        store.add_certificate_version("cli", "chain-2", "key-2").unwrap();
+        store.create_certificate("cli", "", "chain-1", "key-1", None).unwrap();
+        store.add_certificate_version("cli", "chain-2", "key-2", None).unwrap();
         let source = |certificate: &str| config_file::FileConfig {
             version: config_file::CURRENT_VERSION,
             sources: vec![

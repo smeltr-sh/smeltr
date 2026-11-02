@@ -420,6 +420,7 @@ pub fn event_for(actor: &Actor, action: &str, target: &str, outcome: &str) -> Se
         action: action.to_string(),
         target: target.to_string(),
         outcome: outcome.to_string(),
+        recorded: actor.recorded.clone(),
     }
 }
 

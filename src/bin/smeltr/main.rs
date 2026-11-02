@@ -1153,6 +1153,11 @@ async fn setup_leader(
             "/api/branches",
             get(branch_api::list_branches).post(branch_api::create_branch),
         )
+        // Here for `State<AppState>`: deleting one records who did, in the store.
+        .route(
+            "/api/branches/:name",
+            delete(branch_api::delete_branch).patch(branch_api::retitle_change),
+        )
         .route("/api/preview/sql", post(sql_api::sql_statement))
         .route("/api/captures", post(capture_api::start_capture))
         .route(
@@ -2136,10 +2141,6 @@ async fn run_leader() {
         .route("/api/areas/:area/preview/routes", post(route_preview))
         .route("/api/areas/:area/lookups/file", get(config_api::get_lookup_file))
         .route("/api/areas/:area/lookups/mmdb", get(config_api::get_lookup_mmdb))
-        .route(
-            "/api/branches/:name",
-            delete(branch_api::delete_branch).patch(branch_api::retitle_change),
-        )
         // GET/POST `/api/worker-groups` and PUT `/api/worker-groups/:id/hue` are on `admin_and_cluster` instead:
         // both need `State<AppState>`, which only that router carries.
         .route(
@@ -2337,7 +2338,8 @@ async fn run_leader() {
     // Outside `shape`, which reads a refusal's body.
     let app = smeltr::leader::gzipped(app)
         // Outermost, so every answer carries the browser hardening headers, the assets and the fallback included.
-        .layer(axum::middleware::from_fn(gate::harden));
+        .layer(axum::middleware::from_fn(gate::harden))
+        .layer(axum::middleware::from_fn(gate::traced));
     // What an agent's calls go through: this router, gate and all.
     auth.chats.serve(app.clone());
 

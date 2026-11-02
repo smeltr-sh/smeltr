@@ -27,11 +27,12 @@ use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use smeltr::leader::access::{Access, ByAgent, Level, given_by};
+use smeltr::leader::accounts;
 use smeltr::leader::auth::hash_secret;
 use smeltr::leader::blocking;
 use smeltr::leader::envelope::{Reason, Refusal, log_refused};
 use smeltr::leader::sessions::{Refused, Sessions};
-use smeltr::leader::store::{Actor, AuthSource, Store, StoreError, UserRecord};
+use smeltr::leader::store::{Actor, AuthSource, Recorded, Store, StoreError, UserRecord};
 use smeltr::leader::throttle::LoginThrottle;
 use smeltr::leader::warnings::now_millis;
 
@@ -224,7 +225,7 @@ pub async fn require_principal(
         }
         let by_agent = req.extensions().get::<ByAgent>().is_some();
         return match key_account_of(&auth, key, by_agent).await {
-            Ok((actor, access)) => admit(req, next, &method, &path, actor, access).await,
+            Ok((actor, access)) => admit(&auth, req, next, &method, &path, actor, access).await,
             Err(response) => *response,
         };
     }
@@ -308,7 +309,7 @@ pub async fn require_principal(
     } else {
         Actor::account(&user.id, &user.display_name)
     };
-    admit(req, next, &method, &path, actor, access).await
+    admit(&auth, req, next, &method, &path, actor, access).await
 }
 
 /// Let in a caller the gate has named, if what they hold meets what the route needs.
@@ -316,7 +317,11 @@ pub async fn require_principal(
 /// An `Actor` is what an audit row and a git author both take: who is asking is one fact, and a second type for it
 /// would be a second fact to keep in step. The gate constructs it and nothing else does, so no field of a request
 /// body reaches it.
+///
+/// A change that recorded nothing -- no audit row, no signed commit -- is recorded here instead, under the
+/// method and path it came in by, and said at warn so the handler that forgot is found.
 async fn admit(
+    auth: &Auth,
     mut req: axum::extract::Request,
     next: axum::middleware::Next,
     method: &Method,
@@ -328,10 +333,28 @@ async fn admit(
     if !need.met_by(&access) {
         return Refusal::from(need).into_response();
     }
-    req.extensions_mut().insert(actor);
+    let actor = Actor {
+        recorded: Recorded::armed(),
+        ..actor
+    };
+    req.extensions_mut().insert(actor.clone());
     // Beside the actor, for a handler whose area is in the body or the branch and so could not be judged above.
     req.extensions_mut().insert(access);
-    next.run(req).await
+    let mut response = next.run(req).await;
+    let unrecorded = !is_safe(method) && response.status().is_success() && !actor.recorded.is_marked();
+    if unrecorded && !policy::changes_nothing(method, path) {
+        tracing::warn!(target: "audit.unrecorded", actor = %actor.id, method = %method, path, "a change recorded nothing, so the gate recorded it");
+        let (store, what) = (auth.store.clone(), format!("{method} {path}"));
+        let actor = actor.clone();
+        let _ = blocking(move || {
+            accounts::record(store.as_ref(), &actor, "unrecorded", &what, "ok");
+            Ok::<(), StoreError>(())
+        })
+        .await;
+    }
+    // For the line that says what was answered, and to whom (`traced`).
+    response.extensions_mut().insert(actor);
+    response
 }
 
 /// The account a key names, and what it holds now, read from the store on every request as an account is:
@@ -407,6 +430,23 @@ pub async fn harden(req: axum::extract::Request, next: axum::middleware::Next) -
     response
 }
 
+/// Every request and its answer, at trace, so a reading of the log can follow a caller through the leader. Never a
+/// body: one can carry a key, an enrollment code or a token, and the log is shipped where those must not go.
+pub async fn traced(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let (method, path, started) = (req.method().clone(), req.uri().path().to_string(), Instant::now());
+    tracing::trace!(target: "http.request", method = %method, path, "a request arrived");
+    let response = next.run(req).await;
+    let actor = response.extensions().get::<Actor>().map(|a| a.id.as_str());
+    let bytes = http_body::Body::size_hint(response.body()).exact();
+    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    tracing::trace!(
+        target: "http.response",
+        method = %method, path, status = response.status().as_u16(), actor, bytes, ms,
+        "a response was sent"
+    );
+    response
+}
+
 /// Every answer under `/api/` is about this request and this moment (`docs/architecture/api.md`): a cache holding one
 /// would answer it again later, or to someone else.
 pub async fn uncached(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
@@ -470,7 +510,12 @@ pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) ->
     if !enveloped {
         return Response::from_parts(parts, axum::body::Body::from(bytes));
     }
-    refuse(status, &message)
+    let mut reshaped = refuse(status, &message);
+    // Who was answered goes on with the answer (`traced`).
+    if let Some(actor) = parts.extensions.get::<Actor>() {
+        reshaped.extensions_mut().insert(actor.clone());
+    }
+    reshaped
 }
 
 /// The most a refusal's text may be to count as a line, in bytes.
@@ -1002,6 +1047,57 @@ mod tests {
                 (200, "reached".to_string())
             );
             assert_eq!(ask(at, &auth, &person, "PUT", "/api/areas/search/sources").await.0, 200);
+        }
+
+        /// A change that wrote nothing of its own is recorded by the gate, under the way it came in. One that
+        /// recorded itself, or that changes nothing, is not recorded twice.
+        #[tokio::test]
+        async fn a_change_that_records_nothing_is_recorded_by_the_gate() {
+            let store = store();
+            let admins = Role {
+                name: ADMINISTRATOR.into(),
+                groups: vec!["smeltr-admins".into()],
+                areas: BTreeMap::new(),
+            };
+            let event = accounts::event_for(&Actor::system(), "role-put", ADMINISTRATOR, "ok");
+            store.put_role(&admins, &event).unwrap();
+            let person = sign_in(store.as_ref(), "ada", &["smeltr-admins"]);
+            let auth = auth(store.clone());
+            let recording = store.clone();
+            let app = Router::new()
+                .route("/api/forgetful", put(|| async { "changed" }))
+                .route(
+                    "/api/careful",
+                    put(move |axum::Extension(actor): axum::Extension<Actor>| async move {
+                        accounts::record(recording.as_ref(), &actor, "careful", "", "ok");
+                        "changed"
+                    }),
+                )
+                .route("/api/preview/thing", axum::routing::post(|| async { "looked" }))
+                .route_layer(axum::middleware::from_fn_with_state(auth.clone(), require_principal));
+            let at = serve_routes(app).await;
+
+            for (method, target) in [
+                ("PUT", "/api/forgetful"),
+                ("PUT", "/api/careful"),
+                ("POST", "/api/preview/thing"),
+            ] {
+                assert_eq!(ask(at, &auth, &person, method, target).await.0, 200, "{target}");
+            }
+            let rows: Vec<(String, String)> = store
+                .list_security_events(10)
+                .unwrap()
+                .into_iter()
+                .filter(|e| e.actor == person.id)
+                .map(|e| (e.action, e.target))
+                .collect();
+            assert_eq!(
+                rows,
+                vec![
+                    ("careful".to_string(), String::new()),
+                    ("unrecorded".to_string(), "PUT /api/forgetful".to_string()),
+                ]
+            );
         }
 
         fn payments_deployer() -> Role {
