@@ -85,8 +85,8 @@
     </p>
     <ProductScreenshot
       source="feed-health-alerts"
-      height={4506}
-      crop={{ x: 472, y: 1152, width: 1664, height: 594 }}
+      height={5080}
+      crop={{ x: 472, y: 1152, width: 1664, height: 578 }}
       alt="Admin, System, Alerts: three channels. Network on-call is a PagerDuty webhook for the network worker group, #siem-pipelines a Slack webhook for every worker group, and SOC engineering an email to soc-eng@example.com."
       caption="PagerDuty pages the network on-call, Slack tells the pipeline team, and email reaches SOC engineering."
     />
@@ -96,9 +96,9 @@
     </p>
     <ProductScreenshot
       source="feed-health-alerts"
-      height={4506}
-      crop={{ x: 472, y: 1766, width: 1664, height: 914 }}
-      alt="What each channel gets: a row for each kind of issue and a column for each channel. Network on-call takes Source unreachable, Destination unreachable and Rows below normal; #siem-pipelines takes Rows below normal and Rows above normal."
+      height={5080}
+      crop={{ x: 472, y: 1731, width: 1664, height: 1357 }}
+      alt="What each channel gets: a row for each kind of issue, in sections, and a column for each channel. Network on-call takes Source unreachable, Destination unreachable and Rows below normal; #siem-pipelines takes Rows below normal, Rows above normal and Stream unrouted."
       caption="A row for each kind of issue, a column for each channel."
     />
     <p>
@@ -111,7 +111,7 @@
       source="feed-health-alert-channel"
       height={1800}
       crop={{ x: 992, y: 390, width: 896, height: 1020 }}
-      alt="Editing the Network on-call channel: format PagerDuty, URL https://events.pagerduty.com/v2/enqueue, routing key stored, worker groups only network, message included."
+      alt="Editing the Network on-call channel: format PagerDuty, URL http://127.0.0.1:9099/pagerduty, the demo's receiver, routing key stored, worker groups only network, message included."
       caption="The network on-call channel pages through PagerDuty, for the network worker group only."
     />
     <p><a href="/docs/operations">Operate a fleet →</a></p>
