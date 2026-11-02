@@ -225,6 +225,16 @@ describe('recordLines', () => {
     expect(shape(lines)).toEqual(['labels["a.b"]']);
   });
 
+  it('starts a top-level key in brackets at the record', () => {
+    const after = { 'x.c': 1, a: { 'y.d': 2, e: 3 } };
+    expect(shape(recordLines(diffTree(null, after)))).toEqual(['a', '  e', '  ["y.d"]', '$["x.c"]']);
+    expect(pathLines(diffTree(null, after)).map((l) => l.kind === 'field' && l.label)).toEqual([
+      'a.e',
+      'a["y.d"]',
+      '$["x.c"]',
+    ]);
+  });
+
   it("carries each field's type and state onto its line", () => {
     const declared = declaredRecord([
       ['a.b', 'i64'],
