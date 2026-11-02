@@ -993,6 +993,14 @@ impl Transform {
         let (lane, batch) = (self.lanes[turn.lane].clone(), turn.batch);
         let reports = lane.reports.clone();
         let source_label = lane.source_id.to_string();
+        // Opened once there is a batch, so an idle turn's wait is not timed as a transform.
+        let _span = tracing::trace_span!(
+            target: "runtime.transform",
+            "a transform",
+            source = lane.source_name.as_deref().unwrap_or(&source_label),
+            batch
+        )
+        .entered();
 
         let process_start = std::time::Instant::now();
         let mut out = Output::default();
@@ -1012,6 +1020,13 @@ impl Transform {
         let row_count = turn.records.len();
         match outcome {
             Ok(Ok(())) => {
+                tracing::trace!(
+                    target: "runtime.transformed",
+                    rows = row_count,
+                    out = out.rows.values().map(Vec::len).sum::<usize>(),
+                    destinations = out.rows.len(),
+                    "a batch ran through its routes and pipelines"
+                );
                 let t = std::time::Instant::now();
                 let dests = lane.destinations();
                 match self.hand_off(turn, &dests, out.rows) {
@@ -1021,6 +1036,7 @@ impl Transform {
                     }
                     // Parked, not blocked: the reader learns of a wait only once it has become a stall.
                     Ok(HandOff::Parked) => {
+                        tracing::trace!(target: "runtime.parked", "a destination has no room, so the batch waits for it");
                         self.metrics.incr(
                             "smeltr_batches_waiting_for_room_total",
                             &[("source", source_label.as_str())],
@@ -1043,6 +1059,7 @@ impl Transform {
             }
             // Only a new config clears it: the same rows meet the same routes and pipelines, and block the same way.
             Ok(Err(held)) => {
+                tracing::trace!(target: "runtime.held", rows = row_count, "a pipeline blocked a batch, so it is held until a new config is deployed");
                 lane.park_held(
                     batch,
                     turn.records,
@@ -1600,6 +1617,14 @@ impl Transform {
             );
         }
 
+        tracing::trace!(
+            target: "runtime.routing",
+            records = slice.len(),
+            routes = masks.len(),
+            taken = bits::popcount(&taken),
+            "routing decided which routes take which records"
+        );
+
         // Before any pipeline runs: the retry meets the same rows and the same routes, so running them now is work
         // the block throws away on every attempt until a redeploy.
         if *self.topology.on_exception.answer(&ExceptionKind::Unmatched) == Answer::Block {
@@ -1708,6 +1733,15 @@ impl Transform {
                 return Err(IoError::transient(msg));
             }
             let (dropped, no_rule, no_rule_dropped) = (docs.dropped, docs.no_rule, docs.no_rule_dropped);
+            tracing::trace!(
+                target: "runtime.route_ran",
+                route = %self.topology.routes[route_idx].id,
+                rows = docs.rows.len(),
+                dropped,
+                no_rule,
+                no_rule_dropped,
+                "a route ran its pipeline over the records it took"
+            );
             if let Some(captures) = &self.captures {
                 for (tap, rows) in taps.iter().zip(std::mem::take(&mut docs.captured)) {
                     captures.offer_sent(&at_destinations[tap.at], rows);
@@ -2393,6 +2427,7 @@ impl Reader {
 
     /// One turn of ingest: apply what transform reported, commit what that completes, and poll -- or, past the depth
     /// limit, wait up to `timeout` for an acknowledgment instead.
+    #[tracing::instrument(level = "trace", target = "runtime.read", name = "a source read", skip_all, fields(source = %self.subject))]
     pub fn step(
         &mut self,
         batches: &Handoff,
@@ -2523,6 +2558,7 @@ impl Reader {
             // A blocked source polls empty because it is blocked, so this is the turn that has to notice there is nothing
             // left to wait for.
             self.release_if_idle();
+            tracing::trace!(target: "runtime.polled", rows = 0, "a source polled and found nothing new");
             return Ok(Polled::Idle);
         }
         // Tracked at poll time, in poll order: what makes the tracker's prefix rule a watermark.
@@ -2536,6 +2572,14 @@ impl Reader {
         }
         let waiting = self.destinations.iter().copied().collect();
         let bytes = records.iter().map(|r| r.read_size()).sum();
+        tracing::trace!(
+            target: "runtime.polled",
+            batch = id,
+            rows = records.len(),
+            bytes,
+            partitions = tokens.len(),
+            "a source polled a batch"
+        );
         self.commits.track(id, tokens, waiting, bytes);
         self.metrics.incr(
             "smeltr_rows_polled_total",
@@ -2551,6 +2595,7 @@ impl Reader {
         match batches.push(Handed { batch: id, records }, timeout) {
             Ok(()) => Ok(Polled::Handed),
             Err(unsent) => {
+                tracing::trace!(target: "runtime.queue_full", batch = id, "the transform's queue is full, so the batch waits in the reader");
                 self.pending = Some(unsent.batch);
                 Ok(Polled::Full)
             }
@@ -2572,6 +2617,13 @@ impl Reader {
             return Ok(());
         };
         let source_label = self.source_id.to_string();
+        tracing::trace!(
+            target: "runtime.committing",
+            source = %self.subject,
+            batches = retired.batches,
+            partitions = retired.tokens.len(),
+            "every destination is done with these batches, so the source commits them"
+        );
         if let Err(e) = self.source.commit(&retired.tokens) {
             self.metrics
                 .incr("smeltr_commits_dropped_total", &[("source", source_label.as_str())], 1);

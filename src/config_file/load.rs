@@ -238,6 +238,16 @@ pub enum BundleAt {
     },
 }
 
+/// What a log line says of where a bundle was read from: its directory, or its path in a commit.
+impl std::fmt::Display for BundleAt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BundleAt::Dir(dir) => write!(f, "{}", dir.display()),
+            BundleAt::Commit { commit, prefix, .. } => write!(f, "{prefix} at commit {commit}"),
+        }
+    }
+}
+
 impl BundleAt {
     /// Where `path`, named relative to this bundle, actually is.
     ///

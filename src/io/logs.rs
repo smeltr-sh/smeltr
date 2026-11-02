@@ -24,6 +24,9 @@ pub struct LogsSourceConfig {
     pub min_level: tracing::Level,
 }
 
+/// The finest severity any logs source carries. Below it is trace, which describes the pipelines themselves.
+pub(crate) const CARRIED_AT_MOST: tracing::Level = tracing::Level::DEBUG;
+
 /// An ordinary `Source` whose "waiting for data" is the buffer filling.
 pub struct LogsSource {
     tap: Tap,
@@ -49,9 +52,19 @@ impl LogsSource {
                 "a logs source asks for logs this process does not collect, and carries only what it does"
             );
         }
+        // Trace describes the pipelines that carry it, this one's included: carrying it would make the lines that
+        // the next batch is made of, and the source would never be idle.
+        let min_level = config.min_level.min(CARRIED_AT_MOST);
+        if min_level != config.min_level {
+            tracing::warn!(
+                target: "logs_source.trace_not_carried",
+                min_level = %config.min_level,
+                "a logs source is set to trace, but that would feed its own reading back into it, so it reads debug and above"
+            );
+        }
         LogsSource {
             tap,
-            min_level: config.min_level,
+            min_level,
             next_offset: 0,
             topic: Arc::from(LOGS_TOPIC),
         }
@@ -233,6 +246,20 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
         assert!(parsed.get("fields").is_none(), "{out}");
         assert_eq!(parsed["message"], "a site said something");
+    }
+
+    /// No logs source carries trace, which describes the pipeline carrying it: a source asked for it carries
+    /// debug and above, and says so.
+    #[test]
+    fn a_logs_source_never_carries_trace() {
+        let _taps = crate::logs::TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let said = crate::logs::said(|| {
+            let source = LogsSource::new(LogsSourceConfig {
+                min_level: tracing::Level::TRACE,
+            });
+            assert_eq!(source.min_level, tracing::Level::DEBUG);
+        });
+        assert!(said.iter().any(|(_, site, _)| site == "logs_source.trace_not_carried"));
     }
 
     /// Two logs sources read side by side, and each sees the whole stream.
