@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reachable } from './reach.mjs';
+import { LIVE, STATS, pickedWindow, write } from './recording.mjs';
 
 const BASE = 'https://127.0.0.1:8443';
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -51,13 +52,6 @@ await ctx.addCookies([
 
 // A page that fails to load fails the recording: a partial one would answer its missing reads as not found.
 const failed = [];
-
-const STATS = /^\/api\/areas\/[^/]+\/stats$/;
-/** The windows each chart opens on (`DEFAULT_CHART_RANGE` in `map.ts`, `DEFAULT_WINDOW_MINUTES` in `flow.ts`). */
-const OPENS_ON = [
-  [STATS, '10'],
-  [/^\/api\/flow$/, '60'],
-];
 
 /** A page that records every GET answer it reads, opened on `scope` and `branch`. */
 async function recording(scope, branch) {
@@ -191,18 +185,8 @@ await reader.close();
 
 // The fleet moving: every live answer read again every five seconds for a minute, so the demo's Map, charts and
 // counters move as the fleet's did. A config read is not live; the demo's own edits change those.
-const LIVE =
-  /^\/api\/(map\/measurements|areas\/[^/?]+\/stats|flow|cluster|workers|warnings|streams)\b/;
 // A chart moves on the window it opens on; on any other it stands still, as recorded.
-const live = Object.keys(answers).filter((k) => {
-  const url = new URL(k, BASE);
-  const window = url.searchParams.get('windowMinutes');
-  return (
-    LIVE.test(k) &&
-    (window === null ||
-      OPENS_ON.some(([path, opens]) => path.test(url.pathname) && opens === window))
-  );
-});
+const live = Object.keys(answers).filter((k) => LIVE.test(k) && !pickedWindow(k));
 const api = await ctx.newPage();
 await api.goto(`${BASE}/#/map`, { waitUntil: 'networkidle' });
 const moving = {};
@@ -298,14 +282,6 @@ for (const key of Object.keys(answers)) {
 delete answers['/api/auth/session'].body.csrf;
 // What every recorded time is relative to: the demo moves them to the visitor's now.
 const recordedAt = Date.now();
-// A version names the branch that built the fleet; the public demo shows it as built from main.
-// The visitor is the fleet's first account, whose name, Administrator, would read twice beside its role.
-const recorded = JSON.stringify({ recordedAt, answers, moving, movingAt, captures });
-fs.writeFileSync(
-  out,
-  recorded
-    .replace(/(\d{4}\.\d+\.\d+\+)[A-Za-z0-9-]+\.([0-9a-f]{12})/g, '$1main.$2')
-    .replaceAll('"Administrator"', '"Demo User"'),
-);
-console.log(`${Object.keys(answers).length} answers written to ${out}`);
+const parts = await write(out, { recordedAt, answers, moving, movingAt, captures });
+console.log(`${Object.keys(answers).length} answers written to ${out}, ${parts} parts beside it`);
 await browser.close();

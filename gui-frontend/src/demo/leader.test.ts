@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DemoLeader, callersOf, keyOf, putBack, shifted, type Recording } from './leader';
+import {
+  DemoLeader,
+  callersOf,
+  keyOf,
+  putBack,
+  shifted,
+  type Pool,
+  type Recording,
+} from './leader';
 
 const RECORDED = 1_790_000_000_000;
 
@@ -82,8 +90,22 @@ const config = (body: object) => ({
   body: { ok: true, errors: [], ...body, commit: COMMIT },
 });
 
+/** A recording and its parts: each capture, and any answer `parts` holds. */
+type Recorded = Recording & { captures: Record<string, Pool>; parts: Record<string, unknown> };
+
+/** A leader over `r` at `now`, reading its parts from `r`. */
+function demoLeader(r: Recorded, now: () => number): DemoLeader {
+  return new DemoLeader(
+    r,
+    'http://service',
+    null,
+    now,
+    async (key) => r.captures[key] ?? r.parts[key],
+  );
+}
+
 /** A recording of one group with one source, whose capture took four records from two workers. */
-function recording(): Recording {
+function recording(): Recorded {
   const row = (worker: string, raw: string) => ({ values: [raw], worker });
   return {
     recordedAt: RECORDED,
@@ -110,6 +132,7 @@ function recording(): Recording {
         },
       },
     },
+    parts: {},
   };
 }
 
@@ -124,7 +147,7 @@ describe('DemoLeader', () => {
       asked.push(url);
       return new Response(JSON.stringify({ ok: true, errors: [] }));
     });
-    const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
+    const leader = demoLeader(recording(), () => RECORDED);
     const sources = [{ id: 'syslog', type: 'syslogReceiver', port: 5514 }];
     const saved = await leader.answer(
       'PUT',
@@ -147,7 +170,7 @@ describe('DemoLeader', () => {
 
   it('ends a capture once it holds what it asked for', async () => {
     let now = RECORDED;
-    const leader = new DemoLeader(recording(), 'http://service', null, () => now);
+    const leader = demoLeader(recording(), () => now);
     const started = (await leader.answer(
       'POST',
       at('/api/captures'),
@@ -181,7 +204,7 @@ describe('DemoLeader', () => {
   it('answers what the recording read on another branch for one it never saw', async () => {
     const r = recording();
     r.answers['/api/areas/network/tests?branch=work'] = config({ tests: [{ id: 't' }] });
-    const leader = new DemoLeader(r, 'http://service', null, () => RECORDED);
+    const leader = demoLeader(r, () => RECORDED);
     const tests = await leader.answer('GET', at('/api/areas/network/tests?branch=mine'), null);
     expect((tests.body as { tests: unknown[] }).tests).toEqual([{ id: 't' }]);
     const none = await leader.answer('GET', at('/api/areas/apps/tests?branch=mine'), null);
@@ -194,7 +217,7 @@ describe('DemoLeader', () => {
       asked.push(url);
       return new Response(JSON.stringify({ ok: true, errors: [] }));
     });
-    const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
+    const leader = demoLeader(recording(), () => RECORDED);
     await leader.answer('GET', at('/api/preview/schema-standards'), null);
     expect(asked).toEqual(['http://service/schemas/standards']);
   });
@@ -205,7 +228,7 @@ describe('DemoLeader', () => {
       asked.push(JSON.parse(init.body as string));
       return new Response(JSON.stringify({ ok: true, errors: [] }));
     });
-    const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
+    const leader = demoLeader(recording(), () => RECORDED);
     await leader.answer('GET', at('/api/areas/network/sources/fw/connections?branch=main'), null);
     await leader.answer('GET', at('/api/areas/shared/pipelines/p/connections?branch=main'), null);
     expect(asked[0]).toMatchObject({ kind: 'source', id: 'fw', groups: [{ id: 'network' }] });
@@ -236,7 +259,7 @@ describe('DemoLeader', () => {
       expected: [],
     };
     r.answers['/api/areas/network/tests/t?branch=main'] = config({ test });
-    const leader = new DemoLeader(r, 'http://service', null, () => RECORDED);
+    const leader = demoLeader(r, () => RECORDED);
     const ran = await leader.answer(
       'POST',
       at('/api/areas/network/test-runs?branch=main'),
@@ -248,11 +271,32 @@ describe('DemoLeader', () => {
     const listed = await leader.answer('GET', at('/api/areas/network/tests?branch=main'), null);
     expect(listed.body).toMatchObject({ tests: [{ area: 'network', id: 't' }] });
   });
+  it('answers a read the recording keeps in a part, reading the part once', async () => {
+    const r = recording();
+    const key = '/api/flow?windowMinutes=10080';
+    r.parts[key] = { status: 200, body: { ok: true, bucketMillis: 300000 } };
+    let reads = 0;
+    const leader = new DemoLeader(
+      r,
+      'http://service',
+      null,
+      () => RECORDED,
+      async (k) => {
+        reads++;
+        return r.parts[k];
+      },
+    );
+    for (let i = 0; i < 2; i++) {
+      const flow = await leader.answer('GET', at(key), null);
+      expect(flow).toEqual({ status: 200, body: { ok: true, bucketMillis: 300000 } });
+    }
+    expect(reads).toBe(1);
+  });
   it("draws the map's measurements on a branch it never watched from main's, under the branch's commit", async () => {
     const r = recording();
     r.moving['/api/map/measurements?branch=main'] = [{ commit: COMMIT, nodes: [{ id: 'fw' }] }];
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
-    const leader = new DemoLeader(r, 'http://service', null, () => RECORDED);
+    const leader = demoLeader(r, () => RECORDED);
     await leader.answer('PUT', at('/api/areas/network/sources?branch=mine'), '[]');
     const m = await leader.answer('GET', at('/api/map/measurements?branch=mine'), null);
     const branches = await leader.answer('GET', at('/api/branches'), null);
@@ -263,14 +307,14 @@ describe('DemoLeader', () => {
     const r = recording();
     const key = '/api/areas/network/stats?branch=main&id=fw&kind=source&windowMinutes=10';
     r.moving[key] = [{ rate: 1 }];
-    const leader = new DemoLeader(r, 'http://service', null, () => RECORDED);
+    const leader = demoLeader(r, () => RECORDED);
     const stats = await leader.answer('GET', at(key.replace('branch=main', 'branch=work')), null);
     expect(stats.body).toEqual({ rate: 1 });
   });
 
   it("answers a visitor's branch read at its own commit or at main's", async () => {
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
-    const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
+    const leader = demoLeader(recording(), () => RECORDED);
     const sources = [{ id: 'syslog', type: 'syslogReceiver', port: 5514 }];
     const saved = await leader.answer(
       'PUT',
@@ -294,7 +338,7 @@ describe('DemoLeader', () => {
       config: { version: 1, pipelines: [{ id: 'p', steps: [] }] },
     });
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
-    const leader = new DemoLeader(r, 'http://service', null, () => RECORDED);
+    const leader = demoLeader(r, () => RECORDED);
     await leader.answer('DELETE', at('/api/areas/network/pipelines/p?branch=mine'), null);
     const gone = await leader.answer('GET', at('/api/areas/network/pipelines/p?branch=mine'), null);
     expect(gone.status).toBe(404);
@@ -311,7 +355,7 @@ describe('DemoLeader', () => {
       if (url.endsWith('/wake')) return new Response(null, { status: up ? 204 : 503 });
       return new Response(JSON.stringify({ ok: true, errors: [] }));
     });
-    const leader = new DemoLeader(recording(), 'http://service', null, Date.now);
+    const leader = demoLeader(recording(), Date.now);
     const heard: boolean[] = [];
     leader.wake((waking) => heard.push(waking));
     const proposed = leader.answer('POST', at('/api/preview/onboard'), '{}');
@@ -326,7 +370,7 @@ describe('DemoLeader', () => {
   });
 
   it("says what the service said when it refuses, or that it can't be reached", async () => {
-    const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
+    const leader = demoLeader(recording(), () => RECORDED);
     const propose = () =>
       leader.answer('POST', at('/api/preview/onboard'), JSON.stringify({ records: [] }));
     vi.stubGlobal(
@@ -354,7 +398,7 @@ describe('DemoLeader', () => {
       const errors = body.groupId ? [{ message: 'unknown source "fw"' }] : [];
       return new Response(JSON.stringify({ ok: !errors.length, errors }));
     });
-    const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
+    const leader = demoLeader(recording(), () => RECORDED);
     const saved = await leader.answer('PUT', at('/api/areas/shared/sources?branch=mine'), '[]');
     expect(saved.body).toMatchObject({
       ok: false,
@@ -382,7 +426,7 @@ describe('DemoLeader', () => {
       },
     ];
     let now = RECORDED;
-    const leader = new DemoLeader(r, 'http://service', null, () => now);
+    const leader = demoLeader(r, () => now);
     const started = (await leader.answer(
       'POST',
       at('/api/captures'),
@@ -404,7 +448,7 @@ describe('DemoLeader', () => {
     expect(sample.body).toMatchObject({ sample: { records: [{ event: 'a' }, { event: 'b' }] } });
   });
   it('starts a branch at main, lists it before its first save, and deletes it', async () => {
-    const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
+    const leader = demoLeader(recording(), () => RECORDED);
     const started = await leader.answer(
       'POST',
       at('/api/branches'),
@@ -436,7 +480,7 @@ describe('DemoLeader', () => {
 
   it("undoes one object back to main's, as one save, and refuses one already as main has it", async () => {
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
-    const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
+    const leader = demoLeader(recording(), () => RECORDED);
     const edited = [{ id: 'fw', type: 'kafka', topics: ['other'] }];
     await leader.answer(
       'PUT',
