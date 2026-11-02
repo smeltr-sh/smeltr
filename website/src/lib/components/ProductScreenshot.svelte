@@ -104,6 +104,8 @@
   }
   /* A 2x screenshot shown no larger than the screen it was taken on. */
   .crop {
+    /* So the aspect ratio is the content's, which the image's percent offsets are of. */
+    box-sizing: content-box;
     margin: 0 auto;
     position: relative;
     overflow: hidden;
