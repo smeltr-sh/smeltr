@@ -1,12 +1,9 @@
 // How the website demo's recording is written: what every page reads in one file, and each part a page reads only
 // once the visitor asks for it -- a chart at another window, a capture -- in a file of its own, named for its key
-// (`gui-frontend/src/demo/parts.ts`), under `recorded/` beside it.
-//
-//   node recording.mjs <recorded.json>   # splits a recording written whole into its parts
-import crypto from 'node:crypto';
+// (`gui-frontend/src/demo/parts.ts`, which the demo finds them by), under `recorded/` beside it.
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { partFile } from '../../gui-frontend/src/demo/parts.ts';
 
 export const STATS = /^\/api\/areas\/[^/]+\/stats$/;
 /** The answers the fleet moves in, read again over a minute so the demo moves as the fleet did. */
@@ -27,11 +24,6 @@ export function pickedWindow(key) {
   );
 }
 
-/** The file that holds `key`'s part. */
-export function partFile(key) {
-  return `recorded-${crypto.createHash('sha256').update(key).digest('hex').slice(0, 16)}.json`;
-}
-
 /** The recording as the public demo shows it. A version names the branch that built the fleet; the demo shows it as
  * built from main. The visitor is the fleet's first account, whose name, Administrator, would read twice beside its
  * role. */
@@ -42,23 +34,18 @@ function shown(value) {
 }
 
 /** Writes `recording` to `out` and its parts beside it, replacing the parts an earlier one wrote. */
-export function write(out, { recordedAt, answers, moving, movingAt, captures }) {
+export async function write(out, { recordedAt, answers, moving, movingAt, captures }) {
   const dir = path.join(path.dirname(out), 'recorded');
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir);
-  const part = (key, value) => fs.writeFileSync(path.join(dir, partFile(key)), shown(value));
+  const part = async (key, value) =>
+    fs.writeFileSync(path.join(dir, await partFile(key)), shown(value));
   const every = {};
   for (const [key, answer] of Object.entries(answers)) {
-    if (pickedWindow(key)) part(key, answer);
+    if (pickedWindow(key)) await part(key, answer);
     else every[key] = answer;
   }
-  for (const [key, pool] of Object.entries(captures)) part(key, pool);
+  for (const [key, pool] of Object.entries(captures)) await part(key, pool);
   fs.writeFileSync(out, shown({ recordedAt, answers: every, moving, movingAt }));
   return fs.readdirSync(dir).length;
-}
-
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const out = process.argv[2];
-  if (!out) throw new Error('usage: node recording.mjs <recorded.json>');
-  console.log(`${write(out, JSON.parse(fs.readFileSync(out, 'utf8')))} parts written`);
 }

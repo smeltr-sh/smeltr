@@ -15,7 +15,7 @@ const service = {
 };
 
 // The recording outgrows the 25 MiB a Cloudflare Workers asset may be, and gzips to a fraction of it. `main.ts`
-// unpacks it.
+// unpacks it. Its parts (`src/demo/recorded/`) are named `recorded-<hash>.json` (`parts.ts`), so this takes them too.
 const RECORDING = /^assets\/recorded-[^/]+\.json$/;
 const gzipRecording: Plugin = {
   name: 'gzip-recording',

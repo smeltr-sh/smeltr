@@ -282,6 +282,6 @@ for (const key of Object.keys(answers)) {
 delete answers['/api/auth/session'].body.csrf;
 // What every recorded time is relative to: the demo moves them to the visitor's now.
 const recordedAt = Date.now();
-const parts = write(out, { recordedAt, answers, moving, movingAt, captures });
+const parts = await write(out, { recordedAt, answers, moving, movingAt, captures });
 console.log(`${Object.keys(answers).length} answers written to ${out}, ${parts} parts beside it`);
 await browser.close();

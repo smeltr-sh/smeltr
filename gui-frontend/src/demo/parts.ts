@@ -1,5 +1,5 @@
 // Where the recording keeps each part (`leader.ts`'s `Parts`): a file named for its key, since a key is a URL or a
-// path. `tools/screenshots/recording.mjs` names them the same way.
+// path. `tools/screenshots/recording.mjs` names them by this too.
 
 /** The file that holds `key`'s part, if any does. */
 export async function partFile(key: string): Promise<string> {
