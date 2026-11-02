@@ -47,6 +47,9 @@ pub const CONTACT_KEY: &str = "acme.contact";
 pub const NAMES_KEY: &str = "acme.names";
 /// How the authority is to prove the leader holds a name: `tls-alpn-01`, `http-01` or `dns-01`.
 pub const CHALLENGE_KEY: &str = "acme.challenge";
+
+/// How long the HTTP-01 listener is given to stop once an order is done, before the next order may find its port held.
+const LISTENER_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Which provider publishes a DNS-01 record (`acme_dns::Kind`), and Cloudflare's API token, sealed.
 pub const DNS_PROVIDER_KEY: &str = "acme.dns.provider";
 pub const CLOUDFLARE_TOKEN_KEY: &str = "acme.dns.cloudflare.token";
@@ -801,11 +804,11 @@ impl Prover for Proving {
             let _ = listening.stop.send(());
             // Until the port is free again, so a renewal that follows at once can bind it. A validator still mid-
             // request holds it a moment; one that never let go is not waited for.
-            if tokio::time::timeout(std::time::Duration::from_secs(5), listening.stopped)
+            if tokio::time::timeout(LISTENER_STOP_WAIT, listening.stopped)
                 .await
                 .is_err()
             {
-                tracing::debug!(target: "leader.acme_http_not_stopped", within_secs = 5, "the HTTP-01 listener did not stop in time, so the next order may find its port held");
+                tracing::debug!(target: "leader.acme_http_not_stopped", within_secs = LISTENER_STOP_WAIT.as_secs(), "the HTTP-01 listener did not stop in time, so the next order may find its port held");
             }
         }
     }
