@@ -568,14 +568,15 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
     out
 }
 
-/// The path of the first field the finding's schema names directly under the finding's field, else of any under it.
+/// The path of the field the finding's schema asks for most directly under the finding's field, else of any under
+/// it, the first of those it asks for alike: `user.id` under `user`, which ECS asks for over `user.domain`.
 fn under(schemas: &[Arc<Schema>], finding: &Finding) -> Option<String> {
     let schema = schemas.iter().find(|s| s.id == finding.schema)?;
     let depth = finding.keys.len();
     let below = |f: &&Field| f.keys().starts_with(&finding.keys) && f.keys().len() > depth;
     let fields: Vec<&Field> = schema.fields.iter().filter(below).collect();
-    let direct = fields.iter().find(|f| f.keys().len() == depth + 1);
-    direct.or(fields.first()).map(|f| f.path.clone())
+    let most = |of: &mut dyn Iterator<Item = &&Field>| of.min_by_key(|f| f.requirement).map(|f| f.path.clone());
+    most(&mut fields.iter().filter(|f| f.keys().len() == depth + 1)).or_else(|| most(&mut fields.iter()))
 }
 
 fn same_kind(a: &Misfit, b: &Misfit) -> bool {
@@ -953,6 +954,25 @@ mod tests {
         assert_eq!(
             told[0].message,
             "`user` is str, but People has it as an object. Write the fields under it, such as `user.name`."
+        );
+    }
+
+    #[test]
+    fn ecs_user_written_as_text_names_a_field_ecs_asks_for_under_it() {
+        let fields = ecs::with_requirements(ecs::read(standard::ECS).unwrap(), ecs::Requirements::Ecs);
+        let ecs = Arc::new(
+            read(&SchemaDto {
+                id: "ecs".to_string(),
+                title: "ECS".to_string(),
+                description: String::new(),
+                fields,
+            })
+            .unwrap(),
+        );
+        let told = told(std::slice::from_ref(&ecs), &ecs.check(&st(&[("user", DataType::Str)])));
+        assert_eq!(
+            told[0].message,
+            "`user` is str, but ECS has it as an object. Write the fields under it, such as `user.id`."
         );
     }
 
