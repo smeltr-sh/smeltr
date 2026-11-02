@@ -113,7 +113,8 @@ export function parsePath(
   let rest = text;
   while (rest !== '') {
     if (rest.startsWith('[')) {
-      const quoted = stringLiteral(rest.slice(1));
+      // JSON first: it is how a name is spelled, and it has escapes, such as `\b`, an expression has not.
+      const quoted = jsonString(rest.slice(1)) ?? stringLiteral(rest.slice(1));
       if (!quoted || rest[quoted.len + 1] !== ']') {
         return fail(`\`${text}\`: a key in brackets is a string in quotes, as in \`a["b.c"]\``);
       }

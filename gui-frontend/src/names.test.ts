@@ -26,6 +26,13 @@ describe('parsePath', () => {
     expect(parsePath("a['b\"]").ok).toBe(false);
   });
 
+  it('reads back a name it spells, escapes an expression has not included', () => {
+    for (const key of ['\b.x', 'a/b.\f', '\u{1F600}.x']) {
+      const name = pushKey('a', key);
+      expect(parsePath(name)).toEqual({ ok: true, name });
+    }
+  });
+
   it('spells a bracketed plain key bare', () => {
     expect(parsePath('a["b"]')).toEqual({ ok: true, name: 'a.b' });
     expect(parsePath('["\\u0061"].b')).toEqual({ ok: true, name: 'a.b' });

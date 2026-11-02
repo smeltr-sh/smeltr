@@ -173,7 +173,10 @@ fn string_literal(s: &str) -> Option<(String, usize)> {
         return None;
     }
     match crate::expr::lex::Lexer::new(s).next_token().ok()? {
-        crate::expr::lex::Spanned { token: crate::expr::lex::Token::Str(key), span } => Some((key, span.end as usize)),
+        crate::expr::lex::Spanned {
+            token: crate::expr::lex::Token::Str(key),
+            span,
+        } => Some((key, span.end as usize)),
         _ => None,
     }
 }
@@ -279,7 +282,11 @@ pub fn parse_name(text: &str) -> Result<String, String> {
     let mut rest = under_record(text);
     while !rest.is_empty() {
         if let Some(quoted) = rest.strip_prefix('[') {
-            let Some((key, len)) = string_literal(quoted).filter(|(_, len)| quoted.as_bytes().get(*len) == Some(&b']'))
+            // JSON first: it is how the compiler spells a name, and it has escapes, such as `\b`, an expression has not.
+            let json = json_string(quoted).map(|(key, len)| (key.into_owned(), len));
+            let Some((key, len)) = json
+                .or_else(|| string_literal(quoted))
+                .filter(|(_, len)| quoted.as_bytes().get(*len) == Some(&b']'))
             else {
                 return Err(format!(
                     "`{text}`: a key in brackets is a string in quotes, as in `a[\"b.c\"]`"
@@ -584,6 +591,16 @@ mod tests {
         assert_eq!(parse_name("$['x.c']").as_deref(), Ok(r#"["x.c"]"#));
         assert_eq!(parse_name(r"a['it\'s'].b").as_deref(), Ok("a.it's.b"));
         assert!(parse_name("a['b\"]").is_err());
+    }
+
+    /// A name the compiler spelled reads back, escapes an expression has not included.
+    #[test]
+    fn parse_name_reads_back_what_it_spells() {
+        for key in ["\u{8}.x", "a/b.\u{c}", "\u{1F600}.x"] {
+            let mut name = "a".to_string();
+            push_key(&mut name, key);
+            assert_eq!(parse_name(&name), Ok(name.clone()), "{name}");
+        }
     }
 
     #[test]
