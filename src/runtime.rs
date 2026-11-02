@@ -997,7 +997,7 @@ impl Transform {
         let _span = tracing::trace_span!(
             target: "runtime.transform",
             "a transform",
-            source = lane.source_name.as_deref().unwrap_or(&source_label),
+            subject = lane.source_name.as_deref().unwrap_or(&source_label),
             batch
         )
         .entered();
@@ -2439,7 +2439,7 @@ impl Reader {
         target = "runtime.read",
         name = "a source read",
         skip_all,
-        fields(source = %self.subject)
+        fields(subject = %self.subject)
     )]
     pub fn step(
         &mut self,
