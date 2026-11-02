@@ -232,12 +232,13 @@ mod tests {
     /// of `types_for`; this keeps its lists equal to these, in order, since the first is the default it names.
     #[test]
     fn the_gui_offers_the_types_each_field_can_hold() {
-        // A Windows checkout may hold the file with CRLF.
-        let source = include_str!("../../gui-frontend/src/schemas.ts").replace("\r\n", "\n");
+        let source = include_str!("../../gui-frontend/src/schemas.ts");
         let body = &source[source
             .find("export function elasticsearchTypes")
             .expect("elasticsearchTypes")..];
-        let body = &body[..body.find("\n}\n").expect("its end")];
+        // It ends at the first line that starts by closing a brace.
+        let end = regex::Regex::new(r"(?m)^\}").unwrap().find(body).expect("its end");
+        let body = &body[..end.start()];
         let listed = |pattern: &str| {
             let re = regex::Regex::new(&format!(r"{pattern}\s*return \[([^\]]*)\]")).unwrap();
             let names = re.captures(body).unwrap_or_else(|| panic!("no list after {pattern}"))[1].to_string();

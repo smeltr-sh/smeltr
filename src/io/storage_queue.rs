@@ -216,6 +216,10 @@ impl StorageQueue {
 }
 
 impl Queue for StorageQueue {
+    fn name(&self) -> &str {
+        &self.queue_url
+    }
+
     fn receive(&self, max: usize, wait: Duration, visibility: Duration) -> Result<Vec<Message>, IoError> {
         receive_polling(wait, || self.get(max, visibility))
     }

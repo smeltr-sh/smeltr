@@ -540,26 +540,22 @@ mod tests {
     /// `ExceptionKind::KINDS`; this keeps the two equal, order included, since the editor lists them in that order.
     #[test]
     fn the_gui_lists_the_kinds_and_categories() {
-        // By line, since a Windows checkout ends each one with CRLF.
-        let source = include_str!("../../gui-frontend/src/exceptions.ts")
-            .lines()
-            .collect::<Vec<_>>()
-            .join("\n");
+        let source: Vec<&str> = include_str!("../../gui-frontend/src/exceptions.ts").lines().collect();
         let label = |category: Category| Category::ALL.iter().find(|(_, c)| *c == category).unwrap().0;
         let categories = Category::ALL.map(|(label, _)| format!("'{label}'")).join(", ");
         let categories = format!("export const CATEGORIES = [{categories}] as const;");
         assert!(
-            source.contains(&categories),
+            source.contains(&categories.as_str()),
             "exceptions.ts must hold the line:\n{categories}"
         );
         let kinds: Vec<_> = ExceptionKind::KINDS
             .iter()
             .map(|(kind, category)| format!("  ['{kind}', '{}'],", label(*category)))
             .collect();
-        let kinds = kinds.join("\n");
         assert!(
-            source.contains(&kinds),
-            "exceptions.ts must hold these lines, in order:\n{kinds}"
+            source.windows(kinds.len()).any(|run| run.iter().eq(&kinds)),
+            "exceptions.ts must hold these lines, in order:\n{}",
+            kinds.join("\n")
         );
     }
 }

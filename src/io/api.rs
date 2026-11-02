@@ -684,6 +684,10 @@ impl<A: Api, F: Fetch> Poller<A, F> {
 }
 
 impl<A: Api, F: Fetch> Source for Poller<A, F> {
+    fn named(&mut self, name: &str) {
+        self.pacer.subject = name.to_string();
+    }
+
     fn poll_batch(
         &mut self,
         max_rows: usize,

@@ -1452,6 +1452,10 @@ struct Calls {
 struct FakeQueue(Arc<Mutex<Calls>>);
 
 impl Queue for FakeQueue {
+    fn name(&self) -> &str {
+        "fake"
+    }
+
     fn receive(&self, max: usize, _: Duration, _: Duration) -> Result<Vec<Message>, IoError> {
         let mut calls = self.0.lock().unwrap();
         let n = calls.inbox.len().min(max);

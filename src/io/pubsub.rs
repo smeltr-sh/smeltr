@@ -125,6 +125,10 @@ impl PubSub {
 }
 
 impl Queue for PubSub {
+    fn name(&self) -> &str {
+        &self.url
+    }
+
     fn receive(&self, max: usize, wait: Duration, visibility: Duration) -> Result<Vec<Message>, IoError> {
         receive_polling(wait, || self.pull(max, visibility))
     }

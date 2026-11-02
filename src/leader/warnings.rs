@@ -3227,8 +3227,7 @@ mod tests {
     #[test]
     fn the_page_labels_every_condition() {
         let api = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("gui-frontend/src/api.ts"))
-            .expect("the typed client")
-            .replace("\r\n", "\n");
+            .expect("the typed client");
         for condition in Condition::ALL {
             let name = condition.name();
             assert_eq!(
@@ -3240,8 +3239,9 @@ mod tests {
                 api.contains(&format!("| '{name}'")),
                 "WarningCondition does not list {name}"
             );
+            let labels = format!(r"case '{name}':\s*return '{}';", regex::escape(condition.label()));
             assert!(
-                api.contains(&format!("case '{name}':\n      return '{}';", condition.label())),
+                regex::Regex::new(&labels).unwrap().is_match(&api),
                 "conditionLabel does not label {name} as {:?}, which is what is sent for it",
                 condition.label()
             );

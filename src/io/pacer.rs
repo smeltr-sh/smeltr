@@ -21,12 +21,15 @@ pub struct Pacer {
     retry_at: Option<Instant>,
     backoff: Duration,
     failing: Relog,
+    /// The source's name, once the reader has given it (`Source::named`).
+    pub subject: String,
 }
 
 impl Pacer {
     pub fn new(kind: &'static str) -> Self {
         Pacer {
             kind,
+            subject: String::new(),
             retry_at: None,
             backoff: FIRST_BACKOFF,
             failing: Relog::default(),
@@ -48,7 +51,7 @@ impl Pacer {
     pub fn relog(&mut self) {
         let kind = self.kind;
         if let Some(why) = self.failing.due() {
-            tracing::warn!(target: "source.poll", source = kind, error = %why, "a source could not read; asking again");
+            tracing::warn!(target: "source.poll", subject = %self.subject, source = kind, error = %why, "a source could not read; asking again");
         }
     }
 
@@ -56,7 +59,9 @@ impl Pacer {
     pub fn landed(&mut self) {
         self.retry_at = None;
         self.backoff = FIRST_BACKOFF;
-        self.failing.clear();
+        if self.failing.clear() {
+            tracing::info!(target: "source.poll_recovered", subject = %self.subject, source = self.kind, "a source reads again");
+        }
     }
 
     /// The failure under way.
