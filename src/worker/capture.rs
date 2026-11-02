@@ -1449,7 +1449,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
                 target: "capture.plan_failed",
                 subject = %invitation.session,
                 error = %why,
-                "Run could not learn what the database plans for a poll"
+                "a capture could not ask the database how it would run the poll, so the poll shows no verdict"
             );
             None
         }

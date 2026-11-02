@@ -805,7 +805,7 @@ impl Prover for Proving {
                 .await
                 .is_err()
             {
-                tracing::debug!(target: "leader.acme_http_not_stopped", "the HTTP-01 listener did not stop within 5s, so the next order may find its port held");
+                tracing::debug!(target: "leader.acme_http_not_stopped", within_secs = 5, "the HTTP-01 listener did not stop in time, so the next order may find its port held");
             }
         }
     }

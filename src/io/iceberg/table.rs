@@ -365,7 +365,7 @@ fn create(
         (CODEC.to_string(), codec_name(config.compression).to_string()),
     ]);
     let created = catalog.create_table(&config.namespace, &config.table, &fresh.schema, &spec, &properties)?;
-    tracing::info!(target: "iceberg.table_created", subject, table = %config.table, partition_by = config.partition_by.len(), "an Iceberg table was created, its schema the record the pipeline writes");
+    tracing::info!(target: "iceberg.table_created", subject, table = %config.table, partition_by = config.partition_by.len(), "an Iceberg table was created with the pipeline's record as its schema");
     Ok(created)
 }
 
@@ -445,7 +445,7 @@ fn evolve(
         ];
         match catalog.commit(&config.namespace, &config.table, &requirements, &updates) {
             Ok(committed) => {
-                tracing::info!(target: "iceberg.schema_evolved", subject, table = %config.table, schema_id = committed.metadata.current_schema_id, "an Iceberg table's schema took the columns of the record the pipeline writes");
+                tracing::info!(target: "iceberg.schema_evolved", subject, table = %config.table, schema_id = committed.metadata.current_schema_id, "an Iceberg table's schema gained the pipeline's new columns");
                 loaded.metadata = committed.metadata
             }
             // Another writer changed the table, or the change's answer was lost: the table as it is now says which.

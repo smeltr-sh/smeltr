@@ -291,7 +291,7 @@ impl Committer for DeltaCommitter {
                 // A checkpoint is upkeep, and no reason to hold rows back: the log reads without it.
                 Err(why) => {
                     tracing::warn!(target: "delta.checkpoint_failed", subject = self.log.subject(), error = %why, version = self.snapshot.version,
-                        "could not checkpoint the table, so its log is read whole until one lands")
+                        "a Delta table could not be checkpointed, so its log is read whole until a checkpoint lands")
                 }
             }
         }
@@ -456,7 +456,7 @@ impl DeltaCommitter {
             // Taken or lost, the table is read again: whoever made it, it is there.
             match log.create(&commit_name(0), create(record, partition_by)?.into_bytes()) {
                 Ok(true) => {
-                    tracing::info!(target: "delta.table_created", subject = log.subject(), partition_by = partition_by.len(), "a Delta table was created, its schema the record the pipeline writes")
+                    tracing::info!(target: "delta.table_created", subject = log.subject(), partition_by = partition_by.len(), "a Delta table was created with the pipeline's record as its schema")
                 }
                 Ok(false) => {}
                 Err(e) => failed = Some(e),
@@ -514,7 +514,7 @@ impl DeltaCommitter {
             // Taken or lost, the log is read again, and the columns are added or widened if they still need it.
             match log.create(&commit_name(version), body.into_bytes()) {
                 Ok(true) => {
-                    tracing::info!(target: "delta.schema_evolved", subject = log.subject(), operation, version, "a Delta table's schema took the columns of the record the pipeline writes");
+                    tracing::info!(target: "delta.schema_evolved", subject = log.subject(), operation, version, "a Delta table's schema gained the pipeline's new columns");
                     snapshot.committed(vec![committed, Action::Metadata(Box::new(metadata))]);
                     checkpoint_due = checkpoint::due(&snapshot.metadata, version);
                 }

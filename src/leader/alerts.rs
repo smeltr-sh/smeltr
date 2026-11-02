@@ -662,7 +662,7 @@ pub async fn run(state: AppState) {
             Ok(()) => {
                 if failing.clear() {
                     let failed_secs = failed_since.take().map_or(0, |at| at.elapsed().as_secs());
-                    tracing::info!(target: "alerts.look", failed_secs, "checking for issues to send to the alert channels works again");
+                    tracing::info!(target: "alerts.look_recovered", failed_secs, "checking for issues to send to the alert channels works again");
                 }
             }
             Err(e) => {
@@ -672,7 +672,7 @@ pub async fn run(state: AppState) {
         }
         if let Some(why) = failing.due() {
             tracing::warn!(
-                target: "alerts.look",
+                target: "alerts.look_failed",
                 error = %why,
                 "could not check for issues to send to the alert channels, so none is sent until the check works"
             );
@@ -1009,7 +1009,7 @@ pub async fn post_test(State(state): State<AppState>, Json(request): Json<PutCha
     match test(&state, &channel, request.secret).await {
         Ok(tested) => Envelope::ok(tested),
         Err(why) => {
-            tracing::warn!(target: "alerts.test", channel = %channel.name, "the test send to the alert channel failed: {why}");
+            tracing::warn!(target: "alerts.test_failed", channel = %channel.name, "the test send to the alert channel failed: {why}");
             Envelope::refused(Refusal::invalid(why))
         }
     }

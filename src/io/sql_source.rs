@@ -753,7 +753,7 @@ impl<D: Driver + 'static> SqlSource<D> {
             .collect::<Result<Vec<_>, _>>()?;
         for c in columns {
             if !self.config.fields.iter().any(|(name, _)| name == c) && self.warned.insert(c.clone()) {
-                tracing::warn!(target: "sql.column_unread", subject = %self.pacer.subject, column = %c, "a result column no field of the record reads is left out");
+                tracing::warn!(target: "sql.column_unread", subject = %self.pacer.subject, column = %c, "a result column that no record field reads is left out");
             }
         }
         Ok(found)

@@ -235,7 +235,7 @@ impl Registry {
                 target: "registry.latest_state_unreadable",
                 rows = unreadable.0,
                 first = %unreadable.1,
-                "dropping saved worker status rows that could not be read"
+                "saved worker status rows could not be read, so they are dropped"
             );
         }
 

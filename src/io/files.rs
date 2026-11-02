@@ -848,7 +848,7 @@ impl Writer {
                         files = self.closed.len(),
                         rows = self.closed.iter().map(|f| f.record_count).sum::<u64>(),
                         after_failure = warned.then_some(true),
-                        "files were committed to the table"
+                        "files were committed to the destination"
                     );
                     self.closed.clear();
                     self.reset_said.clear();

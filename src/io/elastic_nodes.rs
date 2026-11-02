@@ -193,7 +193,7 @@ impl Nodes {
             Ok(nodes) => {
                 state.failing.clear();
                 if state.refreshing.clear() {
-                    tracing::info!(target: "elasticsearch.refresh_recovered", subject = %self.subject, "an Elasticsearch destination learns the cluster's nodes again");
+                    tracing::info!(target: "elasticsearch.refresh_recovered", subject = %self.subject, "an Elasticsearch destination learned the cluster's nodes again");
                 }
                 let before: Vec<&Node> = state.nodes.iter().map(|l| &l.node).collect();
                 if before != nodes.iter().collect::<Vec<_>>() {
