@@ -401,8 +401,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for RustlsStream<S> {
 }
 
 /// RFC 5929's `tls-server-end-point` for the server certificate `der`: the certificate hashed with its own signature's
-/// hash, SHA-256 in place of MD5 or SHA-1. `None` for a signature with no single hash (Ed25519, RSA-PSS), as
-/// PostgreSQL's server has none to compare either, so binding is skipped, or refused under `channel_binding=require`.
+/// hash, SHA-256 in place of MD5 or SHA-1. `None` for Ed25519, which has no hash, and for RSA-PSS, whose hash sits
+/// in its parameters: the sign-in goes unbound, or is refused under `channel_binding=require`.
 fn server_end_point(der: &[u8]) -> Option<Vec<u8>> {
     use x509_parser::oid_registry as oid;
     let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
