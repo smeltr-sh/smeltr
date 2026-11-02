@@ -176,48 +176,54 @@ const THROUGHPUT: &[&str] = &[
 const HISTORY_MS: i64 = 8 * 86_400_000;
 
 /// Writes into a staged leader's registry the throughput its fleet would have had over the last [`HISTORY_MS`]: each
-/// series of [`THROUGHPUT`] at the rate it has read since it started, on a daily curve that is at its mean now, up to
-/// its first point. Each bucket is the width the registry keeps at its age, so a chart of any range is as smooth as
-/// a fleet that ran all week.
+/// series of [`THROUGHPUT`] as it has read since it started, played back on a loop up to its first point, so the history
+/// carries the same waves and jitter the live streams do. On top of the loop is a daily curve that is at its mean now
+/// and a level for each earlier day, the same for every series, so what a destination was sent stays in step with
+/// what its sources read. Each bucket is the width the registry keeps at its age, so a chart of any range is as
+/// smooth as a fleet that ran all week.
 fn history(registry: &std::path::Path) {
     let store = RegistryStore::open(registry).expect("the leader's registry");
     let now = now().unix * 1_000;
     const DAY: f64 = 86_400_000.0;
+    // Each earlier day runs up to 12% above or below the live one, blended into the next, as a real fleet's days
+    // differ: the spread at an hour across days is what sets each source's band.
+    let level = |d: u64| {
+        if d == 0 {
+            1.0
+        } else {
+            0.88 + 0.24 * (mix(d.wrapping_mul(0x9e37)) % 1_000) as f64 / 1_000.0
+        }
+    };
     let mut written = 0;
     for metric in THROUGHPUT {
-        let fine = store
-            .series_since_at(metric, &[Tier::TenSeconds, Tier::OneMinute], 0)
-            .expect("the series");
-        let mut subjects = std::collections::BTreeMap::<String, Vec<(i64, f64)>>::new();
-        for (subject, points) in fine.into_iter().flatten() {
-            subjects.entry(subject).or_default().extend(points);
+        let tiers = [Tier::TenSeconds, Tier::OneMinute];
+        let fine = store.series_since_at(metric, &tiers, 0).expect("the series");
+        let mut subjects = std::collections::BTreeMap::<String, Vec<Read>>::new();
+        for (tier, series) in tiers.iter().zip(fine) {
+            for (subject, points) in series {
+                subjects
+                    .entry(subject)
+                    .or_default()
+                    .extend(points.into_iter().map(|(at, rows)| Read {
+                        at,
+                        width: tier.bucket_ms(),
+                        rows,
+                    }));
+            }
         }
-        for (subject, points) in subjects {
-            let first = points.iter().map(|p| p.0).min().expect("a series has a point");
-            let read: f64 = points.iter().map(|p| p.1).sum();
-            let rate = read / (now - first).max(60_000) as f64;
-            let salt = subject.bytes().fold(0u64, |h, b| mix(h ^ u64::from(b)));
-            let mut at = first;
+        for (subject, reads) in subjects {
+            let Some(played) = Loop::of(reads, now) else {
+                continue;
+            };
+            let mut at = played.first;
             while at > now - HISTORY_MS {
                 let width = Tier::for_window(Duration::from_millis((now - at) as u64)).bucket_ms();
                 at -= width;
-                // A day's curve, at its mean at this time of day, with each bucket's own noise: ±3%, as the live
-                // jitter averages out over a bucket, so the history reads as the same feed. Each earlier day runs
-                // up to 12% above or below it, blended into the next, as a real feed's days differ: the spread
-                // at an hour across days is what sets the band. The last day is the live one's level.
                 let curve = 1.0 + 0.3 * (TAU * (at - now) as f64 / DAY).sin();
-                let noise = 0.97 + 0.06 * (mix(salt ^ at as u64) % 1_000) as f64 / 1_000.0;
                 let days = (now - at) as f64 / DAY;
-                let level = |d: u64| {
-                    if d == 0 {
-                        1.0
-                    } else {
-                        0.88 + 0.24 * (mix(salt ^ d.wrapping_mul(0x9e37)) % 1_000) as f64 / 1_000.0
-                    }
-                };
                 let blend = 0.5 - 0.5 * (std::f64::consts::PI * days.fract()).cos();
                 let day = level(days as u64) * (1.0 - blend) + level(days as u64 + 1) * blend;
-                let delta = (rate * width as f64 * curve * day * noise).round();
+                let delta = (played.between(at, at + width) * curve * day).round();
                 if delta > 0.0 {
                     write(|| store.record_delta(metric, &subject, at, delta));
                     written += 1;
@@ -227,6 +233,66 @@ fn history(registry: &std::path::Path) {
     }
     write(|| store.maintain(now));
     println!("{written} buckets of history");
+}
+
+/// One bucket a series holds: what was read from `at` for `width` milliseconds.
+struct Read {
+    at: i64,
+    width: i64,
+    rows: f64,
+}
+
+/// What one series read, from `first` for `span` milliseconds, repeated before and after it.
+struct Loop {
+    first: i64,
+    span: i64,
+    /// Each bucket's start relative to `first`, its width, and what was read before it began.
+    reads: Vec<(i64, i64, f64)>,
+    total: f64,
+}
+
+impl Loop {
+    /// `reads` without the first bucket, which the series started part way into, and the one still filling at
+    /// `now`; `None` when that leaves nothing.
+    fn of(mut reads: Vec<Read>, now: i64) -> Option<Loop> {
+        reads.sort_by_key(|r| r.at);
+        reads.retain(|r| r.at + r.width <= now);
+        let whole = reads.get(1..).filter(|r| !r.is_empty())?;
+        let first = whole[0].at;
+        let mut total = 0.0;
+        let reads: Vec<_> = whole
+            .iter()
+            .map(|r| {
+                let before = total;
+                total += r.rows;
+                (r.at - first, r.width, before)
+            })
+            .collect();
+        let last = whole.last().expect("not empty");
+        Some(Loop {
+            first,
+            span: last.at + last.width - first,
+            reads,
+            total,
+        })
+    }
+
+    /// What the loop read between `from` and `to`.
+    fn between(&self, from: i64, to: i64) -> f64 {
+        self.upto(to) - self.upto(from)
+    }
+
+    /// What the loop read from `first` up to `t`, negative before it; a bucket read evenly through its width, and
+    /// nothing read in a gap between buckets.
+    fn upto(&self, t: i64) -> f64 {
+        let off = t - self.first;
+        let (laps, into) = (off.div_euclid(self.span), off.rem_euclid(self.span));
+        let i = self.reads.partition_point(|r| r.0 <= into).saturating_sub(1);
+        let (at, width, before) = self.reads[i];
+        let rows = self.reads.get(i + 1).map_or(self.total, |r| r.2) - before;
+        let part = ((into - at) as f64 / width as f64).min(1.0);
+        laps as f64 * self.total + before + rows * part
+    }
 }
 
 /// Runs a write to the registry, again while the leader's own write holds it. The leader keeps running: its sign-in
