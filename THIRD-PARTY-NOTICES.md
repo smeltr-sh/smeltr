@@ -265,8 +265,8 @@ license is https://mozilla.org/MPL/2.0/.
 ## Rust crates
 
 - Apache License 2.0 (395)
-- MIT License (93)
-- Unicode License v3 (19)
+- MIT License (94)
+- Unicode License v3 (20)
 - BSD 3-Clause "New" or "Revised" License (13)
 - ISC License (7)
 - BSD Zero Clause License (2)
@@ -536,7 +536,7 @@ Used by:
 
 Used by:
 
-- [deranged 0.5.8](https://github.com/jhpratt/deranged)
+- [deranged 0.5.9](https://github.com/jhpratt/deranged)
 
 ```
 
@@ -764,7 +764,7 @@ Used by:
 - [siphasher 1.0.4](https://github.com/jedisct1/rust-siphash)
 - [static_assertions 1.1.0](https://github.com/nvzqz/static-assertions-rs)
 - [tinyvec 1.13.3](https://github.com/Lokathor/tinyvec)
-- [ureq-proto 0.6.4](https://github.com/algesten/ureq-proto)
+- [ureq-proto 0.6.5](https://github.com/algesten/ureq-proto)
 - [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
 - [zeroize 1.9.1](https://github.com/RustCrypto/utils)
 
@@ -2281,8 +2281,8 @@ Used by:
 
 Used by:
 
-- [zerocopy-derive 0.8.62](https://github.com/google/zerocopy)
-- [zerocopy 0.8.62](https://github.com/google/zerocopy)
+- [zerocopy-derive 0.8.63](https://github.com/google/zerocopy)
+- [zerocopy 0.8.63](https://github.com/google/zerocopy)
 
 ```
                                  Apache License
@@ -6750,7 +6750,7 @@ limitations under the License.
 Used by:
 
 - [ahash 0.8.12](https://github.com/tkaitchuck/ahash)
-- [arc-swap 1.9.2](https://github.com/vorner/arc-swap)
+- [arc-swap 1.9.3](https://github.com/vorner/arc-swap)
 - [arrayvec 0.7.8](https://github.com/bluss/arrayvec)
 - [asn1-rs-derive 0.6.0](https://github.com/rusticata/asn1-rs.git)
 - [asn1-rs 0.7.2](https://github.com/rusticata/asn1-rs.git)
@@ -6775,7 +6775,7 @@ Used by:
 - [der-parser 10.0.0](https://github.com/rusticata/der-parser.git)
 - [displaydoc 0.2.7](https://github.com/yaahc/displaydoc)
 - [either 1.19.0](https://github.com/rayon-rs/either)
-- [equivalent 1.0.2](https://github.com/indexmap-rs/equivalent)
+- [equivalent 1.0.3](https://github.com/indexmap-rs/equivalent)
 - [errno 0.3.14](https://github.com/lambda-fairy/rust-errno)
 - [fastrand 2.5.0](https://github.com/smol-rs/fastrand)
 - [filetime 0.2.29](https://github.com/alexcrichton/filetime)
@@ -6830,7 +6830,7 @@ Used by:
 - [rusticata-macros 4.1.0](https://github.com/rusticata/rusticata-macros.git)
 - [rustix 1.1.5](https://github.com/bytecodealliance/rustix)
 - [rustls-ffi 0.15.7](https://github.com/rustls/rustls-ffi)
-- [rustls-native-certs 0.8.4](https://github.com/rustls/rustls-native-certs)
+- [rustls-native-certs 0.8.5](https://github.com/rustls/rustls-native-certs)
 - [rustls 0.23.46](https://github.com/rustls/rustls)
 - [scopeguard 1.2.0](https://github.com/bluss/scopeguard)
 - [smallvec 1.16.3](https://github.com/servo/rust-smallvec)
@@ -6842,7 +6842,7 @@ Used by:
 - [tikv-jemallocator 0.7.0](https://github.com/tikv/jemallocator)
 - [tokio-postgres 0.7.18](https://github.com/rust-postgres/rust-postgres)
 - [unicode-bidi 0.3.18](https://github.com/servo/unicode-bidi)
-- [unicode-normalization 0.1.25](https://github.com/unicode-rs/unicode-normalization)
+- [unicode-normalization 0.1.26](https://github.com/unicode-rs/unicode-normalization)
 - [unicode-properties 0.1.4](https://github.com/unicode-rs/unicode-properties)
 - [url 2.5.8](https://github.com/servo/rust-url)
 - [uuid 1.28.0](https://github.com/uuid-rs/uuid)
@@ -7934,10 +7934,10 @@ Used by:
 - [hex-literal 1.1.0](https://github.com/RustCrypto/utils)
 - [hmac 0.13.0](https://github.com/RustCrypto/MACs)
 - [hybrid-array 0.4.15](https://github.com/RustCrypto/hybrid-array)
-- [inout 0.2.2](https://github.com/RustCrypto/utils)
+- [inout 0.2.5](https://github.com/RustCrypto/utils)
 - [keccak 0.2.2](https://github.com/RustCrypto/sponges)
 - [md-5 0.11.0](https://github.com/RustCrypto/hashes)
-- [ml-kem 0.3.2](https://github.com/RustCrypto/KEMs)
+- [ml-kem 0.3.3](https://github.com/RustCrypto/KEMs)
 - [module-lattice 0.2.3](https://github.com/RustCrypto/KEMs)
 - [p256 0.14.0](https://github.com/RustCrypto/elliptic-curves)
 - [p384 0.14.0](https://github.com/RustCrypto/elliptic-curves)
@@ -7961,8 +7961,8 @@ Used by:
 - [sha1dc 0.1.5](https://github.com/srijs/sha1dc)
 - [sha2 0.10.9](https://github.com/RustCrypto/hashes)
 - [sha2 0.11.1](https://github.com/RustCrypto/hashes)
-- [sha3 0.11.0](https://github.com/RustCrypto/hashes)
 - [sha3 0.12.0](https://github.com/RustCrypto/hashes)
+- [shake 0.1.0](https://github.com/RustCrypto/XOFs)
 - [signature 3.0.0](https://github.com/RustCrypto/traits)
 - [spki 0.7.3](https://github.com/RustCrypto/formats/tree/master/spki)
 - [spki 0.8.1](https://github.com/RustCrypto/formats)
@@ -9787,7 +9787,7 @@ Used by:
 - [itoa 1.0.18](https://github.com/dtolnay/itoa)
 - [kem 0.3.0](https://github.com/RustCrypto/traits)
 - [krb5-src 0.3.4](https://github.com/MaterializeInc/rust-krb5-src)
-- [libc 0.2.190](https://github.com/rust-lang/libc)
+- [libc 0.2.191](https://github.com/rust-lang/libc)
 - [md5 0.8.1](https://github.com/stainless-steel/md5)
 - [miniz_oxide 0.9.1](https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
 - [num-conv 0.2.2](https://github.com/jhpratt/num-conv)
@@ -9802,7 +9802,7 @@ Used by:
 - [prettyplease 0.3.0](https://github.com/dtolnay/prettyplease)
 - [proc-macro2-diagnostics 0.10.1](https://github.com/SergioBenitez/proc-macro2-diagnostics)
 - [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2)
-- [psl 2.1.241](https://github.com/addr-rs/psl)
+- [psl 2.1.243](https://github.com/addr-rs/psl)
 - [quote 1.0.47](https://github.com/dtolnay/quote)
 - [rand 0.10.3](https://github.com/rust-random/rand)
 - [rcgen 0.14.10](https://github.com/rustls/rcgen)
@@ -10957,13 +10957,14 @@ Used by:
 - [aws-lc-sys 0.46.0](https://github.com/aws/aws-lc-rs)
 
 ```
-ISC License
+ISC License:
 
-Copyright <year> <owner> 
+Copyright (c) 2004-2010 by Internet Systems Consortium, Inc. ("ISC")
+Copyright (c) 1995-2003 by Internet Software Consortium
 
 Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.
 
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL ISC BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ```
 
@@ -11691,7 +11692,7 @@ THE SOFTWARE.
 
 Used by:
 
-- [schannel 0.1.29](https://github.com/steffengy/schannel-rs)
+- [schannel 0.1.30](https://github.com/steffengy/schannel-rs)
 
 ```
 Copyright (c) 2015 steffengy
@@ -12173,6 +12174,7 @@ THE SOFTWARE.
 Used by:
 
 - [synstructure 0.13.2](https://github.com/mystor/synstructure)
+- [synstructure 0.14.0](https://github.com/mystor/synstructure)
 
 ```
 Copyright 2016 Nika Layzell
@@ -14395,6 +14397,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 Used by:
 
 - [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident)
+- [unicode-normalization 0.1.26](https://github.com/unicode-rs/unicode-normalization)
 
 ```
 UNICODE LICENSE V3
@@ -14454,9 +14457,9 @@ Used by:
 - [potential_utf 0.1.6](https://github.com/unicode-org/icu4x)
 - [tinystr 0.8.4](https://github.com/unicode-org/icu4x)
 - [writeable 0.6.4](https://github.com/unicode-org/icu4x)
-- [yoke-derive 0.8.2](https://github.com/unicode-org/icu4x)
+- [yoke-derive 0.8.4](https://github.com/unicode-org/icu4x)
 - [yoke 0.8.3](https://github.com/unicode-org/icu4x)
-- [zerofrom-derive 0.1.7](https://github.com/unicode-org/icu4x)
+- [zerofrom-derive 0.1.8](https://github.com/unicode-org/icu4x)
 - [zerofrom 0.1.8](https://github.com/unicode-org/icu4x)
 - [zerotrie 0.2.5](https://github.com/unicode-org/icu4x)
 - [zerovec-derive 0.11.6](https://github.com/unicode-org/icu4x)
