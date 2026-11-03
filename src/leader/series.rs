@@ -649,7 +649,7 @@ pub struct LoggedType {
 /// default asks for the newest of everything.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LogFilter<'a> {
-    /// Exactly this severity. Levels do not nest here: asking for `warn` is asking for `warn`, and a caller
+    /// Exactly these levels. Levels do not nest here: asking for `warn` is asking for `warn`, and a caller
     /// wanting warnings and errors together asks for both.
     pub levels: &'a [String],
     pub worker_id: Option<&'a str>,
@@ -1176,8 +1176,6 @@ impl RegistryStore {
             for event in events {
                 let fields = serde_json::to_string(&event.fields).unwrap_or_else(|_| "[]".to_string());
                 let (class, kind) = event.class_and_type();
-                // What a build before lines had types reads, should the leader be rolled back to one.
-                let site = class.map_or_else(|| kind.to_string(), |class| format!("{class}.{kind}"));
                 stmt.execute(params![
                     event.timestamp_ms,
                     worker_id,
@@ -1190,7 +1188,8 @@ impl RegistryStore {
                     class,
                     kind,
                     event.service,
-                    site,
+                    // What a build before lines had types reads, should the leader be rolled back to one.
+                    event.site,
                     event.message,
                     fields,
                     group_id,

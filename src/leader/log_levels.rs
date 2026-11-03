@@ -5,7 +5,7 @@
 use axum::Json;
 use axum::extract::State;
 
-use crate::heartbeat::{LevelOverride, LogLevels};
+use crate::heartbeat::{LevelOverride, LogLevels, Named};
 use crate::leader::envelope::{Envelope, Refusal};
 use crate::leader::store::{Actor, Store, StoreError};
 use crate::leader::{AppState, run_store};
@@ -92,19 +92,11 @@ fn named(named: &LevelOverride) -> Result<String, String> {
             ))
         }
     };
-    match (
-        named.class.as_deref(),
-        named.r#type.as_deref(),
-        named.service.as_deref(),
-    ) {
-        (Some(c), None, None) => class(c).map(|()| format!("class {c}")),
-        (Some(c), Some(kind), None) => {
+    match named.names() {
+        Some(Named::Class(c)) => class(c).map(|()| format!("class {c}")),
+        Some(Named::Type { class: c, kind }) => {
             class(c)?;
-            let snake = !kind.is_empty()
-                && kind
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
-            if snake {
+            if crate::logs::levels::is_type(kind) {
                 Ok(format!("class {c}, type {kind}"))
             } else {
                 Err(format!(
@@ -112,13 +104,13 @@ fn named(named: &LevelOverride) -> Result<String, String> {
                 ))
             }
         }
-        (None, None, Some(service)) if crate::logs::levels::services().contains(&service) => {
+        Some(Named::Service(service)) if crate::logs::levels::services().contains(&service) => {
             Ok(format!("service {service}"))
         }
-        (None, None, Some(service)) => Err(format!(
+        Some(Named::Service(service)) => Err(format!(
             "{service:?} is not a service: use one of the services GET /api/settings/log-levels lists"
         )),
-        _ => Err("An override must name a class, a class and a type, or a service.".to_string()),
+        None => Err("An override must name a class, a class and a type, or a service.".to_string()),
     }
 }
 

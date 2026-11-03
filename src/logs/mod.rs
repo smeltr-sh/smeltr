@@ -365,7 +365,7 @@ macro_rules! log_enabled {
 
 /// Whether a line of `class` and `kind` said in `module` at `level` would be kept. [`log_enabled!`]'s.
 pub fn kept(class: &str, kind: &str, module: &str, level: Level) -> bool {
-    level <= max_level() && level <= levels::kept_at(Some(class), kind, levels::service(module))
+    levels::keeps(level, Some(class), kind, levels::service(module))
 }
 
 /// `took` in whole milliseconds, as a line's `ms` says how long something took.
@@ -373,7 +373,7 @@ pub fn millis(took: Duration) -> u64 {
     u64::try_from(took.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// The highest level any area keeps (`levels`): no line below it is kept anywhere.
+/// The highest level any line is kept at (`levels`): no line below it is kept anywhere.
 pub fn max_level() -> Level {
     level_of(MAX_LEVEL.load(Ordering::Relaxed))
 }

@@ -1142,7 +1142,6 @@ pub(super) fn librdkafka_said(class: &'static str, level: rdkafka::config::RDKaf
     crate::logs::library_said(
         class,
         "librdkafka",
-        "kafka",
         level,
         message.to_string(),
         vec![("facility".into(), crate::logs::Value::Str(fac.to_string()))],

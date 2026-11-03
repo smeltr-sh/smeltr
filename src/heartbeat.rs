@@ -155,8 +155,8 @@ impl LogDto {
     }
 
     /// The event this carries, for a process that reads it rather than delivers it: a runtime handed its
-    /// supervisor's logs to mirror. Named for no worker, which the reading process supplies. `None` for a severity
-    /// this build does not know.
+    /// supervisor's logs to mirror. Named for no worker, which the reading process supplies. `None` for a level this
+    /// build does not know.
     pub fn into_event(self) -> Option<crate::logs::Event> {
         Some(crate::logs::Event {
             timestamp: std::time::UNIX_EPOCH + std::time::Duration::from_millis(self.timestamp_ms.max(0) as u64),
@@ -829,7 +829,7 @@ pub struct HeartbeatResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployed: Option<String>,
     /// The levels this worker keeps its lines at, whole on every answer. Absent while an operator has set nothing,
-    /// and from a leader too old to say: every area is then at the process's startup level
+    /// and from a leader too old to say: every line is then kept at the process's startup level
     /// (`crate::startup_config::log_level`).
     #[serde(default, skip_serializing_if = "LogLevels::is_empty")]
     pub log_levels: LogLevels,
@@ -864,6 +864,26 @@ pub struct LevelOverride {
     pub level: String,
 }
 
+/// What one override names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Named<'a> {
+    Type { class: &'a str, kind: &'a str },
+    Class(&'a str),
+    Service(&'a str),
+}
+
+impl LevelOverride {
+    /// What this names, or `None` for any other mix of class, type and service, which names no line.
+    pub fn names(&self) -> Option<Named<'_>> {
+        match (self.class.as_deref(), self.r#type.as_deref(), self.service.as_deref()) {
+            (Some(class), Some(kind), None) => Some(Named::Type { class, kind }),
+            (Some(class), None, None) => Some(Named::Class(class)),
+            (None, None, Some(service)) => Some(Named::Service(service)),
+            _ => None,
+        }
+    }
+}
+
 impl LogLevels {
     pub fn is_empty(&self) -> bool {
         self.default.is_none() && self.overrides.is_empty()
@@ -883,21 +903,21 @@ impl LogLevels {
             let Some(level) = crate::logs::level_for_label(&named.level) else {
                 continue;
             };
-            match (&named.class, &named.r#type, &named.service) {
-                (Some(class), Some(kind), None) => {
+            match named.names() {
+                Some(Named::Type { class, kind }) => {
                     levels
                         .types
-                        .entry(class.clone())
+                        .entry(class.to_string())
                         .or_default()
-                        .insert(kind.clone(), level);
+                        .insert(kind.to_string(), level);
                 }
-                (Some(class), None, None) => {
-                    levels.classes.insert(class.clone(), level);
+                Some(Named::Class(class)) => {
+                    levels.classes.insert(class.to_string(), level);
                 }
-                (None, None, Some(service)) => {
-                    levels.services.insert(service.clone(), level);
+                Some(Named::Service(service)) => {
+                    levels.services.insert(service.to_string(), level);
                 }
-                _ => {}
+                None => {}
             }
         }
         levels
