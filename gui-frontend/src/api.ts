@@ -474,7 +474,8 @@ export function sqlStatement(source: SourceDto): Promise<SqlStatementsResult> {
   return post('/api/preview/sql', { source }, 'quiet');
 }
 
-/** Which of OpenTelemetry's signals an OTLP receiver takes, mirroring `plan::topology::Signal`. */
+/** Which of OpenTelemetry's signals an OTLP receiver takes or an OTLP destination sends, mirroring
+ * `plan::topology::Signal`. */
 export type OtlpSignal = 'logs' | 'metrics' | 'traces';
 
 /** What happens when the same document reaches Elasticsearch twice.
@@ -669,6 +670,26 @@ export type DestinationDto = {
       headers?: Record<string, string>;
       /** Header name to where its value lives. */
       credentials?: Record<string, SecretRef>;
+      maxRequestBytes?: ByteCount;
+      bufferBytes?: ByteCount;
+      stallAfterSecs?: number;
+    })
+  | (TlsDto & {
+      id: string;
+      type: 'otlp';
+      exceptions?: ExceptionsDto;
+      /** The OTLP endpoint. Each request goes to its signal's path after it: `/v1/logs`, `/v1/metrics` or
+       * `/v1/traces`. */
+      url: string;
+      /** The signal it sends. Absent is `logs`. */
+      signal?: OtlpSignal;
+      /** Absent is `none`. */
+      compression?: HttpCompression;
+      /** Header name to its value, committed to the config repository. */
+      headers?: Record<string, string>;
+      /** Header name to where its value lives. */
+      credentials?: Record<string, SecretRef>;
+      inFlight?: number;
       maxRequestBytes?: ByteCount;
       bufferBytes?: ByteCount;
       stallAfterSecs?: number;

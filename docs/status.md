@@ -39,7 +39,7 @@ document's systems.
 | HTTP (`http`) (Runtime stages, Config plane, Secrets boundary) | built (`io::http_post`) |
 | Log Analytics workspace (`logAnalytics`), through Azure Monitor's Logs Ingestion API (Runtime stages, Config plane, Security) | built, on the HTTP destination core (`io::http_post`), signed in with Entra as a service principal, the host's managed identity or, in an AKS pod, its workload identity (`io::entra`), with its Destinations page form. Not built: a stream chosen per row; the managed identities of App Service, Container Apps and Functions |
 | Prometheus remote_write 1.0 and 2.0 (`prometheus`) (Runtime stages, Config plane, Secrets boundary) | built (`io::remote_write`). Not built: sharding by series; SigV4 or OAuth sign-in |
-| OTLP (`otlp`), logs, metrics or traces over OTLP/HTTP as protobuf (Runtime stages, Config plane, Secrets boundary) | built, on the HTTP destination core (`io::otlp::export`). Not built: gRPC; OTLP/JSON; its Destinations page form |
+| OTLP (`otlp`), logs, metrics or traces over OTLP/HTTP as protobuf (Runtime stages, Config plane, Secrets boundary) | built, on the HTTP destination core (`io::otlp::export`). Not built: gRPC; OTLP/JSON |
 | Object stores: S3, GCS, Azure Blob (Runtime stages, Config plane) | built (`io::files`, `io::objects`). A batch sent again after a failure may leave a duplicate object |
 | SFTP (`sftp`) (Runtime stages, Config plane, Security) | built, on the object store destinations. A write cut off may leave its hidden temporary file |
 | Destination formats: JSON, Parquet, Avro, text, bytes (Runtime stages, Config plane) | built (`Payload`, `io::avro`). A Parquet object holds a variant as its JSON text, or with `variant` `native` as Parquet's variant |
