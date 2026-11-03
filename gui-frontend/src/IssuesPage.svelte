@@ -215,9 +215,6 @@
   .empty {
     color: var(--ink);
   }
-  .mono {
-    font-family: var(--mono);
-  }
 
   .totals {
     display: flex;
