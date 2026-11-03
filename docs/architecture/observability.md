@@ -114,10 +114,13 @@ store, the Logs page and the Smeltr logs source.
   remote. It is looked up from where the line is said in the code, through one
   list.
 
-A library's line takes the class of the span of ours it is said inside, has
-none outside any, and has its library as its type. librdkafka calls back on its
-own threads, so its lines take the class of the source or destination whose
-client said them, and the service kafka.
+A library's line is the one exception to a line having a class. It takes the
+class of the span of ours it is said inside, and has none outside any, since
+nothing then says which part of Smeltr it is about; the default level applies
+to it. A library says no type of its own, so its line's type is the library's
+name. librdkafka calls back on its own threads, so its lines take the class of
+the source or destination whose client said them, the service kafka, and the
+part of librdkafka that said them in a `facility` field.
 
 ### Which lines are kept
 
