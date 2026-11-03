@@ -6,6 +6,7 @@
 -->
 <script lang="ts">
   import StateMark from './StateMark.svelte';
+  import Button, { BUSY } from './Button.svelte';
   import Locked from './Locked.svelte';
   import type { Reviews, TestsTally } from './review';
   import { count } from './time';
@@ -53,6 +54,8 @@
     /** The dock's own height, so the page can leave that much room below its content. */
     height?: number;
   } = $props();
+
+  const MERGED_ON_REMOTE = 'This leader follows a git remote, so its changes are merged there.';
 </script>
 
 {#snippet opens(tab: 'tests' | 'schemas', text: string)}
@@ -136,11 +139,10 @@
       <span class="act">
         {#if deployDisabledReason}<span class="blocked">{deployDisabledReason}</span>{/if}
         <Locked refusedInDemo>
-          <button
+          <Button
             type="button"
             class="primary"
-            disabled={deploying || deployDisabledReason !== ''}
-            title={deployDisabledReason || undefined}
+            disabled={deploying ? BUSY : deployDisabledReason}
             onclick={ondeploy}
           >
             {deploying
@@ -150,12 +152,14 @@
               : held
                 ? 'Approve'
                 : 'Approve & deploy'}
-          </button>
+          </Button>
         </Locked>
       </span>
     {:else}
       <span class="act">
-        <button type="button" class="primary" disabled>Merge on the remote instead</button>
+        <Button type="button" class="primary" disabled={MERGED_ON_REMOTE}
+          >Merge on the remote instead</Button
+        >
       </span>
     {/if}
   </div>

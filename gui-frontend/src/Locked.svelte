@@ -7,6 +7,13 @@
   import { getContext, setContext } from 'svelte';
 
   const UNLOCKED = Symbol('unlocked');
+  const LOCKED = Symbol('locked');
+
+  /** Why a `Locked` above disables what the caller holds, or `''` when none does. Read while a
+   * component initialises. */
+  export function lockedBecause(): string {
+    return getContext<string | undefined>(LOCKED) ?? '';
+  }
 
   /** Called while a component initialises: no `Locked` below it disables anything, whatever page
    * the address names. For a screen shown in place of a page, as signing in is. */
@@ -17,7 +24,7 @@
 
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import { NOT_IN_DEMO, editable } from './access';
+  import { NOT_IN_DEMO, READ_ONLY, editable } from './access';
 
   let {
     children,
@@ -31,6 +38,7 @@
   // svelte-ignore state_referenced_locally
   const why = refusedInDemo ? NOT_IN_DEMO : '';
   const readOnly = !getContext<boolean | undefined>(UNLOCKED) && (why !== '' || !editable());
+  if (readOnly) setContext(LOCKED, why || READ_ONLY);
 </script>
 
 <!-- A disabled fieldset disables every control in it, whatever the caller put there. Its title is

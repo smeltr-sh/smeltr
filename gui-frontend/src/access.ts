@@ -98,6 +98,9 @@ export function settleScope(): void {
   if (held.length > 0 && !held.includes(currentScope())) setScope(held[0]);
 }
 
+/** Why a control is disabled for a person whose roles do not let them change what it changes. */
+export const READ_ONLY = "Your roles don't let you change this.";
+
 /** What a control the website demo does not do says in place of doing it (`demo/leader.ts` refuses it), or `''`
  * outside the demo. */
 export const NOT_IN_DEMO = import.meta.env.MODE === 'demo' ? 'Not in the demo' : '';
