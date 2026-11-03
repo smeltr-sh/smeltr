@@ -655,8 +655,7 @@ pub struct LogFilter<'a> {
     pub worker_id: Option<&'a str>,
     pub group_id: Option<&'a str>,
     pub class: Option<&'a str>,
-    /// Matched anywhere in the type, the same as `message_contains` is against the message.
-    pub type_contains: Option<&'a str>,
+    pub r#type: Option<&'a str>,
     pub service: Option<&'a str>,
     /// Matched anywhere in the message. Truncated at delivery, so this cannot find what was cut.
     pub message_contains: Option<&'a str>,
@@ -1231,6 +1230,7 @@ impl RegistryStore {
             ("worker_id", filter.worker_id),
             ("group_id", filter.group_id),
             ("class", filter.class),
+            ("type", filter.r#type),
             ("service", filter.service),
         ] {
             if let Some(value) = value {
@@ -1238,13 +1238,10 @@ impl RegistryStore {
                 args.push(Box::new(value.to_string()));
             }
         }
-        // `escape`d, so a type or message containing `%` or `_` searches for those characters rather than for
-        // every row.
-        for (column, value) in [("type", filter.type_contains), ("message", filter.message_contains)] {
-            if let Some(text) = value {
-                sql.push_str(&format!(" AND {column} LIKE ? ESCAPE '\\'"));
-                args.push(Box::new(format!("%{}%", like_escape(text))));
-            }
+        // `escape`d, so a message containing `%` or `_` searches for those characters rather than for every row.
+        if let Some(text) = filter.message_contains {
+            sql.push_str(" AND message LIKE ? ESCAPE '\\'");
+            args.push(Box::new(format!("%{}%", like_escape(text))));
         }
         for (op, value) in [(">=", filter.since_ms), ("<=", filter.until_ms)] {
             if let Some(value) = value {
@@ -2736,13 +2733,20 @@ mod tests {
             })),
             vec!["destinations.bulk_refused"]
         );
-        // Matched anywhere, not just at the front: "refused" ends the one type that has it.
+        // The whole type, not a part of one: "refused" is in "bulk_refused" and names no line.
         assert_eq!(
             lines(&one(LogFilter {
-                type_contains: Some("refused"),
+                r#type: Some("bulk_refused"),
                 ..Default::default()
             })),
             vec!["destinations.bulk_refused"]
+        );
+        assert!(
+            lines(&one(LogFilter {
+                r#type: Some("refused"),
+                ..Default::default()
+            }))
+            .is_empty()
         );
         assert_eq!(
             lines(&one(LogFilter {

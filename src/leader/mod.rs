@@ -1763,7 +1763,6 @@ struct LogsQuery {
     worker: Option<String>,
     group: Option<String>,
     class: Option<String>,
-    /// Matched anywhere in the type.
     r#type: Option<String>,
     service: Option<String>,
     /// Matched anywhere in the message.
@@ -1885,7 +1884,7 @@ async fn get_logs(
                 worker_id: query.worker.as_deref(),
                 group_id: query.group.as_deref(),
                 class: query.class.as_deref(),
-                type_contains: query.r#type.as_deref(),
+                r#type: query.r#type.as_deref(),
                 service: query.service.as_deref(),
                 message_contains: query.q.as_deref(),
                 since_ms: query.since_millis,
