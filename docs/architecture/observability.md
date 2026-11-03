@@ -77,26 +77,65 @@ may run one: the endpoint adds the two processes' counts, as the leader does.
 A process also says things about itself, and they go to one buffer per
 process for the same reasons the registry is one: most of what smeltr has to
 report happens where no deployment exists. A log is structured like a metric
-is -- a time, a severity, the call site, a constant sentence and typed fields
--- so what reads it searches fields rather than parsing prose.
+is -- a time, a severity, a class and a type, a constant sentence and typed
+fields -- so what reads it searches fields rather than parsing prose.
 
 Three consumers read that buffer, each bounded its own way:
 
 ```text
-                          ┌──► console       drops when full, counts per site
+                          ┌──► console       drops when full, counts per type
   every thread ──► buffer ─┼──► leader       held until acknowledged, cut to
                           │                  length, capped by row count
                           └──► smeltr logs   one queue per reader
 ```
 
 A write never blocks: the console's latency belongs to whatever is reading
-it, and a thread moving data must never wait on that. What the buffer drops
-it counts per site, which is the only thing that can say whether one site is
-drowning the rest.
+it, and a thread moving data must never wait on that. What the console writes
+it counts per class and type, which is the only thing that can say whether one
+line is drowning the rest.
 
 A library's line is kept one step below what it says: its info is debug here
 and its debug is trace, since what a library reports at those levels Smeltr
 says better itself. Its warn and error are what they say.
+
+### What a line is
+
+Every line carries a class and a type, and a service when it talks to one.
+Each is its own field wherever the line goes: the heartbeat, the leader's
+store, the Logs page and the Smeltr logs source.
+
+- The class is the part of Smeltr the line is about, one of a fixed list
+  (`logs::levels`): sources, destinations, pipelines, deploy and so on.
+- The type is what happened, in snake_case. It never repeats the class, the
+  service or the process that said it, since the process is on every line
+  already.
+- The service is the outside service the code that said it talks to: a
+  source's or destination's kind, an ACME authority, an OIDC provider, the git
+  remote. It is looked up from where the line is said in the code, through one
+  list.
+
+A library's line takes the class of the span of ours it is said inside, has
+none outside any, and has its library as its type. librdkafka calls back on its
+own threads, so its lines take the class of the source or destination whose
+client said them, and the service kafka.
+
+### Which lines are kept
+
+The leader holds the levels for the whole fleet: a default, and overrides.
+Each override names a class and a type, a service, or a class, and no two
+name the same thing. A line is kept at the first of these that names it:
+
+```mermaid
+flowchart LR
+  T[its class and type] -->|none| S[its service] -->|none| C[its class] -->|none| D[the default]
+```
+
+On a Kafka source's line, an override for kafka wins over one for sources. A
+process starts at its startup log level and keeps the leader's levels from its
+next heartbeat. A call site of ours is asked once whether it is kept, and
+asked again only when the levels change, so a line below its level costs
+nothing. A library's is asked each time, since the span around it decides its
+class.
 
 What bounds output is the call site. A loop that refuses a thousand rows
 reports once, with a thousand in a field; occupancy is then a property of the
@@ -120,8 +159,8 @@ A line's severity is what it asks of whoever reads it:
 A failure that begins has a line that ends it: the `cleared` or `recovered`
 line carries how long it held, so a reader of the log alone can see the
 outage whole. A failure that repeats is said once, with its count, not once
-per retry; what a loop refuses it reports once with a count. A site
-is a literal `subsystem.event` with one constant sentence, and what varies
+per retry; what a loop refuses it reports once with a count. A call site
+names a literal class and type with one constant sentence, and what varies
 rides in fields: `subject` names the thing the line is about, `error` carries
 what failed. Every refused answer the leader gives is logged by the layer
 that shapes it, and every audit row by the store that writes it, so neither
