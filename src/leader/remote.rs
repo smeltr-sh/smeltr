@@ -234,13 +234,15 @@ fn fetch(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, S
             .ok()
             .and_then(|r| r.target().try_id().map(|id| id.to_string()))
     };
-    let from = held(&git);
+    // Read only to be said, so only when it will be.
+    let saying = tracing::enabled!(target: "git.ref_moved", tracing::Level::TRACE);
+    let from = saying.then(|| held(&git)).flatten();
     let outcome = prepare
         .receive(gix::progress::Discard, &AtomicBool::new(false))
         .map_err(|e| unreachable(&with_cause(&e)))?;
     // The one ref the leader moves outside `git::edit_refs`: gix's fetch moves it, so it is said here.
-    let to = held(&git);
-    if to != from {
+    let to = saying.then(|| held(&git)).flatten();
+    if saying && to != from {
         tracing::trace!(target: "git.ref_moved", reference = git::FETCHED_MAIN_REF, from, to, "a ref moved");
     }
     Ok(outcome
