@@ -580,8 +580,8 @@ async function addFrom(admin: Page, leader: Leader, tile: string, id: string, fi
   return dialog;
 }
 
-/** Opens Add schema at `tile` and names the schema `id`, read from the release the leader carries. Answers the
- * dialog. */
+/** Opens Add schema at `tile` and names the schema `id`, read from the newest release the leader carries. Answers
+ * the dialog. */
 async function addBuiltIn(admin: Page, leader: Leader, tile: 'ECS' | 'OCSF', id?: string) {
   await goto(admin, leader, '#/build/schemas');
   await admin.getByRole('button', { name: '+ Add schema' }).click();
@@ -589,7 +589,9 @@ async function addBuiltIn(admin: Page, leader: Leader, tile: 'ECS' | 'OCSF', id?
   await dialog.getByRole('button', { name: tile, exact: true }).click();
   if (id) await dialog.getByLabel('id', { exact: true }).fill(id);
   await expect(
-    dialog.getByRole('button', { name: new RegExp(`^${tile} \\d+\\.\\d+\\.\\d+, built in$`) }),
+    dialog
+      .getByRole('button', { name: new RegExp(`^${tile} \\d+\\.\\d+\\.\\d+, built in$`) })
+      .first(),
   ).toHaveAttribute('aria-pressed', 'true');
   await expect(dialog.getByLabel(/^File/)).toHaveCount(0);
   return dialog;
@@ -628,6 +630,19 @@ test('ECS and an OCSF class come in from the releases the leader carries', async
   field = await saved(admin, api, 'process_activity-1');
   expect(field('process')).toMatchObject({ type: '{...}', requirement: 'required' });
   expect(field('process.pid')?.type).toBe('i64');
+
+  // An older release, for a destination that reads only up to it: its class keeps, and the schema is read from it.
+  dialog = await addBuiltIn(admin, leader, 'OCSF', 'auth-13');
+  await dialog.getByRole('button', { name: 'OCSF 1.3.0, built in', exact: true }).click();
+  await expect(
+    dialog.getByRole('link', { name: 'github.com/ocsf/ocsf-schema/tree/1.3.0' }),
+  ).toBeVisible();
+  await expect(dialog.getByRole('combobox', { name: 'Class' })).toHaveValue('authentication');
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  field = await saved(admin, api, 'auth-13');
+  expect(field('user')?.requirement).toBe('required');
+  expect(field('actor'), 'optional in 1.3, recommended in 1.9').toBeUndefined();
 });
 
 test("ECS read with Elastic Security's requirements asks for the fields Elastic Security uses", async ({

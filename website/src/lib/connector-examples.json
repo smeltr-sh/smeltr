@@ -262,6 +262,18 @@
     "bucket": "acme-logs",
     "region": "us-east-2"
   },
+  "securityLakeDestination": {
+    "id": "lake-okta-auth",
+    "type": "s3",
+    "bucket": "aws-security-data-lake-us-east-1-example",
+    "region": "us-east-1",
+    "roleArn": "arn:aws:iam::123456789012:role/AmazonSecurityLake-Provider-okta-auth-us-east-1",
+    "externalId": "acme-okta-auth",
+    "prefix": "ext/okta-auth/region=us-east-1/accountId=123456789012/eventDay=%Y%m%d/",
+    "format": "parquet",
+    "compression": "zstd",
+    "accepts": ["authentication"]
+  },
   "gcsDestination": {
     "id": "archive",
     "type": "gcs",

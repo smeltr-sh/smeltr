@@ -1806,7 +1806,8 @@ fn the_destination_reference_matches_the_engine() {
     }
 }
 
-/// Every source and destination example on the Sources and Destinations pages is one the leader accepts on its own.
+/// Every source and destination example on the Sources and Destinations pages is one the leader accepts on its own,
+/// beside the schemas, empty, that a destination's `accepts` names.
 #[test]
 fn every_connector_example_loads() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("website/src/lib/connector-examples.json");
@@ -1820,7 +1821,10 @@ fn every_connector_example_loads() {
         } else {
             continue;
         };
-        let file = serde_json::from_value(serde_json::json!({ "version": 1, section: [example] }))
+        let schemas: Vec<_> = (example["accepts"].as_array().into_iter().flatten())
+            .map(|id| serde_json::json!({ "id": id, "fields": [] }))
+            .collect();
+        let file = serde_json::from_value(serde_json::json!({ "version": 1, section: [example], "schemas": schemas }))
             .unwrap_or_else(|e| panic!("{name} does not load: {e}"));
         let errors = smeltr::config_file::validation_errors(file);
         assert!(errors.is_empty(), "{name} is refused: {errors:?}");
