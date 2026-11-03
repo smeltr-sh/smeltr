@@ -83,8 +83,9 @@ impl Unwritten {
         &self.subject
     }
 
-    /// Counts `count` of `kind` unwritten, and warns, saying `why`, when no warning of this destination's is recent.
-    pub fn note(&self, kind: &str, count: u64, why: &str) {
+    /// Counts `count` of `kind` unwritten, and warns, saying what `why` makes, when no warning of this destination's is
+    /// recent. `why` runs only for a warning, as most notes make none.
+    pub fn note(&self, kind: &str, count: u64, why: impl FnOnce() -> String) {
         if count == 0 {
             return;
         }
@@ -98,7 +99,7 @@ impl Unwritten {
             subject = %self.subject,
             kind,
             count,
-            error = why,
+            error = why(),
             "a destination's store took a request, but its answer says it stored fewer rows than it was sent"
         );
     }

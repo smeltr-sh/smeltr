@@ -998,8 +998,9 @@ fn note_unwritten(unwritten: &Unwritten, response: &Response, items: &[Item], mi
             continue;
         };
         if written < sent {
-            let why = format!("the store wrote {written} of {sent} {kind}(s) of a request");
-            unwritten.note(kind, sent - written, &why);
+            unwritten.note(kind, sent - written, || {
+                format!("the store wrote {written} of {sent} {kind}(s) of a request")
+            });
         }
     }
 }

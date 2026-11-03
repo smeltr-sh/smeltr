@@ -232,12 +232,13 @@ impl Protocol for Otlp {
                 // A request holds one item per row, and a service that names more refused than it was sent is held
                 // to what it was.
                 let rejected = (partial.rejected as u64).min(items.len() as u64);
-                let why = format!(
-                    "the service refused {rejected} of {} {items_of} in a request: {}",
-                    items.len(),
-                    partial.error_message
-                );
-                unwritten.note(kind, rejected, &why);
+                unwritten.note(kind, rejected, || {
+                    format!(
+                        "the service refused {rejected} of {} {items_of} in a request: {}",
+                        items.len(),
+                        partial.error_message
+                    )
+                });
             }
         }
         answered(response, items.len())

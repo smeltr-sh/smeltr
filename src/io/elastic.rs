@@ -317,8 +317,9 @@ impl Protocol for Elastic {
             200..300 => {
                 let (outcome, failure_stored) = classify(&response.body, count, self.doc_id)?;
                 if let Some(unwritten) = self.unwritten.as_ref().filter(|_| failure_stored > 0) {
-                    let why = format!("{failure_stored} document(s) went to their data stream's failure store");
-                    unwritten.note("document", failure_stored as u64, &why);
+                    unwritten.note("document", failure_stored as u64, || {
+                        format!("{failure_stored} document(s) went to their data stream's failure store")
+                    });
                 }
                 Ok(outcome)
             }
