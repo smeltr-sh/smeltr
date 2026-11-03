@@ -241,6 +241,13 @@
       "DD-API-KEY": "INTAKE_API_KEY"
     }
   },
+  "otlpDestination": {
+    "id": "traces-out",
+    "type": "otlp",
+    "url": "https://otel-collector.example.com:4318",
+    "signal": "traces",
+    "credentials": { "Authorization": "OTEL_TOKEN" }
+  },
   "prometheusDestination": {
     "id": "metrics-out",
     "type": "prometheus",

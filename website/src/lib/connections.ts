@@ -315,6 +315,15 @@ export const destinations: Connection[] = [
     href: '/docs/destinations/kafka',
   },
   {
+    id: 'otlp',
+    type: 'otlp',
+    name: 'OTLP',
+    summary:
+      'Send logs, metrics or traces over OTLP to an OpenTelemetry Collector or any OTLP endpoint.',
+    category: 'Observability',
+    href: '/docs/destinations/otlp',
+  },
+  {
     id: 'prometheus',
     type: 'prometheus',
     name: 'Prometheus remote_write',
