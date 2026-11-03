@@ -20,6 +20,7 @@
   on.
 -->
 <script lang="ts">
+  import Button from './Button.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
@@ -340,8 +341,20 @@
     </table>
     {#if nextAfter != null || nextBefore != null}
       <div class="pager">
-        <button type="button" onclick={newer} disabled={nextAfter == null}> Newer </button>
-        <button type="button" onclick={older} disabled={nextBefore == null}> Older </button>
+        <Button
+          type="button"
+          onclick={newer}
+          disabled={nextAfter == null ? 'These are the newest logs.' : ''}
+        >
+          Newer
+        </Button>
+        <Button
+          type="button"
+          onclick={older}
+          disabled={nextBefore == null ? 'These are the oldest logs.' : ''}
+        >
+          Older
+        </Button>
       </div>
     {/if}
   {/if}

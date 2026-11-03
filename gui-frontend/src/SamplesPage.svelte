@@ -5,6 +5,7 @@
   branch's history rather than over whatever was last typed into a box.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { reported, unreported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
@@ -182,7 +183,8 @@
 
   {#if !readOnly}
     <div class="toolbar">
-      <button class="primary" onclick={() => (adding = true)} disabled={saving}>+ Add sample</button
+      <Button class="primary" onclick={() => (adding = true)} disabled={saving ? BUSY : ''}
+        >+ Add sample</Button
       >
     </div>
   {/if}
@@ -246,15 +248,15 @@
               </td>
               <td class="right">
                 {#if !readOnly}
-                  <button
+                  <Button
                     onclick={() => (editing = editing === s.id ? null : s.id)}
-                    disabled={saving}>Edit</button
+                    disabled={saving ? BUSY : ''}>Edit</Button
                   >
                 {/if}
               </td>
               <td class="right">
                 {#if !readOnly}
-                  <button onclick={() => remove(s)} disabled={saving}>Delete</button>
+                  <Button onclick={() => remove(s)} disabled={saving ? BUSY : ''}>Delete</Button>
                 {/if}
               </td>
             </tr>
@@ -338,7 +340,9 @@
                 </td>
                 <td class="right">
                   {#if !readOnly}
-                    <button onclick={() => removeTest(t)} disabled={deletingTest}> Delete </button>
+                    <Button onclick={() => removeTest(t)} disabled={deletingTest ? BUSY : ''}>
+                      Delete
+                    </Button>
                   {/if}
                 </td>
               </tr>

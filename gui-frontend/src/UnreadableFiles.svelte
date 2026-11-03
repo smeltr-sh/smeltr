@@ -8,6 +8,7 @@
   Nothing is asked of the leader while there are no problems.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { reported } from './errors.svelte';
   import type { Snippet } from 'svelte';
   import { currentScope, deleteConfigFile, unreadableFiles, type UnreadableFileDto } from './api';
@@ -93,11 +94,11 @@
           <div class="actions">
             <a class="btn compact" href={fileHash(f.path, location.hash)}>Edit</a>
             {#if f.deletable && editable()}
-              <button
+              <Button
                 type="button"
                 class="compact danger"
-                disabled={deleting !== null}
-                onclick={() => remove(f)}>{deleting === f.path ? 'Deleting…' : 'Delete'}</button
+                disabled={deleting !== null ? BUSY : ''}
+                onclick={() => remove(f)}>{deleting === f.path ? 'Deleting…' : 'Delete'}</Button
               >
             {/if}
           </div>

@@ -95,10 +95,9 @@
   <p>
     One worker of the group holds the source and reads it; every other worker running it reads
     nothing. The leader chooses the holder from the workers' heartbeats. The leader gives the hold
-    to another worker after three heartbeat intervals without hearing from the holder, the holder's
-    interval or the leader's, whichever is longer, and that worker resumes from the last progress
-    the leader kept. That worker delivers again what the previous holder delivered after that
-    progress.
+    to another worker after three heartbeat intervals without hearing from the holder, and that
+    worker resumes from the last progress the leader kept. That worker delivers again what the
+    previous holder delivered after that progress.
   </p>
   <p>
     With <code>afterCommit</code> <code>keep</code>, the progress is a <strong>ledger</strong>: each
@@ -159,8 +158,7 @@
     <dt><strong>The holder was last heard some time ago</strong></dt>
     <dd>
       The leader has not heard from that worker. It gives the hold to another worker after three
-      heartbeat intervals without hearing from the holder, the holder's interval or the leader's,
-      whichever is longer.
+      heartbeat intervals without hearing from the holder.
     </dd>
     <dt><strong>An object stays under the prefix</strong></dt>
     <dd>

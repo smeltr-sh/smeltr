@@ -4,6 +4,7 @@
   the Routes page saves it there and then.
 -->
 <script lang="ts" generics="O extends { id: string; type: T }, T extends string, K extends string">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported } from './errors.svelte';
   import type { Snippet } from 'svelte';
   import Dialog from './Dialog.svelte';
@@ -98,10 +99,12 @@
   {#snippet actions()}
     <button type="button" onclick={oncancel}>Cancel</button>
     {#if draft}
-      <button
+      <Button
         type="submit"
         class="primary"
-        disabled={busy || idProblem(draft.id, unavailable) !== null || !ready(draft)}>Add</button
+        disabled={busy
+          ? BUSY
+          : (idProblem(draft.id, unavailable) ?? (ready(draft) ? '' : INCOMPLETE))}>Add</Button
       >
     {/if}
   {/snippet}

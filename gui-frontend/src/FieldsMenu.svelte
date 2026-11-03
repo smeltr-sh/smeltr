@@ -21,6 +21,7 @@
 </script>
 
 <script lang="ts">
+  import Button from './Button.svelte';
   import ChevronIcon from './ChevronIcon.svelte';
   import ChipPicker from './ChipPicker.svelte';
   import Help from './Help.svelte';
@@ -208,17 +209,16 @@
             {#if tree}<span class="req"
                 >{#if req}<RequirementMark of={req} />{/if}</span
               >{/if}
-            {#if records !== null}<button
+            {#if records !== null}<Button
                 type="button"
-                class="count link-button"
-                class:none={f.count === 0}
+                class={['count link-button', f.count === 0 && 'none']}
                 aria-label={`records with ${fromRecord(f.path)}`}
-                disabled={f.count === 0}
+                disabled={f.count === 0 ? 'No records have this field.' : ''}
                 onclick={(e) => {
                   e.preventDefault();
                   open = false;
                   onhas(f.path);
-                }}>{f.count} of {records}</button
+                }}>{f.count} of {records}</Button
               >{:else}<span></span>{/if}
             {#if tree}<span></span>{/if}
           </label>
@@ -473,17 +473,19 @@
   }
 
   .records,
-  .count {
+  .count,
+  .list :global(.count) {
     justify-self: end;
   }
 
-  .count {
+  .count,
+  .list :global(.count) {
     font-family: var(--mono);
     color: var(--ink);
     text-underline-offset: 3px;
   }
 
-  .count.none {
+  .list :global(.count.none) {
     color: var(--accent);
     text-decoration: none;
     cursor: default;

@@ -13,6 +13,7 @@
   Closing this discards whatever session it still holds.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import WorkerGroupIcon from './WorkerGroupIcon.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -419,10 +420,15 @@
     <InlineError message={error} />
   </div>
   {#snippet actions()}
-    <button type="button" onclick={oncancel} disabled={busy}>Cancel</button>
-    <button type="submit" class="primary" data-guide="capture-start" disabled={busy || !canStart}>
+    <Button type="button" onclick={oncancel} disabled={busy ? BUSY : ''}>Cancel</Button>
+    <Button
+      type="submit"
+      class="primary"
+      data-guide="capture-start"
+      disabled={busy ? BUSY : !canStart ? INCOMPLETE : ''}
+    >
       {busy ? 'Starting…' : 'Start'}
-    </button>
+    </Button>
   {/snippet}
 </Dialog>
 

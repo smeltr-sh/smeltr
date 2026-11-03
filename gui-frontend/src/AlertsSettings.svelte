@@ -7,6 +7,7 @@
   table's ticks -- saves the whole list as the page holds it.
 -->
 <script lang="ts">
+  import Button, { BUSY, UNCHANGED } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import {
@@ -409,7 +410,9 @@
         </Field>
       </div>
       <div class="buttons">
-        <button class="primary" type="submit" disabled={busy || !mailDirty}>Save</button>
+        <Button class="primary" type="submit" disabled={busy ? BUSY : !mailDirty ? UNCHANGED : ''}
+          >Save</Button
+        >
       </div>
     {/if}
   </Panel>
@@ -452,26 +455,32 @@
             >
             <span role="cell" class="note dim">{c.includeMessage ? 'Included' : 'Left out'}</span>
             <span role="cell" class="actions">
-              <button type="button" class="compact" disabled={busy} onclick={() => testRow(c.id)}
-                >Send test</button
-              >
-              {#if muted(c)}
-                <button
-                  type="button"
-                  class="compact"
-                  disabled={busy}
-                  onclick={() => mute(c.id, undefined)}>Unmute</button
-                >
-              {:else}
-                <button type="button" class="compact" disabled={busy} onclick={() => (muting = c)}
-                  >Mute…</button
-                >
-              {/if}
-              <button
+              <Button
                 type="button"
                 class="compact"
-                disabled={busy}
-                onclick={() => open(c.kind.type, c)}>Edit</button
+                disabled={busy ? BUSY : ''}
+                onclick={() => testRow(c.id)}>Send test</Button
+              >
+              {#if muted(c)}
+                <Button
+                  type="button"
+                  class="compact"
+                  disabled={busy ? BUSY : ''}
+                  onclick={() => mute(c.id, undefined)}>Unmute</Button
+                >
+              {:else}
+                <Button
+                  type="button"
+                  class="compact"
+                  disabled={busy ? BUSY : ''}
+                  onclick={() => (muting = c)}>Mute…</Button
+                >
+              {/if}
+              <Button
+                type="button"
+                class="compact"
+                disabled={busy ? BUSY : ''}
+                onclick={() => open(c.kind.type, c)}>Edit</Button
               >
             </span>
             {#if c.kind.type === 'email' && !mailOn}
@@ -558,7 +567,9 @@
         </table>
       </div>
       <div class="buttons">
-        <button class="primary" type="submit" disabled={busy || !ticksDirty}>Save</button>
+        <Button class="primary" type="submit" disabled={busy ? BUSY : !ticksDirty ? UNCHANGED : ''}
+          >Save</Button
+        >
       </div>
     </Panel>
   {/if}
@@ -655,10 +666,13 @@
     </div>
   {/if}
   {#snippet actions()}
-    {#if editing}<button type="button" onclick={remove} disabled={busy}>Remove</button>{/if}
-    <button type="button" onclick={() => (draft = null)} disabled={busy}>Cancel</button>
-    <button type="button" onclick={sendTest} disabled={busy}>Send test</button>
-    <button type="submit" class="primary" disabled={busy}>{editing ? 'Save' : 'Add'}</button>
+    {#if editing}<Button type="button" onclick={remove} disabled={busy ? BUSY : ''}>Remove</Button
+      >{/if}
+    <Button type="button" onclick={() => (draft = null)} disabled={busy ? BUSY : ''}>Cancel</Button>
+    <Button type="button" onclick={sendTest} disabled={busy ? BUSY : ''}>Send test</Button>
+    <Button type="submit" class="primary" disabled={busy ? BUSY : ''}
+      >{editing ? 'Save' : 'Add'}</Button
+    >
   {/snippet}
 </Dialog>
 
@@ -684,8 +698,14 @@
     >
   </fieldset>
   {#snippet actions()}
-    <button type="button" onclick={() => (muting = null)} disabled={busy}>Cancel</button>
-    <button type="submit" class="primary" disabled={busy || until() === undefined}>Mute</button>
+    <Button type="button" onclick={() => (muting = null)} disabled={busy ? BUSY : ''}>Cancel</Button
+    >
+    <Button
+      type="submit"
+      class="primary"
+      disabled={busy ? BUSY : until() === undefined ? 'Choose when the mute ends first.' : ''}
+      >Mute</Button
+    >
   {/snippet}
 </Dialog>
 

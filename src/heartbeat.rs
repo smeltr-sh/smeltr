@@ -505,10 +505,6 @@ pub struct HeartbeatRequest {
     /// The last directive this worker took, by id. The leader repeats a directive until a beat names it here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub took: Option<String>,
-    /// How often this worker beats, as its own configuration sets it. The leader holds a source for this worker
-    /// for three of these, or of its own, whichever is longer. Absent from a worker older than this field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub heartbeat_interval_ms: Option<u64>,
     /// Every single-worker source this worker's deployment runs, whether or not it holds it: the workers that may
     /// be given its hold. Empty from a worker running none, and from one older than this field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -803,6 +799,11 @@ pub struct HeartbeatResponse {
     /// (`crate::startup_config::log_level`).
     #[serde(default, skip_serializing_if = "LogLevels::is_empty")]
     pub log_levels: LogLevels,
+    /// How often the leader has its workers beat, which is the pace it judges them by. A worker beats at this from
+    /// the answer that carries it on. Absent from a leader older than this field, and then the worker keeps
+    /// [`crate::startup_config::DEFAULT_HEARTBEAT_INTERVAL`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat_interval_ms: Option<u64>,
 }
 
 /// The levels lines are kept at, by area (`crate::logs::levels`), each a label of [`crate::logs::LEVEL_LABELS`].
@@ -2042,7 +2043,6 @@ mod tests {
     #[test]
     fn a_heartbeat_request_serializes_to_the_wire_spelling() {
         let req = HeartbeatRequest {
-            heartbeat_interval_ms: None,
             single_worker: Vec::new(),
             progress: Vec::new(),
             streams: None,
@@ -2101,7 +2101,6 @@ mod tests {
         // The key a worker's logs ride under, pinned separately because the fixture above carries none and an
         // empty list is left off the wire. It is the same two-binary contract as everything else here.
         let carrying = HeartbeatRequest {
-            heartbeat_interval_ms: None,
             single_worker: Vec::new(),
             progress: Vec::new(),
             streams: None,
@@ -2137,6 +2136,7 @@ mod tests {
             secrets: Vec::new(),
             directive: None,
             log_levels: LogLevels::default(),
+            heartbeat_interval_ms: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, r#"{}"#);
@@ -2385,6 +2385,7 @@ mod tests {
             secrets: vec![delivery.clone()],
             directive: None,
             log_levels: LogLevels::default(),
+            heartbeat_interval_ms: None,
         };
         assert!(!format!("{response:?}").contains("hunter2"));
         assert!(!format!("{:?}", Some(vec![delivery])).contains("hunter2"));

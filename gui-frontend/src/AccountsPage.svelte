@@ -9,6 +9,7 @@
   them, is changed. The administrator role holds everything.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import SectionShell from './SectionShell.svelte';
@@ -495,8 +496,10 @@
       <AccountAccess {roles} bind:chosen={newRoles} />
     </div>
     {#snippet actions()}
-      <button type="button" onclick={reset} disabled={busy}>Cancel</button>
-      <button class="primary" type="submit" disabled={busy || !createReady}>Add</button>
+      <Button type="button" onclick={reset} disabled={busy ? BUSY : ''}>Cancel</Button>
+      <Button class="primary" type="submit" disabled={busy ? BUSY : !createReady ? INCOMPLETE : ''}
+        >Add</Button
+      >
     {/snippet}
   </Dialog>
 
@@ -507,8 +510,14 @@
     </Field>
     {#snippet actions()}
       <button type="button" onclick={() => (naming = false)}>Cancel</button>
-      <button class="primary" type="submit" disabled={newRole.trim() === '' || nameTaken}
-        >Add</button
+      <Button
+        class="primary"
+        type="submit"
+        disabled={newRole.trim() === ''
+          ? INCOMPLETE
+          : nameTaken
+            ? 'A role with this name already exists.'
+            : ''}>Add</Button
       >
     {/snippet}
   </Dialog>
@@ -615,14 +624,22 @@
                       {#if role.builtIn}
                         <span></span>
                       {:else}
-                        <button type="button" onclick={() => removeRole(role.name)} disabled={busy}
-                          >Remove role</button
+                        <Button
+                          type="button"
+                          onclick={() => removeRole(role.name)}
+                          disabled={busy ? BUSY : ''}>Remove role</Button
                         >
                       {/if}
                       <span class="buttons">
                         <button type="button" onclick={closeRow}>Cancel</button>
-                        <button class="primary" type="submit" disabled={busy || !givesSomething}
-                          >Save</button
+                        <Button
+                          class="primary"
+                          type="submit"
+                          disabled={busy
+                            ? BUSY
+                            : !givesSomething
+                              ? 'Give the role at least one permission first.'
+                              : ''}>Save</Button
                         >
                       </span>
                     </div>

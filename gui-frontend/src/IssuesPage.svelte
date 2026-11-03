@@ -114,7 +114,8 @@
             ><StateMark state="error" /> <b>{failedCount}</b> failed</span
           >{/if}
         {#if warningCount > 0}<span class="total warning"
-            ><StateMark state="warning" /> <b>{warningCount}</b> warning</span
+            ><StateMark state="warning" /> <b>{warningCount}</b>
+            {warningCount === 1 ? 'warning' : 'warnings'}</span
           >{/if}
         {#if infoCount > 0}<span class="total info"
             ><StateMark state="info" /> <b>{infoCount}</b> info</span
@@ -147,7 +148,6 @@
       <Collapsible bind:open={expanded[group.condition]}>
         {#snippet summary()}
           <span class="group-title">{conditionLabel(group.condition)}</span>
-          <span class="group-cond mono">{group.condition}</span>
         {/snippet}
         {#snippet actions()}
           {#if group.failed > 0}<span class="count failed"
@@ -246,12 +246,6 @@
   .group-title {
     font-weight: 600;
   }
-  .group-cond {
-    color: var(--dim);
-    font-size: var(--text-micro);
-    margin-left: 0.5rem;
-  }
-
   .count {
     font-size: var(--text-micro);
     font-family: var(--mono);
@@ -309,6 +303,8 @@
     .issue-row {
       grid-template-columns: 0.9rem 1fr;
     }
+    /* Under the subject, in its column: the narrow first column holds only the severity mark. */
+    .issue-message,
     .issue-since {
       grid-column: 2;
     }

@@ -174,7 +174,7 @@ async fn get_map_measurements(
     let readings = smeltr::leader::throughput::readings(
         &state,
         smeltr::leader::warnings::now_millis(),
-        smeltr::startup_config::worker_heartbeat_interval(),
+        smeltr::startup_config::leader_heartbeat_interval(),
         true,
     )
     .await;
@@ -199,7 +199,7 @@ async fn get_map_measurements(
         let snapshot = state.registry.snapshot();
         let live = smeltr::leader::stats::Live {
             snapshot: &snapshot,
-            heartbeat_interval: smeltr::startup_config::worker_heartbeat_interval(),
+            heartbeat_interval: smeltr::startup_config::leader_heartbeat_interval(),
             band_share: smeltr::leader::throughput::DEFAULT_BAND_PERCENT / 100.0,
         };
         Ok(Measurements {
@@ -272,7 +272,7 @@ async fn get_stats(
                     let snapshot = state.registry.snapshot();
                     let live = smeltr::leader::stats::Live {
                         snapshot: &snapshot,
-                        heartbeat_interval: smeltr::startup_config::worker_heartbeat_interval(),
+                        heartbeat_interval: smeltr::startup_config::leader_heartbeat_interval(),
                         band_share: smeltr::leader::throughput::band_percent(&*state.store)
                             .unwrap_or(smeltr::leader::throughput::DEFAULT_BAND_PERCENT)
                             / 100.0,
@@ -1009,7 +1009,6 @@ fn start_worker(
     cfg::worker_listen_address();
     let thread_limit = cfg::worker_thread_limit();
     let memory = smeltr::worker::memory_to_fit();
-    let heartbeat_interval = cfg::worker_heartbeat_interval();
     let stop_after_unreachable_secs = cfg::worker_stop_after_unreachable_secs();
     let leader_trust_public = cfg::leader_trust_public();
     let metrics_endpoint = smeltr::worker::metrics_endpoint::open().unwrap_or_else(|e| {
@@ -1029,7 +1028,6 @@ fn start_worker(
         memory,
         state_dir,
         enrollment_code,
-        heartbeat_interval,
         stop_after_unreachable_secs,
         in_leader,
         metrics_endpoint,
@@ -1272,6 +1270,8 @@ struct WorkerRuntimeFileConfig {
 #[derive(Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorkerHeartbeatFileConfig {
+    /// Read and ignored, so an upgrade does not stop a worker over a line it no longer needs: the leader sets the
+    /// pace.
     interval_ms: Option<u64>,
     // -1 is never, as the example file shows; `startup_config` refuses other negatives.
     stop_after_unreachable_secs: Option<i64>,
@@ -1307,6 +1307,15 @@ struct LeaderFileConfig {
     secrets: LeaderSecretsFileConfig,
     #[serde(default)]
     lookups: LeaderLookupsFileConfig,
+    #[serde(default)]
+    heartbeat: LeaderHeartbeatFileConfig,
+}
+
+/// How often every worker reports to this leader. See `startup_config::leader_heartbeat_interval`.
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LeaderHeartbeatFileConfig {
+    interval_ms: Option<u64>,
 }
 
 /// The port the leader's GUI and both APIs listen on, and the address a browser reaches it under.
@@ -1661,6 +1670,7 @@ fn load_and_apply_config_file() {
         backfill_env("SMELTR_LEADER_TLS_EXTRA_SAN", Some(file.leader.tls.extra_san.join(",")));
     }
     backfill_env("SMELTR_RECOVER_ADMIN", file.leader.recover_admin);
+    backfill_env("SMELTR_LEADER_HEARTBEAT_INTERVAL_MS", file.leader.heartbeat.interval_ms);
 
     backfill_env("SMELTR_WORKER_ENABLED", file.worker.enabled);
     backfill_env("SMELTR_WORKER_GROUP", file.worker.group);
@@ -1672,7 +1682,6 @@ fn load_and_apply_config_file() {
     backfill_env("SMELTR_WORKER_STATE_DIR", file.worker.storage.state_dir);
     backfill_env("SMELTR_WORKER_THREAD_LIMIT", file.worker.runtime.thread_limit);
     backfill_env("SMELTR_WORKER_MEMORY", file.worker.runtime.memory);
-    backfill_env("SMELTR_WORKER_HEARTBEAT_INTERVAL_MS", file.worker.heartbeat.interval_ms);
     backfill_env(
         "SMELTR_WORKER_STOP_AFTER_UNREACHABLE_SECS",
         file.worker.heartbeat.stop_after_unreachable_secs,
@@ -1704,6 +1713,12 @@ fn load_and_apply_config_file() {
         eprintln!(
             "smeltr: `[worker] enroll_code` does nothing and can be removed. A worker that has not enrolled yet \
              takes `[worker] enrollment_code`, minted on the leader's Workers page."
+        );
+    }
+    if file.worker.heartbeat.interval_ms.is_some() {
+        eprintln!(
+            "smeltr: `[worker.heartbeat] interval_ms` does nothing and can be removed. The leader sets the \
+             heartbeat interval, with `[leader.heartbeat] interval_ms`."
         );
     }
 }
@@ -1985,6 +2000,8 @@ async fn run_leader() {
         eprintln!("smeltr: refusing to start -- {e}");
         std::process::exit(1);
     }
+    // Read before the bind, which a refusal must not hide behind.
+    smeltr::startup_config::leader_heartbeat_interval();
 
     // Before anything below persists state -- the data directory, the account store, the bootstrap administrator
     // it may create and print a one-time password for. A bind failure (an unprivileged port 443, or the port
@@ -2912,6 +2929,14 @@ mod tests {
             "[worker]\nenabled = true\ngroup = \"edge\"\nenroll_code = \"whatever the leader minted\"\n",
         )
         .expect("a file left as an upgrade found it");
+        assert_eq!(file.worker.group.as_deref(), Some("edge"));
+    }
+
+    #[test]
+    fn a_worker_config_still_naming_its_heartbeat_interval_starts() {
+        let file: super::FileConfig =
+            toml::from_str("[worker]\nenabled = true\ngroup = \"edge\"\n\n[worker.heartbeat]\ninterval_ms = 500\n")
+                .expect("a file left as an upgrade found it");
         assert_eq!(file.worker.group.as_deref(), Some("edge"));
     }
 

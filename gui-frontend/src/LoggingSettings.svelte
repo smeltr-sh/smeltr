@@ -7,6 +7,7 @@
   import Panel from './Panel.svelte';
   import Field from './Field.svelte';
   import CrossButton from './CrossButton.svelte';
+  import Button, { BUSY } from './Button.svelte';
   import InlineSaveBar from './InlineSaveBar.svelte';
   import { getLogLevels, putLogLevels, type LogLevelsDto, type LogLevelsResult } from './api';
 
@@ -132,15 +133,14 @@
               </select>
             </td>
             <td>
-              <button
+              <Button
                 type="button"
-                disabled={adding === ''}
-                title={adding === '' ? 'Choose an area first.' : undefined}
+                disabled={adding === '' ? 'Choose an area first.' : ''}
                 onclick={() => {
                   rows.push({ key: adding, level: addingLevel });
                   adding = '';
                   addingLevel = 'trace';
-                }}>Add</button
+                }}>Add</Button
               >
             </td>
           </tr>
@@ -154,7 +154,7 @@
     <InlineSaveBar
       {dirty}
       label="Save log levels"
-      disabled={busy}
+      disabled={busy ? BUSY : ''}
       ondiscard={() => saved && adopt({ ok: true, errors: [], levels: saved, areas: [], labels })}
     />
   </Panel>

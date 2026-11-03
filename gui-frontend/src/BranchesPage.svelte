@@ -5,6 +5,7 @@
   any other branch, carrying its title and its tests.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
@@ -289,7 +290,9 @@
 
   <form class="start" data-guide="branch-start" onsubmit={(e) => (e.preventDefault(), start())}>
     <input placeholder="a name for new work" bind:value={newName} disabled={busy} />
-    <button type="submit" disabled={busy || newName.trim() === ''}>Start a branch</button>
+    <Button type="submit" disabled={busy ? BUSY : newName.trim() === '' ? INCOMPLETE : ''}
+      >Start a branch</Button
+    >
   </form>
 
   {#if loading}
@@ -420,14 +423,16 @@
               <td class="right">
                 {#if current !== b.name}
                   <!-- The demo's guide points at the Open of a branch just started, which has no commits yet. -->
-                  <button
+                  <Button
                     class="compact"
                     data-guide={b.commits === 0 ? 'branch-open' : undefined}
                     onclick={() => open(b.name)}
-                    disabled={busy}>Open</button
+                    disabled={busy ? BUSY : ''}>Open</Button
                   >
                 {/if}
-                <button class="compact" onclick={() => remove(b)} disabled={busy}>Delete</button>
+                <Button class="compact" onclick={() => remove(b)} disabled={busy ? BUSY : ''}
+                  >Delete</Button
+                >
               </td>
             </tr>
           {/each}

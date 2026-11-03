@@ -27,7 +27,7 @@ describe('ChangeDock', () => {
         schemaFindings: 2,
         onopen,
         bringingCurrent: false,
-        bringCurrentDisabled: false,
+        bringCurrentDisabled: '',
         onbringcurrent: () => {},
         approvable: false,
         deploying: false,

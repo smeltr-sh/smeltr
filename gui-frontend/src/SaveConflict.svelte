@@ -8,6 +8,7 @@
   is on screen. Taking it to a branch keeps both.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import { commitDiff, createBranch, setBranch, type SaveConflict } from './api';
@@ -121,10 +122,16 @@
   {#if naming}
     <form class="actions" onsubmit={(e) => (e.preventDefault(), fork())}>
       <input placeholder="a name for the branch" bind:value={newName} disabled={busy} />
-      <button class="primary" type="submit" disabled={busy || newName.trim() === ''}>
+      <Button
+        class="primary"
+        type="submit"
+        disabled={busy ? BUSY : newName.trim() === '' ? INCOMPLETE : ''}
+      >
         Start it and save
-      </button>
-      <button type="button" onclick={() => (naming = false)} disabled={busy}> Cancel </button>
+      </Button>
+      <Button type="button" onclick={() => (naming = false)} disabled={busy ? BUSY : ''}>
+        Cancel
+      </Button>
     </form>
   {:else}
     <div class="actions">

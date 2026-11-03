@@ -23,6 +23,7 @@
   import CrossIcon from './CrossIcon.svelte';
   import { store, stored } from './stored';
   import ErrorBar from './ErrorBar.svelte';
+  import WhyDisabled from './WhyDisabled.svelte';
   import { heldAreas, isAdministrator, levelIn, settleScope } from './access';
   import { pages, preload } from './pages.svelte';
   import Brand from './Brand.svelte';
@@ -380,6 +381,7 @@
 </script>
 
 <svelte:window onkeydown={leaveOnEscape} />
+<WhyDisabled />
 
 {#if shellShown}
   <nav class="top-nav">

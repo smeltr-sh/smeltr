@@ -4,6 +4,7 @@
   and saving are the caller's (`onSave`).
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import { editable } from './access';
@@ -83,8 +84,8 @@
   ></textarea>
   {#if !readOnly}
     <div class="run-row">
-      <button class="primary" onclick={save} disabled={saving}
-        >{saving ? 'Validating…' : 'Save'}</button
+      <Button class="primary" onclick={save} disabled={saving ? BUSY : ''}
+        >{saving ? 'Validating…' : 'Save'}</Button
       >
       {#if saveMessage}<span class="save-message">{saveMessage}</span>{/if}
     </div>

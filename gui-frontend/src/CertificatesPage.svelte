@@ -7,6 +7,7 @@
   upload and goes back to that chooser once the certificate is added.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { untrack } from 'svelte';
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
@@ -173,9 +174,14 @@
   </PageHeader>
 
   <div class="toolbar">
-    <button type="button" class="primary" onclick={() => open(null)} disabled={editing !== null}>
+    <Button
+      type="button"
+      class="primary"
+      onclick={() => open(null)}
+      disabled={editing !== null ? 'Finish the certificate you are editing first.' : ''}
+    >
       + Add certificate
-    </button>
+    </Button>
   </div>
 
   <Dialog
@@ -242,10 +248,10 @@
       {/if}
     </div>
     {#snippet actions()}
-      <button type="button" onclick={cancel} disabled={saving}>Cancel</button>
-      <button type="submit" class="primary" disabled={!canSave}>
+      <Button type="button" onclick={cancel} disabled={saving ? BUSY : ''}>Cancel</Button>
+      <Button type="submit" class="primary" disabled={saving ? BUSY : !canSave ? INCOMPLETE : ''}>
         {saving ? 'Saving…' : editing?.name ? 'Replace' : 'Add'}
-      </button>
+      </Button>
     {/snippet}
   </Dialog>
 
