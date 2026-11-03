@@ -112,7 +112,7 @@ store, the Logs page and the Smeltr logs source.
 - The service is the outside service the code that logged it talks to: a
   source's or destination's kind, an ACME authority, an OIDC provider, the git
   remote. It is looked up from where the line is logged in the code, through one
-  list. A line from code several services share names none.
+  list. A line from code that several services share has no service.
 
 A library's lines are filtered when they are logged, not at a call site, so
 they take their class from where they run. They are the one exception to
