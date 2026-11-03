@@ -53,6 +53,8 @@ pub(super) const DESTINATION_QUEUE_BYTES_METRIC: &str = "smeltr_destination_queu
 pub(super) const DESTINATION_QUEUE_BUDGET_METRIC: &str = "smeltr_destination_queue_budget_bytes";
 /// A Kafka producer's mean round trip to its brokers, off its freshest statistics (`io::kafka::publish_stats`).
 const DESTINATION_RTT_METRIC: &str = "smeltr_destination_rtt_seconds";
+/// What a source has yet to finish, per topic and partition (`runtime.rs`).
+const SOURCE_LAG_METRIC: &str = "smeltr_source_lag";
 /// Seconds a destination was held back because the far end asked it to slow down: a Kafka producer's broker
 /// throttle time, an HTTP destination's backoff after a throttled answer. Summed over concurrent requests.
 const DESTINATION_THROTTLED_METRIC: &str = "smeltr_destination_throttled_seconds_total";
@@ -147,6 +149,10 @@ pub struct SourceStats {
     /// Microseconds inside the source's own read per row read, bucket by bucket. Only buckets that read a row count.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poll_per_row: Option<Spread>,
+    /// Its lag, bucket by bucket: each partition's highest reading in the bucket, summed over its partitions. Absent
+    /// for a source that reports no lag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lag: Option<Spread>,
     /// What the source was expected to read per second, bucket by bucket (`throughput::expected_over`). Empty while
     /// it has too little history.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -366,6 +372,7 @@ pub fn build(
                     &rows,
                 ),
                 polled: total(&polled, group, &at),
+                lag: shape.levels(&summed_peaks(&totals(SOURCE_LAG_METRIC), group, &at)),
                 unmatched: total(&totals(ROWS_UNMATCHED_METRIC), group, &[("source", id)]),
                 unmatched_policy: system.answer_by_name(
                     system
@@ -744,6 +751,18 @@ fn peaks(totals: &[SubjectTotal], group: &str, labels: &[(&str, &str)]) -> Bucke
     out
 }
 
+/// Like [`peaks`], for a gauge each subject holds a share of, such as a source's lag over its partitions: each
+/// subject's highest reading within each bucket, added across the subjects.
+fn summed_peaks(totals: &[SubjectTotal], group: &str, labels: &[(&str, &str)]) -> Buckets {
+    let mut out = Buckets::new();
+    for subject in totals.iter().filter(|s| s.matches(group, labels)) {
+        for (bucket, peak) in peaks(std::slice::from_ref(subject), group, labels) {
+            *out.entry(bucket).or_default() += peak;
+        }
+    }
+    out
+}
+
 fn matching_points<'a>(
     totals: &'a [SubjectTotal],
     group: &'a str,
@@ -751,14 +770,16 @@ fn matching_points<'a>(
 ) -> impl Iterator<Item = (i64, f64)> + 'a {
     totals
         .iter()
-        .filter(move |subject| {
-            subject.label("group") == Some(group)
-                && labels.iter().all(|(name, value)| subject.label(name) == Some(*value))
-        })
+        .filter(move |subject| subject.matches(group, labels))
         .flat_map(|subject| subject.points.iter().copied())
 }
 
 impl SubjectTotal {
+    /// Whether this subject is in `group` and carries every one of `labels`.
+    fn matches(&self, group: &str, labels: &[(&str, &str)]) -> bool {
+        self.label("group") == Some(group) && labels.iter().all(|(name, value)| self.label(name) == Some(*value))
+    }
+
     fn label(&self, name: &str) -> Option<&str> {
         self.labels
             .iter()
@@ -776,10 +797,7 @@ fn total(totals: &[SubjectTotal], group: &str, labels: &[(&str, &str)]) -> f64 {
     // that formats `-0.0` shows a minus sign no count should ever carry. `+ 0.0` clears the sign.
     totals
         .iter()
-        .filter(|subject| {
-            subject.label("group") == Some(group)
-                && labels.iter().all(|(name, value)| subject.label(name) == Some(*value))
-        })
+        .filter(|subject| subject.matches(group, labels))
         .map(|subject| subject.total)
         .sum::<f64>()
         + 0.0
@@ -1147,6 +1165,41 @@ mod tests {
 
     /// A pipeline's rows per bucket are its routes' matches added within the bucket; its per-row time is every
     /// step's time over them. A destination's round trip comes off a gauge, so a bucket is its peak.
+    #[test]
+    fn a_sources_lag_is_each_partitions_peak_in_the_bucket_summed() {
+        let store = RegistryStore::open(std::path::Path::new(":memory:")).unwrap();
+        let now = super::super::warnings::now_millis();
+        let minute = Tier::OneMinute.align(now) - Tier::OneMinute.bucket_ms();
+        let partition =
+            |p: &str| format!(r#"[["group","g"],["partition","{p}"],["source","orders-west"],["topic","orders"]]"#);
+        // Ten-second readings a two-hour window serves as minutes.
+        for (p, at, lag) in [
+            ("0", 0, 100.0),
+            ("0", 20_000, 300.0),
+            ("1", 0, 50.0),
+            ("1", 20_000, 20.0),
+        ] {
+            store
+                .record_gauge_max(SOURCE_LAG_METRIC, &partition(p), minute + at, lag)
+                .unwrap();
+        }
+        let window = Duration::from_secs(2 * 60 * 60);
+        let answer = build(
+            "g",
+            &with_dlq(),
+            NodeKind::Source,
+            "orders-west",
+            window,
+            Some(&store),
+            quiet(),
+        );
+        let lag = answer.body.source.unwrap().lag.unwrap();
+        assert_eq!((lag.min, lag.max), (350.0, 350.0));
+
+        let none = built_for(NodeKind::Source, "orders-west", None).body.source.unwrap();
+        assert!(none.lag.is_none(), "a source that reports no lag has none to chart");
+    }
+
     #[test]
     fn a_pipeline_adds_its_routes_per_bucket_and_a_destinations_round_trip_is_each_buckets_peak() {
         let store = RegistryStore::open(std::path::Path::new(":memory:")).unwrap();
