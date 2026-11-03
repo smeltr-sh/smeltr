@@ -2217,7 +2217,7 @@ fn off_by(r: &throughput::Reading, side: throughput::Outside) -> String {
     let percent = ((r.rows - edge) / edge * 100.0).abs();
     // Any reading outside is past the edge, which "0%" would deny.
     let percent = if percent < 1.0 {
-        "under 1%".to_string()
+        "slightly".to_string()
     } else {
         format!("{percent:.0}%")
     };
@@ -4357,7 +4357,7 @@ mod tests {
     #[test]
     fn a_reading_just_past_its_normal_is_not_zero_percent_past_it() {
         let r = reading_of("high", 5010.0);
-        assert_eq!(off_by(&r, throughput::Outside::Above), "under 1% above ");
+        assert_eq!(off_by(&r, throughput::Outside::Above), "slightly above ");
         let zero = throughput::Reading {
             band: throughput::Band { low: 0.0, high: 0.0 },
             ..r
