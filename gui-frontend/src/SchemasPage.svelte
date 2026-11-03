@@ -124,7 +124,7 @@
         format: READ_FORMATS[draft.type]!,
         text: draft.text,
         ...((draft.type === 'ecs' || draft.type === 'ocsf') && draft.builtIn
-          ? { builtIn: true }
+          ? { builtIn: true, ...(draft.release ? { release: draft.release } : {}) }
           : {}),
         ...(draft.type === 'ocsf'
           ? { class: draft.class, cut: { depth: draft.depth, levels: draft.levels } }

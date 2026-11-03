@@ -1761,10 +1761,12 @@ const addBuiltInSchema: Move = {
     const format = rng.pick(['ecs', 'ocsf'] as const);
     const truth = await j.truth();
     const standards = await truth.get('/api/preview/schema-standards');
-    const release = standards[format];
+    // Any release it carries; the newest is the one the dialog starts on.
+    const releases = standards[format] as { version: string; classes?: { name: string }[] }[];
+    const release = rng.pick(releases);
+    const newest = release === releases[0];
     // An OCSF class, cut as deep and to the requirements drawn.
-    const klass: string =
-      format === 'ocsf' ? rng.pick(release.classes as { name: string }[]).name : '';
+    const klass: string = format === 'ocsf' ? rng.pick(release.classes!).name : '';
     const depth = 1 + rng.below(3);
     const levels = ['required', 'recommended', 'optional'].filter(
       (l, i) => i === 0 || rng.chance(2),
@@ -1775,10 +1777,9 @@ const addBuiltInSchema: Move = {
     await dialog.getByRole('button', { name: FORMAT_TILES[format], exact: true }).click();
     await dialog.getByLabel('id', { exact: true }).fill(id);
     const name = `${FORMAT_TILES[format]} ${release.version}, built in`;
-    await expect(dialog.getByRole('button', { name, exact: true })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    const button = dialog.getByRole('button', { name, exact: true });
+    if (newest) await expect(button).toHaveAttribute('aria-pressed', 'true');
+    else await button.click();
     if (format === 'ocsf') {
       await dialog.getByRole('combobox', { name: 'Class' }).selectOption(klass);
       await dialog.getByRole('spinbutton', { name: 'Depth' }).fill(String(depth));
@@ -1797,6 +1798,7 @@ const addBuiltInSchema: Move = {
       id,
       format,
       builtIn: true,
+      release: release.version,
       ...(format === 'ocsf' ? { class: klass, cut: { depth, levels } } : {}),
     });
     expect(saved.fields, `${id} from ${name}`).toEqual(read.schema.fields);
