@@ -483,7 +483,16 @@ async fn heartbeat(
     if state.registry.issue_look_due(now_ms, heartbeat_interval) {
         let state = state.clone();
         tokio::spawn(async move {
-            let _ = catalog(&state).await;
+            static SAID: std::sync::Mutex<crate::logs::Repeat> = std::sync::Mutex::new(crate::logs::Repeat::new());
+            let looked = catalog(&state).await;
+            let mut said = SAID.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match looked {
+                Ok(_) => said.clear(),
+                Err(e) if said.due() => {
+                    tracing::warn!(target: "leader.issues_unreadable", error = %e, "the issues could not be read, so none are logged as beginning or ending")
+                }
+                Err(_) => {}
+            }
         });
     }
 
