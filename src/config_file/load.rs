@@ -3664,12 +3664,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                     errors,
                 );
                 refuse_avro(*format, &d.id, errors);
-                if !matches!(compression, CompressionDto::None | CompressionDto::Gzip) {
-                    errors.at("compression").push(format!(
-                        "destination {:?} compresses with {compression:?}; an HTTP request is sent as none or gzip",
-                        d.id
-                    ));
-                }
+                check_http_compression(&d.id, compression, errors);
                 check_http_headers(
                     &format!("destination {:?}", d.id),
                     headers,
@@ -3746,12 +3741,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                     },
                     errors,
                 );
-                if !matches!(compression, CompressionDto::None | CompressionDto::Gzip) {
-                    errors.at("compression").push(format!(
-                        "destination {:?} compresses with {compression:?}; an HTTP request is sent as none or gzip",
-                        d.id
-                    ));
-                }
+                check_http_compression(&d.id, compression, errors);
                 check_http_headers(
                     &format!("destination {:?}", d.id),
                     headers,
@@ -5080,6 +5070,41 @@ fn is_token_byte(b: u8) -> bool {
 }
 
 /// How many requests of `request_bytes` the buffer holds at once.
+/// A destination over the HTTP core, sending records to `url` with no headers of its own, as its sizes and stall
+/// threshold say. Each kind sets what it sends on top of it.
+fn to_http_core(
+    url: String,
+    tls: Option<Tls>,
+    in_flight: &InFlight,
+    max_request_bytes: usize,
+    buffer_bytes: Option<BufferBytes>,
+    stall_after_secs: &StallAfter,
+) -> HttpDestinationConfig {
+    HttpDestinationConfig {
+        url,
+        zone_urls: BTreeMap::new(),
+        body: RequestBody::default(),
+        payload: Payload::Record,
+        compression: crate::plan::topology::Compression::None,
+        headers: Vec::new(),
+        credentials: Vec::new(),
+        tls,
+        in_flight: in_flight.start(affords(buffer_bytes, max_request_bytes)),
+        max_request_bytes,
+        buffer_bytes: effective_buffer_bytes(buffer_bytes, max_request_bytes),
+        stall_after: std::time::Duration::from_secs(stall_after_secs.0),
+    }
+}
+
+/// An HTTP request is sent as none or gzip.
+fn check_http_compression(id: &str, compression: &CompressionDto, errors: &mut ItemErrors<'_>) {
+    if !matches!(compression, CompressionDto::None | CompressionDto::Gzip) {
+        errors.at("compression").push(format!(
+            "destination {id:?} compresses with {compression:?}; an HTTP request is sent as none or gzip"
+        ));
+    }
+}
+
 fn affords(buffer_bytes: Option<BufferBytes>, request_bytes: usize) -> usize {
     effective_buffer_bytes(buffer_bytes, request_bytes) / request_bytes.max(1)
 }
@@ -5337,7 +5362,6 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             buffer_bytes,
             stall_after_secs,
         } => DestinationKind::Http(HttpDestinationConfig {
-            url: as_parsed(url),
             zone_urls: zone_urls
                 .iter()
                 .map(|(zone, url)| (zone.clone(), as_parsed(url)))
@@ -5351,11 +5375,14 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             compression: compression.to_plan(),
             headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             credentials: credentials.iter().map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
-            tls: to_tls(tls, &of, Side::Client),
-            in_flight: in_flight.start(affords(*buffer_bytes, max_request_bytes.0)),
-            max_request_bytes: max_request_bytes.0,
-            buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
-            stall_after: std::time::Duration::from_secs(stall_after_secs.0),
+            ..to_http_core(
+                as_parsed(url),
+                to_tls(tls, &of, Side::Client),
+                in_flight,
+                max_request_bytes.0,
+                *buffer_bytes,
+                stall_after_secs,
+            )
         }),
         DestinationKindDto::Prometheus {
             url,
@@ -5392,18 +5419,17 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             stall_after_secs,
         } => DestinationKind::Otlp(OtlpDestinationConfig {
             http: HttpDestinationConfig {
-                url: as_parsed(url),
-                zone_urls: BTreeMap::new(),
-                body: RequestBody::default(),
-                payload: Payload::Record,
                 compression: compression.to_plan(),
                 headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
                 credentials: credentials.iter().map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
-                tls: to_tls(tls, &of, Side::Client),
-                in_flight: in_flight.start(affords(*buffer_bytes, max_request_bytes.0)),
-                max_request_bytes: max_request_bytes.0,
-                buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
-                stall_after: std::time::Duration::from_secs(stall_after_secs.0),
+                ..to_http_core(
+                    as_parsed(url),
+                    to_tls(tls, &of, Side::Client),
+                    in_flight,
+                    max_request_bytes.0,
+                    *buffer_bytes,
+                    stall_after_secs,
+                )
             },
             signal: *signal,
         }),
@@ -5419,18 +5445,16 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             stall_after_secs,
         } => DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig {
             http: HttpDestinationConfig {
-                url: log_analytics_stream_url(endpoint, rule_id, stream),
-                zone_urls: BTreeMap::new(),
                 body: RequestBody::JsonArray,
-                payload: Payload::Record,
                 compression: crate::plan::topology::Compression::Gzip,
-                headers: Vec::new(),
-                credentials: Vec::new(),
-                tls: to_tls(tls, &of, Side::Client),
-                in_flight: in_flight.start(affords(*buffer_bytes, max_request_bytes.0)),
-                max_request_bytes: max_request_bytes.0,
-                buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
-                stall_after: std::time::Duration::from_secs(stall_after_secs.0),
+                ..to_http_core(
+                    log_analytics_stream_url(endpoint, rule_id, stream),
+                    to_tls(tls, &of, Side::Client),
+                    in_flight,
+                    max_request_bytes.0,
+                    *buffer_bytes,
+                    stall_after_secs,
+                )
             },
             sign_in: to_entra_sign_in(sign_in),
         }),
