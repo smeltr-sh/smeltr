@@ -455,11 +455,7 @@ impl Captures {
         // Late reports come in runs as a capture ends, so one is said at debug every RELOG_EVERY and the rest at trace.
         static DROPPED: std::sync::Mutex<crate::logs::Repeat> = std::sync::Mutex::new(crate::logs::Repeat::new());
         let dropped = |why: &str| {
-            if DROPPED.lock().unwrap().due() {
-                tracing::debug!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
-            } else {
-                tracing::trace!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
-            }
+            crate::debug_when!(DROPPED.lock().unwrap().due(), target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
         };
         let mut sessions = self.0.lock().unwrap();
         let Some(session) = sessions.get_mut(&report.session) else {
@@ -592,7 +588,8 @@ impl Captures {
     /// Drop every session that finished more than `keep` ago. A capture nobody collected must not hold its records
     /// forever: this is the only thing that bounds the leader's memory across sessions.
     pub fn sweep(&self, keep: Duration) {
-        let _pass = crate::logs::Pass::begin("drop finished captures");
+        let _pass =
+            tracing::trace_span!(target: "background.pass", "a background pass", task = "drop finished captures");
         let mut sessions = self.0.lock().unwrap();
         sessions.retain(|_, s| !s.done() || s.elapsed() < Duration::from_secs(s.invitation.deadline_secs) + keep);
     }

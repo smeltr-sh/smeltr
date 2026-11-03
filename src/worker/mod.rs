@@ -3708,7 +3708,7 @@ impl Supervisor {
                         tracing::trace!(
                             target: "worker.fetched",
                             commit = %head,
-                            took_ms = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX),
+                            ms = crate::logs::millis(began.elapsed()),
                             "the worker fetched the deployed commit from the leader"
                         );
                         if failing.take().is_some() {

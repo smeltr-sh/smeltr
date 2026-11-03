@@ -246,7 +246,7 @@ impl Holds {
         if clock.up_for <= clock.hold_time.max(FORGET_AFTER_UP) {
             return Ok(Vec::new());
         }
-        let _pass = crate::logs::Pass::begin("forget progress of sources nothing reads");
+        let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "forget progress of sources nothing reads");
         let listed = |group: &str, key: &SourceKey| {
             workers.heard.values().any(|w| {
                 w.group == group && w.within(clock, w.at) && w.listed.get(key).is_some_and(|&at| w.within(clock, at))

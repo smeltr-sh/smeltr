@@ -257,6 +257,18 @@ mod tests {
         assert!(found.is_empty(), "instrumented without skip_all:\n{}", found.join("\n"));
     }
 
+    /// A span held and never entered, as a background pass holds one across its awaits, still says when it ends.
+    #[test]
+    fn a_span_never_entered_says_when_it_ends() {
+        let events = handed(|| {
+            let pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "check alerts");
+            drop(pass);
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].message, "a background pass finished");
+        assert!(field(&events[0], "task").is_some() && field(&events[0], "ms").is_some());
+    }
+
     /// A library's span lends nothing and says nothing.
     #[test]
     fn a_library_span_is_not_said() {
