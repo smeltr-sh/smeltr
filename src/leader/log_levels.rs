@@ -97,7 +97,7 @@ fn named(named: &LevelOverride) -> Result<String, String> {
         named.r#type.as_deref(),
         named.service.as_deref(),
     ) {
-        (Some(c), None, None) => class(c).map(|()| c.to_string()),
+        (Some(c), None, None) => class(c).map(|()| format!("class {c}")),
         (Some(c), Some(kind), None) => {
             class(c)?;
             let snake = !kind.is_empty()
@@ -105,14 +105,16 @@ fn named(named: &LevelOverride) -> Result<String, String> {
                     .bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
             if snake {
-                Ok(format!("{c} {kind}"))
+                Ok(format!("class {c}, type {kind}"))
             } else {
                 Err(format!(
                     "{kind:?} is not a type: use lower-case letters, digits and underscores"
                 ))
             }
         }
-        (None, None, Some(service)) if crate::logs::levels::services().contains(&service) => Ok(service.to_string()),
+        (None, None, Some(service)) if crate::logs::levels::services().contains(&service) => {
+            Ok(format!("service {service}"))
+        }
         (None, None, Some(service)) => Err(format!(
             "{service:?} is not a service: use one of the services GET /api/settings/log-levels lists"
         )),
@@ -218,7 +220,7 @@ mod tests {
         );
         assert_eq!(
             refused(&levels(None, &[("sources", "3")])).unwrap(),
-            r#""3" is not a level for sources: use error, warn, info, debug or trace"#
+            r#""3" is not a level for class sources: use error, warn, info, debug or trace"#
         );
         assert_eq!(
             refused(&levels(None, &[("kafka", "trace")])).unwrap(),
@@ -239,7 +241,7 @@ mod tests {
         );
         assert_eq!(
             refused(&levels(None, &[("sources", "trace"), ("sources", "debug")])).unwrap(),
-            "sources is named by two overrides: keep one"
+            "class sources is named by two overrides: keep one"
         );
         let both = LogLevels {
             default: None,
