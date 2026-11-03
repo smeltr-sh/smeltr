@@ -137,6 +137,11 @@ impl FactKey {
             subject: subject.into(),
         }
     }
+
+    /// The issue this fact is, as its log line names it.
+    pub fn logged(&self) -> super::warnings::LoggedIssue<'_> {
+        super::warnings::logged_issue(&self.entry, &self.subject)
+    }
 }
 
 pub struct Registry {
@@ -162,6 +167,8 @@ pub struct Registry {
     /// When the next look for progress no deployed source reads is due, in epoch milliseconds
     /// (`leader::prune_source_progress`).
     next_prune_ms: std::sync::atomic::AtomicI64,
+    /// When the heartbeat next looks at every issue, in epoch milliseconds (`leader::catalog`).
+    next_issue_look_ms: std::sync::atomic::AtomicI64,
     /// When this registry began taking heartbeats: when this leader started.
     started: Instant,
     /// Who reads each single-worker source, settled on every beat.
@@ -179,6 +186,7 @@ impl Default for Registry {
             store: None,
             next_sweep_ms: Default::default(),
             next_prune_ms: Default::default(),
+            next_issue_look_ms: Default::default(),
             started: Instant::now(),
             holds: Default::default(),
         }
@@ -253,6 +261,7 @@ impl Registry {
             store: Some(Arc::new(store)),
             next_sweep_ms: Default::default(),
             next_prune_ms: Default::default(),
+            next_issue_look_ms: Default::default(),
             started: Instant::now(),
             holds: Default::default(),
         })
@@ -369,6 +378,11 @@ impl Registry {
     /// Whether a look for the progress of sources no bundle reads is due at `now_ms`, as [`Registry::sweep_due`].
     pub fn prune_due(&self, now_ms: i64, every: Duration) -> bool {
         due(&self.next_prune_ms, now_ms, every)
+    }
+
+    /// Whether the heartbeat's look at every issue is due at `now_ms`, as [`Registry::sweep_due`].
+    pub fn issue_look_due(&self, now_ms: i64, every: Duration) -> bool {
+        due(&self.next_issue_look_ms, now_ms, every)
     }
 
     /// Records which authorities a worker would accept, as it just reported them, and whether it takes one from
@@ -524,6 +538,16 @@ impl Registry {
         clock.keys().filter(|k| k.entry == entry).cloned().collect()
     }
 
+    /// When each of `keys` began, as [`Registry::observe_facts`] would answer at `now_ms` without changing the
+    /// clock: the start it holds, or `now_ms` for a key it has not seen. What a caller reads while it is still
+    /// working out the rest of what is active, before it observes the whole of it.
+    pub fn starts_of(&self, keys: &HashSet<FactKey>, now_ms: i64) -> HashMap<FactKey, i64> {
+        let clock = self.fact_clock.lock().unwrap();
+        keys.iter()
+            .map(|k| (k.clone(), clock.get(k).copied().unwrap_or(now_ms)))
+            .collect()
+    }
+
     /// Reconcile the fact clock against `active`, everything a catalog entry currently reads as true. A key seen
     /// for the first time is stamped `now_ms`; one no longer present is forgotten -- so a fact that stops is a fact
     /// this clock has no memory of, same as the warning it times (design doc, Control plane: "derived, never
@@ -552,7 +576,7 @@ impl Registry {
         // the Issues page no longer shows it. `issue` marks the line as an issue's own, which the catalog's
         // "worker logged warnings" entry leaves out (`warnings::recent_logs`): it would be the same issue twice.
         for k in &inserted {
-            let it = super::warnings::logged_issue(&k.entry, &k.subject);
+            let it = k.logged();
             tracing::warn!(
                 target: "issues.began",
                 issue = it.issue,
@@ -563,13 +587,14 @@ impl Registry {
             );
         }
         for (k, start) in &removed {
-            let it = super::warnings::logged_issue(&k.entry, &k.subject);
+            let it = k.logged();
             tracing::info!(
                 target: "issues.cleared",
                 issue = it.issue,
                 group = it.group,
                 subject = it.subject,
                 commit = it.commit,
+                began_ms = *start,
                 held_secs = (now_ms - start).max(0) / 1000,
                 "an issue cleared"
             );
