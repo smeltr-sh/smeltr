@@ -7,13 +7,6 @@
   import { getContext, setContext } from 'svelte';
 
   const UNLOCKED = Symbol('unlocked');
-  const LOCKED = Symbol('locked');
-
-  /** Why a `Locked` above disables what the caller holds, or `''` when none does. Read while a
-   * component initialises. */
-  export function lockedBecause(): string {
-    return getContext<string | undefined>(LOCKED) ?? '';
-  }
 
   /** Called while a component initialises: no `Locked` below it disables anything, whatever page
    * the address names. For a screen shown in place of a page, as signing in is. */
@@ -38,12 +31,11 @@
   // svelte-ignore state_referenced_locally
   const why = refusedInDemo ? NOT_IN_DEMO : '';
   const readOnly = !getContext<boolean | undefined>(UNLOCKED) && (why !== '' || !editable());
-  if (readOnly) setContext(LOCKED, why || READ_ONLY);
 </script>
 
-<!-- A disabled fieldset disables every control in it, whatever the caller put there. Its title is
-     every control's, since none inside names its own. -->
-{#if readOnly}<fieldset class="read-only" disabled title={why || undefined}>
+<!-- A disabled fieldset disables every control in it, whatever the caller put there. Its reason is
+     every control's (`WhyDisabled`), since none inside names its own. -->
+{#if readOnly}<fieldset class="read-only" disabled data-why={why || READ_ONLY}>
     {@render children()}
   </fieldset>{:else}{@render children()}{/if}
 

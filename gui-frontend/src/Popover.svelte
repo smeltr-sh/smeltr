@@ -11,12 +11,15 @@
     id,
     anchor,
     open = $bindable(false),
+    manual = false,
     children,
   }: {
     id: string;
     /** What the note sits under, read each time it opens. */
     anchor: () => Element;
     open?: boolean;
+    /** Opened and closed only by its owner: no click elsewhere or Escape closes it. */
+    manual?: boolean;
     children: Snippet;
   } = $props();
 
@@ -34,7 +37,7 @@
 <div
   bind:this={pop}
   {id}
-  popover
+  popover={manual ? 'manual' : 'auto'}
   class="pop"
   onbeforetoggle={(e) => {
     stop?.();
