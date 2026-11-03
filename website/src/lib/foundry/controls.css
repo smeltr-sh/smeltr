@@ -79,9 +79,16 @@
   outline-offset: 1px;
 }
 
+/* Drained of fill and color, so no variant still reads as one to press. */
 :where(button):disabled {
-  opacity: 0.55;
-  cursor: default;
+  background: transparent;
+  border: 1px dashed var(--dim);
+  color: var(--dim);
+  cursor: not-allowed;
+}
+
+:where(button).icon:disabled {
+  border-color: transparent;
 }
 
 :where(

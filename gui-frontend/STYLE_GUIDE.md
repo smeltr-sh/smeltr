@@ -274,6 +274,8 @@ definition, not a page's own rule.
     `aria-label`: bare and dim until hovered, on a 24px target, with an
     accent ring on keyboard focus.
   - `large` -- a call to action on a page of the website.
+  - disabled -- any variant drawn dashed in `--dim`, with no fill, so it
+    never reads as one to press.
 - **Text field.** Every text `input`, `select` and `textarea`: `--field`
   on a 1px `--border`, `--text-body`, 1rem on a phone so it does not zoom.
   A value field may set the mono face. One whose value does not hold
