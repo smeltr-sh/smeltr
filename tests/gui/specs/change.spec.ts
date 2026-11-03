@@ -177,7 +177,9 @@ test('a change behind main is brought current, and its conflict is the author’
   await expect(admin.getByRole('heading', { name: 'Red is one' })).toBeVisible();
   await expect(admin.getByText('Behind main by 1 commit', { exact: true })).toBeVisible();
   await expect(
-    admin.getByText('Behind main by 1 commit — bring the branch current first.'),
+    admin
+      .getByText('Behind main by 1 commit — bring the branch current first.')
+      .filter({ visible: true }),
   ).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Approve & deploy' })).toBeDisabled();
 
