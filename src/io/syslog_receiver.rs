@@ -378,7 +378,7 @@ impl Handler {
         let remote = &*inlet.remote;
         if !admits(&self.allow_from, peer) {
             tracing::trace!(
-                name: "receiver_syslog_refused", target: "sources",
+                name: "refused", target: "sources",
                 subject = %remote,
                 "a connection is closed: its address is in none of the receiver's allowFrom networks"
             );
@@ -392,13 +392,13 @@ impl Handler {
         match self.read(stream, admit, &mut inlet.held()).await {
             End::Gone { partial: 0 } | End::Stopping => {}
             End::Gone { partial } => tracing::trace!(
-                name: "receiver_syslog_partial", target: "sources",
+                name: "partial", target: "sources",
                 subject = %remote,
                 bytes = partial,
                 "a sender hung up partway through an octet-counted message, which is dropped"
             ),
             End::Malformed(Malformed { at, what }) => tracing::warn!(
-                name: "receiver_syslog_malformed", target: "sources",
+                name: "malformed", target: "sources",
                 subject = %remote,
                 offset = at,
                 what = %what,
@@ -412,7 +412,7 @@ impl Handler {
     pub(super) fn datagram(&self, datagram: &[u8], peer: IpAddr) -> Option<Cutter> {
         if !admits(&self.allow_from, peer) {
             tracing::trace!(
-                name: "receiver_syslog_refused", target: "sources",
+                name: "refused", target: "sources",
                 subject = %peer,
                 "a datagram is dropped: its address is in none of the receiver's allowFrom networks"
             );
@@ -420,7 +420,7 @@ impl Handler {
         }
         if datagram.len() > self.max_message_bytes {
             tracing::warn!(
-                name: "receiver_syslog_malformed", target: "sources",
+                name: "malformed", target: "sources",
                 subject = %peer,
                 limit = self.max_message_bytes,
                 "a datagram larger than the receiver's maxRequestBytes is dropped"
