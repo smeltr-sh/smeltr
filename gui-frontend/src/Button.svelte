@@ -29,8 +29,14 @@
     disabled?: string;
     children?: Snippet;
   } = $props();
+
+  const why = $props.id();
 </script>
 
-<button {...rest} disabled={disabled !== ''} data-why={disabled || undefined}
-  >{@render children?.()}</button
->
+<!-- A disabled button takes no focus, so a screen reader finds the reason only in its description. -->
+<button
+  {...rest}
+  disabled={disabled !== ''}
+  data-why={disabled || undefined}
+  aria-describedby={disabled ? why : undefined}>{@render children?.()}</button
+>{#if disabled}<span id={why} hidden>{disabled}</span>{/if}
