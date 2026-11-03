@@ -72,7 +72,19 @@ pub fn destination(
     metrics: crate::metrics::MetricsHandle,
     id: crate::core::id::DestId,
 ) -> HttpDestination<Post, HttpTransport> {
-    HttpDestination::new(make(), Post::new(config).named(name))
+    destination_of(Post::new(config).named(name), config, make, subject, metrics, id)
+}
+
+/// The destination speaking `protocol` to `config`'s URL, as [`destination`] makes one.
+pub fn destination_of<P: Protocol>(
+    protocol: P,
+    config: &HttpDestinationConfig,
+    make: impl Fn() -> HttpTransport,
+    subject: &str,
+    metrics: crate::metrics::MetricsHandle,
+    id: crate::core::id::DestId,
+) -> HttpDestination<P, HttpTransport> {
+    HttpDestination::new(make(), protocol)
         .with_subject(subject)
         .with_metrics(metrics, id)
         .with_max_request_bytes(config.max_request_bytes)
@@ -87,13 +99,23 @@ pub fn transport(
     credentials: &[(String, String)],
     agent: &ureq::config::Config,
 ) -> HttpTransport {
+    transport_as(config, content_type(config), credentials, agent)
+}
+
+/// [`transport`], its requests of `content_type`.
+pub fn transport_as(
+    config: &HttpDestinationConfig,
+    content_type: &'static str,
+    credentials: &[(String, String)],
+    agent: &ureq::config::Config,
+) -> HttpTransport {
     let mut headers: Vec<(String, String)> = config.headers.iter().chain(credentials).cloned().collect();
     if config.compression == Compression::Gzip {
         headers.push(("Content-Encoding".to_string(), "gzip".to_string()));
     }
     // A redirect would land nothing: see `HttpTransport::without_redirects`. It would also carry the credential
     // headers to wherever it points.
-    HttpTransport::new(&config.url, content_type(config), headers, agent).without_redirects()
+    HttpTransport::new(&config.url, content_type, headers, agent).without_redirects()
 }
 
 fn content_type(config: &HttpDestinationConfig) -> &'static str {
@@ -196,38 +218,47 @@ impl Protocol for Post {
                 }
             }
         }
-        if !self.gzip {
-            return body;
-        }
-        let mut out = flate2::write::GzEncoder::new(Vec::with_capacity(body.len() / 4), flate2::Compression::fast());
-        // Writing to a Vec cannot fail.
-        out.write_all(&body).expect("gzip into memory");
-        out.finish().expect("gzip into memory")
+        compressed(body, self.gzip)
     }
 
     fn read(&self, response: &Response, items: &[Self::Item]) -> Result<Outcome, IoError> {
-        let count = items.len();
-        match response.status {
-            200..=299 => Ok(Outcome::default()),
-            // Every one of these says "not now", and a retry that does not back off would only say it louder.
-            408 | 429 | 500 | 502 | 503 | 504 => Ok(Outcome {
-                retryable: (0..count).collect(),
-                throttled: true,
-                ..Outcome::default()
-            }),
-            // The service took none of it and named no row: the halves find the one it will not take.
-            400 | 413 | 422 => Ok(Outcome {
-                split: Some(response.describe()),
-                ..Outcome::default()
-            }),
-            401 | 403 => Err(IoError::transient(format!(
-                "the service refused this destination's credentials: {}",
-                response.describe()
-            ))),
-            _ => Err(IoError::transient(format!(
-                "the service answered {}",
-                response.describe()
-            ))),
-        }
+        answered(response, items.len())
+    }
+}
+
+/// `body` gzipped where `gzip` says.
+pub fn compressed(body: Vec<u8>, gzip: bool) -> Vec<u8> {
+    if !gzip {
+        return body;
+    }
+    let mut out = flate2::write::GzEncoder::new(Vec::with_capacity(body.len() / 4), flate2::Compression::fast());
+    // Writing to a Vec cannot fail.
+    out.write_all(&body).expect("gzip into memory");
+    out.finish().expect("gzip into memory")
+}
+
+/// What `response` says of the `count` items its request carried, as the module's table gives it.
+pub fn answered(response: &Response, count: usize) -> Result<Outcome, IoError> {
+    match response.status {
+        200..=299 => Ok(Outcome::default()),
+        // Every one of these says "not now", and a retry that does not back off would only say it louder.
+        408 | 429 | 500 | 502 | 503 | 504 => Ok(Outcome {
+            retryable: (0..count).collect(),
+            throttled: true,
+            ..Outcome::default()
+        }),
+        // The service took none of it and named no row: the halves find the one it will not take.
+        400 | 413 | 422 => Ok(Outcome {
+            split: Some(response.describe()),
+            ..Outcome::default()
+        }),
+        401 | 403 => Err(IoError::transient(format!(
+            "the service refused this destination's credentials: {}",
+            response.describe()
+        ))),
+        _ => Err(IoError::transient(format!(
+            "the service answered {}",
+            response.describe()
+        ))),
     }
 }

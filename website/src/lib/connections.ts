@@ -178,7 +178,7 @@ export const sources: Connection[] = [
     type: 'otlpReceiver',
     name: 'OTLP receiver',
     summary:
-      'Take the logs OpenTelemetry exporters send over OTLP/HTTP to a port every worker listens on.',
+      'Take the logs, metrics or traces OpenTelemetry exporters send over OTLP to a port every worker listens on.',
     category: 'Push, all workers',
     href: '/docs/sources/otlp-receiver',
   },

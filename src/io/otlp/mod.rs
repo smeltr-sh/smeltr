@@ -19,9 +19,11 @@ use super::hec::Filed;
 use crate::core::variant;
 use crate::plan::topology::Signal;
 
+pub mod export;
 mod json;
 mod logs;
 mod metrics;
+mod rows;
 mod traces;
 
 /// The keys of [`Filed`] this module fills, each by the `__source` field it is read as, and each left out when empty.
@@ -362,6 +364,24 @@ struct KeyValue {
     key: String,
     #[prost(message, optional, tag = "2")]
     value: Option<AnyValue>,
+}
+
+/// Items under their scopes under their resources, as a request nests them.
+type Nested<T> = Vec<(Resource, Vec<(InstrumentationScope, Vec<T>)>)>;
+
+/// `resources` as a request's list of them: each scope's items made one message by `scope`, and each resource's
+/// scopes one by `resource`.
+fn nest<T, S, R>(
+    resources: Nested<T>,
+    scope: impl Fn(Option<InstrumentationScope>, Vec<T>) -> S,
+    resource: impl Fn(Option<Resource>, Vec<S>) -> R,
+) -> Vec<R> {
+    (resources.into_iter())
+        .map(|(r, scopes)| {
+            let scopes = (scopes.into_iter()).map(|(s, items)| scope(Some(s), items)).collect();
+            resource(Some(r), scopes)
+        })
+        .collect()
 }
 
 /// The messages `walk` reads, by what each field holds: those every signal shares, and its own.

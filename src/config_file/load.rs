@@ -33,9 +33,10 @@ use crate::plan::topology::{
     Endpoint, EntraSignIn, Framing, GcsAccess, GcsStore, HttpDestinationConfig, IcebergDestinationConfig,
     KafkaDestinationConfig, KafkaProps, KafkaService, KafkaSourceConfig, ListPlace, ListStart,
     LogAnalyticsDestinationConfig, NamedCertificate, NamedSecret, Newlines, ObjectFormat, ObjectQueue,
-    ObjectSourceConfig, ObjectsDestinationConfig, OktaSignIn, PrometheusDestinationConfig, RemoteWriteVersion,
-    RequestBody, RouteConfig, S3Access, S3Store, SftpAccess, SftpCredential, SftpStore, SourceConfig, SourceKind,
-    SplunkHecDestinationConfig, StartPosition, StopPosition, Tls, TopologyConfig, Transport, UnityCatalogTable,
+    ObjectSourceConfig, ObjectsDestinationConfig, OktaSignIn, OtlpDestinationConfig, PrometheusDestinationConfig,
+    RemoteWriteVersion, RequestBody, RouteConfig, S3Access, S3Store, SftpAccess, SftpCredential, SftpStore,
+    SourceConfig, SourceKind, SplunkHecDestinationConfig, StartPosition, StopPosition, Tls, TopologyConfig, Transport,
+    UnityCatalogTable,
 };
 use crate::schema::Schema;
 
@@ -3715,6 +3716,51 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                     errors,
                 );
             }
+            DestinationKindDto::Otlp {
+                url,
+                signal: _,
+                compression,
+                headers,
+                credentials,
+                tls,
+                in_flight,
+                max_request_bytes,
+                buffer_bytes,
+                stall_after_secs,
+            } => {
+                check_http_delivery(
+                    &HttpDelivery {
+                        id: &d.id,
+                        url,
+                        url_field: "url",
+                        zone_urls: None,
+                        request_field: "maxRequestBytes",
+                        tls,
+                        in_flight: Some(*in_flight),
+                        request_bytes: max_request_bytes.0,
+                        request_limits: (RequestBytes::MIN, RequestBytes::MAX),
+                        request_what: "a request size",
+                        limit_why: "a request is held whole in memory until the service answers it",
+                        buffer_bytes: *buffer_bytes,
+                        stall_after: *stall_after_secs,
+                    },
+                    errors,
+                );
+                if !matches!(compression, CompressionDto::None | CompressionDto::Gzip) {
+                    errors.at("compression").push(format!(
+                        "destination {:?} compresses with {compression:?}; an HTTP request is sent as none or gzip",
+                        d.id
+                    ));
+                }
+                check_http_headers(
+                    &format!("destination {:?}", d.id),
+                    headers,
+                    credentials,
+                    DESTINATION_HEADERS,
+                    "as OTLP asks",
+                    errors,
+                );
+            }
             DestinationKindDto::LogAnalytics {
                 endpoint,
                 rule_id,
@@ -5332,6 +5378,34 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             max_request_bytes: max_request_bytes.0,
             buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
+        }),
+        DestinationKindDto::Otlp {
+            url,
+            signal,
+            compression,
+            headers,
+            credentials,
+            tls,
+            in_flight,
+            max_request_bytes,
+            buffer_bytes,
+            stall_after_secs,
+        } => DestinationKind::Otlp(OtlpDestinationConfig {
+            http: HttpDestinationConfig {
+                url: as_parsed(url),
+                zone_urls: BTreeMap::new(),
+                body: RequestBody::default(),
+                payload: Payload::Record,
+                compression: compression.to_plan(),
+                headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                credentials: credentials.iter().map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
+                tls: to_tls(tls, &of, Side::Client),
+                in_flight: in_flight.start(affords(*buffer_bytes, max_request_bytes.0)),
+                max_request_bytes: max_request_bytes.0,
+                buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
+                stall_after: std::time::Duration::from_secs(stall_after_secs.0),
+            },
+            signal: *signal,
         }),
         DestinationKindDto::LogAnalytics {
             endpoint,

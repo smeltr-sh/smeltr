@@ -1539,6 +1539,7 @@ pub enum DestinationKind {
     Http(HttpDestinationConfig),
     Prometheus(PrometheusDestinationConfig),
     LogAnalytics(LogAnalyticsDestinationConfig),
+    Otlp(OtlpDestinationConfig),
     Iceberg(IcebergDestinationConfig),
     Delta(DeltaDestinationConfig),
 }
@@ -1563,7 +1564,8 @@ impl DestinationKind {
             DestinationKind::Objects(o) => o.tls.as_ref(),
             DestinationKind::Http(h) => h.tls.as_ref(),
             DestinationKind::Prometheus(p) => p.tls.as_ref(),
-            DestinationKind::LogAnalytics(l) => l.http.tls.as_ref(),
+            DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig { http, .. })
+            | DestinationKind::Otlp(OtlpDestinationConfig { http, .. }) => http.tls.as_ref(),
             DestinationKind::Iceberg(i) => i.tls.as_ref(),
             DestinationKind::Delta(d) => d.tls.as_ref(),
         }
@@ -1604,6 +1606,7 @@ impl DestinationKind {
             },
             DestinationKind::Prometheus(_)
             | DestinationKind::LogAnalytics(_)
+            | DestinationKind::Otlp(_)
             | DestinationKind::Iceberg(_)
             | DestinationKind::Delta(_) => Payload::Record,
         }
@@ -1620,6 +1623,7 @@ impl DestinationKind {
             | DestinationKind::Http(_)
             | DestinationKind::Prometheus(_)
             | DestinationKind::LogAnalytics(_)
+            | DestinationKind::Otlp(_)
             | DestinationKind::Iceberg(_)
             | DestinationKind::Delta(_) => false,
         }
@@ -1634,6 +1638,7 @@ impl DestinationKind {
             DestinationKind::Http(_)
             | DestinationKind::Prometheus(_)
             | DestinationKind::LogAnalytics(_)
+            | DestinationKind::Otlp(_)
             | DestinationKind::Iceberg(_)
             | DestinationKind::Delta(_) => None,
         }
@@ -1648,7 +1653,8 @@ impl DestinationKind {
             DestinationKind::Objects(o) => o.stall_after,
             DestinationKind::Http(h) => h.stall_after,
             DestinationKind::Prometheus(p) => p.stall_after,
-            DestinationKind::LogAnalytics(s) => s.http.stall_after,
+            DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig { http, .. })
+            | DestinationKind::Otlp(OtlpDestinationConfig { http, .. }) => http.stall_after,
             DestinationKind::Iceberg(i) => i.stall_after,
             DestinationKind::Delta(d) => d.stall_after,
         }
@@ -1670,7 +1676,8 @@ impl DestinationKind {
             DestinationKind::Objects(o) => o.buffer_bytes,
             DestinationKind::Http(h) => h.buffer_bytes,
             DestinationKind::Prometheus(p) => p.buffer_bytes,
-            DestinationKind::LogAnalytics(s) => s.http.buffer_bytes,
+            DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig { http, .. })
+            | DestinationKind::Otlp(OtlpDestinationConfig { http, .. }) => http.buffer_bytes,
             DestinationKind::Iceberg(i) => i.buffer_bytes,
             DestinationKind::Delta(d) => d.buffer_bytes,
         }
@@ -1703,7 +1710,8 @@ impl DestinationKind {
             DestinationKind::Objects(o) => o.buffer_bytes = bytes,
             DestinationKind::Http(h) => h.buffer_bytes = bytes,
             DestinationKind::Prometheus(p) => p.buffer_bytes = bytes,
-            DestinationKind::LogAnalytics(s) => s.http.buffer_bytes = bytes,
+            DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig { http, .. })
+            | DestinationKind::Otlp(OtlpDestinationConfig { http, .. }) => http.buffer_bytes = bytes,
             DestinationKind::Iceberg(i) => i.buffer_bytes = bytes,
             DestinationKind::Delta(d) => d.buffer_bytes = bytes,
         }
@@ -1717,7 +1725,8 @@ impl DestinationKind {
             DestinationKind::SplunkHec(s) => s.max_request_bytes * s.in_flight,
             DestinationKind::Http(h) => h.max_request_bytes * h.in_flight,
             DestinationKind::Prometheus(p) => p.max_request_bytes,
-            DestinationKind::LogAnalytics(s) => s.http.max_request_bytes * s.http.in_flight,
+            DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig { http, .. })
+            | DestinationKind::Otlp(OtlpDestinationConfig { http, .. }) => http.max_request_bytes * http.in_flight,
             DestinationKind::Kafka(_)
             | DestinationKind::Objects(_)
             | DestinationKind::Iceberg(_)
@@ -1746,6 +1755,7 @@ impl DestinationKind {
             | DestinationKind::Http(_)
             | DestinationKind::Prometheus(_)
             | DestinationKind::LogAnalytics(_)
+            | DestinationKind::Otlp(_)
             | DestinationKind::Iceberg(_)
             | DestinationKind::Delta(_) => None,
         }
@@ -1999,6 +2009,15 @@ pub struct LogAnalyticsDestinationConfig {
     /// The rule's stream, as an HTTP destination: its `url` the stream's whole address.
     pub http: HttpDestinationConfig,
     pub sign_in: EntraSignIn,
+}
+
+/// Where an OTLP destination sends one signal: OTLP/HTTP protobuf exports, as the HTTP destination's requests, to the
+/// signal's path under its `url`.
+#[derive(Clone, Debug)]
+pub struct OtlpDestinationConfig {
+    /// The endpoint, as an HTTP destination: its `url` the address the signal's path goes under.
+    pub http: HttpDestinationConfig,
+    pub signal: Signal,
 }
 
 /// How a client signs in to an Azure service with Entra ID.

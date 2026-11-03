@@ -5157,6 +5157,154 @@
         ]
       },
       {
+        "type": "otlp",
+        "name": "OTLP",
+        "summary": "Sends each record over OTLP/HTTP, as protobuf, to any OTLP endpoint, such as an OpenTelemetry Collector. It sends one `signal`, logs, metrics or traces. It reads each record in the form an OTLP receiver of that signal produces, with its resource's attributes in `resource` and its scope's `name`, `version` and `attributes` in `scope`. A record that cannot be sent as that signal, such as a span with no `traceId`, is refused with the reason.",
+        "settings": [
+          {
+            "name": "url",
+            "type": "string",
+            "required": true,
+            "examples": ["https://otel-collector.example.com:4318"],
+            "what": "The OTLP endpoint, `http://` or `https://`. Each request goes to the signal's path added to this URL: `/v1/logs`, `/v1/metrics` or `/v1/traces`. It sends a credential only over `https://`, or to the machine the worker runs on."
+          },
+          {
+            "name": "signal",
+            "type": "string",
+            "default": "logs",
+            "examples": ["metrics", "traces"],
+            "what": "The kind of data it sends. One destination sends one signal.",
+            "values": [
+              {
+                "value": "logs",
+                "what": "Sends each record as a log record, to `/v1/logs`."
+              },
+              {
+                "value": "metrics",
+                "what": "Sends each record as a metric data point, to `/v1/metrics`. A record's `type` is its metric's: `gauge`, `sum`, `histogram`, `exponentialHistogram` or `summary`."
+              },
+              {
+                "value": "traces",
+                "what": "Sends each record as a span, to `/v1/traces`."
+              }
+            ]
+          },
+          {
+            "name": "headers",
+            "type": "map",
+            "absent": "none",
+            "examples": [
+              {
+                "X-Source": "smeltr"
+              },
+              {
+                "X-Source": "smeltr",
+                "X-Tenant": "acme"
+              }
+            ],
+            "what": "Headers it sends on every request, each name to its value. Smeltr sets `Content-Type`, `Content-Encoding`, `Content-Length`, `Transfer-Encoding`, `Host` and `Cookie` itself."
+          },
+          {
+            "name": "credentials",
+            "type": "map",
+            "absent": "none",
+            "examples": [
+              {
+                "Authorization": "OTLP_TOKEN"
+              }
+            ],
+            "what": "Headers whose values are secret, each name to the [credential](/docs/secrets) holding its whole value, such as `Bearer <token>`."
+          },
+          {
+            "name": "certificate",
+            "type": "certificate",
+            "absent": "none",
+            "examples": ["otlp-client"],
+            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version. Only on an `https://` URL."
+          },
+          {
+            "name": "trustedAuthorities",
+            "type": "string",
+            "absent": "public roots",
+            "examples": [
+              "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
+            ],
+            "what": "Trusted authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only on an `https://` URL."
+          },
+          {
+            "name": "trustPublic",
+            "type": "bool",
+            "absent": "trusted",
+            "examples": [false],
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
+          },
+          {
+            "name": "compression",
+            "type": "string",
+            "default": "none",
+            "examples": ["gzip"],
+            "what": "How it compresses each request body.",
+            "values": [
+              {
+                "value": "none",
+                "what": "Sends it uncompressed."
+              },
+              {
+                "value": "gzip",
+                "what": "Compresses each body and sends it with `Content-Encoding: gzip`."
+              }
+            ]
+          },
+          {
+            "name": "inFlight",
+            "type": "integer",
+            "default": 4,
+            "examples": [8, 1, 16],
+            "what": "How many requests it sends at once to start with. 1 to 64."
+          },
+          {
+            "name": "maxRequestBytes",
+            "type": "size",
+            "default": "1 MiB",
+            "examples": ["4 MiB", "256 KiB", "10 MB"],
+            "what": "The most one request carries, before compression. A record larger than this still goes as a single record. 4 KiB to 100 MiB."
+          },
+          {
+            "name": "bufferBytes",
+            "type": "size",
+            "absent": "64 MiB, or one request if that is larger",
+            "examples": ["256 MiB", "64 MiB", "1 GiB"],
+            "what": "Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput. 4 MiB to 1 GiB, and at least one request."
+          },
+          {
+            "name": "stallAfterSecs",
+            "type": "integer",
+            "default": 30,
+            "examples": [60, 120],
+            "what": "Seconds one batch may take to deliver, every retry included, before the destination reports it stalled. 1 to 120."
+          }
+        ],
+        "reads": [],
+        "form": [
+          {
+            "settings": ["url", "signal", "headers", "credentials"]
+          },
+          {
+            "section": "Advanced",
+            "settings": [
+              "certificate",
+              "trustedAuthorities",
+              "trustPublic",
+              "compression",
+              "inFlight",
+              "maxRequestBytes",
+              "bufferBytes",
+              "stallAfterSecs"
+            ]
+          }
+        ]
+      },
+      {
         "type": "s3",
         "name": "Amazon S3",
         "summary": "Writes each batch to an S3 bucket, or an S3-compatible store, as one object per prefix.",

@@ -5,9 +5,10 @@ use std::sync::Arc;
 use prost::Message as _;
 
 use super::json::{self, Reader, each, fields};
+use super::rows;
 use super::{
-    AnyValue, Cell, Cursor, Filed, InstrumentationScope, KeyValue, Resource, Row, Shape, id, int, micros, pairs,
-    put_any, text, variant_of,
+    AnyValue, Cell, Cursor, Filed, InstrumentationScope, KeyValue, Nested, Resource, Row, Shape, id, int, micros, nest,
+    pairs, put_any, text, variant_of,
 };
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -33,7 +34,7 @@ struct ScopeLogs {
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct LogRecord {
+pub(super) struct LogRecord {
     #[prost(fixed64, tag = "1")]
     time_unix_nano: u64,
     #[prost(fixed64, tag = "11")]
@@ -158,6 +159,37 @@ fn row(log: LogRecord) -> Row {
         text(log.event_name),
         int(log.dropped_attributes_count),
     ])
+}
+
+/// The logs request of `resources`, each with its scopes, each with its log records.
+pub(super) fn request(resources: Nested<LogRecord>) -> Vec<u8> {
+    let resource_logs = nest(
+        resources,
+        |scope, log_records| ScopeLogs { scope, log_records },
+        |resource, scope_logs| ResourceLogs { resource, scope_logs },
+    );
+    ExportLogsServiceRequest { resource_logs }.encode_to_vec()
+}
+
+impl LogRecord {
+    /// Reads field `key` of a row, as `SourceMeta::OTLP_LOGS` names it, where it is one of a log record's.
+    pub(super) fn field(&mut self, key: &str, r: &mut Reader) -> Result<bool, String> {
+        match key {
+            "time" => self.time_unix_nano = rows::time(r, key)?,
+            "observedTime" => self.observed_time_unix_nano = rows::time(r, key)?,
+            "severityNumber" => self.severity_number = json::int(r, key)?,
+            "severityText" => self.severity_text = rows::text(r, key)?,
+            "body" => self.body = Some(rows::any(r, key)?),
+            "attributes" => self.attributes = rows::attributes(r, key)?,
+            "traceId" => self.trace_id = rows::trace_id(r, key)?,
+            "spanId" => self.span_id = rows::span_id(r, key)?,
+            "flags" => self.flags = json::int(r, key)?,
+            "eventName" => self.event_name = rows::text(r, key)?,
+            "droppedAttributesCount" => self.dropped_attributes_count = json::int(r, key)?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
 }
 
 fn resource_logs(r: &mut Reader) -> Result<ResourceLogs, String> {

@@ -143,6 +143,10 @@ mod objects_tests;
 mod okta_live_tests;
 #[path = "ops.rs"]
 mod ops;
+#[path = "otlp-destination-fuzz.rs"]
+mod otlp_destination_fuzz;
+#[path = "otlp-destination-tests.rs"]
+mod otlp_destination_tests;
 #[path = "otlp-receiver-fuzz.rs"]
 mod otlp_receiver_fuzz;
 #[path = "parquet-tests.rs"]

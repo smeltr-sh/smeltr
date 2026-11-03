@@ -6,9 +6,10 @@ use std::sync::Arc;
 use prost::Message as _;
 
 use super::json::{self, Reader, each, enumerated, fields, oneof};
+use super::rows;
 use super::{
-    Cell, Cursor, Filed, InstrumentationScope, KeyValue, Number, Resource, Row, Shape, id, int, micros, nonzero, pairs,
-    put_pairs, text, variant_of,
+    Cell, Cursor, Filed, InstrumentationScope, KeyValue, Nested, Number, Resource, Row, Shape, id, int, micros, nest,
+    nonzero, pairs, put_pairs, text, variant_of,
 };
 use crate::core::variant::{begin_array, begin_object, end, put_datetime, put_f64, put_i64, put_key, put_str};
 
@@ -35,7 +36,7 @@ struct ScopeMetrics {
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct Metric {
+pub(super) struct Metric {
     #[prost(string, tag = "1")]
     name: String,
     #[prost(string, tag = "2")]
@@ -102,7 +103,7 @@ struct Summary {
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct NumberDataPoint {
+pub(super) struct NumberDataPoint {
     #[prost(message, repeated, tag = "7")]
     attributes: Vec<KeyValue>,
     #[prost(fixed64, tag = "2")]
@@ -126,7 +127,7 @@ enum PointValue {
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct HistogramDataPoint {
+pub(super) struct HistogramDataPoint {
     #[prost(message, repeated, tag = "9")]
     attributes: Vec<KeyValue>,
     #[prost(fixed64, tag = "2")]
@@ -152,7 +153,7 @@ struct HistogramDataPoint {
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct ExponentialHistogramDataPoint {
+pub(super) struct ExponentialHistogramDataPoint {
     #[prost(message, repeated, tag = "1")]
     attributes: Vec<KeyValue>,
     #[prost(fixed64, tag = "2")]
@@ -192,7 +193,7 @@ struct Buckets {
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct SummaryDataPoint {
+pub(super) struct SummaryDataPoint {
     #[prost(message, repeated, tag = "7")]
     attributes: Vec<KeyValue>,
     #[prost(fixed64, tag = "2")]
@@ -672,6 +673,278 @@ fn put_exemplar(out: &mut Vec<u8>, e: &Exemplar) {
         count += 1;
     }
     end(out, open, count);
+}
+
+/// The metrics request of `resources`, each with its scopes, each with its metrics.
+pub(super) fn request(resources: Nested<Metric>) -> Vec<u8> {
+    let resource_metrics = nest(
+        resources,
+        |scope, metrics| ScopeMetrics { scope, metrics },
+        |resource, scope_metrics| ResourceMetrics {
+            resource,
+            scope_metrics,
+        },
+    );
+    ExportMetricsServiceRequest { resource_metrics }.encode_to_vec()
+}
+
+/// One data point of any metric's type.
+#[derive(Clone, Debug)]
+pub(super) enum DataPoint {
+    Number(NumberDataPoint),
+    Histogram(HistogramDataPoint),
+    Exponential(ExponentialHistogramDataPoint),
+    Summary(SummaryDataPoint),
+}
+
+impl DataPoint {
+    pub(super) fn encoded_len(&self) -> usize {
+        match self {
+            DataPoint::Number(p) => p.encoded_len(),
+            DataPoint::Histogram(p) => p.encoded_len(),
+            DataPoint::Exponential(p) => p.encoded_len(),
+            DataPoint::Summary(p) => p.encoded_len(),
+        }
+    }
+}
+
+/// `metric`, which holds no points, holding `points`, each of its type.
+pub(super) fn with_points(mut metric: Metric, points: impl Iterator<Item = DataPoint>) -> Metric {
+    for point in points {
+        match (&mut metric.data, point) {
+            (
+                Some(Data::Gauge(Gauge { data_points })) | Some(Data::Sum(Sum { data_points, .. })),
+                DataPoint::Number(p),
+            ) => data_points.push(p),
+            (Some(Data::Histogram(h)), DataPoint::Histogram(p)) => h.data_points.push(p),
+            (Some(Data::ExponentialHistogram(h)), DataPoint::Exponential(p)) => h.data_points.push(p),
+            (Some(Data::Summary(s)), DataPoint::Summary(p)) => s.data_points.push(p),
+            _ => unreachable!("a point is read with its metric's type"),
+        }
+    }
+    metric
+}
+
+/// A row of a data point, as `SourceMeta::otlp(Signal::Metrics)` names its fields, read before its `type` says which
+/// point they make.
+#[derive(Default)]
+pub(super) struct PointRow {
+    name: String,
+    description: String,
+    unit: String,
+    kind: Option<String>,
+    metadata: Vec<KeyValue>,
+    aggregation_temporality: i32,
+    is_monotonic: bool,
+    start_time: u64,
+    time: u64,
+    attributes: Vec<KeyValue>,
+    flags: u32,
+    value: Option<PointValue>,
+    count: u64,
+    sum: Option<f64>,
+    min: Option<f64>,
+    max: Option<f64>,
+    bucket_counts: Vec<u64>,
+    explicit_bounds: Vec<f64>,
+    scale: i32,
+    zero_count: u64,
+    zero_threshold: f64,
+    positive: Option<Buckets>,
+    negative: Option<Buckets>,
+    quantile_values: Vec<ValueAtQuantile>,
+    exemplars: Vec<Exemplar>,
+}
+
+impl PointRow {
+    /// Reads field `key` of a row, where it is one of a data point's or its metric's.
+    pub(super) fn field(&mut self, key: &str, r: &mut Reader) -> Result<bool, String> {
+        match key {
+            "name" => self.name = rows::text(r, key)?,
+            "description" => self.description = rows::text(r, key)?,
+            "unit" => self.unit = rows::text(r, key)?,
+            "type" => self.kind = Some(rows::text(r, key)?),
+            "metadata" => self.metadata = rows::attributes(r, key)?,
+            "aggregationTemporality" => self.aggregation_temporality = temporality(r)?,
+            "isMonotonic" => self.is_monotonic = json::bool(r, key)?,
+            "startTime" => self.start_time = rows::time(r, key)?,
+            "time" => self.time = rows::time(r, key)?,
+            "attributes" => self.attributes = rows::attributes(r, key)?,
+            "flags" => self.flags = json::int(r, key)?,
+            "value" => self.value = Some(number(r, key)?),
+            "count" => self.count = rows::count(r, key)?,
+            "sum" => self.sum = Some(json::double(r, key)?),
+            "min" => self.min = Some(json::double(r, key)?),
+            "max" => self.max = Some(json::double(r, key)?),
+            "bucketCounts" => self.bucket_counts = rows::counts(r, key)?,
+            "explicitBounds" => self.explicit_bounds = rows::doubles(r, key)?,
+            "scale" => self.scale = json::int(r, key)?,
+            "zeroCount" => self.zero_count = rows::count(r, key)?,
+            "zeroThreshold" => self.zero_threshold = json::double(r, key)?,
+            "positive" => self.positive = Some(buckets_of(r, "positive")?),
+            "negative" => self.negative = Some(buckets_of(r, "negative")?),
+            "quantileValues" => self.quantile_values = rows::objects(r, key, quantile_field)?,
+            "exemplars" => self.exemplars = rows::objects(r, key, exemplar_field)?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// The point's metric, holding no points, and the point; or why it is no point.
+    pub(super) fn point(mut self) -> Result<(Metric, DataPoint), String> {
+        let temporality = self.aggregation_temporality;
+        let mut metric = Metric {
+            name: std::mem::take(&mut self.name),
+            description: std::mem::take(&mut self.description),
+            unit: std::mem::take(&mut self.unit),
+            data: None,
+            metadata: std::mem::take(&mut self.metadata),
+        };
+        let (data, point) = match self.kind.take().as_deref() {
+            Some("gauge") => (Data::Gauge(Gauge::default()), DataPoint::Number(self.number_point())),
+            Some("sum") => (
+                Data::Sum(Sum {
+                    data_points: Vec::new(),
+                    aggregation_temporality: temporality,
+                    is_monotonic: self.is_monotonic,
+                }),
+                DataPoint::Number(self.number_point()),
+            ),
+            Some("histogram") => (
+                Data::Histogram(Histogram {
+                    data_points: Vec::new(),
+                    aggregation_temporality: temporality,
+                }),
+                DataPoint::Histogram(self.histogram_point()),
+            ),
+            Some("exponentialHistogram") => (
+                Data::ExponentialHistogram(ExponentialHistogram {
+                    data_points: Vec::new(),
+                    aggregation_temporality: temporality,
+                }),
+                DataPoint::Exponential(self.exponential_point()),
+            ),
+            Some("summary") => (
+                Data::Summary(Summary::default()),
+                DataPoint::Summary(self.summary_point()),
+            ),
+            _ => {
+                return Err(
+                    "a metric's point has its type in the field type: gauge, sum, histogram, exponentialHistogram or \
+                     summary"
+                        .into(),
+                );
+            }
+        };
+        metric.data = Some(data);
+        Ok((metric, point))
+    }
+
+    fn number_point(self) -> NumberDataPoint {
+        NumberDataPoint {
+            attributes: self.attributes,
+            start_time_unix_nano: self.start_time,
+            time_unix_nano: self.time,
+            value: self.value,
+            exemplars: self.exemplars,
+            flags: self.flags,
+        }
+    }
+
+    fn histogram_point(self) -> HistogramDataPoint {
+        HistogramDataPoint {
+            attributes: self.attributes,
+            start_time_unix_nano: self.start_time,
+            time_unix_nano: self.time,
+            count: self.count,
+            sum: self.sum,
+            bucket_counts: self.bucket_counts,
+            explicit_bounds: self.explicit_bounds,
+            exemplars: self.exemplars,
+            flags: self.flags,
+            min: self.min,
+            max: self.max,
+        }
+    }
+
+    fn exponential_point(self) -> ExponentialHistogramDataPoint {
+        ExponentialHistogramDataPoint {
+            attributes: self.attributes,
+            start_time_unix_nano: self.start_time,
+            time_unix_nano: self.time,
+            count: self.count,
+            sum: self.sum,
+            scale: self.scale,
+            zero_count: self.zero_count,
+            positive: self.positive,
+            negative: self.negative,
+            flags: self.flags,
+            exemplars: self.exemplars,
+            min: self.min,
+            max: self.max,
+            zero_threshold: self.zero_threshold,
+        }
+    }
+
+    fn summary_point(self) -> SummaryDataPoint {
+        SummaryDataPoint {
+            attributes: self.attributes,
+            start_time_unix_nano: self.start_time,
+            time_unix_nano: self.time,
+            count: self.count,
+            sum: self.sum.unwrap_or_default(),
+            quantile_values: self.quantile_values,
+            flags: self.flags,
+        }
+    }
+}
+
+/// A point's or an exemplar's value: an int, or a double where the row writes a fraction or an exponent.
+fn number(r: &mut Reader, name: &str) -> Result<PointValue, String> {
+    match rows::any(r, name)?.value {
+        Some(super::Any::Int(i)) => Ok(PointValue::AsInt(i)),
+        Some(super::Any::Double(d)) => Ok(PointValue::AsDouble(d)),
+        _ => Err(format!("`{name}` is not a number")),
+    }
+}
+
+fn buckets_of(r: &mut Reader, name: &str) -> Result<Buckets, String> {
+    let mut buckets = Buckets::default();
+    fields(r, &format!("`{name}`"), |key, r| {
+        match key {
+            "offset" => buckets.offset = json::int(r, &format!("{name}.offset"))?,
+            "bucketCounts" => buckets.bucket_counts = rows::counts(r, &format!("{name}.bucketCounts"))?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    })?;
+    Ok(buckets)
+}
+
+fn quantile_field(key: &str, r: &mut Reader, q: &mut ValueAtQuantile) -> Result<bool, String> {
+    match key {
+        "quantile" => q.quantile = json::double(r, "quantileValues.quantile")?,
+        "value" => q.value = json::double(r, "quantileValues.value")?,
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn exemplar_field(key: &str, r: &mut Reader, e: &mut Exemplar) -> Result<bool, String> {
+    match key {
+        "time" => e.time_unix_nano = rows::time(r, "exemplars.time")?,
+        "value" => {
+            e.value = Some(match number(r, "exemplars.value")? {
+                PointValue::AsInt(i) => ExemplarValue::AsInt(i),
+                PointValue::AsDouble(d) => ExemplarValue::AsDouble(d),
+            })
+        }
+        "traceId" => e.trace_id = rows::trace_id(r, "exemplars.traceId")?,
+        "spanId" => e.span_id = rows::span_id(r, "exemplars.spanId")?,
+        "filteredAttributes" => e.filtered_attributes = rows::attributes(r, "exemplars.filteredAttributes")?,
+        _ => return Ok(false),
+    }
+    Ok(true)
 }
 
 fn resource_metrics(r: &mut Reader) -> Result<ResourceMetrics, String> {
