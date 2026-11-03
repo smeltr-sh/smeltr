@@ -107,7 +107,7 @@ impl Clock {
         Clock {
             now: Instant::now(),
             up_for,
-            hold_time: 3 * crate::startup_config::worker_heartbeat_interval(),
+            hold_time: 3 * crate::startup_config::leader_heartbeat_interval(),
         }
     }
 

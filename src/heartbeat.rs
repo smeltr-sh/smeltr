@@ -505,7 +505,7 @@ pub struct HeartbeatRequest {
     /// The last directive this worker took, by id. The leader repeats a directive until a beat names it here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub took: Option<String>,
-    /// How often this worker beats, as its own configuration sets it. The leader holds a source for this worker
+    /// How often this worker beats, as its last answer set it. The leader holds a source for this worker
     /// for three of these, or of its own, whichever is longer. Absent from a worker older than this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat_interval_ms: Option<u64>,
@@ -798,6 +798,11 @@ pub struct HeartbeatResponse {
     /// is deployed, and from a leader too old to say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployed: Option<String>,
+    /// How often the leader has its workers beat, which is the pace it judges them by. A worker beats at this from
+    /// the answer that carries it on. Absent from a leader older than this field, and then the worker keeps
+    /// [`crate::startup_config::DEFAULT_HEARTBEAT_INTERVAL`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat_interval_ms: Option<u64>,
 }
 
 /// One thing an operator asked of one worker. The id tells a repeat from a new request: a worker acts on each id
@@ -2092,6 +2097,7 @@ mod tests {
             captures: Vec::new(),
             secrets: Vec::new(),
             directive: None,
+            heartbeat_interval_ms: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, r#"{}"#);
@@ -2339,6 +2345,7 @@ mod tests {
             captures: vec![Invited::Readable(Box::new(invitation))],
             secrets: vec![delivery.clone()],
             directive: None,
+            heartbeat_interval_ms: None,
         };
         assert!(!format!("{response:?}").contains("hunter2"));
         assert!(!format!("{:?}", Some(vec![delivery])).contains("hunter2"));

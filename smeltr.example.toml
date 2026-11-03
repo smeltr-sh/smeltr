@@ -38,6 +38,9 @@
 [leader.lookups]
 # versions = 5                       # SMELTR_LEADER_LOOKUP_VERSIONS; -1 keeps every version
 
+[leader.heartbeat]
+# interval_ms = 1500                 # SMELTR_LEADER_HEARTBEAT_INTERVAL_MS, how often every worker reports to this leader
+
 [worker]
 # enabled = false                              # SMELTR_WORKER_ENABLED
 # group = "default"                            # SMELTR_WORKER_GROUP
@@ -60,7 +63,6 @@
 # thread_limit = 0                   # SMELTR_WORKER_THREAD_LIMIT, threads running pipelines; 0 is the core count
 
 [worker.heartbeat]
-# interval_ms = 1500                 # SMELTR_WORKER_HEARTBEAT_INTERVAL_MS
 # stop_after_unreachable_secs = -1   # SMELTR_WORKER_STOP_AFTER_UNREACHABLE_SECS, stop pipelines after this long without the leader; -1 never stops
 
 [worker.metrics_endpoint]

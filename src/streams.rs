@@ -6,8 +6,8 @@
 //! took are keyed on every batch, since a new stream is what those rows are. Everything held is bounded by the caps
 //! the wire sets (`heartbeat::STREAM_FIELDS_PER_PARSER` and its neighbours), and what does not fit is counted.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::core::tally::{FieldSeen, FieldTally};
@@ -17,6 +17,34 @@ use crate::heartbeat::{
 };
 use crate::plan::compile::Plan;
 
+/// How often a route tallies a batch: the worker's heartbeat interval, which its leader can change while a deployment
+/// runs. Until it is set, [`crate::startup_config::DEFAULT_HEARTBEAT_INTERVAL`].
+pub struct Pace(AtomicU64);
+
+impl Pace {
+    pub fn new(interval: Duration) -> Pace {
+        Pace(AtomicU64::new(Pace::millis(interval)))
+    }
+
+    pub fn set(&self, interval: Duration) {
+        self.0.store(Pace::millis(interval), Ordering::Relaxed);
+    }
+
+    fn ms(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn millis(interval: Duration) -> u64 {
+        interval.as_millis().max(1) as u64
+    }
+}
+
+impl Default for Pace {
+    fn default() -> Pace {
+        Pace::new(crate::startup_config::DEFAULT_HEARTBEAT_INTERVAL)
+    }
+}
+
 /// One deployment's account of its streams.
 pub struct Streams {
     /// When each route may next tally a batch, in milliseconds since `started`. One atomic per route, so the hot path
@@ -25,7 +53,7 @@ pub struct Streams {
     /// Each pipeline's id as its author wrote it, by position: what a shape names, since the position a plan carries
     /// does not survive a redeploy.
     pipelines: Vec<String>,
-    interval_ms: u64,
+    pace: Arc<Pace>,
     started: Instant,
     window: Mutex<StreamReport>,
 }
@@ -34,10 +62,15 @@ impl Streams {
     /// An account over `routes` routes, each tallying one batch every `interval`, of a deployment whose pipelines are
     /// `pipelines`, by position.
     pub fn new(routes: usize, pipelines: Vec<String>, interval: Duration) -> Streams {
+        Streams::paced(routes, pipelines, Arc::new(Pace::new(interval)))
+    }
+
+    /// [`Streams::new`], tallying at whatever `pace` holds when each batch asks.
+    pub fn paced(routes: usize, pipelines: Vec<String>, pace: Arc<Pace>) -> Streams {
         Streams {
             due: (0..routes).map(|_| AtomicU64::new(0)).collect(),
             pipelines,
-            interval_ms: interval.as_millis().max(1) as u64,
+            pace,
             started: Instant::now(),
             window: Mutex::new(StreamReport::default()),
         }
@@ -51,7 +84,7 @@ impl Streams {
         let at = due.load(Ordering::Relaxed);
         now >= at
             && due
-                .compare_exchange(at, now + self.interval_ms, Ordering::Relaxed, Ordering::Relaxed)
+                .compare_exchange(at, now + self.pace.ms(), Ordering::Relaxed, Ordering::Relaxed)
                 .is_ok()
     }
 
@@ -197,6 +230,17 @@ mod tests {
         streams.not_run(0);
         assert!(streams.due(0), "the batch that never ran left the interval's tally");
         assert!(!streams.due(0));
+    }
+
+    #[test]
+    fn a_new_pace_takes_from_the_next_interval() {
+        let pace = Arc::new(Pace::new(Duration::ZERO));
+        let streams = Streams::paced(1, Vec::new(), pace.clone());
+        assert!(streams.due(0));
+        pace.set(Duration::from_secs(3600));
+        std::thread::sleep(Duration::from_millis(2));
+        assert!(streams.due(0), "the interval already running ends at the old pace");
+        assert!(!streams.due(0), "the next runs at the new one");
     }
 
     #[test]

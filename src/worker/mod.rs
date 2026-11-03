@@ -64,7 +64,6 @@ pub struct WorkerConfig {
     /// and again for a new identity where the leader no longer knows this worker's credential. Read for nothing else
     /// once `state_dir` holds one: an enrollment code left in a unit file after it was spent is no instruction.
     pub enrollment_code: Option<String>,
-    pub heartbeat_interval: Duration,
     /// How long this worker may go without a successful heartbeat before it stops its deployment. `None` means
     /// never. Known at startup, unlike a directive from the leader -- which is what lets this worker enforce it
     /// before its first successful heartbeat, the exact situation the setting exists for.
@@ -1302,15 +1301,16 @@ fn deploy(
         secrets,
         registry,
         held,
+        pace,
     } = runtime;
     let registry = registry.clone();
     let refusals = Arc::new(crate::runtime::RefusalRing::default());
     // One tallied batch per route per heartbeat: what the leader sees of a stream arrives at the pace it hears
     // everything else.
-    let streams = Arc::new(crate::streams::Streams::new(
+    let streams = Arc::new(crate::streams::Streams::paced(
         topology.routes.len(),
         system.pipeline_ids.clone(),
-        crate::startup_config::worker_heartbeat_interval(),
+        pace.clone(),
     ));
     let memory = process_memory_budget();
     // A memory refusal is an unwind by design; the default hook would print a panic dump for each one.
@@ -2341,6 +2341,7 @@ pub fn run_worker(mut config: WorkerConfig) {
         presenting: Mutex::new(Vec::new()),
         holds: Arc::new(Mutex::new(Holds::default())),
         receiver_sockets: Mutex::new(crate::io::receiver::Sockets::default()),
+        heartbeat_interval: Mutex::new((crate::startup_config::DEFAULT_HEARTBEAT_INTERVAL, false)),
         config,
     });
     // One worker per process, so this is set once. A second would be a test running two in one process, and the
@@ -2606,6 +2607,8 @@ struct Supervisor {
     holds: Arc<Mutex<Holds>>,
     /// The sockets of the receivers this worker runs, held across the runtimes it starts.
     receiver_sockets: Mutex<crate::io::receiver::Sockets>,
+    /// How often this worker beats, as the leader's last answer set it, and whether the running runtime has it.
+    heartbeat_interval: Mutex<(Duration, bool)>,
 }
 
 /// How long a grant the runtime did not make waits before it is offered again, at first and at most. It doubles
@@ -3124,6 +3127,7 @@ impl Supervisor {
                     self.hand_back_captures();
                     self.follow_captures(resp.captures);
                     self.follow_holds(resp.holds);
+                    self.follow_heartbeat_interval(resp.heartbeat_interval_ms);
                     if let Some(directive) = resp.directive {
                         self.follow_directive(directive);
                     }
@@ -3148,7 +3152,7 @@ impl Supervisor {
             let exit = self.exit.lock().unwrap();
             let _ = self
                 .exit_changed
-                .wait_timeout_while(exit, self.config.heartbeat_interval, |exit| *exit < Exit::Notice);
+                .wait_timeout_while(exit, self.heartbeat_interval(), |exit| *exit < Exit::Notice);
         }
     }
 
@@ -3216,7 +3220,7 @@ impl Supervisor {
             stopping,
             accepts: self.accepts(),
             took: self.took.lock().unwrap().clone(),
-            heartbeat_interval: Some(self.config.heartbeat_interval),
+            heartbeat_interval: Some(self.heartbeat_interval()),
         };
         // The window still owed, or a new one. What the runtime last said is read under the lock; the deployment
         // it describes is another process, so nothing here can be waiting on one that is stopping.
@@ -3398,6 +3402,57 @@ impl Supervisor {
         drop(held);
         // Owed again on every beat until the leader has it; `owe_captures` keeps one report per session.
         self.owe_captures(unreadable);
+    }
+
+    /// How often this worker beats now.
+    fn heartbeat_interval(&self) -> Duration {
+        self.heartbeat_interval.lock().unwrap().0
+    }
+
+    /// Beat at the interval the leader's answer set, from the next beat on. An answer that sets none, from a leader
+    /// older than the field, keeps the one this worker has; so does zero, which no leader sends.
+    fn follow_heartbeat_interval(&self, interval_ms: Option<u64>) {
+        let Some(interval) = interval_ms.filter(|&ms| ms > 0).map(Duration::from_millis) else {
+            return;
+        };
+        let mut held = self.heartbeat_interval.lock().unwrap();
+        if held.0 == interval {
+            return;
+        }
+        tracing::info!(
+            target: "worker.heartbeat_interval",
+            from_ms = held.0.as_millis() as u64,
+            to_ms = interval.as_millis() as u64,
+            "the leader set how often this worker reports"
+        );
+        *held = (interval, false);
+        drop(held);
+        self.arrived.notify_all();
+    }
+
+    /// Tell the running runtime the interval this worker beats at, when it does not have it.
+    ///
+    /// `true` is a control pipe that would not take the frame, as for [`Supervisor::route_invitations`].
+    fn route_heartbeat_interval(&self, running: Option<&mut child::RuntimeHandle>) -> bool {
+        let Some(handle) = running else { return false };
+        let interval = match *self.heartbeat_interval.lock().unwrap() {
+            (_, true) => return false,
+            (interval, false) => interval,
+        };
+        match handle.paced(interval) {
+            Ok(()) => {
+                self.heartbeat_interval.lock().unwrap().1 = true;
+                false
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "worker.heartbeat_interval_not_forwarded",
+                    error = %e,
+                    "could not pass the heartbeat interval to the runtime, so it is being ended"
+                );
+                true
+            }
+        }
     }
 
     /// Take the leader's holds, which are whole on every answer, for the deployer to hand the runtime.
@@ -3734,7 +3789,7 @@ impl Supervisor {
                     }
                 }
             }
-            std::thread::sleep(self.config.heartbeat_interval);
+            std::thread::sleep(self.heartbeat_interval());
         }
     }
 
@@ -3794,7 +3849,8 @@ impl Supervisor {
             let wedged = self.route_invitations(running.as_mut())
                 || self.mirror_to(running.as_mut())
                 || self.route_holds(running.as_mut())
-                || self.route_backlog(running.as_mut());
+                || self.route_backlog(running.as_mut())
+                || self.route_heartbeat_interval(running.as_mut());
 
             // A control pipe that has stopped taking frames: every capture forwarded to it from here on fails
             // the same way. `send_within`'s caller owes the tree a kill, and this is where that is paid -- the
@@ -4113,6 +4169,7 @@ impl Supervisor {
                     // It holds nothing yet. Its first turn tells it what the leader holds here, each ledger
                     // fetched afresh: the last runtime's reports have moved them since.
                     self.holds.lock().unwrap().restarted();
+                    self.heartbeat_interval.lock().unwrap().1 = false;
                     running = Some(handle);
                     content = Some(arriving.clone());
                     last_good = Some((commit.clone(), arriving));
@@ -6336,6 +6393,7 @@ mod tests {
             presenting: Mutex::new(Vec::new()),
             holds: Arc::new(Mutex::new(Holds::default())),
             receiver_sockets: Mutex::new(crate::io::receiver::Sockets::default()),
+            heartbeat_interval: Mutex::new((Duration::from_millis(50), false)),
             config: WorkerConfig {
                 leader_url: "http://127.0.0.1:1".to_string(),
                 leader_ca_pem: None,
@@ -6346,7 +6404,6 @@ mod tests {
                 memory: None,
                 state_dir,
                 enrollment_code: None,
-                heartbeat_interval: Duration::from_millis(50),
                 stop_after_unreachable_secs: None,
                 in_leader: false,
                 metrics_endpoint: None,
@@ -8513,7 +8570,6 @@ mod tests {
             memory: None,
             state_dir: dir.to_path_buf(),
             enrollment_code: None,
-            heartbeat_interval: Duration::from_secs(1),
             stop_after_unreachable_secs: None,
             in_leader: false,
             metrics_endpoint: None,
