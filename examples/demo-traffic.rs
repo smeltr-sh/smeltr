@@ -251,20 +251,21 @@ fn history(registry: &std::path::Path) {
         while bucket + five <= began {
             for tier in [Tier::TenSeconds, Tier::OneMinute] {
                 let step = tier.bucket_ms();
-                let rates: Vec<f64> = (bucket..bucket + five)
+                let mut rates: Vec<f64> = (bucket..bucket + five)
                     .step_by(step as usize)
                     .map(|at| {
                         let rows: f64 = loops.iter().map(|l| l.between(at, at + step)).sum();
                         rows * shape(at) * 1000.0 / step as f64
                     })
                     .collect();
+                let (low, high) = smeltr::leader::throughput::swing(&mut rates);
                 swings.push(Swing {
                     group: group.clone(),
                     source: source.clone(),
                     width_ms: step,
                     bucket_ms: bucket,
-                    low: rates.iter().copied().fold(f64::INFINITY, f64::min),
-                    high: rates.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                    low,
+                    high,
                 });
             }
             bucket += five;

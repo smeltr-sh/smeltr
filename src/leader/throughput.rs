@@ -235,7 +235,7 @@ fn band(buckets: &BTreeMap<i64, f64>, ended_ms: i64, share: f64) -> Option<Band>
 
 /// The band of `held` at `ended_ms` on each past day, `reach` steps of `step_ms` either side, or `None` while fewer
 /// than [`MIN_DAYS`] days have one. `held` is the band one past bucket ending at a time held, if it is known: a
-/// window read throughout holds only its own rows, and a bucket's swing holds its lowest and highest rate. The band
+/// window read throughout holds only its own rows, and a bucket's swing holds its low and high rate ([`swing`]). The band
 /// is the share asked for of the lows and of the highs, cut from the bottom of the one and the top of the other.
 fn band_of(held: impl Fn(i64) -> Option<Band>, ended_ms: i64, step_ms: i64, reach: i64, share: f64) -> Option<Band> {
     let (mut lows, mut highs) = (Vec::new(), Vec::new());
@@ -506,7 +506,7 @@ fn swings_of(slots: &BTreeMap<i64, f64>, from: i64, until: i64) -> Vec<(i64, i64
         if read(bucket - width) && read(bucket) && read(bucket + width) {
             for tier in SWING_WIDTHS {
                 let step = tier.bucket_ms();
-                let rates: Vec<f64> = (bucket..bucket + width)
+                let mut rates: Vec<f64> = (bucket..bucket + width)
                     .step_by(step as usize)
                     .map(|at| {
                         let rows: f64 = (at..at + step)
@@ -516,14 +516,24 @@ fn swings_of(slots: &BTreeMap<i64, f64>, from: i64, until: i64) -> Vec<(i64, i64
                         rows * 1000.0 / step as f64
                     })
                     .collect();
-                let low = rates.iter().copied().fold(f64::INFINITY, f64::min);
-                let high = rates.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let (low, high) = swing(&mut rates);
                 out.push((step, bucket, low, high));
             }
         }
         bucket += width;
     }
     out
+}
+
+/// The share of a bucket's rates its swing spans, cut evenly from both ends: a slot or two that a slow heartbeat or a
+/// restart left nearly empty would otherwise set the bucket's low, and with it the band at that time of day all week.
+const SWING_SHARE: f64 = 0.8;
+
+/// The low and high of a bucket's `rates` at one width: the [`SWING_SHARE`] of them in between.
+pub fn swing(rates: &mut [f64]) -> (f64, f64) {
+    rates.sort_by(f64::total_cmp);
+    let tail = (1.0 - SWING_SHARE) / 2.0;
+    (quantile(rates, tail), quantile(rates, 1.0 - tail))
 }
 
 /// The `q` quantile of `sorted`, linear between the two nearest samples.
@@ -924,17 +934,19 @@ mod tests {
         assert_eq!(swings(Tier::TenSeconds).len(), 5);
     }
 
-    /// A slot with no point in a bucket read on both sides read nothing, and pulls the low down to it.
+    /// A slot with no point in a bucket read on both sides read nothing. One such slot among thirty does not set the
+    /// bucket's low at ten seconds; among the five minutes, it moves the low part of the way to its minute.
     #[test]
-    fn a_quiet_slot_inside_a_read_bucket_swings_to_zero() {
+    fn one_quiet_slot_does_not_set_a_buckets_low() {
         let mut slots: BTreeMap<i64, f64> = (0..3 * FIVE).step_by(10_000).map(|at| (END + at, 50.0)).collect();
         slots.remove(&(END + FIVE + 20_000));
         let swings = swings_of(&slots, END + FIVE, END + 2 * FIVE);
+        let quiet_minute = 250.0 * 1000.0 / 60_000.0;
         assert_eq!(
             swings,
             vec![
-                (10_000, END + FIVE, 0.0, 5.0),
-                (60_000, END + FIVE, 250.0 * 1000.0 / 60_000.0, 5.0)
+                (10_000, END + FIVE, 5.0, 5.0),
+                (60_000, END + FIVE, quiet_minute + 0.4 * (5.0 - quiet_minute), 5.0)
             ]
         );
     }

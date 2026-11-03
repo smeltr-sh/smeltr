@@ -426,8 +426,9 @@ pub(crate) const STEPS: &[&str] = &[
      CREATE INDEX swings_bucket ON swings (bucket_ms);",
 ];
 
-/// The lowest and highest rate one source read at `width_ms` inside the five-minute bucket starting at `bucket_ms`,
-/// in rows per second: how far its reading swung within the bucket, which the bucket's own sum does not say.
+/// The low and high rate one source read at `width_ms` inside the five-minute bucket starting at `bucket_ms`, in rows
+/// per second (`throughput::swing`): how far its reading swung within the bucket, which the bucket's own sum does not
+/// say.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Swing {
     pub group: String,
