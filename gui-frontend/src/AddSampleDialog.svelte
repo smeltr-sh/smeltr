@@ -9,6 +9,7 @@
 </script>
 
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { untrack } from 'svelte';
   import Dialog from './Dialog.svelte';
   import TypeCatalog, { type CatalogType } from './TypeCatalog.svelte';
@@ -160,11 +161,11 @@
     <TypeCatalog types={WAYS} onpick={pick} />
   {/if}
   {#snippet actions()}
-    <button type="button" onclick={oncancel} disabled={busy}>Cancel</button>
+    <Button type="button" onclick={oncancel} disabled={busy ? BUSY : ''}>Cancel</Button>
     {#if way}
-      <button type="submit" class="primary" disabled={busy || !canSave}>
+      <Button type="submit" class="primary" disabled={busy ? BUSY : !canSave ? INCOMPLETE : ''}>
         {busy ? 'Saving…' : 'Save sample'}
-      </button>
+      </Button>
     {/if}
   {/snippet}
 </Dialog>

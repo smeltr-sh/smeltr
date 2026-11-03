@@ -412,7 +412,32 @@ pub(crate) const STEPS: &[&str] = &[
      CREATE INDEX fact_history_ended ON fact_history (ended_ms);",
     // 10 -- the last window recorded from each worker, which numbers a beat's points and its streams.
     "ALTER TABLE stream_windows RENAME TO windows;",
+    // 11 -- how far each source's rate swung inside each five-minute bucket, at a finer width (`Swing`). Kept as
+    // long as the five-minute tier and never rolled up, since a swing does not sum.
+    "CREATE TABLE swings (
+         group_id  TEXT NOT NULL,
+         source    TEXT NOT NULL,
+         width_ms  INTEGER NOT NULL,
+         bucket_ms INTEGER NOT NULL,
+         low       REAL NOT NULL,
+         high      REAL NOT NULL,
+         PRIMARY KEY (group_id, source, width_ms, bucket_ms)
+     ) WITHOUT ROWID;
+     CREATE INDEX swings_bucket ON swings (bucket_ms);",
 ];
+
+/// The low and high rate one source read at `width_ms` inside the five-minute bucket starting at `bucket_ms`, in rows
+/// per second (`throughput::swing`): how far its reading swung within the bucket, which the bucket's own sum does not
+/// say.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Swing {
+    pub group: String,
+    pub source: String,
+    pub width_ms: i64,
+    pub bucket_ms: i64,
+    pub low: f64,
+    pub high: f64,
+}
 
 /// [`RegistryStore::series_since`] on a connection the caller holds.
 fn series_since_on(
@@ -1001,6 +1026,57 @@ impl RegistryStore {
             .collect()
     }
 
+    /// Write `swings`, each over any already held for its source, width and bucket.
+    pub fn record_swings(&self, swings: &[Swing]) -> Result<(), StoreError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction()?;
+        {
+            let mut write = tx.prepare_cached(
+                "INSERT OR REPLACE INTO swings (group_id, source, width_ms, bucket_ms, low, high) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for s in swings {
+                write.execute(params![s.group, s.source, s.width_ms, s.bucket_ms, s.low, s.high])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// One source's swings at `width_ms` from `since_ms` on, oldest first.
+    pub fn swings_since(
+        &self,
+        group: &str,
+        source: &str,
+        width_ms: i64,
+        since_ms: i64,
+    ) -> Result<Vec<Swing>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare_cached(
+            "SELECT bucket_ms, low, high FROM swings \
+             WHERE group_id = ?1 AND source = ?2 AND width_ms = ?3 AND bucket_ms >= ?4 ORDER BY bucket_ms",
+        )?;
+        let rows = stmt
+            .query_map(params![group, source, width_ms, since_ms], |r| {
+                Ok(Swing {
+                    group: group.to_string(),
+                    source: source.to_string(),
+                    width_ms,
+                    bucket_ms: r.get(0)?,
+                    low: r.get(1)?,
+                    high: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// The start of the newest bucket any swing is held for.
+    pub fn last_swing_ms(&self) -> Result<Option<i64>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(conn.query_row("SELECT MAX(bucket_ms) FROM swings", [], |r| r.get(0))?)
+    }
+
     /// Record what one worker said about itself. Best-effort like the series: a heartbeat must not fail because
     /// the leader could not write down what it carried.
     pub fn record_logs(
@@ -1230,6 +1306,11 @@ impl RegistryStore {
                 params![tier.code(), cutoff],
             )?;
         }
+
+        tx.execute(
+            "DELETE FROM swings WHERE bucket_ms < ?1",
+            params![now_ms - Tier::FiveMinutes.retention_ms()],
+        )?;
 
         // Past the cap, oldest first. `AUTOINCREMENT` makes `id` monotonic even across deletes, so this cannot
         // start keeping the wrong end.
@@ -2982,6 +3063,36 @@ mod tests {
             .series_since("smeltr_rows_polled_total", Tier::TenSeconds, 10_000)
             .unwrap();
         assert_eq!(series, vec![("a".to_string(), vec![(20_000, 2.0)])]);
+    }
+
+    /// A swing is kept as long as the five-minute bucket it swung in, and written again replaces the one held.
+    #[test]
+    fn a_swing_is_kept_as_long_as_its_bucket() {
+        let store = memory_store();
+        let kept = Tier::FiveMinutes.retention_ms();
+        let swing = |bucket_ms: i64, high: f64| Swing {
+            group: "g".into(),
+            source: "s".into(),
+            width_ms: 10_000,
+            bucket_ms,
+            low: 1.0,
+            high,
+        };
+        let now = 10 * kept;
+        store
+            .record_swings(&[
+                swing(now - kept - 300_000, 2.0),
+                swing(now - kept, 2.0),
+                swing(now - kept, 3.0),
+            ])
+            .unwrap();
+        store.maintain(now).unwrap();
+        assert_eq!(
+            store.swings_since("g", "s", 10_000, 0).unwrap(),
+            vec![swing(now - kept, 3.0)]
+        );
+        assert_eq!(store.last_swing_ms().unwrap(), Some(now - kept));
+        assert_eq!(store.swings_since("g", "s", 60_000, 0).unwrap(), vec![]);
     }
 
     #[test]

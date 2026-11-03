@@ -28,21 +28,22 @@ describe('the guide', () => {
     expect(done(fresh({ branch: 'fix' }))).toEqual(['branch']);
   });
 
-  it('ticks pipeline on the recorded cisco-asa draft, which holds one, and capture and route as each is there', () => {
-    const draft = network('cisco-asa-draft')!;
-    const branch = 'cisco-asa-draft';
-    expect(done(fresh({ branch, config: draft }))).toEqual(['branch', 'pipeline']);
+  it('ticks pipeline for a pipeline main lacks, and capture and route as each is there', () => {
+    const branch = 'fix';
+    const main = network('main')!;
+    const piped = { ...main, pipelines: [...(main.pipelines ?? []), { id: 'cisco-asa' }] };
+    expect(done(fresh({ branch, config: piped }))).toEqual(['branch', 'pipeline']);
     const samples = [{ source: 'cisco-asa' }];
-    expect(done(fresh({ branch, config: draft, samples }))).toEqual([
+    expect(done(fresh({ branch, config: piped, samples }))).toEqual([
       'branch',
       'capture',
       'pipeline',
     ]);
-    const unpiped = { ...draft, routes: [...(draft.routes ?? []), { source: 'cisco-asa' }] };
+    const unpiped = { ...piped, routes: [...(piped.routes ?? []), { source: 'cisco-asa' }] };
     expect(done(fresh({ branch, config: unpiped, samples }))).not.toContain('route');
     const routed = {
-      ...draft,
-      routes: [...(draft.routes ?? []), { source: 'cisco-asa', pipeline: 'cisco-asa' }],
+      ...piped,
+      routes: [...(piped.routes ?? []), { source: 'cisco-asa', pipeline: 'cisco-asa' }],
     };
     expect(done(fresh({ branch, config: routed, samples }))).toContain('route');
   });

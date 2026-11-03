@@ -4,6 +4,7 @@
   the person holds, so each area shows what they hold beside it.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
@@ -163,7 +164,7 @@
       {/if}
       {#if message}<p class="message" role="status">{message}</p>{/if}
       <div class="actions">
-        <button class="primary" type="submit" disabled={busy}>Save</button>
+        <Button class="primary" type="submit" disabled={busy ? BUSY : ''}>Save</Button>
       </div>
     </form>
   {/if}

@@ -5,6 +5,7 @@
   whether one is stored.
 -->
 <script lang="ts">
+  import Button, { BUSY, SAVE_FIRST, UNCHANGED } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import {
@@ -223,11 +224,15 @@
 
     <div class="buttons">
       {#if settings.url}
-        <button type="button" onclick={disconnect} disabled={busy}>Disconnect</button>
-        <button type="button" onclick={syncNow} disabled={busy || dirty}>Sync now</button>
+        <Button type="button" onclick={disconnect} disabled={busy ? BUSY : ''}>Disconnect</Button>
+        <Button type="button" onclick={syncNow} disabled={busy ? BUSY : dirty ? SAVE_FIRST : ''}
+          >Sync now</Button
+        >
       {/if}
-      <button class="primary" type="submit" disabled={busy || !dirty || pollProblem !== ''}
-        >Save</button
+      <Button
+        class="primary"
+        type="submit"
+        disabled={busy ? BUSY : !dirty ? UNCHANGED : pollProblem}>Save</Button
       >
     </div>
   </Panel>

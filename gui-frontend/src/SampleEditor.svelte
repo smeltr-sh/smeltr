@@ -8,6 +8,7 @@
   which goes through whatever they would say: a config that breaks a test is always saved.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported } from './errors.svelte';
   import Field from './Field.svelte';
   import CrossButton from './CrossButton.svelte';
@@ -200,17 +201,21 @@
         </div>
         <span class="count">{selected.size} of {rows.length} selected</span>
         <span class="spacer"></span>
-        <button
+        <Button
           type="button"
           class="compact"
-          disabled={selected.size === 0}
-          onclick={() => keepTicked(true)}>Keep only selected</button
+          disabled={selected.size === 0 ? 'Select rows first.' : ''}
+          onclick={() => keepTicked(true)}>Keep only selected</Button
         >
-        <button
+        <Button
           type="button"
           class="compact"
-          disabled={selected.size === 0 || selected.size === rows.length}
-          onclick={() => keepTicked(false)}>Remove selected</button
+          disabled={selected.size === 0
+            ? 'Select rows first.'
+            : selected.size === rows.length
+              ? 'A sample keeps at least one row.'
+              : ''}
+          onclick={() => keepTicked(false)}>Remove selected</Button
         >
       </div>
       <InlineError message={findError} />
@@ -332,9 +337,9 @@
 
     <div class="actions">
       <span class="spacer"></span>
-      <button type="button" onclick={oncancel} disabled={saving}>Cancel</button>
-      <button class="primary" type="submit" disabled={!canSave}
-        >{saving ? 'Saving…' : 'Save sample'}</button
+      <Button type="button" onclick={oncancel} disabled={saving ? BUSY : ''}>Cancel</Button>
+      <Button class="primary" type="submit" disabled={saving ? BUSY : !canSave ? INCOMPLETE : ''}
+        >{saving ? 'Saving…' : 'Save sample'}</Button
       >
     </div>
   </form>

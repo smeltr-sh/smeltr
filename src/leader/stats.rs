@@ -375,7 +375,9 @@ pub fn build(
                 ),
                 routes: route_shares(system, source.id, group, &totals(ROUTE_MATCHED_METRIC)),
                 expected: series_store
-                    .map(|store| throughput::expected_over(store, group, id, since_ms, now_ms, live.band_share))
+                    .map(|store| {
+                        throughput::expected_over(store, group, id, since_ms, now_ms, tier.bucket_ms(), live.band_share)
+                    })
                     .transpose()
                     .unwrap_or_else(|e| {
                         tracing::warn!(

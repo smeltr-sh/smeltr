@@ -10,6 +10,7 @@
   deploys, an admin who read only the row's name would believe it is live.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { untrack } from 'svelte';
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
@@ -270,9 +271,9 @@
     {/if}
 
     <div class="toolbar">
-      <button type="button" class="primary" onclick={startAdding} disabled={adding}>
+      <Button type="button" class="primary" onclick={startAdding} disabled={adding ? BUSY : ''}>
         + Add secret
-      </button>
+      </Button>
     </div>
 
     <Dialog open={adding} title="new secret" oncancel={cancelAdding} onsubmit={add}>
@@ -309,10 +310,10 @@
         </Field>
       </div>
       {#snippet actions()}
-        <button type="button" onclick={cancelAdding} disabled={saving}>Cancel</button>
-        <button type="submit" class="primary" disabled={!canAdd}>
+        <Button type="button" onclick={cancelAdding} disabled={saving ? BUSY : ''}>Cancel</Button>
+        <Button type="submit" class="primary" disabled={saving ? BUSY : !canAdd ? INCOMPLETE : ''}>
           {saving ? 'Adding…' : 'Add'}
-        </button>
+        </Button>
       {/snippet}
     </Dialog>
 
@@ -394,14 +395,18 @@
                         ariaLabel="the new value"
                         placeholder="the new value"
                       />
-                      <button
+                      <Button
                         type="button"
                         class="primary"
-                        disabled={busy || storeValue.length === 0}
+                        disabled={busy
+                          ? BUSY
+                          : storeValue.length === 0
+                            ? 'Enter a value first.'
+                            : ''}
                         onclick={() => store(s.name)}
                       >
                         {busy ? 'Storing…' : 'Store'}
-                      </button>
+                      </Button>
                       <button type="button" onclick={() => (open = null)}>Cancel</button>
                       <Help label="New value">
                         Stores a new version and points every reference to this secret at it, as a
@@ -421,13 +426,17 @@
                         ariaLabel="the value you think is stored"
                         placeholder="the value you think is stored"
                       />
-                      <button
+                      <Button
                         type="button"
-                        disabled={busy || checkValue.length === 0}
+                        disabled={busy
+                          ? BUSY
+                          : checkValue.length === 0
+                            ? 'Enter a value first.'
+                            : ''}
                         onclick={() => check(s.name)}
                       >
                         {busy ? 'Checking…' : 'Check'}
-                      </button>
+                      </Button>
                       <button type="button" onclick={() => (open = null)}>Close</button>
                       {#if checkAnswer && checkAnswer.name === s.name}
                         <span class={checkAnswer.matches ? 'match' : 'no-match'}>

@@ -564,7 +564,6 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
             .env("SMELTR_WORKER_GROUP", group_id)
             .env("SMELTR_WORKER_STATE_DIR", state_dir.to_str().unwrap())
             .env("SMELTR_WORKER_THREAD_LIMIT", "1")
-            .env("SMELTR_WORKER_HEARTBEAT_INTERVAL_MS", "500")
             // Isolated from any `smeltr.toml` in the cwd this test
             // inherited -- see the leader spawn above for why.
             .current_dir(&state_dir)
@@ -733,7 +732,6 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
         .env("SMELTR_WORKER_ENROLLMENT_CODE", enroll_code)
         .env("SMELTR_WORKER_STATE_DIR", state_dir.to_str().unwrap())
         .env("SMELTR_WORKER_THREAD_LIMIT", "1")
-        .env("SMELTR_WORKER_HEARTBEAT_INTERVAL_MS", "500")
         // Isolated from any `smeltr.toml` in the cwd this test
         // inherited -- see the leader spawn above for why. `smeltr` runs
         // as a worker here purely because SMELTR_LEADER_URL is set.
@@ -1866,7 +1864,6 @@ fn a_standalone_worker_fetches_over_https_with_no_leader_role_in_its_own_process
         .env("SMELTR_WORKER_ENROLLMENT_CODE", enroll_code)
         .env("SMELTR_WORKER_STATE_DIR", state_dir.to_str().unwrap())
         .env("SMELTR_WORKER_THREAD_LIMIT", "1")
-        .env("SMELTR_WORKER_HEARTBEAT_INTERVAL_MS", "500")
         .current_dir(&state_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

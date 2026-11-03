@@ -6,6 +6,7 @@
   Run has answered. The statement smeltr runs is the leader's, built as a poll builds it.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { unreported } from './errors.svelte';
   import { onDestroy } from 'svelte';
   import Field from './Field.svelte';
@@ -433,9 +434,14 @@
 {/if}
 
 <div class="run">
-  <button type="button" class:primary={!opened} onclick={() => void startRun()} disabled={running}>
+  <Button
+    type="button"
+    class={opened ? undefined : 'primary'}
+    onclick={() => void startRun()}
+    disabled={running ? BUSY : ''}
+  >
     {running ? 'Running…' : 'Run'}
-  </button>
+  </Button>
   <span class="dim">
     {#if running}
       Asking a worker in {group}…
@@ -715,7 +721,9 @@
 
   {#if positional}
     <div class="run">
-      <button type="button" onclick={() => void startRun()} disabled={running}>Run again</button>
+      <Button type="button" onclick={() => void startRun()} disabled={running ? BUSY : ''}
+        >Run again</Button
+      >
       <span class="dim">
         {checked ? "ran: the plan below is this poll's" : "checks this poll's plan; not run yet"}
       </span>
@@ -748,8 +756,8 @@
 
   {#if ran && run.session}
     <div class="run">
-      <button type="button" onclick={() => void saveSample()} disabled={saving}
-        >Save rows as sample</button
+      <Button type="button" onclick={() => void saveSample()} disabled={saving ? BUSY : ''}
+        >Save rows as sample</Button
       >
       <span class="dim">Keeps Run's {ran.rows.length} rows, to test the pipeline with.</span>
     </div>

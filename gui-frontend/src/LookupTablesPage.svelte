@@ -10,6 +10,7 @@
   leader writes as a new file and points the table at.
 -->
 <script lang="ts">
+  import Button from './Button.svelte';
   import { unreported } from './errors.svelte';
   import Connections from './Connections.svelte';
   import EditInShared from './EditInShared.svelte';
@@ -453,7 +454,9 @@
               {@render facts(MMDB_FACTS, [mmdbFacts])}
               <form class="bar" onsubmit={(e) => lookUp(e, t.path)}>
                 <input aria-label="IP address" placeholder="Try an IP" bind:value={ip} />
-                <button type="submit" disabled={!ip.trim()}>Look up</button>
+                <Button type="submit" disabled={!ip.trim() ? 'Enter an IP address first.' : ''}
+                  >Look up</Button
+                >
               </form>
               {#if probe && probe.path === t.path}
                 {#if probe.error}
@@ -575,10 +578,10 @@
       {#snippet actions()}
         <button type="button" onclick={() => (adding = null)}>Cancel</button>
         {#if adding?.draft}
-          <button
+          <Button
             type="submit"
             class="primary"
-            disabled={idProblem(adding.draft.id, takenIds()) !== null}>Add</button
+            disabled={idProblem(adding.draft.id, takenIds()) ?? ''}>Add</Button
           >
         {/if}
       {/snippet}

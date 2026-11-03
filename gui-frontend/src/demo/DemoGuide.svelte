@@ -117,6 +117,10 @@
 {#if open}
   <div class="guide" id="demo-guide">
     <h2>Fix two problems</h2>
+    <p>
+      Cisco ASA logs are arriving with no route to take them, and one FortiGate's firmware now sends
+      proto as a name instead of a number.
+    </p>
     <ol>
       {#each TASKS as task, i (task.id)}
         <li class:done={done[i]} class:next={i === next}>
@@ -176,6 +180,10 @@
   h2 {
     margin: 0 0 0.4rem;
     font-size: var(--text-label);
+  }
+
+  p {
+    margin: 0 0 0.4rem;
   }
 
   ol {

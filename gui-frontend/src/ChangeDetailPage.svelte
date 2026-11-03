@@ -4,6 +4,7 @@
   onto main and deletes it. Merging is deploying; there is no separate step.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import Locked from './Locked.svelte';
@@ -44,7 +45,7 @@
   import PencilIcon from './PencilIcon.svelte';
   import { ask } from './Confirm.svelte';
   import Help from './Help.svelte';
-  import ConflictChoices from './ConflictChoices.svelte';
+  import ConflictChoices, { UNCHOSEN } from './ConflictChoices.svelte';
   import PushState from './PushState.svelte';
   import ChangeConversation from './ChangeConversation.svelte';
   import ChangeTests from './ChangeTests.svelte';
@@ -500,17 +501,21 @@
                 ></textarea>
                 <InlineError message={renameError} />
                 <div class="actions">
-                  <button type="button" disabled={renameBusy} onclick={() => (renaming = false)}>
+                  <Button
+                    type="button"
+                    disabled={renameBusy ? BUSY : ''}
+                    onclick={() => (renaming = false)}
+                  >
                     Cancel
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
                     class="primary"
-                    disabled={renameBusy || renameTitle.trim() === ''}
+                    disabled={renameBusy ? BUSY : renameTitle.trim() === '' ? INCOMPLETE : ''}
                     onclick={confirmRename}
                   >
                     {renameBusy ? 'Saving…' : 'Save'}
-                  </button>
+                  </Button>
                 </div>
               </div>
             </div>
@@ -634,7 +639,7 @@
         behind={loaded.branch.behind}
         leftOut={loaded.branch.leftOut?.length ?? 0}
         {bringingCurrent}
-        bringCurrentDisabled={bringingCurrent || mergeConflicts !== null}
+        bringCurrentDisabled={bringingCurrent ? BUSY : mergeConflicts !== null ? UNCHOSEN : ''}
         onbringcurrent={() => confirmBringCurrent()}
         {approvable}
         {deploying}
