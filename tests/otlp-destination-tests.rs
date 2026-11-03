@@ -351,7 +351,9 @@ fn a_url_naming_a_signals_path_is_refused() {
         let file = serde_json::from_value(bundle).unwrap();
         let errors = smeltr::config_file::validation_errors(file);
         assert!(
-            errors.iter().any(|e| e.to_string().contains("without the path")),
+            errors
+                .iter()
+                .any(|e| e.to_string().contains("which the destination adds itself")),
             "{url}: {errors:?}"
         );
     }

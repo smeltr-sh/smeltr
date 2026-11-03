@@ -3748,8 +3748,8 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 if let Some(path) = (signals.into_iter()).find(|path| url.trim().trim_end_matches('/').ends_with(path))
                 {
                     errors.at("url").push(format!(
-                        "destination {:?} has a url ending in {path}; give it without the path, which the \
-                         destination adds for its signal",
+                        "destination {:?} has a url ending in {path}; remove {path}, which the destination adds \
+                         itself for its signal",
                         d.id
                     ));
                 }
