@@ -154,7 +154,9 @@
         </Locked>
       </span>
     {:else}
-      <span class="act dim">Merge on the remote</span>
+      <span class="act">
+        <button type="button" class="primary" disabled>Merge on the remote instead</button>
+      </span>
     {/if}
   </div>
 </div>
