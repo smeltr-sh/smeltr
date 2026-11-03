@@ -2588,14 +2588,14 @@ fn worker_logged_warnings(logged: &[Logged]) -> Vec<Warning> {
                 severity: Severity::Warning,
                 since_millis: Some(first_ms),
                 message: format!(
-                    "worker {} logged {what} at {}: {}{fields}",
+                    "worker {} logged {what} ({}): {}{fields}",
                     row.worker_id,
                     row.class
                         .iter()
                         .chain([&row.r#type])
                         .map(String::as_str)
                         .collect::<Vec<_>>()
-                        .join(" "),
+                        .join(", "),
                     row.message
                 ),
             }

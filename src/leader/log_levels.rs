@@ -81,7 +81,15 @@ fn named(named: &LevelOverride) -> Result<String, String> {
         if crate::logs::levels::CLASSES.contains(&class) {
             Ok(())
         } else {
-            Err(format!("{class:?} is not a class"))
+            let service = crate::logs::levels::services().contains(&class);
+            Err(format!(
+                "{class:?} is not a class: use one of the classes GET /api/settings/log-levels lists{}",
+                if service {
+                    format!(" ({class} is a service)")
+                } else {
+                    String::new()
+                }
+            ))
         }
     };
     match (
@@ -105,8 +113,10 @@ fn named(named: &LevelOverride) -> Result<String, String> {
             }
         }
         (None, None, Some(service)) if crate::logs::levels::services().contains(&service) => Ok(service.to_string()),
-        (None, None, Some(service)) => Err(format!("{service:?} is not a service")),
-        _ => Err("an override names a class, a class and a type, or a service".to_string()),
+        (None, None, Some(service)) => Err(format!(
+            "{service:?} is not a service: use one of the services GET /api/settings/log-levels lists"
+        )),
+        _ => Err("An override must name a class, a class and a type, or a service.".to_string()),
     }
 }
 
@@ -126,7 +136,7 @@ fn refused(levels: &LogLevels) -> Option<String> {
             return Some(format!("{:?} is not a level for {what}: use {}", each.level, labels()));
         }
         if !seen.insert(what.clone()) {
-            return Some(format!("two overrides name {what}"));
+            return Some(format!("{what} is named by two overrides: keep one"));
         }
     }
     None
@@ -212,11 +222,15 @@ mod tests {
         );
         assert_eq!(
             refused(&levels(None, &[("kafka", "trace")])).unwrap(),
-            r#""kafka" is not a class"#
+            r#""kafka" is not a class: use one of the classes GET /api/settings/log-levels lists (kafka is a service)"#
+        );
+        assert_eq!(
+            refused(&levels(None, &[("store_x", "trace")])).unwrap(),
+            r#""store_x" is not a class: use one of the classes GET /api/settings/log-levels lists"#
         );
         assert_eq!(
             refused(&levels(None, &[("@mongo", "trace")])).unwrap(),
-            r#""mongo" is not a service"#
+            r#""mongo" is not a service: use one of the services GET /api/settings/log-levels lists"#
         );
         assert!(
             refused(&levels(None, &[("sources Assigned", "trace")]))
@@ -225,7 +239,7 @@ mod tests {
         );
         assert_eq!(
             refused(&levels(None, &[("sources", "trace"), ("sources", "debug")])).unwrap(),
-            "two overrides name sources"
+            "sources is named by two overrides: keep one"
         );
         let both = LogLevels {
             default: None,
@@ -238,7 +252,7 @@ mod tests {
         };
         assert_eq!(
             refused(&both).unwrap(),
-            "an override names a class, a class and a type, or a service"
+            "An override must name a class, a class and a type, or a service."
         );
     }
 

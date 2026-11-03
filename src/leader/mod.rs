@@ -1813,6 +1813,9 @@ pub struct LogsResponse {
     /// The cursor for "newer", present only while a row exists above the page. Absent on the head, which a
     /// page reached with no cursor already is.
     pub next_after: Option<i64>,
+    /// Every class and service a line can name, for a reader to narrow by.
+    pub classes: &'static [&'static str],
+    pub services: Vec<&'static str>,
 }
 
 #[cfg(test)]
@@ -1940,6 +1943,8 @@ async fn get_logs(
         message_limit: crate::heartbeat::MAX_TEXT_LEN,
         next_before,
         next_after,
+        classes: crate::logs::levels::CLASSES,
+        services: crate::logs::levels::services(),
     }))
 }
 
