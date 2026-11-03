@@ -238,7 +238,7 @@ impl Handler {
         match ended {
             End::Gone | End::Stopping => {}
             End::Malformed { at, within, what } => tracing::warn!(
-                name: "receiver_s2s_malformed",
+                name: "malformed",
                 target: "sources",
                 subject = %remote,
                 forwarder,
@@ -249,7 +249,7 @@ impl Handler {
                  was not acknowledged"
             ),
             End::Token(why) => tracing::warn!(
-                name: "receiver_s2s_token_refused",
+                name: "token_refused",
                 target: "sources",
                 subject = %remote,
                 forwarder,
@@ -257,14 +257,14 @@ impl Handler {
                 "a forwarder's connection is closed: its token was refused"
             ),
             End::Silent => tracing::debug!(
-                name: "receiver_s2s_silent",
+                name: "silent",
                 target: "sources",
                 subject = %remote,
                 forwarder,
                 "a connection is closed: it did not finish its S2S handshake in time"
             ),
             End::OldProtocol => tracing::warn!(
-                name: "receiver_s2s_old_protocol",
+                name: "old_protocol",
                 target: "sources",
                 subject = %remote,
                 forwarder,
@@ -432,7 +432,7 @@ impl Handler {
                         let records = channels.close_quiet(Instant::now());
                         if !records.is_empty() {
                             tracing::warn!(
-                                name: "receiver_s2s_line_cut",
+                                name: "line_cut",
                                 target: "sources",
                                 subject = %inlet.remote,
                                 forwarder,
