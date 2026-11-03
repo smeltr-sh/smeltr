@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::time::{Instant, SystemTime};
 
-use tracing::span::{Attributes, Id, Record};
+use tracing::span::{Attributes, Id};
 use tracing::subscriber::Interest;
 use tracing::{Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
@@ -83,22 +83,6 @@ where
                 fields: collected.fields,
                 opened: kept.then(Instant::now),
             });
-        }
-    }
-
-    fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
-        let Some(span) = ctx.span(id) else { return };
-        let mut extensions = span.extensions_mut();
-        let Some(known) = extensions.get_mut::<Known>().filter(|known| known.opened.is_some()) else {
-            return;
-        };
-        let mut collected = Collect::default();
-        values.record(&mut collected);
-        for (name, value) in collected.fields {
-            match known.fields.iter_mut().find(|(n, _)| *n == name) {
-                Some(field) => field.1 = value,
-                None => known.fields.push((name, value)),
-            }
         }
     }
 

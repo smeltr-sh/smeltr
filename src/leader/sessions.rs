@@ -365,7 +365,8 @@ impl Sessions {
     /// since it started.
     pub fn sweep(&self, now: Instant) -> usize {
         let _pass =
-            tracing::trace_span!(target: "accounts", "a background pass", task = "drop expired sign-in sessions");
+            tracing::trace_span!(target: "accounts", "a background pass", task = "drop expired sign-in sessions")
+                .entered();
         let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let lifetimes = held.lifetimes;
         let before = held.entries.len();
