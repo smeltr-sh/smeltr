@@ -41,7 +41,9 @@
     if (e.pointerType === 'mouse') show(e);
   }}
   onpointerout={(e) => {
-    if (e.pointerType === 'mouse' && disabledAt(e)?.control === at) pop.toggle(false);
+    // Whether or not it is still disabled: one enabled under the pointer would otherwise keep its old reason up.
+    if (e.pointerType === 'mouse' && e.target instanceof Node && at?.contains(e.target))
+      pop.toggle(false);
   }}
   onpointerdown={show}
 />
