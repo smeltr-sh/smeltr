@@ -62,9 +62,8 @@ single-worker source it holds. Down: only what the leader
 alone knows, such as every capture it still wants from this worker, the
 single-worker sources it holds, a
 certificate authority it has just minted, or an operator's directive to restart
-its deployment or shut down. Every answer carries the interval the leader has
-its workers beat at, which is the pace it judges them by; a worker beats at a
-built-in default until its first answer. A directive names no commit: what to
+its deployment or shut down. Every answer carries the heartbeat interval. A
+worker uses a built-in default until its first heartbeat is answered. A directive names no commit: what to
 run is the deployed pointer, and the worker fetches it for itself over plain git and runs
 its own group's subtree merged with `shared/`. Each answer also names the commit the
 pointer is at, as a cue: a worker that has fetched that commit already does not fetch
@@ -114,8 +113,7 @@ flowchart LR
   resume --> report[progress on each heartbeat]
 ```
 
-A holder loses the hold once the leader has gone three heartbeat intervals,
-the holder's own or the leader's, whichever is longer, without hearing from it, or without it listing the source, so a redeploy
+A holder loses the hold once the leader has gone three heartbeat intervals, without hearing from it, or without it listing the source, so a redeploy
 that briefly runs nothing keeps its holds. One that says it is stopping gives
 them up once its last progress is kept. The next worker resumes from the last
 progress the leader kept: what was delivered since is delivered again. A leader that restarts counts

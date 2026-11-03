@@ -524,12 +524,6 @@ pub fn leader_heartbeat_interval() -> Duration {
     )
 }
 
-/// `SMELTR_WORKER_HEARTBEAT_INTERVAL_MS`, when it is still set. A worker beats at its leader's pace, so it only says
-/// it ignores this.
-pub fn ignored_worker_heartbeat_interval() -> Option<String> {
-    env("SMELTR_WORKER_HEARTBEAT_INTERVAL_MS")
-}
-
 /// How often the leader refreshes each OIDC session's tokens at the provider, and so how long a change to a
 /// person's groups there takes to reach this leader.
 pub fn oidc_refresh_interval() -> Duration {

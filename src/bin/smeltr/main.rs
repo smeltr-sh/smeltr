@@ -1018,14 +1018,6 @@ fn start_worker(
 
     let describe = if in_leader { "an embedded worker" } else { "worker" };
     tracing::info!(target: "worker.starting", role = %describe, group = %group_id, "starting a worker");
-    if let Some(value) = cfg::ignored_worker_heartbeat_interval() {
-        tracing::warn!(
-            target: "worker.heartbeat_interval_ignored",
-            value = %value,
-            "SMELTR_WORKER_HEARTBEAT_INTERVAL_MS does nothing and can be removed. The leader sets how often workers \
-             report, with SMELTR_LEADER_HEARTBEAT_INTERVAL_MS."
-        );
-    }
     smeltr::worker::run_worker(smeltr::worker::WorkerConfig {
         leader_url,
         leader_ca_pem,
@@ -1723,8 +1715,8 @@ fn load_and_apply_config_file() {
     }
     if file.worker.heartbeat.interval_ms.is_some() {
         eprintln!(
-            "smeltr: `[worker.heartbeat] interval_ms` does nothing and can be removed. The leader sets how often \
-             workers report, with `[leader.heartbeat] interval_ms`."
+            "smeltr: `[worker.heartbeat] interval_ms` does nothing and can be removed. The leader sets the \
+             heartbeat interval, with `[leader.heartbeat] interval_ms`."
         );
     }
 }

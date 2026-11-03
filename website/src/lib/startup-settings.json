@@ -92,7 +92,7 @@
       "env": "SMELTR_LEADER_HEARTBEAT_INTERVAL_MS",
       "default": "`1500`",
       "examples": ["1000", "5000"],
-      "what": "Milliseconds between each worker's reports to this leader. The leader sends it to every worker, which beats at the default until it hears."
+      "what": "Milliseconds between each worker's heartbeats. The leader sends it to every worker, which uses a built-in default until its first heartbeat is answered."
     },
     {
       "key": "leader.tls.enabled",

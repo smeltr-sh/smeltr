@@ -116,12 +116,11 @@
   <p>
     One worker of the group reads it at a time, the one the leader holds it for; the others read
     nothing. The leader gives the hold to another worker after three heartbeat intervals without
-    hearing from the holder, the holder's interval or the leader's, whichever is longer. With <code
-      >keep</code
-    >, its progress is a <strong>ledger</strong>: the blobs it has read, each with the version it
-    read. The holder reports it on its heartbeat and the leader keeps it; the next holder fetches
-    the ledger and reads only what is not in it. The next holder delivers again what the previous
-    holder delivered after the last progress the leader kept. With <code>delete</code> or
+    hearing from the holder. With <code>keep</code>, its progress is a <strong>ledger</strong>: the
+    blobs it has read, each with the version it read. The holder reports it on its heartbeat and the
+    leader keeps it; the next holder fetches the ledger and reads only what is not in it. The next
+    holder delivers again what the previous holder delivered after the last progress the leader
+    kept. With <code>delete</code> or
     <code>move</code> the source keeps no progress: the next holder reads what the container still holds,
     so it delivers again a blob delivered but not yet deleted or moved.
   </p>

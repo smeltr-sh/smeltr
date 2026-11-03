@@ -39,7 +39,7 @@
 # versions = 5                       # SMELTR_LEADER_LOOKUP_VERSIONS; -1 keeps every version
 
 [leader.heartbeat]
-# interval_ms = 1500                 # SMELTR_LEADER_HEARTBEAT_INTERVAL_MS, how often every worker reports to this leader
+# interval_ms = 1500                 # SMELTR_LEADER_HEARTBEAT_INTERVAL_MS, the heartbeat interval of every worker
 
 [worker]
 # enabled = false                              # SMELTR_WORKER_ENABLED

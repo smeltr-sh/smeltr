@@ -17,7 +17,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -1293,6 +1293,7 @@ fn deploy(
     system: &LoadedSystem,
     topology: Arc<crate::plan::topology::CompiledTopology>,
     thread_limit: usize,
+    heartbeat_interval: Duration,
     fitted: Option<memory::Fit>,
     runtime: &child::Runtime,
 ) -> Result<Deployment, String> {
@@ -1301,16 +1302,15 @@ fn deploy(
         secrets,
         registry,
         held,
-        pace,
     } = runtime;
     let registry = registry.clone();
     let refusals = Arc::new(crate::runtime::RefusalRing::default());
     // One tallied batch per route per heartbeat: what the leader sees of a stream arrives at the pace it hears
     // everything else.
-    let streams = Arc::new(crate::streams::Streams::paced(
+    let streams = Arc::new(crate::streams::Streams::new(
         topology.routes.len(),
         system.pipeline_ids.clone(),
-        pace.clone(),
+        heartbeat_interval,
     ));
     let memory = process_memory_budget();
     // A memory refusal is an unwind by design; the default hook would print a panic dump for each one.
@@ -1843,8 +1843,6 @@ struct Reporting<'a> {
     stopping: bool,
     accepts: Vec<heartbeat::DirectiveAction>,
     took: Option<String>,
-    /// How often this worker beats, for the leader to hold its sources for long enough.
-    heartbeat_interval: Option<Duration>,
 }
 
 /// One window of what this worker owes the leader: what its own registry and log buffer, and its runtime's report,
@@ -2063,7 +2061,6 @@ fn build_heartbeat_request(
         stopping,
         accepts,
         took,
-        heartbeat_interval,
     } = about;
     let mut by_thread = split_dtos_by_thread(&window.samples);
     // A thread whose counters wait is still reported, with what is true of it now.
@@ -2136,7 +2133,6 @@ fn build_heartbeat_request(
         }
     };
     HeartbeatRequest {
-        heartbeat_interval_ms: heartbeat_interval.map(|i| i.as_millis() as u64),
         single_worker: deployed.map(|d| d.single_worker.clone()).unwrap_or_default(),
         // Already capped, by `take_window`.
         progress: window.progress.clone(),
@@ -2341,7 +2337,7 @@ pub fn run_worker(mut config: WorkerConfig) {
         presenting: Mutex::new(Vec::new()),
         holds: Arc::new(Mutex::new(Holds::default())),
         receiver_sockets: Mutex::new(crate::io::receiver::Sockets::default()),
-        heartbeat_interval: Mutex::new((crate::startup_config::DEFAULT_HEARTBEAT_INTERVAL, false)),
+        heartbeat_interval_ms: AtomicU64::new(crate::startup_config::DEFAULT_HEARTBEAT_INTERVAL.as_millis() as u64),
         config,
     });
     // One worker per process, so this is set once. A second would be a test running two in one process, and the
@@ -2607,8 +2603,8 @@ struct Supervisor {
     holds: Arc<Mutex<Holds>>,
     /// The sockets of the receivers this worker runs, held across the runtimes it starts.
     receiver_sockets: Mutex<crate::io::receiver::Sockets>,
-    /// How often this worker beats, as the leader's last answer set it, and whether the running runtime has it.
-    heartbeat_interval: Mutex<(Duration, bool)>,
+    /// How often this worker beats, in milliseconds, as the leader's last answer set it.
+    heartbeat_interval_ms: AtomicU64,
 }
 
 /// How long a grant the runtime did not make waits before it is offered again, at first and at most. It doubles
@@ -3127,7 +3123,9 @@ impl Supervisor {
                     self.hand_back_captures();
                     self.follow_captures(resp.captures);
                     self.follow_holds(resp.holds);
-                    self.follow_heartbeat_interval(resp.heartbeat_interval_ms);
+                    if let Some(ms) = resp.heartbeat_interval_ms {
+                        self.heartbeat_interval_ms.store(ms, Ordering::Relaxed);
+                    }
                     if let Some(directive) = resp.directive {
                         self.follow_directive(directive);
                     }
@@ -3220,7 +3218,6 @@ impl Supervisor {
             stopping,
             accepts: self.accepts(),
             took: self.took.lock().unwrap().clone(),
-            heartbeat_interval: Some(self.heartbeat_interval()),
         };
         // The window still owed, or a new one. What the runtime last said is read under the lock; the deployment
         // it describes is another process, so nothing here can be waiting on one that is stopping.
@@ -3406,53 +3403,7 @@ impl Supervisor {
 
     /// How often this worker beats now.
     fn heartbeat_interval(&self) -> Duration {
-        self.heartbeat_interval.lock().unwrap().0
-    }
-
-    /// Beat at the interval the leader's answer set, from the next beat on. An answer that sets none, from a leader
-    /// older than the field, keeps the one this worker has; so does zero, which no leader sends.
-    fn follow_heartbeat_interval(&self, interval_ms: Option<u64>) {
-        let Some(interval) = interval_ms.filter(|&ms| ms > 0).map(Duration::from_millis) else {
-            return;
-        };
-        let mut held = self.heartbeat_interval.lock().unwrap();
-        if held.0 == interval {
-            return;
-        }
-        tracing::info!(
-            target: "worker.heartbeat_interval",
-            from_ms = held.0.as_millis() as u64,
-            to_ms = interval.as_millis() as u64,
-            "the leader set how often this worker reports"
-        );
-        *held = (interval, false);
-        drop(held);
-        self.arrived.notify_all();
-    }
-
-    /// Tell the running runtime the interval this worker beats at, when it does not have it.
-    ///
-    /// `true` is a control pipe that would not take the frame, as for [`Supervisor::route_invitations`].
-    fn route_heartbeat_interval(&self, running: Option<&mut child::RuntimeHandle>) -> bool {
-        let Some(handle) = running else { return false };
-        let interval = match *self.heartbeat_interval.lock().unwrap() {
-            (_, true) => return false,
-            (interval, false) => interval,
-        };
-        match handle.paced(interval) {
-            Ok(()) => {
-                self.heartbeat_interval.lock().unwrap().1 = true;
-                false
-            }
-            Err(e) => {
-                tracing::warn!(
-                    target: "worker.heartbeat_interval_not_forwarded",
-                    error = %e,
-                    "could not pass the heartbeat interval to the runtime, so it is being ended"
-                );
-                true
-            }
-        }
+        Duration::from_millis(self.heartbeat_interval_ms.load(Ordering::Relaxed))
     }
 
     /// Take the leader's holds, which are whole on every answer, for the deployer to hand the runtime.
@@ -3849,8 +3800,7 @@ impl Supervisor {
             let wedged = self.route_invitations(running.as_mut())
                 || self.mirror_to(running.as_mut())
                 || self.route_holds(running.as_mut())
-                || self.route_backlog(running.as_mut())
-                || self.route_heartbeat_interval(running.as_mut());
+                || self.route_backlog(running.as_mut());
 
             // A control pipe that has stopped taking frames: every capture forwarded to it from here on fails
             // the same way. `send_within`'s caller owes the tree a kill, and this is where that is paid -- the
@@ -4169,7 +4119,6 @@ impl Supervisor {
                     // It holds nothing yet. Its first turn tells it what the leader holds here, each ledger
                     // fetched afresh: the last runtime's reports have moved them since.
                     self.holds.lock().unwrap().restarted();
-                    self.heartbeat_interval.lock().unwrap().1 = false;
                     running = Some(handle);
                     content = Some(arriving.clone());
                     last_good = Some((commit.clone(), arriving));
@@ -4242,6 +4191,7 @@ impl Supervisor {
             group_id: self.config.group_id.clone(),
             thread_limit: self.config.thread_limit,
             memory: self.config.memory,
+            heartbeat_interval: self.heartbeat_interval(),
             worker_id: self.worker_id.clone(),
             // Only what this commit quotes. A runtime is not handed credentials its own bundle does not name,
             // and never the pile of every version this worker has been sent since it started.
@@ -5007,7 +4957,15 @@ fn start_deployment(spec: &child::StartSpec, runtime: &child::Runtime) -> Result
         tracing::debug!(target: "worker.memory_fitted", columnar_bytes = fit.columnar, "the deployment was sized to this worker's memory");
     }
     process_memory_budget().set_limit(fitted.map_or_else(crate::startup_config::memory_budget_bytes, |f| f.columnar));
-    deploy(&system, topology, spec.thread_limit, fitted, runtime).map_err(|e| e.to_string())
+    deploy(
+        &system,
+        topology,
+        spec.thread_limit,
+        spec.heartbeat_interval,
+        fitted,
+        runtime,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Serve one capture invitation. A source this deployment already reads is tapped by the transform threads with
@@ -5753,7 +5711,6 @@ mod tests {
                 stopping: false,
                 accepts: Vec::new(),
                 took: None,
-                heartbeat_interval: None,
             },
             Some(&deployed),
             &Metrics::new(),
@@ -5893,7 +5850,6 @@ mod tests {
                 stopping: false,
                 accepts: Vec::new(),
                 took: None,
-                heartbeat_interval: None,
             },
             None,
             &registry,
@@ -5942,7 +5898,6 @@ mod tests {
                     stopping,
                     accepts: Vec::new(),
                     took: None,
-                    heartbeat_interval: None,
                 },
                 Some(&running),
                 &Arc::new(Metrics::new()),
@@ -5979,7 +5934,6 @@ mod tests {
                 stopping: false,
                 accepts: Vec::new(),
                 took: None,
-                heartbeat_interval: None,
             },
             None,
             &registry,
@@ -6074,7 +6028,6 @@ mod tests {
                 stopping: false,
                 accepts: Vec::new(),
                 took: None,
-                heartbeat_interval: None,
             },
             deployment.as_ref().map(report_of).as_ref(),
             &registry,
@@ -6393,7 +6346,7 @@ mod tests {
             presenting: Mutex::new(Vec::new()),
             holds: Arc::new(Mutex::new(Holds::default())),
             receiver_sockets: Mutex::new(crate::io::receiver::Sockets::default()),
-            heartbeat_interval: Mutex::new((Duration::from_millis(50), false)),
+            heartbeat_interval_ms: AtomicU64::new(50),
             config: WorkerConfig {
                 leader_url: "http://127.0.0.1:1".to_string(),
                 leader_ca_pem: None,
@@ -6726,6 +6679,7 @@ mod tests {
                 group_id: "g".to_string(),
                 thread_limit: 1,
                 memory: None,
+                heartbeat_interval: Duration::from_secs(1),
                 worker_id: "w1".to_string(),
                 secrets: vec![],
                 incarnation: 1,
@@ -6957,6 +6911,7 @@ mod tests {
                 group_id: "g".to_string(),
                 thread_limit: 1,
                 memory: None,
+                heartbeat_interval: Duration::from_secs(1),
                 worker_id: "w1".to_string(),
                 secrets: vec![],
                 incarnation: 1,
@@ -7487,7 +7442,6 @@ mod tests {
                 stopping: false,
                 accepts: Vec::new(),
                 took: None,
-                heartbeat_interval: None,
             },
             Some(&runtime.state),
             &first,
@@ -7776,35 +7730,6 @@ mod tests {
         let rest = supervisor.next_beat(false).progress;
         assert_eq!(ledger_entries(&rest), 3);
         assert_eq!(rest.last().unwrap().progress.cursor.as_deref(), Some("a3"));
-    }
-
-    /// The leader is told how often this worker beats, so it holds the worker's sources for long enough.
-    #[test]
-    fn a_beat_says_how_often_this_worker_beats() {
-        let (req, _) = beat_from(
-            Reporting {
-                worker_id: "w1",
-                group_id: "g",
-                commit: Some("c0ffee"),
-                supervising: None,
-                resources: None,
-                stop_after_unreachable_secs: None,
-                authority_expires_millis: None,
-                authority_fingerprints: Vec::new(),
-                takes_authority: true,
-                stopping: false,
-                accepts: Vec::new(),
-                took: None,
-                heartbeat_interval: Some(Duration::from_millis(1500)),
-            },
-            None,
-            &Metrics::new(),
-        );
-        assert_eq!(
-            req.heartbeat_interval_ms,
-            Some(1500),
-            "the leader was not told how often this worker beats"
-        );
     }
 
     /// Progress outlives the runtime that read it: the leader has not had it, and nothing else will deliver it.
@@ -8280,7 +8205,6 @@ mod tests {
                 stopping: false,
                 accepts: Vec::new(),
                 took: None,
-                heartbeat_interval: None,
             },
             runtime.as_ref(),
             &supervisor.registry,
@@ -8622,6 +8546,7 @@ mod tests {
             group_id: "west".to_string(),
             thread_limit: 1,
             memory: Some(1024 * 1024 * 1024),
+            heartbeat_interval: Duration::from_secs(1),
             worker_id: "w1".to_string(),
             secrets: vec![],
             incarnation: 1,
@@ -8732,6 +8657,7 @@ mod tests {
             group_id: "west".to_string(),
             thread_limit: 1,
             memory: None,
+            heartbeat_interval: Duration::from_secs(1),
             worker_id: "w1".to_string(),
             secrets: vec![],
             incarnation: 1,
@@ -8766,6 +8692,7 @@ mod tests {
             group_id: "west".to_string(),
             thread_limit: 1,
             memory: None,
+            heartbeat_interval: Duration::from_secs(1),
             worker_id: "w1".to_string(),
             secrets: vec![],
             incarnation: 1,
@@ -8822,6 +8749,7 @@ mod tests {
                 group_id: "west".to_string(),
                 thread_limit: 1,
                 memory: None,
+                heartbeat_interval: Duration::from_secs(1),
                 worker_id: "w1".to_string(),
                 secrets: vec![],
                 incarnation: 1,

@@ -18,7 +18,6 @@
 //!       |--- Listed: captures still wanted ----->|   whenever the leader's list changes
 //!       |--- Holds: sources this worker holds -->|   whenever the leader's list changes (`super::held`)
 //!       |--- Backlogged: progress past bound --->|   whenever that changes
-//!       |--- Paced: the heartbeat interval ----->|   whenever the leader's changes
 //!       |--- Stop ------------------------------>|   cooperative, with a deadline
 //!       |<-- Stopped ----------------------------|
 //! ```
@@ -149,23 +148,18 @@ pub enum ToRuntime {
     /// Whether the progress the supervisor holds for the leader is past its bound. While it is, held sources read
     /// nothing new (`super::held::BACKLOG_FULL`). Sent when it changes, and to a runtime as it starts.
     Backlogged { full: bool },
-    /// The interval the leader has this worker beat at, which the runtime tallies its streams at
-    /// (`crate::streams::Pace`). Sent when it changes, and to a runtime as it starts.
-    Paced { interval_ms: u64 },
     /// Drain and exit. The supervisor kills the process tree if this is not answered in time.
     Stop,
 }
 
 /// What one runtime process holds for as long as it runs, shared by the deployment it starts and the supervisor's
-/// commands it obeys: the captures it serves, the secrets it was sent, its metrics registry, the sources it holds and
-/// the pace it tallies its streams at.
+/// commands it obeys: the captures it serves, the secrets it was sent, its metrics registry and the sources it holds.
 #[derive(Clone, Default)]
 pub struct Runtime {
     pub captures: Arc<super::capture::Captures>,
     pub secrets: crate::plan::topology::HeldSecrets,
     pub registry: Arc<crate::metrics::Metrics>,
     pub held: Arc<super::held::Held>,
-    pub pace: Arc<crate::streams::Pace>,
 }
 
 /// Everything a runtime needs to become one. No path to a working tree: a commit is read out of the object store.
@@ -181,6 +175,8 @@ pub struct StartSpec {
     /// `WorkerConfig::memory`.
     #[serde(default)]
     pub memory: Option<usize>,
+    /// How often the leader has this worker beat, which the runtime tallies its streams at.
+    pub heartbeat_interval: Duration,
     pub worker_id: String,
     /// Only what this commit names. A runtime is not given credentials its own bundle does not quote.
     pub secrets: Vec<crate::heartbeat::SecretDelivery>,
@@ -414,8 +410,7 @@ impl Frame for ToRuntime {
             | ToRuntime::Listed { .. }
             | ToRuntime::Mirror { .. }
             | ToRuntime::Holds { .. }
-            | ToRuntime::Backlogged { .. }
-            | ToRuntime::Paced { .. } => MAX_FRAME,
+            | ToRuntime::Backlogged { .. } => MAX_FRAME,
         }
     }
 }
@@ -721,7 +716,6 @@ fn obey(frame: ToRuntime, runtime: &Runtime) -> bool {
         secrets,
         registry,
         held,
-        pace,
     } = runtime;
     match frame {
         ToRuntime::Stop => {
@@ -741,7 +735,6 @@ fn obey(frame: ToRuntime, runtime: &Runtime) -> bool {
         }
         ToRuntime::Holds { seq, holds } => held.apply(seq, holds),
         ToRuntime::Backlogged { full } => held.set_upstream_backlogged(full),
-        ToRuntime::Paced { interval_ms } => pace.set(Duration::from_millis(interval_ms)),
         ToRuntime::Start(_) => {}
     }
     true
@@ -1042,16 +1035,6 @@ impl RuntimeHandle {
             .send_within(ToRuntime::Backlogged { full }, CONTROL_FRAME_BUDGET)
     }
 
-    /// Tell this runtime the interval the leader has this worker beat at.
-    pub fn paced(&mut self, interval: Duration) -> std::io::Result<()> {
-        self.control.send_within(
-            ToRuntime::Paced {
-                interval_ms: interval.as_millis() as u64,
-            },
-            CONTROL_FRAME_BUDGET,
-        )
-    }
-
     /// Hand this runtime what the supervisor recorded and said, to mirror.
     pub fn mirror(&mut self, samples: Vec<MetricSampleDto>, logs: Vec<LogDto>) -> std::io::Result<()> {
         self.control
@@ -1254,6 +1237,7 @@ mod tests {
             group_id: "g".to_string(),
             thread_limit: 1,
             memory: None,
+            heartbeat_interval: Duration::from_secs(1),
             worker_id: "w1".to_string(),
             secrets: vec![],
             incarnation: 1,

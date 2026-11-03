@@ -405,7 +405,6 @@ async fn heartbeat(
         let (worker, group) = (worker_id.clone(), req.group_id.clone());
         let runs = std::mem::take(&mut req.single_worker);
         let progress = std::mem::take(&mut req.progress);
-        let interval = req.heartbeat_interval_ms.map(std::time::Duration::from_millis);
         let clock = holds::Clock::at(state.registry.up_for());
         let settled = run_store(state.store.clone(), move |store| {
             let beat = holds::Beat {
@@ -414,7 +413,6 @@ async fn heartbeat(
                 runs,
                 progress,
                 stopping,
-                interval,
             };
             registry.holds.beat(store, beat, clock)
         })
@@ -4408,7 +4406,6 @@ mod secrets_delivery_tests {
 
     pub(super) fn beat(group: &str, held: Vec<(String, i64)>) -> HeartbeatRequest {
         HeartbeatRequest {
-            heartbeat_interval_ms: None,
             single_worker: Vec::new(),
             progress: Vec::new(),
             streams: None,

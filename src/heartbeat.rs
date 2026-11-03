@@ -505,10 +505,6 @@ pub struct HeartbeatRequest {
     /// The last directive this worker took, by id. The leader repeats a directive until a beat names it here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub took: Option<String>,
-    /// How often this worker beats, as its last answer set it. The leader holds a source for this worker
-    /// for three of these, or of its own, whichever is longer. Absent from a worker older than this field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub heartbeat_interval_ms: Option<u64>,
     /// Every single-worker source this worker's deployment runs, whether or not it holds it: the workers that may
     /// be given its hold. Empty from a worker running none, and from one older than this field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2003,7 +1999,6 @@ mod tests {
     #[test]
     fn a_heartbeat_request_serializes_to_the_wire_spelling() {
         let req = HeartbeatRequest {
-            heartbeat_interval_ms: None,
             single_worker: Vec::new(),
             progress: Vec::new(),
             streams: None,
@@ -2062,7 +2057,6 @@ mod tests {
         // The key a worker's logs ride under, pinned separately because the fixture above carries none and an
         // empty list is left off the wire. It is the same two-binary contract as everything else here.
         let carrying = HeartbeatRequest {
-            heartbeat_interval_ms: None,
             single_worker: Vec::new(),
             progress: Vec::new(),
             streams: None,

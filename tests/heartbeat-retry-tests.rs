@@ -78,7 +78,6 @@ fn flaky_leader(serve_then_close: usize) -> (String, Arc<AtomicUsize>) {
 
 fn beat() -> HeartbeatRequest {
     HeartbeatRequest {
-        heartbeat_interval_ms: None,
         single_worker: Vec::new(),
         progress: Vec::new(),
         streams: None,
