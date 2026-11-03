@@ -1497,6 +1497,10 @@ const ROWS_OUT_METRIC: &str = "smeltr_rows_sent_total";
 /// `egress::run`'s count of rows a destination has acknowledged (`egress.rs`) -- a real delivery, past
 /// `Dispatched::InFlight`.
 const ROWS_DELIVERED_METRIC: &str = "smeltr_rows_delivered_total";
+/// The wire name `Reader::lag` gauges, per source, topic and partition (E6). Only a source kind that overrides
+/// `Source::lag` ever reports it, so a source that cannot is simply absent from this metric rather than reporting
+/// zero.
+const SOURCE_LAG_METRIC: &str = "smeltr_source_lag";
 /// `Transform::poll`'s payload bytes read, beside its row count (`runtime.rs`).
 const BYTES_POLLED_METRIC: &str = "smeltr_bytes_polled_total";
 /// `egress::note_delivered`'s bytes acknowledged, beside its row count. The weight of what a destination took, so

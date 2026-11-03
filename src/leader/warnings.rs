@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use super::SOURCE_LAG_METRIC;
 use crate::heartbeat::{MetricValueDto, ThreadKind};
 use crate::leader::access::{Access, Level};
 use crate::leader::alerts::{self, Channel};
@@ -497,10 +498,6 @@ const DESTINATION_LAST_REFUSAL: &str = "smeltr_destination_last_refusal";
 /// accepting writes and 0.0 from the moment a send fails until one next succeeds -- the destination-side mirror of
 /// `SOURCE_CONNECTION_ERROR` (E4), though this one carries no reason text, only whether.
 const DESTINATION_HEALTHY: &str = "smeltr_destination_healthy";
-/// The wire name `Reader::lag` gauges, per source, topic and partition (E6). Only a source kind that overrides
-/// `Source::lag` ever reports it, so a source that cannot is simply absent from this metric rather than reporting
-/// zero.
-const SOURCE_LAG: &str = "smeltr_source_lag";
 /// Messages a queue-backed source has finished, which is what drains its lag.
 const MESSAGES_FINISHED: &str = "smeltr_source_messages_finished_total";
 /// The wire name `egress::note_kept` gauges a destination's refused rows with, kept to send again.
@@ -2302,7 +2299,7 @@ fn lag_climbing(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
     let Some(store) = store else { return Vec::new() };
     let open = LAG_TIER.align(now_ms);
     let since = open - throughput::WINDOW.as_millis() as i64;
-    let series = match store.peaks_since(SOURCE_LAG, LAG_TIER, since) {
+    let series = match store.peaks_since(SOURCE_LAG_METRIC, LAG_TIER, since) {
         Ok(series) => series,
         Err(e) => {
             tracing::warn!(
@@ -4604,7 +4601,7 @@ mod tests {
         let key = lag_subject_key(group, "7", "orders", "0");
         for (i, v) in values.iter().enumerate() {
             store
-                .record_gauge_max(SOURCE_LAG, &key, lag_bucket(i, values.len()), *v)
+                .record_gauge_max(SOURCE_LAG_METRIC, &key, lag_bucket(i, values.len()), *v)
                 .unwrap();
         }
         store
@@ -6288,12 +6285,12 @@ mod tests {
         let steady = lag_subject_key("g", "7", "orders", "1");
         for (i, v) in [100.0, 200.0, 300.0, 400.0, 500.0, 600.0].into_iter().enumerate() {
             store
-                .record_gauge_max(SOURCE_LAG, &climbing, lag_bucket(i, 6), v)
+                .record_gauge_max(SOURCE_LAG_METRIC, &climbing, lag_bucket(i, 6), v)
                 .unwrap();
         }
         for (i, v) in [50.0; 6].into_iter().enumerate() {
             store
-                .record_gauge_max(SOURCE_LAG, &steady, lag_bucket(i, 6), v)
+                .record_gauge_max(SOURCE_LAG_METRIC, &steady, lag_bucket(i, 6), v)
                 .unwrap();
         }
 
@@ -6323,7 +6320,8 @@ mod tests {
         // than reopening a store `store_with_lag_in` already committed to one group.
         let key = lag_subject_key("g2", "7", "orders", "0");
         for (i, v) in [60.0, 50.0, 40.0, 30.0, 20.0, 10.0].into_iter().enumerate() {
-            g1.record_gauge_max(SOURCE_LAG, &key, lag_bucket(i, 6), v).unwrap();
+            g1.record_gauge_max(SOURCE_LAG_METRIC, &key, lag_bucket(i, 6), v)
+                .unwrap();
         }
 
         let warnings = lag_climbing(Some(&g1), NOW);
@@ -6344,7 +6342,7 @@ mod tests {
         let from = lag_bucket(0, 6);
         for (n, at) in (from..LAG_TIER.align(NOW)).step_by(10_000).enumerate() {
             let lag = [300.0, 1_400.0, 2_900.0][n % 3];
-            store.record_gauge_max(SOURCE_LAG, &key, at, lag).unwrap();
+            store.record_gauge_max(SOURCE_LAG_METRIC, &key, at, lag).unwrap();
         }
         assert!(lag_climbing(Some(&store), NOW).is_empty());
     }
@@ -6361,7 +6359,7 @@ mod tests {
         let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]);
         let key = lag_subject_key("g", "7", "orders", "0");
         store
-            .record_gauge_max(SOURCE_LAG, &key, LAG_TIER.align(NOW), 10.0)
+            .record_gauge_max(SOURCE_LAG_METRIC, &key, LAG_TIER.align(NOW), 10.0)
             .unwrap();
         assert_eq!(lag_climbing(Some(&store), NOW).len(), 1);
     }
