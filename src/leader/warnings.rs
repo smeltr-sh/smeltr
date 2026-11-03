@@ -526,10 +526,6 @@ const LAG_TIER: Tier = throughput::BUCKET;
 /// rows are judged over, so a climb is judged over the same span as a source reading above or below normal.
 const LAG_CLIMB_PEAKS: usize = (throughput::WINDOW.as_millis() / LAG_TIER.bucket_ms() as u128) as usize;
 
-/// How far back [`lag_climbing`] reads, so a long climb is dated from where it started: as far as the ten-second
-/// tier holds the rows read that the climb is weighed against.
-const LAG_REACH_MS: i64 = 60 * 60_000;
-
 /// How far behind a climbing partition must be before [`lag_climbing`] raises, in time rather than records: a
 /// thousand records is days of a quiet source and a millisecond of a busy one.
 const LAG_WARN_BEHIND: Duration = Duration::from_secs(60);
@@ -2063,13 +2059,14 @@ fn humanize_secs(secs: u64) -> String {
     }
 }
 
-/// `metric`, a count each source reports, per bucket from `since_ms`, keyed by (group, source). The ten-second tier
-/// holds an hour, so the minutes it has already moved on are read too. A store that cannot answer reads as nothing
-/// counted, which leaves a climbing partition to warn rather than go quiet.
+/// `metric`, a count each source reports, per ten-second bucket from `since_ms`, keyed by (group, source). A store
+/// that cannot answer reads as nothing counted, which leaves a climbing partition to warn rather than go quiet.
 fn per_source(store: &RegistryStore, metric: &str, since_ms: i64) -> HashMap<(String, String), Vec<(i64, f64)>> {
     let mut out: HashMap<(String, String), Vec<(i64, f64)>> = HashMap::new();
-    let read = store.series_since_at(metric, Tier::OneMinute.and_finer(), since_ms);
-    for (key, points) in read.unwrap_or_default().into_iter().flatten() {
+    for (key, points) in store
+        .series_since(metric, Tier::TenSeconds, since_ms)
+        .unwrap_or_default()
+    {
         let Some(labels) = subject_labels(&key) else { continue };
         if let (Some(group), Some(source)) = (label(&labels, "group"), label(&labels, "source")) {
             out.entry((group.to_string(), source.to_string()))
@@ -2292,18 +2289,20 @@ pub fn spans(
         .collect())
 }
 
-/// Every (group, source, topic, partition) whose lag's [`LAG_TIER`] peaks have strictly risen for
-/// [`LAG_CLIMB_PEAKS`] straight closed buckets, the last of them the one just closed (E6) -- a trend, which a single
+/// Every (group, source, topic, partition) whose lag's [`LAG_TIER`] peaks have strictly risen through the
+/// [`throughput::WINDOW`] that just closed (E6) -- a trend, which a single
 /// heartbeat cannot show, so this reads the series rather than `snapshot`. `None` `store` (no durable registry behind
 /// this leader; see [`crate::leader::registry::Registry::series`]) answers with nothing: there is no history yet to
 /// judge a trend against.
 ///
 /// Not a fact-clock entry: unlike `source_blocked`/`destination_refusing`, the series already carries real timestamps,
-/// so `since_millis` is the run's own first bucket rather than something a separate clock has to remember.
+/// so `since_millis` is the window's first bucket rather than something a separate clock has to remember. A longer
+/// climb is still dated from there: the source's chart shows how far back it goes.
 fn lag_climbing(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
     let Some(store) = store else { return Vec::new() };
     let open = LAG_TIER.align(now_ms);
-    let series = match store.peaks_since(SOURCE_LAG, LAG_TIER, open - LAG_REACH_MS) {
+    let since = open - throughput::WINDOW.as_millis() as i64;
+    let series = match store.peaks_since(SOURCE_LAG, LAG_TIER, since) {
         Ok(series) => series,
         Err(e) => {
             tracing::warn!(
@@ -2324,8 +2323,8 @@ fn lag_climbing(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
     let (mut unreadable_key, mut incomplete_key) = (None, None);
     // Lag is drained at the rate of what it counts: a queue's messages, which it counts as finished, else records,
     // which are rows read.
-    let read = per_source(store, super::ROWS_IN_METRIC, open - LAG_REACH_MS);
-    let finished = per_source(store, MESSAGES_FINISHED, open - LAG_REACH_MS);
+    let read = per_source(store, super::ROWS_IN_METRIC, since);
+    let finished = per_source(store, MESSAGES_FINISHED, since);
     // Rows read are counted per source, lag per partition, so a partition's share of the reading is taken as even.
     let mut partitions: HashMap<(String, String), usize> = HashMap::new();
     for labels in series.iter().filter_map(|(key, _)| subject_labels(key)) {
@@ -6267,25 +6266,19 @@ mod tests {
     }
 
     #[test]
-    fn lag_climbings_since_time_is_the_runs_true_start_not_just_the_trailing_window() {
-        // Eight rising peaks: LAG_CLIMB_PEAKS only requires six, but the start is the whole run's.
+    fn a_longer_climb_is_dated_from_the_windows_start() {
+        // Eight rising peaks: only the window's six are read.
         let store = store_with_lag(&[10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]);
         let warnings = lag_climbing(Some(&store), NOW);
-        assert_eq!(warnings[0].since_millis, Some(lag_bucket(0, 8)));
+        assert_eq!(warnings[0].since_millis, Some(lag_bucket(2, 8)));
+        assert!(warnings[0].message.contains("30 to 80"), "{}", warnings[0].message);
     }
 
     #[test]
-    fn lag_climbing_only_counts_the_run_since_the_last_dip() {
-        // Dips at the fourth peak (300 -> 250), then rises for six straight peaks from there.
-        let values = [100.0, 200.0, 300.0, 250.0, 260.0, 270.0, 280.0, 290.0, 300.0];
-        let store = store_with_lag(&values);
-        let warnings = lag_climbing(Some(&store), NOW);
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(
-            warnings[0].since_millis,
-            Some(lag_bucket(3, values.len())),
-            "the dip restarts the run"
-        );
+    fn lag_climbing_is_absent_when_the_window_holds_a_dip() {
+        // Dips at the window's second peak (300 -> 250), then rises to its end.
+        let store = store_with_lag(&[100.0, 200.0, 300.0, 250.0, 260.0, 270.0, 280.0]);
+        assert!(lag_climbing(Some(&store), NOW).is_empty());
     }
 
     #[test]

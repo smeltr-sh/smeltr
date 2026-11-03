@@ -790,29 +790,20 @@ fn total(totals: &[SubjectTotal], group: &str, labels: &[(&str, &str)]) -> f64 {
 /// hundreds of times. Summing is what a total means: a bucket holds a counter's increase over it, so the buckets in
 /// a window add up to the window's count.
 ///
-/// `maintain` moves a bucket to the next tier only once it ages out of its own, so the window's newest buckets are
-/// still in the finer tiers. Their points are read too and keyed by `tier`'s bucket they fall in; [`buckets`] adds
-/// a bucket's points and [`peaks`] takes their highest, as `maintain` will.
+/// A bucket may hold several points (`RegistryStore::series_at`): [`buckets`] adds them and [`peaks`] takes their
+/// highest.
 fn totals_by_subject(store: &RegistryStore, metric: &str, tier: Tier, since_ms: i64) -> Vec<SubjectTotal> {
-    match store.series_since_at(metric, tier.and_finer(), since_ms) {
-        Ok(read) => {
-            let mut by_subject: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
-            for (subject_key, points) in read.into_iter().flatten() {
-                let of = by_subject.entry(subject_key).or_default();
-                of.extend(points.into_iter().map(|(at, value)| (tier.align(at), value)));
-            }
-            by_subject
-                .into_iter()
-                .filter_map(|(subject_key, mut points)| {
-                    points.sort_by_key(|(at, _)| *at);
-                    Some(SubjectTotal {
-                        labels: serde_json::from_str(&subject_key).ok()?,
-                        total: points.iter().map(|(_, v)| v).sum(),
-                        points,
-                    })
+    match store.series_at(metric, tier, since_ms) {
+        Ok(read) => read
+            .into_iter()
+            .filter_map(|(subject_key, points)| {
+                Some(SubjectTotal {
+                    labels: serde_json::from_str(&subject_key).ok()?,
+                    total: points.iter().map(|(_, v)| v).sum(),
+                    points,
                 })
-                .collect()
-        }
+            })
+            .collect(),
         Err(e) => {
             tracing::warn!(
                 target: "stats.metric_unreadable",

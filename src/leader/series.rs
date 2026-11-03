@@ -1027,29 +1027,54 @@ impl RegistryStore {
             .collect()
     }
 
-    /// Every subject of the gauge `metric` with a reading at or after `since_ms`, as `tier`'s buckets, oldest first:
-    /// each bucket's highest reading, as [`RegistryStore::maintain`] keeps a gauge. The window's newest buckets are
-    /// still in the finer tiers, so those are read too and folded the same way. The open bucket holds the highest
-    /// reading so far.
+    /// Every subject of `metric` with a point at or after `since_ms`, each point keyed by the `tier` bucket it falls
+    /// in, oldest first. The window's newest buckets are still in the finer tiers, so those are read too: a bucket
+    /// may hold several points, which a counter adds and a gauge takes the highest of, as
+    /// [`RegistryStore::maintain`] will.
+    pub fn series_at(
+        &self,
+        metric: &str,
+        tier: Tier,
+        since_ms: i64,
+    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+        let mut by_subject: BTreeMap<String, SubjectPoints> = BTreeMap::new();
+        for (subject_key, points) in self
+            .series_since_at(metric, tier.and_finer(), since_ms)?
+            .into_iter()
+            .flatten()
+        {
+            let of = by_subject.entry(subject_key).or_default();
+            of.extend(points.into_iter().map(|(at, value)| (tier.align(at), value)));
+        }
+        Ok(by_subject
+            .into_iter()
+            .map(|(subject_key, mut points)| {
+                points.sort_by_key(|(at, _)| *at);
+                (subject_key, points)
+            })
+            .collect())
+    }
+
+    /// [`RegistryStore::series_at`] for a gauge: one point per bucket, its highest.
     pub fn peaks_since(
         &self,
         metric: &str,
         tier: Tier,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        let mut peaks: BTreeMap<String, BTreeMap<i64, f64>> = BTreeMap::new();
-        let read = self.series_since_at(metric, tier.and_finer(), since_ms)?;
-        for (subject_key, points) in read.into_iter().flatten() {
-            let of = peaks.entry(subject_key).or_default();
-            for (at, value) in points {
-                of.entry(tier.align(at))
-                    .and_modify(|peak| *peak = peak.max(value))
-                    .or_insert(value);
-            }
-        }
-        Ok(peaks
+        Ok(self
+            .series_at(metric, tier, since_ms)?
             .into_iter()
-            .map(|(subject_key, buckets)| (subject_key, buckets.into_iter().collect()))
+            .map(|(subject_key, points)| {
+                let mut peaks: SubjectPoints = Vec::new();
+                for (at, value) in points {
+                    match peaks.last_mut() {
+                        Some((bucket, peak)) if *bucket == at => *peak = peak.max(value),
+                        _ => peaks.push((at, value)),
+                    }
+                }
+                (subject_key, peaks)
+            })
             .collect())
     }
 
