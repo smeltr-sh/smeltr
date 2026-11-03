@@ -377,7 +377,7 @@ impl Handler {
         let Connection { stream, peer, inlet } = connection;
         let remote = &*inlet.remote;
         if !admits(&self.allow_from, peer) {
-            tracing::debug!(
+            tracing::trace!(
                 target: "worker.receiver_syslog_refused",
                 subject = %remote,
                 "a connection is closed: its address is in none of the receiver's allowFrom networks"
@@ -391,7 +391,7 @@ impl Handler {
         };
         match self.read(stream, admit, &mut inlet.held()).await {
             End::Gone { partial: 0 } | End::Stopping => {}
-            End::Gone { partial } => tracing::debug!(
+            End::Gone { partial } => tracing::trace!(
                 target: "worker.receiver_syslog_partial",
                 subject = %remote,
                 bytes = partial,
@@ -411,7 +411,7 @@ impl Handler {
     /// datagram from a sender this receiver does not admit, one larger than its largest message, or an empty one.
     pub(super) fn datagram(&self, datagram: &[u8], peer: IpAddr) -> Option<Cutter> {
         if !admits(&self.allow_from, peer) {
-            tracing::debug!(
+            tracing::trace!(
                 target: "worker.receiver_syslog_refused",
                 subject = %peer,
                 "a datagram is dropped: its address is in none of the receiver's allowFrom networks"

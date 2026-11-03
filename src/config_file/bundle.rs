@@ -365,7 +365,17 @@ fn assemble_at(
         grok_patterns: parts.grok_patterns,
         schemas: parts.schemas,
     };
-    super::validate_at(file, declared_at).map_err(BundleError::Load)
+    let loaded = super::validate_at(file, declared_at).map_err(BundleError::Load);
+    match &loaded {
+        Ok(system) => tracing::trace!(
+            target: "bundle.loaded",
+            pipelines = system.pipelines.len(),
+            validated = system.compiled.is_some(),
+            "a bundle was read"
+        ),
+        Err(e) => tracing::trace!(target: "bundle.refused", error = %e, "a bundle was read but did not validate"),
+    }
+    loaded
 }
 
 /// Read and validate a bundle directory. A relative lookup path in it resolves against `root`.
@@ -375,6 +385,7 @@ pub fn load_bundle_dir(root: &Path) -> Result<LoadedSystem, BundleError> {
 
 /// Read and validate one bundle out of `files`. A relative lookup path in it resolves against `at`, which is where
 /// `files` reads from -- a directory, or a commit.
+#[tracing::instrument(level = "trace", target = "bundle.load", name = "a bundle load", skip_all, fields(at = %at))]
 pub fn load_bundle_from(files: &mut dyn FileSet, at: &BundleAt) -> Result<LoadedSystem, BundleError> {
     let mut parts = read_parts(files, "")?;
     let Some(manifest) = parts.manifest.take() else {
@@ -500,6 +511,13 @@ pub fn load_group_dir(root: &Path, group_id: &str) -> Result<LoadedSystem, Bundl
 ///
 /// The seam that lets the leader ask whether a commit -- or a tree it has merged but not committed -- would load,
 /// which it cannot answer from a directory it never checks out.
+#[tracing::instrument(
+    level = "trace",
+    target = "bundle.load",
+    name = "a bundle load",
+    skip_all,
+    fields(group = group_id, at = %group_at)
+)]
 pub fn load_group_from(
     shared_files: &mut dyn FileSet,
     shared_at: &BundleAt,

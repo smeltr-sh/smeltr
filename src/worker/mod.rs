@@ -3308,6 +3308,11 @@ impl Supervisor {
         use heartbeat::DirectiveAction;
         let mut took = self.took.lock().unwrap();
         if took.as_deref() == Some(directive.id.as_str()) {
+            tracing::trace!(
+                target: "worker.directive_repeated",
+                id = %directive.id,
+                "the leader repeated a directive this worker already took, so it is ignored"
+            );
             return;
         }
         *took = Some(directive.id);
@@ -3707,8 +3712,15 @@ impl Supervisor {
                 supervising.discovered_ms = supervising.attempted_ms;
             } else if self.contacted() {
                 self.supervising.lock().unwrap().attempted_ms = Some(now_ms());
+                let began = std::time::Instant::now();
                 match fetch_deployed(&self.repo_dir, &self.config.leader_url, &self.token, &self.git_roots) {
                     Ok(head) => {
+                        tracing::trace!(
+                            target: "worker.fetched",
+                            commit = %head,
+                            ms = crate::logs::millis(began.elapsed()),
+                            "the worker fetched the deployed commit from the leader"
+                        );
                         if failing.take().is_some() {
                             tracing::info!(
                                 target: "worker.fetch_recovered",

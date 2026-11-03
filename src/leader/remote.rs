@@ -229,9 +229,22 @@ fn fetch(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, S
     if prepare.ref_map().is_missing_required_mapping() {
         return Ok(None);
     }
+    let held = |git: &gix::Repository| {
+        git.find_reference(git::FETCHED_MAIN_REF)
+            .ok()
+            .and_then(|r| r.target().try_id().map(|id| id.to_string()))
+    };
+    // Read only to be said, so only when it will be.
+    let saying = tracing::enabled!(target: "git.ref_moved", tracing::Level::TRACE);
+    let from = saying.then(|| held(&git)).flatten();
     let outcome = prepare
         .receive(gix::progress::Discard, &AtomicBool::new(false))
         .map_err(|e| unreachable(&with_cause(&e)))?;
+    // The one ref the leader moves outside `git::edit_refs`: gix's fetch moves it, so it is said here.
+    let to = saying.then(|| held(&git)).flatten();
+    if saying && to != from {
+        tracing::trace!(target: "git.ref_moved", reference = git::FETCHED_MAIN_REF, from, to, "a ref moved");
+    }
     Ok(outcome
         .ref_map
         .mappings
@@ -712,7 +725,10 @@ pub async fn poll(state: AppState) {
             state.remote.settings_changed.notified().await;
             continue;
         };
-        let _ = sync_now(&state).await;
+        // Here and not in `sync_now`, which an administrator's sync also takes.
+        let pass =
+            tracing::trace_span!(target: "background.pass", "a background pass", task = "sync with the git remote");
+        let _ = tracing::Instrument::instrument(sync_now(&state), pass).await;
         tokio::select! {
             _ = tokio::time::sleep(every) => {}
             _ = state.remote.settings_changed.notified() => {}
@@ -750,6 +766,8 @@ pub async fn push_saves(state: AppState) {
     let mut failing = crate::logs::Relog::default();
     loop {
         tokio::time::sleep(PUSH_SCAN).await;
+        let _pass =
+            tracing::trace_span!(target: "background.pass", "a background pass", task = "push saves to the git remote");
         let _pushing = state.remote.pushing.lock().await;
         let remote = match run_store(state.store.clone(), configured).await {
             Ok(Some(remote)) => remote,

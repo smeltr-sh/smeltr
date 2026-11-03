@@ -268,7 +268,7 @@ fn every_reader_carries_each_event_at_its_level_once_in_order_within_its_batch()
                 let opened = (before, SystemTime::now());
                 readers.push(Reader {
                     source,
-                    min_level,
+                    min_level: min_level.min(super::CARRIED_AT_MOST),
                     queue: VecDeque::new(),
                     opened,
                     next_offset: 0,

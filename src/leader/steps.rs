@@ -9,6 +9,45 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
 
+/// Which store a connection is, for the lines [`say_statements`] says.
+pub enum Store {
+    Leader,
+    Registry,
+}
+
+/// Say at trace each statement `conn` runs, with how long it took. The text is the statement as written, with its
+/// parameters as placeholders, so no value it binds is said.
+pub fn say_statements(conn: &Connection, store: Store) {
+    // SQLite takes a plain function, so each store has its own.
+    fn leader(event: rusqlite::trace::TraceEvent<'_>) {
+        said("leader.db", event);
+    }
+    fn registry(event: rusqlite::trace::TraceEvent<'_>) {
+        said("registry.db", event);
+    }
+    fn said(store: &str, event: rusqlite::trace::TraceEvent<'_>) {
+        // SQLite calls this for every statement at every level, so the text is built only when it will be said.
+        if !tracing::enabled!(target: "store.statement", tracing::Level::TRACE) {
+            return;
+        }
+        if let rusqlite::trace::TraceEvent::Profile(statement, took) = event {
+            let sql = statement.sql().split_whitespace().collect::<Vec<_>>().join(" ");
+            tracing::trace!(
+                target: "store.statement",
+                store,
+                %sql,
+                us = u64::try_from(took.as_micros()).unwrap_or(u64::MAX),
+                "a store ran a statement"
+            );
+        }
+    }
+    let said: fn(rusqlite::trace::TraceEvent<'_>) = match store {
+        Store::Leader => leader,
+        Store::Registry => registry,
+    };
+    conn.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE, Some(said));
+}
+
 /// Bring the SQLite file `conn` up to `steps`, one transaction per step, after checking this build may use it.
 /// `store` names the file in every refusal.
 ///
@@ -65,6 +104,7 @@ pub fn upgrade_sqlite(conn: &mut Connection, store: &str, steps: &[&str]) -> Res
     }
     for (i, step) in steps.iter().enumerate().skip(applied) {
         let version = i + 1;
+        let began = std::time::Instant::now();
         let tx = conn.transaction().map_err(failed)?;
         if i == 0 {
             tx.execute_batch("CREATE TABLE min_reader (steps INTEGER NOT NULL); INSERT INTO min_reader VALUES (0);")
@@ -80,6 +120,14 @@ pub fn upgrade_sqlite(conn: &mut Connection, store: &str, steps: &[&str]) -> Res
         // supplied.
         tx.pragma_update(None, "user_version", version as i64).map_err(failed)?;
         tx.commit().map_err(failed)?;
+        tracing::trace!(
+            target: "store.step_applied",
+            %store,
+            step = version,
+            only_adds = is_additive(step),
+            ms = crate::logs::millis(began.elapsed()),
+            "a store took a step of its schema"
+        );
     }
     Ok(())
 }

@@ -74,7 +74,7 @@ may run one: the endpoint adds the two processes' counts, as the leader does.
 
 ## Logs
 
-A process also says things about itself, and they go to one buffer per
+A process also logs things about itself, and they go to one buffer per
 process for the same reasons the registry is one: most of what smeltr has to
 report happens where no deployment exists. A log is structured like a metric
 is -- a time, a severity, the call site, a constant sentence and typed fields
@@ -119,7 +119,7 @@ A line's severity is what it asks of whoever reads it:
 
 A failure that begins has a line that ends it: the `cleared` or `recovered`
 line carries how long it held, so a reader of the log alone can see the
-outage whole. A failure that repeats is said once, with its count, not once
+outage whole. A failure that repeats is logged once, with its count, not once
 per retry; what a loop refuses it reports once with a count. A site
 is a literal `subsystem.event` with one constant sentence, and what varies
 rides in fields: `subject` names the thing the line is about, `error` carries
@@ -128,9 +128,16 @@ that shapes it, and every audit row by the store that writes it, so neither
 depends on the handler remembering to. Every request a person or a key
 makes that changes something leaves a record of who made it: an audit row, or
 a commit signed for them. One that left neither is recorded by the gate, under
-the method and path it came by, and said at warn, so the handler that forgot
-is found. Every request and its answer are said at trace, with who asked, the
+the method and path it came by, and logged at warn, so the handler that forgot
+is found. Every request and its answer are logged at trace, with who asked, the
 status and how long it took, and never a body.
+
+A span marks a stretch of work and names what it is about. Every line logged
+inside it carries the span's fields, so a line deep in a commit names its
+source and batch, and the span is logged when it closes, with how long it was
+open. A thing that recurs, such as a failure retried every round, is logged at
+trace each time, and at debug when it starts and every `RELOG_EVERY` while it
+goes on.
 
 ## What a heartbeat carries
 
@@ -183,6 +190,8 @@ is in the next delivery.
 Smeltr logs is the metrics source's twin: a bundle declares it, and each
 event reaches a pipeline as JSON. The pipeline behind it is not delivery-local,
 so a destination refusing a batch reports it, once for the batch.
+A logs source never reads trace: trace describes the pipelines themselves,
+and reading it would make the source log its own reads.
 
 ## A worker's two buffers
 
@@ -203,7 +212,7 @@ flowchart LR
 ```
 
 A mirrored event reaches the runtime's readers only, never its console or its
-queue for the leader, so nothing the supervisor said is written or delivered
+queue for the leader, so nothing the supervisor logged is written or delivered
 twice. Its cost is one heartbeat of delay on the supervisor's events, and the
 supervisor keeps them only while a runtime runs. With no runtime, the
 supervisor serves a capture itself, and its buffer is then the whole worker.

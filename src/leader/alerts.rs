@@ -615,6 +615,7 @@ async fn record(state: &AppState, told: Vec<AlertTold>, cleared: Vec<(String, St
 
 /// One look: tell every channel what has changed since it was last told.
 pub async fn look(state: &AppState) -> Result<(), StoreError> {
+    let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "check alerts");
     let now = super::warnings::now_millis();
     let (channels, mail, told) =
         run_store(state.store.clone(), |s| Ok((channels(s)?, mail(s)?, s.alerts_told()?))).await?;
@@ -630,9 +631,24 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
     for channel in &channels {
         // What an email channel would be told waits for the mail server, which the page says is off.
         if matches!(channel.kind, Kind::Email { .. }) && mail.is_none() {
+            tracing::trace!(
+                target: "alerts.skipped",
+                channel = %channel.name,
+                why = "the mail server is off",
+                "an alert channel was told nothing on this check"
+            );
             continue;
         }
         let mut changes = changes(channel, now, &warnings, &told);
+        tracing::trace!(
+            target: "alerts.changes",
+            channel = %channel.name,
+            raised = changes.raised.len(),
+            cleared = changes.cleared.len(),
+            dropped_untold = changes.dropped.len(),
+            muted = channel.muted_until.is_some_and(|until| until > now),
+            "a check worked out what an alert channel must be told"
+        );
         if !changes.dropped.is_empty() {
             let dropped: Vec<(String, String)> = std::mem::take(&mut changes.dropped)
                 .into_iter()
@@ -643,8 +659,19 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
         if changes.raised.is_empty() && changes.cleared.is_empty() {
             continue;
         }
+        let (raised, cleared) = (changes.raised.len(), changes.cleared.len());
         match tell(state, channel, mail.as_ref(), changes).await {
-            Ok(()) => state.alerts.took(&channel.id),
+            Ok(()) => {
+                // Info: an alert sent is something an admin wants to see without asking for detail.
+                tracing::info!(
+                    target: "alerts.sent",
+                    channel = %channel.name,
+                    raised,
+                    cleared,
+                    "an alert channel took what was sent"
+                );
+                state.alerts.took(&channel.id)
+            }
             Err(Unsent::Later(why)) => {
                 tracing::info!(target: "alerts.later", channel = %channel.name, "an alert channel asked to be sent it later: {why}");
             }

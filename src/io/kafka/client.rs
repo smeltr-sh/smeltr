@@ -1435,6 +1435,8 @@ impl Sampler {
                     // Both are due at once: a fresh source should show its backlog on the first heartbeat, and read
                     // what its patterns match without waiting out a listing.
                     let mut sampled: Option<Instant> = None;
+                    // Lag that goes unmeasured round after round is said at debug once in a while, not every round.
+                    let mut unmeasured = crate::logs::Relog::new();
                     let listed: Cell<Option<Instant>> = Cell::new(None);
                     // Also run between lag queries, so a slow broker behind one partition does not hold back a new
                     // topic. A source that names a pattern and attached since the last listing is listed for now.
@@ -1452,7 +1454,7 @@ impl Sampler {
                         list_if_due();
                         if sampled.is_none_or(|at| at.elapsed() >= LAG_SAMPLE_INTERVAL) {
                             sampled = Some(Instant::now());
-                            measure_lag(&consumer, &routes, &stopped, &list_if_due);
+                            measure_lag(&consumer, &routes, &stopped, &list_if_due, &mut unmeasured);
                         }
                         let (flag, wake) = &*stop;
                         let guard = flag.lock().unwrap();
@@ -1521,11 +1523,23 @@ type Committed = (String, i32, i64);
 /// and a broker to ask, so this reports through both -- exactly when lag is worth seeing grow. Each source's lag is
 /// handed to it as soon as its own partitions are measured, so a slow broker behind one source does not hold back the
 /// others. Nothing is handed over when the broker did not answer, or once `stopped` turns true.
-fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn Fn() -> bool, between: &dyn Fn()) {
+///
+/// Each failure is said at trace; while they go on, `unmeasured` says the latest at debug every
+/// [`crate::logs::RELOG_EVERY`].
+fn measure_lag(
+    consumer: &BaseConsumer<Routes>,
+    routes: &Routes,
+    stopped: &dyn Fn() -> bool,
+    between: &dyn Fn(),
+    unmeasured: &mut crate::logs::Relog,
+) {
+    // Each failure is said at trace, and at debug when it starts and every RELOG_EVERY while it goes on.
+    let mut failed = |why: String| unmeasured.fail_due(why).is_some();
     let assignment = match consumer.assignment() {
         Ok(assignment) => assignment,
         Err(e) => {
-            tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the assignment could not be read, so lag is not measured this round");
+            let due = failed(format!("the assignment could not be read: {e}"));
+            crate::debug_when!(due, target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the assignment could not be read, so lag is not measured this round");
             return;
         }
     };
@@ -1536,7 +1550,8 @@ fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn F
     let committed = match consumer.committed_offsets(assignment, LAG_QUERY_TIMEOUT) {
         Ok(committed) => committed,
         Err(e) => {
-            tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the committed offsets could not be read, so lag is not measured this round");
+            let due = failed(format!("the committed offsets could not be read: {e}"));
+            crate::debug_when!(due, target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the committed offsets could not be read, so lag is not measured this round");
             return;
         }
     };
@@ -1558,6 +1573,7 @@ fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn F
         }
     }
 
+    let mut any_failed = false;
     for (slot, partitions) in by_slot {
         let mut lags = Vec::new();
         for (topic, partition, committed_offset) in partitions {
@@ -1570,7 +1586,10 @@ fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn F
             let (_, high) = match consumer.fetch_watermarks(&topic, partition, LAG_QUERY_TIMEOUT) {
                 Ok(marks) => marks,
                 Err(e) => {
-                    tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), %topic, partition, error = %e, "a partition's high watermark could not be read, so its lag is not measured this round");
+                    any_failed = true;
+                    // The partition is a field, not part of the fault: each failing partition would otherwise be a new one.
+                    let due = failed(format!("a high watermark could not be read: {e}"));
+                    crate::debug_when!(due, target: "kafka.lag_unmeasured", group = %routes.group(), %topic, partition, error = %e, "a partition's high watermark could not be read, so its lag is not measured this round");
                     continue;
                 }
             };
@@ -1588,6 +1607,9 @@ fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn F
         if !lags.is_empty() {
             slot.lock().lag = lags;
         }
+    }
+    if !any_failed {
+        unmeasured.clear();
     }
 }
 

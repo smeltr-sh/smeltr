@@ -331,6 +331,18 @@ async fn heartbeat(
     // every heartbeat") -- reconciling the fact clock while the timing is exact, rather than waiting for someone to
     // ask for `/api/warnings`, since nothing else has a source of "now" if a fact starts and clears between two reads.
     let now_ms = warnings::now_millis();
+    tracing::trace!(
+        target: "leader.heartbeat_received",
+        worker = %worker_id,
+        group = %req.group_id,
+        threads = req.threads.len(),
+        logs = req.logs.len(),
+        commit = req.commit.as_deref(),
+        stopping = req.stopping,
+        "a worker's heartbeat arrived"
+    );
+    // Kept for the answer's line: the id itself moves into the blocking work below.
+    let answering = worker_id.clone();
     let threads = std::mem::take(&mut req.threads);
     let reported_group = threads.first().map(|t| t.group_id.clone());
     let stopping = req.stopping;
@@ -525,6 +537,16 @@ async fn heartbeat(
     .await
     .unwrap_or_default();
 
+    tracing::trace!(
+        target: "leader.heartbeat_answered",
+        worker = %answering,
+        holds = holds.len(),
+        deployed = pointer.as_deref(),
+        directive = directive.as_ref().map(|d| format!("{:?} {}", d.action, d.id)),
+        captures = captures_for.len(),
+        secrets = secrets.len(),
+        "the leader answered a worker's heartbeat"
+    );
     Ok(Json(HeartbeatResponse {
         holds,
         deployed: pointer,
@@ -888,7 +910,7 @@ fn read_sources(
         }
     }
     if unread > 0 {
-        tracing::debug!(target: "leader.sources_unread", bundles = unread, "bundles that do not load were left out of what the fleet reads");
+        tracing::trace!(target: "leader.sources_unread", bundles = unread, "bundles that do not load were left out of what the fleet reads");
     }
     Ok(ReadSources {
         single: out,
@@ -1213,6 +1235,19 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
             true => Some(crate::config_file::SHARED_DIR.to_string()),
             false => w.group.clone(),
         };
+    }
+    // Every warnings read derives them, so the counts are made only when they will be said.
+    if tracing::enabled!(target: "warnings.derived", tracing::Level::TRACE) {
+        let mut by_condition = std::collections::BTreeMap::new();
+        for w in &out {
+            *by_condition.entry(w.condition.name()).or_insert(0usize) += 1;
+        }
+        tracing::trace!(
+            target: "warnings.derived",
+            warnings = out.len(),
+            by_condition = ?by_condition,
+            "the current issues were worked out"
+        );
     }
     let issues = warnings::issue_facts(&out, &active_facts);
     active_facts.extend(issues);

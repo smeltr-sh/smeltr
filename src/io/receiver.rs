@@ -2912,7 +2912,7 @@ async fn serve_streams<H, F>(
                 Some(tls) => match tls.accept(tcp, ()).await {
                     Ok((stream, ())) => Box::new(stream),
                     Err(e) => {
-                        tracing::debug!(
+                        tracing::trace!(
                             target: "worker.receiver_handshake_failed",
                             subject = %peer,
                             error = %e,

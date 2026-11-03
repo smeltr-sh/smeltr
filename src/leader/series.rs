@@ -696,6 +696,7 @@ impl RegistryStore {
         // `leader.db` holds the configuration, on a different connection at the default.
         // `auto_vacuum` first: it is fixed once page 1 is written, and the switch to WAL writes it. Asked for
         // after the switch, it is refused without a word and `incremental_vacuum` reclaims nothing.
+        super::steps::say_statements(&conn, super::steps::Store::Registry);
         conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
         super::steps::upgrade_sqlite(&mut conn, "registry.db", STEPS).map_err(StoreError::failed)?;
         Ok(RegistryStore {
@@ -1276,6 +1277,7 @@ impl RegistryStore {
     ///
     /// Also trims the logs table to its row cap, since that is the other thing here that grows.
     pub fn maintain(&self, now_ms: i64) -> Result<(), StoreError> {
+        let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "trim the registry's logs and series").entered();
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction()?;
 

@@ -632,6 +632,9 @@ fn run(
     id: DestId,
     name: &str,
 ) {
+    // Lends the destination to every line this thread says while it is kept at trace. It opens once, so a line at
+    // trace names its destination itself too, for when trace is turned on after the thread started.
+    let _span = tracing::trace_span!(target: "egress.run", "an egress thread", subject = name).entered();
     // The destination's own batch ids, mapped back to the reader's.
     let mut owner: HashMap<BatchId, Owed> = HashMap::new();
     let mut next_local: BatchId = 0;
@@ -697,6 +700,21 @@ fn run(
             let app_limited = !pressing;
             // Borrowed: the unit is kept until acknowledged, to send again or to hand a refused row back.
             let delivered = destination.deliver(local, Cow::Borrowed(&unit.rows));
+            tracing::trace!(
+                target: "egress.delivered",
+                subject = name,
+                batch = unit.batch,
+                sent_as = local,
+                rows = unit.rows.len(),
+                bytes = unit.bytes,
+                outcome = match &delivered {
+                    Err(_) => "failed",
+                    Ok((Dispatched::Complete, _)) => "complete",
+                    Ok((Dispatched::InFlight, _)) => "in flight",
+                    Ok((Dispatched::NoRoom { .. }, _)) => "no room",
+                },
+                "a destination was handed a batch"
+            );
             // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
             // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight.
             let taken = matches!(delivered, Ok((Dispatched::Complete | Dispatched::InFlight, _)));
@@ -725,7 +743,7 @@ fn run(
                     if let (Some(p), Some(c)) = (&mut pacer, paced) {
                         p.completed(queue, c);
                     }
-                    finish(queue, returns, metrics, id, unit, rejections, &mut again);
+                    finish(queue, returns, metrics, (id, name), unit, rejections, &mut again);
                 }
                 // Refusals seen at hand-over wait for the acknowledgment, so one completion carries every refusal
                 // against a batch. Handed to the transport is not delivered: `Dispatched::InFlight` means only that, so
@@ -766,6 +784,15 @@ fn run(
                     let Some(mut owed) = owner.remove(&c.batch) else {
                         continue;
                     };
+                    tracing::trace!(
+                        target: "egress.completed",
+                        subject = name,
+                        batch = owed.unit.batch,
+                        sent_as = c.batch,
+                        refused = c.rejections.len(),
+                        undelivered = c.undelivered.as_ref().map_or(0, |u| u.rows.len()),
+                        "a destination reported back on a batch in flight"
+                    );
                     owed.rejections.extend(c.rejections);
                     if let Some(undelivered) = c.undelivered.filter(|u| !u.rows.is_empty()) {
                         note_stall(metrics, id, name, &undelivered.error, &mut stalled);
@@ -787,7 +814,15 @@ fn run(
                             },
                         );
                     }
-                    finish(queue, returns, metrics, id, owed.unit, owed.rejections, &mut again);
+                    finish(
+                        queue,
+                        returns,
+                        metrics,
+                        (id, name),
+                        owed.unit,
+                        owed.rejections,
+                        &mut again,
+                    );
                 }
                 if failures {
                     cut_off = false;
@@ -857,7 +892,7 @@ fn finish(
     queue: &Queue,
     returns: &Returns,
     metrics: &MetricsHandle,
-    id: DestId,
+    (id, name): (DestId, &str),
     mut unit: Unit,
     mut rejections: Vec<Rejection>,
     again: &mut Vec<(Instant, Unit)>,
@@ -893,6 +928,14 @@ fn finish(
         None => (HELD_RETRY_MIN, HashSet::new()),
     };
     let holds = queue.holds_refusals.load(Ordering::Relaxed);
+    tracing::trace!(
+        target: "egress.finished",
+        subject = name,
+        batch = unit.batch,
+        rows = unit.rows.len(),
+        refused = rejections.len(),
+        "a destination is done with a batch"
+    );
     let (kept, passed): (Vec<Rejection>, Vec<Rejection>) =
         rejections.into_iter().partition(|r| holds && r.record.is_some());
     carried.extend(passed);

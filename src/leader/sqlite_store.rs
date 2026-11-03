@@ -549,6 +549,7 @@ impl SqliteStore {
     /// A damaged file is refused: nothing else holds what it holds.
     pub fn open(path: &Path, secret_key: &Path) -> Result<SqliteStore, StoreError> {
         let mut conn = Connection::open(path)?;
+        super::steps::say_statements(&conn, super::steps::Store::Leader);
         // First, so the leader never acts on what a damaged file says.
         if let Some(found) = damage(&conn, check_for(&conn))? {
             return Err(StoreError::failed(refusal(path, &found)));
