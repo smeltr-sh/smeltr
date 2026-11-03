@@ -15,7 +15,6 @@ export type Filters = {
   worker?: string;
   group?: string;
   class?: string;
-  /** Matched anywhere in the type. */
   type?: string;
   service?: string;
   q?: string;

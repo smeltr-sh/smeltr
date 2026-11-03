@@ -3388,8 +3388,6 @@ export function putWarningSettings(sourceRowsBandPercent: number): Promise<Warni
   });
 }
 
-/** The levels the fleet keeps its log lines at: `default` for every area `areas` does not name. An absent default
- * is each process's startup log level. */
 /** The level the lines one override names are kept at. It names a class and a type, a class,
  * or a service (`heartbeat::LevelOverride`). */
 export interface LevelOverrideDto {
@@ -3399,6 +3397,8 @@ export interface LevelOverrideDto {
   level: string;
 }
 
+/** The levels the fleet keeps its log lines at: `default` for every line no override names. An absent default
+ * is each process's startup log level. */
 export interface LogLevelsDto {
   default?: string;
   overrides?: LevelOverrideDto[];

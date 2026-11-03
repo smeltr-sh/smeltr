@@ -40,10 +40,15 @@
     if (!result.levels) return;
     saved = result.levels;
     labels = result.labels;
-    if (result.classes.length > 0) classes = result.classes;
-    if (result.services.length > 0) services = result.services;
-    defaultShown = result.levels.default ?? STARTUP;
-    rows = (result.levels.overrides ?? []).map((o) => ({ ...o }));
+    classes = result.classes;
+    services = result.services;
+    show(result.levels);
+  }
+
+  /** Put `levels` on the form. */
+  function show(levels: LogLevelsDto) {
+    defaultShown = levels.default ?? STARTUP;
+    rows = (levels.overrides ?? []).map((o) => ({ ...o }));
   }
 
   /** What `o` names, one text for each thing an override can name. */
@@ -174,7 +179,7 @@
                 type="button"
                 disabled={added === null
                   ? 'Choose a class or a service first.'
-                  : added.type !== undefined && !/^[a-z0-9_]+$/.test(added.type)
+                  : added.type !== undefined && !/^[a-z][a-z0-9]*(_[a-z0-9]+)*$/.test(added.type)
                     ? 'A type is lower-case letters, digits and underscores.'
                     : rows.some((r) => key(r) === key(added))
                       ? 'An override already names this.'
@@ -199,8 +204,7 @@
       {dirty}
       label="Save log levels"
       disabled={busy ? BUSY : ''}
-      ondiscard={() =>
-        saved && adopt({ ok: true, errors: [], levels: saved, classes: [], services: [], labels })}
+      ondiscard={() => saved && show(saved)}
     />
   </Panel>
 {/if}
