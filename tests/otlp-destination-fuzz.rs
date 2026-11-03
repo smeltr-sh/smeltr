@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 use smeltr::io::http::{HttpDestination, Response, Transport, Unwritten, agent_config, credential_headers};
-use smeltr::io::otlp::export::{CONTENT_TYPE, Otlp};
+use smeltr::io::otlp::Encoding;
+use smeltr::io::otlp::export::Otlp;
 use smeltr::io::{Destination, Dispatched, IoError, OwnedRecord, Rejection, Source, SourceRecord, http_post};
 use smeltr::plan::config::Payload;
 use smeltr::plan::topology::{
@@ -351,7 +352,7 @@ fn settle(json: &str, secrets: &HeldSecrets) -> Result<Reached, String> {
         return Ok(Reached::Unresolved);
     };
     // Built as a worker builds it, though never asked to connect: the bundle's host is no service.
-    let _ = http_post::transport_as(&c.http, CONTENT_TYPE, &credentials, &agent);
+    let _ = http_post::transport_as(&c.http, Encoding::Protobuf.content_type(), &credentials, &agent);
     let landed = Landed::default();
     let service = Takes {
         signal: c.signal,

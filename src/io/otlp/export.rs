@@ -34,9 +34,6 @@ use crate::io::http_post::{answered, compressed};
 use crate::io::{IoError, OwnedRecord};
 use crate::plan::topology::{Compression, OtlpDestinationConfig, Signal};
 
-/// The `Content-Type` of every request.
-pub const CONTENT_TYPE: &str = "application/x-protobuf";
-
 /// The request and the answer.
 #[derive(Clone, Debug)]
 pub struct Otlp {
@@ -73,19 +70,18 @@ impl Otlp {
     /// What a row of `resource` and `scope` came under: the last row's where it is the same, so the rows of one
     /// resource and scope share it.
     fn scoped(&self, resource: Resource, scope: InstrumentationScope) -> Arc<Scoped> {
-        let (resource_key, scope_key) = (resource.encode_to_vec(), scope.encode_to_vec());
         let mut last = self.last.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(held) = &last.scoped
-            && held.resource_key == resource_key
-            && held.scope_key == scope_key
+            && held.resource == resource
+            && held.scope == scope
         {
             return held.clone();
         }
         let scoped = Arc::new(Scoped {
+            resource_key: resource.encode_to_vec(),
+            scope_key: scope.encode_to_vec(),
             resource,
             scope,
-            resource_key,
-            scope_key,
         });
         last.scoped = Some(scoped.clone());
         scoped
@@ -93,14 +89,16 @@ impl Otlp {
 
     /// `metric`, which holds no points: the last row's where it is the same.
     fn family(&self, metric: Metric) -> Arc<Family> {
-        let key = metric.encode_to_vec();
         let mut last = self.last.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(held) = &last.metric
-            && held.key == key
+            && held.metric == metric
         {
             return held.clone();
         }
-        let family = Arc::new(Family { metric, key });
+        let family = Arc::new(Family {
+            key: metric.encode_to_vec(),
+            metric,
+        });
         last.metric = Some(family.clone());
         family
     }
@@ -291,13 +289,19 @@ fn by_metric(resources: Nested<(Arc<Family>, DataPoint)>) -> Nested<Metric> {
         .map(|(resource, scopes)| {
             let scopes = (scopes.into_iter())
                 .map(|(scope, points)| {
-                    let mut families: Vec<(Arc<Family>, Vec<DataPoint>)> = Vec::new();
-                    let mut at: HashMap<Vec<u8>, usize> = HashMap::new();
-                    for (family, point) in points {
-                        let i = *at.entry(family.key.clone()).or_insert_with(|| {
-                            families.push((family.clone(), Vec::new()));
-                            families.len() - 1
-                        });
+                    // Each point's metric, by where it first came.
+                    let mut at: HashMap<&[u8], usize> = HashMap::new();
+                    let places: Vec<usize> = (points.iter())
+                        .map(|(family, _)| {
+                            let next = at.len();
+                            *at.entry(&family.key).or_insert(next)
+                        })
+                        .collect();
+                    let mut families: Vec<(Arc<Family>, Vec<DataPoint>)> = Vec::with_capacity(at.len());
+                    for ((family, point), i) in points.into_iter().zip(places) {
+                        if i == families.len() {
+                            families.push((family, Vec::new()));
+                        }
                         families[i].1.push(point);
                     }
                     let metrics = (families.into_iter())

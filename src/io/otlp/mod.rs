@@ -95,7 +95,7 @@ impl Encoding {
             .find(|e| named.eq_ignore_ascii_case(e.content_type()))
     }
 
-    pub fn content_type(self) -> &'static str {
+    pub const fn content_type(self) -> &'static str {
         match self {
             Encoding::Protobuf => "application/x-protobuf",
             Encoding::Json => "application/json",

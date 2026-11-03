@@ -27,6 +27,7 @@ use crate::plan::config::{
     TimeSource,
 };
 use crate::plan::parse_call::split_dots_default;
+use crate::plan::topology::Signal;
 use crate::plan::topology::{
     AccessKey, Acknowledgement, AfterCommit, ApiRecords, AssumedRole, AzureAccess, AzureCredential, AzureStore,
     CatalogSignIn, Cloud, DeliverRule, DeltaDestinationConfig, DestinationConfig, DestinationKind, DocIdPolicy,
@@ -3742,6 +3743,16 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                     errors,
                 );
                 check_http_compression(&d.id, compression, errors);
+                // An exporter's per-signal endpoint, as `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` holds one, names its path.
+                let signals = [Signal::Logs, Signal::Metrics, Signal::Traces].map(crate::io::otlp::http_path);
+                if let Some(path) = (signals.into_iter()).find(|path| url.trim().trim_end_matches('/').ends_with(path))
+                {
+                    errors.at("url").push(format!(
+                        "destination {:?} has a url ending in {path}; give it without the path, which the \
+                         destination adds for its signal",
+                        d.id
+                    ));
+                }
                 check_http_headers(
                     &format!("destination {:?}", d.id),
                     headers,

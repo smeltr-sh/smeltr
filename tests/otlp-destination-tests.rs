@@ -10,7 +10,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use smeltr::core::batch::Batch;
 use smeltr::io::http::{HttpDestination, agent_config};
-use smeltr::io::otlp::export::{CONTENT_TYPE, Otlp};
+use smeltr::io::otlp::Encoding;
+use smeltr::io::otlp::export::Otlp;
 use smeltr::io::{Destination, Dispatched, OwnedRecord, Source, SourceRecord, build_source, http_post};
 use smeltr::plan::config::Payload;
 use smeltr::plan::topology::{
@@ -154,7 +155,7 @@ fn round_trip(signal: Signal, export: &Value, items: usize, compression: Compres
 
     let config = destination(to, signal, compression);
     let agent = agent_config(None, &HeldSecrets::default()).unwrap();
-    let transport = http_post::transport_as(&config.http, CONTENT_TYPE, &[], &agent);
+    let transport = http_post::transport_as(&config.http, Encoding::Protobuf.content_type(), &[], &agent);
     let rows = carried(signal, &received);
     let delivered = std::thread::spawn(move || {
         let mut d = HttpDestination::new(transport, Otlp::new(&config));
@@ -281,7 +282,7 @@ fn a_row_of_no_resource_lands_and_a_row_otlp_cannot_take_is_refused() {
     let mut second = receiver(to, Signal::Traces);
     let config = destination(to, Signal::Traces, Compression::None);
     let agent = agent_config(None, &HeldSecrets::default()).unwrap();
-    let transport = http_post::transport_as(&config.http, CONTENT_TYPE, &[], &agent);
+    let transport = http_post::transport_as(&config.http, Encoding::Protobuf.content_type(), &[], &agent);
     let row = |json: &str| OwnedRecord {
         value: json.as_bytes().to_vec(),
         payload: Payload::Record,
@@ -330,4 +331,28 @@ fn an_otlp_destination_loads_from_a_bundle() {
     assert_eq!(c.http.compression, Compression::Gzip);
     assert_eq!(c.http.url, "https://collector.example.com:4318/");
     assert_eq!(c.http.headers, vec![("X-Tenant".to_string(), "a".to_string())]);
+}
+
+/// The destination adds its signal's path, so a URL already holding one, as an exporter's per-signal endpoint does,
+/// is refused rather than sent to twice the path.
+#[test]
+fn a_url_naming_a_signals_path_is_refused() {
+    for url in [
+        "https://collector.example.com:4318/v1/logs",
+        "https://c.example/otlp/v1/traces/",
+    ] {
+        let bundle = json!({
+            "version": 1,
+            "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
+            "pipelines": [{"id": "p", "name": "p", "steps": []}],
+            "destinations": [{"id": "out", "type": "otlp", "url": url}],
+            "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["out"]}]}],
+        });
+        let file = serde_json::from_value(bundle).unwrap();
+        let errors = smeltr::config_file::validation_errors(file);
+        assert!(
+            errors.iter().any(|e| e.to_string().contains("without the path")),
+            "{url}: {errors:?}"
+        );
+    }
 }
