@@ -232,9 +232,9 @@
         </button>
       {/each}
       <span class="dim">
-        {filters.levels.length === 0 ? 'every severity' : 'these severities'}
-        <Help label="severity">
-          A severity is not a minimum: <code>warn</code> shows warnings only, so pick
+        {filters.levels.length === 0 ? 'every level' : 'these levels'}
+        <Help label="level">
+          A level is not a minimum: <code>warn</code> shows warnings only, so pick
           <code>error</code> too to see both.
         </Help>
       </span>
@@ -289,7 +289,7 @@
       <thead>
         <tr>
           <th>when</th>
-          <th>severity</th>
+          <th>level</th>
           <th>class</th>
           <th>type</th>
           <th>service</th>

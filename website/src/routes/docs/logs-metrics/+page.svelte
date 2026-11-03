@@ -65,9 +65,9 @@
   <h2 id="gui">Read them in the GUI</h2>
   <ul>
     <li>
-      <strong>Status → Logs</strong> shows the fleet's logs, newest first. Choose severities, a
-      worker, a worker group, a class, a type, a service, or text in the message, then choose
-      <strong>Search</strong>. A severity is not a minimum: choose <code>error</code> and
+      <strong>Status → Logs</strong> shows the fleet's logs, newest first. Choose levels, a worker,
+      a worker group, a class, a type, a service, or text in the message, then choose
+      <strong>Search</strong>. A level is not a minimum: choose <code>error</code> and
       <code>warn</code> to see both. Select a row's fields to open them. The filters are in the page's
       address, so you can share a view as a link.
     </li>

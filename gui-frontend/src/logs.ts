@@ -4,7 +4,7 @@
 
 import type { LogRowDto } from './api';
 
-/** The severities a filter may name, most severe first. Mirrors
+/** The levels a filter may name, most severe first. Mirrors
  * `logs::LEVEL_LABELS`. */
 export const LEVELS = ['error', 'warn', 'info', 'debug', 'trace'];
 
@@ -78,7 +78,7 @@ export function toQuery(f: Filters, limit: number): string {
   return q.toString();
 }
 
-/** `levels` with `level` added or taken away -- what a severity chip does.
+/** `levels` with `level` added or taken away -- what a level chip does.
  * Kept in `LEVELS` order so the same set is always the same hash. */
 export function toggleLevel(levels: string[], level: string): string[] {
   const next = levels.includes(level) ? levels.filter((l) => l !== level) : [...levels, level];
@@ -88,7 +88,9 @@ export function toggleLevel(levels: string[], level: string): string[] {
 /** True when anything is narrowed, which is what decides whether a "clear"
  * control has something to do. */
 export function isFiltered(f: Filters): boolean {
-  return f.levels.length > 0 || Boolean(f.worker || f.group || f.class || f.type || f.service || f.q);
+  return (
+    f.levels.length > 0 || Boolean(f.worker || f.group || f.class || f.type || f.service || f.q)
+  );
 }
 
 /** One field of a row, flattened for display from the delivered

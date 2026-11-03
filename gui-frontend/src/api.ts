@@ -360,7 +360,7 @@ export type SourceDto =
   | {
       id: string;
       type: 'logs';
-      /** The lowest severity it carries: `error`, `warn`, `info` (absent),
+      /** The lowest level it carries: `error`, `warn`, `info` (absent),
        * `debug` or `trace`. A line its process did not keep is not there to
        * read. */
       minLevel?: string;

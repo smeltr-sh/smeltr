@@ -35,7 +35,7 @@
       wide that range is in Admin → System → General.
     </li>
     <li>
-      Use Logs to narrow by severity, worker, worker group, message and time. Preserve timestamps,
+      Use Logs to narrow by level, worker, worker group, message and time. Preserve timestamps,
       commit IDs and error text for an incident report; omit secrets and sensitive sample records.
     </li>
   </ol>
