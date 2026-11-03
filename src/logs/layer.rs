@@ -154,7 +154,7 @@ fn ours_kept(metadata: &tracing::Metadata<'_>) -> bool {
     let level = *metadata.level();
     let kind = if metadata.is_span() { FINISHED } else { metadata.name() };
     let service = metadata.module_path().and_then(super::levels::service);
-    level <= super::max_level() && level <= super::levels::kept_at(Some(metadata.target()), kind, service)
+    super::levels::keeps(level, Some(metadata.target()), kind, service)
 }
 
 /// The class of the innermost span of ours in `scope`, which a library's line said there takes.
@@ -167,23 +167,23 @@ where
         .find_map(|span| span.extensions().get::<Known>().map(|known| known.class))
 }
 
-/// A line `library` said for a part of smeltr of `class`, where no span of ours is around it to lend one, from code
-/// that talks to `service`. librdkafka calls back on its own threads, for a source's client or a destination's.
+/// A line `library` said for a part of smeltr of `class`, where no span of ours is around it to lend one.
+/// librdkafka calls back on its own threads, for a source's client or a destination's.
 pub fn library_said(
     class: &'static str,
     library: &'static str,
-    service: &'static str,
     level: Level,
     message: String,
     fields: Vec<(Cow<'static, str>, super::event::Value)>,
 ) {
     let level = as_said_here(library, level);
-    if level <= super::max_level() && level <= super::levels::kept_at(Some(class), library, Some(service)) {
+    let service = super::levels::service(library);
+    if super::levels::keeps(level, Some(class), library, service) {
         hand_off(shaped(
             level,
             Some(class),
             Cow::Borrowed(library),
-            Some(service),
+            service,
             message,
             fields,
         ));

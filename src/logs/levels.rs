@@ -77,6 +77,15 @@ pub const CLASSES: &[&str] = &[
     "updates",
 ];
 
+/// Whether `kind` can be a line's type: snake_case, which starts with a letter and has no empty word.
+pub fn is_type(kind: &str) -> bool {
+    kind.starts_with(|c: char| c.is_ascii_lowercase())
+        && kind.split('_').all(|word| !word.is_empty())
+        && kind
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
 /// Where a line is said, and the outside service the code there talks to: a module, or a library that names itself.
 /// A module's own modules are in it.
 const SERVICES: &[(&str, &str)] = &[
@@ -143,6 +152,11 @@ pub fn kept_at(class: Option<&str>, kind: &str, service: Option<&str>) -> Level 
         .read()
         .unwrap_or_else(PoisonError::into_inner)
         .kept_at(class, kind, service)
+}
+
+/// Whether a line of `class` and `kind` from code that talks to `service`, said at `level`, is kept now.
+pub fn keeps(level: Level, class: Option<&str>, kind: &str, service: Option<&str>) -> bool {
+    level <= super::max_level() && level <= kept_at(class, kind, service)
 }
 
 /// The levels kept at now.
@@ -251,7 +265,6 @@ mod tests {
             // A line's class and type, or a span's class, which takes its name as its sentence.
             let line = regex::Regex::new(r#"(name: "([^"]*)",\s*)?target(: | = )"([^"]*)"\s*[,)]"#).unwrap();
             let span = regex::Regex::new(r"(_span!\(\s*(parent: [^,]+,\s*)?|instrument\([^)]*)$").unwrap();
-            let snake = regex::Regex::new(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$").unwrap();
             for entry in std::fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
                 if path.is_dir() {
@@ -270,7 +283,7 @@ mod tests {
                             found.push(format!("{}: class {class}", path.display()));
                         }
                         match named.get(2) {
-                            Some(kind) if !snake.is_match(kind.as_str()) => {
+                            Some(kind) if !is_type(kind.as_str()) => {
                                 found.push(format!("{}: type {}", path.display(), kind.as_str()))
                             }
                             None if !is_span => found.push(format!("{}: {class} has no type", path.display())),
