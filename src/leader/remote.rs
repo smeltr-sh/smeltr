@@ -229,9 +229,20 @@ fn fetch(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, S
     if prepare.ref_map().is_missing_required_mapping() {
         return Ok(None);
     }
+    let held = |git: &gix::Repository| {
+        git.find_reference(git::FETCHED_MAIN_REF)
+            .ok()
+            .and_then(|r| r.target().try_id().map(|id| id.to_string()))
+    };
+    let from = held(&git);
     let outcome = prepare
         .receive(gix::progress::Discard, &AtomicBool::new(false))
         .map_err(|e| unreachable(&with_cause(&e)))?;
+    // The one ref the leader moves outside `git::edit_refs`: gix's fetch moves it, so it is said here.
+    let to = held(&git);
+    if to != from {
+        tracing::trace!(target: "git.ref_moved", reference = git::FETCHED_MAIN_REF, from, to, "a ref moved");
+    }
     Ok(outcome
         .ref_map
         .mappings
@@ -713,7 +724,8 @@ pub async fn poll(state: AppState) {
             continue;
         };
         // Here and not in `sync_now`, which an administrator's sync also takes.
-        let pass = crate::logs::Pass::begin("sync with the git remote");
+        let pass =
+            tracing::trace_span!(target: "background.pass", "a background pass", task = "sync with the git remote");
         let _ = sync_now(&state).await;
         drop(pass);
         tokio::select! {
@@ -753,7 +765,8 @@ pub async fn push_saves(state: AppState) {
     let mut failing = crate::logs::Relog::default();
     loop {
         tokio::time::sleep(PUSH_SCAN).await;
-        let _pass = crate::logs::Pass::begin("push saves to the git remote");
+        let _pass =
+            tracing::trace_span!(target: "background.pass", "a background pass", task = "push saves to the git remote");
         let _pushing = state.remote.pushing.lock().await;
         let remote = match run_store(state.store.clone(), configured).await {
             Ok(Some(remote)) => remote,

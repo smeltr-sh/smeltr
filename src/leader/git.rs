@@ -787,8 +787,9 @@ fn swap_ref_in(
     .map_err(|e| GitError::failed(format!("{reference} did not move: {e}")))
 }
 
-/// Apply `edits` as one transaction. Every ref the leader moves moves here, so each move is said once, at trace, and
-/// the advertisement a worker fetches is made again.
+/// Apply `edits` as one transaction. Every ref the leader moves moves here but the one a fetch from the git remote
+/// moves (`remote::fetch` says that one), so each move is said once, at trace, and the advertisement a worker fetches
+/// is made again. Pushes from git clients are refused, so nothing else moves a ref.
 fn edit_refs(repo: &gix::Repository, edits: Vec<gix::refs::transaction::RefEdit>) -> Result<(), String> {
     use gix::refs::transaction::Change;
     fn named(target: &gix::refs::Target) -> String {
@@ -3442,7 +3443,7 @@ pub fn pack(repo_path: &Path) -> Result<(), GitError> {
     if loose <= LOOSE_LIMIT && packs <= PACK_LIMIT {
         return Ok(());
     }
-    let _pass = crate::logs::Pass::begin("pack the git store");
+    let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "pack the git store");
     // Not `gc --auto`: the limits are counted here, the same way a worker counts its packs. A cruft pack is where
     // `gc` keeps what no ref reaches until it expires, rather than loose, and before git 2.40 it has to be asked for.
     let output = Command::new("git")

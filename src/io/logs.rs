@@ -83,12 +83,15 @@ impl Source for LogsSource {
         // hands itself that report to carry, and carrying it is what produces the next one.
         crate::logs::while_delivering(|| {
             let mut taken = self.tap.drain(max_rows);
-            if taken.is_empty() {
+            // Nothing this source carries waits too: otherwise, at trace, its own per-poll lines would skip the sleep.
+            if !taken.iter().any(|e| e.level <= self.min_level) {
                 // No logs is the steady state of a healthy process, so this is the common path, and
                 // returning straight away would spin a reader thread against an empty buffer for the life of the
                 // deployment. Waiting is this source's poll.
                 std::thread::sleep(timeout);
-                taken = self.tap.drain(max_rows);
+                if taken.is_empty() {
+                    taken = self.tap.drain(max_rows);
+                }
             }
 
             let mut out = crate::io::RecordChunkBuilder::new();
