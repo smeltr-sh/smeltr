@@ -12,6 +12,7 @@
   of what it sits on; a resolved one folds to a line that opens it.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import Locked from './Locked.svelte';
@@ -77,6 +78,7 @@
   /** Who is writing, when the session names someone. */
   const me = session().displayName || session().username || '';
   const myId = session().userId;
+  const NOTHING_TO_SUBMIT = 'Write a comment first.';
 
   /** The leader refuses a verdict on a closed change, and from the change's own author. */
   let reviewable = $derived(!closed && !(myId !== undefined && myId === change.authorId));
@@ -250,13 +252,18 @@
       <Locked refusedInDemo
         ><div class="actions">
           {#if closed}
-            <button type="button" disabled={busy} onclick={reopen}>Reopen change</button>
+            <Button type="button" disabled={busy ? BUSY : ''} onclick={reopen}>Reopen change</Button
+            >
           {:else}
-            <button type="button" disabled={busy} onclick={close}>Close change</button>
+            <Button type="button" disabled={busy ? BUSY : ''} onclick={close}>Close change</Button>
           {/if}
-          <button type="submit" class="primary" disabled={busy || !canSubmit(sending, body)}>
+          <Button
+            type="submit"
+            class="primary"
+            disabled={busy ? BUSY : canSubmit(sending, body) ? '' : NOTHING_TO_SUBMIT}
+          >
             {busy ? 'Sending…' : 'Submit'}
-          </button>
+          </Button>
         </div></Locked
       >
     </form>

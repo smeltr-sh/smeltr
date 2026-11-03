@@ -27,6 +27,7 @@
   leader keeps no series for `smeltr_rows_errored_total`.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import WorkerGroupIcon from './WorkerGroupIcon.svelte';
   import ChevronIcon from './ChevronIcon.svelte';
   import { reported, unreported } from './errors.svelte';
@@ -805,7 +806,7 @@
           <FoldAllButton
             allOpen={allGroupsOpen}
             what="worker groups"
-            disabled={displayedGroups.length === 0}
+            disabled={displayedGroups.length === 0 ? 'No worker groups are shown.' : ''}
             onclick={() => setAllGroups(!allGroupsOpen)}
           />
           <label class="matrix-search"
@@ -936,12 +937,16 @@
           {#if canAsk(selectedWorker, 'restart')}
             <Locked refusedInDemo
               ><div class="detail-actions">
-                <button
+                <Button
                   type="button"
                   class="compact"
-                  disabled={restarting || selectedWorker.asked === 'restart'}
+                  disabled={restarting
+                    ? BUSY
+                    : selectedWorker.asked === 'restart'
+                      ? 'A restart has already been requested for this worker.'
+                      : ''}
                   onclick={() => selectedWorker && restart(selectedWorker.workerId)}
-                  >{selectedWorker.asked === 'restart' ? 'Restarting…' : 'Restart'}</button
+                  >{selectedWorker.asked === 'restart' ? 'Restarting…' : 'Restart'}</Button
                 >
               </div></Locked
             >

@@ -10,6 +10,7 @@
   the URL, else on the one this pipeline last ran over in this browser.
 -->
 <script lang="ts">
+  import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
   import StateMark from './StateMark.svelte';
   import InlineError from './InlineError.svelte';
   import { tick, untrack } from 'svelte';
@@ -1420,8 +1421,16 @@
       <span class="grow"></span>
       {#if changedOnBranch && !readOnly}
         {#if isDirty || neverSaved}<span class="dim">Save or discard your edits first.</span>{/if}
-        <button type="button" disabled={undoBusy || isDirty || neverSaved} onclick={undoPipeline}
-          >{undoBusy ? 'Undoing…' : 'Undo changes'}</button
+        <Button
+          type="button"
+          disabled={undoBusy
+            ? BUSY
+            : isDirty
+              ? SAVE_FIRST
+              : neverSaved
+                ? 'Save the pipeline first.'
+                : ''}
+          onclick={undoPipeline}>{undoBusy ? 'Undoing…' : 'Undo changes'}</Button
         >
       {/if}
       <button
@@ -1507,9 +1516,9 @@
 
         {#if !readOnly}
           <div class="run-row">
-            <button type="button" onclick={run} disabled={running}>
+            <Button type="button" onclick={run} disabled={running ? BUSY : ''}>
               {running ? 'Running…' : 'Run now'}
-            </button>
+            </Button>
             <label class="inline-checkbox">
               <Toggle bind:checked={autoRun} ariaLabel="recompute as I type" />
               <span class="field-name">recompute as I type</span>

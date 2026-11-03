@@ -9,6 +9,7 @@
   row).
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { currentBranch, currentScope } from './api';
   import { editable } from './access';
   import { keepClear } from './keepClear';
@@ -65,14 +66,15 @@
       <span class="writes-to">Saving to <code>{writesTo}</code></span>
       <span class="dirty-flag"><span class="dot"></span>Unsaved</span>
       {#if ondiscard}
-        <button type="button" onclick={ondiscard} disabled={saving}>Discard</button>
+        <Button type="button" onclick={ondiscard} disabled={saving ? BUSY : ''}>Discard</Button>
       {/if}
-      <button
+      <Button
         type="button"
         class="primary"
         data-guide="save"
         onclick={onsave}
-        disabled={saving || added.length > 0}>{saving ? 'Saving…' : label}</button
+        disabled={saving ? BUSY : added.length > 0 ? 'Fix the problem shown first.' : ''}
+        >{saving ? 'Saving…' : label}</Button
       >
     </div>
   </div>

@@ -5,6 +5,7 @@
   this view does not show is listed at its top.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import StateMark from './StateMark.svelte';
   import InlineError from './InlineError.svelte';
   import { reported } from './errors.svelte';
@@ -563,11 +564,11 @@
         >
       {/if}
       {#if csvSides(c)}
-        <button
+        <Button
           type="button"
           class="compact"
-          disabled={comparing[key]}
-          onclick={() => compareRowsOf(c)}>{comparing[key] ? 'Comparing…' : 'Compare rows'}</button
+          disabled={comparing[key] ? BUSY : ''}
+          onclick={() => compareRowsOf(c)}>{comparing[key] ? 'Comparing…' : 'Compare rows'}</Button
         >
       {/if}
       <button
@@ -579,11 +580,11 @@
       <!-- A group's own card is read only: neither undo nor a comment names a manifest. A left-out sample
         never reaches main, so it has nothing to undo. -->
       {#if target && span.whole && !leftOut && canEdit(c.scope)}
-        <button
+        <Button
           type="button"
           class="compact"
-          disabled={undoing !== null}
-          onclick={() => undo(c, target)}>{undoing === key ? 'Undoing…' : 'Undo changes'}</button
+          disabled={undoing !== null ? BUSY : ''}
+          onclick={() => undo(c, target)}>{undoing === key ? 'Undoing…' : 'Undo changes'}</Button
         >
       {/if}
       {#if isSectionChange(c)}{@render commentButton(c, c.label)}{/if}

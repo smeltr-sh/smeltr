@@ -13,6 +13,7 @@
   a fetch, a search box, the group filter and a click.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import ChevronIcon from './ChevronIcon.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -916,8 +917,8 @@
     {#if topologyChanged || layoutError}
       <div class="topology-notice callout warn" role="status">
         <span>The layout is out of date</span>
-        <button type="button" class="primary" disabled={updating} onclick={updateLayout}
-          >Update layout</button
+        <Button type="button" class="primary" disabled={updating ? BUSY : ''} onclick={updateLayout}
+          >Update layout</Button
         >
         <InlineError message={layoutError} inline />
       </div>

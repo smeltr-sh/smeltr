@@ -17,7 +17,7 @@
 
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import { NOT_IN_DEMO, editable } from './access';
+  import { NOT_IN_DEMO, READ_ONLY, editable } from './access';
 
   let {
     children,
@@ -33,9 +33,9 @@
   const readOnly = !getContext<boolean | undefined>(UNLOCKED) && (why !== '' || !editable());
 </script>
 
-<!-- A disabled fieldset disables every control in it, whatever the caller put there. Its title is
-     every control's, since none inside names its own. -->
-{#if readOnly}<fieldset class="read-only" disabled title={why || undefined}>
+<!-- A disabled fieldset disables every control in it, whatever the caller put there. Its reason is
+     every control's (`WhyDisabled`), since none inside names its own. -->
+{#if readOnly}<fieldset class="read-only" disabled data-why={why || READ_ONLY}>
     {@render children()}
   </fieldset>{:else}{@render children()}{/if}
 

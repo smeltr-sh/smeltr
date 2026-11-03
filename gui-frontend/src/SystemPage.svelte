@@ -6,6 +6,7 @@
   that saves nothing.
 -->
 <script lang="ts">
+  import { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import InlineSaveBar from './InlineSaveBar.svelte';
@@ -288,7 +289,7 @@
         <InlineSaveBar
           dirty={checkDirty}
           label="Save updates"
-          disabled={updatesBusy}
+          disabled={updatesBusy ? BUSY : ''}
           ondiscard={() => updates && adoptUpdates(updates)}
         />
       </Panel>
@@ -318,7 +319,7 @@
           <InlineSaveBar
             dirty={bandDirty}
             label="Save warnings"
-            disabled={warningsBusy}
+            disabled={warningsBusy ? BUSY : ''}
             ondiscard={() => warnings && adoptWarnings(warnings)}
           />
         </Panel>
@@ -384,7 +385,7 @@
         <InlineSaveBar
           {dirty}
           label="Save sessions"
-          disabled={busy || impossible}
+          disabled={busy ? BUSY : impossible ? INCOMPLETE : ''}
           ondiscard={discard}
         >
           <p class="critical">

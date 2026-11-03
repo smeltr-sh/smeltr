@@ -10,6 +10,7 @@
   from it. What this page adds is the diagram.
 -->
 <script lang="ts">
+  import Button, { BUSY, LOADING } from './Button.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import RoutePreview from './RoutePreview.svelte';
@@ -327,9 +328,13 @@
           <option value={s.id}>{s.name} ({count(s.records, 'record')})</option>
         {/each}
       </select>
-      <button class="primary" onclick={run} disabled={running || !selected || !config}>
+      <Button
+        class="primary"
+        onclick={run}
+        disabled={running ? BUSY : !selected ? 'Choose a sample first.' : !config ? LOADING : ''}
+      >
         {running ? 'Running…' : 'Run'}
-      </button>
+      </Button>
     </div>
 
     {#if samples.length === 0}
@@ -343,9 +348,13 @@
     <div class="output-actions">
       <span class="grow"></span>
       {#if editable()}
-        <button type="button" onclick={goLockTest} disabled={!canLockTest}>
+        <Button
+          type="button"
+          onclick={goLockTest}
+          disabled={!canLockTest ? 'Choose a sample and run it without errors first.' : ''}
+        >
           Lock this as a test
-        </button>
+        </Button>
       {/if}
     </div>
 

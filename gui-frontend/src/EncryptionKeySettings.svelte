@@ -21,6 +21,7 @@
 </script>
 
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import Help from './Help.svelte';
@@ -121,9 +122,9 @@
 
   {#if broken}
     <div class="buttons">
-      <button class="danger" type="button" disabled={busy} onclick={regenerate}>
+      <Button class="danger" type="button" disabled={busy ? BUSY : ''} onclick={regenerate}>
         Regenerate key
-      </button>
+      </Button>
     </div>
   {/if}
 </Panel>

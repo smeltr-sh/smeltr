@@ -3,6 +3,7 @@
   `#/build/pipelines/:id` is where authoring happens.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { reported } from './errors.svelte';
   import EditInShared from './EditInShared.svelte';
   import OnlyNotice from './OnlyNotice.svelte';
@@ -175,14 +176,14 @@
               <td class="dim">{p.steps.length}</td>
               <td class="row-actions">
                 {#if !readOnly}
-                  <button
+                  <Button
                     type="button"
                     class="compact"
                     onclick={() => remove(p.id, p.name)}
-                    disabled={deletingId === p.id}
+                    disabled={deletingId === p.id ? BUSY : ''}
                   >
                     {deletingId === p.id ? 'Deleting…' : 'Delete'}
-                  </button>
+                  </Button>
                 {/if}
               </td>
             </tr>
