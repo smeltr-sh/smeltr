@@ -447,14 +447,10 @@ async fn heartbeat(
     // One blocking hop for all: each reads the repository or the store, and none belongs on the async runtime's
     // threads. A certificate is entitled at its newest version, resolved on every beat so that a new version
     // reaches the fleet on the next one.
-    let checks = state.deploy_checks.clone();
     let store = state.store.clone();
-    let (deployed, pointer, entitled, findings) = tokio::task::spawn_blocking(move || {
-        // Read once, so the groups and the commit a worker is cued with are of the same deploy.
-        let pointer = deployed_pointer(&data_dir);
+    let (pointer, entitled) = tokio::task::spawn_blocking(move || {
         (
-            groups_in(&data_dir, pointer.as_deref()),
-            pointer,
+            deployed_pointer(&data_dir),
             at_newest(
                 &entitled(&data_dir, &entitlements, &for_group),
                 // Unreadable, a beat entitles no certificate and the next one tries again.
@@ -465,7 +461,6 @@ async fn heartbeat(
                     Default::default()
                 }),
             ),
-            checks.findings(&data_dir),
         )
     })
     .await
@@ -498,18 +493,23 @@ async fn heartbeat(
     // periodic tick (design doc, Control plane), so the check rides the beat that carries the evidence.
     cut_over_if_due(&state, now_ms).await;
 
-    let snapshot = state.registry.snapshot();
-    let mut active_facts = warnings::currently_active_facts(&snapshot, now_ms, heartbeat_interval, &deployed);
-    active_facts.extend(warnings::deploy_facts(&findings, &state.registry));
-    let readings = throughput::readings(&state, now_ms, heartbeat_interval, false).await;
-    let recovering = warnings::recovering_sources(state.registry.series(), now_ms);
-    active_facts.extend(warnings::outside_normal_facts(
-        &readings,
-        &snapshot,
-        &recovering,
-        heartbeat_interval,
-    ));
-    state.registry.observe_facts(&active_facts, now_ms);
+    // Every issue begins and ends in the log as it happens, read or not: the whole catalog, once an interval
+    // across the fleet, behind the beat. A catalog that fails here fails the Issues page the same way, which says so.
+    if state.registry.issue_look_due(now_ms, heartbeat_interval) {
+        let state = state.clone();
+        tokio::spawn(async move {
+            static SAID: std::sync::Mutex<crate::logs::Repeat> = std::sync::Mutex::new(crate::logs::Repeat::new());
+            let looked = catalog(&state).await;
+            let mut said = SAID.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match looked {
+                Ok(_) => said.clear(),
+                Err(e) if said.due() => {
+                    tracing::warn!(name: "issues_unreadable", target: "status", error = %e, "the issues could not be read, so none are logged as beginning or ending")
+                }
+                Err(_) => {}
+            }
+        });
+    }
 
     // A finished session that nobody collected would otherwise hold its records until the process restarted. The
     // heartbeat is the leader's only periodic tick, so the sweep rides it.
@@ -1148,7 +1148,8 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     // Only to name a channel's secret: unreadable channels are the alerts loop's to report, not every warning's.
     let channels = channels.unwrap_or_default();
     active_facts.extend(warnings::encryption_key_facts(&key, &channels));
-    let starts = state.registry.observe_facts(&active_facts, now_ms);
+    // Read, not yet observed: what else is active is known only once the whole catalog is.
+    let starts = state.registry.starts_of(&active_facts, now_ms);
     let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
     let normal_warnings =
         warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, heartbeat_interval);
@@ -1248,6 +1249,9 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
             "the current issues were worked out"
         );
     }
+    let issues = warnings::issue_facts(&out, &active_facts);
+    active_facts.extend(issues);
+    state.registry.observe_facts(&active_facts, now_ms);
     Ok(out)
 }
 

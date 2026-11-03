@@ -435,6 +435,29 @@ pub struct LoggedIssue<'a> {
     pub commit: Option<&'a str>,
 }
 
+/// A fact for each issue in `issues` that no fact in `clocked` already is, keyed by its condition's name: what lets
+/// the one clock (`Registry::observe_facts`) log every issue's start and end, not only those that time themselves.
+pub fn issue_facts(issues: &[Warning], clocked: &HashSet<FactKey>) -> HashSet<FactKey> {
+    let timed: HashSet<(&str, Option<&str>, &str)> = clocked
+        .iter()
+        .map(|k| {
+            let it = k.logged();
+            (it.issue, it.group, it.subject)
+        })
+        .collect();
+    issues
+        .iter()
+        .filter(|w| !timed.contains(&(w.condition.name(), w.group.as_deref(), w.subject_id.as_str())))
+        .map(|w| {
+            let subject = match &w.group {
+                Some(group) => scoped_subject(group, &w.subject_id),
+                None => w.subject_id.clone(),
+            };
+            FactKey::new(w.condition.name(), subject)
+        })
+        .collect()
+}
+
 /// What an issue's log line says of the fact `entry` about `subject`.
 pub fn logged_issue<'a>(entry: &'a str, subject: &'a str) -> LoggedIssue<'a> {
     let issue = issue_of_fact(entry);
@@ -6834,6 +6857,40 @@ mod tests {
             said.iter()
                 .all(|w| w.message.ends_with("Enter it again under System, Alerts")),
             "{said:?}"
+        );
+    }
+
+    /// Every issue gets one fact on the clock: one that times itself keeps its own, any other gets one by its name.
+    #[test]
+    fn issue_facts_add_one_for_each_issue_not_on_the_clock() {
+        let issue = |condition, subject: &str, group: Option<&str>| Warning {
+            condition,
+            subject_kind: SubjectKind::Source,
+            subject_id: subject.into(),
+            group: group.map(str::to_owned),
+            severity: Severity::Warning,
+            since_millis: None,
+            message: String::new(),
+            class: None,
+            r#type: None,
+            area: None,
+        };
+        let clocked = HashSet::from([
+            FactKey::new(SOURCE_BLOCKED, scoped_subject("edge", "orders")),
+            FactKey::new("secretsKeyUnusable", KEY_SUBJECT),
+        ]);
+        let issues = [
+            issue(Condition::SourceBlocked, "orders", Some("edge")),
+            issue(Condition::SecretsKeyUnusable, KEY_SUBJECT, None),
+            issue(Condition::LagClimbing, "orders", Some("edge")),
+            issue(Condition::WorkerSilent, "w1", None),
+        ];
+        assert_eq!(
+            issue_facts(&issues, &clocked),
+            HashSet::from([
+                FactKey::new(Condition::LagClimbing.name(), scoped_subject("edge", "orders")),
+                FactKey::new(Condition::WorkerSilent.name(), "w1"),
+            ])
         );
     }
 }

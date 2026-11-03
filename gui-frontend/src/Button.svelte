@@ -38,5 +38,6 @@
   {...rest}
   disabled={disabled !== ''}
   data-why={disabled || undefined}
-  aria-describedby={disabled ? why : undefined}>{@render children?.()}</button
+  aria-describedby={[rest['aria-describedby'], disabled && why].filter(Boolean).join(' ') ||
+    undefined}>{@render children?.()}</button
 >{#if disabled}<span id={why} hidden>{disabled}</span>{/if}

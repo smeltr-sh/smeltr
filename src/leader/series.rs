@@ -424,17 +424,20 @@ pub(crate) const STEPS: &[&str] = &[
          PRIMARY KEY (group_id, source, width_ms, bucket_ms)
      ) WITHOUT ROWID;
      CREATE INDEX swings_bucket ON swings (bucket_ms);",
-    // 12 -- a log's class, type and service in place of its one site name (`crate::logs::Event`). A row from
-    // before is split at its first dot, its class before and its type after; a library's, which has no dot, is its
-    // type alone.
+    // 12 -- a log's class, type and service beside its site (`crate::logs::Event`), which is still written for a
+    // build before lines had types. A row that build wrote is split as the store opens (`SPLIT_SITES`).
     "ALTER TABLE logs ADD COLUMN class TEXT;
      ALTER TABLE logs ADD COLUMN type TEXT NOT NULL DEFAULT '';
-     ALTER TABLE logs ADD COLUMN service TEXT;
-     UPDATE logs SET
-         class = CASE WHEN instr(site, '.') > 0 THEN substr(site, 1, instr(site, '.') - 1) END,
-         type = CASE WHEN instr(site, '.') > 0 THEN substr(site, instr(site, '.') + 1) ELSE site END;
-     ALTER TABLE logs DROP COLUMN site;",
+     ALTER TABLE logs ADD COLUMN service TEXT;",
 ];
+
+/// Gives each log a build before lines had types wrote, before step 12 or after a rollback to it, its class and
+/// type from its site: split at the first dot, its class before and its type after; a library's, which has no dot,
+/// is its type alone.
+const SPLIT_SITES: &str = "UPDATE logs SET
+     class = CASE WHEN instr(site, '.') > 0 THEN substr(site, 1, instr(site, '.') - 1) END,
+     type = CASE WHEN instr(site, '.') > 0 THEN substr(site, instr(site, '.') + 1) ELSE site END
+ WHERE type = '' AND site <> '';";
 
 /// The low and high rate one source read at `width_ms` inside the five-minute bucket starting at `bucket_ms`, in rows
 /// per second (`throughput::swing`): how far its reading swung within the bucket, which the bucket's own sum does not
@@ -715,6 +718,7 @@ impl RegistryStore {
         super::steps::say_statements(&conn, super::steps::Store::Registry);
         conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
         super::steps::upgrade_sqlite(&mut conn, "registry.db", STEPS).map_err(StoreError::failed)?;
+        conn.execute_batch(SPLIT_SITES)?;
         Ok(RegistryStore {
             conn: Mutex::new(conn),
             next_maintenance_due_ms: AtomicI64::new(0),
@@ -1113,13 +1117,15 @@ impl RegistryStore {
             // events, and the second arrival must leave the table as the first did.
             let mut stmt = tx.prepare(
                 "INSERT OR IGNORE INTO logs \
-                 (at_ms, worker_id, boot_id, seq, thread_name, level, class, type, service, message, fields_json, \
-                  group_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 (at_ms, worker_id, boot_id, seq, thread_name, level, class, type, service, site, message, \
+                  fields_json, group_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             )?;
             for event in events {
                 let fields = serde_json::to_string(&event.fields).unwrap_or_else(|_| "[]".to_string());
                 let (class, kind) = event.class_and_type();
+                // What a build before lines had types reads, should the leader be rolled back to one.
+                let site = class.map_or_else(|| kind.to_string(), |class| format!("{class}.{kind}"));
                 stmt.execute(params![
                     event.timestamp_ms,
                     worker_id,
@@ -1132,6 +1138,7 @@ impl RegistryStore {
                     class,
                     kind,
                     event.service,
+                    site,
                     event.message,
                     fields,
                     group_id,
@@ -3591,7 +3598,7 @@ mod tests {
         cleanup(&path);
     }
 
-    /// Step 12 gives each stored log a class and a type in place of its site: split at the first dot, and a
+    /// Each log stored before step 12 gets a class and a type from its site: split at the first dot, and a
     /// library's, which has none, its type alone.
     #[test]
     fn a_file_from_step_11_splits_each_logs_site_into_its_class_and_type() {
@@ -3608,10 +3615,7 @@ mod tests {
                 .unwrap();
             }
         }
-        assert!(
-            !super::super::steps::is_additive(STEPS[11]),
-            "a dropped column is breaking"
-        );
+        assert!(super::super::steps::is_additive(STEPS[11]));
         let store = RegistryStore::open(&path).unwrap();
         let rows = store.logs(&LogFilter::default(), 10).unwrap();
         let named: Vec<(Option<&str>, &str, Option<&str>)> = rows
