@@ -565,7 +565,10 @@ impl Registry {
     /// this runs, and nothing else ticks this clock (design doc, Control plane: "recomputed ... on every
     /// heartbeat").
     pub fn observe_facts(&self, active: &HashSet<FactKey>, now_ms: i64) -> HashMap<FactKey, i64> {
-        let mut clock = self.fact_clock.lock().unwrap();
+        let mut clock = self
+            .fact_clock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Catalogs run side by side; one that lost the race to the lock is older than the clock, and applying it
         // would clear and begin again whatever the newer one saw.
         if self.observed_ms.fetch_max(now_ms, std::sync::atomic::Ordering::Relaxed) > now_ms {
