@@ -149,6 +149,13 @@
     <code>okta-auth</code> in account 123456789012:
   </p>
   <pre><code>{@html highlight(json(examples.securityLakeDestination))}</code></pre>
+  <ProductScreenshot
+    source="security-lake-destination"
+    height={3000}
+    crop={{ x: 608, y: 64, width: 1664, height: 2496 }}
+    alt="The Amazon S3 form on the Destinations page: id lake-okta-auth, its bucket and prefix, format parquet, and under Endpoint and delivery region us-east-1, the role ARN, external id acme-okta-auth and compression zstd."
+    caption="The same destination on the Destinations page. The role, its external id and compression sit under Endpoint and delivery."
+  />
   <p>
     A file it writes on 3 November 2026 lands at
     <code>ext/okta-auth/region=us-east-1/accountId=123456789012/eventDay=20261103/</code>, named by
