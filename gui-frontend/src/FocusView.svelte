@@ -17,6 +17,7 @@
 </script>
 
 <script lang="ts">
+  import Button, { FIRST_PAGE, LAST_PAGE } from './Button.svelte';
   import { CHART_RANGES, chartRange, type SourceGap } from './map';
   import {
     conditionLabel,
@@ -542,20 +543,20 @@
         </ul>
         {#if workers.pages > 1}
           <div class="pager">
-            <button
+            <Button
               type="button"
               class="icon"
-              disabled={workers.page === 0}
+              disabled={workers.page === 0 ? FIRST_PAGE : ''}
               onclick={() => (page = workers.page - 1)}
-              aria-label="Previous workers">&lsaquo;</button
+              aria-label="Previous workers">&lsaquo;</Button
             >
             <span class="small">{workers.start}&ndash;{workers.end} of {workers.total}</span>
-            <button
+            <Button
               type="button"
               class="icon"
-              disabled={workers.page === workers.pages - 1}
+              disabled={workers.page === workers.pages - 1 ? LAST_PAGE : ''}
               onclick={() => (page = workers.page + 1)}
-              aria-label="Next workers">&rsaquo;</button
+              aria-label="Next workers">&rsaquo;</Button
             >
           </div>
         {/if}

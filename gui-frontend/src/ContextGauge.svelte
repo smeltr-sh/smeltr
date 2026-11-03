@@ -4,6 +4,7 @@
   now or clear them.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import ChipPicker from './ChipPicker.svelte';
 
   let {
@@ -57,10 +58,12 @@
       <strong>Context {percent}% full</strong><br />
       {tokens(used)} of {tokens(size)} tokens. Older turns are summarized at 75% full.
     </div>
-    <button type="button" class="pick" disabled={busy} onclick={() => restart(true)}>
+    <Button type="button" class="pick" disabled={busy ? BUSY : ''} onclick={() => restart(true)}>
       Summarize now
-    </button>
-    <button type="button" class="pick" disabled={busy} onclick={() => restart(false)}>Clear</button>
+    </Button>
+    <Button type="button" class="pick" disabled={busy ? BUSY : ''} onclick={() => restart(false)}
+      >Clear</Button
+    >
   </div>
 </ChipPicker>
 

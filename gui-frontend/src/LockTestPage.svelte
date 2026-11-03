@@ -10,6 +10,7 @@
   review diff holds only what really changed.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import ShowAll from './ShowAll.svelte';
   import { bareError, errors, reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -355,11 +356,16 @@
 
     <div class="card">
       <div class="row explain-row">
-        <button onclick={cancel} disabled={saving}>Cancel</button>
+        <Button onclick={cancel} disabled={saving ? BUSY : ''}>Cancel</Button>
         {#if editable()}
-          <button class="primary" data-guide="lock" onclick={lockTest} disabled={!canLock}>
+          <Button
+            class="primary"
+            data-guide="lock"
+            onclick={lockTest}
+            disabled={!canLock ? INCOMPLETE : ''}
+          >
             {saving ? 'Locking…' : 'Lock the test'}
-          </button>
+          </Button>
         {/if}
       </div>
     </div>

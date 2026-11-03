@@ -3,12 +3,13 @@
   Save submits it. A form long enough to scroll its Save away takes `SaveBar.svelte` instead.
 -->
 <script lang="ts">
+  import Button from './Button.svelte';
   import type { Snippet } from 'svelte';
 
   let {
     dirty,
     label,
-    disabled = false,
+    disabled = '',
     ondiscard,
     children,
   }: {
@@ -16,7 +17,8 @@
     /** The Save button's text. */
     label: string;
     /** Holds Save back, as while a save is in flight. */
-    disabled?: boolean;
+    /** Why saving is disabled, or `''` when it is not. */
+    disabled?: string;
     ondiscard: () => void;
     /** What saving would do that the person should know first, beside the buttons. */
     children?: Snippet;
@@ -28,7 +30,7 @@
     {@render children?.()}
     <div class="buttons">
       <button type="button" onclick={ondiscard}>Discard</button>
-      <button class="primary" type="submit" {disabled}>{label}</button>
+      <Button class="primary" type="submit" {disabled}>{label}</Button>
     </div>
   </div>
 {/if}

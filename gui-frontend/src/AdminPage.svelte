@@ -5,6 +5,7 @@
 -->
 
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import WorkerGroupIcon from './WorkerGroupIcon.svelte';
   import { slugify } from './slugify';
   import { bareError, errors, reported, unreported } from './errors.svelte';
@@ -754,35 +755,35 @@
                         <MoreIcon />
                       {/snippet}
                       {#if canAsk(w, 'restart')}
-                        <button
+                        <Button
                           type="button"
                           class="pick"
-                          disabled={actingOn === w.workerId}
-                          onclick={() => restart(w.workerId)}>Restart</button
+                          disabled={actingOn === w.workerId ? BUSY : ''}
+                          onclick={() => restart(w.workerId)}>Restart</Button
                         >
                       {/if}
                       {#if canAsk(w, 'shutdown')}
-                        <button
+                        <Button
                           type="button"
                           class="pick"
-                          disabled={actingOn === w.workerId}
-                          onclick={() => shutDown(w.workerId)}>Shut down</button
+                          disabled={actingOn === w.workerId ? BUSY : ''}
+                          onclick={() => shutDown(w.workerId)}>Shut down</Button
                         >
                       {/if}
                       {#if w.status !== 'revoked'}
-                        <button
+                        <Button
                           type="button"
                           class="pick remove"
-                          disabled={actingOn === w.workerId}
-                          onclick={() => revoke(w.workerId)}>Revoke</button
+                          disabled={actingOn === w.workerId ? BUSY : ''}
+                          onclick={() => revoke(w.workerId)}>Revoke</Button
                         >
                       {/if}
                       {#if canRemove(w)}
-                        <button
+                        <Button
                           type="button"
                           class="pick remove"
-                          disabled={actingOn === w.workerId}
-                          onclick={() => remove(w.workerId)}>Remove</button
+                          disabled={actingOn === w.workerId ? BUSY : ''}
+                          onclick={() => remove(w.workerId)}>Remove</Button
                         >
                       {/if}
                     </ChipPicker>
@@ -814,9 +815,13 @@
                   bind:value={forgetMinutes}
                 />
               </Field>
-              <button type="submit" class="primary" disabled={forgetSaving || !forgetReady}>
+              <Button
+                type="submit"
+                class="primary"
+                disabled={forgetSaving ? BUSY : !forgetReady ? INCOMPLETE : ''}
+              >
                 {forgetSaving ? 'Saving…' : 'Save'}
-              </button>
+              </Button>
             </div>
             {#if forgetSaved}<p>Saved. The next look for gone workers uses it.</p>{/if}
           </form>
@@ -871,9 +876,13 @@
       </div>
       {#snippet actions()}
         <button type="button" onclick={() => (mintOpen = false)}>Cancel</button>
-        <button type="submit" class="primary" disabled={minting || !mintReady}>
+        <Button
+          type="submit"
+          class="primary"
+          disabled={minting ? BUSY : !mintReady ? INCOMPLETE : ''}
+        >
           {minting ? 'Minting…' : 'Mint'}
-        </button>
+        </Button>
       {/snippet}
     </Dialog>
 
@@ -941,13 +950,13 @@
                   <td>{codeState(code)}</td>
                   <td class="right">
                     {#if usable(code)}
-                      <button
+                      <Button
                         type="button"
                         onclick={() => withdrawCode(code)}
-                        disabled={withdrawingCode === code.id}
+                        disabled={withdrawingCode === code.id ? BUSY : ''}
                       >
                         {withdrawingCode === code.id ? 'Withdrawing…' : 'Withdraw'}
-                      </button>
+                      </Button>
                     {/if}
                   </td>
                 </tr>
@@ -1025,17 +1034,20 @@
         </Field>
       </div>
       {#snippet actions()}
-        <button type="button" onclick={cancelGroup} disabled={groupSaving}>Cancel</button>
-        <button
+        <Button type="button" onclick={cancelGroup} disabled={groupSaving ? BUSY : ''}
+          >Cancel</Button
+        >
+        <Button
           type="submit"
           class="primary"
-          disabled={groupSaving ||
-            !newGroupName.trim() ||
-            !newGroupId.trim() ||
-            groupIdProblem !== null}
+          disabled={groupSaving
+            ? BUSY
+            : !newGroupName.trim() || !newGroupId.trim()
+              ? INCOMPLETE
+              : (groupIdProblem ?? '')}
         >
           {groupSaving ? 'Saving…' : 'Add'}
-        </button>
+        </Button>
       {/snippet}
     </Dialog>
 
@@ -1099,12 +1111,12 @@
                     <div class="hue-edit">
                       <HueWheel bind:value={hueValue} label="Shared" />
                       <div class="actions">
-                        <button
+                        <Button
                           type="button"
                           class="primary"
-                          disabled={hueSaving}
+                          disabled={hueSaving ? BUSY : ''}
                           onclick={() => saveHue(SHARED_SCOPE)}
-                          >{hueSaving ? 'Saving…' : 'Save color'}</button
+                          >{hueSaving ? 'Saving…' : 'Save color'}</Button
                         >
                         <button type="button" onclick={() => (hueEditing = null)}>Cancel</button>
                       </div>
@@ -1161,17 +1173,17 @@
                       >
                         Rename
                       </button>
-                      <button
+                      <Button
                         type="button"
                         class="pick remove"
-                        disabled={deletingId === g.id}
+                        disabled={deletingId === g.id ? BUSY : ''}
                         onclick={() => {
                           actionsOpenFor = null;
                           deleteGroup(g.id, g.name);
                         }}
                       >
                         {deletingId === g.id ? 'Deleting…' : 'Delete'}
-                      </button>
+                      </Button>
                     </ChipPicker>
                   </td>
                 </tr>
@@ -1184,12 +1196,12 @@
                           <input bind:value={renameValue} autofocus />
                         </Field>
                         <div class="actions">
-                          <button
+                          <Button
                             type="button"
                             class="primary"
-                            disabled={renameSaving || !renameValue.trim()}
+                            disabled={renameSaving ? BUSY : !renameValue.trim() ? INCOMPLETE : ''}
                             onclick={() => saveRename(g.id)}
-                            >{renameSaving ? 'Saving…' : 'Save name'}</button
+                            >{renameSaving ? 'Saving…' : 'Save name'}</Button
                           >
                           <button type="button" onclick={() => (renaming = null)}>Cancel</button>
                         </div>
@@ -1204,12 +1216,12 @@
                       <div class="hue-edit">
                         <HueWheel bind:value={hueValue} label={g.name} />
                         <div class="actions">
-                          <button
+                          <Button
                             type="button"
                             class="primary"
-                            disabled={hueSaving}
+                            disabled={hueSaving ? BUSY : ''}
                             onclick={() => saveHue(g.id)}
-                            >{hueSaving ? 'Saving…' : 'Save color'}</button
+                            >{hueSaving ? 'Saving…' : 'Save color'}</Button
                           >
                           <button type="button" onclick={() => (hueEditing = null)}>Cancel</button>
                         </div>
@@ -1301,7 +1313,7 @@
     gap: 0.7rem;
   }
 
-  .mintrow > button {
+  .mintrow > :global(button) {
     justify-self: start;
   }
 

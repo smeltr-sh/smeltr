@@ -5,6 +5,7 @@
   deployed again, which is the Release button.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { reported } from './errors.svelte';
   import Locked from './Locked.svelte';
   import { history, deployCommit, type CommitDto, type HeldDto } from './api';
@@ -135,13 +136,13 @@
         {held.behind === 1 ? 'is' : 'are'} not deployed.
       </span>
       <Locked refusedInDemo>
-        <button
+        <Button
           class="compact"
           onclick={() => rollback(held!.head, true)}
-          disabled={rollingBack !== null}
+          disabled={rollingBack !== null ? BUSY : ''}
         >
           {rollingBack === held.head ? 'Releasing…' : 'Release'}
-        </button>
+        </Button>
       </Locked>
     </div>
   {/if}
@@ -203,17 +204,17 @@
               <td class="right nowrap">
                 {#if c.commit !== deployed}
                   <Locked refusedInDemo
-                    ><button
+                    ><Button
                       class="compact"
                       onclick={() => rollback(c.commit, c.commit === held?.head)}
-                      disabled={rollingBack !== null}
+                      disabled={rollingBack !== null ? BUSY : ''}
                     >
                       {#if i < deployedAt}
                         {rollingBack === c.commit ? 'Deploying…' : 'Deploy this'}
                       {:else}
                         {rollingBack === c.commit ? 'Rolling back…' : 'Roll back to here'}
                       {/if}
-                    </button></Locked
+                    </Button></Locked
                   >
                 {/if}
               </td>
@@ -223,8 +224,8 @@
       </table>
       {#if canShowMore}
         <div class="row">
-          <button class="compact" onclick={showMore} disabled={rollingBack !== null}
-            >Show more</button
+          <Button class="compact" onclick={showMore} disabled={rollingBack !== null ? BUSY : ''}
+            >Show more</Button
           >
         </div>
       {/if}

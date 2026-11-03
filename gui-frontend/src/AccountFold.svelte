@@ -7,6 +7,7 @@
   or `onkey`, which shows it once, until it is dismissed.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported } from './errors.svelte';
   import Field from './Field.svelte';
   import AccountAccess from './AccountAccess.svelte';
@@ -229,22 +230,29 @@
      would be gone before anybody could read it. Change password does this
      safely. -->
   {#if account.authSource === 'local' && account.id !== me}
-    <button type="button" disabled={busy} onclick={resetPassword}>Reset password</button>
+    <Button type="button" disabled={busy ? BUSY : ''} onclick={resetPassword}>Reset password</Button
+    >
   {/if}
   {#if !isKey}
-    <button type="button" disabled={busy} onclick={revokeSessions}>Revoke sessions</button>
+    <Button type="button" disabled={busy ? BUSY : ''} onclick={revokeSessions}
+      >Revoke sessions</Button
+    >
   {/if}
   {#if isKey && account.enabled}
     <button type="button" onclick={() => startForm('key')}>+ New key</button>
   {/if}
   {#if account.enabled}
-    <button type="button" disabled={busy} onclick={() => setEnabled(false)}>Disable account</button>
+    <Button type="button" disabled={busy ? BUSY : ''} onclick={() => setEnabled(false)}
+      >Disable account</Button
+    >
   {:else}
-    <button type="button" disabled={busy} onclick={() => setEnabled(true)}>Enable account</button>
+    <Button type="button" disabled={busy ? BUSY : ''} onclick={() => setEnabled(true)}
+      >Enable account</Button
+    >
     <!-- Only a disabled account is deleted, so deleting is a second, deliberate step. Never admin,
        the account recovery from the host restores (`accounts::BOOTSTRAP_USERNAME`). -->
     {#if !(account.authSource === 'local' && account.username === 'admin')}
-      <button type="button" disabled={busy} onclick={remove}>Delete account</button>
+      <Button type="button" disabled={busy ? BUSY : ''} onclick={remove}>Delete account</Button>
     {/if}
   {/if}
 </div>
@@ -263,7 +271,7 @@
     </Field>
     <div class="actions">
       <button type="button" onclick={() => (form = null)}>Cancel</button>
-      <button class="primary" type="submit" disabled={busy}>Save display name</button>
+      <Button class="primary" type="submit" disabled={busy ? BUSY : ''}>Save display name</Button>
     </div>
   </form>
 {:else if form === 'access'}
@@ -271,7 +279,7 @@
     <AccountAccess {roles} bind:chosen={draftRoles} />
     <div class="actions">
       <button type="button" onclick={() => (form = null)}>Cancel</button>
-      <button class="primary" type="submit" disabled={busy}>Save access</button>
+      <Button class="primary" type="submit" disabled={busy ? BUSY : ''}>Save access</Button>
     </div>
   </form>
 {:else if form === 'key'}
@@ -289,7 +297,9 @@
     </Field>
     <div class="actions">
       <button type="button" onclick={() => (form = null)}>Cancel</button>
-      <button class="primary" type="submit" disabled={busy || !daysValid}>Create key</button>
+      <Button class="primary" type="submit" disabled={busy ? BUSY : !daysValid ? INCOMPLETE : ''}
+        >Create key</Button
+      >
     </div>
   </form>
 {/if}
@@ -320,7 +330,9 @@
             >
             <td class="dim">{when(key.lastUsedAt)}</td>
             <td class="right">
-              <button type="button" disabled={busy} onclick={() => revoke(key)}>Revoke</button>
+              <Button type="button" disabled={busy ? BUSY : ''} onclick={() => revoke(key)}
+                >Revoke</Button
+              >
             </td>
           </tr>
         {/each}

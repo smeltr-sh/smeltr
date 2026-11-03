@@ -23,6 +23,7 @@
 </script>
 
 <script lang="ts">
+  import Button, { INCOMPLETE } from './Button.svelte';
   import ChevronIcon from './ChevronIcon.svelte';
   import { untrack, type Snippet } from 'svelte';
   import StateMark from './StateMark.svelte';
@@ -761,15 +762,15 @@
           >
         {/if}
         <span class="grow"></span>
-        <button
+        <Button
           type="button"
           class="primary"
           data-guide="lock-test"
           onclick={onlock}
-          disabled={!canLock}
+          disabled={!canLock ? INCOMPLETE : ''}
         >
           Lock this as a test
-        </button>
+        </Button>
       </div>
 
       <div class="results">

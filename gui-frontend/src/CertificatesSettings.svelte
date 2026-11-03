@@ -9,6 +9,7 @@
   listing two rows of hex and leaving it to be worked out.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import StateMark from './StateMark.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -499,7 +500,7 @@
     <InlineSaveBar
       dirty={deadlineDirty(rotation)}
       label="Save"
-      disabled={rotationBusy || !!problem}
+      disabled={rotationBusy ? BUSY : (problem ?? '')}
       ondiscard={() => (cutOverBy = toLocalInput(rotation.deadlineMillis))}
     />
   </form>
@@ -581,7 +582,8 @@
       <div class="setting">
         {@render who(certificates.authority, on(certificates.authority.notAfterMillis))}
         <!-- A link is not a control a disabled fieldset reaches, and the demo has no file to give. -->
-        {#if NOT_IN_DEMO}<button type="button" disabled title={NOT_IN_DEMO}>Download ca.pem</button
+        {#if NOT_IN_DEMO}<Button type="button" disabled={NOT_IN_DEMO} title={NOT_IN_DEMO}
+            >Download ca.pem</Button
           >{:else}<a class="btn" href={AUTHORITY_URL} download>Download ca.pem</a>{/if}
       </div>
     </Panel>
@@ -645,10 +647,10 @@
             longer connect, and enrollment codes minted under the current one are withdrawn.
           </p>
           <div class="buttons">
-            <button
+            <Button
               class="danger"
               type="button"
-              disabled={rotationBusy}
+              disabled={rotationBusy ? BUSY : ''}
               onclick={async () => {
                 const ok = await ask({
                   title: 'cut over',
@@ -664,14 +666,14 @@
               }}
             >
               Cut over now
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              disabled={rotationBusy}
+              disabled={rotationBusy ? BUSY : ''}
               onclick={() => rotationAct(() => abandonRotation(), 'switch abandoned')}
             >
               Abandon switch
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -688,10 +690,10 @@
             {@render status(formError, message)}
             {#if choseAnother}
               <div class="buttons">
-                <button
+                <Button
                   class="primary"
                   type="button"
-                  disabled={busy}
+                  disabled={busy ? BUSY : ''}
                   onclick={() =>
                     act(
                       () => putCertificate(OWN_CERTIFICATE),
@@ -699,7 +701,7 @@
                     )}
                 >
                   Switch to Leader issued
-                </button>
+                </Button>
               </div>
             {/if}
           </div>
@@ -730,10 +732,10 @@
               no longer connect, and enrollment codes minted under the current one are withdrawn.
             </p>
             <div class="buttons">
-              <button
+              <Button
                 class="danger"
                 type="button"
-                disabled={rotationBusy}
+                disabled={rotationBusy ? BUSY : ''}
                 onclick={async () => {
                   const ok = await ask({
                     title: 'cut over',
@@ -746,14 +748,14 @@
                 }}
               >
                 Cut over now
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                disabled={rotationBusy}
+                disabled={rotationBusy ? BUSY : ''}
                 onclick={() => rotationAct(() => abandonRotation(), 'rotation abandoned')}
               >
                 Abandon rotation
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -789,12 +791,16 @@
                 </div>
               </div>
               <div class="buttons">
-                <button
+                <Button
                   class="primary"
                   type="button"
-                  disabled={rotationBusy ||
-                    waitHours < ROTATION_WAIT_HOURS.min ||
-                    waitHours > ROTATION_WAIT_HOURS.max}
+                  disabled={rotationBusy
+                    ? BUSY
+                    : waitHours < ROTATION_WAIT_HOURS.min
+                      ? `Choose between ${ROTATION_WAIT_HOURS.min} and ${ROTATION_WAIT_HOURS.max} hours.`
+                      : waitHours > ROTATION_WAIT_HOURS.max
+                        ? `Choose between ${ROTATION_WAIT_HOURS.min} and ${ROTATION_WAIT_HOURS.max} hours.`
+                        : ''}
                   onclick={() =>
                     rotationAct(
                       () => beginRotation(waitHours, authorityValidityDays),
@@ -802,7 +808,7 @@
                     )}
                 >
                   Start rotation
-                </button>
+                </Button>
               </div>
               {@render status(rotationError, rotationMessage)}
             </Collapsible>
@@ -829,10 +835,10 @@
           {/if}
           {@render status(formError, message)}
           <div class="buttons">
-            <button
+            <Button
               class="primary"
               type="button"
-              disabled={busy || !chosen}
+              disabled={busy ? BUSY : !chosen ? 'Choose a certificate first.' : ''}
               onclick={() =>
                 act(
                   () => putCertificate(chosen!),
@@ -840,7 +846,7 @@
                 )}
             >
               Serve this certificate
-            </button>
+            </Button>
           </div>
         </div>
       {:else if source === 'acme' && acme && (!switching || newRoot)}
@@ -969,30 +975,38 @@
           {@render status(formError, ordering ? orderStatus : message)}
           <div class="buttons">
             {#if inForce === 'acme'}
-              <button
+              <Button
                 class="primary"
                 type="button"
-                disabled={busy || ordering || !orderable}
+                disabled={busy ? BUSY : ordering ? BUSY : !orderable ? INCOMPLETE : ''}
                 onclick={() => save()}
               >
                 Save
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                disabled={busy || ordering || !orderable}
+                disabled={busy ? BUSY : ordering ? BUSY : !orderable ? INCOMPLETE : ''}
                 onclick={() => order()}
               >
                 {ordering ? 'Renewing…' : 'Renew now'}
-              </button>
+              </Button>
             {:else}
-              <button
+              <Button
                 class="primary"
                 type="button"
-                disabled={busy || ordering || !orderable || !agreed}
+                disabled={busy
+                  ? BUSY
+                  : ordering
+                    ? BUSY
+                    : !orderable
+                      ? INCOMPLETE
+                      : !agreed
+                        ? 'Agree to the terms of service first.'
+                        : ''}
                 onclick={() => order()}
               >
                 {ordering ? 'Getting certificate…' : 'Get certificate'}
-              </button>
+              </Button>
             {/if}
           </div>
         </div>

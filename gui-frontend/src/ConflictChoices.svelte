@@ -5,7 +5,13 @@
   every conflict has a side and Apply sends them, against the same two tips
   they were shown at.
 -->
+<script module lang="ts">
+  /** Why what a merge's conflicts block is disabled until each has a side. */
+  export const UNCHOSEN = 'Choose a side for every conflict first.';
+</script>
+
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import Field from './Field.svelte';
   import Panel from './Panel.svelte';
   import {
@@ -76,12 +82,12 @@
 <Panel title="Conflicts">
   {#snippet actions()}
     <div class="actions">
-      <button type="button" disabled={busy} onclick={oncancel}>Cancel</button>
-      <button
+      <Button type="button" disabled={busy ? BUSY : ''} onclick={oncancel}>Cancel</Button>
+      <Button
         type="button"
         class="primary"
-        disabled={!ready || busy}
-        onclick={() => onapply(sides as MergeSide[])}>{busy ? 'Applying…' : 'Apply'}</button
+        disabled={!ready ? UNCHOSEN : busy ? BUSY : ''}
+        onclick={() => onapply(sides as MergeSide[])}>{busy ? 'Applying…' : 'Apply'}</Button
       >
     </div>
   {/snippet}

@@ -5,6 +5,7 @@
   Buttons, inputs and the bar take the page's styles.
 -->
 <script lang="ts">
+  import Button, { FIRST_PAGE, LAST_PAGE } from './Button.svelte';
   import InlineError from './InlineError.svelte';
   import { count } from './time';
   import { tick } from 'svelte';
@@ -140,9 +141,11 @@
 </div>
 
 <div class="bar dim">
-  <button type="button" disabled={page === 0} onclick={() => page--}>‹</button>
+  <Button type="button" disabled={page === 0 ? FIRST_PAGE : ''} onclick={() => page--}>‹</Button>
   page {page + 1} of {pages}
-  <button type="button" disabled={page >= pages - 1} onclick={() => page++}>›</button>
+  <Button type="button" disabled={page >= pages - 1 ? LAST_PAGE : ''} onclick={() => page++}
+    >›</Button
+  >
   <span class="grow"></span>
   {count(rows.length, 'row')} · {count(headers.length, 'column')}
 </div>

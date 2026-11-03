@@ -41,7 +41,8 @@
     /** Opens the page's tab that lists what a count counts. */
     onopen: (tab: 'tests' | 'schemas') => void;
     bringingCurrent: boolean;
-    bringCurrentDisabled: boolean;
+    /** Why Bring current is disabled, or `''` when it is not. */
+    bringCurrentDisabled: string;
     onbringcurrent: () => void;
     /** Whether Approve & deploy is offered at all. */
     approvable: boolean;
@@ -120,14 +121,14 @@
         <StateMark state="warning" size={17} />
         <span>Behind <span class="mono">main</span> by {count(behind, 'commit')}</span>
         <Locked refusedInDemo>
-          <button
+          <Button
             type="button"
             class="compact"
             disabled={bringCurrentDisabled}
             onclick={onbringcurrent}
           >
             {bringingCurrent ? 'Bringing current…' : 'Bring current'}
-          </button>
+          </Button>
         </Locked>
       {:else}
         <StateMark state="ok" size={17} />

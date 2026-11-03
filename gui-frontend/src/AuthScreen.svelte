@@ -13,6 +13,7 @@
   most people on such a leader have no password to type.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import InlineError from './InlineError.svelte';
   import {
     changePassword,
@@ -254,9 +255,13 @@
         <InlineError message={error || oidcError} />
       {/if}
 
-      <button class="primary" type="submit" disabled={busy || waiting > 0}>
+      <Button
+        class="primary"
+        type="submit"
+        disabled={busy ? BUSY : waiting > 0 ? 'Wait until you can try again.' : ''}
+      >
         {changing ? 'Change password' : 'Sign in'}
-      </button>
+      </Button>
     </form>
   {/if}
 

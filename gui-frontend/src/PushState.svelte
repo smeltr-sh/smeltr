@@ -16,6 +16,7 @@
 </script>
 
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import { errorText, overwriteBranch, type BranchDto } from './api';
@@ -76,9 +77,9 @@
       >
       <span class="mono dim">ours {shortCommit(branch.head)}</span>
       <span class="mono dim">host {push.hostTip ? shortCommit(push.hostTip) : '—'}</span>
-      <button type="button" class="compact" disabled={busy} onclick={overwrite}>
+      <Button type="button" class="compact" disabled={busy ? BUSY : ''} onclick={overwrite}>
         {busy ? 'Overwriting…' : 'Overwrite remote'}
-      </button>
+      </Button>
     {/if}
     <InlineError message={error} inline />
   </span>
@@ -100,7 +101,7 @@
   .mono {
     font-family: var(--mono);
   }
-  button {
+  .push :global(button) {
     white-space: nowrap;
   }
 </style>
