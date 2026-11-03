@@ -432,11 +432,7 @@ fn in_halves<P: Protocol, T: Transport>(
         return None;
     }
     let half = group.pending.len() / 2;
-    if round.said.halved.lock().unwrap().due() {
-        tracing::debug!(target: "http.request_halved", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
-    } else {
-        tracing::trace!(target: "http.request_halved", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
-    }
+    crate::debug_when!(round.said.halved.lock().unwrap().due(), target: "http.request_halved", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
     let mut tail = Group {
         route: group.route.clone(),
         part: group.part,
@@ -553,11 +549,7 @@ fn deliver<P: Protocol, T: Transport>(
         }
         if !round.throttle_said {
             round.throttle_said = true;
-            if round.said.throttled.lock().unwrap().due() {
-                tracing::debug!(target: "http.throttled", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
-            } else {
-                tracing::trace!(target: "http.throttled", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
-            }
+            crate::debug_when!(round.said.throttled.lock().unwrap().due(), target: "http.throttled", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
         }
         std::thread::sleep(nap);
         round.waited += nap;
