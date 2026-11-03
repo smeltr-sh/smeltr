@@ -120,38 +120,17 @@ fn check_literal(prefix: &str) -> Result<(), String> {
         .map_err(|e| format!("it is no key prefix: {e}"))
 }
 
-/// `prefix` with each placeholder filled from `at`, UTC.
+/// `prefix` with each placeholder filled from `at`, UTC. `check_prefix` has refused any other `%`.
 fn expand(prefix: &str, at: SystemTime) -> String {
     if !prefix.contains('%') {
         return prefix.to_string();
     }
-    let secs = at
+    let micros = at
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    let (year, month, day) = crate::ops::civil::civil_from_days(secs.div_euclid(86_400));
-    let of_day = secs.rem_euclid(86_400);
-    let mut out = String::with_capacity(prefix.len() + 8);
-    let mut chars = prefix.chars();
-    while let Some(c) = chars.next() {
-        if c != '%' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('Y') => out.push_str(&format!("{year:04}")),
-            Some('m') => out.push_str(&format!("{month:02}")),
-            Some('d') => out.push_str(&format!("{day:02}")),
-            Some('H') => out.push_str(&format!("{:02}", of_day / 3600)),
-            Some('M') => out.push_str(&format!("{:02}", of_day % 3600 / 60)),
-            // Refused at load.
-            Some(other) => {
-                out.push('%');
-                out.push(other);
-            }
-            None => out.push('%'),
-        }
-    }
-    out
+        .map_or(0, |d| d.as_micros() as i64);
+    let mut out = Vec::with_capacity(prefix.len() + 8);
+    crate::ops::timeparse::format_into(micros, prefix, &mut out);
+    String::from_utf8(out).expect("a prefix and its placeholders are UTF-8")
 }
 
 /// The prefix `row` goes under: its `__destination.prefix` as it stands, else `template` filled from now.

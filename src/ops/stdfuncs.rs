@@ -435,6 +435,7 @@ stdfuncs! {
     LastIndexOf "lastIndexOf" = some(strops::str_last_index_of); [Str, Str] => (I64);
     At          "at"          = some(at_any);                  [Str, I64] => (Str), [Array, I64] => (element 0);
     ParseTime   "parseTime"   = some(|c, i| convert::read_or_refuse(c, i, convert::parse_time));     [Str] => (DateTime), [Str, Str] => (DateTime), [Str, DateTime] => (DateTime), [Str, Str, DateTime] => (DateTime);
+    FormatTime  "formatTime"  = some(datetime::format_time);   [DateTime, Str] => (Str);
     ParseDuration "parseDuration" = some(|c, i| convert::read_or_refuse(c, i, convert::parse_duration)); [Str] => (Duration);
     Year        "year"        = some(datetime::dt_year);       [DateTime] => (I64);
     Month       "month"       = some(datetime::dt_month);      [DateTime] => (I64);
