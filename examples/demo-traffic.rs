@@ -27,7 +27,7 @@ use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::producer::{BaseProducer, BaseRecord};
 use reference::demo::{self, STREAMS, Stream};
 use reference::{Clock, mix};
-use smeltr::leader::series::{RegistryStore, Tier};
+use smeltr::leader::series::{RegistryStore, Swing, Tier};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -160,7 +160,7 @@ fn send(producer: &BaseProducer, topic: &str, line: &str) {
 
 /// The counters the fleet's throughput charts and each source's expected band are drawn from.
 const THROUGHPUT: &[&str] = &[
-    "smeltr_rows_polled_total",
+    ROWS_READ,
     "smeltr_bytes_polled_total",
     "smeltr_rows_sent_total",
     "smeltr_rows_delivered_total",
@@ -194,7 +194,16 @@ fn history(registry: &std::path::Path) {
             0.88 + 0.24 * (mix(d.wrapping_mul(0x9e37)) % 1_000) as f64 / 1_000.0
         }
     };
+    // The live one's own: a day's curve, at its mean now, and the day's level.
+    let shape = |at: i64| {
+        let curve = 1.0 + 0.3 * (TAU * (at - now) as f64 / DAY).sin();
+        let days = (now - at) as f64 / DAY;
+        let blend = 0.5 - 0.5 * (std::f64::consts::PI * days.fract()).cos();
+        curve * (level(days as u64) * (1.0 - blend) + level(days as u64 + 1) * blend)
+    };
     let mut written = 0;
+    // Each source's loops, one per subject that read it, for the swings below.
+    let mut sources = std::collections::BTreeMap::<(String, String), Vec<Loop>>::new();
     for metric in THROUGHPUT {
         let tiers = [Tier::TenSeconds, Tier::OneMinute];
         let fine = store.series_since_at(metric, &tiers, 0).expect("the series");
@@ -219,20 +228,62 @@ fn history(registry: &std::path::Path) {
             while at > now - HISTORY_MS {
                 let width = Tier::for_window(Duration::from_millis((now - at) as u64)).bucket_ms();
                 at -= width;
-                let curve = 1.0 + 0.3 * (TAU * (at - now) as f64 / DAY).sin();
-                let days = (now - at) as f64 / DAY;
-                let blend = 0.5 - 0.5 * (std::f64::consts::PI * days.fract()).cos();
-                let day = level(days as u64) * (1.0 - blend) + level(days as u64 + 1) * blend;
-                let delta = (played.between(at, at + width) * curve * day).round();
+                let delta = (played.between(at, at + width) * shape(at)).round();
                 if delta > 0.0 {
                     write(|| store.record_delta(metric, &subject, at, delta));
                     written += 1;
                 }
             }
+            if *metric == ROWS_READ
+                && let Some(source) = source_of(&subject)
+            {
+                sources.entry(source).or_default().push(played);
+            }
         }
     }
+    // How far each source's rate swung in each five-minute bucket of the history, as the leader records it from its
+    // ten-second points while it still holds them: the loops are those points, played back.
+    let five = Tier::FiveMinutes.bucket_ms();
+    let mut swings = Vec::new();
+    for ((group, source), loops) in sources {
+        let began = loops.iter().map(|l| l.first).min().expect("a source has a loop");
+        let mut bucket = Tier::FiveMinutes.align(now - HISTORY_MS);
+        while bucket + five <= began {
+            for tier in [Tier::TenSeconds, Tier::OneMinute] {
+                let step = tier.bucket_ms();
+                let mut rates: Vec<f64> = (bucket..bucket + five)
+                    .step_by(step as usize)
+                    .map(|at| {
+                        let rows: f64 = loops.iter().map(|l| l.between(at, at + step)).sum();
+                        rows * shape(at) * 1000.0 / step as f64
+                    })
+                    .collect();
+                let (low, high) = smeltr::leader::throughput::swing(&mut rates);
+                swings.push(Swing {
+                    group: group.clone(),
+                    source: source.clone(),
+                    width_ms: step,
+                    bucket_ms: bucket,
+                    low,
+                    high,
+                });
+            }
+            bucket += five;
+        }
+    }
+    write(|| store.record_swings(&swings));
     write(|| store.maintain(now));
-    println!("{written} buckets of history");
+    println!("{written} buckets of history, {} swings", swings.len());
+}
+
+/// The rows read metric, which a source's band is learned from.
+const ROWS_READ: &str = "smeltr_rows_polled_total";
+
+/// The group and source a subject of [`ROWS_READ`] names.
+fn source_of(subject: &str) -> Option<(String, String)> {
+    let labels: Vec<(String, String)> = serde_json::from_str(subject).ok()?;
+    let get = |name: &str| labels.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+    Some((get("group")?, get("source")?))
 }
 
 /// One bucket a series holds: what was read from `at` for `width` milliseconds.
