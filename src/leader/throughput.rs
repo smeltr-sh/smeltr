@@ -36,7 +36,7 @@ use super::{AppState, ROWS_IN_METRIC, run_store};
 pub const WINDOW: Duration = Duration::from_secs(30 * 60);
 
 /// The resolution history is judged at: the finest every tier the history spans can be read at.
-const BUCKET: Tier = Tier::FiveMinutes;
+pub(super) const BUCKET: Tier = Tier::FiveMinutes;
 
 /// How many days back the normal is learned from. The series keeps five-minute buckets a day longer, so the oldest
 /// day's windows and their neighborhood are still in them.

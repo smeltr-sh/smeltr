@@ -25,6 +25,7 @@
 //! only expires. A bucket nothing landed in is a bucket with no row: there is nothing to promote and nothing to
 //! delete, so an outage reads as absent rather than as a zero.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -67,7 +68,7 @@ impl Tier {
 
     /// This tier's bucket width -- also what a caller of [`Tier::for_window`] reports as the resolution it served
     /// (`leader::FlowResponse::bucket_millis`).
-    pub fn bucket_ms(self) -> i64 {
+    pub const fn bucket_ms(self) -> i64 {
         match self {
             Tier::TenSeconds => 10_000,
             Tier::OneMinute => 60_000,
@@ -1024,6 +1025,32 @@ impl RegistryStore {
             .iter()
             .map(|tier| series_since_on(&conn, metric, *tier, since_ms))
             .collect()
+    }
+
+    /// Every subject of the gauge `metric` with a reading at or after `since_ms`, as `tier`'s buckets, oldest first:
+    /// each bucket's highest reading, as [`RegistryStore::maintain`] keeps a gauge. The window's newest buckets are
+    /// still in the finer tiers, so those are read too and folded the same way. The open bucket holds the highest
+    /// reading so far.
+    pub fn peaks_since(
+        &self,
+        metric: &str,
+        tier: Tier,
+        since_ms: i64,
+    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+        let mut peaks: BTreeMap<String, BTreeMap<i64, f64>> = BTreeMap::new();
+        let read = self.series_since_at(metric, tier.and_finer(), since_ms)?;
+        for (subject_key, points) in read.into_iter().flatten() {
+            let of = peaks.entry(subject_key).or_default();
+            for (at, value) in points {
+                of.entry(tier.align(at))
+                    .and_modify(|peak| *peak = peak.max(value))
+                    .or_insert(value);
+            }
+        }
+        Ok(peaks
+            .into_iter()
+            .map(|(subject_key, buckets)| (subject_key, buckets.into_iter().collect()))
+            .collect())
     }
 
     /// Write `swings`, each over any already held for its source, width and bucket.
@@ -3161,6 +3188,31 @@ mod tests {
         assert_eq!(
             store.points("smeltr_source_lag", "k", Tier::OneMinute).unwrap(),
             vec![(coarse_bucket, 9.0)]
+        );
+    }
+
+    /// A window read at a coarse width is the same peaks whether `maintain` has moved its buckets up yet or not.
+    #[test]
+    fn peaks_since_reads_a_gauge_at_a_coarse_width_across_the_tiers_it_still_lies_in() {
+        let store = memory_store();
+        let old = Tier::FiveMinutes.align(-4_000_000);
+        let new = old + Tier::FiveMinutes.bucket_ms();
+        for (at, lag) in [(old, 3.0), (old + 10_000, 9.0), (new, 5.0), (new + 70_000, 2.0)] {
+            store.record_gauge_max("smeltr_source_lag", "k", at, lag).unwrap();
+        }
+        let before = store.peaks_since("smeltr_source_lag", Tier::FiveMinutes, old).unwrap();
+        assert_eq!(before, vec![("k".to_string(), vec![(old, 9.0), (new, 5.0)])]);
+
+        store.maintain(0).unwrap();
+        assert!(
+            store
+                .points("smeltr_source_lag", "k", Tier::TenSeconds)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store.peaks_since("smeltr_source_lag", Tier::FiveMinutes, old).unwrap(),
+            before
         );
     }
 
