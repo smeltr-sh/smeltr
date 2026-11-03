@@ -21,10 +21,26 @@ pub fn stored(store: &dyn Store) -> Result<LogLevels, StoreError> {
         .unwrap_or_default())
 }
 
-/// Keep the leader's own lines at what is stored. Called as the leader starts.
+/// The levels as stored, held so a heartbeat answer need not read the store for them.
+#[derive(Default)]
+pub struct Held(std::sync::RwLock<LogLevels>);
+
+impl Held {
+    pub fn get(&self) -> LogLevels {
+        self.0.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    /// Hold `levels` and keep the leader's own lines at them.
+    fn keep(&self, levels: LogLevels) {
+        levels.apply();
+        *self.0.write().unwrap_or_else(std::sync::PoisonError::into_inner) = levels;
+    }
+}
+
+/// Hold what is stored, and keep the leader's own lines at it. Called as the leader starts.
 pub async fn keep_stored(state: &AppState) {
     match run_store(state.store.clone(), |s| stored(s)).await {
-        Ok(levels) => levels.apply(),
+        Ok(levels) => state.log_levels.keep(levels),
         Err(e) => {
             tracing::warn!(target: "leader.log_levels_unreadable", error = %e, "the saved log levels could not be read, so the leader keeps the levels it has")
         }
@@ -103,7 +119,7 @@ pub async fn put_settings(
     let event = super::accounts::event_for(&actor, "log-levels-change", &text, "ok");
     let written = run_store(state.store, move |s| s.put_settings(&[(KEY, text)], Some(&event))).await;
     if written.is_ok() {
-        levels.apply();
+        state.log_levels.keep(levels.clone());
     }
     answer(written.map(|()| levels).map_err(Refusal::from))
 }
@@ -166,5 +182,20 @@ mod tests {
         assert_eq!(text, r#"{"default":"info","areas":{"kafka":"trace"}}"#);
         let none: crate::heartbeat::HeartbeatResponse = serde_json::from_str(r#"{"captures":[],"holds":[]}"#).unwrap();
         assert!(none.log_levels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn levels_set_are_held_for_the_heartbeat_and_held_again_on_a_restart() {
+        let state = crate::leader::secrets_delivery_tests::state("log-levels-held");
+        let set = levels(None, &[("kafka", "trace")]);
+        let put = put_settings(State(state.clone()), None, Json(set.clone())).await;
+        assert!(put.succeeded());
+        assert_eq!(state.log_levels.get(), set);
+        let restarted = AppState {
+            log_levels: Default::default(),
+            ..state
+        };
+        keep_stored(&restarted).await;
+        assert_eq!(restarted.log_levels.get(), set);
     }
 }

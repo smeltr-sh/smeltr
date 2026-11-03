@@ -110,6 +110,8 @@ pub struct AppState {
     pub alerts: Arc<alerts::Alerts>,
     /// What operators have asked of workers and the workers have not yet taken.
     pub directives: Arc<directives::Directives>,
+    /// The levels the fleet keeps its lines at, as stored (`log_levels`).
+    pub log_levels: Arc<log_levels::Held>,
 }
 
 /// What each group's bundle quotes, remembered per commit. The answer changes only when the bundle does, so it is
@@ -519,12 +521,10 @@ async fn heartbeat(
     // The whole of what this worker should run: it lets go of a session still filling that this leaves out
     // (`Captures::invitations_for`). On the blocking pool, because `holder` waits on any beat in progress, which
     // holds the holds lock across its store writes; an async thread parked on that would stall every handler.
-    let (captures_for, secrets, log_levels) = tokio::task::spawn_blocking(move || {
+    let (captures_for, secrets) = tokio::task::spawn_blocking(move || {
         let captures_for = state.captures.invitations_for(&worker_id, &group_id, |source| {
             state.registry.holds.holder(&group_id, source)
         });
-        // Whole on every answer, so a worker that missed a change has it on its next beat.
-        let log_levels = log_levels::stored(&*state.store).unwrap_or_default();
         let secrets = state
             .store
             .secrets_for_delivery(&entitled, &req.secret_versions)
@@ -534,7 +534,7 @@ async fn heartbeat(
                 }
                 Default::default()
             });
-        (captures_for, secrets, log_levels)
+        (captures_for, secrets)
     })
     .await
     .unwrap_or_default();
@@ -559,7 +559,8 @@ async fn heartbeat(
             .map(|invitation| crate::heartbeat::Invited::Readable(Box::new(invitation)))
             .collect(),
         secrets,
-        log_levels,
+        // Whole on every answer, so a worker that missed a change has it on its next beat.
+        log_levels: state.log_levels.get(),
     }))
 }
 
@@ -4444,6 +4445,7 @@ mod secrets_delivery_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir,
         }
     }
@@ -4932,6 +4934,7 @@ mod warnings_endpoint_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir,
         }
     }
@@ -5165,6 +5168,7 @@ mod logs_endpoint_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir: std::env::temp_dir(),
         }
     }
@@ -5391,6 +5395,7 @@ mod flow_endpoint_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir: std::env::temp_dir(),
         }
     }
@@ -5420,6 +5425,7 @@ mod flow_endpoint_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir: std::env::temp_dir(),
         };
         let flow = flow_snapshot(&state, Duration::from_secs(3600)).unwrap();
@@ -5786,6 +5792,7 @@ mod authority_delivery_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir,
         };
         cut_over_if_due(&state, now_ms).await;

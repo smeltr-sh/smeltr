@@ -4130,7 +4130,10 @@ impl Supervisor {
                     // It holds nothing yet. Its first turn tells it what the leader holds here, each ledger
                     // fetched afresh: the last runtime's reports have moved them since.
                     self.holds.lock().unwrap().restarted();
-                    self.log_levels.lock().unwrap().1 = false;
+                    self.log_levels
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .1 = false;
                     running = Some(handle);
                     content = Some(arriving.clone());
                     last_good = Some((commit.clone(), arriving));
@@ -4657,7 +4660,10 @@ impl Supervisor {
     /// `true` is a control pipe that would not take the frame, as for [`Supervisor::route_invitations`].
     /// Keep this process's lines at the levels the leader sent, and have the runtime keep its at them too.
     fn follow_log_levels(&self, levels: heartbeat::LogLevels) {
-        let mut held = self.log_levels.lock().unwrap();
+        let mut held = self
+            .log_levels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if held.0 == levels {
             return;
         }
@@ -4672,7 +4678,10 @@ impl Supervisor {
     fn route_log_levels(&self, running: Option<&mut child::RuntimeHandle>) -> bool {
         let Some(handle) = running else { return false };
         let levels = {
-            let held = self.log_levels.lock().unwrap();
+            let held = self
+                .log_levels
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if held.1 {
                 return false;
             }
@@ -4680,7 +4689,10 @@ impl Supervisor {
         };
         match handle.log_levels(levels) {
             Ok(()) => {
-                self.log_levels.lock().unwrap().1 = true;
+                self.log_levels
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .1 = true;
                 false
             }
             Err(e) => {
@@ -5285,6 +5297,7 @@ mod tests {
                     updates: Default::default(),
                     alerts: Default::default(),
                     directives: Default::default(),
+                    log_levels: Default::default(),
                     data_dir: data_dir_for_leader,
                 };
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -5474,6 +5487,7 @@ mod tests {
                     updates: Default::default(),
                     alerts: Default::default(),
                     directives: Default::default(),
+                    log_levels: Default::default(),
                     data_dir: data_dir_for_leader,
                 };
                 let tls = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem)

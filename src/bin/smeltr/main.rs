@@ -1092,6 +1092,7 @@ async fn setup_leader(
         updates: Default::default(),
         alerts: Default::default(),
         directives: Default::default(),
+        log_levels: Default::default(),
     };
     state.deploy_checks.set_runner(Arc::new(test_api::failing_at));
     smeltr::leader::log_levels::keep_stored(&state).await;
