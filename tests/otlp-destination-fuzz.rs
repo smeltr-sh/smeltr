@@ -602,6 +602,7 @@ fn junk(rng: &mut Rng) -> Value {
             json!("0102"),
             json!("2026-13-45T99:00:00Z"),
             json!("1969-12-31T23:59:59Z"),
+            json!("9999-12-31T23:59:59Z"),
             json!("gauge"),
             json!("stateset"),
             json!(true),

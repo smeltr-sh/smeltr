@@ -760,10 +760,10 @@ impl PointRow {
     /// Reads field `key` of a row, where it is one of a data point's or its metric's.
     pub(super) fn field(&mut self, key: &str, r: &mut Reader) -> Result<bool, String> {
         match key {
-            "name" => self.name = rows::text(r, key)?,
-            "description" => self.description = rows::text(r, key)?,
-            "unit" => self.unit = rows::text(r, key)?,
-            "type" => self.kind = Some(rows::text(r, key)?),
+            "name" => self.name = json::text(r, key)?,
+            "description" => self.description = json::text(r, key)?,
+            "unit" => self.unit = json::text(r, key)?,
+            "type" => self.kind = Some(json::text(r, key)?),
             "metadata" => self.metadata = rows::attributes(r, key)?,
             "aggregationTemporality" => self.aggregation_temporality = temporality(r)?,
             "isMonotonic" => self.is_monotonic = json::bool(r, key)?,

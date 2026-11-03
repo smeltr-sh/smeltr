@@ -97,18 +97,14 @@ pub(super) fn scope(r: &mut Reader) -> Result<InstrumentationScope, String> {
     let mut scope = InstrumentationScope::default();
     fields(r, "`scope`", |key, r| {
         match key {
-            "name" => scope.name = text(r, "scope.name")?,
-            "version" => scope.version = text(r, "scope.version")?,
+            "name" => scope.name = super::json::text(r, "scope.name")?,
+            "version" => scope.version = super::json::text(r, "scope.version")?,
             "attributes" => scope.attributes = attributes(r, "scope.attributes")?,
             _ => return Ok(false),
         }
         Ok(true)
     })?;
     Ok(scope)
-}
-
-pub(super) fn text(r: &mut Reader, name: &str) -> Result<String, String> {
-    super::json::text(r, name)
 }
 
 /// A datetime, as nanoseconds since the epoch. A row's datetime is text, to the microsecond.
@@ -118,7 +114,7 @@ pub(super) fn time(r: &mut Reader, name: &str) -> Result<u64, String> {
         _ => None,
     };
     (micros.and_then(|us| u64::try_from(us).ok()))
-        .map(|us| us * 1000)
+        .and_then(|us| us.checked_mul(1000))
         .ok_or_else(|| format!("`{name}` is not a datetime after 1970"))
 }
 
@@ -249,6 +245,10 @@ mod tests {
         assert_eq!(time(r#""2023-11-14T22:13:20.123456Z""#), Ok(1_700_000_000_123_456_000));
         assert!(time("1").is_err());
         assert!(time(r#""1969-12-31T23:59:59Z""#).is_err());
+        assert!(
+            time(r#""9999-12-31T23:59:59Z""#).is_err(),
+            "past what nanoseconds in a u64 hold"
+        );
     }
 
     #[test]

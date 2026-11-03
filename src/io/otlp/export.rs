@@ -187,15 +187,15 @@ impl Protocol for Otlp {
         })
     }
 
-    /// The record as it is encoded, and its field's key and length. A request also carries each resource, scope and
-    /// metric once, which is not counted.
+    /// The record as it is encoded, with its field's key and length, and the resource, scope and metric it came
+    /// under, as if it were the first of a request under each: a request held to its limit is never larger than it.
     fn size(&self, item: &Item) -> usize {
         let len = match &item.record {
             Record::Log(log) => log.encoded_len(),
             Record::Span(span) => span.encoded_len(),
-            Record::Point(_, point) => point.encoded_len(),
+            Record::Point(family, point) => point.encoded_len() + family.key.len() + 6,
         };
-        len + 6
+        len + 6 + item.scoped.resource_key.len() + item.scoped.scope_key.len() + 12
     }
 
     fn body(&self, items: &[Item]) -> Vec<u8> {
