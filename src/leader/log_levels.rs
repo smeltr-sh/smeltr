@@ -1,5 +1,5 @@
-//! The levels the fleet keeps its lines at, set by an operator: one for every area, and any area set apart from
-//! it (`crate::logs::levels`). Stored as a leader setting, kept by the leader's own process, and sent to every
+//! The levels the fleet keeps its lines at, set by an operator: one for every area, and an override for any area
+//! kept at its own (`crate::logs::levels`). Stored as a leader setting, kept by the leader's own process, and sent to every
 //! worker whole on each heartbeat answer.
 
 use axum::Json;
@@ -12,8 +12,8 @@ use crate::leader::{AppState, run_store};
 
 const KEY: &str = "log_levels";
 
-/// What is stored, or nothing set apart when nothing is. A stored value this build cannot read is nothing set
-/// apart too, so a worker keeps its own level rather than one nobody can see.
+/// What is stored, or the default with no overrides when nothing is. A stored value this build cannot read is the
+/// default too, so a worker keeps a level an operator can see on the leader rather than one nobody can.
 pub fn stored(store: &dyn Store) -> Result<LogLevels, StoreError> {
     Ok(store
         .setting(KEY)?
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn levels_travel_whole_and_absent_is_nothing_set_apart() {
+    fn levels_travel_whole_and_absent_is_the_default() {
         let text = serde_json::to_string(&levels(Some("info"), &[("kafka", "trace")])).unwrap();
         assert_eq!(text, r#"{"default":"info","areas":{"kafka":"trace"}}"#);
         let none: crate::heartbeat::HeartbeatResponse = serde_json::from_str(r#"{"captures":[],"holds":[]}"#).unwrap();
