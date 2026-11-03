@@ -588,7 +588,8 @@ impl Captures {
     /// Drop every session that finished more than `keep` ago. A capture nobody collected must not hold its records
     /// forever: this is the only thing that bounds the leader's memory across sessions.
     pub fn sweep(&self, keep: Duration) {
-        let _pass = tracing::trace_span!(target: "captures", "a background pass", task = "drop finished captures");
+        let _pass =
+            tracing::trace_span!(target: "captures", "a background pass", task = "drop finished captures").entered();
         let mut sessions = self.0.lock().unwrap();
         sessions.retain(|_, s| !s.done() || s.elapsed() < Duration::from_secs(s.invitation.deadline_secs) + keep);
     }

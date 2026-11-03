@@ -3445,7 +3445,7 @@ pub fn pack(repo_path: &Path) -> Result<(), GitError> {
     if loose <= LOOSE_LIMIT && packs <= PACK_LIMIT {
         return Ok(());
     }
-    let _pass = tracing::trace_span!(target: "git", "a background pass", task = "pack the git store");
+    let _pass = tracing::trace_span!(target: "git", "a background pass", task = "pack the git store").entered();
     // Not `gc --auto`: the limits are counted here, the same way a worker counts its packs. A cruft pack is where
     // `gc` keeps what no ref reaches until it expires, rather than loose, and before git 2.40 it has to be asked for.
     let output = Command::new("git")

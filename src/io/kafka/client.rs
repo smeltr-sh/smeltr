@@ -1591,7 +1591,8 @@ fn measure_lag(
                 Ok(marks) => marks,
                 Err(e) => {
                     any_failed = true;
-                    let due = failed(format!("{topic}[{partition}]'s high watermark could not be read: {e}"));
+                    // The partition is a field, not part of the fault: each failing partition would otherwise be a new one.
+                    let due = failed(format!("a high watermark could not be read: {e}"));
                     crate::debug_when!(due, name: "lag_unmeasured", target: "sources", group = %routes.group(), %topic, partition, error = %e, "a partition's high watermark could not be read, so its lag is not measured this round");
                     continue;
                 }

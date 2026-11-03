@@ -632,7 +632,8 @@ fn run(
     id: DestId,
     name: &str,
 ) {
-    // Lends the destination to every line this thread says.
+    // Lends the destination to every line this thread says while it is kept at trace. It opens once, so a line at
+    // trace names its destination itself too, for when trace is turned on after the thread started.
     let _span = tracing::trace_span!(target: "destinations", "an egress thread", subject = name).entered();
     // The destination's own batch ids, mapped back to the reader's.
     let mut owner: HashMap<BatchId, Owed> = HashMap::new();
@@ -701,6 +702,7 @@ fn run(
             let delivered = destination.deliver(local, Cow::Borrowed(&unit.rows));
             tracing::trace!(
                 name: "delivered", target: "destinations",
+                subject = name,
                 batch = unit.batch,
                 sent_as = local,
                 rows = unit.rows.len(),
@@ -741,7 +743,7 @@ fn run(
                     if let (Some(p), Some(c)) = (&mut pacer, paced) {
                         p.completed(queue, c);
                     }
-                    finish(queue, returns, metrics, id, unit, rejections, &mut again);
+                    finish(queue, returns, metrics, (id, name), unit, rejections, &mut again);
                 }
                 // Refusals seen at hand-over wait for the acknowledgment, so one completion carries every refusal
                 // against a batch. Handed to the transport is not delivered: `Dispatched::InFlight` means only that, so
@@ -784,6 +786,7 @@ fn run(
                     };
                     tracing::trace!(
                         name: "completed", target: "destinations",
+                        subject = name,
                         batch = owed.unit.batch,
                         sent_as = c.batch,
                         refused = c.rejections.len(),
@@ -811,7 +814,15 @@ fn run(
                             },
                         );
                     }
-                    finish(queue, returns, metrics, id, owed.unit, owed.rejections, &mut again);
+                    finish(
+                        queue,
+                        returns,
+                        metrics,
+                        (id, name),
+                        owed.unit,
+                        owed.rejections,
+                        &mut again,
+                    );
                 }
                 if failures {
                     cut_off = false;
@@ -881,7 +892,7 @@ fn finish(
     queue: &Queue,
     returns: &Returns,
     metrics: &MetricsHandle,
-    id: DestId,
+    (id, name): (DestId, &str),
     mut unit: Unit,
     mut rejections: Vec<Rejection>,
     again: &mut Vec<(Instant, Unit)>,
@@ -919,6 +930,7 @@ fn finish(
     let holds = queue.holds_refusals.load(Ordering::Relaxed);
     tracing::trace!(
         name: "finished", target: "destinations",
+        subject = name,
         batch = unit.batch,
         rows = unit.rows.len(),
         refused = rejections.len(),
