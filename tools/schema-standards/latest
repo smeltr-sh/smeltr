@@ -4,7 +4,8 @@
 set -euo pipefail
 out=src/schema/standards
 ours_ecs=$(sed -n 2p "$out/ecs-fields.csv" | cut -d, -f1)
-ours_ocsf=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$out/ocsf.json")
+# The newest OCSF release carried; an older one is kept on purpose.
+ours_ocsf=$(ls "$out"/ocsf-*.json | sed 's#.*/ocsf-\(.*\)\.json#\1#' | sort -V | tail -1)
 
 # The newest release tag, rc and dev tags left out.
 newest() {
@@ -21,4 +22,4 @@ for pair in "ECS $ours_ecs https://github.com/elastic/ecs.git" "OCSF $ours_ocsf 
         echo "$name: smeltr carries $ours, the latest"
     fi
 done
-[ "$stale" = 0 ] || { echo "Refresh with: just schemas-refresh <ecs> <ocsf>"; exit 1; }
+[ "$stale" = 0 ] || { echo "Refresh with: just schemas-refresh <ecs> <ocsf>..."; exit 1; }

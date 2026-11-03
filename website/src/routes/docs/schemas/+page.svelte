@@ -128,8 +128,9 @@
   <h2 id="ocsf">Read an OCSF class</h2>
   <ol>
     <li>
-      Choose <strong>OCSF</strong>. It reads the OCSF release built into Smeltr, which the choice
-      names. For another release, choose <strong>Upload a file</strong> and the
+      Choose <strong>OCSF</strong>, then the release the tools downstream read. Smeltr has more than
+      one built in and starts on the newest. For a release it does not have, choose
+      <strong>Upload a file</strong> and the
       <a href="https://github.com/ocsf/ocsf-schema">OCSF schema</a> at that release, compiled into
       one file with
       <a href="https://pypi.org/project/ocsf-schema-compiler/"><code>ocsf-schema-compiler</code></a

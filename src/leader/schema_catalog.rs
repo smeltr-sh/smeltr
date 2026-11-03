@@ -35,9 +35,12 @@ pub struct ReadRequest {
     /// The file, as text.
     #[serde(default)]
     pub text: String,
-    /// Read the release of ECS or OCSF smeltr carries (`schema::standard`) rather than `text`.
+    /// Read a release of ECS or OCSF smeltr carries (`schema::standard`) rather than `text`.
     #[serde(default)]
     pub built_in: bool,
+    /// The release `built_in` reads, by its version; the newest where empty.
+    #[serde(default)]
+    pub release: String,
     /// Whose requirements an ECS schema's fields take.
     #[serde(default)]
     pub requirements: crate::schema::ecs::Requirements,
@@ -77,11 +80,21 @@ pub fn read(req: &ReadRequest) -> Result<ReadSchema, String> {
                 preview: None,
             });
         }
+        ReadFormat::Ecs if req.built_in && !req.release.is_empty() && req.release != standard::ecs_version() => {
+            return Err(not_carried("ECS", &req.release));
+        }
         ReadFormat::Ecs => {
             let text = if req.built_in { standard::ECS } else { &req.text };
             crate::schema::ecs::with_requirements(crate::schema::ecs::read(text)?, req.requirements)
         }
-        ReadFormat::Ocsf if req.built_in => crate::schema::ocsf::read(&standard::ocsf(), &req.class, &req.cut)?,
+        ReadFormat::Ocsf if req.built_in => {
+            let version = match req.release.as_str() {
+                "" => &standard::ocsf_releases()[0].version,
+                named => named,
+            };
+            let ocsf = standard::ocsf(version).ok_or_else(|| not_carried("OCSF", version))?;
+            crate::schema::ocsf::read(&ocsf, &req.class, &req.cut)?
+        }
         ReadFormat::Ocsf => crate::schema::ocsf::read(&json()?, &req.class, &req.cut)?,
         _ if req.built_in => return Err("only ECS and OCSF are built in".to_string()),
         ReadFormat::Csv if req.preview => {
@@ -95,11 +108,17 @@ pub fn read(req: &ReadRequest) -> Result<ReadSchema, String> {
     declared(&req.id, "", fields)
 }
 
-/// The releases of the standards smeltr carries, for a schema to be read from one with `ReadRequest::built_in`.
+/// Why a built-in read of `standard`'s `version` is refused.
+fn not_carried(standard: &str, version: &str) -> String {
+    format!("smeltr carries no {standard} {version}")
+}
+
+/// The releases of the standards smeltr carries, each newest first, for a schema to be read from one with
+/// `ReadRequest::built_in` and `ReadRequest::release`.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Standards {
-    pub ecs: Release,
-    pub ocsf: Release,
+    pub ecs: Vec<Release>,
+    pub ocsf: Vec<Release>,
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -114,19 +133,21 @@ pub struct Release {
 
 pub fn standards() -> Standards {
     Standards {
-        ecs: Release {
+        ecs: vec![Release {
             version: standard::ecs_version().to_string(),
             source: format!(
                 "https://github.com/elastic/ecs/tree/v{}/generated",
                 standard::ecs_version()
             ),
             classes: Vec::new(),
-        },
-        ocsf: Release {
-            version: standard::ocsf_version().to_string(),
-            source: format!("https://github.com/ocsf/ocsf-schema/tree/{}", standard::ocsf_version()),
-            classes: standard::ocsf_classes().to_vec(),
-        },
+        }],
+        ocsf: (standard::ocsf_releases().iter())
+            .map(|r| Release {
+                version: r.version.clone(),
+                source: format!("https://github.com/ocsf/ocsf-schema/tree/{}", r.version),
+                classes: r.classes.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -289,6 +310,7 @@ mod tests {
             format: ReadFormat::JsonSchema,
             text: doc.to_string(),
             built_in: false,
+            release: String::new(),
             requirements: Default::default(),
             class: String::new(),
             cut: Default::default(),
@@ -300,11 +322,12 @@ mod tests {
 
     #[test]
     fn each_built_in_release_reads_as_a_bundles_schema() {
-        let req = |format, class: &str| ReadRequest {
+        let req = |format, release: &str, class: &str| ReadRequest {
             id: "x".to_string(),
             format,
             text: String::new(),
             built_in: true,
+            release: release.to_string(),
             requirements: Default::default(),
             class: class.to_string(),
             cut: Default::default(),
@@ -312,15 +335,44 @@ mod tests {
             types: Default::default(),
             preview: false,
         };
-        assert!(!read(&req(ReadFormat::Ecs, "")).unwrap().schema.fields.is_empty());
         let standards = standards();
-        assert!(standards.ocsf.classes.iter().any(|c| c.name == "authentication"));
-        for class in standards.ocsf.classes.iter().map(|c| &c.name) {
-            let read = read(&req(ReadFormat::Ocsf, class)).unwrap_or_else(|e| panic!("{class}: {e}"));
-            assert!(!read.schema.fields.is_empty(), "{class}");
+        let ecs = &standards.ecs[0].version;
+        for release in ["", ecs] {
+            assert!(
+                !read(&req(ReadFormat::Ecs, release, ""))
+                    .unwrap()
+                    .schema
+                    .fields
+                    .is_empty()
+            );
         }
         assert_eq!(
-            read(&req(ReadFormat::Csv, "")).unwrap_err(),
+            read(&req(ReadFormat::Ecs, "0.1.0", "")).unwrap_err(),
+            "smeltr carries no ECS 0.1.0"
+        );
+        assert!(standards.ocsf.len() > 1);
+        for release in &standards.ocsf {
+            let version = &release.version;
+            assert!(release.classes.iter().any(|c| c.name == "authentication"), "{version}");
+            for class in release.classes.iter().map(|c| &c.name) {
+                let read =
+                    read(&req(ReadFormat::Ocsf, version, class)).unwrap_or_else(|e| panic!("{version} {class}: {e}"));
+                assert!(!read.schema.fields.is_empty(), "{version} {class}");
+            }
+        }
+        // Unnamed, the newest: a class only it has reads.
+        let newest = &standards.ocsf[0].classes;
+        let only_newest = (newest.iter())
+            .find(|c| !standards.ocsf[1].classes.iter().any(|o| o.name == c.name))
+            .unwrap();
+        assert!(read(&req(ReadFormat::Ocsf, "", &only_newest.name)).is_ok());
+        assert!(read(&req(ReadFormat::Ocsf, &standards.ocsf[1].version, &only_newest.name)).is_err());
+        assert_eq!(
+            read(&req(ReadFormat::Ocsf, "0.1.0", "authentication")).unwrap_err(),
+            "smeltr carries no OCSF 0.1.0"
+        );
+        assert_eq!(
+            read(&req(ReadFormat::Csv, "", "")).unwrap_err(),
             "only ECS and OCSF are built in"
         );
     }
@@ -332,6 +384,7 @@ mod tests {
             format,
             text: text.to_string(),
             built_in: false,
+            release: String::new(),
             requirements: Default::default(),
             class: "authentication".to_string(),
             cut: Default::default(),

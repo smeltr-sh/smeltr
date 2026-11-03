@@ -12,6 +12,7 @@
     { id: 'settings', title: 'Settings' },
     { id: 'fields-it-reads', title: 'Fields it reads' },
     { id: 'how-it-works', title: 'How it works' },
+    { id: 'security-lake', title: 'Amazon Security Lake' },
     { id: 'verify', title: 'Verify' },
     { id: 'troubleshooting', title: 'Troubleshooting' },
     { id: 'see-also', title: 'See also' },
@@ -96,6 +97,31 @@
     was written least recently. A batch is acknowledged once every object holding its records has landed.
     Two objects never share a key, so records written again after a failure make new objects.
   </p>
+
+  <h2 id="security-lake">Amazon Security Lake</h2>
+  <p>
+    Security Lake reads OCSF records as Parquet objects that a custom source writes to its bucket.
+  </p>
+  <ol>
+    <li>
+      <a href="https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html"
+        >Add a custom source</a
+      > in Security Lake for each OCSF class you send. Each gives a bucket, a prefix, and a role to assume
+      with its external id.
+    </li>
+    <li>
+      <a href="/docs/schemas#ocsf">Add a schema from the OCSF class</a>, at the OCSF release
+      Security Lake reads for custom sources, and hold the pipeline to it.
+    </li>
+    <li>
+      Add an S3 destination for each custom source, with its bucket, its role in <code>roleArn</code
+      >
+      and its external id in <code>externalId</code>, format <code>parquet</code> and compression
+      <code>zstd</code>. Give <code>prefix</code> the custom source's prefix and the folders below
+      it that Security Lake names, with <code>%Y%m%d</code> where the day goes.
+    </li>
+    <li>Route each class to its own destination.</li>
+  </ol>
 
   <h2 id="verify">Verify</h2>
   <p>
