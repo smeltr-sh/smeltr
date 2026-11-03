@@ -728,8 +728,7 @@ pub async fn poll(state: AppState) {
         // Here and not in `sync_now`, which an administrator's sync also takes.
         let pass =
             tracing::trace_span!(target: "background.pass", "a background pass", task = "sync with the git remote");
-        let _ = sync_now(&state).await;
-        drop(pass);
+        let _ = tracing::Instrument::instrument(sync_now(&state), pass).await;
         tokio::select! {
             _ = tokio::time::sleep(every) => {}
             _ = state.remote.settings_changed.notified() => {}

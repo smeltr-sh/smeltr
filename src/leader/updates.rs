@@ -147,11 +147,10 @@ pub async fn poll(state: AppState) {
         let pass =
             tracing::trace_span!(target: "background.pass", "a background pass", task = "check for a newer release");
         let now = super::warnings::now_millis();
-        match fetch(own).await {
+        match tracing::Instrument::instrument(fetch(own), pass).await {
             Ok(newest) => state.updates.found(newest, now),
             Err(why) => state.updates.failed(why, now),
         }
-        drop(pass);
         tokio::select! {
             _ = tokio::time::sleep(EVERY) => {}
             _ = state.updates.settings_changed.notified() => {}
