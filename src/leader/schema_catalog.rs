@@ -80,19 +80,18 @@ pub fn read(req: &ReadRequest) -> Result<ReadSchema, String> {
                 preview: None,
             });
         }
-        ReadFormat::Ecs if req.built_in && !req.release.is_empty() && req.release != standard::ecs_version() => {
-            return Err(not_carried("ECS", &req.release));
-        }
         ReadFormat::Ecs => {
-            let text = if req.built_in { standard::ECS } else { &req.text };
+            let text = if req.built_in {
+                carried("ECS", &req.release, [standard::ecs_version()])?;
+                standard::ECS
+            } else {
+                &req.text
+            };
             crate::schema::ecs::with_requirements(crate::schema::ecs::read(text)?, req.requirements)
         }
         ReadFormat::Ocsf if req.built_in => {
-            let version = match req.release.as_str() {
-                "" => &standard::ocsf_releases()[0].version,
-                named => named,
-            };
-            let ocsf = standard::ocsf(version).ok_or_else(|| not_carried("OCSF", version))?;
+            let releases = standard::ocsf_releases().iter().map(|r| r.version.as_str());
+            let ocsf = standard::ocsf(carried("OCSF", &req.release, releases)?).expect("a carried release parses");
             crate::schema::ocsf::read(&ocsf, &req.class, &req.cut)?
         }
         ReadFormat::Ocsf => crate::schema::ocsf::read(&json()?, &req.class, &req.cut)?,
@@ -108,9 +107,20 @@ pub fn read(req: &ReadRequest) -> Result<ReadSchema, String> {
     declared(&req.id, "", fields)
 }
 
-/// Why a built-in read of `standard`'s `version` is refused.
-fn not_carried(standard: &str, version: &str) -> String {
-    format!("smeltr carries no {standard} {version}")
+/// The release of `standard` a built-in read takes: the one `named`, or the newest where `named` is empty.
+/// `newest_first` is what smeltr carries.
+fn carried<'a>(
+    standard: &str,
+    named: &str,
+    newest_first: impl IntoIterator<Item = &'a str>,
+) -> Result<&'a str, String> {
+    let mut releases = newest_first.into_iter();
+    match named {
+        "" => Ok(releases.next().expect("smeltr carries a release of each standard")),
+        named => releases
+            .find(|v| *v == named)
+            .ok_or_else(|| format!("smeltr carries no {standard} {named}")),
+    }
 }
 
 /// The releases of the standards smeltr carries, each newest first, for a schema to be read from one with
