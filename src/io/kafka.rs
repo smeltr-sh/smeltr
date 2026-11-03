@@ -175,7 +175,7 @@ pub fn total_partitions(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Op
         let md = match consumer.fetch_metadata(Some(topic), SETUP_TIMEOUT) {
             Ok(md) => md,
             Err(e) => {
-                tracing::debug!(target: "kafka.size_unknown", %topic, group = %config.group_id, error = %e, "a topic's partitions could not be counted, so the source's size is unknown");
+                tracing::debug!(name: "size_unknown", target: "sources", %topic, group = %config.group_id, error = %e, "a topic's partitions could not be counted, so the source's size is unknown");
                 return None;
             }
         };
@@ -450,7 +450,7 @@ impl KafkaSource {
     fn touch(&self) {
         if self.slot.touch() {
             tracing::info!(
-                target: "kafka.reader_resumed",
+                name: "reader_resumed", target: "sources",
                 subject = %self.topic,
                 "a Kafka source's reader is reading again; its topics rejoin the subscription"
             );
@@ -501,7 +501,7 @@ impl KafkaSource {
                     .place_failing
                     .fail_due(format!("its partitions' starts could not be resolved: {e}"))
                     .is_some();
-                crate::debug_when!(due, target: "kafka.placement_failed", group = %self.client.routes.group(), topic = %self.topic, error = %e, "a source still cannot place its held partitions; they wait for the next poll");
+                crate::debug_when!(due, name: "placement_failed", target: "sources", group = %self.client.routes.group(), topic = %self.topic, error = %e, "a source still cannot place its held partitions; they wait for the next poll");
                 return Ok(());
             }
         };
@@ -533,7 +533,7 @@ impl KafkaSource {
                         .place_failing
                         .fail_due(format!("its partitions could not be sought: {e}"))
                         .is_some();
-                    crate::debug_when!(due, target: "kafka.placement_failed", group = %self.client.routes.group(), topic = %self.topic, error = %e, "a source could not seek its held partitions; they wait for the next poll");
+                    crate::debug_when!(due, name: "placement_failed", target: "sources", group = %self.client.routes.group(), topic = %self.topic, error = %e, "a source could not seek its held partitions; they wait for the next poll");
                 }
             }
         }
@@ -556,7 +556,7 @@ impl KafkaSource {
     /// Marks a partition exhausted and pauses it so librdkafka stops fetching from it. Idempotent.
     fn mark_exhausted(&self, state: &mut client::SlotState, topic: &str, partition: i32) -> Result<(), IoError> {
         if state.exhausted.insert((topic.to_string(), partition)) {
-            tracing::info!(target: "kafka.partition_at_stop", group = %self.client.routes.group(), topic, partition, "a partition reached the stop time set for the source, so it is no longer fetched");
+            tracing::info!(name: "partition_at_stop", target: "sources", group = %self.client.routes.group(), topic, partition, "a partition reached the stop time set for the source, so it is no longer fetched");
             self.slot.sync(self.consumer(), state)?;
         }
         Ok(())
@@ -619,7 +619,7 @@ impl KafkaSource {
             self.stale_burst_at = Some(Instant::now());
             if repeated {
                 tracing::warn!(
-                    target: "kafka.commit_stale",
+                    name: "commit_stale", target: "sources",
                     subject = %self.topic,
                     error = cause,
                     "dropping an offset commit, in the second rebalance within ten minutes: the group is \
@@ -629,7 +629,7 @@ impl KafkaSource {
                 );
             } else {
                 tracing::info!(
-                    target: "kafka.commit_stale",
+                    name: "commit_stale", target: "sources",
                     subject = %self.topic,
                     error = cause,
                     "dropping an offset commit: the consumer group rebalanced and these partitions are no \
@@ -645,7 +645,7 @@ impl KafkaSource {
             Ok(()) => {
                 if self.stale_commit_logged {
                     tracing::info!(
-                        target: "kafka.commit_current",
+                        name: "commit_current", target: "sources",
                         subject = %self.topic,
                         dropped = self.stale_commits,
                         "commits are landing again after some were dropped while the consumer group rebalanced"
@@ -1320,7 +1320,7 @@ impl KafkaDestination {
             message_ceiling(&producer_config, &config.default_topic).unwrap_or((DEFAULT_BATCH_BYTES, "default"));
         let (message_bytes, batch_bytes) = request_sizes(ceiling);
         tracing::info!(
-            target: "kafka.message_ceiling",
+            name: "message_ceiling", target: "destinations",
             destination = %id,
             topic = %config.default_topic,
             ceiling_bytes = ceiling,

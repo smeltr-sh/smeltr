@@ -210,7 +210,7 @@ impl Oidc {
                 }
                 match stale {
                     Some(known) => {
-                        tracing::warn!(target: "leader.oidc_provider", issuer = %issuer, error = %error, "the OIDC provider could not be read again; its last keys are kept");
+                        tracing::warn!(name: "provider", target: "accounts", issuer = %issuer, error = %error, "the OIDC provider could not be read again; its last keys are kept");
                         Ok(known)
                     }
                     None => Err(error),
@@ -414,14 +414,14 @@ pub async fn start(State(auth): State<Auth>, headers: HeaderMap) -> Response {
         Ok(Some(settings)) => settings,
         Ok(None) => return back_to_gui(&auth, Ended::Unavailable, None),
         Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "the OIDC settings could not be read");
+            tracing::error!(name: "identity_unavailable", target: "enrollment", error = %e, "the OIDC settings could not be read");
             return back_to_gui(&auth, Ended::Unavailable, None);
         }
     };
     let known = match auth.oidc.provider(&settings.issuer).await {
         Ok(known) => known,
         Err(e) => {
-            tracing::warn!(target: "leader.oidc_provider", issuer = %settings.issuer, error = %e, "the OIDC provider could not be read");
+            tracing::warn!(name: "provider", target: "accounts", issuer = %settings.issuer, error = %e, "the OIDC provider could not be read");
             return back_to_gui(&auth, Ended::Provider, None);
         }
     };
@@ -489,7 +489,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
         back_to_gui(&auth, Ended::Refused, Some(state))
     };
     if let Some(error) = query.error {
-        tracing::warn!(target: "leader.sign_in_refused", provider_error = %bounded(&error), "the OIDC provider refused a sign-in");
+        tracing::warn!(name: "sign_in_refused", target: "accounts", provider_error = %bounded(&error), "the OIDC provider refused a sign-in");
         return refused("oidc");
     }
     let Some(code) = query.code else {
@@ -501,7 +501,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
         Ok(Some(settings)) => settings,
         Ok(None) => return back_to_gui(&auth, Ended::Unavailable, Some(state)),
         Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "the OIDC settings could not be read");
+            tracing::error!(name: "identity_unavailable", target: "enrollment", error = %e, "the OIDC settings could not be read");
             return back_to_gui(&auth, Ended::Unavailable, Some(state));
         }
     };
@@ -511,7 +511,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
     let known = match auth.oidc.provider(&settings.issuer).await {
         Ok(known) => known,
         Err(e) => {
-            tracing::warn!(target: "leader.oidc_provider", issuer = %settings.issuer, error = %e, "the OIDC provider could not be read");
+            tracing::warn!(name: "provider", target: "accounts", issuer = %settings.issuer, error = %e, "the OIDC provider could not be read");
             return back_to_gui(&auth, Ended::Provider, Some(state));
         }
     };
@@ -528,7 +528,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
     {
         Ok(tokens) => tokens,
         Err(e) => {
-            tracing::warn!(target: "leader.oidc_provider", issuer = %settings.issuer, error = %e, "an OIDC code could not be exchanged");
+            tracing::warn!(name: "provider", target: "accounts", issuer = %settings.issuer, error = %e, "an OIDC code could not be exchanged");
             return back_to_gui(&auth, Ended::Provider, Some(state));
         }
     };
@@ -542,7 +542,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
     let claims = match auth.oidc.verify(&known, &token, &expect, &settings.groups_claim).await {
         Ok(claims) => claims,
         Err(e) => {
-            tracing::warn!(target: "leader.sign_in_refused", error = %e, "an OIDC ID token was refused");
+            tracing::warn!(name: "sign_in_refused", target: "accounts", error = %e, "an OIDC ID token was refused");
             return refused(&settings.issuer);
         }
     };
@@ -550,7 +550,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
     let roles = match blocking(move || store.list_roles()).await {
         Ok(roles) => roles,
         Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "the roles could not be read");
+            tracing::error!(name: "identity_unavailable", target: "enrollment", error = %e, "the roles could not be read");
             return back_to_gui(&auth, Ended::Unavailable, Some(state));
         }
     };
@@ -558,7 +558,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
         // The groups as the provider sent them: the one place an administrator sees the names a role's groups must
         // match before anybody has been let in.
         tracing::warn!(
-            target: "leader.sign_in_refused",
+            name: "sign_in_refused", target: "accounts",
             subject = %bounded(&claims.subject),
             login = %fit_login(&claims).unwrap_or_default(),
             groups = %bounded(&claims.groups.join(", ")),
@@ -593,7 +593,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
     let user = match signed_in {
         Ok(user) => user,
         Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "an OIDC sign-in could not be recorded");
+            tracing::error!(name: "identity_unavailable", target: "enrollment", error = %e, "an OIDC sign-in could not be recorded");
             return back_to_gui(&auth, Ended::Unavailable, Some(state));
         }
     };
@@ -603,7 +603,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
         return refused(&user.id);
     }
     let Some(issued) = auth.sessions.issue(&user.id, user.generation, false, Instant::now()) else {
-        tracing::warn!(target: "leader.sign_in_refused", "too many sessions are open for an OIDC sign-in");
+        tracing::warn!(name: "sign_in_refused", target: "accounts", "too many sessions are open for an OIDC sign-in");
         return back_to_gui(&auth, Ended::Unavailable, Some(state));
     };
     if let Some(refresh_token) = refresh_token {
@@ -631,7 +631,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
 /// gate. A provider that refuses a grant, or whose answer no longer admits the person, ends that session. A provider
 /// that cannot be reached leaves every session as it is, to be tried again one interval later.
 pub async fn refresh_due(auth: &Auth, every: Duration) {
-    let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "refresh OIDC sessions");
+    let _pass = tracing::trace_span!(target: "accounts", "a background pass", task = "refresh OIDC sessions");
     let due = auth.sessions.due_grants(Instant::now(), every);
     if due.is_empty() {
         return;
@@ -645,7 +645,7 @@ pub async fn refresh_due(auth: &Auth, every: Duration) {
         Ok(Some(settings)) => settings,
         Ok(None) => return retry_all(due),
         Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "the OIDC settings could not be read");
+            tracing::error!(name: "identity_unavailable", target: "enrollment", error = %e, "the OIDC settings could not be read");
             return retry_all(due);
         }
     };
@@ -655,7 +655,7 @@ pub async fn refresh_due(auth: &Auth, every: Duration) {
     let known = match auth.oidc.provider(&settings.issuer).await {
         Ok(known) => known,
         Err(e) => {
-            tracing::warn!(target: "leader.oidc_provider", issuer = %settings.issuer, error = %e, "the OIDC provider could not be read");
+            tracing::warn!(name: "provider", target: "accounts", issuer = %settings.issuer, error = %e, "the OIDC provider could not be read");
             return retry_all(due);
         }
     };
@@ -663,7 +663,7 @@ pub async fn refresh_due(auth: &Auth, every: Duration) {
     let roles = match blocking(move || store.list_roles()).await {
         Ok(roles) => roles,
         Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "the roles could not be read");
+            tracing::error!(name: "identity_unavailable", target: "enrollment", error = %e, "the roles could not be read");
             return retry_all(due);
         }
     };
@@ -687,7 +687,7 @@ pub async fn refresh_due(auth: &Auth, every: Duration) {
             Err(RefreshFailure::Refused(why)) => end_session(auth, &d, &why),
             Err(RefreshFailure::Unavailable(why)) => {
                 // Every grant goes to the same provider, so the rest would wait out the same failure in turn.
-                tracing::warn!(target: "leader.oidc_provider", issuer = %settings.issuer, error = %why, "OIDC sessions could not be refreshed");
+                tracing::warn!(name: "provider", target: "accounts", issuer = %settings.issuer, error = %why, "OIDC sessions could not be refreshed");
                 auth.sessions.retry_later(&d.key, Instant::now());
                 return retry_all(due.collect());
             }
@@ -721,7 +721,7 @@ async fn refreshed_one(
             return end_session(auth, &d, &format!("its refreshed ID token was refused: {why}"));
         }
         Err(Unverified::KeysUnavailable(why)) => {
-            tracing::warn!(target: "leader.oidc_provider", issuer = %settings.issuer, error = %why, "the OIDC provider's keys could not be read");
+            tracing::warn!(name: "provider", target: "accounts", issuer = %settings.issuer, error = %why, "the OIDC provider's keys could not be read");
             // Renewed rather than retried, so a refresh token the provider rotated is the one spent next time.
             return auth.sessions.renewed(&d.key, refreshed.refresh_token, Instant::now());
         }
@@ -747,7 +747,7 @@ async fn refreshed_one(
         Ok(true) => auth.sessions.renewed(&d.key, refreshed.refresh_token, Instant::now()),
         Ok(false) => end_session(auth, &d, "its refreshed ID token names somebody else"),
         Err(e) => {
-            tracing::error!(target: "leader.identity_unavailable", error = %e, "a refreshed OIDC sign-in could not be recorded");
+            tracing::error!(name: "identity_unavailable", target: "enrollment", error = %e, "a refreshed OIDC sign-in could not be recorded");
             // Renewed rather than retried, so a refresh token the provider rotated is the one spent next time.
             auth.sessions.renewed(&d.key, refreshed.refresh_token, Instant::now());
         }
@@ -757,7 +757,7 @@ async fn refreshed_one(
 /// End `d`'s session because of what its provider said, and say so in the audit.
 fn end_session(auth: &Auth, d: &Due, why: &str) {
     if auth.sessions.end(&d.key) {
-        tracing::info!(target: "leader.oidc_session_ended", user = %d.user_id, reason = %bounded(why), "an OIDC session ended at its provider");
+        tracing::info!(name: "session_ended", target: "accounts", user = %d.user_id, reason = %bounded(why), "an OIDC session ended at its provider");
         accounts::record(auth.store.as_ref(), &Actor::system(), "logout", &d.user_id, "ok");
     }
 }

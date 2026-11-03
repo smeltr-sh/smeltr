@@ -343,7 +343,7 @@ fn read(store: &RegistryStore, metric: &str, since_ms: i64) -> Vec<(String, Subj
         .series_since(metric, Tier::TenSeconds, since_ms)
         .unwrap_or_else(|e| {
             tracing::warn!(
-                target: "map.metric_unreadable",
+                name: "map_metric_unreadable", target: "status",
                 subject = %metric,
                 error = %e,
                 "could not read a metric for the map's measurements, so its nodes show no reading"

@@ -368,12 +368,12 @@ fn assemble_at(
     let loaded = super::validate_at(file, declared_at).map_err(BundleError::Load);
     match &loaded {
         Ok(system) => tracing::trace!(
-            target: "bundle.loaded",
+            name: "loaded", target: "deploy",
             pipelines = system.pipelines.len(),
             validated = system.compiled.is_some(),
             "a bundle was read"
         ),
-        Err(e) => tracing::trace!(target: "bundle.refused", error = %e, "a bundle was read but did not validate"),
+        Err(e) => tracing::trace!(name: "refused", target: "deploy", error = %e, "a bundle was read but did not validate"),
     }
     loaded
 }
@@ -385,7 +385,7 @@ pub fn load_bundle_dir(root: &Path) -> Result<LoadedSystem, BundleError> {
 
 /// Read and validate one bundle out of `files`. A relative lookup path in it resolves against `at`, which is where
 /// `files` reads from -- a directory, or a commit.
-#[tracing::instrument(level = "trace", target = "bundle.load", name = "a bundle load", skip_all, fields(at = %at))]
+#[tracing::instrument(level = "trace", target = "deploy", name = "a bundle load", skip_all, fields(at = %at))]
 pub fn load_bundle_from(files: &mut dyn FileSet, at: &BundleAt) -> Result<LoadedSystem, BundleError> {
     let mut parts = read_parts(files, "")?;
     let Some(manifest) = parts.manifest.take() else {
@@ -513,7 +513,7 @@ pub fn load_group_dir(root: &Path, group_id: &str) -> Result<LoadedSystem, Bundl
 /// which it cannot answer from a directory it never checks out.
 #[tracing::instrument(
     level = "trace",
-    target = "bundle.load",
+    target = "deploy",
     name = "a bundle load",
     skip_all,
     fields(group = group_id, at = %group_at)

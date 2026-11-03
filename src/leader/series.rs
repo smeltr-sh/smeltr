@@ -681,7 +681,7 @@ impl RegistryStore {
             drop(conn);
             let kept = set_aside(path)?;
             tracing::warn!(
-                target: "registry.rebuilt",
+                name: "rebuilt", target: "heartbeats",
                 path = %path.display(),
                 kept = %kept.display(),
                 damage = %found,
@@ -969,7 +969,7 @@ impl RegistryStore {
                 }
                 // Dropped, the savepoint rolls back.
                 Err(e) => tracing::warn!(
-                    target: "series.streams_not_recorded",
+                    name: "streams_not_recorded", target: "status",
                     subject = %beat.worker_id,
                     group = %streams.group_id,
                     error = %e,
@@ -1277,7 +1277,7 @@ impl RegistryStore {
     ///
     /// Also trims the logs table to its row cap, since that is the other thing here that grows.
     pub fn maintain(&self, now_ms: i64) -> Result<(), StoreError> {
-        let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "trim the registry's logs and series");
+        let _pass = tracing::trace_span!(target: "status", "a background pass", task = "trim the registry's logs and series");
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction()?;
 
@@ -1361,7 +1361,7 @@ impl RegistryStore {
             .store(now_ms + Tier::TenSeconds.bucket_ms(), Ordering::Relaxed);
         if let Err(e) = self.maintain(now_ms) {
             tracing::warn!(
-                target: "series.maintenance_failed",
+                name: "maintenance_failed", target: "status",
                 error = %e,
                 "registry series maintenance failed, so old points are not being rolled up or dropped"
             );

@@ -364,7 +364,7 @@ impl Sessions {
     /// Drop what has expired. Called on a schedule so a leader nobody visits does not hold a session per sign-in
     /// since it started.
     pub fn sweep(&self, now: Instant) -> usize {
-        let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "drop expired sign-in sessions");
+        let _pass = tracing::trace_span!(target: "accounts", "a background pass", task = "drop expired sign-in sessions");
         let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let lifetimes = held.lifetimes;
         let before = held.entries.len();

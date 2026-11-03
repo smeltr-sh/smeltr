@@ -901,7 +901,7 @@ pub fn last_checkpoint(log: &Log) -> Option<i64> {
     let bytes = match log.get("_last_checkpoint") {
         Ok(bytes) => bytes?,
         Err(e) => {
-            tracing::debug!(target: "delta.checkpoint_hint_unreadable", subject = log.subject(), error = %e, "the log's checkpoint hint could not be read, so the log is listed from its start");
+            tracing::debug!(name: "checkpoint_hint_unreadable", target: "destinations", subject = log.subject(), error = %e, "the log's checkpoint hint could not be read, so the log is listed from its start");
             return None;
         }
     };

@@ -311,7 +311,7 @@ pub fn seed_default_group(
     // holds the manifest and stop here again.
     if seeded && let Err(e) = store.set_group_hue(group_id, DEFAULT_HUES[0], None) {
         tracing::warn!(
-            target: "leader.seeded_group_color_unrecorded",
+            name: "seeded_group_color_unrecorded", target: "deploy",
             subject = %group_id,
             error = %e,
             "a worker group was seeded without a color"
@@ -379,7 +379,7 @@ fn create_group_in(
             // a store hiccup here is a color to pick again, not a failed create.
             if let Err(e) = store.set_group_hue(&req.id, hue, None) {
                 tracing::warn!(
-                    target: "leader.created_group_color_unrecorded",
+                    name: "created_group_color_unrecorded", target: "deploy",
                     subject = %req.id,
                     error = %e,
                     "a worker group has no color recorded"

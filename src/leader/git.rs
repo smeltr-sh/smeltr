@@ -730,7 +730,7 @@ fn commit_tree_in(
         .map(|id| id.detach())
         .map_err(|e| GitError::failed(format!("writing a commit: {e}")))?;
     tracing::trace!(
-        target: "git.commit_written",
+        name: "commit_written", target: "git",
         commit = %id,
         %tree,
         parents = parents.len(),
@@ -802,7 +802,7 @@ fn edit_refs(repo: &gix::Repository, edits: Vec<gix::refs::transaction::RefEdit>
         let reference = edit.name.as_bstr().to_string();
         match &edit.change {
             Change::Update { new, expected, .. } => tracing::trace!(
-                target: "git.ref_moved",
+                name: "ref_moved", target: "git",
                 %reference,
                 from = match expected {
                     gix::refs::transaction::PreviousValue::MustExistAndMatch(old)
@@ -812,7 +812,7 @@ fn edit_refs(repo: &gix::Repository, edits: Vec<gix::refs::transaction::RefEdit>
                 to = %named(new),
                 "a ref moved"
             ),
-            Change::Delete { .. } => tracing::trace!(target: "git.ref_deleted", %reference, "a ref was deleted"),
+            Change::Delete { .. } => tracing::trace!(name: "ref_deleted", target: "git", %reference, "a ref was deleted"),
         }
     }
     forget_advertisement();
@@ -2238,7 +2238,7 @@ pub fn deploy_squash(data_dir: &Path, squash: &Squash, author: &Actor) -> Result
     // already happened by here -- workers take it on their next heartbeat -- so a branch that will not go is
     // reported by it staying on the list rather than by an error that reads as "it did not deploy".
     if let Err(e) = delete_branch(data_dir, branch, Some(&squash.tip)) {
-        tracing::debug!(target: "git.branch_not_deleted", %branch, error = %e.message, "a merged branch was not deleted");
+        tracing::debug!(name: "branch_not_deleted", target: "git", %branch, error = %e.message, "a merged branch was not deleted");
     }
     Ok(())
 }
@@ -2418,7 +2418,7 @@ fn deploy_in(
     edit_refs(repo, edits).map_err(|e| GitError::failed(format!("the fleet did not move: {e}")))?;
     let from = running.map(|id| id.to_string());
     tracing::info!(
-        target: "deploy.moved",
+        name: "moved", target: "deploy",
         commit = %new,
         from = from.as_deref(),
         %subject,
@@ -3218,7 +3218,7 @@ fn backend(
             && cached_repo == repo_path
             && made.elapsed() < ADVERTISEMENT_TTL
         {
-            tracing::trace!(target: "git.served", %path_info, method, push = receive, cached = true, "the leader's repository answered a git request");
+            tracing::trace!(name: "served", target: "git", %path_info, method, push = receive, cached = true, "the leader's repository answered a git request");
             return Ok(response.clone());
         }
     }
@@ -3270,7 +3270,7 @@ fn backend(
     let out = run(cmd, &["http-backend"], body)?;
     let response = parse_cgi(&out)?;
     tracing::trace!(
-        target: "git.served",
+        name: "served", target: "git",
         %path_info,
         method,
         status = response.status,
@@ -3443,7 +3443,7 @@ pub fn pack(repo_path: &Path) -> Result<(), GitError> {
     if loose <= LOOSE_LIMIT && packs <= PACK_LIMIT {
         return Ok(());
     }
-    let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "pack the git store");
+    let _pass = tracing::trace_span!(target: "git", "a background pass", task = "pack the git store");
     // Not `gc --auto`: the limits are counted here, the same way a worker counts its packs. A cruft pack is where
     // `gc` keeps what no ref reaches until it expires, rather than loose, and before git 2.40 it has to be asked for.
     let output = Command::new("git")
@@ -3635,7 +3635,7 @@ fn run(mut cmd: Command, args: &[&str], stdin_body: &[u8]) -> Result<Vec<u8>, Gi
     let _ = writer.join();
 
     tracing::trace!(
-        target: "git.ran",
+        name: "ran", target: "git",
         args = ?args,
         code = output.status.code(),
         out_bytes = output.stdout.len(),

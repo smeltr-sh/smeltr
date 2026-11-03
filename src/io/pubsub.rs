@@ -113,7 +113,7 @@ impl PubSub {
         let unheld = self.modify(&handles, visibility);
         if let Some((_, why)) = unheld.first() {
             tracing::warn!(
-                target: "object_source.receive_failed",
+                name: "receive_failed", target: "sources",
                 count = unheld.len(),
                 error = %why,
                 "messages pulled could not be held; they are left to be redelivered"
@@ -166,7 +166,7 @@ fn batch(
             };
             if lapsed_is_done && reason.starts_with("PERMANENT_FAILURE") {
                 tracing::warn!(
-                    target: "object_source.delete_failed",
+                    name: "delete_failed", target: "sources",
                     reason,
                     "a finished message had already lapsed back onto the subscription; it will be read again"
                 );

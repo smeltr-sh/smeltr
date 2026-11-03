@@ -18,7 +18,7 @@
 //! - **A call site reports once per event, not once per element.** A loop that refuses a thousand rows says so
 //!   once, with a thousand in a field. That is what keeps output proportional to what happened rather than to how
 //!   much data it happened to.
-//! - **A log is data.** A timestamp, a severity, a site, a sentence and typed fields. The console
+//! - **A log is data.** A timestamp, a severity, a class and a type, a sentence and typed fields. The console
 //!   rendering is one view of it; what a SIEM reads is the fields, not a parse of the sentence.
 //!
 //! A path that is about to exit does not write here. It prints and goes: a buffer has nothing to offer a process
@@ -31,6 +31,7 @@ pub mod levels;
 mod noted;
 
 pub(crate) use console::{render_fields, render_value, stamp};
+pub use layer::library_said;
 #[cfg(test)]
 pub(crate) use layer::LogLayer;
 
@@ -44,9 +45,9 @@ pub use event::{Event, Value};
 pub use noted::Noted;
 pub use tracing::Level;
 
-/// One event as a test reads it: its level, its target, and its fields with the sentence under `message`.
+/// One event as a test reads it: its level, its class and type, and its fields with the sentence under `message`.
 #[cfg(test)]
-pub(crate) type Said = (Level, String, Vec<(String, String)>);
+pub(crate) type Said = (Level, String, String, Vec<(String, String)>);
 
 /// Every event raised on this thread while `f` runs.
 #[cfg(test)]
@@ -71,6 +72,7 @@ pub(crate) fn said(f: impl FnOnce()) -> Vec<Said> {
             self.0.lock().unwrap().push((
                 *event.metadata().level(),
                 event.metadata().target().to_string(),
+                event.metadata().name().to_string(),
                 fields.0,
             ));
         }
@@ -227,7 +229,7 @@ fn log_panics() {
                 let panic = panic_text(info.payload());
                 let thread = std::thread::current();
                 tracing::error!(
-                    target: "process.panicked",
+                    name: "panicked", target: "processes",
                     thread = thread.name().unwrap_or_default(),
                     location = info.location().map(|l| l.to_string()).unwrap_or_default(),
                     %panic,
@@ -262,9 +264,11 @@ static WORKER: OnceLock<String> = OnceLock::new();
 /// Whether this process runs a leader and no worker, so that what no thread of the leader's raised is the leader's
 /// all the same: a thread it spawned itself, or one before it started.
 static NO_WORKER: AtomicBool = AtomicBool::new(false);
-/// What the drain thread has written, by site. Whoever holds a registry publishes it; `logs` stays underneath
-/// `metrics` rather than depending on it. This is what says whether one site is drowning the rest.
-static WRITTEN: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Default::default);
+/// What the drain thread has written, by class and type. Whoever holds a registry publishes it; `logs` stays
+/// underneath `metrics` rather than depending on it. This is what says whether one line is drowning the rest.
+static WRITTEN: LazyLock<Mutex<HashMap<Written, u64>>> = LazyLock::new(Default::default);
+/// A line's class and type, as [`WRITTEN`] counts it.
+type Written = (Option<std::borrow::Cow<'static, str>>, std::borrow::Cow<'static, str>);
 /// Written, and not yet acknowledged by the leader. Drained by the heartbeat, which drops only what landed.
 static PENDING: LazyLock<Mutex<VecDeque<Event>>> = LazyLock::new(Default::default);
 /// What this process's leader raised and has not yet written into its own store. Apart from [`PENDING`], so a
@@ -347,6 +351,20 @@ macro_rules! debug_when {
             ::tracing::trace!($($line)+)
         }
     };
+}
+
+/// Whether a line of this type and class said here at this level would be kept, for a site that does work only to
+/// say it: `tracing::enabled!` cannot name a type.
+#[macro_export]
+macro_rules! log_enabled {
+    (name: $name:literal, target: $target:literal, $level:expr) => {
+        $crate::logs::kept($target, $name, ::std::module_path!(), $level)
+    };
+}
+
+/// Whether a line of `class` and `kind` said in `module` at `level` would be kept. [`log_enabled!`]'s.
+pub fn kept(class: &str, kind: &str, module: &str, level: Level) -> bool {
+    level <= max_level() && level <= levels::kept_at(Some(class), kind, levels::service(module))
 }
 
 /// `took` in whole milliseconds, as a line's `ms` says how long something took.
@@ -532,14 +550,15 @@ pub fn unwritable() -> u64 {
     UNWRITABLE.load(Ordering::Relaxed)
 }
 
-/// What has been written, by site, for the life of the process. The answer to "is one site drowning the rest",
-/// which is the question that decides whether these events ever need folding.
-pub fn written_by_site() -> Vec<(String, u64)> {
+/// What has been written, by class and type, for the life of the process. The answer to "is one line drowning the
+/// rest", which is the question that decides whether these events ever need folding. A library's line outside any
+/// span of ours has no class.
+pub fn written_by_type() -> Vec<(Option<String>, String, u64)> {
     WRITTEN
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .map(|(site, n)| (site.clone(), *n))
+        .map(|((class, kind), n)| (class.as_deref().map(str::to_string), kind.to_string(), *n))
         .collect()
 }
 
@@ -574,7 +593,7 @@ pub fn report_losses() {
             let count = |n: u64| (n > 0).then_some(n);
             while_delivering(|| {
                 tracing::warn!(
-                    target: "logs.events_lost",
+                    name: "events_lost", target: "logs",
                     dropped = count(dropped),
                     undelivered = count(undelivered),
                     unread = count(unread),
@@ -585,7 +604,7 @@ pub fn report_losses() {
         }
     } else if last.1.clear() {
         while_delivering(|| {
-            tracing::info!(target: "logs.events_kept_again", "no log event has been lost since the last report");
+            tracing::info!(name: "events_kept_again", target: "logs", "no log event has been lost since the last report");
         });
     }
 }
@@ -746,7 +765,7 @@ fn drain(receiver: Receiver<Message>) {
     wake.notify_all();
 }
 
-/// Write one event, raised by a thread of the leader's where `leader`, and count it against its site. The drain thread's job, and also the caller's own on the paths
+/// Write one event, raised by a thread of the leader's where `leader`, and count it against its class and type. The drain thread's job, and also the caller's own on the paths
 /// that have no drain thread to hand to.
 ///
 /// Counted after the write and only when it landed: a count of what was said is worth nothing if it also counts
@@ -765,15 +784,12 @@ fn take(event: Event, leader: bool) {
     // from whether anybody here did, and gating one on the other means a daemon with a closed stderr tells the
     // leader nothing -- the one shape where its console was already useless.
     if console::write(&event).is_ok() {
-        let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
-        // A site is almost always one this map already holds, and its key is a `&'static str` for everything
-        // smeltr writes itself, so the common path neither allocates nor copies.
-        match written.get_mut(event.site.as_ref()) {
-            Some(count) => *count += 1,
-            None => {
-                written.insert(event.site.to_string(), 1);
-            }
-        }
+        // The key is borrowed for everything smeltr says itself, so the common path neither allocates nor copies.
+        *WRITTEN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry((event.class.clone(), event.r#type.clone()))
+            .or_default() += 1;
     } else {
         UNWRITABLE.fetch_add(1, Ordering::Relaxed);
     }

@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::time::{Instant, SystemTime};
 
 use tracing::span::{Attributes, Id, Record};
+use tracing::subscriber::Interest;
 use tracing::{Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
@@ -23,22 +24,50 @@ pub struct LogLayer;
 
 /// What a span of ours knew, kept on it for the lines raised inside it and for its own closing line.
 struct Known {
+    /// Its target, which a library's line said inside it takes as its class.
+    class: &'static str,
     fields: Vec<(Cow<'static, str>, super::event::Value)>,
     opened: Instant,
 }
+
+/// The type of the line a span of ours says when it closes.
+const FINISHED: &str = "finished";
 
 impl<S> Layer<S> for LogLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    /// Asked once per callsite and cached until the levels change, so a site below its area's level costs its
-    /// caller nothing at all: the field expressions and the message are never evaluated. A library's line through
-    /// the `log` facade is asked each time, with the library's own target.
-    fn enabled(&self, metadata: &tracing::Metadata<'_>, _: Context<'_, S>) -> bool {
+    /// A library's call site is asked each time, since its class is the span it is said inside. Ours are asked once
+    /// and cached until the levels change.
+    fn register_callsite(&self, metadata: &'static tracing::Metadata<'static>) -> Interest {
+        if is_library(metadata.target()) {
+            Interest::sometimes()
+        } else if self.enabled(metadata, Context::none()) {
+            Interest::always()
+        } else {
+            Interest::never()
+        }
+    }
+
+    /// Asked once per call site of ours and cached until the levels change, so a site below its level costs its
+    /// caller nothing at all: the field expressions and the message are never evaluated. A library's line, through
+    /// the `log` facade or not, is asked each time, with the library's own target.
+    fn enabled(&self, metadata: &tracing::Metadata<'_>, ctx: Context<'_, S>) -> bool {
         let target = metadata.target();
         let level = as_said_here(target, *metadata.level());
-        // The highest any area keeps first, which needs no lock: a library's line through the facade asks every time.
-        level <= super::max_level() && level <= super::levels::kept_at(target)
+        // The highest any line is kept at first, which needs no lock: a library's line is asked every time.
+        if level > super::max_level() {
+            return false;
+        }
+        let kept = if is_library(target) {
+            let class = ctx.lookup_current().and_then(|span| class_around(span.scope()));
+            super::levels::kept_at(class, library(target), super::levels::service(target))
+        } else {
+            let kind = if metadata.is_span() { FINISHED } else { metadata.name() };
+            let service = metadata.module_path().and_then(super::levels::service);
+            super::levels::kept_at(Some(target), kind, service)
+        };
+        level <= kept
     }
 
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
@@ -49,6 +78,7 @@ where
         attrs.record(&mut collected);
         if let Some(span) = ctx.span(id) {
             span.extensions_mut().insert(Known {
+                class: attrs.metadata().target(),
                 fields: collected.fields,
                 opened: Instant::now(),
             });
@@ -74,20 +104,34 @@ where
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
         let mut collected = Collect::default();
         event.record(&mut collected);
+        let metadata = event.metadata();
 
         // `tracing-log` dispatches every record from one callsite per level, whose target is the literal "log",
         // and carries the originating library in a field instead. Our own events have it in their metadata.
-        let site = match collected.log_target.take() {
-            Some(target) => Cow::Owned(target),
-            None => Cow::Borrowed(event.metadata().target()),
+        let (class, kind, service) = match collected.log_target.take() {
+            Some(target) => {
+                let class = ctx.event_scope(event).and_then(class_around);
+                let service = super::levels::service(&target);
+                (class, Cow::Owned(library(&target).to_string()), service)
+            }
+            None if is_library(metadata.target()) => {
+                let class = ctx.event_scope(event).and_then(class_around);
+                let target = metadata.target();
+                (class, Cow::Borrowed(library(target)), super::levels::service(target))
+            }
+            None => (
+                Some(metadata.target()),
+                Cow::Borrowed(metadata.name()),
+                metadata.module_path().and_then(super::levels::service),
+            ),
         };
         // Innermost first, so a field the line or a nearer span names wins over the same name further out.
         let mut fields = collected.fields;
         for span in ctx.event_scope(event).into_iter().flatten() {
             lend(&span.extensions(), &mut fields);
         }
-        let level = as_said_here(event.metadata().target(), *event.metadata().level());
-        hand_off(shaped(level, site, collected.message, fields));
+        let level = as_said_here(metadata.target(), *metadata.level());
+        hand_off(shaped(level, class, kind, service, collected.message, fields));
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
@@ -108,11 +152,37 @@ where
         let message = format!("{} finished", metadata.name());
         hand_off(shaped(
             *metadata.level(),
-            Cow::Borrowed(metadata.target()),
+            Some(metadata.target()),
+            Cow::Borrowed(FINISHED),
+            metadata.module_path().and_then(super::levels::service),
             message,
             fields,
         ));
     }
+}
+
+/// The class of the innermost span of ours in `scope`, which a library's line said there takes.
+fn class_around<S>(scope: tracing_subscriber::registry::Scope<'_, S>) -> Option<&'static str>
+where
+    S: for<'a> LookupSpan<'a>,
+{
+    scope
+        .into_iter()
+        .find_map(|span| span.extensions().get::<Known>().map(|known| known.class))
+}
+
+/// A line `library` said for a part of smeltr of `class`, where no span of ours is around it to lend one, from code
+/// that talks to `service`. librdkafka calls back on its own threads, for a source's client or a destination's.
+pub fn library_said(class: &'static str, library: &'static str, service: &'static str, level: Level, message: String) {
+    let level = as_said_here(library, level);
+    if level <= super::max_level() && level <= super::levels::kept_at(Some(class), library, Some(service)) {
+        hand_off(shaped(level, Some(class), Cow::Borrowed(library), Some(service), message, Vec::new()));
+    }
+}
+
+/// A library's line's type: its crate, which is its target's first part.
+fn library(target: &str) -> &str {
+    target.split_once("::").map_or(target, |(krate, _)| krate)
 }
 
 /// `known`'s fields, onto `fields` where they do not already name the same thing.
@@ -132,14 +202,18 @@ fn lend(
 /// life.
 fn shaped(
     level: Level,
-    site: Cow<'static, str>,
+    class: Option<&'static str>,
+    kind: Cow<'static, str>,
+    service: Option<&'static str>,
     message: String,
     fields: Vec<(Cow<'static, str>, super::event::Value)>,
 ) -> Event {
     Event {
         timestamp: SystemTime::now(),
         level,
-        site,
+        class: class.map(Cow::Borrowed),
+        r#type: kind,
+        service: service.map(Cow::Borrowed),
         message,
         fields,
         worker: super::worker(),
@@ -201,11 +275,11 @@ mod tests {
     fn a_span_lends_its_fields_and_says_when_it_ends() {
         use super::super::event::Value;
         let events = handed(|| {
-            let outer = tracing::trace_span!(target: "runtime.read", "a read", subject = "orders", batch = 7_u64);
+            let outer = tracing::trace_span!(target: "pipelines", "a read", subject = "orders", batch = 7_u64);
             let _outer = outer.enter();
-            let inner = tracing::trace_span!(target: "runtime.commit", "a commit", batch = 8_u64);
+            let inner = tracing::trace_span!(target: "pipelines", "a commit", batch = 8_u64);
             let _inner = inner.enter();
-            tracing::trace!(target: "runtime.committed", partitions = 2_u64, "offsets were committed");
+            tracing::trace!(name: "committed", target: "pipelines", partitions = 2_u64, "offsets were committed");
         });
         let line = events.iter().find(|e| e.site == "runtime.committed").expect("the line");
         assert_eq!(field(line, "subject"), Some(&Value::Str("orders".into())));
@@ -266,8 +340,8 @@ mod tests {
         let tap = super::super::tap();
         tracing::subscriber::with_default(tracing_subscriber::registry().with(LogLayer), || {
             let say = || {
-                tracing::trace!(target: "kafka.lag_unmeasured", "lag cannot be measured");
-                tracing::trace!(target: "store.statement", "a store ran a statement");
+                tracing::trace!(name: "kafka_lag_unmeasured", target: "sources", "lag cannot be measured");
+                tracing::trace!(name: "statement_ran", target: "store", "a store ran a statement");
             };
             levels::set(Levels::at(Level::INFO));
             say();
@@ -286,7 +360,7 @@ mod tests {
     #[test]
     fn a_span_never_entered_says_when_it_ends() {
         let events = handed(|| {
-            let pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "check alerts");
+            let pass = tracing::trace_span!(target: "processes", "a background pass", task = "check alerts");
             drop(pass);
         });
         assert_eq!(events.len(), 1);
@@ -300,7 +374,7 @@ mod tests {
         let events = handed(|| {
             let span = tracing::trace_span!(target: "hyper::proto", "parse", token = "abc");
             let _entered = span.enter();
-            tracing::trace!(target: "runtime.polled", "a source was polled");
+            tracing::trace!(name: "polled", target: "pipelines", "a source was polled");
         });
         assert_eq!(events.len(), 1);
         assert!(field(&events[0], "token").is_none());

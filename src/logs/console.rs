@@ -10,10 +10,17 @@ use crate::ops::civil::civil_from_days;
 
 /// Render one event for a person reading a terminal.
 ///
-/// The JSON form is what a machine reads; this is deliberately not that. Time, severity and site first because
-/// that is what an eye scans for, then the sentence, then what varied.
+/// The JSON form is what a machine reads; this is deliberately not that. Time, severity, class, type and service
+/// first because that is what an eye scans for, then the sentence, then what varied.
 pub fn line(event: &Event) -> String {
-    let mut out = format!("{} {:<5} {}", stamp(event.timestamp), event.level.as_str(), event.site);
+    let mut out = format!("{} {:<5}", stamp(event.timestamp), event.level.as_str());
+    for part in [event.class.as_deref(), Some(event.r#type.as_ref()), event.service.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        out.push(' ');
+        out.push_str(part);
+    }
     // Who spoke, where a reader is already looking. Eight reader threads holding one source are eight lines that
     // differ only here, so leaving it to a field would put the one distinguishing part last.
     match (event.worker, event.thread.as_deref()) {
@@ -47,7 +54,7 @@ pub(crate) fn render_fields<'a>(fields: impl IntoIterator<Item = (&'a str, Strin
 }
 
 /// One event is one line. A value carrying its own line breaks -- an Elasticsearch refusal, a TLS error -- would
-/// otherwise emit fragments with no timestamp, level or site, which a shipper indexes as separate malformed
+/// otherwise emit fragments with no timestamp, level or type, which a shipper indexes as separate malformed
 /// records. This makes them visible rather than reversible; the fields are what a machine reads.
 fn escaped(text: &str) -> std::borrow::Cow<'_, str> {
     if !text.contains(['\n', '\r', '\t']) {

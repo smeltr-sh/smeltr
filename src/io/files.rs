@@ -699,7 +699,7 @@ impl Writer {
                         .map(|(p, _)| p.clone())
                         .expect("a full map has an oldest file");
                     let file = self.open.remove(&oldest).expect("found just now");
-                    tracing::debug!(target: "files.file_rotated", subject = %self.subject, open = MAX_OPEN_FILES, "the oldest open file was closed to make room for another partition's file");
+                    tracing::debug!(name: "rotated", target: "destinations", subject = %self.subject, open = MAX_OPEN_FILES, "the oldest open file was closed to make room for another partition's file");
                     self.close(file)?;
                 }
                 let file = self.open_file(partition.clone())?;
@@ -843,7 +843,7 @@ impl Writer {
             let error = match self.committer.commit(&self.closed) {
                 Ok(()) => {
                     tracing::info!(
-                        target: "files.committed",
+                        name: "committed", target: "destinations",
                         subject = %self.subject,
                         files = self.closed.len(),
                         rows = self.closed.iter().map(|f| f.record_count).sum::<u64>(),
@@ -862,14 +862,14 @@ impl Writer {
                     match &error {
                         // Another writer committed first: ordinary for a shared table, so no warning.
                         CommitError::Conflict => tracing::debug!(
-                            target: "files.commit_conflict",
+                            name: "commit_conflict", target: "destinations",
                             subject = %self.subject,
                             "another writer committed first; committing again"
                         ),
                         CommitError::Transient(why) | CommitError::Unknown(why) if !warned => {
                             warned = true;
                             tracing::warn!(
-                                target: "files.commit_failed",
+                                name: "commit_failed", target: "destinations",
                                 subject = %self.subject,
                                 error = %why,
                                 stall_after_secs = self.config.stall_after.as_secs(),
@@ -891,7 +891,7 @@ impl Writer {
                     };
                     // Only this line can say the rows may land twice: the stall that follows says the commit failed.
                     tracing::error!(
-                        target: "files.commit_abandoned",
+                        name: "commit_abandoned", target: "destinations",
                         subject = %self.subject,
                         files = self.closed.len(),
                         rows = self.closed.iter().map(|f| f.record_count).sum::<u64>(),
@@ -916,7 +916,7 @@ impl Writer {
     fn fail(&mut self, why: String) -> IoError {
         if self.reset_said.due() {
             tracing::warn!(
-                target: "files.writer_reset",
+                name: "writer_reset", target: "destinations",
                 subject = %self.subject,
                 files_aborted = self.open.len(),
                 files_deleted = self.closed.len(),
@@ -952,7 +952,7 @@ impl Writer {
         }
         if let Some(error) = first {
             tracing::warn!(
-                target: "files.orphans_left",
+                name: "orphans_left", target: "destinations",
                 subject = %self.subject,
                 count = left,
                 error,
@@ -1130,7 +1130,7 @@ impl Drop for Upload {
             && let Err(e) = wait(&self.runtime, self.stall_after, parts.abort())
         {
             // A part left behind is an orphan the store's own lifecycle removes.
-            tracing::debug!(target: "files.upload_not_aborted", subject = %self.subject, object = %self.name, error = %e, "an upload could not be aborted, so the store keeps its parts until its lifecycle removes them");
+            tracing::debug!(name: "upload_not_aborted", target: "destinations", subject = %self.subject, object = %self.name, error = %e, "an upload could not be aborted, so the store keeps its parts until its lifecycle removes them");
         }
     }
 }

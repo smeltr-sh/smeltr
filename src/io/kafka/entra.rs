@@ -67,7 +67,7 @@ pub(super) fn sign_in_unpolled<C: ClientContext>(client: &Client<C>, config: Opt
     if config.is_some_and(|c| c.starts_with(SCOPE))
         && let Err(why) = hand(client, token(config).map_err(|e| e.to_string()))
     {
-        tracing::warn!(target: "kafka.sign_in_failed", error = %why, "a source could not sign in to Kafka as the pod's workload identity, so it cannot connect until a sign-in works");
+        tracing::warn!(name: "sign_in_failed", target: "sources", error = %why, "a source could not sign in to Kafka as the pod's workload identity, so it cannot connect until a sign-in works");
     }
 }
 

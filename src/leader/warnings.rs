@@ -2126,7 +2126,7 @@ pub fn recovering_sources(store: Option<&RegistryStore>, now_ms: i64) -> HashSet
             .collect(),
         Err(e) => {
             tracing::warn!(
-                target: "throughput.recovery_unreadable",
+                name: "recovery_unreadable", target: "status",
                 error = %e,
                 "could not read which sources just recovered, so one may warn on the dip it is recovering from"
             );
@@ -2298,7 +2298,7 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
         Ok(series) => series,
         Err(e) => {
             tracing::warn!(
-                target: "warnings.lag_series_unreadable",
+                name: "lag_series_unreadable", target: "status",
                 error = %e,
                 "could not read the lag series, so no lag warnings are derived this pass"
             );
@@ -2400,7 +2400,7 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
     }
     if unreadable > 0 {
         tracing::warn!(
-            target: "warnings.lag_subjects_unreadable",
+            name: "lag_subjects_unreadable", target: "status",
             subjects = unreadable,
             exemplar = unreadable_key.as_deref(),
             "lag series subjects were dropped because their keys could not be parsed"
@@ -2408,7 +2408,7 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
     }
     if incomplete > 0 {
         tracing::warn!(
-            target: "warnings.lag_subjects_incomplete",
+            name: "lag_subjects_incomplete", target: "status",
             subjects = incomplete,
             exemplar = incomplete_key.as_deref(),
             "lag series subjects were dropped for naming no group, source, topic or partition"
@@ -2491,7 +2491,7 @@ fn recent_logs(store: Option<&RegistryStore>, credentials: &[WorkerCredentialRec
         Ok(rows) => rows,
         Err(e) => {
             tracing::warn!(
-                target: "warnings.worker_logs_unreadable",
+                name: "logs_unreadable", target: "status",
                 error = %e,
                 "could not read recent logs, so no worker-logged-warnings warnings are derived this pass"
             );
@@ -3078,7 +3078,7 @@ fn declared_fields_drifted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Wa
         Ok(fields) => fields,
         Err(e) => {
             tracing::warn!(
-                target: "warnings.declared_fields_unreadable",
+                name: "declared_fields_unreadable", target: "status",
                 error = %e,
                 "could not read the declared fields production saw, so no drift warnings are derived this pass"
             );
@@ -3170,7 +3170,7 @@ fn streams_unrouted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> 
         Ok(sources) => sources,
         Err(e) => {
             tracing::warn!(
-                target: "warnings.streams_unreadable",
+                name: "streams_unreadable", target: "status",
                 error = %e,
                 "could not read the streams production saw, so no unrouted-stream warnings are derived this pass"
             );

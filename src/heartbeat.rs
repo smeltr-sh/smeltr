@@ -72,7 +72,12 @@ pub struct LogDto {
     pub seq: u64,
     pub timestamp_ms: i64,
     pub level: String,
-    pub site: String,
+    /// Absent on a library's line said outside any span of ours (`crate::logs::Event::class`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    pub r#type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
@@ -107,7 +112,9 @@ impl From<&crate::logs::Event> for LogDto {
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or_default(),
             level: event.level.as_str().to_lowercase(),
-            site: truncate(&event.site, MAX_TEXT_LEN),
+            class: event.class.as_deref().map(|class| truncate(class, MAX_TEXT_LEN)),
+            r#type: truncate(&event.r#type, MAX_TEXT_LEN),
+            service: event.service.as_deref().map(|service| truncate(service, MAX_TEXT_LEN)),
             message: truncate(&event.message, MAX_TEXT_LEN),
             thread: event.thread.clone(),
             boot_id: None,
@@ -129,7 +136,9 @@ impl LogDto {
         Some(crate::logs::Event {
             timestamp: std::time::UNIX_EPOCH + std::time::Duration::from_millis(self.timestamp_ms.max(0) as u64),
             level: crate::logs::level_for_label(&self.level)?,
-            site: self.site.into(),
+            class: self.class.map(Into::into),
+            r#type: self.r#type.into(),
+            service: self.service.map(Into::into),
             message: self.message,
             fields: self
                 .fields
@@ -806,24 +815,38 @@ pub struct HeartbeatResponse {
     pub heartbeat_interval_ms: Option<u64>,
 }
 
-/// The levels lines are kept at, by area (`crate::logs::levels`), each a label of [`crate::logs::LEVEL_LABELS`].
+/// The levels lines are kept at (`crate::logs::levels`), each a label of [`crate::logs::LEVEL_LABELS`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogLevels {
-    /// Every area `areas` does not name. Absent is the process's startup level.
+    /// Every line no override names. Absent is the process's startup level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub areas: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<LevelOverride>,
+}
+
+/// The level the lines one override names are kept at. It names a class and a type, a class, or a service.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LevelOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    pub level: String,
 }
 
 impl LogLevels {
     pub fn is_empty(&self) -> bool {
-        self.default.is_none() && self.areas.is_empty()
+        self.default.is_none() && self.overrides.is_empty()
     }
 
     /// What a process keeps its lines at, `fallback` where these name no default. A label this build does not know
-    /// is one it cannot keep, so that area stays at the default.
+    /// is one it cannot keep, and an override naming anything else is one it cannot follow, so those lines stay at
+    /// the default.
     pub fn levels(&self, fallback: tracing::Level) -> crate::logs::levels::Levels {
         let default = self
             .default
@@ -831,9 +854,21 @@ impl LogLevels {
             .and_then(crate::logs::level_for_label)
             .unwrap_or(fallback);
         let mut levels = crate::logs::levels::Levels::at(default);
-        for (area, label) in &self.areas {
-            if let Some(level) = crate::logs::level_for_label(label) {
-                levels.areas.insert(area.clone(), level);
+        for named in &self.overrides {
+            let Some(level) = crate::logs::level_for_label(&named.level) else {
+                continue;
+            };
+            match (&named.class, &named.r#type, &named.service) {
+                (Some(class), Some(kind), None) => {
+                    levels.types.entry(class.clone()).or_default().insert(kind.clone(), level);
+                }
+                (Some(class), None, None) => {
+                    levels.classes.insert(class.clone(), level);
+                }
+                (None, None, Some(service)) => {
+                    levels.services.insert(service.clone(), level);
+                }
+                _ => {}
             }
         }
         levels
@@ -1553,7 +1588,7 @@ mod client {
         pub fn send(&self, req: &HeartbeatRequest) -> Result<HeartbeatResponse, HeartbeatError> {
             match self.send_once(req) {
                 Err(e) if e.retryable => {
-                    tracing::debug!(target: "heartbeat.retried", error = %e.error, "a heartbeat's connection failed, so it is sent once more");
+                    tracing::debug!(name: "retried", target: "heartbeats", error = %e.error, "a heartbeat's connection failed, so it is sent once more");
                     self.send_once(req).map_err(|e| e.error)
                 }
                 other => other.map_err(|e| e.error),

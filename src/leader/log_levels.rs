@@ -1,18 +1,18 @@
-//! The levels the fleet keeps its lines at, set by an operator: one for every area, and an override for any area
-//! kept at its own (`crate::logs::levels`). Stored as a leader setting, kept by the leader's own process, and sent to every
-//! worker whole on each heartbeat answer.
+//! The levels the fleet keeps its lines at, set by an operator: one for every line, and an override for a class, a
+//! class and a type, or a service kept at its own (`crate::logs::levels`). Stored as a leader setting, kept by the
+//! leader's own process, and sent to every worker whole on each heartbeat answer.
 
 use axum::Json;
 use axum::extract::State;
 
-use crate::heartbeat::LogLevels;
+use crate::heartbeat::{LevelOverride, LogLevels};
 use crate::leader::envelope::{Envelope, Refusal};
 use crate::leader::store::{Actor, Store, StoreError};
 use crate::leader::{AppState, run_store};
 
 const KEY: &str = "log_levels";
 
-/// What is stored, or nothing when nothing is: every area then at each process's startup level. A stored value this
+/// What is stored, or nothing when nothing is: every line then at each process's startup level. A stored value this
 /// build cannot read is nothing too.
 pub fn stored(store: &dyn Store) -> Result<LogLevels, StoreError> {
     Ok(store
@@ -42,7 +42,7 @@ pub async fn keep_stored(state: &AppState) {
     match run_store(state.store.clone(), |s| stored(s)).await {
         Ok(levels) => state.log_levels.keep(levels),
         Err(e) => {
-            tracing::warn!(target: "leader.log_levels_unreadable", error = %e, "the saved log levels could not be read, so the leader keeps the levels it has")
+            tracing::warn!(name: "levels_unreadable", target: "logs", error = %e, "the saved log levels could not be read, so the leader keeps the levels it has")
         }
     }
 }
@@ -52,7 +52,8 @@ pub async fn keep_stored(state: &AppState) {
 #[serde(rename_all = "camelCase")]
 pub struct LogLevelsAnswer {
     levels: Option<LogLevels>,
-    areas: &'static [&'static str],
+    classes: &'static [&'static str],
+    services: Vec<&'static str>,
     labels: &'static [&'static str],
 }
 
@@ -60,7 +61,8 @@ fn answer(levels: Result<LogLevels, Refusal>) -> Envelope<LogLevelsAnswer> {
     match levels {
         Ok(levels) => Envelope::ok(LogLevelsAnswer {
             levels: Some(levels),
-            areas: crate::logs::levels::AREAS,
+            classes: crate::logs::levels::CLASSES,
+            services: crate::logs::levels::services(),
             labels: crate::logs::LEVEL_LABELS,
         }),
         Err(refusal) => Envelope::refused(refusal),
@@ -73,25 +75,54 @@ fn labels() -> String {
     format!("{} or {last}", rest.join(", "))
 }
 
-/// Why `levels` cannot be kept, if it cannot. An area is any one a line could name, a library's crate included, so
-/// it is held to the shape of one rather than to [`crate::logs::levels::AREAS`].
+/// What `named` names, as a person would say it, or why it names nothing a line can have.
+fn named(named: &LevelOverride) -> Result<String, String> {
+    let class = |class: &str| {
+        if crate::logs::levels::CLASSES.contains(&class) {
+            Ok(())
+        } else {
+            Err(format!("{class:?} is not a class"))
+        }
+    };
+    match (named.class.as_deref(), named.r#type.as_deref(), named.service.as_deref()) {
+        (Some(c), None, None) => class(c).map(|()| c.to_string()),
+        (Some(c), Some(kind), None) => {
+            class(c)?;
+            let snake = !kind.is_empty()
+                && kind
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+            if snake {
+                Ok(format!("{c} {kind}"))
+            } else {
+                Err(format!(
+                    "{kind:?} is not a type: use lower-case letters, digits and underscores"
+                ))
+            }
+        }
+        (None, None, Some(service)) if crate::logs::levels::services().contains(&service) => Ok(service.to_string()),
+        (None, None, Some(service)) => Err(format!("{service:?} is not a service")),
+        _ => Err("an override names a class, a class and a type, or a service".to_string()),
+    }
+}
+
+/// Why `levels` cannot be kept, if it cannot.
 fn refused(levels: &LogLevels) -> Option<String> {
     let label = |label: &str| crate::logs::level_for_label(label).is_none();
     if let Some(default) = levels.default.as_deref().filter(|d| label(d)) {
         return Some(format!("{default:?} is not a level: use {}", labels()));
     }
-    for (area, level) in &levels.areas {
-        if area.is_empty()
-            || !area
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-        {
-            return Some(format!(
-                "{area:?} is not an area: use lower-case letters, digits and underscores"
-            ));
+    let mut seen = std::collections::BTreeSet::new();
+    for override_ in &levels.overrides {
+        let what = match named(override_) {
+            Ok(what) => what,
+            Err(why) => return Some(why),
+        };
+        if label(&override_.level) {
+            return Some(format!("{:?} is not a level for {what}: use {}", override_.level, labels()));
         }
-        if label(level) {
-            return Some(format!("{level:?} is not a level for {area}: use {}", labels()));
+        if !seen.insert(what.clone()) {
+            return Some(format!("two overrides name {what}"));
         }
     }
     None
@@ -128,48 +159,88 @@ pub async fn put_settings(
 mod tests {
     use super::*;
 
-    fn levels(default: Option<&str>, areas: &[(&str, &str)]) -> LogLevels {
+    /// An override for each of `named`: `class`, `class type`, or `@service`, at its level.
+    fn levels(default: Option<&str>, named: &[(&str, &str)]) -> LogLevels {
+        let overrides = named
+            .iter()
+            .map(|(what, level)| {
+                let mut o = LevelOverride {
+                    level: level.to_string(),
+                    ..Default::default()
+                };
+                match (what.strip_prefix('@'), what.split_once(' ')) {
+                    (Some(service), _) => o.service = Some(service.to_string()),
+                    (None, Some((class, kind))) => {
+                        o.class = Some(class.to_string());
+                        o.r#type = Some(kind.to_string());
+                    }
+                    (None, None) => o.class = Some(what.to_string()),
+                }
+                o
+            })
+            .collect();
         LogLevels {
             default: default.map(str::to_string),
-            areas: areas.iter().map(|(a, l)| (a.to_string(), l.to_string())).collect(),
+            overrides,
         }
     }
 
     #[test]
-    fn levels_are_refused_for_what_is_not_a_level_or_an_area() {
+    fn levels_are_refused_for_what_is_not_a_level_or_a_line() {
         assert_eq!(
-            refused(&levels(Some("info"), &[("kafka", "trace"), ("hyper_util", "debug")])),
+            refused(&levels(
+                Some("info"),
+                &[("sources", "trace"), ("store statement_ran", "debug"), ("@kafka", "debug")]
+            )),
             None
         );
         assert_eq!(
             refused(&levels(Some("loud"), &[])).unwrap(),
             r#""loud" is not a level: use error, warn, info, debug or trace"#
         );
-        assert!(
-            refused(&levels(None, &[("kafka", "3")]))
-                .unwrap()
-                .contains("not a level")
+        assert_eq!(
+            refused(&levels(None, &[("sources", "3")])).unwrap(),
+            r#""3" is not a level for sources: use error, warn, info, debug or trace"#
         );
+        assert_eq!(refused(&levels(None, &[("kafka", "trace")])).unwrap(), r#""kafka" is not a class"#);
+        assert_eq!(refused(&levels(None, &[("@mongo", "trace")])).unwrap(), r#""mongo" is not a service"#);
         assert!(
-            refused(&levels(None, &[("Kafka", "trace")]))
+            refused(&levels(None, &[("sources Assigned", "trace")]))
                 .unwrap()
-                .contains("not an area")
+                .contains("not a type")
         );
-        assert!(
-            refused(&levels(None, &[("", "trace")]))
-                .unwrap()
-                .contains("not an area")
+        assert_eq!(
+            refused(&levels(None, &[("sources", "trace"), ("sources", "debug")])).unwrap(),
+            "two overrides name sources"
+        );
+        let both = LogLevels {
+            default: None,
+            overrides: vec![LevelOverride {
+                class: Some("sources".into()),
+                service: Some("kafka".into()),
+                level: "trace".into(),
+                ..Default::default()
+            }],
+        };
+        assert_eq!(
+            refused(&both).unwrap(),
+            "an override names a class, a class and a type, or a service"
         );
     }
 
     #[test]
     fn levels_name_what_a_process_keeps() {
         use tracing::Level;
-        let kept = levels(None, &[("kafka", "trace"), ("store", "nonsense")]).levels(Level::WARN);
+        let kept = levels(
+            None,
+            &[("sources", "trace"), ("@kafka", "debug"), ("store statement_ran", "nonsense")],
+        )
+        .levels(Level::WARN);
         assert_eq!(kept.default, Level::WARN);
-        assert_eq!(kept.kept_at("kafka.lag_unmeasured"), Level::TRACE);
+        assert_eq!(kept.kept_at(Some("sources"), "poll_failed", None), Level::TRACE);
+        assert_eq!(kept.kept_at(Some("sources"), "assigned", Some("kafka")), Level::DEBUG);
         assert_eq!(
-            kept.kept_at("store.statement"),
+            kept.kept_at(Some("store"), "statement_ran", None),
             Level::WARN,
             "a label this build does not know is the default"
         );
@@ -178,8 +249,11 @@ mod tests {
 
     #[test]
     fn levels_travel_whole_and_absent_is_the_startup_level() {
-        let text = serde_json::to_string(&levels(Some("info"), &[("kafka", "trace")])).unwrap();
-        assert_eq!(text, r#"{"default":"info","areas":{"kafka":"trace"}}"#);
+        let text = serde_json::to_string(&levels(Some("info"), &[("sources", "trace"), ("@kafka", "debug")])).unwrap();
+        assert_eq!(
+            text,
+            r#"{"default":"info","overrides":[{"class":"sources","level":"trace"},{"service":"kafka","level":"debug"}]}"#
+        );
         let none: crate::heartbeat::HeartbeatResponse = serde_json::from_str(r#"{"captures":[],"holds":[]}"#).unwrap();
         assert!(none.log_levels.is_empty());
     }
@@ -187,7 +261,7 @@ mod tests {
     #[tokio::test]
     async fn levels_set_are_held_for_the_heartbeat_and_held_again_on_a_restart() {
         let state = crate::leader::secrets_delivery_tests::state("log-levels-held");
-        let set = levels(None, &[("kafka", "trace")]);
+        let set = levels(None, &[("sources", "trace")]);
         let put = put_settings(State(state.clone()), None, Json(set.clone())).await;
         assert!(put.succeeded());
         assert_eq!(state.log_levels.get(), set);

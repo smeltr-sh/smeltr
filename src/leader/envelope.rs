@@ -197,9 +197,9 @@ fn log_refused_at(method: &str, path: &str, status: StatusCode, error: &str, now
             }
         };
         drop(failed);
-        tracing::error!(target: "api.failed", method, path, status = status.as_u16(), error, repeats, "an API call failed");
+        tracing::error!(name: "failed", target: "api", method, path, status = status.as_u16(), error, repeats, "an API call failed");
     } else if status.is_client_error() {
-        tracing::debug!(target: "api.refused", method, path, status = status.as_u16(), error, "an API call was refused");
+        tracing::debug!(name: "refused", target: "api", method, path, status = status.as_u16(), error, "an API call was refused");
     }
 }
 

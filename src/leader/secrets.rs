@@ -181,7 +181,7 @@ fn create(path: &Path) -> Result<EncryptionKey, KeyError> {
     // Renamed into place whole: every store reads the key from disk, and one reading it half written would fail.
     private_file::replace(path, material.as_bytes()).map_err(|e| KeyError(format!("{}: {e}", path.display())))?;
     tracing::info!(
-        target: "secrets.key_created",
+        name: "key_created", target: "secrets",
         path = %path.display(),
         "wrote a new secrets encryption key. Back it up: without it, a restored leader cannot open the stored secrets."
     );

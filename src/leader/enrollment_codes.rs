@@ -553,13 +553,13 @@ pub async fn withdraw_off_authority(state: &AppState, actor: &Actor) {
     match withdrawn {
         Ok(ids) if ids.is_empty() => {}
         Ok(ids) => tracing::info!(
-            target: "leader.enrollment_codes_withdrawn_on_cutover",
+            name: "codes_withdrawn_on_cutover", target: "enrollment",
             codes = %ids.join(", "),
             "these enrollment codes named the authority this leader rotated away from, and were withdrawn: a worker \
              given one would pin a root nothing here presents"
         ),
         Err(e) => tracing::warn!(
-            target: "leader.enrollment_codes_not_withdrawn",
+            name: "codes_not_withdrawn", target: "enrollment",
             error = %e,
             "this leader rotated away from an authority and could not withdraw the enrollment codes naming it, so they \
              are still outstanding and bring nobody in"

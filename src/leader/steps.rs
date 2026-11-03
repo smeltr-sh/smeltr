@@ -27,13 +27,13 @@ pub fn say_statements(conn: &Connection, store: Store) {
     }
     fn said(store: &str, event: rusqlite::trace::TraceEvent<'_>) {
         // SQLite calls this for every statement at every level, so the text is built only when it will be said.
-        if !tracing::enabled!(target: "store.statement", tracing::Level::TRACE) {
+        if !crate::log_enabled!(name: "statement_ran", target: "store", tracing::Level::TRACE) {
             return;
         }
         if let rusqlite::trace::TraceEvent::Profile(statement, took) = event {
             let sql = statement.sql().split_whitespace().collect::<Vec<_>>().join(" ");
             tracing::trace!(
-                target: "store.statement",
+                name: "statement_ran", target: "store",
                 store,
                 %sql,
                 us = u64::try_from(took.as_micros()).unwrap_or(u64::MAX),
@@ -100,7 +100,7 @@ pub fn upgrade_sqlite(conn: &mut Connection, store: &str, steps: &[&str]) -> Res
 
     let failed = |e: rusqlite::Error| format!("upgrading {store}: {e}");
     if applied < steps.len() && applied > 0 {
-        tracing::info!(target: "store.upgrading", %store, from = applied, to = steps.len(), "upgrading a store's schema");
+        tracing::info!(name: "upgrading", target: "store", %store, from = applied, to = steps.len(), "upgrading a store's schema");
     }
     for (i, step) in steps.iter().enumerate().skip(applied) {
         let version = i + 1;
@@ -121,7 +121,7 @@ pub fn upgrade_sqlite(conn: &mut Connection, store: &str, steps: &[&str]) -> Res
         tx.pragma_update(None, "user_version", version as i64).map_err(failed)?;
         tx.commit().map_err(failed)?;
         tracing::trace!(
-            target: "store.step_applied",
+            name: "step_applied", target: "store",
             %store,
             step = version,
             only_adds = is_additive(step),

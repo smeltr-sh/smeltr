@@ -158,7 +158,7 @@ impl Holds {
         heard.listed.extend(runs.into_iter().map(|key| (key, clock.now)));
         heard.answered = answered.clone();
         tracing::trace!(
-            target: "leader.holds_settled",
+            name: "holds_settled", target: "heartbeats",
             %worker,
             %group,
             holds = answered.len(),
@@ -227,7 +227,7 @@ impl Holds {
         if clock.up_for <= clock.hold_time.max(FORGET_AFTER_UP) {
             return Ok(Vec::new());
         }
-        let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "forget progress of sources nothing reads");
+        let _pass = tracing::trace_span!(target: "heartbeats", "a background pass", task = "forget progress of sources nothing reads");
         let listed = |group: &str, key: &SourceKey| {
             workers.heard.values().any(|w| {
                 w.group == group && clock.within(w.at) && w.listed.get(key).is_some_and(|&at| clock.within(at))
@@ -295,7 +295,7 @@ fn settle(workers: &Workers, store: &dyn Store, beat: &mut Beat<'_>, clock: Cloc
             store.set_source_holder(group, key, worker)?;
             match &from {
                 Some(from) if from != worker => tracing::info!(
-                    target: "leader.hold_moved",
+                    name: "hold_moved", target: "heartbeats",
                     source = %key.source,
                     %group,
                     %from,
@@ -304,7 +304,7 @@ fn settle(workers: &Workers, store: &dyn Store, beat: &mut Beat<'_>, clock: Cloc
                 ),
                 Some(_) => {}
                 None => tracing::info!(
-                    target: "leader.hold_granted",
+                    name: "hold_granted", target: "heartbeats",
                     source = %key.source,
                     %group,
                     %worker,
@@ -326,7 +326,7 @@ fn admitted(worker: &str, key: &SourceKey, mut progress: Progress) -> Progress {
     let (cursor_refused, refused) = progress.admit();
     if cursor_refused {
         tracing::warn!(
-            target: "leader.progress_refused",
+            name: "progress_refused", target: "heartbeats",
             subject = %worker,
             source = %key.source,
             "a cursor longer than {MAX_CURSOR} bytes was refused, so the source resumes from the one before it"
@@ -334,7 +334,7 @@ fn admitted(worker: &str, key: &SourceKey, mut progress: Progress) -> Progress {
     }
     if refused > 0 {
         tracing::warn!(
-            target: "leader.progress_refused",
+            name: "progress_refused", target: "heartbeats",
             subject = %worker,
             source = %key.source,
             refused,

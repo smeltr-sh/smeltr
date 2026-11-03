@@ -45,7 +45,7 @@ impl LogsSource {
         let min_level = config.min_level.min(CARRIED_AT_MOST);
         if min_level != config.min_level {
             tracing::warn!(
-                target: "logs_source.trace_not_carried",
+                name: "trace_not_carried", target: "logs",
                 min_level = %config.min_level,
                 "a logs source is set to trace, but that would feed its own reading back into it, so it reads debug \
                  and above"

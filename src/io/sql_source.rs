@@ -722,7 +722,7 @@ impl<D: Driver + 'static> SqlSource<D> {
             self.wide = true;
         } else {
             tracing::error!(
-                target: "sql.rows_skipped",
+                name: "rows_skipped", target: "sources",
                 subject = %self.pacer.subject,
                 position = %name,
                 value = ?last,
@@ -763,7 +763,7 @@ impl<D: Driver + 'static> SqlSource<D> {
             .collect::<Result<Vec<_>, _>>()?;
         for c in columns {
             if !self.config.fields.iter().any(|(name, _)| name == c) && self.warned.insert(c.clone()) {
-                tracing::warn!(target: "sql.column_unread", subject = %self.pacer.subject, column = %c, "a result column that no record field reads is left out");
+                tracing::warn!(name: "column_unread", target: "sources", subject = %self.pacer.subject, column = %c, "a result column that no record field reads is left out");
             }
         }
         Ok(found)

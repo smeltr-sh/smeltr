@@ -174,7 +174,7 @@ impl Session {
                     Ok(filter) => (filter, None),
                     Err(e) => {
                         tracing::warn!(
-                            target: "capture.filter_not_compiled",
+                            name: "filter_not_compiled", target: "captures",
                             subject = %invitation.session,
                             error = %e,
                             "a capture's filter would not compile, so it keeps every record it reads"
@@ -1193,7 +1193,7 @@ pub fn run_cold_capture(
         Ok(kind) => kind,
         Err(e) => {
             tracing::warn!(
-                target: "capture.source_kind_unknown",
+                name: "source_kind_unknown", target: "captures",
                 subject = %session,
                 error = %e,
                 "a capture named a source this worker cannot build"
@@ -1233,7 +1233,7 @@ pub fn run_cold_capture(
         Ok(source) => source,
         Err(e) => {
             tracing::warn!(
-                target: "capture.source_not_opened",
+                name: "source_not_opened", target: "captures",
                 subject = %session,
                 error = %e,
                 "a capture could not open its source"
@@ -1270,7 +1270,7 @@ fn drive<S: crate::io::Source + ?Sized>(
             Ok(records) => records,
             Err(e) => {
                 tracing::warn!(
-                    target: "capture.poll_failed",
+                    name: "poll_failed", target: "captures",
                     subject = %session,
                     error = %e,
                     "a capture could not poll its source, so it ends with what it has"
@@ -1446,7 +1446,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         }
         Some(Err(why)) => {
             tracing::warn!(
-                target: "capture.plan_failed",
+                name: "plan_failed", target: "captures",
                 subject = %invitation.session,
                 error = %why,
                 "a capture could not ask the database how it would run the poll, so the poll shows no verdict"

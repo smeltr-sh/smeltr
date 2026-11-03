@@ -68,17 +68,17 @@ impl fmt::Display for Noted {
 /// Logs a failure at warn and keeps its message as a [`Noted`], for a page to show:
 ///
 /// ```ignore
-/// let message = noted!(target: "remote.sync_failed", "the remote could not be followed", why);
-/// let message = noted!(target: "remote.push_failed", "a save was not pushed", why, branch = %branch);
+/// let message = noted!(name: "sync_failed", target: "git", "the remote could not be followed", why);
+/// let message = noted!(name: "push_failed", target: "git", "a save was not pushed", why, branch = %branch);
 /// ```
 ///
-/// The target and sentence are constant per site, as every log line's are; the message goes in the `error` field,
+/// The type, class and sentence are constant per site, as every log line's are; the message goes in the `error` field,
 /// after any fields given.
 #[macro_export]
 macro_rules! noted {
-    (target: $target:literal, $sentence:literal, $message:expr $(, $($field:tt)+)?) => {{
+    (name: $name:literal, target: $target:literal, $sentence:literal, $message:expr $(, $($field:tt)+)?) => {{
         let message: String = $message;
-        tracing::warn!(target: $target, $($($field)+,)? error = %message, $sentence);
+        tracing::warn!(name: $name, target: $target, $($($field)+,)? error = %message, $sentence);
         $crate::logs::Noted::logged(message)
     }};
 }
@@ -91,13 +91,13 @@ mod tests {
     fn a_noted_failure_is_logged_as_it_is_made() {
         let mut made = None;
         let seen = crate::logs::said(|| {
-            made = Some(noted!(target: "test.noted", "something failed", "it broke".to_string(), subject = "x"));
+            made = Some(noted!(name: "noted", target: "test", "something failed", "it broke".to_string(), subject = "x"));
         });
         let made = made.unwrap();
         assert_eq!(made, "it broke");
         assert_eq!(seen.len(), 1, "{seen:?}");
-        let (level, site, fields) = &seen[0];
-        assert_eq!((*level, site.as_str()), (tracing::Level::WARN, "test.noted"));
+        let (level, class, kind, fields) = &seen[0];
+        assert_eq!((*level, class.as_str(), kind.as_str()), (tracing::Level::WARN, "test", "noted"));
         let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(field("subject"), Some("x"));
         assert_eq!(field("error"), Some("it broke"));
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn a_noted_failure_is_stored_and_read_back_as_its_text() {
-        let made = noted!(target: "test.noted", "something failed", "it broke".to_string());
+        let made = noted!(name: "noted", target: "test", "something failed", "it broke".to_string());
         assert_eq!(serde_json::to_string(&made).unwrap(), r#""it broke""#);
         let back: Noted = serde_json::from_str(r#""it broke""#).unwrap();
         assert_eq!(back, made);

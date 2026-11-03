@@ -602,7 +602,7 @@ fn latest_by_group_pair(store: &RegistryStore, metric: &str, since_ms: i64) -> H
         Ok(series) => series,
         Err(e) => {
             tracing::warn!(
-                target: "map.metric_unreadable",
+                name: "map_metric_unreadable", target: "status",
                 subject = %metric,
                 error = %e,
                 "could not read a metric for the topology map, so it draws no poison edges"
