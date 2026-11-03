@@ -2172,6 +2172,7 @@ mod tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir,
         }
     }

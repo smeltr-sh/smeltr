@@ -36,6 +36,7 @@ pub mod git;
 pub mod holds;
 pub mod listen;
 pub mod lock;
+pub mod log_levels;
 pub mod lookups;
 pub mod map;
 pub mod measurements;
@@ -109,6 +110,8 @@ pub struct AppState {
     pub alerts: Arc<alerts::Alerts>,
     /// What operators have asked of workers and the workers have not yet taken.
     pub directives: Arc<directives::Directives>,
+    /// The levels the fleet keeps its lines at, as stored (`log_levels`).
+    pub log_levels: Arc<log_levels::Held>,
 }
 
 /// What each group's bundle quotes, remembered per commit. The answer changes only when the bundle does, so it is
@@ -534,6 +537,8 @@ async fn heartbeat(
             .map(|invitation| crate::heartbeat::Invited::Readable(Box::new(invitation)))
             .collect(),
         secrets,
+        // Whole on every answer, so a worker that missed a change has it on its next beat.
+        log_levels: state.log_levels.get(),
     }))
 }
 
@@ -3860,6 +3865,10 @@ pub fn admin_router() -> Router<AppState> {
             get(forget::get_settings).put(forget::put_settings),
         )
         .route(
+            "/api/settings/log-levels",
+            get(log_levels::get_settings).put(log_levels::put_settings),
+        )
+        .route(
             "/api/settings/warnings",
             get(throughput::get_settings).put(throughput::put_settings),
         )
@@ -4401,6 +4410,7 @@ mod secrets_delivery_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir,
         }
     }
@@ -4889,6 +4899,7 @@ mod warnings_endpoint_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir,
         }
     }
@@ -5122,6 +5133,7 @@ mod logs_endpoint_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir: std::env::temp_dir(),
         }
     }
@@ -5348,6 +5360,7 @@ mod flow_endpoint_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir: std::env::temp_dir(),
         }
     }
@@ -5377,6 +5390,7 @@ mod flow_endpoint_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir: std::env::temp_dir(),
         };
         let flow = flow_snapshot(&state, Duration::from_secs(3600)).unwrap();
@@ -5743,6 +5757,7 @@ mod authority_delivery_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir,
         };
         cut_over_if_due(&state, now_ms).await;

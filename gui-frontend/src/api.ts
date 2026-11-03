@@ -361,8 +361,8 @@ export type SourceDto =
       id: string;
       type: 'logs';
       /** The lowest severity it carries: `error`, `warn`, `info` (absent),
-       * `debug` or `trace`. The process collects at `SMELTR_LOG_LEVEL`, and
-       * what it never collected is not there to read. */
+       * `debug` or `trace`. A line its process did not keep is not there to
+       * read. */
       minLevel?: string;
     };
 

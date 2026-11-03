@@ -27,6 +27,7 @@
 mod console;
 mod event;
 mod layer;
+pub mod levels;
 mod noted;
 
 pub(crate) use console::{render_fields, render_value, stamp};
@@ -334,7 +335,7 @@ fn level_of(ord: usize) -> Level {
     }
 }
 
-/// The threshold every call site is measured against.
+/// The highest level any area keeps (`levels`): no line below it is kept anywhere.
 pub fn max_level() -> Level {
     level_of(MAX_LEVEL.load(Ordering::Relaxed))
 }
@@ -651,8 +652,9 @@ pub fn start() {
         .spawn(move || drain(receiver))
         .expect("start the logs drain thread (called once, at startup)");
 
+    // Until the fleet's levels arrive: the leader reads them as it starts, a worker on its first heartbeat.
     let level = crate::startup_config::log_level();
-    MAX_LEVEL.store(level_ord(level), Ordering::Relaxed);
+    levels::set(levels::Levels::at(level));
 
     // A second installation is somebody else's subscriber, not a failure of ours: leave it alone and keep our own
     // call sites working.

@@ -153,9 +153,9 @@
 
   <h2 id="verbosity">Change log verbosity</h2>
   <p>
-    A process collects logs at or above its log level, <code>info</code> unless you set it. The
-    console, the leader and every Smeltr logs source get only what the process collects. To change
-    it, see
+    A process keeps the log lines its levels allow. A process starts at its startup log level, info
+    unless set, until the leader's levels reach it. The console and every Smeltr logs source get
+    only what the process keeps. To change the levels, see
     <a href="/docs/operations#logs">Change log verbosity</a>.
   </p>
 </GuideLayout>

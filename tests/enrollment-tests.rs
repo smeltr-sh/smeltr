@@ -99,6 +99,7 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
                 alerts: Default::default(),
                 data_dir,
                 directives: Default::default(),
+                log_levels: Default::default(),
             };
             let tls = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem)
                 .await

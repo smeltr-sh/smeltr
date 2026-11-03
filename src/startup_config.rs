@@ -173,8 +173,9 @@ fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
-/// How much a process says about itself: `error`, `warn`, `info` (the default), `debug` or `trace`. Everything
-/// below it is refused at its call site, so a level nobody reads costs nothing to leave in the code.
+/// The level a process keeps its lines at until the fleet's levels reach it (`crate::leader::log_levels`), which
+/// then replace it: `error`, `warn`, `info` (the default), `debug` or `trace`. It is how a worker that never
+/// reaches the leader says more.
 pub fn log_level() -> tracing::Level {
     let Some(value) = env("SMELTR_LOG_LEVEL") else {
         return tracing::Level::INFO;

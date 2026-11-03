@@ -3029,8 +3029,8 @@ impl Default for EncodingLabel {
 pub struct LevelLabel(pub String);
 
 impl LevelLabel {
-    /// What a process collects at unless `SMELTR_LOG_LEVEL` says otherwise, so a source that names nothing
-    /// carries everything its process gathers.
+    /// The startup level unless one is set, so a source that names nothing carries what a process keeps until an
+    /// operator sets levels.
     pub const DEFAULT: &str = "info";
 
     pub fn is_default(&self) -> bool {

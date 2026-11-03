@@ -7,17 +7,21 @@ use tracing::{Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 
 use super::event::{Collect, Event};
-use super::{hand_off, max_level};
+use super::hand_off;
 
 /// Every `tracing` event in the process arrives here -- our own call sites, and anything a library reports
 /// through the `log` facade.
 pub struct LogLayer;
 
 impl<S: Subscriber> Layer<S> for LogLayer {
-    /// Asked once per callsite and cached, so a site below the threshold costs its caller nothing at all: the
-    /// field expressions and the message are never evaluated.
+    /// Asked once per callsite and cached until the levels change, so a site below its area's level costs its
+    /// caller nothing at all: the field expressions and the message are never evaluated. A library's line through
+    /// the `log` facade is asked each time, with the library's own target.
     fn enabled(&self, metadata: &tracing::Metadata<'_>, _: Context<'_, S>) -> bool {
-        as_said_here(metadata.target(), *metadata.level()) <= max_level()
+        let target = metadata.target();
+        let level = as_said_here(target, *metadata.level());
+        // The highest any area keeps first, which needs no lock: a library's line through the facade asks every time.
+        level <= super::max_level() && level <= super::levels::kept_at(target)
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
@@ -72,6 +76,30 @@ pub(crate) fn facade_ceiling(max: Level) -> Level {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Turning an area up opens its call sites at once, the same sites that were closed, and leaves the rest shut.
+    #[test]
+    fn an_area_turned_up_is_said_from_then_on() {
+        use super::super::levels::{self, Levels};
+        use tracing_subscriber::layer::SubscriberExt;
+        let tap = super::super::tap();
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(LogLayer), || {
+            let say = || {
+                tracing::trace!(target: "kafka.lag_unmeasured", "lag cannot be measured");
+                tracing::trace!(target: "store.statement", "a store ran a statement");
+            };
+            levels::set(Levels::at(Level::INFO));
+            say();
+            let mut up = Levels::at(Level::INFO);
+            up.areas.insert("kafka".into(), Level::TRACE);
+            levels::set(up);
+            say();
+            levels::set(Levels::at(Level::INFO));
+            say();
+        });
+        let sites: Vec<String> = tap.drain(100).into_iter().map(|e| e.site.to_string()).collect();
+        assert_eq!(sites, ["kafka.lag_unmeasured"]);
+    }
 
     #[test]
     fn a_library_line_is_kept_one_step_below_what_it_says() {
