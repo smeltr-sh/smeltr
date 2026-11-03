@@ -254,8 +254,9 @@ check-package package: need-nextest stable
 # A release: its fixtures recorded and committed, and that commit tagged `v<release>`. Nothing leaves
 # this machine: `git push --atomic origin main v<release>` starts the release workflow. Semver: a major release
 # raises the upgrade floor or ships a breaking store step, a minor one adds features and additive steps
-# only, a patch fixes and adds no step. A pre-release tag (`v1.2.0-rc1`), made by hand with `git tag`, runs
-# the workflow as a trial: a draft pre-release and its own image tag, with nothing recorded.
+# only, a patch fixes and adds no step. A pre-release tag (`v1.2.0-rc1`), made by hand with `git tag` and
+# pushed, is a trial the workflow runs when started by hand on it: a draft pre-release and its own image tag,
+# with nothing recorded, and Windows only when asked.
 [doc("Record a release, commit it and tag it.")]
 cut-release release: (has-notes release) (record-release if release =~ '^[0-9]+\.[0-9]+\.[0-9]+$' { release } else { error('a release is named major.minor.patch, like 1.0.0') })
     git add tests/fixtures/releases
@@ -327,7 +328,7 @@ check-rust: need-nextest stable fips-dll
 # seeds each and take a minute or more, so `check` leaves them here.
 [doc("Every offline fuzzer.")]
 [env("SMELTR_NO_GUI", "1")]
-check-fuzz: need-nextest fips-dll && fuzz-gui fuzz-journey fuzz-pipeline
+check-fuzz: need-nextest fips-dll && fuzz-gui fuzz-journey fuzz-pipeline fuzz-demo
     cargo nextest run --workspace -j {{test_threads}} -E "test(/fuzz/)"
 
 # The GUI fuzzer, `tests/gui/specs/gui-fuzz.spec.ts`, over more seeds than
@@ -357,6 +358,14 @@ fuzz-journey: build-dev
 fuzz-pipeline: build-dev
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project pipeline-coverage
+
+# Everything a visitor can reach in the website demo, each read checked
+# against its recording: `tests/gui/specs/demo-fuzz.spec.ts`.
+[doc("Everything a visitor can reach in the website demo, against its recording.")]
+[env("SMELTR_FUZZ_DEMO", "1")]
+fuzz-demo: build-dev
+    npm --prefix tests/gui install
+    cd tests/gui && npx playwright test --project demo
 
 # The build goes to `target/gui-check`, not `dist`: `check-rust` runs alongside
 # and embeds `dist`, which vite empties before it writes.

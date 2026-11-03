@@ -159,10 +159,10 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "h
 # librdkafka take where `webpki-roots` gives only trust anchors, and the host's own store.
 webpki-root-certs = "1"
 rustls-native-certs = "0.8"
-# The PostgreSQL source. TLS goes through the rustls above with smeltr's provider, so neither feature set names a
-# backend.
+# The PostgreSQL source. TLS goes through the rustls above with smeltr's provider, so no feature set names a backend.
 tokio-postgres = { version = "0.7", default-features = false, features = ["runtime"] }
-tokio-postgres-rustls = { version = "0.14", default-features = false }
+# Its TLS handshake, which `io::postgres` hands to tokio-postgres. Already in the build under axum-server and reqwest.
+tokio-rustls = { version = "0.26", default-features = false }
 # The MySQL and MariaDB source. `rustls-tls` without a provider feature: its TLS is the rustls above, whose
 # provider is smeltr's. `minimal-rust` is the compression backend smeltr already builds, and leaves out the
 # derive macros a driver that reads rows by hand never uses.

@@ -59,9 +59,10 @@ graph LR
   Priya Raman onboards the firewalls, Marcus Webb onboards the web and cloud feeds and adds a 5xx alert, Priya
   sends PAN-OS to Splunk trimmed and to an S3 archive whole, and the admin rotates the Elasticsearch key. Priya's
   App-ID risk change stays open for review; Marcus's Cisco ASA draft stays a branch.
-- **A week before it** (`demo-traffic history`). Once staged, every throughput series is extended back eight days
-  at the rate it has read, on a daily curve, so the charts span a week and each source shows the band it is
-  expected to read in. The leader refuses a few heartbeats while it writes; their warnings fade in five minutes,
+- **A week before it** (`demo-traffic history`). Once staged, every throughput series plays what it has read back
+  on a loop for eight days, on a daily curve with a level for each day shared by the whole fleet, so the charts span
+  a week with the live streams' waves, destinations keep step with their sources, and each source shows the band it
+  is expected to read in. The leader refuses a few heartbeats while it writes; their warnings fade in five minutes,
   within the settle.
 - **Incident** (`incident.py`). Issues and a Status that needs attention need something wrong: it freezes
   fw-collector-02 until the leader reports it silent, captures those two pages, and thaws it.

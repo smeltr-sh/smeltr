@@ -39,5 +39,7 @@ export default defineConfig({
       testMatch: /pipeline-fuzz-coverage\.spec\.ts/,
       dependencies: ['pipeline'],
     },
+    // Minutes long, so only `just fuzz-demo` asks for it.
+    ...(process.env.SMELTR_FUZZ_DEMO ? [{ name: 'demo', testMatch: /demo-fuzz\.spec\.ts/ }] : []),
   ],
 });

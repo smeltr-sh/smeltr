@@ -1,7 +1,8 @@
-# A pushed `v*` tag builds that commit's release archives and image, and puts them on a draft Release to
-# publish by hand. `just cut-release` makes the tag; nothing here records, commits or tags. A pre-release
-# tag (`v1.2.0-rc1`) is a trial: it needs no fixtures, drafts a pre-release, and pushes only its own image
-# tag.
+# A pushed release tag (`v1.2.0`) builds that commit's release archives and image, and puts them on a draft
+# Release to publish by hand. `just cut-release` makes the tag; nothing here records, commits or tags. A
+# pre-release tag (`v1.2.0-rc1`) is a trial, run by hand on its tag from the Actions tab or with
+# `gh workflow run release.yml --ref v1.2.0-rc1 -f windows=false`: it needs no fixtures, drafts a pre-release,
+# and pushes only its own image tag. Without Windows, the image is out as soon as Linux is built.
 #
 # `just check` does not run here: it runs before every push. Actions are
 # pinned to commits, and the jobs that run the build hold no token that can publish.
@@ -9,7 +10,13 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['v*', '!v*-*']
+  workflow_dispatch:
+    inputs:
+      windows:
+        description: Build Windows too
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -24,7 +31,11 @@ jobs:
           # The Dockerfile copies `.git` into its builder, which must not carry the token.
           persist-credentials: false
       - name: The tag is semver, on main and alone on its commit, and a release carries its fixtures and notes
+        env:
+          WINDOWS: ${{ github.event_name == 'push' || inputs.windows }}
         run: |
+          test "$GITHUB_REF_TYPE" = tag \
+            || { echo "::error::run the release on a v* tag, not on a branch"; exit 1; }
           git merge-base --is-ancestor HEAD origin/main \
             || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
           # The build, dist and this workflow each read the release name off the commit; two tags make it ambiguous.
@@ -34,6 +45,8 @@ jobs:
           [[ "$name" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
             || { echo "::error::$GITHUB_REF_NAME is not v<major>.<minor>.<patch>[-<pre-release>]"; exit 1; }
           case "$name" in *-*) exit 0 ;; esac
+          test "$WINDOWS" = true \
+            || { echo "::error::a release carries Windows: only a pre-release can leave it out"; exit 1; }
           test -d "tests/fixtures/releases/$name" \
             || { echo "::error::no tests/fixtures/releases/$name: cut a release with just cut-release"; exit 1; }
           node website/scripts/release-notes.js "$name" > /dev/null \
@@ -70,6 +83,7 @@ jobs:
 
   windows:
     needs: guard
+    if: github.event_name == 'push' || inputs.windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -99,6 +113,8 @@ jobs:
   # Nothing is published until every archive is built: the image and the draft go out together.
   publish:
     needs: [linux, windows]
+    # A pre-release run without Windows skips that job, and a skipped need would skip this one too.
+    if: ${{ !cancelled() && needs.linux.result == 'success' && contains(fromJSON('["success", "skipped"]'), needs.windows.result) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -157,6 +173,7 @@ jobs:
       - name: Draft the Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WINDOWS: ${{ needs.windows.result }}
         run: |
           # The release lists what most people download; the image archive and the reports go in one zip beside them.
           zip -j smeltr-extras.zip linux/smeltr-image.tar.gz linux/smeltr-sbom.cdx.json linux/smeltr-stig.html linux/smeltr-cves.txt
@@ -166,6 +183,8 @@ jobs:
             *-*) prerelease=--prerelease ;;
             *) notes=$(node repo/website/scripts/release-notes.js "${GITHUB_REF_NAME#v}") ;;
           esac
+          assets=(linux/smeltr-linux.tar.gz)
+          if [ "$WINDOWS" = success ]; then assets+=(windows/smeltr-windows.zip); fi
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease \
             --title "${GITHUB_REF_NAME#v}" --notes "$notes" \
-            linux/smeltr-linux.tar.gz windows/smeltr-windows.zip smeltr-extras.zip
+            "${assets[@]}" smeltr-extras.zip

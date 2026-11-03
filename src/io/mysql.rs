@@ -299,13 +299,7 @@ LIMIT 1";
 fn message(e: &mysql_async::Error) -> String {
     match e {
         mysql_async::Error::Server(s) => s.message.clone(),
-        other => {
-            let mut cause: &dyn std::error::Error = other;
-            while let Some(inner) = cause.source() {
-                cause = inner;
-            }
-            cause.to_string()
-        }
+        other => super::sql_source::cause(other),
     }
 }
 

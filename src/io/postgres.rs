@@ -11,15 +11,24 @@
 
 use std::error::Error as StdError;
 use std::fmt::{self, Write as _};
+use std::future::Future;
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 
-use tokio_postgres::config::SslMode;
-// What `to_sql` writes into. tokio-postgres re-exports the `bytes` type here for its own `to_sql_checked!`.
+use aws_lc_rs::digest;
 use futures_util::StreamExt as _;
+use rustls::pki_types::ServerName;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio_postgres::config::SslMode;
+use tokio_postgres::tls::{ChannelBinding, MakeTlsConnect, TlsConnect, TlsStream};
+// What `to_sql` writes into. tokio-postgres re-exports the `bytes` type here for its own `to_sql_checked!`.
 use tokio_postgres::types::private::BytesMut;
 use tokio_postgres::types::{FromSql, IsNull, Kind, ToSql, Type, to_sql_checked};
 use tokio_postgres::{Client, Column, Config, NoTls, Row};
-use tokio_postgres_rustls::MakeRustlsConnect;
+use tokio_rustls::TlsConnector;
 
 use super::IoError;
 use super::sql::{Dialect, Statement, quote};
@@ -129,7 +138,7 @@ async fn connect(config: Config, tls: Option<rustls::ClientConfig>) -> Result<Cl
         }
         Some(tls) => {
             let (client, connection) = config
-                .connect(MakeRustlsConnect::new(tls))
+                .connect(RustlsConnect(Arc::new(tls)))
                 .await
                 .map_err(|e| message(&e))?;
             tokio::spawn(connection);
@@ -295,7 +304,138 @@ WHERE c.oid = $1";
 const RELTUPLES: &str = "SELECT c.reltuples::float8 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = $1 AND c.relname = $2";
 
-/// The database's own words for `e`: its message, then its detail and hint when it gave them.
+/// TLS for tokio-postgres through `config`, the rustls config every client of this process gets (`io::trust`).
+struct RustlsConnect(Arc<rustls::ClientConfig>);
+
+impl<S> MakeTlsConnect<S> for RustlsConnect
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    type Stream = RustlsStream<S>;
+    type TlsConnect = RustlsHandshake;
+    type Error = io::Error;
+
+    fn make_tls_connect(&mut self, domain: &str) -> io::Result<RustlsHandshake> {
+        let name =
+            ServerName::try_from(domain.to_string()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        Ok(RustlsHandshake {
+            connector: TlsConnector::from(self.0.clone()),
+            name,
+        })
+    }
+}
+
+/// One connection's handshake with the server named `name`.
+struct RustlsHandshake {
+    connector: TlsConnector,
+    name: ServerName<'static>,
+}
+
+impl<S> TlsConnect<S> for RustlsHandshake
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    type Stream = RustlsStream<S>;
+    type Error = io::Error;
+    type Future = Pin<Box<dyn Future<Output = io::Result<RustlsStream<S>>> + Send>>;
+
+    fn connect(self, stream: S) -> Self::Future {
+        Box::pin(async move {
+            let stream = self.connector.connect(self.name, stream).await?;
+            let end_point = stream
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .and_then(|leaf| server_end_point(leaf));
+            Ok(RustlsStream { stream, end_point })
+        })
+    }
+}
+
+/// A TLS connection to the server, with its `tls-server-end-point` channel binding when its certificate has one.
+struct RustlsStream<S> {
+    stream: tokio_rustls::client::TlsStream<S>,
+    end_point: Option<Vec<u8>>,
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> TlsStream for RustlsStream<S> {
+    fn channel_binding(&self) -> ChannelBinding {
+        match &self.end_point {
+            Some(hash) => ChannelBinding::tls_server_end_point(hash.clone()),
+            None => ChannelBinding::none(),
+        }
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for RustlsStream<S> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for RustlsStream<S> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+}
+
+/// RFC 5929's `tls-server-end-point` for the server certificate `der`: the certificate hashed with its own signature's
+/// hash, SHA-256 in place of MD5 or SHA-1. `None` for Ed25519, which has no hash, and for RSA-PSS, whose hash sits
+/// in its parameters: the sign-in goes unbound, or is refused under `channel_binding=require`.
+fn server_end_point(der: &[u8]) -> Option<Vec<u8>> {
+    use x509_parser::oid_registry as oid;
+    let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+    let algorithm = &cert.signature_algorithm.algorithm;
+    let hashes: [(&[&oid::Oid<'static>], &'static digest::Algorithm); 4] = [
+        (
+            &[
+                &oid::OID_PKCS1_MD5WITHRSAENC,
+                &oid::OID_PKCS1_SHA1WITHRSA,
+                &oid::OID_PKCS1_SHA256WITHRSA,
+                &oid::OID_SIG_ECDSA_WITH_SHA256,
+            ],
+            &digest::SHA256,
+        ),
+        (
+            &[&oid::OID_PKCS1_SHA224WITHRSA, &oid::OID_SIG_ECDSA_WITH_SHA224],
+            &digest::SHA224,
+        ),
+        (
+            &[&oid::OID_PKCS1_SHA384WITHRSA, &oid::OID_SIG_ECDSA_WITH_SHA384],
+            &digest::SHA384,
+        ),
+        (
+            &[&oid::OID_PKCS1_SHA512WITHRSA, &oid::OID_SIG_ECDSA_WITH_SHA512],
+            &digest::SHA512,
+        ),
+    ];
+    let (_, hash) = hashes.iter().find(|(oids, _)| oids.contains(&algorithm))?;
+    Some(digest::digest(hash, der).as_ref().to_vec())
+}
+
+/// The database's own words for `e`: its message, then its detail and hint when it gave them. Without one, the cause
+/// beneath tokio-postgres's own wrappers, a [`Refusal`] among them.
 fn message(e: &tokio_postgres::Error) -> String {
     if let Some(db) = e.as_db_error() {
         let mut text = db.message().to_string();
@@ -305,10 +445,7 @@ fn message(e: &tokio_postgres::Error) -> String {
         }
         return text;
     }
-    match e.source().and_then(|s| s.downcast_ref::<Refusal>()) {
-        Some(refusal) => refusal.0.clone(),
-        None => e.to_string(),
-    }
+    super::sql_source::cause(e)
 }
 
 /// Why a value could not be bound or read, in words that already name what is wrong.
@@ -1132,6 +1269,37 @@ mod tests {
             Value::Json(plan) => plan,
             other => panic!("not JSON: {other:?}"),
         }
+    }
+
+    /// A self-signed certificate signed with `algorithm`, as DER.
+    fn certificate(algorithm: &'static rcgen::SignatureAlgorithm) -> Vec<u8> {
+        let key = rcgen::KeyPair::generate_for(algorithm).unwrap();
+        let params = rcgen::CertificateParams::new(vec!["db.example".to_string()]).unwrap();
+        params.self_signed(&key).unwrap().der().to_vec()
+    }
+
+    #[test]
+    fn the_end_point_hashes_the_certificate_with_its_signature_hash() {
+        for (algorithm, hash) in [
+            (&rcgen::PKCS_ECDSA_P256_SHA256, &digest::SHA256),
+            (&rcgen::PKCS_ECDSA_P384_SHA384, &digest::SHA384),
+            (&rcgen::PKCS_RSA_SHA256, &digest::SHA256),
+            (&rcgen::PKCS_RSA_SHA384, &digest::SHA384),
+            (&rcgen::PKCS_RSA_SHA512, &digest::SHA512),
+        ] {
+            let der = certificate(algorithm);
+            assert_eq!(
+                server_end_point(&der),
+                Some(digest::digest(hash, &der).as_ref().to_vec()),
+                "{algorithm:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_signature_with_no_single_hash_has_no_end_point() {
+        assert_eq!(server_end_point(&certificate(&rcgen::PKCS_ED25519)), None);
+        assert_eq!(server_end_point(b"not a certificate"), None);
     }
 
     fn numeric(text: &str) -> String {

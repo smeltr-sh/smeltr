@@ -573,6 +573,43 @@ pub fn socket_has_what_is_on_disk(dir: &Path) -> bool {
     socket == disk
 }
 
+/// Whether a replacement of what is served has reached the disk and the socket has not yet taken it.
+///
+/// A start serving a stand-in under another root leaves the two parted too, with nothing on its way to the socket.
+/// That parting stops nothing an operator does: one who knows their fleet trusts what they are moving to may rotate
+/// away from the stand-in and cut over, past the confirmation that says who that strands. What waits for the fleet
+/// still waits on [`socket_has_what_is_on_disk`].
+fn reload_pending(dir: &Path) -> bool {
+    !socket_has_what_is_on_disk(dir) && unserved(dir).is_none()
+}
+
+/// Whether the socket a start builds presents the root workers verify by, so that building it brings the socket
+/// and the disk together.
+///
+/// Workers verify by the root of the entry named in `served.json`. A stand-in under that same root -- the
+/// temporary certificate, which the leader's own authority signs, in place of the leader's own entry -- is one
+/// every worker already verifies. A stand-in under another root, or one with no entry named to compare against,
+/// is not.
+pub fn start_agrees(dir: &Path) -> bool {
+    let _reading = changing();
+    if unserved(dir).is_none() {
+        return true;
+    }
+    let Ok(Some(named)) = served(dir) else {
+        return false;
+    };
+    let Ok(presented) = current_held(dir) else {
+        return false;
+    };
+    match (
+        describe(named.ca.as_bytes(), "the root workers verify by"),
+        signing_root(&presented.ca_pem, &presented.served),
+    ) {
+        (Ok(named), Ok(presented)) => named.fingerprint == presented.fingerprint,
+        _ => false,
+    }
+}
+
 /// How to make the socket serve what is on disk, registered by whatever built it.
 static RELOAD: std::sync::OnceLock<Reload> = std::sync::OnceLock::new();
 
@@ -1051,7 +1088,7 @@ pub fn rotation_may_begin(dir: &Path, installs: Installs) -> Result<(), Refused>
     }
     // What the socket presents is not what `ca.pem` describes, so the root a rotation would move away from is not
     // the one any worker is verifying by. Minting against the file would publish an overlap the fleet never sees.
-    if !socket_has_what_is_on_disk(dir) {
+    if reload_pending(dir) {
         return Err(Refused::Conflict(
             "this leader is presenting a certificate other than the one on disk, so what its workers verify by \
              is not what a rotation would move them off. Restart it first."
@@ -1574,13 +1611,13 @@ pub fn rotation_can_finish(dir: &Path) -> bool {
     matches!(rotation(dir), Ok(Some(_))) && cut_over_is_possible(dir).is_ok()
 }
 
-/// Refuses while what this leader presents is not what its files describe.
+/// Refuses while a replacement of what is served is on its way to the socket ([`reload_pending`]).
 ///
 /// A rotation is a promise carried on the heartbeat, and [`leader::authority_to_hand`] withholds the bundle for
-/// exactly as long as this holds -- so no worker can have been handed the incoming root, and anything that moved
-/// the rotation forward here would move it past a fleet that never saw it.
+/// as long as the two are parted -- so no worker can have been handed the incoming root, and a cutover reached
+/// past a replacement in flight would move the rotation past a fleet that never saw it.
 fn socket_agrees(dir: &Path) -> Result<(), String> {
-    if socket_has_what_is_on_disk(dir) {
+    if !reload_pending(dir) {
         return Ok(());
     }
     Err(
@@ -2756,6 +2793,80 @@ pub(crate) mod tests {
         assert!(unserved(&dir).is_none());
         let (_, chain, _) = to_serve(&dir).unwrap();
         assert_eq!(chain, own.served, "the stored version is served again");
+    }
+
+    /// The temporary certificate is signed by the leader's own authority, in place of the leader's own entry, so it
+    /// is under the root every worker verifies by: the socket a start builds for it agrees with the disk.
+    #[test]
+    fn a_temporary_certificate_is_under_the_root_workers_verify_by() {
+        let dir = scratch("key-lost-agrees");
+        ensure(&dir, names(), A_YEAR, &[]).expect("the leader's own");
+        let key = dir.with_extension("key");
+        std::fs::rename(&key, key.with_extension("kept")).expect("the secrets key");
+        ensure(&dir, names(), A_YEAR, &[]).expect("a start with its key lost");
+        assert!(unserved(&dir).is_some_and(|why| why.contains("temporary")));
+
+        assert!(
+            start_agrees(&dir),
+            "the temporary certificate read as under another root"
+        );
+        rotation_may_begin(&dir, Installs::Supplied).expect("an order under another root may rotate away from it");
+    }
+
+    /// A stand-in under another root than the entry named stays parted, so nothing waiting for the fleet moves. An
+    /// operator may still rotate away from it and cut over.
+    #[test]
+    fn an_operator_may_rotate_away_from_a_stand_in_under_another_root() {
+        let dir = scratch("stand-in-rotates");
+        ensure(&dir, names(), A_YEAR, &[]).expect("the leader's own");
+        let (chain, key, ca) = elsewhere("stand-in-gone", names());
+        let gone = listed(&dir, &chain, &key, &ca);
+        serve(&dir, &gone, &names(), &[]).expect("served");
+        list_in(&dir)
+            .delete_secret_version(&gone.name, gone.version, None)
+            .unwrap();
+        ensure(&dir, names(), A_YEAR, &[]).expect("a start with its entry gone");
+        assert!(!start_agrees(&dir), "workers verify by the root of the entry named");
+        assert!(!socket_has_what_is_on_disk(&dir));
+
+        let (chain, key, ca) = elsewhere("stand-in-next", names());
+        let next = listed(&dir, &chain, &key, &ca);
+        rotation_may_begin(&dir, Installs::Supplied).expect("the stand-in refused a rotation");
+        begin_supplied_rotation(&dir, &next, &names(), &[], NOW).expect("a rotation away from the stand-in");
+        assert!(
+            !cut_over_if_due(&dir, names(), A_YEAR, Some(&[]), i64::MAX).expect("asked"),
+            "the deadline cut over while no worker could have been handed the incoming root"
+        );
+
+        cut_over_is_possible(&dir).expect("the operator's cutover refused");
+        cut_over(&dir, names(), A_YEAR).expect("the operator's cutover");
+        assert_eq!(served(&dir).unwrap(), Some(next));
+        assert!(unserved(&dir).is_none());
+        assert!(socket_has_what_is_on_disk(&dir));
+    }
+
+    /// A replacement the socket has not yet taken still refuses a rotation, and a cutover: what is on disk is not
+    /// what any worker has been shown.
+    #[test]
+    fn a_replacement_in_flight_refuses_a_rotation() {
+        let dir = scratch("in-flight");
+        ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
+        let (loading, _, _) = to_serve(&dir).expect("what the socket would load");
+        renew(&dir).expect("a replacement during the reload");
+        socket_took(&dir, loading);
+
+        assert!(matches!(
+            rotation_may_begin(&dir, Installs::Supplied),
+            Err(Refused::Conflict(_))
+        ));
+        socket_took(&dir, disk_generation(&dir));
+        let (chain, key, ca) = elsewhere("in-flight-next", names());
+        let next = listed(&dir, &chain, &key, &ca);
+        begin_supplied_rotation(&dir, &next, &names(), &[], NOW).expect("a rotation");
+        let (loading, _, _) = to_serve(&dir).expect("what the socket would load");
+        renew(&dir).expect("a replacement during the reload");
+        socket_took(&dir, loading);
+        assert!(matches!(cut_over_is_possible(&dir), Err(Refused::Conflict(_))));
     }
 
     /// A certificate supplied as files before the list is not served, and the start says where it goes.

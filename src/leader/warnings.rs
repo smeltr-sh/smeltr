@@ -2182,16 +2182,46 @@ pub fn outside_normal_warnings(
                 severity: Severity::Warning,
                 since_millis: starts.get(&outside_key(r, side)).copied(),
                 message: format!(
-                    "source {}: {} rows in {} minutes, normal at this time of day is {} to {}",
+                    "source {}: {}normal, {} rows in {} minutes against {} at this time of day",
                     r.source,
+                    off_by(r, side),
                     throughput::grouped(r.rows),
                     throughput::WINDOW.as_secs() / 60,
-                    throughput::grouped(r.band.low),
-                    throughput::grouped(r.band.high),
+                    // A band whose top is zero is zero throughout, since no source reads fewer than none.
+                    if r.band.high <= 0.0 {
+                        "none".to_string()
+                    } else {
+                        format!(
+                            "{} to {}",
+                            throughput::grouped(r.band.low),
+                            throughput::grouped(r.band.high)
+                        )
+                    },
                 ),
             }
         })
         .collect()
+}
+
+/// How far past its band's nearest edge a reading is, in percent of that edge, and which way, as the warning opens:
+/// a count in the millions is hard to set against another by eye. Only the way where the edge is zero, which any
+/// reading is infinitely above.
+fn off_by(r: &throughput::Reading, side: throughput::Outside) -> String {
+    let (edge, word) = match side {
+        throughput::Outside::Below => (r.band.low, "below"),
+        throughput::Outside::Above => (r.band.high, "above"),
+    };
+    if edge <= 0.0 {
+        return format!("{word} ");
+    }
+    let percent = ((r.rows - edge) / edge * 100.0).abs();
+    // Any reading outside is past the edge, which "0%" would deny.
+    let percent = if percent < 1.0 {
+        "slightly".to_string()
+    } else {
+        format!("{percent:.0}%")
+    };
+    format!("{percent} {word} ")
 }
 
 /// When one warning about a source or destination held, for a chart to mark.
@@ -4325,6 +4355,25 @@ mod tests {
     }
 
     #[test]
+    fn a_reading_just_past_its_normal_is_not_zero_percent_past_it() {
+        let r = reading_of("high", 5010.0);
+        assert_eq!(off_by(&r, throughput::Outside::Above), "slightly above ");
+        let zero = throughput::Reading {
+            band: throughput::Band { low: 0.0, high: 0.0 },
+            ..r
+        };
+        assert_eq!(off_by(&zero, throughput::Outside::Above), "above ");
+        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("high")])];
+        assert_eq!(
+            outside(&[zero], &snapshot),
+            [(
+                Condition::SourceRowsAbove,
+                "source high: above normal, 5,010 rows in 30 minutes against none at this time of day".to_string()
+            )]
+        );
+    }
+
+    #[test]
     fn a_source_outside_its_normal_warns_on_the_side_it_is_on() {
         let snapshot = [thread_health_in(
             "g",
@@ -4344,11 +4393,11 @@ mod tests {
             [
                 (
                     Condition::SourceRowsAbove,
-                    "source high: 9,000 rows in 30 minutes, normal at this time of day is 1,000 to 5,000".to_string()
+                    "source high: 80% above normal, 9,000 rows in 30 minutes against 1,000 to 5,000 at this time of day".to_string()
                 ),
                 (
                     Condition::SourceRowsBelow,
-                    "source low: 600 rows in 30 minutes, normal at this time of day is 1,000 to 5,000".to_string()
+                    "source low: 40% below normal, 600 rows in 30 minutes against 1,000 to 5,000 at this time of day".to_string()
                 ),
             ]
         );

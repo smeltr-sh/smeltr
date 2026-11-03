@@ -62,9 +62,6 @@ skip = [
     { crate = "num-bigint@0.4.8", reason = "der-parser, through x509-parser" },
     { crate = "spin@0.9.9", reason = "multer, through axum" },
     { crate = "untrusted@0.7.1", reason = "aws-lc-rs" },
-    { crate = "const-oid@0.9.6", reason = "x509-cert 0.2, through tokio-postgres-rustls" },
-    { crate = "der@0.7.10", reason = "x509-cert 0.2, through tokio-postgres-rustls" },
-    { crate = "spki@0.7.3", reason = "x509-cert 0.2, through tokio-postgres-rustls" },
     { crate = "fallible-iterator@0.2.0", reason = "postgres-protocol, through tokio-postgres" },
 ]
 wildcards = "deny"

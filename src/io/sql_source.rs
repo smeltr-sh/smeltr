@@ -44,6 +44,16 @@ pub fn held(row: &[Value]) -> usize {
     std::mem::size_of::<Vec<Value>>() + row.iter().map(Value::held).sum::<usize>()
 }
 
+/// The innermost cause beneath `e`: what a driver's own wrappers hide when the server sent no message, such as which
+/// certificate check failed under "error performing TLS handshake".
+pub fn cause(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut cause = e;
+    while let Some(inner) = cause.source() {
+        cause = inner;
+    }
+    cause.to_string()
+}
+
 /// Why a driver stops reading a result past [`MAX_RESULT_BYTES`].
 pub fn too_large() -> String {
     format!(
