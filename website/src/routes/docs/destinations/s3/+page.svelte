@@ -111,22 +111,22 @@
     </li>
     <li>
       <a href="/docs/schemas#ocsf">Add a schema from the OCSF class</a> at the OCSF release Security
-      Lake reads for custom sources, which
+      Lake reads for custom sources, which the
       <a href="https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html"
         >Add a custom source</a
       >
-      names, and choose it in the pipeline's <a href="/docs/schemas#produces">Produces bar</a>.
+      page names, and choose it in the pipeline's <a href="/docs/schemas#produces">Produces bar</a>.
     </li>
     <li>
       Add an S3 destination for each custom source, with its location's bucket, its role in <code
         >roleArn</code
       >
       and its external id in <code>externalId</code>, format <code>parquet</code> and compression
-      <code>zstd</code>. Set <code>prefix</code> to the rest of its location and the folders
+      <code>zstd</code>. Set <code>prefix</code> to the rest of its location and the folders the
       <a href="https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html"
         >Add a custom source</a
       >
-      lists below it, with <code>%Y%m%d</code> for the day, such as
+      page lists below it, with <code>%Y%m%d</code> for the day, such as
       <code>ext/my-source/region=us-east-1/accountId=123456789012/eventDay=%Y%m%d/</code>.
     </li>
     <li>Route each class to its own destination.</li>
