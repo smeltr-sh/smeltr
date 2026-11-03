@@ -16,7 +16,6 @@
     dirty: boolean;
     /** The Save button's text. */
     label: string;
-    /** Holds Save back, as while a save is in flight. */
     /** Why saving is disabled, or `''` when it is not. */
     disabled?: string;
     ondiscard: () => void;
