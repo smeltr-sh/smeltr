@@ -455,7 +455,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/logs",
-        what: "One page of fleet log rows. Query: level (comma-separated), worker, group, site, q, sinceMillis, untilMillis, limit, before, after.",
+        what: "One page of fleet log rows. Query: level (comma-separated), worker, group, class, type (part of one), service, q, sinceMillis, untilMillis, limit, before, after.",
         body: "",
     },
     Route {

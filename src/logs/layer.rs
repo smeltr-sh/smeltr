@@ -16,9 +16,10 @@ use super::hand_off;
 /// through the `log` facade.
 ///
 /// A span of ours lends its fields to every line raised inside it, so a line deep in a commit says which source
-/// and batch it was about without its call site knowing. Only while the span is enabled: the data path opens its
-/// spans at trace, so below trace a line names what it is about itself. When one closes it is said, at its own
-/// level, with how long it was open. A library's spans are neither: what it names in them is its own business, and
+/// and batch it was about without its call site knowing. Only when the span was kept as it opened: the data path
+/// opens its spans at trace, so below trace a line names what it is about itself. When a kept one closes it is said,
+/// at its own level, with how long it was open. Every span of ours lends its class, kept or not, since a library's
+/// line inside it has no other. A library's spans are neither: what it names in them is its own business, and
 /// it opens far too many to say.
 pub struct LogLayer;
 
@@ -27,7 +28,8 @@ struct Known {
     /// Its target, which a library's line said inside it takes as its class.
     class: &'static str,
     fields: Vec<(Cow<'static, str>, super::event::Value)>,
-    opened: Instant,
+    /// When it opened, if it was kept then.
+    opened: Option<Instant>,
 }
 
 /// The type of the line a span of ours says when it closes.
@@ -42,7 +44,7 @@ where
     fn register_callsite(&self, metadata: &'static tracing::Metadata<'static>) -> Interest {
         if is_library(metadata.target()) {
             Interest::sometimes()
-        } else if ours_kept(metadata) {
+        } else if metadata.is_span() || ours_kept(metadata) {
             Interest::always()
         } else {
             Interest::never()
@@ -60,7 +62,7 @@ where
             return false;
         }
         if !is_library(target) {
-            return ours_kept(metadata);
+            return metadata.is_span() || ours_kept(metadata);
         }
         let class = ctx.lookup_current().and_then(|span| class_around(span.scope()));
         level <= super::levels::kept_at(class, library(target), super::levels::service(target))
@@ -70,13 +72,16 @@ where
         if is_library(attrs.metadata().target()) {
             return;
         }
+        let kept = ours_kept(attrs.metadata());
         let mut collected = Collect::default();
-        attrs.record(&mut collected);
+        if kept {
+            attrs.record(&mut collected);
+        }
         if let Some(span) = ctx.span(id) {
             span.extensions_mut().insert(Known {
                 class: attrs.metadata().target(),
                 fields: collected.fields,
-                opened: Instant::now(),
+                opened: kept.then(Instant::now),
             });
         }
     }
@@ -84,7 +89,7 @@ where
     fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(id) else { return };
         let mut extensions = span.extensions_mut();
-        let Some(known) = extensions.get_mut::<Known>() else {
+        let Some(known) = extensions.get_mut::<Known>().filter(|known| known.opened.is_some()) else {
             return;
         };
         let mut collected = Collect::default();
@@ -135,8 +140,10 @@ where
         let metadata = span.metadata();
         let (mut fields, took) = {
             let extensions = span.extensions();
-            let Some(known) = extensions.get::<Known>() else { return };
-            (known.fields.clone(), known.opened.elapsed())
+            let Some((known, opened)) = extensions.get::<Known>().and_then(|k| Some((k, k.opened?))) else {
+                return;
+            };
+            (known.fields.clone(), opened.elapsed())
         };
         for outer in span.scope().skip(1) {
             lend(&outer.extensions(), &mut fields);
@@ -277,8 +284,12 @@ mod tests {
 
     /// What the layer hands on while `f` runs, everything kept.
     fn handed(f: impl FnOnce()) -> Vec<Event> {
+        handed_at(Level::TRACE, f)
+    }
+
+    fn handed_at(level: Level, f: impl FnOnce()) -> Vec<Event> {
         use tracing_subscriber::layer::SubscriberExt;
-        super::super::levels::set(super::super::levels::Levels::at(Level::TRACE));
+        super::super::levels::set(super::super::levels::Levels::at(level));
         let tap = super::super::tap();
         tracing::subscriber::with_default(tracing_subscriber::registry().with(LogLayer), f);
         tap.drain(100)
@@ -422,6 +433,20 @@ mod tests {
             .map(|e| (e.class.as_deref(), e.message.as_str()))
             .collect();
         assert_eq!(said, [(None, "outside"), (Some("destinations"), "inside")]);
+    }
+
+    /// A span below its level still lends its class, since a thread's span opens once and a library's line in it
+    /// has no other; it lends no fields and says nothing when it ends.
+    #[test]
+    fn a_span_not_kept_lends_its_class_and_nothing_else() {
+        let events = handed_at(Level::INFO, || {
+            let span = tracing::trace_span!(target: "destinations", "an egress thread", subject = "d1");
+            let _entered = span.enter();
+            tracing::warn!(target: "ureq::pool", "inside");
+        });
+        assert_eq!(events.len(), 1, "no line for the span's end");
+        assert_eq!(events[0].class.as_deref(), Some("destinations"));
+        assert!(field(&events[0], "subject").is_none());
     }
 
     #[test]

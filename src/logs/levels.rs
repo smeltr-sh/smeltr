@@ -95,6 +95,7 @@ const SERVICES: &[(&str, &str)] = &[
     ("smeltr::io::pubsub", "gcsPubSub"),
     ("smeltr::io::storage_queue", "azureBlobQueue"),
     ("smeltr::io::syslog_receiver", "syslogReceiver"),
+    ("smeltr::io::s2s_receiver", "s2sReceiver"),
     ("smeltr::io::splunk", "splunkHec"),
     ("smeltr::io::okta", "oktaLogs"),
     ("smeltr::io::remote_write", "prometheus"),
@@ -192,10 +193,8 @@ mod tests {
                         let class = &named[4];
                         let at = named.get(0).unwrap().start();
                         let is_span = span.is_match(&text[at.saturating_sub(200)..at]);
-                        if class == "test"
-                            || class.is_empty()
-                            || !class.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
-                        {
+                        // A library's target, said in a test of the layer.
+                        if class == "test" || class.is_empty() || class.contains("::") {
                             continue;
                         }
                         if !CLASSES.contains(&class) {

@@ -1119,6 +1119,7 @@ impl RegistryStore {
             )?;
             for event in events {
                 let fields = serde_json::to_string(&event.fields).unwrap_or_else(|_| "[]".to_string());
+                let (class, kind) = event.class_and_type();
                 stmt.execute(params![
                     event.timestamp_ms,
                     worker_id,
@@ -1128,8 +1129,8 @@ impl RegistryStore {
                     event.seq as i64,
                     event.thread,
                     event.level,
-                    event.class,
-                    event.r#type,
+                    class,
+                    kind,
                     event.service,
                     event.message,
                     fields,
@@ -2380,6 +2381,7 @@ mod tests {
             class,
             r#type,
             service,
+            site: String::new(),
             message: "a source is blocked".to_string(),
             thread: Some("reader-0".to_string()),
             boot_id: None,
@@ -2435,6 +2437,7 @@ mod tests {
             class,
             r#type,
             service,
+            site: String::new(),
             message: message.to_string(),
             thread: Some("reader-0".to_string()),
             boot_id: None,

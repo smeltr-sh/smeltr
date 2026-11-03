@@ -1776,6 +1776,7 @@ mod tests {
                     class: Some("logs".into()),
                     r#type: "mirror_obey_test".into(),
                     service: None,
+                    site: String::new(),
                     message: "a supervisor said something".into(),
                     thread: None,
                     boot_id: None,

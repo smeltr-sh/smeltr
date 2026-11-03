@@ -7285,6 +7285,7 @@ mod tests {
                 class: Some("logs".to_string()),
                 r#type: "runtime".to_string(),
                 service: None,
+                site: String::new(),
                 message: format!("log {seq}"),
                 thread: None,
                 boot_id: Some(7),
