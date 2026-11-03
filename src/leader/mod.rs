@@ -504,7 +504,7 @@ async fn heartbeat(
             match looked {
                 Ok(_) => said.clear(),
                 Err(e) if said.due() => {
-                    tracing::warn!(target: "leader.issues_unreadable", error = %e, "the issues could not be read, so none are logged as beginning or ending")
+                    tracing::warn!(name: "issues_unreadable", target: "status", error = %e, "the issues could not be read, so none are logged as beginning or ending")
                 }
                 Err(_) => {}
             }

@@ -6871,7 +6871,8 @@ mod tests {
             severity: Severity::Warning,
             since_millis: None,
             message: String::new(),
-            site: None,
+            class: None,
+            r#type: None,
             area: None,
         };
         let clocked = HashSet::from([
