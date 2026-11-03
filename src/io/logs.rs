@@ -19,8 +19,8 @@ pub const LOGS_TOPIC: &str = "__smeltr_logs";
 /// How this source is configured. Nothing to reach and nothing to authenticate: what it reads is already here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LogsSourceConfig {
-    /// The lowest severity this source carries. A ceiling sits above it: the process collects at
-    /// `SMELTR_LOG_LEVEL`, and what it never collected is not here to read.
+    /// The lowest severity this source carries. A line its process did not keep (`crate::logs::levels`) is not
+    /// here to read.
     pub min_level: tracing::Level,
 }
 
@@ -40,18 +40,6 @@ impl LogsSource {
     /// source alone.
     pub fn new(config: LogsSourceConfig) -> LogsSource {
         let tap = crate::logs::tap();
-        // Said here rather than refused at load: the ceiling belongs to this process, and the bundle is read by
-        // the leader too, where a different `SMELTR_LOG_LEVEL` would make the same bundle valid in one place and
-        // invalid in another. Refusing would also cost every other pipeline in it.
-        let ceiling = crate::startup_config::log_level();
-        if config.min_level > ceiling {
-            tracing::warn!(
-                target: "logs_source.below_ceiling",
-                min_level = %config.min_level,
-                ceiling = %ceiling,
-                "a logs source asks for logs this process does not collect, and carries only what it does"
-            );
-        }
         // Trace describes the pipelines that carry it, this one's included: carrying it would make the lines that
         // the next batch is made of, and the source would never be idle.
         let min_level = config.min_level.min(CARRIED_AT_MOST);

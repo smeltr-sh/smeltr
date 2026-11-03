@@ -165,15 +165,15 @@ mod tests {
     #[test]
     fn levels_name_what_a_process_keeps() {
         use tracing::Level;
-        let kept = levels(None, &[("kafka", "trace"), ("store", "nonsense")]).levels(Level::WARN);
-        assert_eq!(kept.default, Level::WARN);
+        let kept = levels(None, &[("kafka", "trace"), ("store", "nonsense")]).levels();
+        assert_eq!(kept.default, Level::INFO);
         assert_eq!(kept.kept_at("kafka.lag_unmeasured"), Level::TRACE);
         assert_eq!(
             kept.kept_at("store.statement"),
-            Level::WARN,
+            Level::INFO,
             "a label this build does not know is the default"
         );
-        assert_eq!(levels(Some("debug"), &[]).levels(Level::WARN).default, Level::DEBUG);
+        assert_eq!(levels(Some("debug"), &[]).levels().default, Level::DEBUG);
     }
 
     #[test]

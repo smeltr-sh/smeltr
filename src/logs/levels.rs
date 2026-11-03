@@ -113,7 +113,10 @@ pub fn area(target: &str) -> &str {
         .map_or(first, |(_, area)| area)
 }
 
-static LEVELS: RwLock<Levels> = RwLock::new(Levels::at(Level::INFO));
+/// Every area's level until an operator sets another.
+pub const DEFAULT: Level = Level::INFO;
+
+static LEVELS: RwLock<Levels> = RwLock::new(Levels::at(DEFAULT));
 
 /// The level a line from `target` is kept at now.
 pub fn kept_at(target: &str) -> Level {

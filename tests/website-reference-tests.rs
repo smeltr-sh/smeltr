@@ -1924,7 +1924,6 @@ fn every_startup_example_is_read() {
         ("worker.metrics_endpoint.password", || {
             format!("{:?}", c::worker_metrics_endpoint_password())
         }),
-        ("log_level", || c::log_level().to_string()),
     ]
     .into_iter()
     .collect();
@@ -2091,7 +2090,6 @@ fn the_startup_settings_match_the_engine() {
             "worker.metrics_endpoint.password",
             c::worker_metrics_endpoint_password(),
         ),
-        ("log_level", some(c::log_level().to_string().to_lowercase())),
     ]
     .into_iter()
     .collect();
@@ -2107,9 +2105,6 @@ fn the_startup_settings_match_the_engine() {
             .unwrap_or_else(|| panic!("{}: no engine default to check", s.key));
         let literal = s.default.strip_prefix('`').and_then(|d| d.strip_suffix('`'));
         assert_eq!(literal, got.as_deref(), "{}: documented default {}", s.key, s.default);
-        if s.key == "log_level" {
-            check_levels(&s.key, &s.values);
-        }
     }
 }
 

@@ -1644,7 +1644,14 @@ fn load_and_apply_config_file() {
         None => FileConfig::default(),
     };
 
-    backfill_env("SMELTR_LOG_LEVEL", file.log_level);
+    // The fleet's levels are set on the leader (`smeltr::leader::log_levels`). An install that still sets its own
+    // starts all the same.
+    if file.log_level.is_some() || std::env::var("SMELTR_LOG_LEVEL").is_ok_and(|v| !v.is_empty()) {
+        eprintln!(
+            "smeltr: `log_level` and SMELTR_LOG_LEVEL do nothing and can be removed. Log levels are set on the \
+             leader's Admin > System > Logging page."
+        );
+    }
 
     backfill_env("SMELTR_LEADER_ENABLED", file.leader.enabled);
     backfill_env("SMELTR_GUI_PORT", file.leader.http.port);

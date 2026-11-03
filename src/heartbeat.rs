@@ -799,7 +799,7 @@ pub struct HeartbeatResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployed: Option<String>,
     /// The levels this worker keeps its lines at, whole on every answer. Absent while an operator has set nothing,
-    /// and from a leader too old to say: every area is then at the worker's own `SMELTR_LOG_LEVEL`.
+    /// and from a leader too old to say: every area is then at [`crate::logs::levels::DEFAULT`].
     #[serde(default, skip_serializing_if = "LogLevels::is_empty")]
     pub log_levels: LogLevels,
 }
@@ -808,7 +808,7 @@ pub struct HeartbeatResponse {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogLevels {
-    /// Every area `areas` does not name. Absent is the process's own `SMELTR_LOG_LEVEL`.
+    /// Every area `areas` does not name. Absent is [`crate::logs::levels::DEFAULT`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -820,14 +820,14 @@ impl LogLevels {
         self.default.is_none() && self.areas.is_empty()
     }
 
-    /// What a process keeps its lines at, `fallback` where these name nothing. A label this build does not know is
-    /// one it cannot keep, so that area stays at the default.
-    pub fn levels(&self, fallback: tracing::Level) -> crate::logs::levels::Levels {
+    /// What a process keeps its lines at. A label this build does not know is one it cannot keep, so that area
+    /// stays at the default.
+    pub fn levels(&self) -> crate::logs::levels::Levels {
         let default = self
             .default
             .as_deref()
             .and_then(crate::logs::level_for_label)
-            .unwrap_or(fallback);
+            .unwrap_or(crate::logs::levels::DEFAULT);
         let mut levels = crate::logs::levels::Levels::at(default);
         for (area, label) in &self.areas {
             if let Some(level) = crate::logs::level_for_label(label) {
@@ -839,7 +839,7 @@ impl LogLevels {
 
     /// Keep this process's lines at these levels from now on.
     pub fn apply(&self) {
-        crate::logs::levels::set(self.levels(crate::startup_config::log_level()));
+        crate::logs::levels::set(self.levels());
     }
 }
 

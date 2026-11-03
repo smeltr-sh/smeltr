@@ -1269,9 +1269,8 @@
   {:else}
     <Field field="minLevel" label="min level">
       {#snippet help()}
-        The lowest severity this source reads. It reads nothing below the worker's <code
-          >SMELTR_LOG_LEVEL</code
-        > (<code>info</code> unless set), and never reads trace, which would feed its own reading back into it.
+        The lowest severity this source reads. It reads only what its worker keeps (Admin › System ›
+        Logging), and never reads trace, which would feed its own reading back into it.
       {/snippet}
       <select
         value={readLevel(source.minLevel)}
