@@ -409,7 +409,7 @@ impl Protocol for Hec {
     }
 
     /// The item and its newline.
-    fn size(&self, event: &Vec<u8>) -> usize {
+    fn size(&self, event: &Vec<u8>, _previous: Option<&Vec<u8>>) -> usize {
         event.len() + 1
     }
 

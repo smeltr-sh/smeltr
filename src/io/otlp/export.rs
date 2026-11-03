@@ -185,15 +185,39 @@ impl Protocol for Otlp {
         })
     }
 
-    /// The record as it is encoded, with its field's key and length, and the resource, scope and metric it came
-    /// under, as if it were the first of a request under each: a request held to its limit is never larger than it.
-    fn size(&self, item: &Item) -> usize {
-        let len = match &item.record {
-            Record::Log(log) => log.encoded_len(),
-            Record::Span(span) => span.encoded_len(),
-            Record::Point(family, point) => point.encoded_len() + family.key.len() + 6,
+    /// The record as it is encoded, with its field's key and length, and each of the resource, scope and metric it
+    /// came under that `previous` did not: a request carries each once, and its rows sharing one come together. A
+    /// resource, scope or metric a request already carried further back is counted again, which only overcounts.
+    fn size(&self, item: &Item, previous: Option<&Item>) -> usize {
+        // A key and a length for the message itself, and for the one that holds it.
+        const FRAMED: usize = 12;
+        let (record, family) = match &item.record {
+            Record::Log(log) => (log.encoded_len(), None),
+            Record::Span(span) => (span.encoded_len(), None),
+            Record::Point(family, point) => (point.encoded_len(), Some(family)),
         };
-        len + 6 + item.scoped.resource_key.len() + item.scoped.scope_key.len() + 12
+        let s = &item.scoped;
+        let shared = |p: &Item| Arc::ptr_eq(&p.scoped, s);
+        let same_resource = previous.is_some_and(|p| shared(p) || p.scoped.resource_key == s.resource_key);
+        let same_scope = same_resource && previous.is_some_and(|p| shared(p) || p.scoped.scope_key == s.scope_key);
+        let same_metric = same_scope
+            && match (previous.map(|p| &p.record), family) {
+                (Some(Record::Point(before, _)), Some(family)) => {
+                    Arc::ptr_eq(before, family) || before.key == family.key
+                }
+                _ => false,
+            };
+        let mut size = record + 6;
+        if !same_resource {
+            size += s.resource_key.len() + FRAMED;
+        }
+        if !same_scope {
+            size += s.scope_key.len() + FRAMED;
+        }
+        if let Some(family) = family.filter(|_| !same_metric) {
+            size += family.key.len() + FRAMED;
+        }
+        size
     }
 
     fn body(&self, items: &[Item]) -> Vec<u8> {
@@ -341,6 +365,29 @@ mod tests {
             },
             signal,
         })
+    }
+
+    /// A request's items, sized each after the one before it, add up to no less than its body, and to about its
+    /// body where they share a resource, so a large resource does not fill a request early.
+    #[test]
+    fn a_request_counts_each_shared_resource_once() {
+        let otlp = protocol(Signal::Metrics);
+        let resource = format!(r#"{{"service.name":"{}"}}"#, "r".repeat(1000));
+        let rows: Vec<String> = (0..100)
+            .map(|i| {
+                let (scope, name) = (i / 50, i / 10);
+                format!(
+                    r#"{{"resource":{resource},"scope":{{"name":"s{scope}"}},"name":"m{name}","type":"gauge","value":{i}}}"#
+                )
+            })
+            .collect();
+        let items = admitted(&otlp, &rows.iter().map(String::as_str).collect::<Vec<_>>());
+        let sized: usize = (items.iter().enumerate())
+            .map(|(i, item)| otlp.size(item, i.checked_sub(1).map(|p| &items[p])))
+            .sum();
+        let body = otlp.body(&items).len();
+        assert!(sized >= body, "{sized} counted of a {body}-byte body");
+        assert!(sized < body + body / 4, "{sized} counted of a {body}-byte body");
     }
 
     fn admitted(otlp: &Otlp, rows: &[&str]) -> Vec<Item> {

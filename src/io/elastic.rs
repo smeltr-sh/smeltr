@@ -300,7 +300,7 @@ impl Protocol for Elastic {
         })
     }
 
-    fn size(&self, doc: &PendingDoc) -> usize {
+    fn size(&self, doc: &PendingDoc, _previous: Option<&PendingDoc>) -> usize {
         doc.body.len()
     }
 

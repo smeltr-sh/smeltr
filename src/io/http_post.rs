@@ -188,7 +188,7 @@ impl Protocol for Post {
     }
 
     /// The row and its separator.
-    fn size(&self, item: &Item) -> usize {
+    fn size(&self, item: &Item, _previous: Option<&Item>) -> usize {
         item.bytes.len() + 1
     }
 

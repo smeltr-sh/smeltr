@@ -195,8 +195,10 @@ pub trait Protocol: Clone + Send + 'static {
     /// The item for `row`, or why the service could never take it.
     fn admit(&self, row: &OwnedRecord) -> Result<Self::Item, String>;
 
-    /// What `item` adds to a request body, counted against the request size limit.
-    fn size(&self, item: &Self::Item) -> usize;
+    /// What `item` adds to a request body after `previous`, the item before it in the same request, or as the
+    /// request's first item where `previous` is `None`. Counted against the request size limit, so never less than
+    /// what it adds.
+    fn size(&self, item: &Self::Item, previous: Option<&Self::Item>) -> usize;
 
     fn body(&self, items: &[Self::Item]) -> Vec<u8>;
 
@@ -344,14 +346,23 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
         sorted.sort_by(|a, b| order(&a.0, &b.0));
         group.bytes = 0;
         for (item, index) in sorted {
-            let size = self.protocol.size(&item);
-            if self.overflows(group, size) {
-                full.push(group.cut());
-            }
+            let size = self.sized(group, &item);
+            let size = match self.overflows(group, size) {
+                true => {
+                    full.push(group.cut());
+                    self.protocol.size(&item, None)
+                }
+                false => size,
+            };
             group.bytes += size;
             group.pending.push(item);
             group.sent_index.push(index);
         }
+    }
+
+    /// What `item` adds to `group` as its next item.
+    fn sized(&self, group: &Group<P::Item>, item: &P::Item) -> usize {
+        self.protocol.size(item, group.pending.last())
     }
 
     /// Whether `group` must go before an item of `size` joins it: a request stays within `max_request_bytes`, and an
@@ -645,10 +656,14 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
                     groups.len() - 1
                 }
             };
-            let size = self.protocol.size(&item);
-            if order.is_none() && self.overflows(&groups[at], size) {
-                full.push(groups[at].cut());
-            }
+            let size = self.sized(&groups[at], &item);
+            let size = match order.is_none() && self.overflows(&groups[at], size) {
+                true => {
+                    full.push(groups[at].cut());
+                    self.protocol.size(&item, None)
+                }
+                false => size,
+            };
             let group = &mut groups[at];
             group.bytes += size;
             group.sent_index.push(i);

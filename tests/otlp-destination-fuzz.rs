@@ -491,6 +491,9 @@ struct FuzzService {
     attempts: HashMap<u64, u64>,
     landed: Landed,
     answered: Answered,
+    max_request_bytes: usize,
+    /// Each body larger than `max_request_bytes` that holds more than one row.
+    oversized: Arc<Mutex<Vec<usize>>>,
 }
 
 /// An `Export*ServiceResponse` whose partial success names `rejected` items refused.
@@ -524,14 +527,15 @@ impl Transport for FuzzService {
         let attempt = self.attempts.entry(key).or_default();
         *attempt += 1;
         let rng = &mut Rng::seeded(self.seed ^ key ^ *attempt);
+        let plain = opened(path, self.signal, self.gzip, body);
+        if plain.len() > self.max_request_bytes && read_back(self.signal, &plain).unwrap_or(0) > 1 {
+            self.oversized.lock().unwrap().push(plain.len());
+        }
         let mut answered = self.answered.lock().unwrap();
         let mut answer = Vec::new();
         let status = match rng.below(100) {
             0..=59 => {
-                self.landed
-                    .lock()
-                    .unwrap()
-                    .push(opened(path, self.signal, self.gzip, body));
+                self.landed.lock().unwrap().push(plain);
                 match rng.below(4) {
                     0 => {
                         answered.push("answer 2xx with a partial success");
@@ -735,6 +739,7 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
     coverage.reach(format!("stall {stall_after}ms"));
     let landed = Landed::default();
     let answered = Answered::default();
+    let oversized = Arc::default();
     let service = FuzzService {
         seed: !seed,
         signal,
@@ -742,6 +747,8 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
         attempts: HashMap::new(),
         landed: Arc::clone(&landed),
         answered: Arc::clone(&answered),
+        max_request_bytes,
+        oversized: Arc::clone(&oversized),
     };
     let config = OtlpDestinationConfig {
         http: HttpDestinationConfig {
@@ -871,6 +878,12 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
     }
     for answer in answered.lock().unwrap().iter() {
         coverage.reach(*answer);
+    }
+    let oversized = oversized.lock().unwrap();
+    if !oversized.is_empty() {
+        return Err(format!(
+            "sent requests of {oversized:?} bytes, past maxRequestBytes {max_request_bytes}"
+        ));
     }
     Ok(())
 }

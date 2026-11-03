@@ -1247,7 +1247,7 @@ impl Protocol for RemoteWrite {
     /// Each point's labels' bytes with each one's framing, the point's: a sample's, or a histogram's fixed fields
     /// and each of its buckets and spans at most, and each exemplar's fixed fields and labels. Its metadata's strings'
     /// bytes with their framing and its type's, though a request sends its family's once.
-    fn size(&self, item: &Item) -> usize {
+    fn size(&self, item: &Item, _previous: Option<&Item>) -> usize {
         let label = |name: &str, value: &str| name.len() + value.len() + 6;
         let metadata =
             (item.metadata.as_ref()).map_or(0, |m| m.metric_family_name.len() + m.help.len() + m.unit.len() + 10);
@@ -1834,7 +1834,7 @@ mod tests {
             "positive":{{"offset":0,"bucketCounts":[1,0,0,0,1,0,0,0,1]}}}}"#
         ))
         .unwrap();
-        assert_eq!(protocol().size(&large) - protocol().size(&small), 9 * 6);
+        assert_eq!(protocol().size(&large, None) - protocol().size(&small, None), 9 * 6);
     }
 
     #[test]
@@ -2112,7 +2112,7 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(
-            protocol().size(&with) - protocol().size(&bare),
+            protocol().size(&with, None) - protocol().size(&bare, None),
             24 + "trace_id".len() + 4 + 6
         );
     }
@@ -2317,9 +2317,12 @@ mod tests {
             r#"{{{T},"name":"x","value":1,"description":"help","unit":"s"}}"#
         ))
         .unwrap();
-        assert_eq!(protocol().size(&with) - protocol().size(&bare), "x".len() + 4 + 1 + 10);
+        assert_eq!(
+            protocol().size(&with, None) - protocol().size(&bare, None),
+            "x".len() + 4 + 1 + 10
+        );
         let alone = admit(r#"{"name":"abc","description":"de"}"#).unwrap();
-        assert_eq!(protocol().size(&alone), 3 + 2 + 10);
+        assert_eq!(protocol().size(&alone, None), 3 + 2 + 10);
     }
 
     #[test]
