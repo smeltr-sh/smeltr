@@ -131,6 +131,16 @@
     </li>
     <li>Route each class to its own destination.</li>
   </ol>
+  <p>
+    For example, Okta sign-ins mapped to OCSF's Authentication class, sent to a custom source named
+    <code>okta-auth</code> in account 123456789012:
+  </p>
+  <pre><code>{@html highlight(json(examples.securityLakeDestination))}</code></pre>
+  <p>
+    A file it writes on 3 November 2026 lands at
+    <code>ext/okta-auth/region=us-east-1/accountId=123456789012/eventDay=20261103/</code>, named by
+    a random id with <code>.parquet</code> at the end.
+  </p>
 
   <h2 id="verify">Verify</h2>
   <p>
