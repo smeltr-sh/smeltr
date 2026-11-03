@@ -115,10 +115,10 @@
 
     <Field label="Overrides" group optional>
       {#snippet help()}
-        A log line has a class, the part of Smeltr it is about, and a type, what happened. One that
-        talks to an outside service, such as kafka, names it too. An override keeps a class, a class
-        and one type, or a service at its own level. A line takes the first override that names it:
-        its class and type, then its service, then its class.
+        A log line has a class, the part of Smeltr it is about, and a type, what happened. A line
+        that talks to an outside service, such as kafka, names that service too. An override keeps a
+        class, a class and one type, or a service at its own level. A line takes the first override
+        that names it: its class and type, then its service, then its class.
       {/snippet}
       <table>
         <thead><tr><th>For</th><th>Level</th><th></th></tr></thead>
