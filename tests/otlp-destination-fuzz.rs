@@ -931,14 +931,43 @@ fn random_exports_and_answers_arrive_as_they_were_received() {
 
 // -- live: a real OpenTelemetry Collector
 
-/// The collector's configuration: take OTLP/HTTP of `signal` at `listening`, and pass it on as protobuf to `at`.
-fn collector_config(listening: SocketAddr, at: SocketAddr, signal: Signal) -> String {
+/// How the destination reaches the collector.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Reach {
+    Plain,
+    /// Over TLS, verifying the collector's certificate.
+    Trusts,
+    /// That, and presenting a certificate of its own, which the collector demands.
+    Presents,
+}
+
+/// The bearer token the collector demands where it demands one.
+const COLLECTOR_TOKEN: &str = "c0llect";
+
+/// The collector's configuration: take OTLP/HTTP of `signal` at `listening`, reached as `reach` says and demanding
+/// [`COLLECTOR_TOKEN`] when `token`, and pass it on as protobuf to `at`.
+fn collector_config(listening: SocketAddr, at: SocketAddr, signal: Signal, reach: Reach, token: bool) -> String {
+    let tls = match reach {
+        Reach::Plain => String::new(),
+        Reach::Trusts => "\n        tls: {cert_file: /smeltr/server.pem, key_file: /smeltr/server-key.pem}".to_string(),
+        Reach::Presents => "\n        tls: {cert_file: /smeltr/server.pem, key_file: /smeltr/server-key.pem, \
+                            client_ca_file: /smeltr/ca.pem}"
+            .to_string(),
+    };
+    let (extensions, auth, service_extensions) = match token {
+        true => (
+            format!("extensions:\n  bearertokenauth:\n    token: \"{COLLECTOR_TOKEN}\"\n"),
+            "\n        auth: {authenticator: bearertokenauth}",
+            "\n  extensions: [bearertokenauth]",
+        ),
+        false => (String::new(), "", ""),
+    };
     format!(
-        "receivers:\n  otlp:\n    protocols:\n      http:\n        endpoint: {listening}\nexporters:\n  \
-         otlphttp:\n    endpoint: http://{at}\n    encoding: proto\n    compression: none\n    sending_queue: \
-         {{enabled: false}}\n    retry_on_failure: {{enabled: false}}\n    headers: {{authorization: \"Bearer \
-         s3cret\"}}\nservice:\n  telemetry:\n    metrics: {{level: none}}\n  pipelines:\n    {signal}:\n      \
-         receivers: [otlp]\n      exporters: [otlphttp]\n",
+        "{extensions}receivers:\n  otlp:\n    protocols:\n      http:\n        endpoint: {listening}{tls}{auth}\n\
+         exporters:\n  otlphttp:\n    endpoint: http://{at}\n    encoding: proto\n    compression: none\n    \
+         sending_queue: {{enabled: false}}\n    retry_on_failure: {{enabled: false}}\n    headers: {{authorization: \
+         \"Bearer s3cret\"}}\nservice:{service_extensions}\n  telemetry:\n    metrics: {{level: none}}\n  \
+         pipelines:\n    {signal}:\n      receivers: [otlp]\n      exporters: [otlphttp]\n",
         signal = signal.name()
     )
 }
@@ -955,27 +984,62 @@ fn listening(at: SocketAddr, within: Duration) -> bool {
     false
 }
 
-/// A real OpenTelemetry Collector takes what the destination sends, of each signal, compressed or not, in requests
-/// of random sizes, and passes it on to a receiver: every row the destination did not refuse arrives as it was
-/// given.
+/// A bundle of one OTLP destination of `signal` sending to `url`, with the settings `d` adds.
+fn bundle(url: &str, signal: Signal, mut d: Map<String, Value>) -> String {
+    d.insert("id".into(), json!("collector"));
+    d.insert("type".into(), json!("otlp"));
+    d.insert("url".into(), json!(url));
+    d.insert("signal".into(), json!(signal.name()));
+    json!({
+        "version": 1,
+        "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
+        "destinations": [d],
+        "pipelines": [{"id": "p", "name": "p", "steps": []}],
+        "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["collector"]}]}],
+    })
+    .to_string()
+}
+
+/// A real OpenTelemetry Collector takes what a destination loaded from a bundle sends, of each signal, compressed or
+/// not, plain or over TLS with or without a client certificate, with or without a bearer token, in requests of
+/// random sizes several at once, and passes it on to a receiver: every row the destination did not refuse arrives as
+/// it was given.
 #[test]
 fn live_a_collector_passes_on_what_the_fuzzed_destination_sends() {
     const TEST: &str = "live_a_collector_passes_on_what_the_fuzzed_destination_sends";
     let Some(collector) = crate::live::otel_collector(TEST) else {
         return;
     };
+    const REQUEST_BYTES: [usize; 3] = [4096, 16 << 10, 1 << 20];
+    const IN_FLIGHT: [usize; 3] = [1, 2, 4];
+    let pki = crate::harness::destination::Pki::new("otlp-live", "localhost", &["localhost"]);
+    let mut secrets = HeldSecrets::default();
+    secrets.set_stored([("collector-token".to_string(), 1, format!("Bearer {COLLECTOR_TOKEN}"))]);
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "client".to_string(),
+        version: 1,
+        value: pki.client.key.clone(),
+        chain: Some(pki.client.certificate.clone()),
+    }]);
     let mut coverage = Coverage::new(
-        (SIGNALS.iter().map(|s| format!("signal {}", s.name()))).chain(
-            [
-                "gzip",
-                "no compression",
-                "requests split",
-                "rows arrived as they were given",
-            ]
-            .map(String::from),
-        ),
+        (SIGNALS.iter().map(|s| format!("signal {}", s.name())))
+            .chain(["Plain", "Trusts", "Presents"].map(|r| format!("reach {r}")))
+            .chain(REQUEST_BYTES.map(|n| format!("maxRequestBytes {n}")))
+            .chain(IN_FLIGHT.map(|n| format!("inFlight {n}")))
+            .chain(
+                [
+                    "gzip",
+                    "no compression",
+                    "a bearer token",
+                    "no token",
+                    "bufferBytes",
+                    "requests split",
+                    "rows arrived as they were given",
+                ]
+                .map(String::from),
+            ),
     );
-    fuzz::run(1..13, |seed| {
+    fuzz::run(1..19, |seed| {
         let mut g = Gen {
             rng: Rng::seeded(seed),
             labels: Vec::new(),
@@ -983,13 +1047,46 @@ fn live_a_collector_passes_on_what_the_fuzzed_destination_sends() {
             exact: true,
         };
         let signal = *g.rng.pick(&SIGNALS);
-        coverage.reach(format!("signal {}", signal.name()));
         let gzip = g.rng.chance(2);
-        coverage.reach(if gzip { "gzip" } else { "no compression" });
-        let max_request_bytes = *g.rng.pick(&[512, 4096, 1 << 20]);
+        let reach = *g.rng.pick(&[Reach::Plain, Reach::Trusts, Reach::Presents]);
+        let token = g.rng.chance(2);
+        let max_request_bytes = *g.rng.pick(&REQUEST_BYTES);
+        let in_flight = *g.rng.pick(&IN_FLIGHT);
+        let mut settings = Map::new();
+        settings.insert("compression".into(), json!(if gzip { "gzip" } else { "none" }));
+        settings.insert("maxRequestBytes".into(), json!(max_request_bytes));
+        settings.insert("inFlight".into(), json!(in_flight));
+        settings.insert("stallAfterSecs".into(), json!(*g.rng.pick(&[10, 30])));
+        let buffered = g.rng.chance(2);
+        if buffered {
+            settings.insert("bufferBytes".into(), json!(4 * max_request_bytes.max(1 << 20)));
+        }
+        if token {
+            settings.insert(
+                "credentials".into(),
+                json!({"Authorization": {"secret": "collector-token", "version": 1}}),
+            );
+        }
+        if reach != Reach::Plain {
+            settings.insert("trustedAuthorities".into(), json!(pki.authority.pem));
+        }
+        if reach == Reach::Presents {
+            settings.insert("certificate".into(), json!("client"));
+        }
+        let mut reached = vec![
+            format!("signal {}", signal.name()),
+            format!("reach {reach:?}"),
+            format!("maxRequestBytes {max_request_bytes}"),
+            format!("inFlight {in_flight}"),
+            (if gzip { "gzip" } else { "no compression" }).to_string(),
+            (if token { "a bearer token" } else { "no token" }).to_string(),
+        ];
+        if buffered {
+            reached.push("bufferBytes".into());
+        }
+
         let (from, to) = (free_port(), free_port());
         let (mut first, mut second) = (receiver(from, signal), receiver(to, signal));
-
         let mut given = Vec::new();
         for _ in 0..1 + g.rng.below(4) {
             let export = random_export(&mut g, signal);
@@ -1004,11 +1101,14 @@ fn live_a_collector_passes_on_what_the_fuzzed_destination_sends() {
         let scratch = Scratch(std::env::temp_dir().join(format!("smeltr-otlp-out-{}-{seed}", std::process::id())));
         std::fs::create_dir_all(&scratch.0).unwrap();
         let collector_at = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), free_port().port());
-        std::fs::write(
-            scratch.0.join("config.yaml"),
-            collector_config(collector_at, to, signal),
-        )
-        .unwrap();
+        for (file, contents) in [
+            ("config.yaml", collector_config(collector_at, to, signal, reach, token)),
+            ("ca.pem", pki.authority.pem.clone()),
+            ("server.pem", pki.served.certificate.clone()),
+            ("server-key.pem", pki.served.key.clone()),
+        ] {
+            std::fs::write(scratch.0.join(file), contents).unwrap();
+        }
         // The collector runs as a user of its own, which reads what this test wrote.
         share(&scratch.0);
         let name = format!("smeltr-otlp-out-{}-{seed}", std::process::id());
@@ -1023,40 +1123,27 @@ fn live_a_collector_passes_on_what_the_fuzzed_destination_sends() {
         if !started.status.success() {
             return Err(format!("docker run: {}", String::from_utf8_lossy(&started.stderr)));
         }
+        let logs = || container_logs(&container.0);
         if !listening(collector_at, Duration::from_secs(30)) {
-            return Err(format!(
-                "the collector never listened\n{}",
-                container_logs(&container.0)
-            ));
+            return Err(format!("the collector never listened\n{}", logs()));
         }
 
-        let config = OtlpDestinationConfig {
-            http: HttpDestinationConfig {
-                url: format!("http://{collector_at}"),
-                zone_urls: Default::default(),
-                body: Default::default(),
-                payload: Payload::Record,
-                compression: if gzip { Compression::Gzip } else { Compression::None },
-                headers: Vec::new(),
-                credentials: Vec::new(),
-                tls: None,
-                in_flight: 1,
-                max_request_bytes,
-                buffer_bytes: max_request_bytes,
-                stall_after: Duration::from_secs(30),
-            },
+        let scheme = if reach == Reach::Plain { "http" } else { "https" };
+        let json = bundle(
+            &format!("{scheme}://localhost:{}", collector_at.port()),
             signal,
-        };
-        let agent = agent_config(None, &HeldSecrets::default()).unwrap();
-        let transport = http_post::transport_as(&config.http, CONTENT_TYPE, &[], &agent);
+            settings,
+        );
+        let system = smeltr::config_file::load_str(&json).map_err(|e| format!("does not load: {e}\n{json}"))?;
+        let kind = &system.topology.destinations[0].kind;
+        let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "otlp-live");
+        let mut d = smeltr::io::build_destination(kind, 0, "collector", metrics, &secrets, None)
+            .map_err(|e| format!("does not build: {e}\n{json}"))?;
         let rows = given.clone();
         // The collector answers each request once the receiver has committed what it passed on, so the receiver is
         // polled while the destination delivers.
         let delivered = std::thread::spawn(move || {
-            let mut d = HttpDestination::new(transport, Otlp::new(&config))
-                .with_max_request_bytes(config.http.max_request_bytes)
-                .with_stall_after(config.http.stall_after);
-            deliver(&mut d, rows).map_err(|e| e.message)
+            crate::harness::destination::write(d.as_mut(), &[rows], Duration::from_secs(60))
         });
         let mut arrived = Vec::new();
         let mut requests = 0;
@@ -1077,13 +1164,13 @@ fn live_a_collector_passes_on_what_the_fuzzed_destination_sends() {
             poll(&mut arrived);
         }
         if requests > 1 {
-            coverage.reach("requests split");
+            reached.push("requests split".into());
         }
-        let logs = || container_logs(&container.0);
         let refused = delivered
             .join()
             .unwrap()
-            .map_err(|e| format!("delivering to the collector: {e}\n{}", logs()))?;
+            .map_err(|e| format!("delivering to the collector: {e}\n{json}\n{}", logs()))?
+            .remove(0);
         let mut expected: Vec<Option<Vec<u8>>> = given.iter().map(|r| Some(r.value.clone())).collect();
         for r in &refused {
             if !REFUSALS.iter().any(|s| r.reason.contains(s)) {
@@ -1114,7 +1201,10 @@ fn live_a_collector_passes_on_what_the_fuzzed_destination_sends() {
             ));
         }
         if !expected.is_empty() {
-            coverage.reach("rows arrived as they were given");
+            reached.push("rows arrived as they were given".into());
+        }
+        for option in reached {
+            coverage.reach(option);
         }
         Ok(())
     });
