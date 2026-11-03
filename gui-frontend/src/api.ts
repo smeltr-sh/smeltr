@@ -4268,6 +4268,9 @@ export type SourceStatsDto = {
   bytesRate?: SpreadDto;
   /** Microseconds inside the source's own read per row read, over the buckets that read a row. */
   pollPerRow?: SpreadDto;
+  /** Its lag in records, bucket by bucket: each partition's highest reading, summed. Absent for a
+   * source that reports no lag. */
+  lag?: SpreadDto;
   /** What the source was expected to read per second, span by span, oldest first. Absent while it
    * has too little history (`throughput::expected_over`). */
   expected?: ExpectedPointDto[];
