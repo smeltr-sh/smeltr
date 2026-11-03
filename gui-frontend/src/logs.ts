@@ -14,7 +14,10 @@ export type Filters = {
   levels: string[];
   worker?: string;
   group?: string;
-  site?: string;
+  class?: string;
+  /** Matched anywhere in the type. */
+  type?: string;
+  service?: string;
   q?: string;
   /** The pager's position: rows below/above this id
    * (`LogsResponseDto.nextBefore` / `.nextAfter`). Carried like a filter, in
@@ -35,7 +38,9 @@ function params(f: Filters): URLSearchParams {
   for (const [name, value] of [
     ['worker', f.worker],
     ['group', f.group],
-    ['site', f.site],
+    ['class', f.class],
+    ['type', f.type],
+    ['service', f.service],
     ['q', f.q],
   ] as const) {
     if (value) params.set(name, value);
@@ -83,7 +88,7 @@ export function toggleLevel(levels: string[], level: string): string[] {
 /** True when anything is narrowed, which is what decides whether a "clear"
  * control has something to do. */
 export function isFiltered(f: Filters): boolean {
-  return f.levels.length > 0 || Boolean(f.worker || f.group || f.site || f.q);
+  return f.levels.length > 0 || Boolean(f.worker || f.group || f.class || f.type || f.service || f.q);
 }
 
 /** One field of a row, flattened for display from the delivered

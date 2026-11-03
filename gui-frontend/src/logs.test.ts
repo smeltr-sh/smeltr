@@ -20,19 +20,31 @@ describe('toHash', () => {
     const hash = toHash({
       levels: ['error', 'warn'],
       worker: 'w-1',
-      site: 'worker.',
+      class: 'deploy',
+      type: 'fetch',
+      service: 'kafka',
       q: 'refused',
     });
     // One key, comma separated: the leader's decoder refuses a repeated one.
     expect(hash).toContain('level=error%2Cwarn');
     expect(hash).toContain('worker=w-1');
-    expect(hash).toContain('site=worker.');
+    expect(hash).toContain('class=deploy');
+    expect(hash).toContain('type=fetch');
+    expect(hash).toContain('service=kafka');
     expect(hash).toContain('q=refused');
   });
 
   /** The whole point of putting filters in the hash: the link is the view. */
   it('round trips through parseRoute', () => {
-    const filters = { levels: ['error'], worker: 'w-1', group: 'west', site: 'io.', q: '100%' };
+    const filters = {
+      levels: ['error'],
+      worker: 'w-1',
+      group: 'west',
+      class: 'sources',
+      type: 'poll',
+      service: 'kafka',
+      q: '100%',
+    };
     const route = parseRoute(toHash(filters));
     expect(route).toEqual({ tab: 'status', page: 'logs', ...filters });
   });
@@ -44,7 +56,9 @@ describe('toHash', () => {
       levels: [],
       worker: undefined,
       group: undefined,
-      site: undefined,
+      class: undefined,
+      type: undefined,
+      service: undefined,
       q: undefined,
     });
   });
