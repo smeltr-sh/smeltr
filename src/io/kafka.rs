@@ -497,8 +497,11 @@ impl KafkaSource {
         let resolved = match client::resolve_starts(self.consumer(), &held) {
             Ok(resolved) => resolved,
             Err(e) => {
-                tracing::trace!(target: "kafka.placement_failed", error = %e, "a source still cannot place its held partitions; they wait for the next poll");
-                self.placement_failed(format!("its partitions' starts could not be resolved: {e}"));
+                let due = self
+                    .place_failing
+                    .fail_due(format!("its partitions' starts could not be resolved: {e}"))
+                    .is_some();
+                crate::debug_when!(due, target: "kafka.placement_failed", group = %self.client.routes.group(), topic = %self.topic, error = %e, "a source still cannot place its held partitions; they wait for the next poll");
                 return Ok(());
             }
         };
@@ -526,8 +529,11 @@ impl KafkaSource {
                     }
                 }
                 Err(e) => {
-                    tracing::trace!(target: "kafka.placement_failed", group = %self.client.routes.group(), error = %e, "a source could not seek its held partitions; they wait for the next poll");
-                    self.placement_failed(format!("its partitions could not be sought: {e}"));
+                    let due = self
+                        .place_failing
+                        .fail_due(format!("its partitions could not be sought: {e}"))
+                        .is_some();
+                    crate::debug_when!(due, target: "kafka.placement_failed", group = %self.client.routes.group(), topic = %self.topic, error = %e, "a source could not seek its held partitions; they wait for the next poll");
                 }
             }
         }
@@ -545,14 +551,6 @@ impl KafkaSource {
             state.tags.insert(key, tag);
         }
         self.slot.sync(self.consumer(), &state)
-    }
-
-    /// Placement failed again: said at debug when it starts, and again every [`crate::logs::RELOG_EVERY`] while it goes
-    /// on.
-    fn placement_failed(&mut self, why: String) {
-        if let Some(why) = self.place_failing.fail_due(why) {
-            tracing::debug!(target: "kafka.placement_failed", group = %self.client.routes.group(), topic = %self.topic, why, "a source cannot place its held partitions");
-        }
     }
 
     /// Marks a partition exhausted and pauses it so librdkafka stops fetching from it. Idempotent.

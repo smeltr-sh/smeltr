@@ -787,8 +787,9 @@ fn swap_ref_in(
     .map_err(|e| GitError::failed(format!("{reference} did not move: {e}")))
 }
 
-/// Apply `edits` as one transaction. Every ref the leader moves moves here, so each move is said once, at trace, and
-/// the advertisement a worker fetches is made again.
+/// Apply `edits` as one transaction. Every ref the leader moves moves here but the one a fetch from the git remote
+/// moves (`remote::fetch` says that one), so each move is said once, at trace, and the advertisement a worker fetches
+/// is made again. Pushes from git clients are refused, so nothing else moves a ref.
 fn edit_refs(repo: &gix::Repository, edits: Vec<gix::refs::transaction::RefEdit>) -> Result<(), String> {
     use gix::refs::transaction::Change;
     fn named(target: &gix::refs::Target) -> String {

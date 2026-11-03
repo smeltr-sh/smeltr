@@ -455,11 +455,7 @@ impl Captures {
         // Late reports come in runs as a capture ends, so one is said at debug every RELOG_EVERY and the rest at trace.
         static DROPPED: std::sync::Mutex<crate::logs::Repeat> = std::sync::Mutex::new(crate::logs::Repeat::new());
         let dropped = |why: &str| {
-            if DROPPED.lock().unwrap().due() {
-                tracing::debug!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
-            } else {
-                tracing::trace!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
-            }
+            crate::debug_when!(DROPPED.lock().unwrap().due(), target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
         };
         let mut sessions = self.0.lock().unwrap();
         let Some(session) = sessions.get_mut(&report.session) else {

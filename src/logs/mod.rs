@@ -361,6 +361,20 @@ fn level_of(ord: usize) -> Level {
     }
 }
 
+/// A line said at debug when `due` and at trace otherwise, so a thing that happens again and again is said each
+/// time and stands at debug now and then, as a [`Repeat`] or a [`Relog`] decides. One line for each time either
+/// way. A level must be a constant, which is why this picks between two.
+#[macro_export]
+macro_rules! debug_when {
+    ($due:expr, $($line:tt)+) => {
+        if $due {
+            ::tracing::debug!($($line)+)
+        } else {
+            ::tracing::trace!($($line)+)
+        }
+    };
+}
+
 /// `took` in whole milliseconds, as a line's `ms` says how long something took.
 pub fn millis(took: Duration) -> u64 {
     u64::try_from(took.as_millis()).unwrap_or(u64::MAX)

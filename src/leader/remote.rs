@@ -229,9 +229,20 @@ fn fetch(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, S
     if prepare.ref_map().is_missing_required_mapping() {
         return Ok(None);
     }
+    let held = |git: &gix::Repository| {
+        git.find_reference(git::FETCHED_MAIN_REF)
+            .ok()
+            .and_then(|r| r.target().try_id().map(|id| id.to_string()))
+    };
+    let from = held(&git);
     let outcome = prepare
         .receive(gix::progress::Discard, &AtomicBool::new(false))
         .map_err(|e| unreachable(&with_cause(&e)))?;
+    // The one ref the leader moves outside `git::edit_refs`: gix's fetch moves it, so it is said here.
+    let to = held(&git);
+    if to != from {
+        tracing::trace!(target: "git.ref_moved", reference = git::FETCHED_MAIN_REF, from, to, "a ref moved");
+    }
     Ok(outcome
         .ref_map
         .mappings
