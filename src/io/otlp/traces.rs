@@ -352,7 +352,7 @@ impl Span {
     pub(super) fn refused(&self) -> Option<&'static str> {
         // OTLP holds an all-zero ID to be none, as the receiver reads one.
         let none = |id: &[u8]| id.iter().all(|b| *b == 0);
-        (none(&self.trace_id) || none(&self.span_id)).then_some("a span has a traceId and a spanId")
+        (none(&self.trace_id) || none(&self.span_id)).then_some("a span needs a traceId and a spanId")
     }
 }
 

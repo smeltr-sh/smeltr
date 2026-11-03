@@ -830,9 +830,7 @@ impl PointRow {
             ),
             _ => {
                 return Err(
-                    "a metric's point has its type in the field type: gauge, sum, histogram, exponentialHistogram or \
-                     summary"
-                        .into(),
+                    "a metric point needs a type field: gauge, sum, histogram, exponentialHistogram or summary".into(),
                 );
             }
         };

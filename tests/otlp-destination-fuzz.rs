@@ -690,7 +690,7 @@ fn mutated(rng: &mut Rng, signal: Signal, value: &[u8]) -> Vec<u8> {
 
 /// Refusals a row carried from an OTLP receiver earns of the destination itself: a span with no IDs, or an ID of
 /// another length than OTLP's.
-const REFUSALS: &[&str] = &["a span has a traceId and a spanId", "hex digits"];
+const REFUSALS: &[&str] = &["a span needs a traceId and a spanId", "hex digits"];
 
 /// What the service said, as a refusal of the destination names it.
 const SERVICE_REFUSALS: &[&str] = &["refused it: HTTP 400", "refused it: HTTP 413", "refused it: HTTP 422"];

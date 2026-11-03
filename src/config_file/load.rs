@@ -5099,7 +5099,7 @@ fn to_http_core(
 fn check_http_compression(id: &str, compression: &CompressionDto, errors: &mut ItemErrors<'_>) {
     if !matches!(compression, CompressionDto::None | CompressionDto::Gzip) {
         errors.at("compression").push(format!(
-            "destination {id:?} compresses with {compression:?}; an HTTP request is sent as none or gzip"
+            "destination {id:?} compresses with {compression:?}; set compression to none or gzip"
         ));
     }
 }

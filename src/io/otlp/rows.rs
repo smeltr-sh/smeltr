@@ -13,10 +13,10 @@ pub(super) fn row<'d>(
     row: &'d [u8],
     field: impl FnMut(&str, &mut Reader<'d>) -> Result<bool, String>,
 ) -> Result<(), String> {
-    let mut r = Reader::new(row.trim_ascii()).map_err(|_| "a row is no JSON object".to_string())?;
+    let mut r = Reader::new(row.trim_ascii()).map_err(|_| "a row is not a JSON object".to_string())?;
     fields(&mut r, "a row", field)?;
     if !r.end() {
-        return Err("a row is no JSON object".into());
+        return Err("a row is not a JSON object".into());
     }
     Ok(())
 }
@@ -28,7 +28,7 @@ pub(super) fn any(r: &mut Reader, name: &str) -> Result<AnyValue, String> {
 
 fn value(r: &mut Reader, name: &str, depth: usize) -> Result<AnyValue, String> {
     if depth > MAX_DEPTH {
-        return Err(format!("`{name}` nests deeper than {MAX_DEPTH}"));
+        return Err(format!("`{name}` nests deeper than {MAX_DEPTH} levels"));
     }
     let value = match r.value()? {
         Next::Null => None,

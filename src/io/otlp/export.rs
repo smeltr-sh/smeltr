@@ -225,16 +225,17 @@ impl Protocol for Otlp {
         {
             let partial = ExportResponse::decode(response.body.as_slice()).unwrap_or_default();
             if let Some(partial) = partial.partial_success.filter(|p| p.rejected > 0) {
-                let kind = match self.signal {
-                    Signal::Logs => "logRecord",
-                    Signal::Metrics => "dataPoint",
-                    Signal::Traces => "span",
+                // The metric's label, and what a person reads.
+                let (kind, items_of) = match self.signal {
+                    Signal::Logs => ("logRecord", "log records"),
+                    Signal::Metrics => ("dataPoint", "data points"),
+                    Signal::Traces => ("span", "spans"),
                 };
                 // A request holds one item per row, and a service that names more refused than it was sent is held
                 // to what it was.
                 let rejected = (partial.rejected as u64).min(items.len() as u64);
                 let why = format!(
-                    "the service refused {rejected} of {} {kind}(s) of a request: {}",
+                    "the service refused {rejected} of {} {items_of} in a request: {}",
                     items.len(),
                     partial.error_message
                 );
