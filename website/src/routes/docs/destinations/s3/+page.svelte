@@ -126,8 +126,7 @@
       <a href="https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html"
         >Add a custom source</a
       >
-      page lists below it, with <code>%Y%m%d</code> for the day, such as
-      <code>ext/my-source/region=us-east-1/accountId=123456789012/eventDay=%Y%m%d/</code>.
+      page lists below it, with <code>%Y%m%d</code> for the day.
     </li>
     <li>Route each class to its own destination.</li>
   </ol>
