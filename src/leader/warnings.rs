@@ -2182,13 +2182,21 @@ pub fn outside_normal_warnings(
                 severity: Severity::Warning,
                 since_millis: starts.get(&outside_key(r, side)).copied(),
                 message: format!(
-                    "source {}: {}normal, {} rows in {} minutes against {} to {} at this time of day",
+                    "source {}: {}normal, {} rows in {} minutes against {} at this time of day",
                     r.source,
                     off_by(r, side),
                     throughput::grouped(r.rows),
                     throughput::WINDOW.as_secs() / 60,
-                    throughput::grouped(r.band.low),
-                    throughput::grouped(r.band.high),
+                    // A band whose top is zero is zero throughout, since no source reads fewer than none.
+                    if r.band.high <= 0.0 {
+                        "none".to_string()
+                    } else {
+                        format!(
+                            "{} to {}",
+                            throughput::grouped(r.band.low),
+                            throughput::grouped(r.band.high)
+                        )
+                    },
                 ),
             }
         })
@@ -4355,6 +4363,14 @@ mod tests {
             ..r
         };
         assert_eq!(off_by(&zero, throughput::Outside::Above), "above ");
+        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("high")])];
+        assert_eq!(
+            outside(&[zero], &snapshot),
+            [(
+                Condition::SourceRowsAbove,
+                "source high: above normal, 5,010 rows in 30 minutes against none at this time of day".to_string()
+            )]
+        );
     }
 
     #[test]
