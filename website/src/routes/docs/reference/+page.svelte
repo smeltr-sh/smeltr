@@ -16,6 +16,7 @@
     }));
   const role = (r: string) => data.settings.filter((s) => s.key.startsWith(`${r}.`));
   // A setting under neither role's table applies to every install.
+  const shared = data.settings.filter((s) => !/^(leader|worker)\./.test(s.key));
   const sections = [
     { id: 'network', title: 'Before you start' },
     { id: 'settings', title: 'Settings' },
@@ -50,6 +51,8 @@
     another version may not match your artifact.
   </p>
   <h2 id="settings">Settings</h2>
+  <h3 id="every-install">Every install</h3>
+  <SettingsTable anchored settings={rows(shared)} />
   <h3 id="leader">Leader</h3>
   <SettingsTable anchored settings={rows(role('leader'))} />
   <h3 id="worker">Worker</h3>

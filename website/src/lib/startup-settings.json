@@ -1,6 +1,34 @@
 {
   "settings": [
     {
+      "key": "log_level",
+      "env": "SMELTR_LOG_LEVEL",
+      "default": "`info`",
+      "what": "The level a process starts at, until the leader's log levels reach it. A top-level key.",
+      "values": [
+        {
+          "value": "error",
+          "what": "Logs errors."
+        },
+        {
+          "value": "warn",
+          "what": "Logs warnings and errors."
+        },
+        {
+          "value": "info",
+          "what": "Logs info, warnings and errors."
+        },
+        {
+          "value": "debug",
+          "what": "Logs everything but trace."
+        },
+        {
+          "value": "trace",
+          "what": "Logs everything."
+        }
+      ]
+    },
+    {
       "key": "leader.enabled",
       "env": "SMELTR_LEADER_ENABLED",
       "default": "`false`",

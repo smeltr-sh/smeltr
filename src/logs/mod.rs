@@ -672,7 +672,7 @@ pub fn start() {
         .expect("start the logs drain thread (called once, at startup)");
 
     // Until the fleet's levels arrive: the leader reads them as it starts, a worker on its first heartbeat.
-    let level = levels::DEFAULT;
+    let level = crate::startup_config::log_level();
     levels::set(levels::Levels::at(level));
 
     // A second installation is somebody else's subscriber, not a failure of ours: leave it alone and keep our own

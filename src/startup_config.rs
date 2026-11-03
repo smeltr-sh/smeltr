@@ -173,6 +173,22 @@ fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
+/// The level a process keeps its lines at until the fleet's levels reach it (`crate::leader::log_levels`), which
+/// then replace it: `error`, `warn`, `info` (the default), `debug` or `trace`. It is how a worker that never
+/// reaches the leader says more.
+pub fn log_level() -> tracing::Level {
+    let Some(value) = env("SMELTR_LOG_LEVEL") else {
+        return tracing::Level::INFO;
+    };
+    crate::logs::level_for_label(&value).unwrap_or_else(|| {
+        refuse(
+            "SMELTR_LOG_LEVEL",
+            &value,
+            &format!("one of {}", crate::logs::LEVEL_LABELS.join(", ")),
+        )
+    })
+}
+
 /// Whether this start regenerates the built-in administrator's password.
 ///
 /// The way back in when nobody can sign in: a forgotten password, an administrator another one disabled, a

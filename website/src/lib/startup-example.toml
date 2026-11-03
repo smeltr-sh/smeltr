@@ -1,5 +1,6 @@
 # A leader that browsers reach at
 # https://smeltr.example.com.
+log_level = "info"
 
 [leader]
 enabled = true

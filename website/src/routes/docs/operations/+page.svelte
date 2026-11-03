@@ -96,6 +96,12 @@
     heartbeat, with no restart.
   </p>
   <p>
+    A process starts at its startup log level and keeps it until the leader's levels reach it. To
+    see more from a worker that cannot reach the leader, set <code>SMELTR_LOG_LEVEL</code> or the
+    top-level
+    <code>log_level</code> and restart it.
+  </p>
+  <p>
     Levels: error, warn, info (default), debug and trace. Use debug or trace briefly, then restore
     info. Do not share logs containing credentials or sensitive records.
   </p>
