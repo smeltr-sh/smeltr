@@ -862,8 +862,8 @@ async fn leader_tls_config(
             eprintln!("smeltr: refusing to start -- {e}");
             std::process::exit(1);
         });
-    // Where the entry named could not be served, the socket presents the leader's own and the two stay parted.
-    if smeltr::leader::tls::unserved(&tls_dir).is_none() {
+    // Where the entry named could not be served under its own root, the two stay parted.
+    if smeltr::leader::tls::start_agrees(&tls_dir) {
         smeltr::leader::tls::socket_took(&tls_dir, generation);
     }
     Some((resolver, materials.ca_pem))
