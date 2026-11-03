@@ -121,7 +121,7 @@
         height={1800}
         crop={{ x: 608, y: 478, width: 1664, height: 851 }}
         alt="The New schema from an OCSF class dialog: id authentication, OCSF 1.3.0 built in, the Authentication class."
-        caption="The Authentication class, read from OCSF 1.3.0."
+        caption="For example, the Authentication class, read from OCSF 1.3.0."
       />
       <ProductScreenshot
         source="security-lake-produces"
