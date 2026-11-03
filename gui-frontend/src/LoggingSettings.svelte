@@ -44,11 +44,15 @@
     };
   });
 
-  const dirty = $derived(
-    saved !== null &&
-      JSON.stringify({ default: saved.default, areas: saved.areas ?? {} }) !==
-        JSON.stringify({ default: shown.default, areas: shown.areas ?? {} }),
-  );
+  /** Levels as one comparable text: the order overrides were added in is not a change. */
+  const same = (l: LogLevelsDto) =>
+    JSON.stringify([l.default, Object.entries(l.areas ?? {}).sort()]);
+  const dirty = $derived(saved !== null && same(saved) !== same(shown));
+
+  // A message about the last save says nothing once the form changes again.
+  $effect(() => {
+    if (dirty) message = '';
+  });
 
   $effect(() => {
     getLogLevels().then(adopt).catch(reported);
