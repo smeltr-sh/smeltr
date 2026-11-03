@@ -180,6 +180,56 @@ test('the session deadlines are changed under System, and an impossible pair is 
   await expect(admin.getByLabel('Idle timeout')).toHaveValue('17');
 });
 
+test('log levels under System → Logging name a class, a class and a type, or a service, and Logs filters by them', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  await openAdmin(admin, 'System');
+  await admin.getByRole('link', { name: 'Logging', exact: true }).click();
+  const add = admin.getByRole('button', { name: 'Add', exact: true });
+  const named = admin.getByLabel('class or service');
+
+  await named.selectOption('class:sources');
+  await add.click();
+  await named.selectOption('class:store');
+  await admin.getByLabel('type', { exact: true }).fill('Statement-Ran');
+  await expect(add).toBeDisabled();
+  await add.hover({ force: true });
+  await expect(admin.locator('#why-disabled')).toHaveText(
+    'A type is lower-case letters, digits and underscores.',
+  );
+  await admin.getByLabel('type', { exact: true }).fill('statement_ran');
+  await admin.getByLabel('level', { exact: true }).selectOption('warn');
+  await add.click();
+  await named.selectOption('service:kafka');
+  await admin.getByLabel('level', { exact: true }).selectOption('debug');
+  await add.click();
+  await admin.getByRole('button', { name: 'Save log levels' }).click();
+  await expect(admin.getByRole('status')).toHaveText('saved');
+
+  const saved = (await api.get('/api/settings/log-levels')).levels.overrides;
+  expect(saved).toEqual([
+    { class: 'sources', level: 'trace' },
+    { class: 'store', type: 'statement_ran', level: 'warn' },
+    { service: 'kafka', level: 'debug' },
+  ]);
+  await admin.reload();
+  await expect(admin.getByRole('cell', { name: 'class store, type statement_ran' })).toBeVisible();
+  await expect(admin.getByLabel('level for kafka')).toHaveValue('debug');
+
+  await goto(admin, leader, '#/status/logs');
+  await admin.getByRole('combobox').filter({ hasText: 'class' }).first().selectOption('deploy');
+  await admin.getByPlaceholder('type', { exact: true }).fill('moved');
+  await admin.getByRole('button', { name: 'Search', exact: true }).click();
+  const rows = admin.getByRole('row').filter({ hasText: 'the fleet was deployed to a commit' });
+  await expect(rows.first()).toBeVisible();
+  await expect(
+    admin.getByRole('row').filter({ hasText: 'an audited action was recorded' }),
+  ).toHaveCount(0);
+  expect(admin.url()).toContain('class=deploy');
+});
+
 test('the leader certificate is the certificate leader in the list', async ({ admin }) => {
   // S6
   await openAdmin(admin, 'System');
