@@ -459,6 +459,7 @@ def siem():
     c.put("destinations", bundle.destinations(bundle.NETWORK_DESTINATIONS + bundle.SIEM_DESTINATIONS, 1), b,
           "network")
     c.put("sources", bundle.NETWORK_SOURCES + [bundle.SIEM_SOURCE], b, "network")
+    # The archive's `as-sent` came with the firewalls; writing it again would record nothing.
     c.put_pipeline(bundle.PANOS_TRIM, b, "network")
     c.put("routes", bundle.NETWORK_ROUTES + bundle.SIEM_ROUTES, b, "network")
     c.open_change(b, "Send PAN-OS to Splunk trimmed, and archive it whole in S3",
@@ -527,7 +528,6 @@ def waiting():
     for scope, samples in bundle.waiting().items():
         for s in samples:
             c.put_sample(s, "work", scope)
-
 
 
 def main():
