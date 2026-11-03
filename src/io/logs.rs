@@ -123,7 +123,13 @@ fn json(event: &Event) -> Vec<u8> {
     out.extend_from_slice(millis(event).to_string().as_bytes());
     out.extend_from_slice(br#","level":"#);
     write_json_string(event.level.as_str().to_lowercase().as_bytes(), &mut out);
-    field(&mut out, b"site", event.site.as_bytes());
+    if let Some(class) = &event.class {
+        field(&mut out, b"class", class.as_bytes());
+    }
+    field(&mut out, b"type", event.r#type.as_bytes());
+    if let Some(service) = &event.service {
+        field(&mut out, b"service", service.as_bytes());
+    }
     field(&mut out, b"message", event.message.as_bytes());
     if let Some(worker) = event.worker {
         field(&mut out, b"worker", worker.as_bytes());
@@ -196,7 +202,9 @@ mod tests {
         let event = Event {
             timestamp: std::time::SystemTime::UNIX_EPOCH,
             level: tracing::Level::ERROR,
-            site: "json.test".into(),
+            class: Some("logs".into()),
+            r#type: "json_test".into(),
+            service: None,
             message: "a site said something".into(),
             fields: fields.into_iter().map(|(name, value)| (name.into(), value)).collect(),
             worker: None,
@@ -251,7 +259,7 @@ mod tests {
             });
             assert_eq!(source.min_level, tracing::Level::DEBUG);
         });
-        assert!(said.iter().any(|(_, site, _)| site == "logs_source.trace_not_carried"));
+        assert!(said.iter().any(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("logs", "trace_not_carried")));
     }
 
     /// Two logs sources read side by side, and each sees the whole stream.
@@ -267,7 +275,9 @@ mod tests {
         crate::logs::mirror([Event {
             timestamp: std::time::SystemTime::now(),
             level: tracing::Level::ERROR,
-            site: "two_sources.test".into(),
+            class: Some("logs".into()),
+            r#type: "two_sources_test".into(),
+            service: None,
             message: "said once".into(),
             fields: Vec::new(),
             worker: None,
@@ -279,7 +289,7 @@ mod tests {
             let got = source.poll_batch(64, 1 << 20, Duration::ZERO).expect("a poll");
             assert!(
                 got.iter()
-                    .any(|r| String::from_utf8_lossy(r.bytes().unwrap()).contains("two_sources.test")),
+                    .any(|r| String::from_utf8_lossy(r.bytes().unwrap()).contains("two_sources_test")),
                 "a reader missed an event the other read"
             );
         }

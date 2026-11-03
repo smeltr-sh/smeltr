@@ -220,9 +220,11 @@ pub fn channels(store: &dyn Store) -> Result<Vec<Channel>, StoreError> {
 }
 
 /// Names one warning across looks: the catalog entry and what it is about. Its start and message are left out, so a
-/// warning whose message changes is the same warning.
+/// warning whose message changes is the same warning. The log line one is about is one element, absent on every
+/// other condition, so a key told before log lines had a class and a type is still the same key.
 pub fn key(w: &Warning) -> String {
-    serde_json::to_string(&(w.condition, w.subject_kind, &w.group, &w.subject_id, &w.site)).unwrap_or_default()
+    let line = w.r#type.as_ref().map(|kind| (&w.class, kind));
+    serde_json::to_string(&(w.condition, w.subject_kind, &w.group, &w.subject_id, line)).unwrap_or_default()
 }
 
 /// Whether `channel` takes `w`.
@@ -1156,7 +1158,8 @@ mod tests {
             severity: Severity::Failed,
             since_millis: Some(1_000),
             message: "orders: connection refused for row 42".into(),
-            site: None,
+            class: None,
+            r#type: None,
             area: None,
         }
     }

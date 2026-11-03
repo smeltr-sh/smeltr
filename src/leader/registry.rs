@@ -1043,8 +1043,11 @@ mod tests {
             r.observe_facts(&HashSet::from([key.clone()]), 2_000);
         });
         assert_eq!(began.len(), 1, "{began:?}");
-        let (level, site, fields) = &began[0];
-        assert_eq!((*level, site.as_str()), (tracing::Level::WARN, "issues.began"));
+        let (level, class, kind, fields) = &began[0];
+        assert_eq!(
+            (*level, class.as_str(), kind.as_str()),
+            (tracing::Level::WARN, "status", "began")
+        );
         let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(field("issue"), Some("sourceBlocked"));
         assert_eq!(field("group"), Some("prod"));
@@ -1055,8 +1058,11 @@ mod tests {
             r.observe_facts(&HashSet::new(), 61_000);
         });
         assert_eq!(cleared.len(), 1, "{cleared:?}");
-        let (level, site, fields) = &cleared[0];
-        assert_eq!((*level, site.as_str()), (tracing::Level::INFO, "issues.cleared"));
+        let (level, class, kind, fields) = &cleared[0];
+        assert_eq!(
+            (*level, class.as_str(), kind.as_str()),
+            (tracing::Level::INFO, "status", "cleared")
+        );
         let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(field("held_secs"), Some("60"));
         assert_eq!(field("message"), Some("an issue cleared"));

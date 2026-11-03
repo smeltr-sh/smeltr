@@ -42,7 +42,7 @@ where
     fn register_callsite(&self, metadata: &'static tracing::Metadata<'static>) -> Interest {
         if is_library(metadata.target()) {
             Interest::sometimes()
-        } else if self.enabled(metadata, Context::none()) {
+        } else if ours_kept(metadata) {
             Interest::always()
         } else {
             Interest::never()
@@ -59,15 +59,11 @@ where
         if level > super::max_level() {
             return false;
         }
-        let kept = if is_library(target) {
-            let class = ctx.lookup_current().and_then(|span| class_around(span.scope()));
-            super::levels::kept_at(class, library(target), super::levels::service(target))
-        } else {
-            let kind = if metadata.is_span() { FINISHED } else { metadata.name() };
-            let service = metadata.module_path().and_then(super::levels::service);
-            super::levels::kept_at(Some(target), kind, service)
-        };
-        level <= kept
+        if !is_library(target) {
+            return ours_kept(metadata);
+        }
+        let class = ctx.lookup_current().and_then(|span| class_around(span.scope()));
+        level <= super::levels::kept_at(class, library(target), super::levels::service(target))
     }
 
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
@@ -159,6 +155,15 @@ where
             fields,
         ));
     }
+}
+
+/// Whether a line or span of ours from `metadata` is kept: its class is its target and its type its name, or
+/// [`FINISHED`] for a span, whose name is its sentence.
+fn ours_kept(metadata: &tracing::Metadata<'_>) -> bool {
+    let level = *metadata.level();
+    let kind = if metadata.is_span() { FINISHED } else { metadata.name() };
+    let service = metadata.module_path().and_then(super::levels::service);
+    level <= super::max_level() && level <= super::levels::kept_at(Some(metadata.target()), kind, service)
 }
 
 /// The class of the innermost span of ours in `scope`, which a library's line said there takes.
@@ -281,17 +286,18 @@ mod tests {
             let _inner = inner.enter();
             tracing::trace!(name: "committed", target: "pipelines", partitions = 2_u64, "offsets were committed");
         });
-        let line = events.iter().find(|e| e.site == "runtime.committed").expect("the line");
+        let line = events.iter().find(|e| e.r#type == "committed").expect("the line");
+        assert_eq!(line.class.as_deref(), Some("pipelines"));
         assert_eq!(field(line, "subject"), Some(&Value::Str("orders".into())));
         assert_eq!(field(line, "batch"), Some(&Value::Uint(8)), "the nearer span's");
         assert_eq!(field(line, "partitions"), Some(&Value::Uint(2)));
-        let ends: Vec<&str> = events
+        let ends: Vec<(&str, &str)> = events
             .iter()
             .filter(|e| field(e, "ms").is_some())
-            .map(|e| e.site.as_ref())
+            .map(|e| (e.r#type.as_ref(), e.message.as_str()))
             .collect();
-        assert_eq!(ends, vec!["runtime.commit", "runtime.read"]);
-        let commit = events.iter().find(|e| e.site == "runtime.commit").unwrap();
+        assert_eq!(ends, vec![("finished", "a commit finished"), ("finished", "a read finished")]);
+        let commit = events.iter().find(|e| e.message == "a commit finished").unwrap();
         assert_eq!(commit.message, "a commit finished");
         assert_eq!(
             field(commit, "subject"),
@@ -332,28 +338,35 @@ mod tests {
         assert!(found.is_empty(), "instrumented without skip_all:\n{}", found.join("\n"));
     }
 
-    /// Turning an area up opens its call sites at once, the same sites that were closed, and leaves the rest shut.
+    /// Turning a class up opens its call sites at once, the same sites that were closed, and leaves the rest shut.
     #[test]
-    fn an_area_turned_up_is_said_from_then_on() {
+    fn a_class_turned_up_is_said_from_then_on() {
         use super::super::levels::{self, Levels};
         use tracing_subscriber::layer::SubscriberExt;
         let tap = super::super::tap();
         tracing::subscriber::with_default(tracing_subscriber::registry().with(LogLayer), || {
             let say = || {
-                tracing::trace!(name: "kafka_lag_unmeasured", target: "sources", "lag cannot be measured");
+                tracing::trace!(name: "lag_unmeasured", target: "sources", "lag cannot be measured");
                 tracing::trace!(name: "statement_ran", target: "store", "a store ran a statement");
             };
             levels::set(Levels::at(Level::INFO));
             say();
             let mut up = Levels::at(Level::INFO);
-            up.areas.insert("kafka".into(), Level::TRACE);
+            up.classes.insert("sources".into(), Level::TRACE);
             levels::set(up);
             say();
             levels::set(Levels::at(Level::INFO));
             say();
         });
-        let sites: Vec<String> = tap.drain(100).into_iter().map(|e| e.site.to_string()).collect();
-        assert_eq!(sites, ["kafka.lag_unmeasured"]);
+        let said: Vec<(Option<String>, String, Option<String>)> = tap
+            .drain(100)
+            .into_iter()
+            .map(|e| (e.class.map(Into::into), e.r#type.into(), e.service.map(Into::into)))
+            .collect();
+        assert_eq!(
+            said,
+            [(Some("sources".into()), "lag_unmeasured".into(), None)]
+        );
     }
 
     /// A span held and never entered, as a background pass holds one across its awaits, still says when it ends.
@@ -380,13 +393,30 @@ mod tests {
         assert!(field(&events[0], "token").is_none());
     }
 
+    /// A library's line takes the class of the span of ours it is said inside, and its crate as its type.
+    #[test]
+    fn a_library_line_takes_the_class_around_it() {
+        let events = handed(|| {
+            tracing::trace!(target: "ureq::pool", "outside");
+            let span = tracing::trace_span!(target: "destinations", "an egress thread");
+            let _entered = span.enter();
+            tracing::trace!(target: "ureq::pool", "inside");
+        });
+        let said: Vec<(Option<&str>, &str)> = events
+            .iter()
+            .filter(|e| e.r#type == "ureq")
+            .map(|e| (e.class.as_deref(), e.message.as_str()))
+            .collect();
+        assert_eq!(said, [(None, "outside"), (Some("destinations"), "inside")]);
+    }
+
     #[test]
     fn a_library_line_is_kept_one_step_below_what_it_says() {
         assert_eq!(as_said_here("ureq::pool", Level::DEBUG), Level::TRACE);
         assert_eq!(as_said_here("log", Level::INFO), Level::DEBUG);
         assert_eq!(as_said_here("hyper_util::client", Level::WARN), Level::WARN);
-        assert_eq!(as_said_here("egress.destination_stalled", Level::DEBUG), Level::DEBUG);
-        assert_eq!(as_said_here("worker.heartbeat_answered", Level::INFO), Level::INFO);
+        assert_eq!(as_said_here("destinations", Level::DEBUG), Level::DEBUG);
+        assert_eq!(as_said_here("heartbeats", Level::INFO), Level::INFO);
     }
 
     #[test]

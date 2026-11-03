@@ -175,7 +175,7 @@ mod tests {
     fn every_line_names_a_listed_class_and_a_type() {
         fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
             // A line's class and type, or a span's class, which takes its name as its sentence.
-            let line = regex::Regex::new(r#"(name: "([^"]*)",\s*)?target(: | = )"([^"]*)""#).unwrap();
+            let line = regex::Regex::new(r#"(name: "([^"]*)",\s*)?target(: | = )"([^"]*)"\s*[,)]"#).unwrap();
             let span = regex::Regex::new(r"(_span!\(\s*(parent: [^,]+,\s*)?|instrument\([^)]*)$").unwrap();
             let snake = regex::Regex::new(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$").unwrap();
             for entry in std::fs::read_dir(dir).unwrap() {
@@ -188,7 +188,7 @@ mod tests {
                         let class = &named[4];
                         let at = named.get(0).unwrap().start();
                         let is_span = span.is_match(&text[at.saturating_sub(200)..at]);
-                        if class == "test" || !class.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                        if class == "test" || class.is_empty() || !class.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
                             continue;
                         }
                         if !CLASSES.contains(&class) {

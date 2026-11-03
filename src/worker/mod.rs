@@ -6886,7 +6886,9 @@ mod tests {
         let said = crate::logs::Event {
             timestamp: std::time::SystemTime::now(),
             level: crate::logs::Level::INFO,
-            site: "mirror_to.test".into(),
+            class: Some("logs".into()),
+            r#type: "mirror_to_test".into(),
+            service: None,
             message: String::new(),
             fields: Vec::new(),
             worker: None,
@@ -6914,7 +6916,7 @@ mod tests {
             .expect("a runtime is running, so the logs mirror is open")
             .drain(usize::MAX);
         assert!(
-            owed_logs.iter().any(|e| e.site == "mirror_to.test"),
+            owed_logs.iter().any(|e| e.r#type == "mirror_to_test"),
             "what the failed frame carried is no longer owed: {owed_logs:?}"
         );
 
@@ -7280,7 +7282,9 @@ mod tests {
                 seq,
                 timestamp_ms: 0,
                 level: "INFO".to_string(),
-                site: "runtime".to_string(),
+                class: Some("logs".to_string()),
+                r#type: "runtime".to_string(),
+                service: None,
                 message: format!("log {seq}"),
                 thread: None,
                 boot_id: Some(7),
@@ -8062,14 +8066,18 @@ mod tests {
         };
         let kafka = heartbeat::LogLevels {
             default: None,
-            areas: [("kafka".to_string(), "trace".to_string())].into(),
+            overrides: vec![heartbeat::LevelOverride {
+                service: Some("kafka".to_string()),
+                level: "trace".to_string(),
+                ..Default::default()
+            }],
         };
 
         assert!(!supervisor.route_log_levels(Some(&mut handle)));
         assert_eq!(frames(1), [r#"{"kind":"log_levels","levels":{}}"#]);
         supervisor.follow_log_levels(kafka.clone());
         assert_eq!(
-            crate::logs::levels::kept_at("kafka.lag_unmeasured"),
+            crate::logs::levels::kept_at(Some("sources"), "lag_unmeasured", Some("kafka")),
             tracing::Level::TRACE
         );
         assert!(!supervisor.route_log_levels(Some(&mut handle)));
@@ -8078,7 +8086,7 @@ mod tests {
         assert!(!supervisor.route_log_levels(Some(&mut handle)));
         assert_eq!(
             frames(2)[1],
-            r#"{"kind":"log_levels","levels":{"areas":{"kafka":"trace"}}}"#
+            r#"{"kind":"log_levels","levels":{"overrides":[{"service":"kafka","level":"trace"}]}}"#
         );
         supervisor.log_levels.lock().unwrap().1 = false;
         assert!(!supervisor.route_log_levels(Some(&mut handle)));

@@ -20,7 +20,7 @@ use crate::leader::access::{Access, Level};
 use crate::leader::alerts::{self, Channel};
 use crate::leader::deploy_checks::{FailingTest, Findings};
 use crate::leader::registry::{FactKey, ThreadHealth};
-use crate::leader::series::{DRIFT_WINDOW, DeclaredField, LoggedSite, RegistryStore, Tier};
+use crate::leader::series::{DRIFT_WINDOW, DeclaredField, LoggedType, RegistryStore, Tier};
 use crate::leader::store::{KeyStanding, Unopenable, WorkerCredentialRecord};
 use crate::leader::throughput;
 
@@ -345,10 +345,14 @@ pub struct Warning {
     pub since_millis: Option<i64>,
     /// Names the object and the fix. Stands alone -- a reader sees this sentence with no other context.
     pub message: String,
-    /// The log site a [`Condition::WorkerLoggedWarnings`] is about. One worker raises that condition once per site,
-    /// so condition and subject alone do not name one warning; with this they do. `None` on every other condition.
+    /// The class of the log line a [`Condition::WorkerLoggedWarnings`] is about, when the line has one. One worker
+    /// raises that condition once per class and type, so condition and subject alone do not name one warning; with
+    /// these they do. `None` on every other condition.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub site: Option<String>,
+    pub class: Option<String>,
+    /// The type of that log line. `None` on every other condition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
     /// The area whose bundle declares the subject: `shared`, or the group. Set only on a pipeline, which the page
     /// links to its editor, and only where the deployed commit says.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -386,7 +390,8 @@ pub fn as_metrics(warnings: &[Warning]) -> String {
             ("subject_kind", named(w.subject_kind)),
             ("subject", w.subject_id.clone()),
             ("group", w.group.clone().unwrap_or_default()),
-            ("site", w.site.clone().unwrap_or_default()),
+            ("class", w.class.clone().unwrap_or_default()),
+            ("type", w.r#type.clone().unwrap_or_default()),
         ];
         let started = w.since_millis.map(|ms| MetricSample {
             key: MetricKey {
@@ -602,7 +607,8 @@ fn authority_expiring(snapshot: &[ThreadHealth], credentials: &[WorkerCredential
                 area: None,
                 condition: Condition::AuthorityExpiring,
                 subject_kind: SubjectKind::Worker,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: worker_id.to_string(),
                 group,
                 severity: if expired { Severity::Failed } else { Severity::Warning },
@@ -752,7 +758,8 @@ pub fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Ve
                 area: None,
                 condition: Condition::CertificateExpiring,
                 subject_kind: certificate.subject_kind,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: id.clone(),
                 group: Some(certificate.group.clone()),
                 severity: if not_yet_valid || expired {
@@ -844,7 +851,8 @@ pub fn authority_aging(
         area: None,
         condition: Condition::AuthorityAging,
         subject_kind: SubjectKind::Leader,
-        site: None,
+        class: None,
+        r#type: None,
         subject_id: authority.fingerprint.clone(),
         group: None,
         severity: if expired { Severity::Failed } else { Severity::Warning },
@@ -957,7 +965,8 @@ pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
         area: None,
         condition,
         subject_kind: SubjectKind::Leader,
-        site: None,
+        class: None,
+        r#type: None,
         subject_id: certificate
             .names
             .first()
@@ -1008,7 +1017,8 @@ pub fn enrollment_code_names_outgoing_authority(
             area: None,
             condition: Condition::EnrollmentCodeNamesOutgoingAuthority,
             subject_kind: SubjectKind::EnrollmentCode,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: code.id.clone(),
             group: (!code.group_id.is_empty()).then(|| code.group_id.clone()),
             severity: Severity::Warning,
@@ -1488,7 +1498,8 @@ fn workers_on_another_build(
             area: None,
             condition: Condition::WorkerOnAnotherBuild,
             subject_kind: SubjectKind::Worker,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: worker_id.to_string(),
             group: Some(t.report.group_id.clone()),
             severity: Severity::Warning,
@@ -1526,7 +1537,8 @@ fn workers_on_another_release(
                 area: None,
                 condition: Condition::WorkerOnAnotherRelease,
                 subject_kind: SubjectKind::Worker,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: worker_id.to_string(),
                 group: Some(t.report.group_id.clone()),
                 severity: Severity::Info,
@@ -1560,7 +1572,8 @@ fn workers_memory_high(snapshot: &[ThreadHealth], heartbeat_interval: Duration) 
                 area: None,
                 condition: Condition::WorkerMemoryHigh,
                 subject_kind: SubjectKind::Worker,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: worker_id.to_string(),
                 group: Some(t.report.group_id.clone()),
                 severity: Severity::Warning,
@@ -1631,7 +1644,8 @@ fn worker_silent(
             area: None,
             condition: Condition::WorkerSilent,
             subject_kind: SubjectKind::Worker,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: worker_id.to_string(),
             group: groups.get(worker_id).cloned(),
             severity: Severity::Failed,
@@ -1658,7 +1672,8 @@ fn enrolled_never_heartbeating(snapshot: &[ThreadHealth], credentials: &[WorkerC
             area: None,
             condition: Condition::WorkerNeverHeartbeated,
             subject_kind: SubjectKind::Worker,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: c.worker_id.clone(),
             // Never heartbeated, so it has never said which group it belongs to.
             group: None,
@@ -1692,7 +1707,8 @@ fn source_blocked(snapshot: &[ThreadHealth], starts: &HashMap<FactKey, i64>) -> 
                 area: None,
                 condition,
                 subject_kind: SubjectKind::Source,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: source_id,
                 group: Some(group),
                 severity,
@@ -1734,7 +1750,8 @@ fn source_unreachable(snapshot: &[ThreadHealth], starts: &HashMap<FactKey, i64>)
                 area: None,
                 condition: Condition::SourceUnreachable,
                 subject_kind: SubjectKind::Source,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: source_id.clone(),
                 group: Some(group),
                 severity: Severity::Failed,
@@ -1803,7 +1820,8 @@ fn destination_refusing(
                 area: None,
                 condition: Condition::DestinationRefusing,
                 subject_kind: SubjectKind::Destination,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: dest_id.clone(),
                 group: Some(group),
                 severity: Severity::Failed,
@@ -1906,7 +1924,8 @@ fn destination_unreachable(
                 area: None,
                 condition: Condition::DestinationUnreachable,
                 subject_kind: SubjectKind::Destination,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: dest_id.clone(),
                 group: Some(group),
                 severity: Severity::Failed,
@@ -1943,7 +1962,8 @@ fn group_not_deployed(
             Warning { area: None,
                 condition: Condition::GroupNotDeployed,
                 subject_kind: SubjectKind::Worker,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: worker_id,
                 group: Some(group_id.clone()),
                 severity: Severity::Warning,
@@ -2031,7 +2051,8 @@ fn destinations_memory_bound(store: Option<&RegistryStore>, now_ms: i64) -> Vec<
                 area: None,
                 condition: Condition::DestinationMemoryBound,
                 subject_kind: SubjectKind::Destination,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: destination.to_string(),
                 group: Some(group.to_string()),
                 severity: Severity::Info,
@@ -2176,7 +2197,8 @@ pub fn outside_normal_warnings(
                 area: None,
                 condition,
                 subject_kind: SubjectKind::Source,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: r.source.clone(),
                 group: Some(r.group.clone()),
                 severity: Severity::Warning,
@@ -2377,7 +2399,8 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
             area: None,
             condition: Condition::LagClimbing,
             subject_kind: SubjectKind::Source,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: source_id.to_string(),
             group: Some(group.to_string()),
             severity: Severity::Warning,
@@ -2424,10 +2447,11 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
     out
 }
 
-/// A log site whose warning repeats a catalog warning: its latest detail is told on that warning, and it raises
+/// A log line whose warning repeats a catalog warning: its latest detail is told on that warning, and it raises
 /// no warning of its own, so one fault reads as one warning.
 struct Fold {
-    site: &'static str,
+    /// The line's class and type.
+    line: (&'static str, &'static str),
     condition: Condition,
     /// The field that says what went wrong. A row without it is told by its sentence.
     detail: &'static str,
@@ -2443,37 +2467,42 @@ enum FoldBy {
 
 const FOLDS: &[Fold] = &[
     Fold {
-        site: "egress.destination_stalled",
+        line: ("destinations", "stalled"),
         condition: Condition::DestinationUnreachable,
         detail: "error",
         by: FoldBy::Subject,
     },
     Fold {
-        site: "worker.commit_refused",
+        line: ("deploy", "commit_refused"),
         condition: Condition::WorkerNotDeployingItsTarget,
         detail: "error",
         by: FoldBy::Worker,
     },
 ];
 
-/// Log sites whose warning a catalog warning already gives in full, reason and all, read off the heartbeat. They
-/// raise nothing of their own and tell nothing on it: their `subject` is the positional id, which no catalog
-/// warning is named by.
-const REPEATED: &[&str] = &["runtime.source_blocked", "runtime.rows_rejected"];
+/// Log lines, by class and type, whose warning a catalog warning already gives in full, reason and all, read off
+/// the heartbeat. They raise nothing of their own and tell nothing on it: their `subject` is the positional id,
+/// which no catalog warning is named by.
+const REPEATED: &[(&str, &str)] = &[("pipelines", "source_blocked"), ("pipelines", "rows_rejected")];
 
-/// One worker's latest row at one site, its fields read out of their JSON.
+/// One worker's latest row of one class and type, its fields read out of their JSON.
 struct Logged {
-    row: LoggedSite,
+    row: LoggedType,
     fields: Vec<(String, String)>,
 }
 
 impl Logged {
+    /// Whether this row is the line `class` and `kind` name.
+    fn is(&self, (class, kind): (&str, &str)) -> bool {
+        self.row.class.as_deref() == Some(class) && self.row.r#type == kind
+    }
+
     fn field(&self, key: &str) -> Option<&str> {
         self.fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
 }
 
-/// Every worker's latest row at `warn` or `error` per site in the last [`WORKER_LOG_WINDOW_MS`], read once for
+/// Every worker's latest row at `warn` or `error` per class and type in the last [`WORKER_LOG_WINDOW_MS`], read once for
 /// [`worker_logged_warnings`] and [`fold_logged_details`] both. A revoked worker's logs never speak for it, the same
 /// exclusion `worker_silent` and `enrolled_never_heartbeating` apply.
 fn recent_logs(store: Option<&RegistryStore>, credentials: &[WorkerCredentialRecord], now_ms: i64) -> Vec<Logged> {
@@ -2487,7 +2516,7 @@ fn recent_logs(store: Option<&RegistryStore>, credentials: &[WorkerCredentialRec
     let levels = ["warn".to_string(), "error".to_string()];
     // One query, not a page walk: no cap to pick means no cap to pick wrong -- whatever the table holds, past
     // `LOGS_KEPT` or not, this reads the window once and groups as it goes.
-    let rows = match store.latest_log_by_site(&levels, now_ms - WORKER_LOG_WINDOW_MS, now_ms) {
+    let rows = match store.latest_log_by_type(&levels, now_ms - WORKER_LOG_WINDOW_MS, now_ms) {
         Ok(rows) => rows,
         Err(e) => {
             tracing::warn!(
@@ -2513,26 +2542,27 @@ fn recent_logs(store: Option<&RegistryStore>, credentials: &[WorkerCredentialRec
         .collect()
 }
 
-/// A worker that has logged at `warn` or `error` at one site in the last [`WORKER_LOG_WINDOW_MS`] -- not broken,
+/// A worker that has logged at `warn` or `error` one class and type of line in the last [`WORKER_LOG_WINDOW_MS`] --
+/// not broken,
 /// but worth a look, so [`Severity::Warning`] rather than `Failed`, an error as much as a warning: what a log line
 /// says is worth reading, and the faults that stop work have catalog entries of their own. Reads the log store
 /// rather than `snapshot`: a heartbeat carries a thread's current metrics, not whether its runtime has logged
 /// anything.
 ///
-/// One warning per worker and site, carrying that site's latest sentence: several rows at one site are one thing
-/// to read, and two sites are two. A site in [`FOLDS`] or [`REPEATED`] raises none -- its catalog warning says it
-/// already. Not a fact-clock entry, for the reason [`lag_climbing`]'s doc comment gives -- a stored log already
-/// carries its own timestamp, so `since_millis` is the earliest row at that site in the window, and the warning
-/// clears a window after the latest.
+/// One warning per worker, class and type, carrying that line's latest sentence: several rows of one line are one
+/// thing to read, and two lines are two. A line in [`FOLDS`] or [`REPEATED`] raises none -- its catalog warning
+/// says it already. Not a fact-clock entry, for the reason [`lag_climbing`]'s doc comment gives -- a stored log
+/// already carries its own timestamp, so `since_millis` is the earliest row of that line in the window, and the
+/// warning clears a window after the latest.
 fn worker_logged_warnings(logged: &[Logged]) -> Vec<Warning> {
-    // `logged` is per subject as well; a site's warning is its latest row about any subject, since its earliest.
-    let mut by_site: BTreeMap<(&str, &str), (&Logged, i64)> = BTreeMap::new();
+    // `logged` is per subject as well; a line's warning is its latest row about any subject, since its earliest.
+    let mut by_line: BTreeMap<(&str, Option<&str>, &str), (&Logged, i64)> = BTreeMap::new();
     for l in logged
         .iter()
-        .filter(|l| !FOLDS.iter().any(|f| f.site == l.row.site) && !REPEATED.contains(&l.row.site.as_str()))
+        .filter(|l| !FOLDS.iter().any(|f| l.is(f.line)) && !REPEATED.iter().any(|&line| l.is(line)))
     {
-        by_site
-            .entry((l.row.worker_id.as_str(), l.row.site.as_str()))
+        by_line
+            .entry((l.row.worker_id.as_str(), l.row.class.as_deref(), l.row.r#type.as_str()))
             .and_modify(|(latest, first)| {
                 *first = (*first).min(l.row.first_ms);
                 if l.row.at_ms > latest.row.at_ms {
@@ -2541,7 +2571,7 @@ fn worker_logged_warnings(logged: &[Logged]) -> Vec<Warning> {
             })
             .or_insert((l, l.row.first_ms));
     }
-    let mut out: Vec<Warning> = by_site
+    let mut out: Vec<Warning> = by_line
         .into_values()
         .map(|(l, first_ms)| {
             let row = &l.row;
@@ -2552,22 +2582,25 @@ fn worker_logged_warnings(logged: &[Logged]) -> Vec<Warning> {
                 condition: Condition::WorkerLoggedWarnings,
                 subject_kind: SubjectKind::Worker,
                 subject_id: row.worker_id.clone(),
-                site: Some(row.site.clone()),
+                class: row.class.clone(),
+                r#type: Some(row.r#type.clone()),
                 group: row.group_id.clone(),
                 severity: Severity::Warning,
                 since_millis: Some(first_ms),
                 message: format!(
                     "worker {} logged {what} at {}: {}{fields}",
-                    row.worker_id, row.site, row.message
+                    row.worker_id,
+                    row.class.iter().chain([&row.r#type]).map(String::as_str).collect::<Vec<_>>().join(" "),
+                    row.message
                 ),
             }
         })
         .collect();
-    out.sort_by(|a, b| (&a.subject_id, &a.site).cmp(&(&b.subject_id, &b.site)));
+    out.sort_by(|a, b| (&a.subject_id, &a.class, &a.r#type).cmp(&(&b.subject_id, &b.class, &b.r#type)));
     out
 }
 
-/// Tell each catalog warning a [`FOLDS`] site repeats the latest detail any worker logged there about its subject.
+/// Tell each catalog warning a [`FOLDS`] line repeats the latest detail any worker logged there about its subject.
 /// Severity, spread and start time stay the catalog's: the log adds the words, not the judgement.
 fn fold_logged_details(out: &mut [Warning], logged: &[Logged]) {
     for warning in out.iter_mut() {
@@ -2576,7 +2609,7 @@ fn fold_logged_details(out: &mut [Warning], logged: &[Logged]) {
         };
         let latest = logged
             .iter()
-            .filter(|l| l.row.site == fold.site)
+            .filter(|l| l.is(fold.line))
             .filter(|l| match fold.by {
                 FoldBy::Subject => {
                     l.row.group_id == warning.group && l.field("subject") == Some(warning.subject_id.as_str())
@@ -2655,7 +2688,8 @@ fn worker_not_deploying_its_target(
                 area: None,
                 condition: Condition::WorkerNotDeployingItsTarget,
                 subject_kind: SubjectKind::Worker,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: worker_id.to_string(),
                 group: Some(group.to_string()),
                 severity: Severity::Failed,
@@ -2744,7 +2778,8 @@ pub fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
         area: None,
         condition: Condition::DeployHeld,
         subject_kind: SubjectKind::Leader,
-        site: None,
+        class: None,
+        r#type: None,
         subject_id: held.commit.clone(),
         group: None,
         severity: Severity::Warning,
@@ -2768,7 +2803,8 @@ pub fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning 
         area: None,
         condition: Condition::RemoteNotFollowed,
         subject_kind: SubjectKind::Leader,
-        site: None,
+        class: None,
+        r#type: None,
         subject_id: failure.commit.clone().unwrap_or_default(),
         group: None,
         severity: Severity::Warning,
@@ -2784,7 +2820,8 @@ pub fn alert_channel_failing(channel: &str, failing: &crate::leader::alerts::Fai
         area: None,
         condition: Condition::AlertChannelFailing,
         subject_kind: SubjectKind::Leader,
-        site: None,
+        class: None,
+        r#type: None,
         subject_id: channel.to_string(),
         group: None,
         severity: Severity::Warning,
@@ -2802,7 +2839,8 @@ pub fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warnin
         area: None,
         condition: Condition::NewerRelease,
         subject_kind: SubjectKind::Leader,
-        site: None,
+        class: None,
+        r#type: None,
         subject_id: "leader".to_string(),
         group: None,
         severity: Severity::Info,
@@ -2866,7 +2904,8 @@ pub fn issued_certificates_not_renewed(issued: &[IssuedChain], signing: &str, no
             area: None,
             condition: Condition::IssuedCertificateNotRenewed,
             subject_kind: SubjectKind::Certificate,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: name.clone(),
             group: None,
             severity: if remaining <= 0 {
@@ -2913,7 +2952,8 @@ pub fn encryption_key_warnings(
         area: None,
         condition,
         subject_kind: SubjectKind::Leader,
-        site: None,
+        class: None,
+        r#type: None,
         since_millis: starts.get(&FactKey::new(condition.name(), subject_id.clone())).copied(),
         subject_id,
         group: None,
@@ -3024,7 +3064,8 @@ fn deploy_breaks_schemas(checks: &Findings, starts: &HashMap<FactKey, i64>) -> V
             area: None,
             condition: Condition::DeployBreaksSchemas,
             subject_kind: SubjectKind::Pipeline,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: pipeline.to_string(),
             group: Some(group.to_string()),
             severity: Severity::Warning,
@@ -3053,7 +3094,8 @@ fn deploy_does_not_load(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Ve
             area: None,
             condition: Condition::DeployDoesNotLoad,
             subject_kind: SubjectKind::Group,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: n.group.clone(),
             group: Some(n.group.clone()),
             severity: Severity::Failed,
@@ -3141,7 +3183,8 @@ fn declared_fields_drifted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Wa
                     Condition::DeclaredFieldFailing
                 },
                 subject_kind: SubjectKind::Pipeline,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id: pipeline.to_string(),
                 group: Some(group.to_string()),
                 severity: Severity::Warning,
@@ -3183,7 +3226,8 @@ fn streams_unrouted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> 
             area: None,
             condition: Condition::StreamUnrouted,
             subject_kind: SubjectKind::Source,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: s.source.clone(),
             group: Some(s.group_id.clone()),
             severity: Severity::Warning,
@@ -3241,7 +3285,8 @@ fn deploy_fails_tests(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Vec<
                 area: None,
                 condition: Condition::DeployFailsTests,
                 subject_kind,
-                site: None,
+                class: None,
+                r#type: None,
                 subject_id,
                 group: (scope != crate::config_file::SHARED_DIR).then(|| scope.to_string()),
                 severity: Severity::Warning,
@@ -4778,7 +4823,9 @@ mod tests {
             seq,
             timestamp_ms: at_ms,
             level: level.to_string(),
-            site: "warnings_test".to_string(),
+            class: Some("logs".to_string()),
+            r#type: "warnings_test".to_string(),
+            service: None,
             message: message.to_string(),
             thread: None,
             boot_id: None,
@@ -4807,7 +4854,8 @@ mod tests {
     fn an_issues_own_log_line_raises_nothing() {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let mut event = log_event(0, NOW - 60_000, "warn", "an issue began");
-        event.site = "issues.began".to_string();
+        event.class = Some("status".to_string());
+        event.r#type = "began".to_string();
         event.fields = vec![(
             "issue".to_string(),
             crate::heartbeat::FieldValueDto::Str("sourceBlocked".to_string()),
@@ -4838,7 +4886,7 @@ mod tests {
         assert_eq!(w.group.as_deref(), Some("g"));
         assert_eq!(w.severity, Severity::Warning);
         assert_eq!(w.since_millis, Some(NOW - 60_000));
-        assert_eq!(w.site.as_deref(), Some("warnings_test"));
+        assert_eq!(line(w).as_deref(), Some("logs.warnings_test"));
         assert!(w.message.contains("w1"), "{}", w.message);
         assert!(w.message.contains("a source is blocked"), "{}", w.message);
     }
@@ -4924,16 +4972,24 @@ mod tests {
         assert_eq!(warnings[1].subject_id, "w2");
     }
 
-    /// A log line at `site`, carrying `fields` as string values.
-    fn site_event(
+    /// The `class.type` of the log line `w` is about.
+    fn line(w: &Warning) -> Option<String> {
+        w.r#type
+            .as_ref()
+            .map(|kind| format!("{}.{kind}", w.class.as_deref().unwrap_or_default()))
+    }
+
+    /// A log line of `line`, as `class.type`, carrying `fields` as string values.
+    fn line_event(
         seq: u64,
         at_ms: i64,
-        site: &str,
+        line: &str,
         message: &str,
         fields: &[(&str, &str)],
     ) -> crate::heartbeat::LogDto {
         crate::heartbeat::LogDto {
-            site: site.to_string(),
+            class: line.split_once('.').map(|(class, _)| class.to_string()),
+            r#type: line.split_once('.').map_or(line, |(_, kind)| kind).to_string(),
             fields: fields
                 .iter()
                 .map(|(k, v)| (k.to_string(), crate::heartbeat::FieldValueDto::Str(v.to_string())))
@@ -4943,7 +4999,7 @@ mod tests {
     }
 
     #[test]
-    fn each_site_a_worker_logs_at_is_its_own_warning_carrying_its_latest_sentence() {
+    fn each_line_a_worker_logs_is_its_own_warning_carrying_its_latest_sentence() {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         store
             .record_logs(
@@ -4951,12 +5007,12 @@ mod tests {
                 1,
                 Some("g"),
                 &[
-                    site_event(0, NOW - 200_000, "worker.fetch_failed", "first fetch failed", &[]),
-                    site_event(1, NOW - 100_000, "worker.heartbeat_failed", "a heartbeat failed", &[]),
-                    site_event(
+                    line_event(0, NOW - 200_000, "deploy.fetch_failed", "first fetch failed", &[]),
+                    line_event(1, NOW - 100_000, "heartbeats.failed", "a heartbeat failed", &[]),
+                    line_event(
                         2,
                         NOW - 10_000,
-                        "worker.fetch_failed",
+                        "deploy.fetch_failed",
                         "fetch failed again",
                         &[("error", "refused")],
                     ),
@@ -4968,25 +5024,25 @@ mod tests {
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         let fetch = warnings
             .iter()
-            .find(|w| w.site.as_deref() == Some("worker.fetch_failed"))
+            .find(|w| line(w).as_deref() == Some("deploy.fetch_failed"))
             .unwrap();
         assert_eq!(
             fetch.since_millis,
             Some(NOW - 200_000),
-            "since the site's earliest row in the window"
+            "since the line's earliest row in the window"
         );
         assert!(fetch.message.contains("fetch failed again"), "{}", fetch.message);
         assert!(!fetch.message.contains("first fetch failed"), "{}", fetch.message);
         assert!(fetch.message.contains("[error=refused]"), "{}", fetch.message);
         let heartbeat = warnings
             .iter()
-            .find(|w| w.site.as_deref() == Some("worker.heartbeat_failed"))
+            .find(|w| line(w).as_deref() == Some("heartbeats.failed"))
             .unwrap();
         assert_eq!(heartbeat.since_millis, Some(NOW - 100_000));
     }
 
     #[test]
-    fn a_site_clears_a_window_after_its_last_log_while_a_fresher_one_stays() {
+    fn a_line_clears_a_window_after_its_last_log_while_a_fresher_one_stays() {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         store
             .record_logs(
@@ -4994,14 +5050,14 @@ mod tests {
                 1,
                 Some("g"),
                 &[
-                    site_event(0, NOW - WORKER_LOG_WINDOW_MS - 1, "worker.fetch_failed", "old", &[]),
-                    site_event(1, NOW - 1_000, "worker.heartbeat_failed", "fresh", &[]),
+                    line_event(0, NOW - WORKER_LOG_WINDOW_MS - 1, "deploy.fetch_failed", "old", &[]),
+                    line_event(1, NOW - 1_000, "heartbeats.failed", "fresh", &[]),
                 ],
             )
             .unwrap();
         let warnings = log_warnings(&store);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert_eq!(warnings[0].site.as_deref(), Some("worker.heartbeat_failed"));
+        assert_eq!(line(&warnings[0]).as_deref(), Some("heartbeats.failed"));
     }
 
     #[test]
@@ -5013,17 +5069,17 @@ mod tests {
                 1,
                 Some("g"),
                 &[
-                    site_event(
+                    line_event(
                         0,
                         NOW - 60_000,
-                        "egress.destination_stalled",
+                        "destinations.stalled",
                         "a destination is stalled",
                         &[("subject", "search"), ("error", "connection refused")],
                     ),
-                    site_event(
+                    line_event(
                         1,
                         NOW - 30_000,
-                        "egress.destination_stalled",
+                        "destinations.stalled",
                         "a destination is stalled",
                         &[("subject", "search"), ("error", "503 unavailable")],
                     ),
@@ -5086,7 +5142,8 @@ mod tests {
             condition,
             subject_kind,
             subject_id: subject_id.to_string(),
-            site: None,
+            class: None,
+            r#type: None,
             group: Some(group.to_string()),
             severity: Severity::Failed,
             since_millis: Some(NOW - 90_000),
@@ -5140,7 +5197,7 @@ mod tests {
     }
 
     #[test]
-    fn each_folded_site_tells_its_detail_on_the_catalog_warning_it_repeats() {
+    fn each_folded_line_tells_its_detail_on_the_catalog_warning_it_repeats() {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         store
             .record_logs(
@@ -5148,33 +5205,33 @@ mod tests {
                 1,
                 Some("g"),
                 &[
-                    site_event(
+                    line_event(
                         0,
                         NOW - 50_000,
-                        "egress.destination_stalled",
+                        "destinations.stalled",
                         "a destination is stalled",
                         &[("subject", "es-prod"), ("error", "connection refused")],
                     ),
                     // No `error` field: the sentence stands in for it.
-                    site_event(
+                    line_event(
                         1,
                         NOW - 30_000,
-                        "worker.commit_refused",
+                        "deploy.commit_refused",
                         "a commit will not run",
                         &[("subject", "abc123")],
                     ),
-                    // Repeated sites tell nothing, though their subject matches by accident.
-                    site_event(
+                    // Repeated lines tell nothing, though their subject matches by accident.
+                    line_event(
                         2,
                         NOW - 20_000,
-                        "runtime.rows_rejected",
+                        "pipelines.rows_rejected",
                         "a destination refused rows",
                         &[("subject", "es-prod"), ("reason", "mapper_parsing_exception")],
                     ),
-                    site_event(
+                    line_event(
                         3,
                         NOW - 10_000,
-                        "runtime.source_blocked",
+                        "pipelines.source_blocked",
                         "a source is blocked",
                         &[("subject", "orders"), ("why", "es-prod refuses")],
                     ),
@@ -5219,7 +5276,7 @@ mod tests {
         );
         assert!(
             worker_logged_warnings(&logged).is_empty(),
-            "a folded or repeated site raises nothing alone"
+            "a folded or repeated line raises nothing alone"
         );
     }
 
@@ -5232,10 +5289,10 @@ mod tests {
                     worker,
                     1,
                     Some("g"),
-                    &[site_event(
+                    &[line_event(
                         0,
                         at,
-                        "egress.destination_stalled",
+                        "destinations.stalled",
                         "stalled",
                         &[("subject", "search"), ("error", error)],
                     )],
@@ -5252,10 +5309,10 @@ mod tests {
         assert_eq!(out[0].message, "it is wrong. Last reported by worker w1: newer");
     }
 
-    /// One worker stalled on two destinations tells each its own error, and a site it logs about two subjects is
+    /// One worker stalled on two destinations tells each its own error, and a line it logs about two subjects is
     /// still one warning, the latest of them since the earliest.
     #[test]
-    fn one_workers_site_about_two_subjects_folds_onto_each_and_warns_once() {
+    fn one_workers_line_about_two_subjects_folds_onto_each_and_warns_once() {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         store
             .record_logs(
@@ -5263,22 +5320,22 @@ mod tests {
                 1,
                 Some("g"),
                 &[
-                    site_event(
+                    line_event(
                         0,
                         NOW - 50_000,
-                        "egress.destination_stalled",
+                        "destinations.stalled",
                         "stalled",
                         &[("subject", "search"), ("error", "search refused")],
                     ),
-                    site_event(
+                    line_event(
                         1,
                         NOW - 20_000,
-                        "egress.destination_stalled",
+                        "destinations.stalled",
                         "stalled",
                         &[("subject", "archive"), ("error", "archive refused")],
                     ),
-                    site_event(2, NOW - 40_000, "kafka.message_ceiling", "first", &[("subject", "a")]),
-                    site_event(3, NOW - 10_000, "kafka.message_ceiling", "second", &[("subject", "b")]),
+                    line_event(2, NOW - 40_000, "destinations.message_ceiling", "first", &[("subject", "a")]),
+                    line_event(3, NOW - 10_000, "destinations.message_ceiling", "second", &[("subject", "b")]),
                 ],
             )
             .unwrap();
@@ -5321,10 +5378,10 @@ mod tests {
                 "w1",
                 1,
                 Some("g"),
-                &[site_event(
+                &[line_event(
                     0,
                     NOW - 20_000,
-                    "egress.destination_stalled",
+                    "destinations.stalled",
                     "stalled",
                     &[("subject", "search"), ("error", "refused")],
                 )],
@@ -6380,7 +6437,8 @@ mod tests {
             area: None,
             condition: Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: "7".to_string(),
             group: Some("g".to_string()),
             severity: Severity::Failed,

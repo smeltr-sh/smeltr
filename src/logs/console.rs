@@ -122,7 +122,9 @@ mod tests {
         let event = |worker, thread: Option<&str>| Event {
             timestamp: at(1_757_689_445_123),
             level: tracing::Level::WARN,
-            site: "runtime.source_blocked".into(),
+            class: Some("sources".into()),
+            r#type: "blocked".into(),
+            service: Some("kafka".into()),
             message: "a source is blocked".to_string(),
             fields: vec![],
             worker,
@@ -130,10 +132,10 @@ mod tests {
             local_only: false,
             seq: 0,
         };
-        assert!(line(&event(Some("w-1"), Some("reader-0"))).contains("runtime.source_blocked (w-1 reader-0): "));
-        assert!(line(&event(None, Some("reader-0"))).contains("runtime.source_blocked (reader-0): "));
-        assert!(line(&event(Some("w-1"), None)).contains("runtime.source_blocked (w-1): "));
-        assert!(line(&event(None, None)).contains("runtime.source_blocked: "));
+        assert!(line(&event(Some("w-1"), Some("reader-0"))).contains("sources blocked kafka (w-1 reader-0): "));
+        assert!(line(&event(None, Some("reader-0"))).contains("sources blocked kafka (reader-0): "));
+        assert!(line(&event(Some("w-1"), None)).contains("sources blocked kafka (w-1): "));
+        assert!(line(&event(None, None)).contains("sources blocked kafka: "));
     }
 
     /// One event is one line, whatever a destination put in its refusal.
@@ -142,7 +144,9 @@ mod tests {
         let event = Event {
             timestamp: at(1_757_689_445_123),
             level: tracing::Level::ERROR,
-            site: "runtime.rows_rejected".into(),
+            class: Some("destinations".into()),
+            r#type: "rows_rejected".into(),
+            service: None,
             message: "a destination refused rows".to_string(),
             fields: vec![(
                 "reason".into(),
@@ -166,7 +170,9 @@ mod tests {
         let event = Event {
             timestamp: at(1_757_689_445_123),
             level: tracing::Level::ERROR,
-            site: "runtime.row_rejected".into(),
+            class: Some("destinations".into()),
+            r#type: "rows_rejected".into(),
+            service: None,
             message: "destination refused rows and always will".to_string(),
             fields: vec![
                 ("subject".into(), Value::Str("d1".into())),
@@ -179,7 +185,7 @@ mod tests {
         };
         assert_eq!(
             line(&event),
-            "2025-09-12T15:04:05.123Z ERROR runtime.row_rejected: \
+            "2025-09-12T15:04:05.123Z ERROR destinations rows_rejected: \
              destination refused rows and always will [subject=d1 rows=4000]"
         );
     }

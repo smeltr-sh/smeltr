@@ -424,6 +424,16 @@ pub(crate) const STEPS: &[&str] = &[
          PRIMARY KEY (group_id, source, width_ms, bucket_ms)
      ) WITHOUT ROWID;
      CREATE INDEX swings_bucket ON swings (bucket_ms);",
+    // 12 -- a log's class, type and service in place of its one site name (`crate::logs::Event`). A row from
+    // before is split at its first dot, its class before and its type after; a library's, which has no dot, is its
+    // type alone.
+    "ALTER TABLE logs ADD COLUMN class TEXT;
+     ALTER TABLE logs ADD COLUMN type TEXT NOT NULL DEFAULT '';
+     ALTER TABLE logs ADD COLUMN service TEXT;
+     UPDATE logs SET
+         class = CASE WHEN instr(site, '.') > 0 THEN substr(site, 1, instr(site, '.') - 1) END,
+         type = CASE WHEN instr(site, '.') > 0 THEN substr(site, instr(site, '.') + 1) ELSE site END;
+     ALTER TABLE logs DROP COLUMN site;",
 ];
 
 /// The low and high rate one source read at `width_ms` inside the five-minute bucket starting at `bucket_ms`, in rows
@@ -602,18 +612,22 @@ pub struct StoredLog {
     pub group_id: Option<String>,
     pub thread_name: Option<String>,
     pub level: String,
-    pub site: String,
+    pub class: Option<String>,
+    pub r#type: String,
+    pub service: Option<String>,
     pub message: String,
     /// The field list as it was delivered, still JSON: nothing here reads it, and whatever renders it wants
     /// the pairs rather than a shape this layer invented.
     pub fields_json: String,
 }
 
-/// What one worker last logged at one site about one subject, as [`RegistryStore::latest_log_by_site`] reads it.
+/// What one worker last logged of one class and type about one subject, as [`RegistryStore::latest_log_by_type`]
+/// reads it.
 #[derive(Debug, Clone, PartialEq)]
-pub struct LoggedSite {
+pub struct LoggedType {
     pub worker_id: String,
-    pub site: String,
+    pub class: Option<String>,
+    pub r#type: String,
     /// The group the latest row was delivered under.
     pub group_id: Option<String>,
     /// The latest row's level, message and fields.
@@ -623,7 +637,7 @@ pub struct LoggedSite {
     pub fields_json: String,
     /// When the latest row was logged.
     pub at_ms: i64,
-    /// When the earliest row read at this site about this subject was logged.
+    /// When the earliest row read of this class and type about this subject was logged.
     pub first_ms: i64,
 }
 
@@ -636,8 +650,10 @@ pub struct LogFilter<'a> {
     pub levels: &'a [String],
     pub worker_id: Option<&'a str>,
     pub group_id: Option<&'a str>,
-    /// Matched anywhere in the site, the same as `message_contains` is against the message.
-    pub site_contains: Option<&'a str>,
+    pub class: Option<&'a str>,
+    /// Matched anywhere in the type, the same as `message_contains` is against the message.
+    pub type_contains: Option<&'a str>,
+    pub service: Option<&'a str>,
     /// Matched anywhere in the message. Truncated at delivery, so this cannot find what was cut.
     pub message_contains: Option<&'a str>,
     pub since_ms: Option<i64>,
@@ -1097,8 +1113,9 @@ impl RegistryStore {
             // events, and the second arrival must leave the table as the first did.
             let mut stmt = tx.prepare(
                 "INSERT OR IGNORE INTO logs \
-                 (at_ms, worker_id, boot_id, seq, thread_name, level, site, message, fields_json, group_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 (at_ms, worker_id, boot_id, seq, thread_name, level, class, type, service, message, fields_json, \
+                  group_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?;
             for event in events {
                 let fields = serde_json::to_string(&event.fields).unwrap_or_else(|_| "[]".to_string());
@@ -1111,7 +1128,9 @@ impl RegistryStore {
                     event.seq as i64,
                     event.thread,
                     event.level,
-                    event.site,
+                    event.class,
+                    event.r#type,
+                    event.service,
                     event.message,
                     fields,
                     group_id,
@@ -1130,12 +1149,12 @@ impl RegistryStore {
     /// `after_id` walks toward the newest and is fetched ascending so `LIMIT` bounds the right end of the
     /// range, then reversed; every other case is already newest-first.
     ///
-    /// No index covers `level`, `site` or `message` (only `at_ms` and the delivery key). At the cap of
+    /// No index covers `level`, `class`, `type`, `service` or `message` (only `at_ms` and the delivery key). At the cap of
     /// [`LOGS_KEPT`] the worst case -- a substring that matches nothing, so every row is read -- measures
     /// ~13 ms, and an ordinary filtered page ~1 ms. The cap is doing the work an index would, so there is none.
     pub fn logs(&self, filter: &LogFilter, limit: usize) -> Result<Vec<StoredLog>, StoreError> {
         let mut sql = String::from(
-            "SELECT id, at_ms, worker_id, group_id, thread_name, level, site, message, fields_json \
+            "SELECT id, at_ms, worker_id, group_id, thread_name, level, class, type, service, message, fields_json \
              FROM logs WHERE 1 = 1",
         );
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -1149,15 +1168,20 @@ impl RegistryStore {
                 args.push(Box::new(level.clone()));
             }
         }
-        for (column, value) in [("worker_id", filter.worker_id), ("group_id", filter.group_id)] {
+        for (column, value) in [
+            ("worker_id", filter.worker_id),
+            ("group_id", filter.group_id),
+            ("class", filter.class),
+            ("service", filter.service),
+        ] {
             if let Some(value) = value {
                 sql.push_str(&format!(" AND {column} = ?"));
                 args.push(Box::new(value.to_string()));
             }
         }
-        // `escape`d, so a site or message containing `%` or `_` searches for those characters rather than for
+        // `escape`d, so a type or message containing `%` or `_` searches for those characters rather than for
         // every row.
-        for (column, value) in [("site", filter.site_contains), ("message", filter.message_contains)] {
+        for (column, value) in [("type", filter.type_contains), ("message", filter.message_contains)] {
             if let Some(text) = value {
                 sql.push_str(&format!(" AND {column} LIKE ? ESCAPE '\\'"));
                 args.push(Box::new(format!("%{}%", like_escape(text))));
@@ -1197,9 +1221,11 @@ impl RegistryStore {
                     group_id: r.get(3)?,
                     thread_name: r.get(4)?,
                     level: r.get(5)?,
-                    site: r.get(6)?,
-                    message: r.get(7)?,
-                    fields_json: r.get(8)?,
+                    class: r.get(6)?,
+                    r#type: r.get(7)?,
+                    service: r.get(8)?,
+                    message: r.get(9)?,
+                    fields_json: r.get(10)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -1209,10 +1235,10 @@ impl RegistryStore {
         Ok(rows)
     }
 
-    /// The latest row each worker logged at each site about each subject (its `subject` field, or none) at one of
-    /// `levels`, within `[since_ms, until_ms]` -- one entry per (worker, site, subject), not one per row. Per subject
-    /// because one worker can log one site about two destinations, and each is told on its own warning.
-    /// `worker_logged_warnings` wants one warning per worker and site,
+    /// The latest row each worker logged of each class and type about each subject (its `subject` field, or none) at
+    /// one of `levels`, within `[since_ms, until_ms]` -- one entry per (worker, class, type, subject), not one per
+    /// row. Per subject because one worker can log one line about two destinations, and each is told on its own
+    /// warning. `worker_logged_warnings` wants one warning per worker, class and type,
     /// so it does the grouping here rather than paging through every qualifying row itself: a page walk needs a
     /// cap on how many pages to read, and any cap short of the whole table can let a noisy worker's rows fill it
     /// before the scan reaches an older, quieter one's own inside the same window. A single query has no such cap
@@ -1221,21 +1247,22 @@ impl RegistryStore {
     /// Window functions rather than a bare column beside `MAX(at_ms)`: an entry wants both the latest row and the
     /// earliest time, and SQLite says which row a bare column comes from only when one `MIN` or `MAX` stands alone.
     /// Two rows at the same `at_ms` go to the one that arrived last.
-    pub fn latest_log_by_site(
+    pub fn latest_log_by_type(
         &self,
         levels: &[String],
         since_ms: i64,
         until_ms: i64,
-    ) -> Result<Vec<LoggedSite>, StoreError> {
+    ) -> Result<Vec<LoggedType>, StoreError> {
         if levels.is_empty() {
             return Ok(Vec::new());
         }
         let holes = std::iter::repeat_n("?", levels.len()).collect::<Vec<_>>().join(", ");
         let sql = format!(
-            "SELECT worker_id, site, group_id, level, message, fields_json, at_ms, first_ms FROM ( \
-                 SELECT worker_id, site, group_id, level, message, fields_json, at_ms, \
-                     MIN(at_ms) OVER (PARTITION BY worker_id, site, subject) AS first_ms, \
-                     ROW_NUMBER() OVER (PARTITION BY worker_id, site, subject ORDER BY at_ms DESC, id DESC) AS nth \
+            "SELECT worker_id, class, type, group_id, level, message, fields_json, at_ms, first_ms FROM ( \
+                 SELECT worker_id, class, type, group_id, level, message, fields_json, at_ms, \
+                     MIN(at_ms) OVER (PARTITION BY worker_id, class, type, subject) AS first_ms, \
+                     ROW_NUMBER() OVER (PARTITION BY worker_id, class, type, subject ORDER BY at_ms DESC, id DESC) \
+                         AS nth \
                  FROM ( \
                      SELECT *, (SELECT CAST(json_extract(f.value, '$[1].value') AS TEXT) \
                                 FROM json_each(logs.fields_json) AS f \
@@ -1255,15 +1282,16 @@ impl RegistryStore {
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())), |r| {
-                Ok(LoggedSite {
+                Ok(LoggedType {
                     worker_id: r.get(0)?,
-                    site: r.get(1)?,
-                    group_id: r.get(2)?,
-                    level: r.get(3)?,
-                    message: r.get(4)?,
-                    fields_json: r.get(5)?,
-                    at_ms: r.get(6)?,
-                    first_ms: r.get(7)?,
+                    class: r.get(1)?,
+                    r#type: r.get(2)?,
+                    group_id: r.get(3)?,
+                    level: r.get(4)?,
+                    message: r.get(5)?,
+                    fields_json: r.get(6)?,
+                    at_ms: r.get(7)?,
+                    first_ms: r.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -2333,12 +2361,22 @@ mod tests {
         RegistryStore::open(Path::new(":memory:")).unwrap()
     }
 
-    fn log(seq: u64, site: &str) -> crate::heartbeat::LogDto {
+    /// `line` as `class.type`, or `class.type@service`.
+    fn named(line: &str) -> (Option<String>, String, Option<String>) {
+        let (line, service) = line.split_once('@').map_or((line, None), |(l, s)| (l, Some(s.to_string())));
+        let (class, kind) = line.split_once('.').expect("a class and a type");
+        (Some(class.to_string()), kind.to_string(), service)
+    }
+
+    fn log(seq: u64, line: &str) -> crate::heartbeat::LogDto {
+        let (class, r#type, service) = named(line);
         crate::heartbeat::LogDto {
             seq,
             timestamp_ms: 1,
             level: "warn".to_string(),
-            site: site.to_string(),
+            class,
+            r#type,
+            service,
             message: "a source is blocked".to_string(),
             thread: Some("reader-0".to_string()),
             boot_id: None,
@@ -2365,10 +2403,10 @@ mod tests {
     fn a_log_keeps_the_group_it_was_delivered_under() {
         let store = memory_store();
         store
-            .record_logs("w-1", 7, Some("west"), &[log(0, "worker.commit_not_loadable")])
+            .record_logs("w-1", 7, Some("west"), &[log(0, "deploy.commit_not_loadable")])
             .unwrap();
         // A worker too old to state one: no group, rather than a group named "".
-        store.record_logs("w-2", 7, None, &[log(0, "worker.started")]).unwrap();
+        store.record_logs("w-2", 7, None, &[log(0, "processes.started")]).unwrap();
 
         let groups: Vec<Option<String>> = store
             .conn
@@ -2383,12 +2421,15 @@ mod tests {
         assert_eq!(groups, vec![Some("west".to_string()), None]);
     }
 
-    fn at(seq: u64, at_ms: i64, level: &str, site: &str, message: &str) -> crate::heartbeat::LogDto {
+    fn at(seq: u64, at_ms: i64, level: &str, line: &str, message: &str) -> crate::heartbeat::LogDto {
+        let (class, r#type, service) = named(line);
         crate::heartbeat::LogDto {
             seq,
             timestamp_ms: at_ms,
             level: level.to_string(),
-            site: site.to_string(),
+            class,
+            r#type,
+            service,
             message: message.to_string(),
             thread: Some("reader-0".to_string()),
             boot_id: None,
@@ -2404,15 +2445,15 @@ mod tests {
                 7,
                 Some("west"),
                 &[
-                    at(0, 100, "info", "worker.started", "worker starting"),
+                    at(0, 100, "info", "processes.started", "worker starting"),
                     at(
                         1,
                         200,
                         "warn",
-                        "worker.enroll_failed",
+                        "enrollment.enroll_failed",
                         "enrollment failed, and will be retried",
                     ),
-                    at(2, 300, "error", "runtime.rows_rejected", "a destination refused rows"),
+                    at(2, 300, "error", "pipelines.rows_rejected", "a destination refused rows"),
                 ],
             )
             .unwrap();
@@ -2421,16 +2462,16 @@ mod tests {
                 "w-2",
                 7,
                 Some("east"),
-                &[at(0, 400, "error", "io.elastic.refused", "100% refused")],
+                &[at(0, 400, "error", "destinations.bulk_refused@elasticsearch", "100% refused")],
             )
             .unwrap();
         store
     }
 
-    /// One entry per worker and site: the latest row's words and group, beside the earliest row's time. Levels
-    /// not asked for and rows outside the window are not read at all.
+    /// One entry per worker, class and type: the latest row's words and group, beside the earliest row's time.
+    /// Levels not asked for and rows outside the window are not read at all.
     #[test]
-    fn latest_log_by_site_gives_each_sites_latest_row_and_earliest_time() {
+    fn latest_log_by_type_gives_each_lines_latest_row_and_earliest_time() {
         let store = memory_store();
         store
             .record_logs(
@@ -2438,20 +2479,20 @@ mod tests {
                 7,
                 Some("west"),
                 &[
-                    at(0, 50, "warn", "worker.fetch_failed", "before the window"),
-                    at(1, 100, "warn", "worker.fetch_failed", "first"),
-                    at(2, 150, "info", "worker.fetch_failed", "not a level asked for"),
-                    at(3, 200, "warn", "worker.heartbeat_failed", "other site"),
+                    at(0, 50, "warn", "deploy.fetch_failed", "before the window"),
+                    at(1, 100, "warn", "deploy.fetch_failed", "first"),
+                    at(2, 150, "info", "deploy.fetch_failed", "not a level asked for"),
+                    at(3, 200, "warn", "heartbeats.failed", "other line"),
                 ],
             )
             .unwrap();
-        // The same site, delivered later under another group.
+        // The same line, delivered later under another group.
         store
             .record_logs(
                 "w-1",
                 8,
                 Some("east"),
-                &[at(0, 300, "error", "worker.fetch_failed", "latest")],
+                &[at(0, 300, "error", "deploy.fetch_failed", "latest")],
             )
             .unwrap();
         store
@@ -2459,19 +2500,20 @@ mod tests {
                 "w-2",
                 7,
                 None,
-                &[at(0, 250, "warn", "worker.fetch_failed", "another worker")],
+                &[at(0, 250, "warn", "deploy.fetch_failed", "another worker")],
             )
             .unwrap();
 
         let levels = ["warn".to_string(), "error".to_string()];
-        let mut rows = store.latest_log_by_site(&levels, 100, 1_000).unwrap();
-        rows.sort_by(|a, b| (&a.worker_id, &a.site).cmp(&(&b.worker_id, &b.site)));
+        let mut rows = store.latest_log_by_type(&levels, 100, 1_000).unwrap();
+        rows.sort_by(|a, b| (&a.worker_id, &a.class, &a.r#type).cmp(&(&b.worker_id, &b.class, &b.r#type)));
         assert_eq!(
             rows,
             vec![
-                LoggedSite {
+                LoggedType {
                     worker_id: "w-1".to_string(),
-                    site: "worker.fetch_failed".to_string(),
+                    class: Some("deploy".to_string()),
+                    r#type: "fetch_failed".to_string(),
                     group_id: Some("east".to_string()),
                     level: "error".to_string(),
                     message: "latest".to_string(),
@@ -2479,19 +2521,21 @@ mod tests {
                     at_ms: 300,
                     first_ms: 100,
                 },
-                LoggedSite {
+                LoggedType {
                     worker_id: "w-1".to_string(),
-                    site: "worker.heartbeat_failed".to_string(),
+                    class: Some("heartbeats".to_string()),
+                    r#type: "failed".to_string(),
                     group_id: Some("west".to_string()),
                     level: "warn".to_string(),
-                    message: "other site".to_string(),
+                    message: "other line".to_string(),
                     fields_json: "[]".to_string(),
                     at_ms: 200,
                     first_ms: 200,
                 },
-                LoggedSite {
+                LoggedType {
                     worker_id: "w-2".to_string(),
-                    site: "worker.fetch_failed".to_string(),
+                    class: Some("deploy".to_string()),
+                    r#type: "fetch_failed".to_string(),
                     group_id: None,
                     level: "warn".to_string(),
                     message: "another worker".to_string(),
@@ -2501,11 +2545,14 @@ mod tests {
                 },
             ]
         );
-        assert!(store.latest_log_by_site(&[], 0, 1_000).unwrap().is_empty());
+        assert!(store.latest_log_by_type(&[], 0, 1_000).unwrap().is_empty());
     }
 
-    fn sites(rows: &[StoredLog]) -> Vec<&str> {
-        rows.iter().map(|r| r.site.as_str()).collect()
+    /// Each row's `class.type`.
+    fn lines(rows: &[StoredLog]) -> Vec<String> {
+        rows.iter()
+            .map(|r| format!("{}.{}", r.class.as_deref().unwrap_or_default(), r.r#type))
+            .collect()
     }
 
     /// Newest first, which is what makes paging safe against the row cap: `maintain` takes the oldest, so the top
@@ -2514,12 +2561,12 @@ mod tests {
     fn an_unfiltered_read_gives_the_newest_first() {
         let rows = seeded().logs(&LogFilter::default(), 10).unwrap();
         assert_eq!(
-            sites(&rows),
+            lines(&rows),
             vec![
-                "io.elastic.refused",
-                "runtime.rows_rejected",
-                "worker.enroll_failed",
-                "worker.started"
+                "destinations.bulk_refused",
+                "pipelines.rows_rejected",
+                "enrollment.enroll_failed",
+                "processes.started"
             ]
         );
         assert_eq!(rows[0].group_id.as_deref(), Some("east"));
@@ -2528,7 +2575,7 @@ mod tests {
     #[test]
     fn a_limit_takes_the_newest_rather_than_the_first_found() {
         let rows = seeded().logs(&LogFilter::default(), 2).unwrap();
-        assert_eq!(sites(&rows), vec!["io.elastic.refused", "runtime.rows_rejected"]);
+        assert_eq!(lines(&rows), vec!["destinations.bulk_refused", "pipelines.rows_rejected"]);
     }
 
     /// `before_id`/`after_id` bound `id` directly -- the mechanism the pager rests on. `after_id` is fetched
@@ -2550,8 +2597,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            sites(&older),
-            sites(&all[1..]),
+            lines(&older),
+            lines(&all[1..]),
             "everything below the cursor, still newest first"
         );
 
@@ -2565,8 +2612,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            sites(&newer),
-            sites(&all[..2]),
+            lines(&newer),
+            lines(&all[..2]),
             "everything above the cursor, restored to newest first"
         );
     }
@@ -2585,8 +2632,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            sites(&rows),
-            vec!["io.elastic.refused", "runtime.rows_rejected", "worker.enroll_failed"]
+            lines(&rows),
+            vec!["destinations.bulk_refused", "pipelines.rows_rejected", "enrollment.enroll_failed"]
         );
     }
 
@@ -2596,51 +2643,65 @@ mod tests {
         let one = |f: LogFilter| store.logs(&f, 10).unwrap();
 
         assert_eq!(
-            sites(&one(LogFilter {
+            lines(&one(LogFilter {
                 worker_id: Some("w-2"),
                 ..Default::default()
             })),
-            vec!["io.elastic.refused"]
+            vec!["destinations.bulk_refused"]
         );
         assert_eq!(
-            sites(&one(LogFilter {
+            lines(&one(LogFilter {
                 group_id: Some("east"),
                 ..Default::default()
             })),
-            vec!["io.elastic.refused"]
+            vec!["destinations.bulk_refused"]
         );
-        // Matched anywhere, not just at the front: "elastic" is in the middle of the one site that has it.
+        // Matched anywhere, not just at the front: "refused" ends the one type that has it.
         assert_eq!(
-            sites(&one(LogFilter {
-                site_contains: Some("elastic"),
+            lines(&one(LogFilter {
+                type_contains: Some("refused"),
                 ..Default::default()
             })),
-            vec!["io.elastic.refused"]
+            vec!["destinations.bulk_refused"]
         );
         assert_eq!(
-            sites(&one(LogFilter {
+            lines(&one(LogFilter {
+                class: Some("pipelines"),
+                ..Default::default()
+            })),
+            vec!["pipelines.rows_rejected"]
+        );
+        assert_eq!(
+            lines(&one(LogFilter {
+                service: Some("elasticsearch"),
+                ..Default::default()
+            })),
+            vec!["destinations.bulk_refused"]
+        );
+        assert_eq!(
+            lines(&one(LogFilter {
                 message_contains: Some("refused"),
                 ..Default::default()
             })),
-            vec!["io.elastic.refused", "runtime.rows_rejected"]
+            vec!["destinations.bulk_refused", "pipelines.rows_rejected"]
         );
         assert_eq!(
-            sites(&one(LogFilter {
+            lines(&one(LogFilter {
                 since_ms: Some(200),
                 until_ms: Some(300),
                 ..Default::default()
             })),
-            vec!["runtime.rows_rejected", "worker.enroll_failed"]
+            vec!["pipelines.rows_rejected", "enrollment.enroll_failed"]
         );
         // Combined, not one winning.
         let levels = ["error".to_string()];
         assert_eq!(
-            sites(&one(LogFilter {
+            lines(&one(LogFilter {
                 levels: &levels,
                 worker_id: Some("w-1"),
                 ..Default::default()
             })),
-            vec!["runtime.rows_rejected"]
+            vec!["pipelines.rows_rejected"]
         );
     }
 
@@ -2660,8 +2721,8 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(
-            sites(&hits("100%")),
-            vec!["io.elastic.refused"],
+            lines(&hits("100%")),
+            vec!["destinations.bulk_refused"],
             "the percent is a character here"
         );
         assert!(hits("%").len() == 1, "an unescaped `%` would match every row");
@@ -2679,7 +2740,7 @@ mod tests {
         let mut store = memory_store();
         store.logs_kept = 4;
 
-        let events: Vec<_> = (0..10).map(|i| log(i, &format!("site.{i}"))).collect();
+        let events: Vec<_> = (0..10).map(|i| log(i, &format!("logs.line_{i}"))).collect();
         store.record_logs("w-1", 7, Some("prod"), &events).unwrap();
         assert_eq!(kept(&store), 10, "everything a heartbeat carried is written");
 
@@ -2690,9 +2751,9 @@ mod tests {
             .conn
             .lock()
             .unwrap()
-            .query_row("SELECT site FROM logs ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT type FROM logs ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(newest, "site.9", "and the end it keeps is the recent one");
+        assert_eq!(newest, "line_9", "and the end it keeps is the recent one");
     }
 
     /// `HeartbeatClient::send` retries once, and its own doc comment says an accumulating downstream needs a key
@@ -2700,7 +2761,7 @@ mod tests {
     #[test]
     fn the_same_batch_delivered_twice_is_written_once() {
         let store = memory_store();
-        let events: Vec<_> = (0..5).map(|i| log(i, "runtime.rows_rejected")).collect();
+        let events: Vec<_> = (0..5).map(|i| log(i, "pipelines.rows_rejected")).collect();
 
         store.record_logs("w-1", 7, Some("prod"), &events).unwrap();
         store.record_logs("w-1", 7, Some("prod"), &events).unwrap();

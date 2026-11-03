@@ -1773,7 +1773,9 @@ mod tests {
                         .map(|d| d.as_millis() as i64 + 1_000)
                         .unwrap_or_default(),
                     level: "info".into(),
-                    site: "mirror.obey.test".into(),
+                    class: Some("logs".into()),
+                    r#type: "mirror_obey_test".into(),
+                    service: None,
                     message: "a supervisor said something".into(),
                     thread: None,
                     boot_id: None,
@@ -1792,7 +1794,7 @@ mod tests {
         let said: Vec<_> = reader
             .drain(usize::MAX)
             .into_iter()
-            .filter(|e| e.site == "mirror.obey.test")
+            .filter(|e| e.r#type == "mirror_obey_test")
             .collect();
         assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(

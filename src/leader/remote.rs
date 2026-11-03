@@ -2033,7 +2033,7 @@ mod tests {
             assert_eq!(again["al/fix"].at, 61_000);
         });
         assert!(
-            !said.iter().any(|(_, site, _)| site == "remote.push_failed"),
+            !said.iter().any(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("git", "push_failed")),
             "{said:?}"
         );
 

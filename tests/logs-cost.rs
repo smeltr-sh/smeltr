@@ -25,7 +25,7 @@ fn hammer(threads: usize, ops: usize) -> f64 {
                 let began = Instant::now();
                 for row in 0..ops as u64 {
                     tracing::error!(
-                        target: "bench.site",
+                        name: "bench_site", target: "logs",
                         subject = %subject,
                         row,
                         reason = "schema mismatch on field ts",
@@ -48,7 +48,7 @@ fn hammer_filtered(ops: usize) -> f64 {
     let began = Instant::now();
     for row in 0..ops as u64 {
         tracing::trace!(
-            target: "bench.filtered",
+            name: "bench_filtered", target: "logs",
             subject = %format!("destination-{row}"),
             row,
             "a message nobody asked for"
@@ -73,9 +73,9 @@ fn what_a_call_site_pays() {
     }
     println!("  REFUSED  threads=1: {:.1} ns/op", hammer_filtered(1_000_000));
 
-    let mut written = smeltr::logs::written_by_site();
+    let mut written = smeltr::logs::written_by_type();
     written.sort();
-    println!("\n  written by site: {written:?}\n");
+    println!("\n  written by class and type: {written:?}\n");
 }
 
 /// What the drain thread gets out of the buffer, and how long a full one takes to empty.
@@ -86,15 +86,15 @@ fn what_a_call_site_pays() {
 #[ignore = "measurement, not a check"]
 fn what_the_drain_thread_keeps_up_with() {
     smeltr::logs::start();
-    const SITE: &str = "bench.drain";
+    const KIND: &str = "bench_drain";
     const N: u64 = 100_000;
 
     // Deltas, not totals: the measurement above this one has already put six hundred thousand through.
     let written = || -> u64 {
-        smeltr::logs::written_by_site()
+        smeltr::logs::written_by_type()
             .into_iter()
-            .filter(|(s, _)| s == SITE)
-            .map(|(_, n)| n)
+            .filter(|(_, kind, _)| kind == KIND)
+            .map(|(_, _, n)| n)
             .sum()
     };
     let (dropped0, unwritable0) = (smeltr::logs::dropped(), smeltr::logs::unwritable());
@@ -106,7 +106,7 @@ fn what_the_drain_thread_keeps_up_with() {
     let began = Instant::now();
     for row in 0..N {
         tracing::error!(
-            target: "bench.drain",
+            name: "bench_drain", target: "logs",
             subject = "destination-0",
             row,
             reason = "schema mismatch on field ts",
@@ -127,7 +127,7 @@ fn what_the_drain_thread_keeps_up_with() {
 
     // A full buffer, then the exit that has to empty it inside `STOP_GRACE`.
     for row in 0..smeltr::logs::CAPACITY as u64 {
-        tracing::error!(target: "bench.drain", row, "filling the buffer before an exit");
+        tracing::error!(name: "bench_drain", target: "logs", row, "filling the buffer before an exit");
     }
     let began = Instant::now();
     smeltr::logs::stop();

@@ -47,7 +47,8 @@ const VALUES: &[&str] = &[
 ];
 
 /// The site every event said here through `tracing` is said at.
-const TRACED: &str = "fuzz.traced";
+/// The class and type of what this fuzzer says through `tracing`.
+const TRACED: (&str, &str) = ("logs", "fuzzed");
 
 fn value(rng: &mut Rng) -> Value {
     match rng.below(VALUES.len()) {
@@ -89,7 +90,10 @@ fn mirrored(rng: &mut Rng, n: u64, at: SystemTime) -> Event {
     Event {
         timestamp: at,
         level: rng.pick(&LEVELS).0,
-        site: format!("fuzz.{n}.{}", rng.pick(TEXTS)).into(),
+        // A library's line said outside any span has no class, and a line from code that talks to no service none.
+        class: rng.chance(2).then(|| rng.pick(TEXTS).to_string().into()),
+        r#type: format!("fuzz_{n}_{}", rng.pick(TEXTS)).into(),
+        service: rng.chance(2).then(|| rng.pick(TEXTS).to_string().into()),
         message: rng.pick(TEXTS).to_string(),
         fields,
         worker: None,
@@ -107,11 +111,11 @@ fn traced(rng: &mut Rng, delivering: bool) -> (Event, SystemTime) {
     let message = rng.pick(TEXTS).to_string();
     let before = SystemTime::now();
     let say = || match level {
-        tracing::Level::ERROR => tracing::error!(target: TRACED, text = %text, n, x, "{message}"),
-        tracing::Level::WARN => tracing::warn!(target: TRACED, text = %text, n, x, "{message}"),
-        tracing::Level::INFO => tracing::info!(target: TRACED, text = %text, n, x, "{message}"),
-        tracing::Level::DEBUG => tracing::debug!(target: TRACED, text = %text, n, x, "{message}"),
-        _ => tracing::trace!(target: TRACED, text = %text, n, x, "{message}"),
+        tracing::Level::ERROR => tracing::error!(name: "fuzzed", target: "logs", text = %text, n, x, "{message}"),
+        tracing::Level::WARN => tracing::warn!(name: "fuzzed", target: "logs", text = %text, n, x, "{message}"),
+        tracing::Level::INFO => tracing::info!(name: "fuzzed", target: "logs", text = %text, n, x, "{message}"),
+        tracing::Level::DEBUG => tracing::debug!(name: "fuzzed", target: "logs", text = %text, n, x, "{message}"),
+        _ => tracing::trace!(name: "fuzzed", target: "logs", text = %text, n, x, "{message}"),
     };
     let subscriber = tracing_subscriber::registry().with(crate::logs::LogLayer);
     tracing::subscriber::with_default(subscriber, || match delivering {
@@ -121,7 +125,9 @@ fn traced(rng: &mut Rng, delivering: bool) -> (Event, SystemTime) {
     let event = Event {
         timestamp: before,
         level,
-        site: TRACED.into(),
+        class: Some(TRACED.0.into()),
+        r#type: TRACED.1.into(),
+        service: None,
         message,
         fields: vec![
             ("text".into(), Value::Str(text)),
@@ -154,10 +160,16 @@ fn check_json(record: &[u8], event: &Event, by: SystemTime) -> Result<(), String
     let said = object.get("timestamp").and_then(serde_json::Value::as_i64);
     let writable: Vec<_> = event.fields.iter().filter(|(_, v)| !unwritable(v)).collect();
     // No worker is set in this process, so a record names none.
-    let keys = 4 + usize::from(event.thread.is_some()) + usize::from(!writable.is_empty());
+    let keys = 4
+        + usize::from(event.class.is_some())
+        + usize::from(event.service.is_some())
+        + usize::from(event.thread.is_some())
+        + usize::from(!writable.is_empty());
     if said.is_none_or(|said| said < millis(event.timestamp) || said > millis(by))
         || text_at("level") != Some(level)
-        || text_at("site") != Some(&event.site)
+        || text_at("class") != event.class.as_deref()
+        || text_at("type") != Some(&event.r#type)
+        || text_at("service") != event.service.as_deref()
         || text_at("message") != Some(&event.message)
         || text_at("thread") != event.thread.as_deref()
         || object.len() != keys
@@ -239,6 +251,8 @@ fn every_reader_carries_each_event_at_its_level_once_in_order_within_its_batch()
                     "an event said here below the ceiling",
                     "an event said while delivering logs",
                     "an event with fields of which none can be written",
+                    "a mirrored event with no class",
+                    "a mirrored event naming a service",
                     "a queue full, refusing an event",
                     "a batch cut by its rows",
                     "a batch cut by its bytes",
@@ -308,6 +322,12 @@ fn every_reader_carries_each_event_at_its_level_once_in_order_within_its_batch()
                 };
                 let event = mirrored(&mut rng, n, at);
                 n += 1;
+                if event.class.is_none() {
+                    cov.reach("a mirrored event with no class");
+                }
+                if event.service.is_some() {
+                    cov.reach("a mirrored event naming a service");
+                }
                 let handed = readers.iter().filter(|r| r.opened.1 <= at).count();
                 if handed < readers.len() {
                     cov.reach(match handed {

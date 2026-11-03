@@ -10,15 +10,15 @@ fn what_delivery_itself_says_does_not_join_the_queue_it_was_emptying() {
     // What a leader's ingest does when the store refuses a batch: it reports, and that report must not become
     // part of the next batch -- which would fail, and report, one event per beat for the life of the process.
     smeltr::logs::while_delivering(|| {
-        tracing::warn!(target: "guard.test.local", "the store would not take a batch");
+        tracing::warn!(name: "guard_test_local", target: "logs", "the store would not take a batch");
     });
-    tracing::warn!(target: "guard.test.queued", "something else entirely");
+    tracing::warn!(name: "guard_test_queued", target: "logs", "something else entirely");
 
     let began = std::time::Instant::now();
     let queued = loop {
-        let sites = smeltr::logs::pending_map(1024, |event| event.site.to_string());
-        if sites.iter().any(|s| s == "guard.test.queued") {
-            break sites;
+        let kinds = smeltr::logs::pending_map(1024, |event| event.r#type.to_string());
+        if kinds.iter().any(|s| s == "guard_test_queued") {
+            break kinds;
         }
         assert!(
             began.elapsed() < std::time::Duration::from_secs(5),
@@ -28,13 +28,13 @@ fn what_delivery_itself_says_does_not_join_the_queue_it_was_emptying() {
     };
 
     assert!(
-        !queued.iter().any(|s| s == "guard.test.local"),
+        !queued.iter().any(|s| s == "guard_test_local"),
         "what delivery said stayed on the console: {queued:?}"
     );
     assert!(
-        smeltr::logs::written_by_site()
+        smeltr::logs::written_by_type()
             .iter()
-            .any(|(site, n)| site == "guard.test.local" && *n == 1),
+            .any(|(_, kind, n)| kind == "guard_test_local" && *n == 1),
         "and it did reach the console -- console-only is not silence"
     );
 }

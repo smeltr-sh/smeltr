@@ -850,7 +850,9 @@ mod tests {
         Event {
             timestamp: std::time::SystemTime::UNIX_EPOCH,
             level: Level::ERROR,
-            site: "put_back.test".into(),
+            class: Some("logs".into()),
+            r#type: "put_back_test".into(),
+            service: None,
             message: String::new(),
             fields: Vec::new(),
             worker: None,
@@ -865,7 +867,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .any(|e| e.site == site)
+            .any(|e| e.r#type == site)
     }
 
     #[test]
@@ -881,12 +883,12 @@ mod tests {
     /// though a worker runs in the same process; what any other thread raises is never the leader's.
     #[test]
     fn a_leader_thread_s_logs_are_kept_apart_from_a_worker_s() {
-        let leader_site = "leader_thread.marked.test";
-        let other_site = "leader_thread.unmarked.test";
+        let leader_site = "leader_thread_marked_test";
+        let other_site = "leader_thread_unmarked_test";
         std::thread::spawn(move || {
             mark_leader_thread();
             hand_off(Event {
-                site: leader_site.into(),
+                r#type: leader_site.into(),
                 ..event(1)
             });
         })
@@ -894,7 +896,7 @@ mod tests {
         .unwrap();
         std::thread::spawn(move || {
             hand_off(Event {
-                site: other_site.into(),
+                r#type: other_site.into(),
                 ..event(2)
             });
         })
@@ -985,10 +987,10 @@ mod tests {
     #[test]
     fn a_mirrored_event_reaches_the_readers_only() {
         let _taps = TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let site = "mirror.readers_only.test";
+        let site = "mirror_readers_only_test";
         let mirrored = || Event {
             timestamp: SystemTime::now(),
-            site: site.into(),
+            r#type: site.into(),
             ..event(7)
         };
 
@@ -1000,10 +1002,10 @@ mod tests {
         mirror([mirrored()]);
         let got = reader.drain(8);
         assert_eq!(got.len(), 1, "{got:?}");
-        assert_eq!(got[0].site, site);
+        assert_eq!(got[0].r#type, site);
         assert_eq!(got[0].worker, worker());
         assert!(
-            written_by_site().iter().all(|(s, _)| s != site),
+            written_by_type().iter().all(|(_, kind, _)| kind != site),
             "a mirrored event was written to this process's console"
         );
     }
@@ -1015,13 +1017,13 @@ mod tests {
         let _taps = TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let said_before = Event {
             timestamp: SystemTime::now() - Duration::from_secs(5),
-            site: "mirror.before_open.test".into(),
+            r#type: "mirror_before_open_test".into(),
             ..event(1)
         };
         let reader = tap();
         mirror([said_before]);
         assert!(
-            reader.drain(8).iter().all(|e| e.site != "mirror.before_open.test"),
+            reader.drain(8).iter().all(|e| e.r#type != "mirror_before_open_test"),
             "a reader was handed what was said before it opened"
         );
     }

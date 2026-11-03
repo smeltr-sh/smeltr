@@ -1981,7 +1981,7 @@ fn the_startup_file_example_starts_a_leader() {
         .any(|line| {
             said.push_str(&line);
             said.push('\n');
-            line.contains("leader.origin")
+            line.contains("api origin_set")
         });
     let _ = leader.kill();
     let _ = leader.wait();

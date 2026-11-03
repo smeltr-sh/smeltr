@@ -4684,8 +4684,8 @@ mod tests {
         });
         let fields: Vec<_> = said
             .iter()
-            .filter(|(_, site, _)| site == "audit.recorded")
-            .map(|(_, _, f)| f)
+            .filter(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("api", "recorded"))
+            .map(|(_, _, _, f)| f)
             .collect();
         let named = |f: &Vec<(String, String)>, key: &str| f.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
         assert_eq!(named(fields[0], "actor_name").as_deref(), Some("Dana"));
@@ -4753,8 +4753,8 @@ mod tests {
         });
         let levels: Vec<_> = said
             .iter()
-            .filter(|(_, site, _)| site == "audit.recorded")
-            .map(|(level, _, _)| *level)
+            .filter(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("api", "recorded"))
+            .map(|(level, _, _, _)| *level)
             .collect();
         assert_eq!(
             levels,

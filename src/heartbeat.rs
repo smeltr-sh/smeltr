@@ -75,6 +75,8 @@ pub struct LogDto {
     /// Absent on a library's line said outside any span of ours (`crate::logs::Event::class`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
+    /// Empty from a build before lines had types: a field added to a heartbeat is optional.
+    #[serde(default)]
     pub r#type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
@@ -1735,7 +1737,9 @@ mod tests {
         let event = crate::logs::Event {
             timestamp: std::time::UNIX_EPOCH,
             level: tracing::Level::ERROR,
-            site: "runtime.rows_rejected".into(),
+            class: Some("pipelines".into()),
+            r#type: "rows_rejected".into(),
+            service: None,
             message: "x".repeat(10_000),
             fields: (0..64)
                 .map(|i| (format!("field{i}").into(), crate::logs::Value::Str("y".repeat(10_000))))
@@ -1780,7 +1784,9 @@ mod tests {
             seq: 3,
             timestamp_ms: 1_757_689_445_123,
             level: "error".to_string(),
-            site: "runtime.rows_rejected".to_string(),
+            class: Some("pipelines".to_string()),
+            r#type: "rows_rejected".to_string(),
+            service: None,
             message: "a destination refused rows".to_string(),
             thread: Some("egress-1".to_string()),
             boot_id: None,
@@ -1792,7 +1798,9 @@ mod tests {
         let json = serde_json::to_value(&dto).unwrap();
         assert_eq!(json["seq"], 3);
         assert_eq!(json["timestampMs"], 1_757_689_445_123i64);
-        assert_eq!(json["site"], "runtime.rows_rejected");
+        assert_eq!(json["class"], "pipelines");
+        assert_eq!(json["type"], "rows_rejected");
+        assert!(json.get("service").is_none(), "absent, not null");
         assert_eq!(json["fields"][0][0], "subject");
         assert_eq!(json["fields"][0][1], serde_json::json!({"kind": "str", "value": "d1"}));
         assert_eq!(json["fields"][1][1], serde_json::json!({"kind": "uint", "value": 4000}));
@@ -2147,7 +2155,9 @@ mod tests {
                 seq: 0,
                 timestamp_ms: 1,
                 level: "warn".to_string(),
-                site: "worker.started".to_string(),
+                class: Some("processes".to_string()),
+                r#type: "started".to_string(),
+                service: None,
                 message: "worker starting".to_string(),
                 thread: None,
                 boot_id: None,

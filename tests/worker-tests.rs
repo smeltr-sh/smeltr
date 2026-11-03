@@ -1379,7 +1379,7 @@ fn a_signaled_worker_stops_its_runtime_before_it_exits() {
         if !status.success() {
             return Err(format!("the worker exited {status} on SIGTERM"));
         }
-        if !standalone.said().contains("worker.stopped_for_exit") {
+        if !standalone.said().contains("processes stopped_for_exit") {
             return Err("the worker never said its runtime had stopped".to_string());
         }
         Ok(())
@@ -1404,7 +1404,7 @@ fn a_signaled_runtime_drains_and_is_replaced() {
         let deadline = Instant::now() + Duration::from_secs(60);
         while Instant::now() < deadline {
             if standalone.incarnation().is_some_and(|now| now > first) {
-                return if standalone.said().contains("runtime.stopping_on_signal") {
+                return if standalone.said().contains("processes stopping_on_signal") {
                     Ok(())
                 } else {
                     Err("the runtime ended on SIGTERM without draining".to_string())

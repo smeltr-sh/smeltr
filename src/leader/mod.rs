@@ -1754,8 +1754,10 @@ struct LogsQuery {
     level: Option<String>,
     worker: Option<String>,
     group: Option<String>,
-    /// Matched anywhere in the dotted call site.
-    site: Option<String>,
+    class: Option<String>,
+    /// Matched anywhere in the type.
+    r#type: Option<String>,
+    service: Option<String>,
     /// Matched anywhere in the message.
     q: Option<String>,
     since_millis: Option<i64>,
@@ -1785,7 +1787,9 @@ pub struct LogRow {
     pub group: Option<String>,
     pub thread: Option<String>,
     pub level: String,
-    pub site: String,
+    pub class: Option<String>,
+    pub r#type: String,
+    pub service: Option<String>,
     pub message: String,
     pub fields: serde_json::Value,
 }
@@ -1828,7 +1832,11 @@ mod logs_query_tests {
     #[test]
     fn several_severities_travel_as_one_comma_separated_key() {
         assert_eq!(decode("level=warn,error").level.as_deref(), Some("warn,error"));
-        assert_eq!(decode("level=info&site=worker.").site.as_deref(), Some("worker."));
+        let query = decode("level=info&class=sources&type=poll&service=kafka");
+        assert_eq!(
+            (query.class.as_deref(), query.r#type.as_deref(), query.service.as_deref()),
+            (Some("sources"), Some("poll"), Some("kafka"))
+        );
         assert!(decode("").level.is_none(), "the bare path asks for everything");
     }
 }
@@ -1861,7 +1869,9 @@ async fn get_logs(
                 levels: &levels,
                 worker_id: query.worker.as_deref(),
                 group_id: query.group.as_deref(),
-                site_contains: query.site.as_deref(),
+                class: query.class.as_deref(),
+                type_contains: query.r#type.as_deref(),
+                service: query.service.as_deref(),
                 message_contains: query.q.as_deref(),
                 since_ms: query.since_millis,
                 until_ms: query.until_millis,
@@ -1913,7 +1923,9 @@ async fn get_logs(
                 group: r.group_id,
                 thread: r.thread_name,
                 level: r.level,
-                site: r.site,
+                class: r.class,
+                r#type: r.r#type,
+                service: r.service,
                 message: r.message,
                 // Stored as the delivered list; a row whose JSON will not parse carries an empty list rather
                 // than failing the page it is one row of.
@@ -5171,12 +5183,15 @@ mod logs_endpoint_tests {
         }
     }
 
-    fn said(seq: u64, level: &str, site: &str, message: &str) -> crate::heartbeat::LogDto {
+    /// A line of `class` and `kind`.
+    fn said(seq: u64, level: &str, (class, kind): (&str, &str), message: &str) -> crate::heartbeat::LogDto {
         crate::heartbeat::LogDto {
             seq,
             timestamp_ms: 1_000 + seq as i64,
             level: level.to_string(),
-            site: site.to_string(),
+            class: Some(class.to_string()),
+            r#type: kind.to_string(),
+            service: None,
             message: message.to_string(),
             thread: Some("main".to_string()),
             boot_id: None,
@@ -5199,14 +5214,18 @@ mod logs_endpoint_tests {
             7,
             Some("west"),
             &[
-                said(0, "info", "worker.started", "worker starting"),
-                said(1, "error", "runtime.rows_rejected", "a destination refused rows"),
+                said(0, "info", ("processes", "started"), "worker starting"),
+                said(1, "error", ("pipelines", "rows_rejected"), "a destination refused rows"),
             ],
         );
 
         let answer = get(&state, LogsQuery::default()).await;
         assert_eq!(answer.rows.len(), 2);
-        assert_eq!(answer.rows[0].site, "runtime.rows_rejected", "newest first");
+        assert_eq!(
+            (answer.rows[0].class.as_deref(), answer.rows[0].r#type.as_str()),
+            (Some("pipelines"), "rows_rejected"),
+            "newest first"
+        );
         assert_eq!(answer.rows[0].group.as_deref(), Some("west"));
         assert_eq!(answer.rows[0].worker_id, "w-1");
         // The fields pass through as delivered rather than reshaped, so what a call site said is what is indexed.
@@ -5224,8 +5243,8 @@ mod logs_endpoint_tests {
             7,
             Some("west"),
             &[
-                said(0, "info", "worker.started", "worker starting"),
-                said(1, "error", "runtime.rows_rejected", "a destination refused rows"),
+                said(0, "info", ("processes", "started"), "worker starting"),
+                said(1, "error", ("pipelines", "rows_rejected"), "a destination refused rows"),
             ],
         );
 
@@ -5239,6 +5258,18 @@ mod logs_endpoint_tests {
         .await;
         assert_eq!(only_errors.rows.len(), 1);
         assert_eq!(only_errors.rows[0].level, "error");
+
+        let by_class = get(
+            &state,
+            LogsQuery {
+                class: Some("processes".to_string()),
+                r#type: Some("art".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(by_class.rows.len(), 1);
+        assert_eq!(by_class.rows[0].r#type, "started");
 
         // Asked for more than a page may carry, and told what it was given rather than refused.
         let huge = get(
@@ -5282,13 +5313,13 @@ mod logs_endpoint_tests {
             7,
             None,
             &[
-                said(0, "info", "a", "row 0"),
-                said(1, "info", "a", "row 1"),
-                said(2, "info", "a", "row 2"),
-                said(3, "info", "a", "row 3"),
-                said(4, "info", "a", "row 4"),
-                said(5, "info", "a", "row 5"),
-                said(6, "info", "a", "row 6"),
+                said(0, "info", ("logs", "a"), "row 0"),
+                said(1, "info", ("logs", "a"), "row 1"),
+                said(2, "info", ("logs", "a"), "row 2"),
+                said(3, "info", ("logs", "a"), "row 3"),
+                said(4, "info", ("logs", "a"), "row 4"),
+                said(5, "info", ("logs", "a"), "row 5"),
+                said(6, "info", ("logs", "a"), "row 6"),
             ],
         );
         let msgs = |r: &LogsResponse| r.rows.iter().map(|row| row.message.clone()).collect::<Vec<_>>();
@@ -5350,9 +5381,9 @@ mod logs_endpoint_tests {
             3,
             None,
             &[
-                said(0, "info", "a", "row 0"),
-                said(1, "info", "a", "row 1"),
-                said(2, "info", "a", "row 2"),
+                said(0, "info", ("logs", "a"), "row 0"),
+                said(1, "info", ("logs", "a"), "row 1"),
+                said(2, "info", ("logs", "a"), "row 2"),
             ],
         );
         let page = get(
