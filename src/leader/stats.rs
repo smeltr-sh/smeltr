@@ -31,7 +31,7 @@ use super::throughput::{self, ExpectedPoint};
 use super::warnings::{self, SubjectKind, WarningSpan, label, stale_after_ms};
 use super::{
     BYTES_DELIVERED_METRIC, BYTES_POLLED_METRIC, ROWS_DELIVERED_METRIC, ROWS_IN_METRIC, ROWS_OUT_METRIC,
-    ROWS_UNMATCHED_METRIC,
+    ROWS_UNMATCHED_METRIC, SOURCE_LAG_METRIC,
 };
 
 /// `route_masks`' count of rows each route's own condition matched (`plan::topology`), labeled with the route's id.
@@ -53,8 +53,6 @@ pub(super) const DESTINATION_QUEUE_BYTES_METRIC: &str = "smeltr_destination_queu
 pub(super) const DESTINATION_QUEUE_BUDGET_METRIC: &str = "smeltr_destination_queue_budget_bytes";
 /// A Kafka producer's mean round trip to its brokers, off its freshest statistics (`io::kafka::publish_stats`).
 const DESTINATION_RTT_METRIC: &str = "smeltr_destination_rtt_seconds";
-/// What a source has yet to finish, per topic and partition (`runtime.rs`).
-const SOURCE_LAG_METRIC: &str = "smeltr_source_lag";
 /// Seconds a destination was held back because the far end asked it to slow down: a Kafka producer's broker
 /// throttle time, an HTTP destination's backoff after a throttled answer. Summed over concurrent requests.
 const DESTINATION_THROTTLED_METRIC: &str = "smeltr_destination_throttled_seconds_total";
@@ -1163,8 +1161,6 @@ mod tests {
         assert_eq!((per_row.min, per_row.max, per_row.mean), (0.0, 4.0, 2.0));
     }
 
-    /// A pipeline's rows per bucket are its routes' matches added within the bucket; its per-row time is every
-    /// step's time over them. A destination's round trip comes off a gauge, so a bucket is its peak.
     #[test]
     fn a_sources_lag_is_each_partitions_peak_in_the_bucket_summed() {
         let store = RegistryStore::open(std::path::Path::new(":memory:")).unwrap();
@@ -1200,6 +1196,8 @@ mod tests {
         assert!(none.lag.is_none(), "a source that reports no lag has none to chart");
     }
 
+    /// A pipeline's rows per bucket are its routes' matches added within the bucket; its per-row time is every
+    /// step's time over them. A destination's round trip comes off a gauge, so a bucket is its peak.
     #[test]
     fn a_pipeline_adds_its_routes_per_bucket_and_a_destinations_round_trip_is_each_buckets_peak() {
         let store = RegistryStore::open(std::path::Path::new(":memory:")).unwrap();

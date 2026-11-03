@@ -20,11 +20,8 @@ use super::stats::{self, Live};
 use super::store::HeldSource;
 use super::throughput;
 use super::warnings::{self, SubjectKind};
-use super::{ROWS_DELIVERED_METRIC, ROWS_IN_METRIC, ROWS_UNMATCHED_METRIC, subject_label};
+use super::{ROWS_DELIVERED_METRIC, ROWS_IN_METRIC, ROWS_UNMATCHED_METRIC, SOURCE_LAG_METRIC, subject_label};
 use crate::heartbeat::SourceKey;
-
-/// Kafka lag per partition (`runtime.rs`), labeled with the source, topic and partition.
-const SOURCE_LAG_METRIC: &str = "smeltr_source_lag";
 
 /// How many closed buckets back a rate still counts as current. One poll can land just after a bucket closes, before
 /// any worker has written into the next; two keeps that from reading as a stop.
