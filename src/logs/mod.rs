@@ -111,33 +111,6 @@ pub const WARNING_FADES_AFTER: Duration = Duration::from_secs(5 * 60);
 /// while the condition does and fades once it stops.
 pub const RELOG_EVERY: Duration = Duration::from_secs(4 * 60);
 
-/// One pass of a task the leader runs in the background, said at trace when it ends with how long it took: a task
-/// that runs is seen running, and one that stops is seen stopping. Held for the pass, dropped when it is done.
-pub struct Pass {
-    task: &'static str,
-    began: std::time::Instant,
-}
-
-impl Pass {
-    pub fn begin(task: &'static str) -> Pass {
-        Pass {
-            task,
-            began: std::time::Instant::now(),
-        }
-    }
-}
-
-impl Drop for Pass {
-    fn drop(&mut self) {
-        tracing::trace!(
-            target: "background.pass",
-            task = self.task,
-            took_ms = u64::try_from(self.began.elapsed().as_millis()).unwrap_or(u64::MAX),
-            "the leader finished a background pass"
-        );
-    }
-}
-
 /// When a thing was last said, so a site says it once, then again every [`RELOG_EVERY`] while it goes on, and
 /// once more as soon as it starts again after [`Repeat::clear`].
 #[derive(Debug, Default)]
