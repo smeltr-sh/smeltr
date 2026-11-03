@@ -556,8 +556,6 @@
         <span class="dim">records</span>
       </div>
       <dl class="facts">
-        <dt>Trend</dt>
-        <dd class:warn={lagClimbing}>{lagTrend()}</dd>
         <dt>Intake</dt>
         <dd class:alarm={held}>{intake()}</dd>
         <dt>Read over the window</dt>
