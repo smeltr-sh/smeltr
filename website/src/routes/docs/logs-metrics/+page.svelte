@@ -66,9 +66,10 @@
   <ul>
     <li>
       <strong>Status → Logs</strong> shows the fleet's logs, newest first. Choose severities, a
-      worker, a worker group, a site, or text in the message, then choose <strong>Search</strong>. A
-      severity is not a minimum: choose <code>error</code> and <code>warn</code> to see both. Select a
-      row's fields to open them. The filters are in the page's address, so you can share a view as a link.
+      worker, a worker group, a class, a type, a service, or text in the message, then choose
+      <strong>Search</strong>. A severity is not a minimum: choose <code>error</code> and
+      <code>warn</code> to see both. Select a row's fields to open them. The filters are in the page's
+      address, so you can share a view as a link.
     </li>
     <li>
       <strong>Status</strong> shows Rows in and out, Errors and Furthest from normal, from the metrics
@@ -77,10 +78,9 @@
     </li>
   </ul>
   <p>
-    The leader cuts a log's site, message and each text field to 1,000 characters, and keeps its
-    first 16 fields. A search cannot find what the leader cut. A worker out of contact with the
-    leader holds the oldest 4,096 of its own events and the newest 2,048 from the process running
-    its pipelines.
+    The leader cuts a log's message and each text field to 1,000 characters, and keeps its first 16
+    fields. A search cannot find what the leader cut. A worker out of contact with the leader holds
+    the oldest 4,096 of its own events and the newest 2,048 from the process running its pipelines.
   </p>
 
   <h2 id="who">See who changed what</h2>
@@ -92,8 +92,8 @@
     </li>
     <li>
       A sign-in, or a change to accounts, secrets, certificates, workers or settings, is a line in
-      the log. In Status → Logs, enter <code>audit.</code> as the site. Each line names who did it and
-      what they did.
+      the log. In Status → Logs, choose the class <code>api</code> and enter <code>recorded</code> as
+      the type. Each line names who did it and what they did.
     </li>
   </ul>
 
