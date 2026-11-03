@@ -80,6 +80,10 @@ pub struct LogDto {
     pub r#type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
+    /// The line's class and type as `class.type`, or its type alone, as a build before lines had types named it. A
+    /// leader of such a build refuses a heartbeat without it, and a worker of one sends only this.
+    #[serde(default)]
+    pub site: String,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
@@ -117,6 +121,13 @@ impl From<&crate::logs::Event> for LogDto {
             class: event.class.as_deref().map(|class| truncate(class, MAX_TEXT_LEN)),
             r#type: truncate(&event.r#type, MAX_TEXT_LEN),
             service: event.service.as_deref().map(|service| truncate(service, MAX_TEXT_LEN)),
+            site: truncate(
+                &event
+                    .class
+                    .as_deref()
+                    .map_or_else(|| event.r#type.to_string(), |class| format!("{class}.{}", event.r#type)),
+                MAX_TEXT_LEN,
+            ),
             message: truncate(&event.message, MAX_TEXT_LEN),
             thread: event.thread.clone(),
             boot_id: None,
@@ -131,6 +142,18 @@ impl From<&crate::logs::Event> for LogDto {
 }
 
 impl LogDto {
+    /// Its class and type, read from `site` when a build before lines had types sent it, split at its first dot as
+    /// the logs store's step that split each stored site does.
+    pub fn class_and_type(&self) -> (Option<&str>, &str) {
+        if !self.r#type.is_empty() || self.site.is_empty() {
+            return (self.class.as_deref(), &self.r#type);
+        }
+        match self.site.split_once('.') {
+            Some((class, kind)) => (Some(class), kind),
+            None => (None, &self.site),
+        }
+    }
+
     /// The event this carries, for a process that reads it rather than delivers it: a runtime handed its
     /// supervisor's logs to mirror. Named for no worker, which the reading process supplies. `None` for a severity
     /// this build does not know.
@@ -1791,6 +1814,7 @@ mod tests {
             class: Some("pipelines".to_string()),
             r#type: "rows_rejected".to_string(),
             service: None,
+            site: String::new(),
             message: "a destination refused rows".to_string(),
             thread: Some("egress-1".to_string()),
             boot_id: None,
@@ -1812,6 +1836,43 @@ mod tests {
         let back: LogDto = serde_json::from_value(json).unwrap();
         assert_eq!(back.seq, dto.seq);
         assert_eq!(back.fields.len(), 2);
+    }
+
+    /// A released leader requires `site`, and a released worker sends only it.
+    #[test]
+    fn a_line_names_its_site_for_a_build_before_lines_had_types() {
+        let mut event = crate::logs::Event {
+            timestamp: std::time::UNIX_EPOCH,
+            level: tracing::Level::WARN,
+            class: Some("sources".into()),
+            r#type: "assigned".into(),
+            service: Some("kafka".into()),
+            message: "the group assigned partitions to this client".into(),
+            fields: Vec::new(),
+            worker: None,
+            thread: None,
+            local_only: false,
+            seq: 1,
+        };
+        assert_eq!(
+            serde_json::to_value(LogDto::from(&event)).unwrap()["site"],
+            "sources.assigned"
+        );
+        event.class = None;
+        event.r#type = "ureq".into();
+        assert_eq!(serde_json::to_value(LogDto::from(&event)).unwrap()["site"], "ureq");
+
+        let released = |site: &str| -> LogDto {
+            serde_json::from_value(serde_json::json!({
+                "seq": 1, "timestampMs": 1, "level": "warn", "site": site, "message": "m",
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            released("runtime.rows_rejected").class_and_type(),
+            (Some("runtime"), "rows_rejected")
+        );
+        assert_eq!(released("ureq").class_and_type(), (None, "ureq"));
     }
 
     use super::*;
@@ -2162,6 +2223,7 @@ mod tests {
                 class: Some("processes".to_string()),
                 r#type: "started".to_string(),
                 service: None,
+                site: String::new(),
                 message: "worker starting".to_string(),
                 thread: None,
                 boot_id: None,

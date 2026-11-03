@@ -5201,6 +5201,7 @@ mod logs_endpoint_tests {
             class: Some(class.to_string()),
             r#type: kind.to_string(),
             service: None,
+            site: String::new(),
             message: message.to_string(),
             thread: Some("main".to_string()),
             boot_id: None,

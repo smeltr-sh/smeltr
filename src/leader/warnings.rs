@@ -4831,6 +4831,7 @@ mod tests {
             class: Some("logs".to_string()),
             r#type: "warnings_test".to_string(),
             service: None,
+            site: String::new(),
             message: message.to_string(),
             thread: None,
             boot_id: None,
