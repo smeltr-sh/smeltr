@@ -110,9 +110,12 @@
       with its external id.
     </li>
     <li>
-      <a href="/docs/schemas#ocsf">Add a schema from the OCSF class</a> with
-      <strong>OCSF 1.3.0, built in</strong>, and choose it in the pipeline's
-      <a href="/docs/schemas#produces">Produces bar</a>.
+      <a href="/docs/schemas#ocsf">Add a schema from the OCSF class</a> at the OCSF release Security
+      Lake reads for custom sources, which
+      <a href="https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html"
+        >Add a custom source</a
+      >
+      names, and choose it in the pipeline's <a href="/docs/schemas#produces">Produces bar</a>.
     </li>
     <li>
       Add an S3 destination for each custom source, with its location's bucket, its role in <code
