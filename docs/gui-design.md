@@ -206,7 +206,7 @@ moment under it: the value, the expected range, and any warning that held
 then, whose span the chart marks. A destination's
 overview adds a buffer summary by its busiest current worker; a source's
 adds its backlog. Tabs hold the rest: **Buffers**, per worker and paged;
-**Backlog**, the Kafka lag and whether intake is held; **Steps**, a
+**Backlog**, the Kafka lag over the window and whether intake is held; **Steps**, a
 pipeline's steps in the order they run; and **Routes**. A
 pencil leads into the object's editor, and × closes the panel. **Only
 this path** hides everything off the selection's path, keeping the other

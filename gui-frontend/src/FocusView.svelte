@@ -170,6 +170,12 @@
       ? spreadSlots(rateSpread, answer.bucketMillis, answer.windowMillis, answer.nowMillis)
       : [],
   );
+  /** The source's lag across the window, as the Backlog tab charts it. */
+  let lagPoints = $derived(
+    source?.lag && answer
+      ? spreadSlots(source.lag, answer.bucketMillis, answer.windowMillis, answer.nowMillis)
+      : [],
+  );
   let rateTimes = $derived(
     answer ? slotTimes(answer.bucketMillis, answer.windowMillis, answer.nowMillis) : [],
   );
@@ -361,26 +367,7 @@
             show connections, not volume.</Help
           >
         </span>
-        <ChipPicker
-          kind="row"
-          compact
-          ariaLabel="Chart range"
-          title="Chart range"
-          bind:open={rangeOpen}
-        >
-          {#snippet face()}<ClockIcon />{/snippet}
-          {#each CHART_RANGES as r (r.range)}
-            <button
-              type="button"
-              class="pick"
-              class:on={r.range === chart.range}
-              onclick={() => {
-                rangeOpen = false;
-                location.hash = rangeHash(r.range);
-              }}>{r.label}</button
-            >
-          {/each}
-        </ChipPicker>
+        {@render rangePicker()}
       </h3>
       <dl class="facts">
         <dt>{scope}</dt>
@@ -398,17 +385,7 @@
           <dd class:dim={!stale}>{ageSeconds} s ago</dd>
         {/if}
       </dl>
-      {#if ratePoints.some((p) => p !== null)}
-        <Sparkline
-          series={[{ label: 'rows/s', color: 'var(--ink)', points: ratePoints }]}
-          band={chartBand}
-          times={rateTimes}
-          {marks}
-        />
-        <div class="axis mono dim" aria-hidden="true">
-          <span>{chart.label} ago</span><span>now</span>
-        </div>
-      {/if}
+      {@render overWindow('rows/s', ratePoints, chartBand)}
     </section>
 
     {#if destination}
@@ -564,25 +541,27 @@
     </section>
   {:else if shown === 'backlog' && source}
     <section>
-      <h3>
-        Kafka lag
-        <Help label="Kafka lag">
-          Records waiting in Kafka for this source, outside smeltr's own buffers. Lag alone is not
-          backpressure: intake is held only when a worker reports it.</Help
-        >
+      <h3 class="with-range">
+        <span>
+          Kafka lag
+          <Help label="Kafka lag">
+            Records waiting in Kafka for this source, outside smeltr's own buffers. Lag alone is not
+            backpressure: intake is held only when a worker reports it.</Help
+          >
+        </span>
+        {@render rangePicker()}
       </h3>
       <div class="summary">
         <strong class="mono">{reading?.lag === undefined ? '—' : rows(reading.lag)}</strong>
         <span class="dim">records</span>
       </div>
       <dl class="facts">
-        <dt>Trend</dt>
-        <dd class:warn={lagClimbing}>{lagTrend()}</dd>
         <dt>Intake</dt>
         <dd class:alarm={held}>{intake()}</dd>
         <dt>Read over the window</dt>
         <dd class="mono">{rows(source.polled)}</dd>
       </dl>
+      {@render overWindow('records', lagPoints)}
     </section>
   {:else if shown === 'steps' && pipeline}
     <section>
@@ -661,6 +640,36 @@
     </section>
   {/if}
 </MapPanel>
+
+{#snippet rangePicker()}
+  <ChipPicker kind="row" compact ariaLabel="Chart range" title="Chart range" bind:open={rangeOpen}>
+    {#snippet face()}<ClockIcon />{/snippet}
+    {#each CHART_RANGES as r (r.range)}
+      <button
+        type="button"
+        class="pick"
+        class:on={r.range === chart.range}
+        onclick={() => {
+          rangeOpen = false;
+          location.hash = rangeHash(r.range);
+        }}>{r.label}</button
+      >
+    {/each}
+  </ChipPicker>
+{/snippet}
+
+{#snippet overWindow(
+  label: string,
+  points: (number | null)[],
+  band?: ReturnType<typeof expectedSlots>,
+)}
+  {#if points.some((p) => p !== null)}
+    <Sparkline series={[{ label, color: 'var(--ink)', points }]} {band} times={rateTimes} {marks} />
+    <div class="axis mono dim" aria-hidden="true">
+      <span>{chart.label} ago</span><span>now</span>
+    </div>
+  {/if}
+{/snippet}
 
 <style>
   .controls {
