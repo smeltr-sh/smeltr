@@ -36,7 +36,7 @@ pub fn say_statements(conn: &Connection, store: Store) {
                 target: "store.statement",
                 store,
                 %sql,
-                took_us = u64::try_from(took.as_micros()).unwrap_or(u64::MAX),
+                us = u64::try_from(took.as_micros()).unwrap_or(u64::MAX),
                 "a store ran a statement"
             );
         }
@@ -125,7 +125,7 @@ pub fn upgrade_sqlite(conn: &mut Connection, store: &str, steps: &[&str]) -> Res
             %store,
             step = version,
             only_adds = is_additive(step),
-            took_ms = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ms = crate::logs::millis(began.elapsed()),
             "a store took a step of its schema"
         );
     }
