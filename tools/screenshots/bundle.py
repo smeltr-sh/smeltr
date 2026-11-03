@@ -61,9 +61,9 @@ def destinations(ids, key_version):
     return out
 
 
-NETWORK_DESTINATIONS = ["es-network", "kafka-alerts", "kafka-dlq"]
-SIEM_DESTINATIONS = ["splunk", "s3-archive"]
-APPS_DESTINATIONS = ["es-web", "es-security", "kafka-alerts", "kafka-dlq"]
+NETWORK_DESTINATIONS = ["es-network", "kafka-alerts", "kafka-dlq", "s3-archive"]
+SIEM_DESTINATIONS = ["splunk"]
+APPS_DESTINATIONS = ["es-web", "es-security", "kafka-alerts", "kafka-dlq", "s3-archive"]
 
 def sites_table():
     return {"id": "sites", "type": "inline", **tables()["sites"]}
@@ -472,9 +472,9 @@ def kafka_source(sid, topic, group):
 NETWORK_SOURCES = [
     kafka_source("panw-firewalls", "syslog.panos", "smeltr-panos"),
     kafka_source("fortigate-firewalls", "syslog.fortigate", "smeltr-fortigate"),
-    # No route takes it: the `cisco-asa-draft` branch is where its pipeline is being written.
+    # No route takes it: the demo's guide has a visitor write its pipeline.
     kafka_source("cisco-asa", "syslog.asa", "smeltr-asa"),
-    # Routed by no one, for a visitor to write a pipeline for.
+    # Archived as sent (ARCHIVED), for a visitor to write a pipeline for.
     kafka_source("panw-threats", "syslog.panos.threat", "smeltr-panos-threat"),
     kafka_source("versa-sdwan", "syslog.versa", "smeltr-versa"),
     kafka_source("netscout-aed", "syslog.netscout", "smeltr-netscout"),
@@ -486,7 +486,7 @@ APPS_SOURCES = [
     kafka_source("nginx-access", "web.nginx.access", "smeltr-nginx"),
     kafka_source("linux-auth", "syslog.auth", "smeltr-auth"),
     kafka_source("aws-cloudtrail", "aws.cloudtrail", "smeltr-cloudtrail"),
-    # Routed by no one, for a visitor to write a pipeline for.
+    # Archived as sent (ARCHIVED), for a visitor to write a pipeline for.
     kafka_source("elastic-agent-linux", "elastic.agent.linux", "smeltr-ea-linux"),
     kafka_source("elastic-agent-windows", "elastic.agent.windows", "smeltr-ea-windows"),
     kafka_source("sentinel-eventhub", "azure.eventhub.sentinel", "smeltr-sentinel"),
@@ -499,12 +499,24 @@ NETWORK_EXCEPTIONS = {"categories": {"math": "drop", "limits": "block"},
 # show it failed rather than waiting for a pipeline.
 APPS_EXCEPTIONS = {"kinds": {"Unmatched": "drop"}}
 
+# The feeds no pipeline parses yet, each sent whole to the archive until one does.
+ARCHIVED = {
+    "network": ["panw-threats", "versa-sdwan", "netscout-aed", "router-snmp"],
+    "apps": ["elastic-agent-linux", "elastic-agent-windows", "sentinel-eventhub"],
+}
+
+
+def archive_routes(group):
+    return [{"id": f"{source}-archive", "source": source, "condition": None, "pipeline": "as-sent",
+             "deliver": [{"to": ["s3-archive"]}]} for source in ARCHIVED[group]]
+
+
 NETWORK_ROUTES = [
     {"id": "panos", "source": "panw-firewalls", "condition": None, "pipeline": "panos-traffic",
      "deliver": [{"to": ["es-network"]}]},
     {"id": "fortigate", "source": "fortigate-firewalls", "condition": None, "pipeline": "fortigate-traffic",
      "deliver": [{"to": ["es-network"]}]},
-]
+] + archive_routes("network")
 # Two routes from one source, since every route whose condition matches runs: trimmed to the SIEM, and whole to
 # the archive.
 SIEM_ROUTES = [
@@ -522,7 +534,7 @@ APPS_ROUTES = [
     {"id": "cloudtrail", "source": "aws-cloudtrail", "condition": None, "pipeline": "aws-cloudtrail",
      "deliver": [{"to": ["es-security"]},
                  {"when": 'event.outcome == "failure"', "to": ["kafka-alerts"]}]},
-]
+] + archive_routes("apps")
 
 # -- samples: generated from the same code as the live traffic, at a fixed instant -----------------
 
@@ -567,7 +579,7 @@ def samples():
 
 
 def waiting():
-    """Samples of the feeds no route takes yet. A deploy leaves out a sample no test names, so these stay on the
+    """Samples of the feeds no pipeline parses yet. A deploy leaves out a sample no test names, so these stay on the
     branch a visitor builds on, ready for the pipeline they write."""
     return {
         "network": [

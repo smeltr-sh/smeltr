@@ -395,7 +395,7 @@ def firewalls():
     c.put("destinations", bundle.destinations(bundle.NETWORK_DESTINATIONS, 1), b, "network")
     c.put("lookups", [bundle.sites_table(), bundle.apps_table(), upload_directory(c, b, "network")], b, "network")
     c.put("sources", bundle.NETWORK_SOURCES, b, "network")
-    for p in (bundle.ECS_COMMON, bundle.PANOS, bundle.FORTIGATE):
+    for p in (bundle.ECS_COMMON, bundle.PANOS, bundle.FORTIGATE, bundle.AS_SENT):
         c.put_pipeline(p, b, "network")
     for s in bundle.samples()["network"]:
         c.put_sample(s, b, "network")
@@ -407,7 +407,9 @@ def firewalls():
     ])
     c.open_change(b, "Onboard PAN-OS and FortiGate firewalls",
                   "Both firewall fleets normalized to ECS and indexed in logs-network. Sessions are enriched with the "
-                  "site from the address plan, the user's department from the HR directory, and App-ID risk.")
+                  "site from the address plan, the user's department from the HR directory, and App-ID risk. "
+                  "PAN-OS threats, Versa, NETSCOUT and router SNMP go to the S3 archive as they arrive, until their "
+                  "pipelines are written.")
     as_("admin").deploy(b)
 
 
@@ -421,7 +423,7 @@ def apps():
     web["deliver"] = [d for d in web["deliver"] if "status_code" not in d.get("when", "")]
     c.put("destinations", bundle.destinations(bundle.APPS_DESTINATIONS, 1), b, "apps")
     c.put("sources", bundle.APPS_SOURCES, b, "apps")
-    for p in (bundle.NGINX, bundle.AUTH, bundle.CLOUDTRAIL):
+    for p in (bundle.NGINX, bundle.AUTH, bundle.CLOUDTRAIL, bundle.AS_SENT):
         c.put_pipeline(p, b, "apps")
     for s in bundle.samples()["apps"]:
         c.put_sample(s, b, "apps")
@@ -434,7 +436,8 @@ def apps():
     ])
     c.open_change(b, "Onboard storefront, bastion and CloudTrail logs",
                   "nginx access logs to logs-web; sshd and sudo from the bastions and every CloudTrail event to "
-                  "logs-security. Failed CloudTrail calls also go to the alerts topic.")
+                  "logs-security. Failed CloudTrail calls also go to the alerts topic. Elastic Agent and Sentinel go to "
+                  "the S3 archive as they arrive, until their pipelines are written.")
     as_("admin").deploy(b)
 
 
@@ -456,8 +459,7 @@ def siem():
     c.put("destinations", bundle.destinations(bundle.NETWORK_DESTINATIONS + bundle.SIEM_DESTINATIONS, 1), b,
           "network")
     c.put("sources", bundle.NETWORK_SOURCES + [bundle.SIEM_SOURCE], b, "network")
-    for p in (bundle.PANOS_TRIM, bundle.AS_SENT):
-        c.put_pipeline(p, b, "network")
+    c.put_pipeline(bundle.PANOS_TRIM, b, "network")
     c.put("routes", bundle.NETWORK_ROUTES + bundle.SIEM_ROUTES, b, "network")
     c.open_change(b, "Send PAN-OS to Splunk trimmed, and archive it whole in S3",
                   "Splunk gets each TRAFFIC line with only the 20 columns the SOC searches, and no allowed DNS "
@@ -527,19 +529,6 @@ def waiting():
             c.put_sample(s, "work", scope)
 
 
-def draft():
-    log("draft branch")
-    c = as_("marcus")
-    c.put_pipeline({"id": "cisco-asa", "name": "cisco-asa", "steps": [
-        {"type": "comment", "id": "todo",
-         "text": "Draft: ASA syslog from the colo firewalls. Connection build and teardown (302013/302014) first."},
-        {"type": "parser", "id": "syslog", "input": "_raw", "kind": {"type": "grok", "patterns": [
-            "<%{INT:pri}>%{DATA:syslog_time} %{HOSTNAME:host_name} : %%{WORD:vendor}-%{INT:severity}-%{INT:message_id}: "
-            "%{GREEDYDATA:message}"]},
-         "declared": [{"name": n, "type": "str"} for n in
-                      ["pri", "syslog_time", "host_name", "vendor", "severity", "message_id", "message"]]},
-    ]}, "cisco-asa-draft", "network")
-
 
 def main():
     if sys.argv[1:] == ["stop"]:
@@ -579,7 +568,6 @@ def main():
     # Before the App-ID change, which How it works shows atop Branches.
     threats()
     open_change()
-    draft()
     waiting()
     # A week of throughput before what the fleet has read so far, so each source's chart shows the band it is
     # expected to read in. The leader refuses a few heartbeats while this writes, and the warnings that leaves
