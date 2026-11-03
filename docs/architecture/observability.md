@@ -114,13 +114,15 @@ store, the Logs page and the Smeltr logs source.
   remote. It is looked up from where the line is said in the code, through one
   list.
 
-A library's line is the one exception to a line having a class. It takes the
-class of the span of ours it is said inside, and has none outside any, since
-nothing then says which part of Smeltr it is about; the default level applies
-to it. A library says no type of its own, so its line's type is the library's
-name. librdkafka calls back on its own threads, so its lines take the class of
-the source or destination whose client said them, the service kafka, and the
-part of librdkafka that said them in a `facility` field.
+A library's lines are filtered when they are said, not at a call site, so
+they take their class from where they run. They are the one exception to
+every line having a class and a type that says what happened. librdkafka's get
+the service kafka and the class of the source or destination whose client said
+them, and the part of librdkafka that said them in a `facility` field. Any
+other library's line takes the class of the Smeltr span it runs inside.
+Outside any span it has no class, since nothing says which part of Smeltr it
+is about, and the default level applies to it. A library says no type of its
+own, so its line's type is the library's name (`ureq`, `librdkafka`).
 
 ### Which lines are kept
 
