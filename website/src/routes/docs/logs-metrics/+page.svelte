@@ -153,9 +153,9 @@
 
   <h2 id="verbosity">Change log verbosity</h2>
   <p>
-    A process keeps logs at or above its log levels, <code>info</code> unless an administrator sets
-    them. The console, the leader and every Smeltr logs source get only what the process keeps. To
-    change them, see
+    A process keeps the log lines its levels allow. Until an administrator sets levels, the default
+    is info. The console and every Smeltr logs source get only what the process keeps. To change the
+    levels, see
     <a href="/docs/operations#logs">Change log verbosity</a>.
   </p>
 </GuideLayout>

@@ -91,8 +91,8 @@
   </p>
   <h2 id="logs">Change log verbosity</h2>
   <p>
-    Set log levels in Admin › System › Logging. One level holds for every area, and an override
-    gives one area its own. The leader keeps a change at once and each worker from its next
+    Set log levels in Admin › System › Logging. The default level applies to every area, and an
+    override gives one area its own. The leader keeps a change at once and each worker from its next
     heartbeat, with no restart.
   </p>
   <p>

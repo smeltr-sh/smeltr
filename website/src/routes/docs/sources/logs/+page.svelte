@@ -48,8 +48,8 @@
 
   <h2 id="how-it-works">How it works</h2>
   <p>
-    The source reads only what the process keeps. To read debug records, also set the log level of
-    the area they come from to debug. See
+    The source reads only the log lines its process keeps. To read debug log lines, also set the
+    level of the area they come from to debug. See
     <a href="/docs/operations#logs">Change log verbosity</a>.
   </p>
 
