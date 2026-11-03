@@ -18,6 +18,7 @@
 </script>
 
 <script lang="ts">
+  import Button from './Button.svelte';
   import type { AskAt, DictionaryOut } from './api';
   import InlineError from './InlineError.svelte';
   import StepList from './StepList.svelte';
@@ -970,17 +971,17 @@
                 <div class="glide-row" animate:glideTo>
                   {#snippet fieldActions()}
                     {#if isCsv}
-                      <button
+                      <Button
                         type="button"
                         class="pick"
-                        disabled={i === 0}
-                        onclick={() => moveDeclared(ps.declared, i, -1)}>Move up</button
+                        disabled={i === 0 ? 'This step is already first.' : ''}
+                        onclick={() => moveDeclared(ps.declared, i, -1)}>Move up</Button
                       >
-                      <button
+                      <Button
                         type="button"
                         class="pick"
-                        disabled={i === ps.declared.length - 1}
-                        onclick={() => moveDeclared(ps.declared, i, 1)}>Move down</button
+                        disabled={i === ps.declared.length - 1 ? 'This step is already last.' : ''}
+                        onclick={() => moveDeclared(ps.declared, i, 1)}>Move down</Button
                       >
                       <button
                         type="button"

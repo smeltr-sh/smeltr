@@ -323,7 +323,6 @@ fn heartbeat_one_thread_with_policy(
     let client = HeartbeatClient::new(base, token, None, true).expect("no authority needed over plain HTTP");
     client
         .send(&HeartbeatRequest {
-            heartbeat_interval_ms: None,
             single_worker: Vec::new(),
             progress: Vec::new(),
             streams: None,
@@ -439,7 +438,6 @@ fn a_worker_trusting_the_authority_reaches_the_leader_it_signed_for() {
         .expect("HeartbeatClient accepts the leader's authority");
     client
         .send(&HeartbeatRequest {
-            heartbeat_interval_ms: None,
             single_worker: Vec::new(),
             progress: Vec::new(),
             streams: None,
@@ -555,7 +553,6 @@ fn heartbeat_client_without_the_authority_rejects_the_leader() {
     let (base, _ca_pem) = start_leader_tls();
     let client = HeartbeatClient::new(&base, "some-token", None, true).unwrap();
     let result = client.send(&HeartbeatRequest {
-        heartbeat_interval_ms: None,
         single_worker: Vec::new(),
         progress: Vec::new(),
         streams: None,

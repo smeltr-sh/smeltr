@@ -3,6 +3,7 @@
   Comment, which stays off until there is something to send.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import Locked from './Locked.svelte';
@@ -61,11 +62,17 @@
     onkeydown={keydown}></textarea>
   <InlineError message={postError} />
   <div class="actions">
-    <button type="button" class="compact" disabled={busy} onclick={oncancel}>Cancel</button>
+    <Button type="button" class="compact" disabled={busy ? BUSY : ''} onclick={oncancel}
+      >Cancel</Button
+    >
     <Locked refusedInDemo>
-      <button type="submit" class="compact primary" disabled={busy || !body.trim()}>
+      <Button
+        type="submit"
+        class="compact primary"
+        disabled={busy ? BUSY : !body.trim() ? 'Write a comment first.' : ''}
+      >
         {busy ? 'Sending…' : 'Comment'}
-      </button>
+      </Button>
     </Locked>
   </div>
 </form>

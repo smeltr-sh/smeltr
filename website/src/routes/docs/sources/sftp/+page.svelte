@@ -104,9 +104,9 @@
   <p>
     Every worker of the group runs the source, and the leader <strong>holds</strong> it for one of them,
     which reads it. The leader gives the hold to another worker after three heartbeat intervals without
-    hearing from the holder, the holder's interval or the leader's, whichever is longer, and that worker
-    resumes from the last progress the leader kept. That worker delivers again what the previous holder
-    delivered after that progress, so a takeover can cost duplicates, never lost records.
+    hearing from the holder, and that worker resumes from the last progress the leader kept. That worker
+    delivers again what the previous holder delivered after that progress, so a takeover can cost duplicates,
+    never lost records.
   </p>
   <h3>After commit</h3>
   <p>

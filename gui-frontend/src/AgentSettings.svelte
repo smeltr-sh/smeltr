@@ -66,6 +66,7 @@
 </script>
 
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE, UNCHANGED } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import {
@@ -268,8 +269,14 @@
     {/if}
 
     <div class="buttons">
-      <button type="button" onclick={discard} disabled={!dirty || busy}>Discard</button>
-      <button class="primary" type="submit" disabled={!savable}>Save</button>
+      <Button type="button" onclick={discard} disabled={busy ? BUSY : !dirty ? UNCHANGED : ''}
+        >Discard</Button
+      >
+      <Button
+        class="primary"
+        type="submit"
+        disabled={busy ? BUSY : !dirty ? UNCHANGED : !savable ? INCOMPLETE : ''}>Save</Button
+      >
     </div>
   </Panel>
 {/if}

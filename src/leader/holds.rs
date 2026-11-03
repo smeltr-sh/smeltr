@@ -53,15 +53,6 @@ struct Heard {
     listed: HashMap<SourceKey, Instant>,
     /// The holds this worker was last answered with.
     answered: Vec<Hold>,
-    /// How long this worker may go unheard, or not list a source, before what it holds is free: the leader's hold
-    /// time, or three of the worker's own intervals when it beats less often than the leader expects.
-    hold_time: Duration,
-}
-
-impl Heard {
-    fn within(&self, clock: Clock, at: Instant) -> bool {
-        clock.now.saturating_duration_since(at) <= self.hold_time
-    }
 }
 
 /// What this leader has heard from a stored holder ([`Holds::seen`]).
@@ -82,8 +73,6 @@ pub struct Beat<'a> {
     pub progress: Vec<SourceProgress>,
     /// The worker is going. Its progress is recorded, it is given nothing, and what it held is free.
     pub stopping: bool,
-    /// How often the worker says it beats. `None` from a worker older than the field.
-    pub interval: Option<Duration>,
 }
 
 /// How long a leader is up before it forgets progress: longer than any worker's heartbeat interval.
@@ -107,8 +96,12 @@ impl Clock {
         Clock {
             now: Instant::now(),
             up_for,
-            hold_time: 3 * crate::startup_config::worker_heartbeat_interval(),
+            hold_time: 3 * crate::startup_config::leader_heartbeat_interval(),
         }
+    }
+
+    fn within(&self, at: Instant) -> bool {
+        self.now.saturating_duration_since(at) <= self.hold_time
     }
 
     fn young(&self) -> bool {
@@ -121,9 +114,7 @@ impl Workers {
     /// time.
     fn reading(&self, holder: &str, group: &str, key: &SourceKey, clock: Clock) -> bool {
         match self.heard.get(holder) {
-            Some(w) => {
-                w.group == group && w.within(clock, w.at) && w.listed.get(key).is_some_and(|&at| w.within(clock, at))
-            }
+            Some(w) => w.group == group && clock.within(w.at) && w.listed.get(key).is_some_and(|&at| clock.within(at)),
             None => clock.young() && !self.gone.contains(holder),
         }
     }
@@ -145,11 +136,7 @@ impl Holds {
         }
         let answered = settle(&workers, store, &mut beat, clock)?;
         let Beat {
-            worker,
-            group,
-            runs,
-            interval,
-            ..
+            worker, group, runs, ..
         } = beat;
         if beat.stopping {
             workers.heard.remove(worker);
@@ -161,18 +148,13 @@ impl Holds {
             at: clock.now,
             listed: HashMap::new(),
             answered: Vec::new(),
-            hold_time: clock.hold_time,
         });
-        heard.hold_time = interval.map_or(clock.hold_time, |i| clock.hold_time.max(3 * i));
         if heard.group != group {
             heard.group = group.to_string();
             heard.listed.clear();
         }
         heard.at = clock.now;
-        let hold_time = heard.hold_time;
-        heard
-            .listed
-            .retain(|_, &mut at| clock.now.saturating_duration_since(at) <= hold_time);
+        heard.listed.retain(|_, &mut at| clock.within(at));
         heard.listed.extend(runs.into_iter().map(|key| (key, clock.now)));
         heard.answered = answered.clone();
         tracing::trace!(
@@ -233,8 +215,7 @@ impl Holds {
     /// within its hold time listed: nothing reads it, so nothing would resume from it. Returns what was forgotten.
     ///
     /// Nothing until the leader has been up for [`FORGET_AFTER_UP`], since a worker it has not heard from yet may still
-    /// be reading, and one that beats slower than this leader's own interval is not known until it beats. Under the
-    /// lock beats take, so no beat records progress for a source while it is being forgotten.
+    /// be reading. Under the lock beats take, so no beat records progress for a source while it is being forgotten.
     /// Blocking.
     pub fn forget_unread(
         &self,
@@ -249,7 +230,7 @@ impl Holds {
         let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "forget progress of sources nothing reads");
         let listed = |group: &str, key: &SourceKey| {
             workers.heard.values().any(|w| {
-                w.group == group && w.within(clock, w.at) && w.listed.get(key).is_some_and(|&at| w.within(clock, at))
+                w.group == group && clock.within(w.at) && w.listed.get(key).is_some_and(|&at| clock.within(at))
             })
         };
         let mut forgotten = Vec::new();
@@ -425,7 +406,6 @@ mod tests {
             runs,
             progress,
             stopping: false,
-            interval: None,
         };
         holds.beat(s, beat, clock).unwrap()
     }
@@ -645,7 +625,6 @@ mod tests {
             runs: vec![key("a"), key("c")],
             progress: reported("a", cursor("9")),
             stopping: true,
-            interval: None,
         };
         assert!(
             holds.beat(&s, last, at(t, 2)).unwrap().is_empty(),
@@ -667,7 +646,6 @@ mod tests {
             runs: vec![key("a")],
             progress: reported("a", cursor("1")),
             stopping: false,
-            interval: None,
         };
         assert!(Holds::default().beat(&s, broken, at(Instant::now(), 0)).is_err());
     }
@@ -772,28 +750,5 @@ mod tests {
         );
         let page = s.ledger_page("g", &key("a"), None, 10).unwrap();
         assert_eq!(page.iter().map(|e| e.item.as_str()).collect::<Vec<_>>(), ["fits"]);
-    }
-
-    /// A worker that beats less often than the leader expects keeps its holds for three of its own intervals.
-    #[test]
-    fn a_holder_that_beats_slowly_keeps_its_sources_for_three_of_its_intervals() {
-        let (s, holds, t) = (store("slow"), Holds::default(), Instant::now());
-        let slow = Beat {
-            worker: "w1",
-            group: "g",
-            runs: vec![key("a")],
-            progress: Vec::new(),
-            stopping: false,
-            interval: Some(Duration::from_secs(10)),
-        };
-        assert_eq!(holds.beat(&s, slow, at(t, 0)).unwrap().len(), 1);
-        assert!(
-            beat(&holds, &s, "w2", "g", vec![key("a")], Vec::new(), at(t, 20)).is_empty(),
-            "past the leader's hold time, inside three of the holder's intervals"
-        );
-        assert_eq!(
-            beat(&holds, &s, "w2", "g", vec![key("a")], Vec::new(), at(t, 31)).len(),
-            1
-        );
     }
 }

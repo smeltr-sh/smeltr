@@ -8,6 +8,7 @@
   delivery rules chose, and a document is what would have been sent.
 -->
 <script lang="ts">
+  import Button, { BUSY, LOADING } from './Button.svelte';
   import ShowAll from './ShowAll.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -172,9 +173,13 @@
           <option value={s.id}>{s.name} ({s.records})</option>
         {/each}
       </select>
-      <button class="primary" onclick={run} disabled={running || !selected || !config}>
+      <Button
+        class="primary"
+        onclick={run}
+        disabled={running ? BUSY : !selected ? 'Choose a sample first.' : !config ? LOADING : ''}
+      >
         {running ? 'Running…' : 'Run'}
-      </button>
+      </Button>
     </div>
 
     {#if loaded && samples.length === 0}

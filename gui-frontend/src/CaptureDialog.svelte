@@ -11,6 +11,7 @@
   field.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import ShowAll from './ShowAll.svelte';
   import InlineError from './InlineError.svelte';
   import Dialog from './Dialog.svelte';
@@ -215,22 +216,39 @@
 
   {#snippet actions()}
     {#if done}
-      <button type="button" onclick={ondiscard} disabled={busy}>Discard</button>
+      <Button type="button" onclick={ondiscard} disabled={busy ? BUSY : ''}>Discard</Button>
       {#if use}
-        <button type="submit" class="primary" disabled={busy || !status}>{use.label}</button>
+        <Button
+          type="submit"
+          class="primary"
+          disabled={busy ? BUSY : !status ? 'Wait for the capture to start.' : ''}
+          >{use.label}</Button
+        >
       {:else}
-        <button
+        <Button
           type="submit"
           class="primary"
           data-guide="capture-save"
-          disabled={busy || !status || held === 0 || !saveName.trim()}
+          disabled={busy
+            ? BUSY
+            : !status
+              ? 'Wait for the capture to start.'
+              : held === 0
+                ? 'Nothing has been captured yet.'
+                : !saveName.trim()
+                  ? INCOMPLETE
+                  : ''}
         >
           {busy ? 'Saving…' : 'Save sample'}
-        </button>
+        </Button>
       {/if}
     {:else}
-      <button type="submit" class="primary" data-guide="capture-stop" disabled={busy || !status}
-        >Stop capture</button
+      <Button
+        type="submit"
+        class="primary"
+        data-guide="capture-stop"
+        disabled={busy ? BUSY : !status ? 'Wait for the capture to start.' : ''}
+        >Stop capture</Button
       >
     {/if}
   {/snippet}

@@ -10,6 +10,7 @@
   A category folds its kinds away. It starts open where this layer answers one of its kinds.
 -->
 <script lang="ts">
+  import Button from './Button.svelte';
   import ChevronIcon from './ChevronIcon.svelte';
   import { untrack } from 'svelte';
   import Help from './Help.svelte';
@@ -123,15 +124,19 @@
           {@const mix = shown.length > 1 && shown.includes(answer)}
           {@const isSet = !mix && own !== undefined && nameOf(own) === answer}
           {@const inherited = !mix && own === undefined && shown.includes(answer)}
-          <button
+          <Button
             type="button"
             role="radio"
-            class="dot"
-            class:set={isSet}
-            class:inh={inherited}
-            class:mix
-            class:no={!possible(row, answer)}
-            disabled={!possible(row, answer)}
+            class={[
+              'dot',
+              isSet && 'set',
+              inherited && 'inh',
+              mix && 'mix',
+              !possible(row, answer) && 'no',
+            ]}
+            disabled={!possible(row, answer)
+              ? 'A failed delivery leaves no row to ignore or tag.'
+              : ''}
             aria-checked={isSet || inherited}
             aria-label="{row}: {answer}{!possible(row, answer)
               ? ', not possible'
@@ -141,7 +146,7 @@
                   ? ', some kinds'
                   : ''}"
             onclick={() => pick(row, answer, mix)}
-          ></button>
+          ></Button>
         {/each}
       </Locked>
     </div>
@@ -262,7 +267,7 @@
   }
   /* A speck where the column is open, a hollow ring where the row inherits, a filled dot where it is set here, half
      of one where only some kinds take it, and a dash where it is not possible. */
-  button.dot {
+  .mx-row :global(button.dot) {
     border: 0;
     background: none;
     padding: 0;
@@ -272,7 +277,7 @@
     justify-content: center;
     cursor: pointer;
   }
-  .dot::before,
+  .mx-row :global(.dot::before),
   .mark {
     content: '';
     display: inline-block;
@@ -284,33 +289,35 @@
   .mark {
     margin: 0 0.3rem 0 0.2rem;
   }
-  .dot:hover:not(:disabled)::before,
-  :is(.dot.inh, .dot.set, .dot.mix)::before,
+  .mx-row :global(.dot:hover:not(:disabled)::before),
+  .mx-row :global(.dot.inh::before),
+  .mx-row :global(.dot.set::before),
+  .mx-row :global(.dot.mix::before),
   .mark {
     width: 0.7rem;
     height: 0.7rem;
     background: none;
     border: 1.5px solid var(--ink);
   }
-  .dot:hover:not(.set, .inh, .mix)::before {
+  .mx-row :global(.dot:hover:not(.set, .inh, .mix)::before) {
     border-color: var(--dim);
   }
   /* Hovered too: the hover ring above would empty it. */
-  .dot.set::before,
-  .dot.set:hover::before,
+  .mx-row :global(.dot.set::before),
+  .mx-row :global(.dot.set:hover::before),
   .mark.set {
     background: var(--ink);
   }
-  .dot.mix::before,
-  .dot.mix:hover::before,
+  .mx-row :global(.dot.mix::before),
+  .mx-row :global(.dot.mix:hover::before),
   .mark.mix {
     background: linear-gradient(90deg, var(--ink) 50%, transparent 50%);
   }
-  .dot:disabled {
+  .mx-row :global(.dot:disabled) {
     cursor: not-allowed;
   }
   /* By what is possible, not by `disabled`: a read-only page disables every dot. */
-  .dot.no::before,
+  .mx-row :global(.dot.no::before),
   .mark.no {
     width: 0.6rem;
     height: 1.5px;

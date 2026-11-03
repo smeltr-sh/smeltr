@@ -3,6 +3,7 @@
   Resolve or Reopen. A resolved thread folds to one line that opens it.
 -->
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import Locked from './Locked.svelte';
@@ -89,10 +90,10 @@
       ><form class="reply" onsubmit={submit}>
         <input type="text" aria-label="Reply" placeholder="Reply" bind:value={reply} />
         {#if reply.trim()}
-          <button type="submit" disabled={busy}>Reply</button>
+          <Button type="submit" disabled={busy ? BUSY : ''}>Reply</Button>
         {/if}
-        <button type="button" disabled={busy} onclick={settle}
-          >{thread.resolved ? 'Reopen' : 'Resolve'}</button
+        <Button type="button" disabled={busy ? BUSY : ''} onclick={settle}
+          >{thread.resolved ? 'Reopen' : 'Resolve'}</Button
         >
       </form></Locked
     >

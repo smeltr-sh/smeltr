@@ -6,6 +6,7 @@
   The branch bar unfolds into this, so it renders on the bar's tint.
 -->
 <script lang="ts">
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import StateMark from './StateMark.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -249,11 +250,15 @@
   </label>
   <div class="actions">
     <InlineError message={error} inline />
-    <button type="button" onclick={onclose} disabled={busy}>Cancel</button>
+    <Button type="button" onclick={onclose} disabled={busy ? BUSY : ''}>Cancel</Button>
     <Locked refusedInDemo>
-      <button type="submit" class="primary" disabled={!ready}>
+      <Button
+        type="submit"
+        class="primary"
+        disabled={busy || drafting ? BUSY : !ready ? INCOMPLETE : ''}
+      >
         {busy ? 'Opening…' : 'Open for review'}
-      </button>
+      </Button>
     </Locked>
   </div>
 </form>

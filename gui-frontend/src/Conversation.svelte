@@ -17,6 +17,7 @@
 </script>
 
 <script lang="ts">
+  import Button, { BUSY } from './Button.svelte';
   import ConversationEntry from './ConversationEntry.svelte';
   import ConversationEvent from './ConversationEvent.svelte';
   import Markdown from './Markdown.svelte';
@@ -357,13 +358,19 @@
               onrestart={restart}
             />
           {/if}
-          <button
+          <Button
             type="submit"
             class="primary"
-            disabled={busy || !message.trim() || shown?.running}
+            disabled={busy
+              ? BUSY
+              : !message.trim()
+                ? 'Write a message first.'
+                : shown?.running
+                  ? BUSY
+                  : ''}
           >
             {busy ? 'Sending…' : 'Send'}
-          </button>
+          </Button>
         </div>
       </form>
     </ConversationEntry>

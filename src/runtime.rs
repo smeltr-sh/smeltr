@@ -4493,7 +4493,6 @@ mod tests {
             fact.labels
         );
         let heartbeat = crate::heartbeat::HeartbeatRequest {
-            heartbeat_interval_ms: None,
             single_worker: Vec::new(),
             progress: Vec::new(),
             streams: None,

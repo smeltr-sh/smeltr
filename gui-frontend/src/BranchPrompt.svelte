@@ -9,6 +9,7 @@
   beside the page's own Save (STYLE_GUIDE.md, "Advanced settings").
 -->
 <script lang="ts">
+  import Button, { INCOMPLETE } from './Button.svelte';
   import { untrack } from 'svelte';
   import Dialog from './Dialog.svelte';
   import Field from './Field.svelte';
@@ -49,7 +50,9 @@
   </div>
   {#snippet actions()}
     <button type="button" onclick={() => onanswer(null)}>Don't save</button>
-    <button type="submit" class="primary" disabled={!name.trim()}>Edit on this branch</button>
+    <Button type="submit" class="primary" disabled={!name.trim() ? INCOMPLETE : ''}
+      >Edit on this branch</Button
+    >
   {/snippet}
 </Dialog>
 
