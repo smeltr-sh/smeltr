@@ -405,7 +405,6 @@ async fn heartbeat(
         let (worker, group) = (worker_id.clone(), req.group_id.clone());
         let runs = std::mem::take(&mut req.single_worker);
         let progress = std::mem::take(&mut req.progress);
-        let interval = req.heartbeat_interval_ms.map(std::time::Duration::from_millis);
         let clock = holds::Clock::at(state.registry.up_for());
         let settled = run_store(state.store.clone(), move |store| {
             let beat = holds::Beat {
@@ -414,7 +413,6 @@ async fn heartbeat(
                 runs,
                 progress,
                 stopping,
-                interval,
             };
             registry.holds.beat(store, beat, clock)
         })
@@ -426,7 +424,7 @@ async fn heartbeat(
             )
         })?
     };
-    let heartbeat_interval = crate::startup_config::worker_heartbeat_interval();
+    let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
     let group_id = reported_group.unwrap_or_default();
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
@@ -534,6 +532,7 @@ async fn heartbeat(
             .map(|invitation| crate::heartbeat::Invited::Readable(Box::new(invitation)))
             .collect(),
         secrets,
+        heartbeat_interval_ms: Some(heartbeat_interval.as_millis() as u64),
     }))
 }
 
@@ -734,7 +733,7 @@ async fn running_deployments(state: &AppState) -> std::collections::HashSet<(Str
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials())
         .await
         .unwrap_or_default();
-    let interval = crate::startup_config::worker_heartbeat_interval();
+    let interval = crate::startup_config::leader_heartbeat_interval();
     warnings::running_deployments(&state.registry.snapshot(), &credentials, interval)
 }
 
@@ -1090,7 +1089,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     // What the page polls, and so one of the reads a look for gone ephemeral workers rides: a fleet that has
     // scaled to nothing sends no heartbeat to carry it.
     forget::sweep(state, now_ms).await;
-    let heartbeat_interval = crate::startup_config::worker_heartbeat_interval();
+    let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
     let snapshot = state.registry.snapshot();
     let data_dir = state.data_dir.clone();
     let checks = state.deploy_checks.clone();
@@ -2239,7 +2238,7 @@ async fn remove_worker(
 /// How recently a worker must have beaten to count as heartbeating: the window past which what it said stops
 /// counting as current.
 fn heartbeat_window() -> Duration {
-    Duration::from_millis(warnings::stale_after_ms(crate::startup_config::worker_heartbeat_interval()).max(0) as u64)
+    Duration::from_millis(warnings::stale_after_ms(crate::startup_config::leader_heartbeat_interval()).max(0) as u64)
 }
 
 /// Who the gate let in, or the leader itself where a router is composed without the gate.
@@ -4407,7 +4406,6 @@ mod secrets_delivery_tests {
 
     pub(super) fn beat(group: &str, held: Vec<(String, i64)>) -> HeartbeatRequest {
         HeartbeatRequest {
-            heartbeat_interval_ms: None,
             single_worker: Vec::new(),
             progress: Vec::new(),
             streams: None,

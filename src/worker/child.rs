@@ -175,6 +175,8 @@ pub struct StartSpec {
     /// `WorkerConfig::memory`.
     #[serde(default)]
     pub memory: Option<usize>,
+    /// How often the leader has this worker beat, which the runtime tallies its streams at.
+    pub heartbeat_interval: Duration,
     pub worker_id: String,
     /// Only what this commit names. A runtime is not given credentials its own bundle does not quote.
     pub secrets: Vec<crate::heartbeat::SecretDelivery>,
@@ -1235,6 +1237,7 @@ mod tests {
             group_id: "g".to_string(),
             thread_limit: 1,
             memory: None,
+            heartbeat_interval: Duration::from_secs(1),
             worker_id: "w1".to_string(),
             secrets: vec![],
             incarnation: 1,
