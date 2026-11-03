@@ -91,13 +91,17 @@ mod tests {
     fn a_noted_failure_is_logged_as_it_is_made() {
         let mut made = None;
         let seen = crate::logs::said(|| {
-            made = Some(noted!(name: "noted", target: "test", "something failed", "it broke".to_string(), subject = "x"));
+            made =
+                Some(noted!(name: "noted", target: "test", "something failed", "it broke".to_string(), subject = "x"));
         });
         let made = made.unwrap();
         assert_eq!(made, "it broke");
         assert_eq!(seen.len(), 1, "{seen:?}");
         let (level, class, kind, fields) = &seen[0];
-        assert_eq!((*level, class.as_str(), kind.as_str()), (tracing::Level::WARN, "test", "noted"));
+        assert_eq!(
+            (*level, class.as_str(), kind.as_str()),
+            (tracing::Level::WARN, "test", "noted")
+        );
         let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(field("subject"), Some("x"));
         assert_eq!(field("error"), Some("it broke"));

@@ -2590,7 +2590,12 @@ fn worker_logged_warnings(logged: &[Logged]) -> Vec<Warning> {
                 message: format!(
                     "worker {} logged {what} at {}: {}{fields}",
                     row.worker_id,
-                    row.class.iter().chain([&row.r#type]).map(String::as_str).collect::<Vec<_>>().join(" "),
+                    row.class
+                        .iter()
+                        .chain([&row.r#type])
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" "),
                     row.message
                 ),
             }
@@ -5334,8 +5339,20 @@ mod tests {
                         "stalled",
                         &[("subject", "archive"), ("error", "archive refused")],
                     ),
-                    line_event(2, NOW - 40_000, "destinations.message_ceiling", "first", &[("subject", "a")]),
-                    line_event(3, NOW - 10_000, "destinations.message_ceiling", "second", &[("subject", "b")]),
+                    line_event(
+                        2,
+                        NOW - 40_000,
+                        "destinations.message_ceiling",
+                        "first",
+                        &[("subject", "a")],
+                    ),
+                    line_event(
+                        3,
+                        NOW - 10_000,
+                        "destinations.message_ceiling",
+                        "second",
+                        &[("subject", "b")],
+                    ),
                 ],
             )
             .unwrap();

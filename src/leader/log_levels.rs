@@ -84,7 +84,11 @@ fn named(named: &LevelOverride) -> Result<String, String> {
             Err(format!("{class:?} is not a class"))
         }
     };
-    match (named.class.as_deref(), named.r#type.as_deref(), named.service.as_deref()) {
+    match (
+        named.class.as_deref(),
+        named.r#type.as_deref(),
+        named.service.as_deref(),
+    ) {
         (Some(c), None, None) => class(c).map(|()| c.to_string()),
         (Some(c), Some(kind), None) => {
             class(c)?;
@@ -113,13 +117,13 @@ fn refused(levels: &LogLevels) -> Option<String> {
         return Some(format!("{default:?} is not a level: use {}", labels()));
     }
     let mut seen = std::collections::BTreeSet::new();
-    for override_ in &levels.overrides {
-        let what = match named(override_) {
+    for each in &levels.overrides {
+        let what = match named(each) {
             Ok(what) => what,
             Err(why) => return Some(why),
         };
-        if label(&override_.level) {
-            return Some(format!("{:?} is not a level for {what}: use {}", override_.level, labels()));
+        if label(&each.level) {
+            return Some(format!("{:?} is not a level for {what}: use {}", each.level, labels()));
         }
         if !seen.insert(what.clone()) {
             return Some(format!("two overrides name {what}"));
@@ -190,7 +194,11 @@ mod tests {
         assert_eq!(
             refused(&levels(
                 Some("info"),
-                &[("sources", "trace"), ("store statement_ran", "debug"), ("@kafka", "debug")]
+                &[
+                    ("sources", "trace"),
+                    ("store statement_ran", "debug"),
+                    ("@kafka", "debug")
+                ]
             )),
             None
         );
@@ -202,8 +210,14 @@ mod tests {
             refused(&levels(None, &[("sources", "3")])).unwrap(),
             r#""3" is not a level for sources: use error, warn, info, debug or trace"#
         );
-        assert_eq!(refused(&levels(None, &[("kafka", "trace")])).unwrap(), r#""kafka" is not a class"#);
-        assert_eq!(refused(&levels(None, &[("@mongo", "trace")])).unwrap(), r#""mongo" is not a service"#);
+        assert_eq!(
+            refused(&levels(None, &[("kafka", "trace")])).unwrap(),
+            r#""kafka" is not a class"#
+        );
+        assert_eq!(
+            refused(&levels(None, &[("@mongo", "trace")])).unwrap(),
+            r#""mongo" is not a service"#
+        );
         assert!(
             refused(&levels(None, &[("sources Assigned", "trace")]))
                 .unwrap()
@@ -233,7 +247,11 @@ mod tests {
         use tracing::Level;
         let kept = levels(
             None,
-            &[("sources", "trace"), ("@kafka", "debug"), ("store statement_ran", "nonsense")],
+            &[
+                ("sources", "trace"),
+                ("@kafka", "debug"),
+                ("store statement_ran", "nonsense"),
+            ],
         )
         .levels(Level::WARN);
         assert_eq!(kept.default, Level::WARN);

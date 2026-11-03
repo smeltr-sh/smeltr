@@ -1834,7 +1834,11 @@ mod logs_query_tests {
         assert_eq!(decode("level=warn,error").level.as_deref(), Some("warn,error"));
         let query = decode("level=info&class=sources&type=poll&service=kafka");
         assert_eq!(
-            (query.class.as_deref(), query.r#type.as_deref(), query.service.as_deref()),
+            (
+                query.class.as_deref(),
+                query.r#type.as_deref(),
+                query.service.as_deref()
+            ),
             (Some("sources"), Some("poll"), Some("kafka"))
         );
         assert!(decode("").level.is_none(), "the bare path asks for everything");

@@ -144,8 +144,7 @@ pub async fn poll(state: AppState) {
             state.updates.settings_changed.notified().await;
             continue;
         }
-        let pass =
-            tracing::trace_span!(target: "updates", "a background pass", task = "check for a newer release");
+        let pass = tracing::trace_span!(target: "updates", "a background pass", task = "check for a newer release");
         let now = super::warnings::now_millis();
         match fetch(own).await {
             Ok(newest) => state.updates.found(newest, now),

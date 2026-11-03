@@ -1130,8 +1130,31 @@ fn any_broker_up(stats: &Statistics) -> bool {
         .any(|b| matches!(b.source.as_str(), "configured" | "learned") && b.state == "UP")
 }
 
+/// A line librdkafka said for a client of `class`'s, at `level`, from its facility `fac`.
+pub(super) fn librdkafka_said(class: &'static str, level: rdkafka::config::RDKafkaLogLevel, fac: &str, message: &str) {
+    use rdkafka::config::RDKafkaLogLevel as Said;
+    let level = match level {
+        Said::Emerg | Said::Alert | Said::Critical | Said::Error => tracing::Level::ERROR,
+        Said::Warning => tracing::Level::WARN,
+        Said::Notice | Said::Info => tracing::Level::INFO,
+        Said::Debug => tracing::Level::DEBUG,
+    };
+    crate::logs::library_said(
+        class,
+        "librdkafka",
+        "kafka",
+        level,
+        message.to_string(),
+        vec![("facility".into(), crate::logs::Value::Str(fac.to_string()))],
+    );
+}
+
 impl ClientContext for DeliveryTracker {
     const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
+
+    fn log(&self, level: rdkafka::config::RDKafkaLogLevel, fac: &str, message: &str) {
+        librdkafka_said("destinations", level, fac, message);
+    }
 
     fn generate_oauth_token(&self, config: Option<&str>) -> Result<OAuthToken, Box<dyn std::error::Error>> {
         entra::token(config)

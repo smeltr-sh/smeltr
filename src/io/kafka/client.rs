@@ -1071,6 +1071,10 @@ impl Routes {
 impl ClientContext for Routes {
     const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
 
+    fn log(&self, level: rdkafka::config::RDKafkaLogLevel, fac: &str, message: &str) {
+        super::librdkafka_said("sources", level, fac, message);
+    }
+
     fn generate_oauth_token(
         &self,
         config: Option<&str>,

@@ -178,10 +178,24 @@ where
 
 /// A line `library` said for a part of smeltr of `class`, where no span of ours is around it to lend one, from code
 /// that talks to `service`. librdkafka calls back on its own threads, for a source's client or a destination's.
-pub fn library_said(class: &'static str, library: &'static str, service: &'static str, level: Level, message: String) {
+pub fn library_said(
+    class: &'static str,
+    library: &'static str,
+    service: &'static str,
+    level: Level,
+    message: String,
+    fields: Vec<(Cow<'static, str>, super::event::Value)>,
+) {
     let level = as_said_here(library, level);
     if level <= super::max_level() && level <= super::levels::kept_at(Some(class), library, Some(service)) {
-        hand_off(shaped(level, Some(class), Cow::Borrowed(library), Some(service), message, Vec::new()));
+        hand_off(shaped(
+            level,
+            Some(class),
+            Cow::Borrowed(library),
+            Some(service),
+            message,
+            fields,
+        ));
     }
 }
 
@@ -296,7 +310,10 @@ mod tests {
             .filter(|e| field(e, "ms").is_some())
             .map(|e| (e.r#type.as_ref(), e.message.as_str()))
             .collect();
-        assert_eq!(ends, vec![("finished", "a commit finished"), ("finished", "a read finished")]);
+        assert_eq!(
+            ends,
+            vec![("finished", "a commit finished"), ("finished", "a read finished")]
+        );
         let commit = events.iter().find(|e| e.message == "a commit finished").unwrap();
         assert_eq!(commit.message, "a commit finished");
         assert_eq!(
@@ -363,10 +380,7 @@ mod tests {
             .into_iter()
             .map(|e| (e.class.map(Into::into), e.r#type.into(), e.service.map(Into::into)))
             .collect();
-        assert_eq!(
-            said,
-            [(Some("sources".into()), "lag_unmeasured".into(), None)]
-        );
+        assert_eq!(said, [(Some("sources".into()), "lag_unmeasured".into(), None)]);
     }
 
     /// A span held and never entered, as a background pass holds one across its awaits, still says when it ends.

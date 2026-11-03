@@ -259,7 +259,10 @@ mod tests {
             });
             assert_eq!(source.min_level, tracing::Level::DEBUG);
         });
-        assert!(said.iter().any(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("logs", "trace_not_carried")));
+        assert!(
+            said.iter()
+                .any(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("logs", "trace_not_carried"))
+        );
     }
 
     /// Two logs sources read side by side, and each sees the whole stream.

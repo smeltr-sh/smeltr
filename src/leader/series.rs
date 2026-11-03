@@ -1305,7 +1305,8 @@ impl RegistryStore {
     ///
     /// Also trims the logs table to its row cap, since that is the other thing here that grows.
     pub fn maintain(&self, now_ms: i64) -> Result<(), StoreError> {
-        let _pass = tracing::trace_span!(target: "status", "a background pass", task = "trim the registry's logs and series");
+        let _pass =
+            tracing::trace_span!(target: "status", "a background pass", task = "trim the registry's logs and series");
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction()?;
 
@@ -2363,7 +2364,9 @@ mod tests {
 
     /// `line` as `class.type`, or `class.type@service`.
     fn named(line: &str) -> (Option<String>, String, Option<String>) {
-        let (line, service) = line.split_once('@').map_or((line, None), |(l, s)| (l, Some(s.to_string())));
+        let (line, service) = line
+            .split_once('@')
+            .map_or((line, None), |(l, s)| (l, Some(s.to_string())));
         let (class, kind) = line.split_once('.').expect("a class and a type");
         (Some(class.to_string()), kind.to_string(), service)
     }
@@ -2406,7 +2409,9 @@ mod tests {
             .record_logs("w-1", 7, Some("west"), &[log(0, "deploy.commit_not_loadable")])
             .unwrap();
         // A worker too old to state one: no group, rather than a group named "".
-        store.record_logs("w-2", 7, None, &[log(0, "processes.started")]).unwrap();
+        store
+            .record_logs("w-2", 7, None, &[log(0, "processes.started")])
+            .unwrap();
 
         let groups: Vec<Option<String>> = store
             .conn
@@ -2462,7 +2467,13 @@ mod tests {
                 "w-2",
                 7,
                 Some("east"),
-                &[at(0, 400, "error", "destinations.bulk_refused@elasticsearch", "100% refused")],
+                &[at(
+                    0,
+                    400,
+                    "error",
+                    "destinations.bulk_refused@elasticsearch",
+                    "100% refused",
+                )],
             )
             .unwrap();
         store
@@ -2575,7 +2586,10 @@ mod tests {
     #[test]
     fn a_limit_takes_the_newest_rather_than_the_first_found() {
         let rows = seeded().logs(&LogFilter::default(), 2).unwrap();
-        assert_eq!(lines(&rows), vec!["destinations.bulk_refused", "pipelines.rows_rejected"]);
+        assert_eq!(
+            lines(&rows),
+            vec!["destinations.bulk_refused", "pipelines.rows_rejected"]
+        );
     }
 
     /// `before_id`/`after_id` bound `id` directly -- the mechanism the pager rests on. `after_id` is fetched
@@ -2633,7 +2647,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             lines(&rows),
-            vec!["destinations.bulk_refused", "pipelines.rows_rejected", "enrollment.enroll_failed"]
+            vec![
+                "destinations.bulk_refused",
+                "pipelines.rows_rejected",
+                "enrollment.enroll_failed"
+            ]
         );
     }
 
@@ -3567,6 +3585,38 @@ mod tests {
         assert!(!claim_window(&conn, "w1", 7, 1).unwrap());
         assert!(claim_window(&conn, "w1", 7, 2).unwrap());
         drop(conn);
+        cleanup(&path);
+    }
+
+    /// Step 12 gives each stored log a class and a type in place of its site: split at the first dot, and a
+    /// library's, which has none, its type alone.
+    #[test]
+    fn a_file_from_step_11_splits_each_logs_site_into_its_class_and_type() {
+        let path = temp_path("step-11");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            super::super::steps::upgrade_sqlite(&mut conn, "registry.db", &STEPS[..11]).unwrap();
+            for (seq, site) in [(1, "kafka.assigned"), (2, "ureq::pool")] {
+                conn.execute(
+                    "INSERT INTO logs (at_ms, worker_id, boot_id, seq, level, site, message, fields_json) \
+                     VALUES (1, 'w1', 7, ?1, 'warn', ?2, 'said', '[]')",
+                    params![seq, site],
+                )
+                .unwrap();
+            }
+        }
+        assert!(
+            !super::super::steps::is_additive(STEPS[11]),
+            "a dropped column is breaking"
+        );
+        let store = RegistryStore::open(&path).unwrap();
+        let rows = store.logs(&LogFilter::default(), 10).unwrap();
+        let named: Vec<(Option<&str>, &str, Option<&str>)> = rows
+            .iter()
+            .map(|r| (r.class.as_deref(), r.r#type.as_str(), r.service.as_deref()))
+            .collect();
+        assert_eq!(named, [(None, "ureq::pool", None), (Some("kafka"), "assigned", None)]);
+        drop(store);
         cleanup(&path);
     }
 

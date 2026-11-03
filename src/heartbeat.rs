@@ -862,7 +862,11 @@ impl LogLevels {
             };
             match (&named.class, &named.r#type, &named.service) {
                 (Some(class), Some(kind), None) => {
-                    levels.types.entry(class.clone()).or_default().insert(kind.clone(), level);
+                    levels
+                        .types
+                        .entry(class.clone())
+                        .or_default()
+                        .insert(kind.clone(), level);
                 }
                 (Some(class), None, None) => {
                     levels.classes.insert(class.clone(), level);

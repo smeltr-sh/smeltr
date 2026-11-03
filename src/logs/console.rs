@@ -14,9 +14,13 @@ use crate::ops::civil::civil_from_days;
 /// first because that is what an eye scans for, then the sentence, then what varied.
 pub fn line(event: &Event) -> String {
     let mut out = format!("{} {:<5}", stamp(event.timestamp), event.level.as_str());
-    for part in [event.class.as_deref(), Some(event.r#type.as_ref()), event.service.as_deref()]
-        .into_iter()
-        .flatten()
+    for part in [
+        event.class.as_deref(),
+        Some(event.r#type.as_ref()),
+        event.service.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
     {
         out.push(' ');
         out.push_str(part);

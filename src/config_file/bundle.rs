@@ -373,7 +373,9 @@ fn assemble_at(
             validated = system.compiled.is_some(),
             "a bundle was read"
         ),
-        Err(e) => tracing::trace!(name: "refused", target: "deploy", error = %e, "a bundle was read but did not validate"),
+        Err(e) => {
+            tracing::trace!(name: "refused", target: "deploy", error = %e, "a bundle was read but did not validate")
+        }
     }
     loaded
 }

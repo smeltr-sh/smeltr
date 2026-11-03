@@ -726,8 +726,7 @@ pub async fn poll(state: AppState) {
             continue;
         };
         // Here and not in `sync_now`, which an administrator's sync also takes.
-        let pass =
-            tracing::trace_span!(target: "git", "a background pass", task = "sync with the git remote");
+        let pass = tracing::trace_span!(target: "git", "a background pass", task = "sync with the git remote");
         let _ = sync_now(&state).await;
         drop(pass);
         tokio::select! {
@@ -767,8 +766,7 @@ pub async fn push_saves(state: AppState) {
     let mut failing = crate::logs::Relog::default();
     loop {
         tokio::time::sleep(PUSH_SCAN).await;
-        let _pass =
-            tracing::trace_span!(target: "git", "a background pass", task = "push saves to the git remote");
+        let _pass = tracing::trace_span!(target: "git", "a background pass", task = "push saves to the git remote");
         let _pushing = state.remote.pushing.lock().await;
         let remote = match run_store(state.store.clone(), configured).await {
             Ok(Some(remote)) => remote,
@@ -2033,7 +2031,9 @@ mod tests {
             assert_eq!(again["al/fix"].at, 61_000);
         });
         assert!(
-            !said.iter().any(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("git", "push_failed")),
+            !said
+                .iter()
+                .any(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("git", "push_failed")),
             "{said:?}"
         );
 

@@ -36,7 +36,11 @@ impl Levels {
         let by_type = class.and_then(|c| self.types.get(c)).and_then(|types| types.get(kind));
         let by_service = || service.and_then(|s| self.services.get(s));
         let by_class = || class.and_then(|c| self.classes.get(c));
-        by_type.or_else(by_service).or_else(by_class).copied().unwrap_or(self.default)
+        by_type
+            .or_else(by_service)
+            .or_else(by_class)
+            .copied()
+            .unwrap_or(self.default)
     }
 
     /// The most any line is kept at.
@@ -188,7 +192,10 @@ mod tests {
                         let class = &named[4];
                         let at = named.get(0).unwrap().start();
                         let is_span = span.is_match(&text[at.saturating_sub(200)..at]);
-                        if class == "test" || class.is_empty() || !class.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+                        if class == "test"
+                            || class.is_empty()
+                            || !class.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                        {
                             continue;
                         }
                         if !CLASSES.contains(&class) {
@@ -224,7 +231,10 @@ mod tests {
             .or_default()
             .insert("assigned".into(), Level::WARN);
         assert_eq!(levels.kept_at(Some("sources"), "assigned", Some("kafka")), Level::WARN);
-        assert_eq!(levels.kept_at(Some("sources"), "poll_failed", Some("kafka")), Level::DEBUG);
+        assert_eq!(
+            levels.kept_at(Some("sources"), "poll_failed", Some("kafka")),
+            Level::DEBUG
+        );
         assert_eq!(levels.kept_at(Some("sources"), "poll_failed", None), Level::TRACE);
         assert_eq!(levels.kept_at(Some("store"), "statement_ran", None), Level::INFO);
         assert_eq!(levels.kept_at(None, "ureq", None), Level::INFO);

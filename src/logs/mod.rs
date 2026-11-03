@@ -31,9 +31,9 @@ pub mod levels;
 mod noted;
 
 pub(crate) use console::{render_fields, render_value, stamp};
-pub use layer::library_said;
 #[cfg(test)]
 pub(crate) use layer::LogLayer;
+pub use layer::library_said;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -243,8 +243,9 @@ fn log_panics() {
 
 /// What the channel carries. `Stop` rides it so that it arrives behind every event already sent.
 enum Message {
-    /// An event, and whether a thread of this process's leader raised it.
-    Event(Event, bool),
+    /// An event, and whether a thread of this process's leader raised it. Boxed, so the channel's slots are a
+    /// pointer wide rather than an event wide.
+    Event(Box<Event>, bool),
     Stop,
 }
 
@@ -664,7 +665,7 @@ fn hand_off(event: Event) {
     let leader = LEADER_THREAD.with(std::cell::Cell::get);
     match SENDER.get() {
         Some(sender) if !STOPPING.load(Ordering::Relaxed) => {
-            if sender.try_send(Message::Event(event, leader)).is_err() {
+            if sender.try_send(Message::Event(Box::new(event), leader)).is_err() {
                 DROPPED.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -751,7 +752,7 @@ pub fn stop() {
 fn drain(receiver: Receiver<Message>) {
     loop {
         match receiver.recv() {
-            Ok(Message::Event(event, leader)) => take(event, leader),
+            Ok(Message::Event(event, leader)) => take(*event, leader),
             // Behind every event already sent, so nothing recorded before a stop is left unwritten.
             Ok(Message::Stop) => break,
             // `SENDER` is a static and outlives every thread, so this cannot fire: `Stop` is what ends this

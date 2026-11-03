@@ -812,7 +812,9 @@ fn edit_refs(repo: &gix::Repository, edits: Vec<gix::refs::transaction::RefEdit>
                 to = %named(new),
                 "a ref moved"
             ),
-            Change::Delete { .. } => tracing::trace!(name: "ref_deleted", target: "git", %reference, "a ref was deleted"),
+            Change::Delete { .. } => {
+                tracing::trace!(name: "ref_deleted", target: "git", %reference, "a ref was deleted")
+            }
         }
     }
     forget_advertisement();
