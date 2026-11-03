@@ -9,7 +9,7 @@
 //! once and the variable name is spelled once. A caller that reads `SMELTR_*` itself will drift from the documented
 //! default; call the accessor.
 
-use std::num::{NonZeroU16, NonZeroUsize};
+use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -158,7 +158,9 @@ const DEFAULT_LEADER_SECRET_VERSIONS: usize = 5;
 const DEFAULT_LEADER_LOOKUP_VERSIONS: usize = 5;
 const DEFAULT_LEADER_CA_VALIDITY: &str = "3650d";
 const DEFAULT_WORKER_STATE_DIR: &str = "smeltr-worker-data";
-const DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS: u64 = 1500;
+/// How often a worker beats until its leader's first answer says otherwise, and the leader's when it is not set.
+pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(DEFAULT_HEARTBEAT_INTERVAL_MS);
+const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 1500;
 const DEFAULT_WORKER_METRICS_ENDPOINT_PORT: NonZeroU16 = NonZeroU16::new(9464).expect("9464 is not zero");
 const DEFAULT_OIDC_REFRESH_INTERVAL_MS: u64 = 5 * 60 * 1000;
 /// Where a certificate authority connects for an HTTP-01 challenge (`leader::acme`): port 80, as RFC 8555 fixes it.
@@ -509,13 +511,17 @@ fn stop_after_unreachable_secs(raw: &str) -> Option<Option<u64>> {
     }
 }
 
-/// How often a worker reports to the leader.
-pub fn worker_heartbeat_interval() -> Duration {
-    Duration::from_millis(parsed(
-        "SMELTR_WORKER_HEARTBEAT_INTERVAL_MS",
-        "a count of milliseconds (e.g. '1500')",
-        || DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS,
-    ))
+/// How often every worker reports to this leader. The leader judges its workers by this pace and sends it to them
+/// in each heartbeat answer.
+pub fn leader_heartbeat_interval() -> Duration {
+    Duration::from_millis(
+        parsed(
+            "SMELTR_LEADER_HEARTBEAT_INTERVAL_MS",
+            "a count of milliseconds above zero (e.g. '1500')",
+            || NonZeroU64::new(DEFAULT_HEARTBEAT_INTERVAL_MS).expect("the default is not zero"),
+        )
+        .get(),
+    )
 }
 
 /// How often the leader refreshes each OIDC session's tokens at the provider, and so how long a change to a
@@ -866,7 +872,7 @@ mod tests {
             format!("ca_validity = {DEFAULT_LEADER_CA_VALIDITY:?}"),
             format!("acme_http_port = {DEFAULT_ACME_HTTP_PORT}"),
             format!("state_dir = {DEFAULT_WORKER_STATE_DIR:?}"),
-            format!("interval_ms = {DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS}"),
+            format!("[leader.heartbeat]\n# interval_ms = {DEFAULT_HEARTBEAT_INTERVAL_MS}"),
             "[worker.metrics_endpoint]\n# enabled = false".to_string(),
             format!("port = {DEFAULT_WORKER_METRICS_ENDPOINT_PORT}"),
             "thread_limit = 0 ".to_string(),

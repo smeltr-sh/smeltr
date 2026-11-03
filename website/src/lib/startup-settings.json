@@ -88,6 +88,13 @@
       "what": "How many uploads of a lookup file a rollback reaches back, counted on every branch: at least 1, or -1 for every version. An older one is gone unless a branch or running deployment uses it."
     },
     {
+      "key": "leader.heartbeat.interval_ms",
+      "env": "SMELTR_LEADER_HEARTBEAT_INTERVAL_MS",
+      "default": "`1500`",
+      "examples": ["1000", "5000"],
+      "what": "Milliseconds between each worker's heartbeats. The leader sends it to every worker, which uses a built-in default until its first heartbeat is answered."
+    },
+    {
       "key": "leader.tls.enabled",
       "env": "SMELTR_LEADER_TLS",
       "default": "`true`",
@@ -198,13 +205,6 @@
       "default": "90% of the container's memory limit, or of the host's memory without one",
       "examples": ["4GiB", "16 GB"],
       "what": "The memory the worker may use. It sizes its working memory and every buffer left on auto to fit. The rest is left to what runs beside it, such as a leader in the same process."
-    },
-    {
-      "key": "worker.heartbeat.interval_ms",
-      "env": "SMELTR_WORKER_HEARTBEAT_INTERVAL_MS",
-      "default": "`1500`",
-      "examples": ["1000", "5000"],
-      "what": "Milliseconds between the worker's reports to the leader."
     },
     {
       "key": "worker.heartbeat.stop_after_unreachable_secs",

@@ -83,11 +83,10 @@
   <p>
     One worker of the group reads the source at a time: the leader <strong>holds</strong> it for that
     worker, and the others run it and read nothing. The leader gives the hold to another worker after
-    three heartbeat intervals without hearing from the holder, the holder's interval or the leader's,
-    whichever is longer, and that worker resumes from the last progress the leader kept. That worker delivers
-    again what the previous holder delivered after that progress. A holder cut off from the leader keeps
-    reading, so until that heals two workers can read the same objects: that costs duplicates, never lost
-    records.
+    three heartbeat intervals without hearing from the holder, and that worker resumes from the last progress
+    the leader kept. That worker delivers again what the previous holder delivered after that progress.
+    A holder cut off from the leader keeps reading, so until that heals two workers can read the same
+    objects: that costs duplicates, never lost records.
   </p>
   <p>
     <code>afterCommit</code> says what the source does with an object once Smeltr delivers every record

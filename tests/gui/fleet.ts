@@ -156,6 +156,8 @@ export class Fleet {
       SMELTR_GUI_PORT: String(port),
       SMELTR_GUI_BIND: '127.0.0.1',
       SMELTR_ACME_HTTP_PORT: String(acmeHttpPort),
+      // Its workers beat once a second.
+      SMELTR_LEADER_HEARTBEAT_INTERVAL_MS: '1000',
       ...settings,
     });
     const deadline = Date.now() + 60_000;
@@ -202,8 +204,7 @@ export class Fleet {
   }
 
   /** A worker named `name`, enrolled with whatever `settings` give it: the lines the Workers page hands out
-   * with an enrollment code, say. One transform thread and a heartbeat a second unless `settings` say
-   * otherwise. */
+   * with an enrollment code, say. One transform thread unless `settings` say otherwise. */
   startWorkerWith(name: string, settings: Record<string, string>): Proc {
     const dir = this.tempDir(name);
     // A worker keeps the id it finds here, so the fleet reads as names rather than as `host-pid-nanos`.
@@ -212,7 +213,6 @@ export class Fleet {
     return this.spawn(name, dir, {
       SMELTR_WORKER_ENABLED: '1',
       SMELTR_WORKER_THREAD_LIMIT: '1',
-      SMELTR_WORKER_HEARTBEAT_INTERVAL_MS: '1000',
       ...settings,
     });
   }
