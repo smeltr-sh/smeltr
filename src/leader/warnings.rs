@@ -2182,16 +2182,31 @@ pub fn outside_normal_warnings(
                 severity: Severity::Warning,
                 since_millis: starts.get(&outside_key(r, side)).copied(),
                 message: format!(
-                    "source {}: {} rows in {} minutes, normal at this time of day is {} to {}",
+                    "source {}: {} rows in {} minutes, {}normal at this time of day is {} to {}",
                     r.source,
                     throughput::grouped(r.rows),
                     throughput::WINDOW.as_secs() / 60,
+                    off_by(r, side),
                     throughput::grouped(r.band.low),
                     throughput::grouped(r.band.high),
                 ),
             }
         })
         .collect()
+}
+
+/// How far past its band's nearest edge a reading is, in percent of that edge, as the start of the warning's clause
+/// on the band: a count in the millions is hard to set against another by eye. Empty where the edge is zero, which
+/// any reading is infinitely above.
+fn off_by(r: &throughput::Reading, side: throughput::Outside) -> String {
+    let (edge, word) = match side {
+        throughput::Outside::Below => (r.band.low, "below"),
+        throughput::Outside::Above => (r.band.high, "above"),
+    };
+    if edge <= 0.0 {
+        return String::new();
+    }
+    format!("{:.0}% {word} normal; ", ((r.rows - edge) / edge * 100.0).abs())
 }
 
 /// When one warning about a source or destination held, for a chart to mark.
@@ -4344,11 +4359,11 @@ mod tests {
             [
                 (
                     Condition::SourceRowsAbove,
-                    "source high: 9,000 rows in 30 minutes, normal at this time of day is 1,000 to 5,000".to_string()
+                    "source high: 9,000 rows in 30 minutes, 80% above normal; normal at this time of day is 1,000 to 5,000".to_string()
                 ),
                 (
                     Condition::SourceRowsBelow,
-                    "source low: 600 rows in 30 minutes, normal at this time of day is 1,000 to 5,000".to_string()
+                    "source low: 600 rows in 30 minutes, 40% below normal; normal at this time of day is 1,000 to 5,000".to_string()
                 ),
             ]
         );
