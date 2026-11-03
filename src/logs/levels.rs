@@ -103,7 +103,6 @@ const SERVICES: &[(&str, &str)] = &[
     ("smeltr::io::sqs", "s3Sqs"),
     ("smeltr::io::postgres", "sql"),
     ("smeltr::io::sql", "sql"),
-    ("smeltr::io::http_post", "http"),
     ("smeltr::io::http_api", "httpApi"),
     ("smeltr::io::splunk", "splunkHec"),
     ("smeltr::io::okta", "oktaLogs"),
@@ -113,7 +112,7 @@ const SERVICES: &[(&str, &str)] = &[
     ("smeltr::acme_api", "acme"),
     ("smeltr::leader::oidc", "oidc"),
     ("smeltr::oidc_api", "oidc"),
-    ("smeltr::leader::remote", "git_remote"),
+    ("smeltr::leader::remote", "gitRemote"),
 ];
 
 /// The service a line said at `origin` talks to: its module path, or a library's own name.
@@ -178,7 +177,7 @@ mod tests {
         assert_eq!(service("librdkafka"), Some("kafka"));
         assert_eq!(service("smeltr::io::elastic_receiver"), Some("elasticReceiver"));
         assert_eq!(service("smeltr::io::elastic"), Some("elasticsearch"));
-        assert_eq!(service("smeltr::leader::remote"), Some("git_remote"));
+        assert_eq!(service("smeltr::leader::remote"), Some("gitRemote"));
         assert_eq!(service("smeltr::leader::store"), None);
         assert_eq!(service("smeltr::io::kafkaesque"), None);
     }
@@ -195,6 +194,7 @@ mod tests {
             "discovery",
             "entra",
             "http",
+            "http_post",
             "listing",
             "oauth",
             "object_source",
