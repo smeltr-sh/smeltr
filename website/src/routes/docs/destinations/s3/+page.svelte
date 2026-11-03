@@ -116,6 +116,20 @@
         >Add a custom source</a
       >
       page names, and choose it in the pipeline's <a href="/docs/schemas#produces">Produces bar</a>.
+      <ProductScreenshot
+        source="security-lake-schema"
+        height={1800}
+        crop={{ x: 608, y: 478, width: 1664, height: 851 }}
+        alt="The New schema from an OCSF class dialog: id authentication, OCSF 1.3.0 built in, the Authentication class."
+        caption="The Authentication class, read from OCSF 1.3.0."
+      />
+      <ProductScreenshot
+        source="security-lake-produces"
+        height={1800}
+        crop={{ x: 470, y: 420, width: 1170, height: 640 }}
+        alt="The okta-auth pipeline with authentication in its Produces bar, and the fields the rows still lack."
+        caption="The pipeline produces authentication. Until its steps fill the fields OCSF requires, the editor lists them."
+      />
     </li>
     <li>
       Add an S3 destination for each custom source, with its location's bucket, its role in <code
@@ -139,6 +153,10 @@
     A file it writes on 3 November 2026 lands at
     <code>ext/okta-auth/region=us-east-1/accountId=123456789012/eventDay=20261103/</code>, named by
     a random id with <code>.parquet</code> at the end.
+  </p>
+  <p>
+    <code>accepts</code> names the schema from step 2, so review flags a route whose pipeline does not
+    produce it.
   </p>
 
   <h2 id="verify">Verify</h2>
