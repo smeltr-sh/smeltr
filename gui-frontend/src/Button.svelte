@@ -11,7 +11,7 @@
   let seq = 0;
 
   /** Why a button is disabled while what it or a button beside it started is still under way. */
-  export const BUSY = 'Wait for the last step to finish.';
+  export const BUSY = 'Wait for the running action to finish.';
 </script>
 
 <script lang="ts">

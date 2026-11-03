@@ -55,7 +55,7 @@
     height?: number;
   } = $props();
 
-  const MERGED_ON_REMOTE = 'This leader follows a git remote, so its changes are merged there.';
+  const MERGED_ON_REMOTE = 'This leader follows a git remote, so changes are merged there.';
 </script>
 
 {#snippet opens(tab: 'tests' | 'schemas', text: string)}
