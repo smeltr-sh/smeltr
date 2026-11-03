@@ -140,7 +140,7 @@ impl Readings {
         if let Some(fresh) = self.fresh(ended_ms, share) {
             return fresh;
         }
-        record_swings(store, ended_ms);
+        record_swings(store, ended_ms, heartbeat_interval);
         let readings = Arc::new(compute(store, ended_ms, share));
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((ended_ms, share.to_bits(), readings.clone()));
         readings
@@ -452,7 +452,11 @@ const SWING_REACH_MS: i64 = 50 * 60 * 1000;
 /// Records each source's swings for the buckets that ended before `ended_ms` and are not held yet, back as far as
 /// the ten-second tier still holds. A bucket is recorded once the bucket after it has ended too: whether its
 /// source read throughout it is known only from both sides. A failure is logged, and the next pass tries again.
-fn record_swings(store: &RegistryStore, ended_ms: i64) {
+///
+/// Rows land in the slot their heartbeat arrived in, so no swing is kept at a width finer than `heartbeat_interval`:
+/// most of its slots would be empty, and its low nothing. A heartbeat that arrives after its bucket was recorded,
+/// as one held back by a lost connection can, is left out of that bucket's swing.
+fn record_swings(store: &RegistryStore, ended_ms: i64, heartbeat_interval: Duration) {
     let width = BUCKET.bucket_ms();
     let reached = BUCKET.align(ended_ms - SWING_REACH_MS);
     let from = match store.last_swing_ms() {
@@ -476,7 +480,7 @@ fn record_swings(store: &RegistryStore, ended_ms: i64) {
     let swings: Vec<Swing> = fine
         .into_iter()
         .flat_map(|((group, source), slots)| {
-            swings_of(&slots, from, until)
+            swings_of(&slots, from, until, heartbeat_interval.as_millis() as i64)
                 .into_iter()
                 .map(move |(width_ms, bucket_ms, low, high)| Swing {
                     group: group.clone(),
@@ -496,7 +500,7 @@ fn record_swings(store: &RegistryStore, ended_ms: i64) {
 /// One source's swings, as (width, bucket start, low, high), for each bucket from `from` to `until`, from its rows
 /// in ten-second slots. A bucket counts only when the source read in it and in the buckets either side, as a window
 /// counts only when it was read throughout. A slot in it with no point read nothing.
-fn swings_of(slots: &BTreeMap<i64, f64>, from: i64, until: i64) -> Vec<(i64, i64, f64, f64)> {
+fn swings_of(slots: &BTreeMap<i64, f64>, from: i64, until: i64, finest_ms: i64) -> Vec<(i64, i64, f64, f64)> {
     let width = BUCKET.bucket_ms();
     let ten = Tier::TenSeconds.bucket_ms();
     let read = |start: i64| slots.range(start..start + width).next().is_some();
@@ -504,7 +508,7 @@ fn swings_of(slots: &BTreeMap<i64, f64>, from: i64, until: i64) -> Vec<(i64, i64
     let mut bucket = from;
     while bucket < until {
         if read(bucket - width) && read(bucket) && read(bucket + width) {
-            for tier in SWING_WIDTHS {
+            for tier in SWING_WIDTHS.into_iter().filter(|tier| tier.bucket_ms() >= finest_ms) {
                 let step = tier.bucket_ms();
                 let mut rates: Vec<f64> = (bucket..bucket + width)
                     .step_by(step as usize)
@@ -908,7 +912,7 @@ mod tests {
     fn a_swing_is_the_lowest_and_highest_rate_at_each_width() {
         let store = store_with(0, |_| None);
         alternating(&store, END - 30 * 60_000, END);
-        record_swings(&store, END);
+        record_swings(&store, END, Duration::from_secs(1));
         let swings = |width: Tier| -> Vec<(i64, f64, f64)> {
             store
                 .swings_since("g", "s", width.bucket_ms(), 0)
@@ -930,7 +934,7 @@ mod tests {
 
         // Held, a bucket is not recorded again; the next bucket's end records the one after.
         alternating(&store, END, END + FIVE);
-        record_swings(&store, END + FIVE);
+        record_swings(&store, END + FIVE, Duration::from_secs(1));
         assert_eq!(swings(Tier::TenSeconds).len(), 5);
     }
 
@@ -940,7 +944,7 @@ mod tests {
     fn one_quiet_slot_does_not_set_a_buckets_low() {
         let mut slots: BTreeMap<i64, f64> = (0..3 * FIVE).step_by(10_000).map(|at| (END + at, 50.0)).collect();
         slots.remove(&(END + FIVE + 20_000));
-        let swings = swings_of(&slots, END + FIVE, END + 2 * FIVE);
+        let swings = swings_of(&slots, END + FIVE, END + 2 * FIVE, 1000);
         let quiet_minute = 250.0 * 1000.0 / 60_000.0;
         assert_eq!(
             swings,
@@ -975,5 +979,24 @@ mod tests {
             assert_eq!(points.len(), 13);
             assert!(points.iter().all(|p| (p.low, p.high) == band), "at {width}: {points:?}");
         }
+    }
+
+    /// Heartbeats slower than ten seconds leave most ten-second slots empty, so no swing is kept at that width.
+    #[test]
+    fn no_swing_is_kept_finer_than_the_heartbeat() {
+        let store = store_with(0, |_| None);
+        alternating(&store, END - 30 * 60_000, END);
+        record_swings(&store, END, Duration::from_secs(15));
+        assert_eq!(
+            store.swings_since("g", "s", Tier::TenSeconds.bucket_ms(), 0).unwrap(),
+            vec![]
+        );
+        assert_eq!(
+            store
+                .swings_since("g", "s", Tier::OneMinute.bucket_ms(), 0)
+                .unwrap()
+                .len(),
+            4
+        );
     }
 }

@@ -8062,8 +8062,6 @@ mod tests {
         assert_eq!(fetches.load(Ordering::SeqCst), 2, "the regrant fetched no ledger");
     }
 
-    /// The runtime hears when the progress waiting here passes its bound and when it has eased, once each, and a
-    /// runtime that starts hears it again.
     #[test]
     fn the_runtime_is_told_the_log_levels_once_each_time_they_change_and_again_when_it_restarts() {
         let dir = temp_dir("runtime-log-levels");
@@ -8105,6 +8103,8 @@ mod tests {
         assert_eq!(frames(3).len(), 3, "a runtime that restarted is told again");
     }
 
+    /// The runtime hears when the progress waiting here passes its bound and when it has eased, once each, and a
+    /// runtime that starts hears it again.
     #[test]
     fn the_runtime_is_told_when_the_progress_waiting_for_the_leader_is_backlogged() {
         let dir = temp_dir("runtime-backlog");
