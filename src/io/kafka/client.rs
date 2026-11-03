@@ -1533,16 +1533,13 @@ fn measure_lag(
     between: &dyn Fn(),
     unmeasured: &mut crate::logs::Relog,
 ) {
-    let mut failed = |why: String| {
-        if let Some(why) = unmeasured.fail_due(why) {
-            tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), why, "lag cannot be measured");
-        }
-    };
+    // Each failure is said at trace, and at debug when it starts and every RELOG_EVERY while it goes on.
+    let mut failed = |why: String| unmeasured.fail_due(why).is_some();
     let assignment = match consumer.assignment() {
         Ok(assignment) => assignment,
         Err(e) => {
-            tracing::trace!(target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the assignment could not be read, so lag is not measured this round");
-            failed(format!("the assignment could not be read: {e}"));
+            let due = failed(format!("the assignment could not be read: {e}"));
+            crate::debug_when!(due, target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the assignment could not be read, so lag is not measured this round");
             return;
         }
     };
@@ -1553,8 +1550,8 @@ fn measure_lag(
     let committed = match consumer.committed_offsets(assignment, LAG_QUERY_TIMEOUT) {
         Ok(committed) => committed,
         Err(e) => {
-            tracing::trace!(target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the committed offsets could not be read, so lag is not measured this round");
-            failed(format!("the committed offsets could not be read: {e}"));
+            let due = failed(format!("the committed offsets could not be read: {e}"));
+            crate::debug_when!(due, target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the committed offsets could not be read, so lag is not measured this round");
             return;
         }
     };
@@ -1589,9 +1586,9 @@ fn measure_lag(
             let (_, high) = match consumer.fetch_watermarks(&topic, partition, LAG_QUERY_TIMEOUT) {
                 Ok(marks) => marks,
                 Err(e) => {
-                    tracing::trace!(target: "kafka.lag_unmeasured", group = %routes.group(), %topic, partition, error = %e, "a partition's high watermark could not be read, so its lag is not measured this round");
                     any_failed = true;
-                    failed(format!("{topic}[{partition}]'s high watermark could not be read: {e}"));
+                    let due = failed(format!("{topic}[{partition}]'s high watermark could not be read: {e}"));
+                    crate::debug_when!(due, target: "kafka.lag_unmeasured", group = %routes.group(), %topic, partition, error = %e, "a partition's high watermark could not be read, so its lag is not measured this round");
                     continue;
                 }
             };
