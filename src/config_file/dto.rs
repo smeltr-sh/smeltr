@@ -3029,8 +3029,8 @@ impl Default for EncodingLabel {
 pub struct LevelLabel(pub String);
 
 impl LevelLabel {
-    /// [`crate::logs::levels::DEFAULT`], so a source that names nothing carries what a process keeps until an
-    /// operator sets other levels.
+    /// The startup level unless one is set, so a source that names nothing carries what a process keeps until an
+    /// operator sets levels.
     pub const DEFAULT: &str = "info";
 
     pub fn is_default(&self) -> bool {

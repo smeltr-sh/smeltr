@@ -4653,11 +4653,6 @@ impl Supervisor {
         }
     }
 
-    /// Tell the running runtime whether the progress waiting here for the leader is past its bound, when that has
-    /// changed or the runtime has not been told. Held sources there read nothing new while it is, which is what
-    /// bounds this backlog through an outage: their commits still arrive, and are kept.
-    ///
-    /// `true` is a control pipe that would not take the frame, as for [`Supervisor::route_invitations`].
     /// Keep this process's lines at the levels the leader sent, and have the runtime keep its at them too.
     fn follow_log_levels(&self, levels: heartbeat::LogLevels) {
         let mut held = self
@@ -4706,6 +4701,11 @@ impl Supervisor {
         }
     }
 
+    /// Tell the running runtime whether the progress waiting here for the leader is past its bound, when that has
+    /// changed or the runtime has not been told. Held sources there read nothing new while it is, which is what
+    /// bounds this backlog through an outage: their commits still arrive, and are kept.
+    ///
+    /// `true` is a control pipe that would not take the frame, as for [`Supervisor::route_invitations`].
     fn route_backlog(&self, running: Option<&mut child::RuntimeHandle>) -> bool {
         // What the owed window took waits for the leader as much as what the runtime's report still holds. Both
         // under the window's lock, taken first as `next_beat` takes it, so no progress moves between the two reads.

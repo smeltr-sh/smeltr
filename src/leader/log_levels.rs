@@ -12,8 +12,8 @@ use crate::leader::{AppState, run_store};
 
 const KEY: &str = "log_levels";
 
-/// What is stored, or the default with no overrides when nothing is. A stored value this build cannot read is the
-/// default too, so a worker keeps a level an operator can see on the leader rather than one nobody can.
+/// What is stored, or nothing when nothing is: every area then at each process's startup level. A stored value this
+/// build cannot read is nothing too.
 pub fn stored(store: &dyn Store) -> Result<LogLevels, StoreError> {
     Ok(store
         .setting(KEY)?
@@ -165,19 +165,19 @@ mod tests {
     #[test]
     fn levels_name_what_a_process_keeps() {
         use tracing::Level;
-        let kept = levels(None, &[("kafka", "trace"), ("store", "nonsense")]).levels();
-        assert_eq!(kept.default, Level::INFO);
+        let kept = levels(None, &[("kafka", "trace"), ("store", "nonsense")]).levels(Level::WARN);
+        assert_eq!(kept.default, Level::WARN);
         assert_eq!(kept.kept_at("kafka.lag_unmeasured"), Level::TRACE);
         assert_eq!(
             kept.kept_at("store.statement"),
-            Level::INFO,
+            Level::WARN,
             "a label this build does not know is the default"
         );
-        assert_eq!(levels(Some("debug"), &[]).levels().default, Level::DEBUG);
+        assert_eq!(levels(Some("debug"), &[]).levels(Level::WARN).default, Level::DEBUG);
     }
 
     #[test]
-    fn levels_travel_whole_and_absent_is_the_default() {
+    fn levels_travel_whole_and_absent_is_the_startup_level() {
         let text = serde_json::to_string(&levels(Some("info"), &[("kafka", "trace")])).unwrap();
         assert_eq!(text, r#"{"default":"info","areas":{"kafka":"trace"}}"#);
         let none: crate::heartbeat::HeartbeatResponse = serde_json::from_str(r#"{"captures":[],"holds":[]}"#).unwrap();
