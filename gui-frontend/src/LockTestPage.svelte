@@ -362,7 +362,7 @@
             class="primary"
             data-guide="lock"
             onclick={lockTest}
-            disabled={!canLock ? INCOMPLETE : ''}
+            disabled={saving ? BUSY : !canLock ? INCOMPLETE : ''}
           >
             {saving ? 'Locking…' : 'Lock the test'}
           </Button>

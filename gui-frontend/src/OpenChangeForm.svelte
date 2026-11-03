@@ -252,7 +252,11 @@
     <InlineError message={error} inline />
     <Button type="button" onclick={onclose} disabled={busy ? BUSY : ''}>Cancel</Button>
     <Locked refusedInDemo>
-      <Button type="submit" class="primary" disabled={!ready ? INCOMPLETE : ''}>
+      <Button
+        type="submit"
+        class="primary"
+        disabled={busy || drafting ? BUSY : !ready ? INCOMPLETE : ''}
+      >
         {busy ? 'Opening…' : 'Open for review'}
       </Button>
     </Locked>

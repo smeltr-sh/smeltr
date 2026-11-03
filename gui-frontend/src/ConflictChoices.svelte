@@ -86,7 +86,7 @@
       <Button
         type="button"
         class="primary"
-        disabled={!ready ? UNCHOSEN : busy ? BUSY : ''}
+        disabled={busy ? BUSY : !ready ? UNCHOSEN : ''}
         onclick={() => onapply(sides as MergeSide[])}>{busy ? 'Applying…' : 'Apply'}</Button
       >
     </div>

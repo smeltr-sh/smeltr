@@ -267,10 +267,14 @@
     {/if}
 
     <div class="buttons">
-      <Button type="button" onclick={discard} disabled={!dirty ? UNCHANGED : busy ? BUSY : ''}
+      <Button type="button" onclick={discard} disabled={busy ? BUSY : !dirty ? UNCHANGED : ''}
         >Discard</Button
       >
-      <Button class="primary" type="submit" disabled={!savable ? INCOMPLETE : ''}>Save</Button>
+      <Button
+        class="primary"
+        type="submit"
+        disabled={busy ? BUSY : !dirty ? UNCHANGED : !savable ? INCOMPLETE : ''}>Save</Button
+      >
     </div>
   </Panel>
 {/if}

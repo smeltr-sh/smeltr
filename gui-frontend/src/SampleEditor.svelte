@@ -338,7 +338,7 @@
     <div class="actions">
       <span class="spacer"></span>
       <Button type="button" onclick={oncancel} disabled={saving ? BUSY : ''}>Cancel</Button>
-      <Button class="primary" type="submit" disabled={!canSave ? INCOMPLETE : ''}
+      <Button class="primary" type="submit" disabled={saving ? BUSY : !canSave ? INCOMPLETE : ''}
         >{saving ? 'Saving…' : 'Save sample'}</Button
       >
     </div>

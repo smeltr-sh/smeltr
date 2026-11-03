@@ -311,7 +311,7 @@
       </div>
       {#snippet actions()}
         <Button type="button" onclick={cancelAdding} disabled={saving ? BUSY : ''}>Cancel</Button>
-        <Button type="submit" class="primary" disabled={!canAdd ? INCOMPLETE : ''}>
+        <Button type="submit" class="primary" disabled={saving ? BUSY : !canAdd ? INCOMPLETE : ''}>
           {saving ? 'Adding…' : 'Add'}
         </Button>
       {/snippet}

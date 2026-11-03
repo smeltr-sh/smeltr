@@ -796,11 +796,9 @@
                   type="button"
                   disabled={rotationBusy
                     ? BUSY
-                    : waitHours < ROTATION_WAIT_HOURS.min
+                    : waitHours < ROTATION_WAIT_HOURS.min || waitHours > ROTATION_WAIT_HOURS.max
                       ? `Choose between ${ROTATION_WAIT_HOURS.min} and ${ROTATION_WAIT_HOURS.max} hours.`
-                      : waitHours > ROTATION_WAIT_HOURS.max
-                        ? `Choose between ${ROTATION_WAIT_HOURS.min} and ${ROTATION_WAIT_HOURS.max} hours.`
-                        : ''}
+                      : ''}
                   onclick={() =>
                     rotationAct(
                       () => beginRotation(waitHours, authorityValidityDays),
@@ -978,14 +976,14 @@
               <Button
                 class="primary"
                 type="button"
-                disabled={busy ? BUSY : ordering ? BUSY : !orderable ? INCOMPLETE : ''}
+                disabled={busy || ordering ? BUSY : !orderable ? INCOMPLETE : ''}
                 onclick={() => save()}
               >
                 Save
               </Button>
               <Button
                 type="button"
-                disabled={busy ? BUSY : ordering ? BUSY : !orderable ? INCOMPLETE : ''}
+                disabled={busy || ordering ? BUSY : !orderable ? INCOMPLETE : ''}
                 onclick={() => order()}
               >
                 {ordering ? 'Renewing…' : 'Renew now'}
@@ -994,15 +992,13 @@
               <Button
                 class="primary"
                 type="button"
-                disabled={busy
+                disabled={busy || ordering
                   ? BUSY
-                  : ordering
-                    ? BUSY
-                    : !orderable
-                      ? INCOMPLETE
-                      : !agreed
-                        ? 'Agree to the terms of service first.'
-                        : ''}
+                  : !orderable
+                    ? INCOMPLETE
+                    : !agreed
+                      ? 'Agree to the terms of service first.'
+                      : ''}
                 onclick={() => order()}
               >
                 {ordering ? 'Getting certificate…' : 'Get certificate'}
