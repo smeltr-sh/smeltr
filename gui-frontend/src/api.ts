@@ -3386,6 +3386,31 @@ export function putWarningSettings(sourceRowsBandPercent: number): Promise<Warni
   });
 }
 
+/** The levels the fleet keeps its log lines at: `default` for every area `areas` does not name. An absent default
+ * is each process's startup log level. */
+export interface LogLevelsDto {
+  default?: string;
+  areas?: Record<string, string>;
+}
+
+export type LogLevelsResult = {
+  ok: boolean;
+  errors: ApiError[];
+  levels: LogLevelsDto | null;
+  /** Every area smeltr's own lines are in. */
+  areas: string[];
+  /** The levels, most severe first. */
+  labels: string[];
+};
+
+export function getLogLevels(): Promise<LogLevelsResult> {
+  return apiJson('/api/settings/log-levels');
+}
+
+export function putLogLevels(levels: LogLevelsDto): Promise<LogLevelsResult> {
+  return apiJson('/api/settings/log-levels', { method: 'PUT', body: JSON.stringify(levels) });
+}
+
 /** Whether this leader looks for a newer release. */
 export interface UpdateSettingsDto {
   check: boolean;
