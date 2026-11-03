@@ -73,7 +73,7 @@
         class="primary"
         data-guide="save"
         onclick={onsave}
-        disabled={saving ? BUSY : added.length > 0 ? 'Fix what would be refused first.' : ''}
+        disabled={saving ? BUSY : added.length > 0 ? 'Fix the problem shown first.' : ''}
         >{saving ? 'Saving…' : label}</Button
       >
     </div>

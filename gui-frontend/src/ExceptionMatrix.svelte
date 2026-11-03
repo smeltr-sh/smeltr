@@ -134,7 +134,9 @@
               mix && 'mix',
               !possible(row, answer) && 'no',
             ]}
-            disabled={!possible(row, answer) ? 'Not possible for this row.' : ''}
+            disabled={!possible(row, answer)
+              ? 'A failed delivery leaves no row to ignore or tag.'
+              : ''}
             aria-checked={isSet || inherited}
             aria-label="{row}: {answer}{!possible(row, answer)
               ? ', not possible'

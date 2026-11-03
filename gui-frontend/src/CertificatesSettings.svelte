@@ -582,7 +582,7 @@
       <div class="setting">
         {@render who(certificates.authority, on(certificates.authority.notAfterMillis))}
         <!-- A link is not a control a disabled fieldset reaches, and the demo has no file to give. -->
-        {#if NOT_IN_DEMO}<Button type="button" disabled={NOT_IN_DEMO} title={NOT_IN_DEMO}
+        {#if NOT_IN_DEMO}<Button type="button" disabled="The demo has no certificate to download."
             >Download ca.pem</Button
           >{:else}<a class="btn" href={AUTHORITY_URL} download>Download ca.pem</a>{/if}
       </div>
@@ -797,7 +797,7 @@
                   disabled={rotationBusy
                     ? BUSY
                     : waitHours < ROTATION_WAIT_HOURS.min || waitHours > ROTATION_WAIT_HOURS.max
-                      ? `Choose between ${ROTATION_WAIT_HOURS.min} and ${ROTATION_WAIT_HOURS.max} hours.`
+                      ? `Set the wait to between ${ROTATION_WAIT_HOURS.min} and ${ROTATION_WAIT_HOURS.max} hours.`
                       : ''}
                   onclick={() =>
                     rotationAct(

@@ -8,7 +8,7 @@
   export const BUSY = 'Wait for the running action to finish.';
 
   // One reason for each cause that buttons share, so the same cause reads the same everywhere.
-  export const UNCHANGED = 'Nothing has changed since the last save.';
+  export const UNCHANGED = "You haven't changed anything yet.";
   export const SAVE_FIRST = 'Save or discard your changes first.';
   export const INCOMPLETE = 'Fill in or correct the fields first.';
   export const LOADING = 'Wait for the page to finish loading.';

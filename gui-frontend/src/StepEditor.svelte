@@ -974,13 +974,13 @@
                       <Button
                         type="button"
                         class="pick"
-                        disabled={i === 0 ? 'It is already first.' : ''}
+                        disabled={i === 0 ? 'This step is already first.' : ''}
                         onclick={() => moveDeclared(ps.declared, i, -1)}>Move up</Button
                       >
                       <Button
                         type="button"
                         class="pick"
-                        disabled={i === ps.declared.length - 1 ? 'It is already last.' : ''}
+                        disabled={i === ps.declared.length - 1 ? 'This step is already last.' : ''}
                         onclick={() => moveDeclared(ps.declared, i, 1)}>Move down</Button
                       >
                       <button

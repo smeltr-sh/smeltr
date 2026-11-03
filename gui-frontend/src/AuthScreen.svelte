@@ -13,6 +13,7 @@
   most people on such a leader have no password to type.
 -->
 <script lang="ts">
+  import { count } from './time';
   import Button, { BUSY } from './Button.svelte';
   import InlineError from './InlineError.svelte';
   import {
@@ -258,7 +259,11 @@
       <Button
         class="primary"
         type="submit"
-        disabled={busy ? BUSY : waiting > 0 ? 'Wait until you can try again.' : ''}
+        disabled={busy
+          ? BUSY
+          : waiting > 0
+            ? `Too many attempts. Try again in ${count(waiting, 'second')}.`
+            : ''}
       >
         {changing ? 'Change password' : 'Sign in'}
       </Button>

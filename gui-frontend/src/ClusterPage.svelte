@@ -943,7 +943,7 @@
                   disabled={restarting
                     ? BUSY
                     : selectedWorker.asked === 'restart'
-                      ? 'This worker is already asked to restart.'
+                      ? 'A restart has already been requested for this worker.'
                       : ''}
                   onclick={() => selectedWorker && restart(selectedWorker.workerId)}
                   >{selectedWorker.asked === 'restart' ? 'Restarting…' : 'Restart'}</Button

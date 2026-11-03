@@ -20,7 +20,7 @@
   on.
 -->
 <script lang="ts">
-  import Button, { FIRST_PAGE, LAST_PAGE } from './Button.svelte';
+  import Button from './Button.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
@@ -341,10 +341,18 @@
     </table>
     {#if nextAfter != null || nextBefore != null}
       <div class="pager">
-        <Button type="button" onclick={newer} disabled={nextAfter == null ? FIRST_PAGE : ''}>
+        <Button
+          type="button"
+          onclick={newer}
+          disabled={nextAfter == null ? 'These are the newest logs.' : ''}
+        >
           Newer
         </Button>
-        <Button type="button" onclick={older} disabled={nextBefore == null ? LAST_PAGE : ''}>
+        <Button
+          type="button"
+          onclick={older}
+          disabled={nextBefore == null ? 'These are the oldest logs.' : ''}
+        >
           Older
         </Button>
       </div>
