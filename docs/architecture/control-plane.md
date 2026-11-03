@@ -320,13 +320,6 @@ window after such a warning ends, while the window still holds the stop and
 the catch-up after it. The leader keeps when each warning held, for as long as
 it keeps hourly rows, so the end is known across a restart.
 
-A source's chart draws its normal behind its points, learned the same way at
-the chart's own resolution. A point finer than a window swings wider than a
-window does, so for each five minutes the leader keeps a low and a high rate
-each source read at each finer resolution a chart draws, past a slot or two
-that a restart left nearly empty, and a fine chart's band holds the share of
-those past swings.
-
 ## Upgrades
 
 A released smeltr starts on whatever an earlier supported release left, and
