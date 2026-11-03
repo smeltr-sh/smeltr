@@ -130,8 +130,8 @@
     <li>
       Choose <strong>OCSF</strong>, then the release the tools downstream read. Smeltr has more than
       one built in and starts on the newest. For a release it does not have, choose
-      <strong>Upload a file</strong> and the
-      <a href="https://github.com/ocsf/ocsf-schema">OCSF schema</a> at that release, compiled into
+      <strong>Upload a file</strong>, then the
+      <a href="https://github.com/ocsf/ocsf-schema">OCSF schema</a> for that release, compiled into
       one file with
       <a href="https://pypi.org/project/ocsf-schema-compiler/"><code>ocsf-schema-compiler</code></a
       >: <code>ocsf-schema-compiler ocsf-schema &gt; schema.json</code>.

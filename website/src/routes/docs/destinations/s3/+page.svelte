@@ -106,19 +106,25 @@
     <li>
       <a href="https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html"
         >Add a custom source</a
-      > in Security Lake for each OCSF class you send. Each gives a bucket, a prefix, and a role to assume
+      > in Security Lake for each OCSF class you send. Each gives a location in S3, and a role to assume
       with its external id.
     </li>
     <li>
-      <a href="/docs/schemas#ocsf">Add a schema from the OCSF class</a>, at the OCSF release
-      Security Lake reads for custom sources, and hold the pipeline to it.
+      <a href="/docs/schemas#ocsf">Add a schema from the OCSF class</a> with
+      <strong>OCSF 1.3.0, built in</strong>, and choose it in the pipeline's
+      <a href="/docs/schemas#produces">Produces bar</a>.
     </li>
     <li>
-      Add an S3 destination for each custom source, with its bucket, its role in <code>roleArn</code
+      Add an S3 destination for each custom source, with its location's bucket, its role in <code
+        >roleArn</code
       >
       and its external id in <code>externalId</code>, format <code>parquet</code> and compression
-      <code>zstd</code>. Give <code>prefix</code> the custom source's prefix and the folders below
-      it that Security Lake names, with <code>%Y%m%d</code> where the day goes.
+      <code>zstd</code>. Set <code>prefix</code> to the rest of its location and the folders
+      <a href="https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html"
+        >Add a custom source</a
+      >
+      lists below it, with <code>%Y%m%d</code> for the day, such as
+      <code>ext/my-source/region=us-east-1/accountId=123456789012/eventDay=%Y%m%d/</code>.
     </li>
     <li>Route each class to its own destination.</li>
   </ol>
