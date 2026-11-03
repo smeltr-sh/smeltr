@@ -90,9 +90,7 @@
     "id": "events",
     "type": "httpApi",
     "url": "https://api.example.com/v1/events?limit=500",
-    "credentials": {
-      "Authorization": "API_TOKEN"
-    },
+    "credentials": { "Authorization": "API_TOKEN" },
     "records": "array",
     "recordsAt": "/data",
     "followLinks": true,
@@ -103,9 +101,7 @@
     "type": "httpReceiver",
     "port": 8088,
     "path": "/hooks/ci",
-    "tokens": {
-      "ci": "HOOK_TOKEN"
-    },
+    "tokens": { "ci": "HOOK_TOKEN" },
     "certificate": "receiver-tls",
     "records": "lines"
   },
@@ -113,37 +109,25 @@
     "id": "otel-logs",
     "type": "hecReceiver",
     "port": 8088,
-    "tokens": {
-      "otel": {
-        "token": "HEC_TOKEN"
-      }
-    },
+    "tokens": { "otel": { "token": "HEC_TOKEN" } },
     "certificate": "receiver-tls"
   },
   "s2sReceiverSource": {
     "id": "forwarders",
     "type": "s2sReceiver",
     "port": 9997,
-    "tokens": {
-      "uf-fleet": "S2S_TOKEN"
-    },
+    "tokens": { "uf-fleet": "S2S_TOKEN" },
     "certificate": "s2s-tls",
     "sourcetypes": {
-      "java:app": {
-        "lineBreaker": "([\\r\\n]+)\\d{4}-\\d{2}-\\d{2}"
-      },
-      "access_combined": {
-        "lineBreaker": "([\\r\\n]+)"
-      }
+      "java:app": { "lineBreaker": "([\\r\\n]+)\\d{4}-\\d{2}-\\d{2}" },
+      "access_combined": { "lineBreaker": "([\\r\\n]+)" }
     }
   },
   "otlpReceiverSource": {
     "id": "otel-logs",
     "type": "otlpReceiver",
     "port": 4318,
-    "tokens": {
-      "collectors": "OTEL_TOKEN"
-    },
+    "tokens": { "collectors": "OTEL_TOKEN" },
     "certificate": "receiver-tls"
   },
   "otlpTracesSource": {
@@ -151,9 +135,7 @@
     "type": "otlpReceiver",
     "port": 4318,
     "signal": "traces",
-    "tokens": {
-      "collectors": "OTEL_TOKEN"
-    },
+    "tokens": { "collectors": "OTEL_TOKEN" },
     "certificate": "receiver-tls"
   },
   "syslogReceiverSource": {
@@ -167,18 +149,14 @@
     "id": "prometheus",
     "type": "prometheusReceiver",
     "port": 9090,
-    "tokens": {
-      "prometheus": "PROM_TOKEN"
-    },
+    "tokens": { "prometheus": "PROM_TOKEN" },
     "certificate": "receiver-tls"
   },
   "elasticReceiverSource": {
     "id": "beats",
     "type": "elasticReceiver",
     "port": 9200,
-    "tokens": {
-      "beats": "ES_TOKEN"
-    },
+    "tokens": { "beats": "ES_TOKEN" },
     "certificate": "receiver-tls"
   },
   "oktaLogsSource": {
@@ -202,23 +180,11 @@
     "user": "smeltr_reader",
     "password": "PG_PASSWORD",
     "query": "SELECT event_id, occurred_at, user_name FROM auth.events",
-    "mode": {
-      "type": "incrementing",
-      "position": ["event_id"]
-    },
+    "mode": { "type": "incrementing", "position": ["event_id"] },
     "fields": [
-      {
-        "name": "event_id",
-        "type": "i64"
-      },
-      {
-        "name": "occurred_at",
-        "type": "datetime"
-      },
-      {
-        "name": "user_name",
-        "type": "str"
-      }
+      { "name": "event_id", "type": "i64" },
+      { "name": "occurred_at", "type": "datetime" },
+      { "name": "user_name", "type": "str" }
     ]
   },
   "mysqlSource": {
@@ -229,23 +195,11 @@
     "user": "smeltr_reader",
     "password": "MYSQL_PASSWORD",
     "query": "SELECT event_id, occurred_at, user_name FROM events",
-    "mode": {
-      "type": "incrementing",
-      "position": ["event_id"]
-    },
+    "mode": { "type": "incrementing", "position": ["event_id"] },
     "fields": [
-      {
-        "name": "event_id",
-        "type": "i64"
-      },
-      {
-        "name": "occurred_at",
-        "type": "datetime"
-      },
-      {
-        "name": "user_name",
-        "type": "str"
-      }
+      { "name": "event_id", "type": "i64" },
+      { "name": "occurred_at", "type": "datetime" },
+      { "name": "user_name", "type": "str" }
     ]
   },
   "kafkaDestination": {
@@ -291,12 +245,8 @@
     "id": "metrics-out",
     "type": "prometheus",
     "url": "https://mimir.example.com/api/v1/push",
-    "headers": {
-      "X-Scope-OrgID": "tenant-1"
-    },
-    "credentials": {
-      "Authorization": "PROMETHEUS_TOKEN"
-    }
+    "headers": { "X-Scope-OrgID": "tenant-1" },
+    "credentials": { "Authorization": "PROMETHEUS_TOKEN" }
   },
   "splunkDestination": {
     "id": "splunk-out",
