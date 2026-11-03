@@ -96,6 +96,15 @@ const SERVICES: &[(&str, &str)] = &[
     ("smeltr::io::storage_queue", "azureBlobQueue"),
     ("smeltr::io::syslog_receiver", "syslogReceiver"),
     ("smeltr::io::s2s_receiver", "s2sReceiver"),
+    ("smeltr::io::s2s", "s2sReceiver"),
+    ("smeltr::io::hec", "hecReceiver"),
+    ("smeltr::io::otlp", "otlpReceiver"),
+    ("smeltr::io::prometheus", "prometheusReceiver"),
+    ("smeltr::io::sqs", "s3Sqs"),
+    ("smeltr::io::postgres", "sql"),
+    ("smeltr::io::sql", "sql"),
+    ("smeltr::io::http_post", "http"),
+    ("smeltr::io::http_api", "httpApi"),
     ("smeltr::io::splunk", "splunkHec"),
     ("smeltr::io::okta", "oktaLogs"),
     ("smeltr::io::remote_write", "prometheus"),
@@ -172,6 +181,66 @@ mod tests {
         assert_eq!(service("smeltr::leader::remote"), Some("git_remote"));
         assert_eq!(service("smeltr::leader::store"), None);
         assert_eq!(service("smeltr::io::kafkaesque"), None);
+    }
+
+    /// Every module under `src/io` names the service it talks to, is shared by several, or talks to none, so a new
+    /// one is placed rather than left without a service.
+    #[test]
+    fn every_io_module_is_placed() {
+        // Each serves several services, which its module path cannot tell apart, so its lines name none.
+        const SHARED: &[&str] = &[
+            "api",
+            "app_sign_in",
+            "client_credentials",
+            "discovery",
+            "entra",
+            "http",
+            "listing",
+            "oauth",
+            "object_source",
+            "objects",
+            "receiver",
+            "vended",
+        ];
+        // Each talks to no outside service.
+        const NONE: &[&str] = &[
+            "avro",
+            "csv",
+            "line_breaker",
+            "lines",
+            "logs",
+            "pacer",
+            "parquet",
+            "parquet_variant",
+            "pipelined",
+            "reads",
+            "stored",
+            "table",
+            "trust",
+            "values",
+        ];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/io");
+        let mut unplaced = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let Some(module) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if module == "mod" || path.extension().is_some_and(|e| e != "rs") {
+                continue;
+            }
+            let listed = service(&format!("smeltr::io::{module}")).is_some();
+            let placed = [listed, SHARED.contains(&module), NONE.contains(&module)];
+            if placed.iter().filter(|&&p| p).count() != 1 {
+                unplaced.push(module.to_string());
+            }
+        }
+        unplaced.sort();
+        unplaced.dedup();
+        assert!(
+            unplaced.is_empty(),
+            "modules under src/io placed on no list, or on two: {unplaced:?}"
+        );
     }
 
     /// Each class and type a line names is checked against [`CLASSES`], and each type is snake_case, so a line in a
