@@ -18,7 +18,7 @@
 //! - **A call site reports once per event, not once per element.** A loop that refuses a thousand rows says so
 //!   once, with a thousand in a field. That is what keeps output proportional to what happened rather than to how
 //!   much data it happened to.
-//! - **A log is data.** A timestamp, a severity, a class and a type, a sentence and typed fields. The console
+//! - **A log is data.** A timestamp, a level, a class and a type, a sentence and typed fields. The console
 //!   rendering is one view of it; what a SIEM reads is the fields, not a parse of the sentence.
 //!
 //! A path that is about to exit does not write here. It prints and goes: a buffer has nothing to offer a process
@@ -258,7 +258,7 @@ static UNWRITABLE: AtomicU64 = AtomicU64::new(0);
 static STOPPING: AtomicBool = AtomicBool::new(false);
 /// Raised by the drain thread once it has written what it held, and waited on by [`stop`].
 static FLUSHED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
-/// The severity threshold, as `Level`'s discriminant. `Level` is not an atomic-sized type of its own.
+/// The level threshold, as `Level`'s discriminant. `Level` is not an atomic-sized type of its own.
 static MAX_LEVEL: AtomicUsize = AtomicUsize::new(level_ord(Level::INFO));
 /// This process's worker id, once it has one. `start` runs before either role begins, so early events have none.
 static WORKER: OnceLock<String> = OnceLock::new();
@@ -378,7 +378,7 @@ pub fn max_level() -> Level {
     level_of(MAX_LEVEL.load(Ordering::Relaxed))
 }
 
-/// The severities anything written down may name, most severe first.
+/// The levels anything written down may name, most severe first.
 pub const LEVEL_LABELS: &[&str] = &["error", "warn", "info", "debug", "trace"];
 
 /// One of [`LEVEL_LABELS`], in any case and with surrounding space. Nothing else, the numbers `tracing`'s own

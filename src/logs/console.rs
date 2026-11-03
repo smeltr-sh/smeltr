@@ -10,7 +10,7 @@ use crate::ops::civil::civil_from_days;
 
 /// Render one event for a person reading a terminal.
 ///
-/// The JSON form is what a machine reads; this is deliberately not that. Time, severity, class, type and service
+/// The JSON form is what a machine reads; this is deliberately not that. Time, level, class, type and service
 /// first because that is what an eye scans for, then the sentence, then what varied.
 pub fn line(event: &Event) -> String {
     let mut out = format!("{} {:<5}", stamp(event.timestamp), event.level.as_str());
@@ -95,8 +95,8 @@ pub(crate) fn stamp(at: std::time::SystemTime) -> String {
 /// All of it to stderr, and whether it landed.
 ///
 /// smeltr's stdout carries no data -- rows leave through destinations -- so there is nothing for logs to
-/// stay out of the way of, and splitting by severity only means an operator watching one stream sees a failure
-/// arrive and never sees it clear. Severity says how bad; it does not pick a stream.
+/// stay out of the way of, and splitting by level only means an operator watching one stream sees a failure
+/// arrive and never sees it clear. A level says how bad; it does not pick a stream.
 pub fn write(event: &Event) -> std::io::Result<()> {
     write_line(&mut std::io::stderr().lock(), &line(event))
 }
