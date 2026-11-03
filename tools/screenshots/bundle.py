@@ -495,8 +495,8 @@ APPS_SOURCES = [
 # Answers for a category and for one kind in it, so the Routes page shows the matrix's range.
 NETWORK_EXCEPTIONS = {"categories": {"math": "drop", "limits": "block"},
                       "kinds": {"Overflow": "tag", "Unmatched": {"deliver": ["kafka-dlq"]}}}
-# The feeds no route takes yet are dropped, not blocked: a source that blocks stops reading, and the leader would
-# show it failed rather than waiting for a pipeline.
+# What no route takes is dropped, not blocked: a source that blocks stops reading, and the leader would show it
+# failed rather than waiting for a route.
 APPS_EXCEPTIONS = {"kinds": {"Unmatched": "drop"}}
 
 # The feeds no pipeline parses yet, each sent whole to the archive until one does.
