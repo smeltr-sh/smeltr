@@ -1877,6 +1877,9 @@ fn every_startup_example_is_read() {
         }),
         ("leader.secrets.versions", || c::leader_secret_versions().to_string()),
         ("leader.lookups.versions", || c::leader_lookup_versions().to_string()),
+        ("leader.heartbeat.interval_ms", || {
+            format!("{:?}", c::leader_heartbeat_interval())
+        }),
         ("leader.tls.enabled", || c::leader_tls_enabled().to_string()),
         ("leader.tls.extra_san", || c::leader_tls_extra_sans().join(",")),
         ("leader.tls.ca_validity", || format!("{:?}", c::leader_ca_validity())),
@@ -1894,9 +1897,6 @@ fn every_startup_example_is_read() {
         }),
         ("worker.runtime.thread_limit", || c::worker_thread_limit().to_string()),
         ("worker.runtime.memory", || format!("{:?}", c::worker_memory_bytes())),
-        ("worker.heartbeat.interval_ms", || {
-            format!("{:?}", c::worker_heartbeat_interval())
-        }),
         ("worker.heartbeat.stop_after_unreachable_secs", || {
             format!("{:?}", c::worker_stop_after_unreachable_secs())
         }),
@@ -2030,6 +2030,10 @@ fn the_startup_settings_match_the_engine() {
         ("leader.secrets.key", path(c::leader_secret_key_path())),
         ("leader.secrets.versions", some(c::leader_secret_versions().to_string())),
         ("leader.lookups.versions", some(c::leader_lookup_versions().to_string())),
+        (
+            "leader.heartbeat.interval_ms",
+            some(c::leader_heartbeat_interval().as_millis().to_string()),
+        ),
         ("leader.tls.enabled", some(c::leader_tls_enabled().to_string())),
         (
             "leader.tls.extra_san",
@@ -2057,10 +2061,6 @@ fn the_startup_settings_match_the_engine() {
                 .map(|n| n.to_string()),
         ),
         ("worker.runtime.memory", c::worker_memory_bytes().map(|n| n.to_string())),
-        (
-            "worker.heartbeat.interval_ms",
-            some(c::worker_heartbeat_interval().as_millis().to_string()),
-        ),
         (
             "worker.heartbeat.stop_after_unreachable_secs",
             c::worker_stop_after_unreachable_secs().map(|n| n.to_string()),

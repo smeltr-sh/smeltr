@@ -268,7 +268,6 @@ fn spawn_worker(base: &str, code: &str, state_dir: &std::path::Path) -> std::pro
         .env("SMELTR_WORKER_ENROLLMENT_CODE", code)
         .env("SMELTR_WORKER_STATE_DIR", state_dir.to_str().unwrap())
         .env("SMELTR_WORKER_THREAD_LIMIT", "1")
-        .env("SMELTR_WORKER_HEARTBEAT_INTERVAL_MS", "300")
         // No SMELTR_LEADER_CA: the enrollment code is the only thing telling this worker what to accept.
         .env_remove("SMELTR_LEADER_CA")
         // Isolated from any `smeltr.toml` the test inherited the cwd of.
