@@ -77,7 +77,7 @@ may run one: the endpoint adds the two processes' counts, as the leader does.
 A process also says things about itself, and they go to one buffer per
 process for the same reasons the registry is one: most of what smeltr has to
 report happens where no deployment exists. A log is structured like a metric
-is -- a time, a severity, a class and a type, a constant sentence and typed
+is -- a time, a level, a class and a type, a constant sentence and typed
 fields -- so what reads it searches fields rather than parsing prose.
 
 Three consumers read that buffer, each bounded its own way:
@@ -151,7 +151,7 @@ bounded so that logs delay an exit no more than they may block a write.
 
 ### What a line says
 
-A line's severity is what it asks of whoever reads it:
+A line's level is what it asks of whoever reads it:
 
 | Level | What it is |
 |---|---|

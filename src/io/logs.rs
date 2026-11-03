@@ -19,12 +19,12 @@ pub const LOGS_TOPIC: &str = "__smeltr_logs";
 /// How this source is configured. Nothing to reach and nothing to authenticate: what it reads is already here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LogsSourceConfig {
-    /// The lowest severity this source carries. A line its process did not keep (`crate::logs::levels`) is not
+    /// The lowest level this source carries. A line its process did not keep (`crate::logs::levels`) is not
     /// here to read.
     pub min_level: tracing::Level,
 }
 
-/// The finest severity any logs source carries. Below it is trace, which describes the pipelines themselves.
+/// The finest level any logs source carries. Below it is trace, which describes the pipelines themselves.
 pub(crate) const CARRIED_AT_MOST: tracing::Level = tracing::Level::DEBUG;
 
 /// An ordinary `Source` whose "waiting for data" is the buffer filling.
