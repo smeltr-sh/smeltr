@@ -5628,11 +5628,11 @@ export interface OcsfClass {
   category: string;
 }
 
-/** The releases of ECS and OCSF the leader carries, which `readSchema` reads with `builtIn`. */
+/** The releases of ECS and OCSF the leader carries, each newest first, which `readSchema` reads with `builtIn`. */
 export interface SchemaStandards {
-  ecs: StandardRelease;
+  ecs: StandardRelease[];
   /** With OCSF's classes. */
-  ocsf: StandardRelease & { classes: OcsfClass[] };
+  ocsf: (StandardRelease & { classes: OcsfClass[] })[];
 }
 
 export function getSchemaStandards(): Promise<SchemaStandards> {
@@ -5644,8 +5644,10 @@ export function readSchema(req: {
   id: string;
   format: SchemaReadFormat;
   text: string;
-  /** Read the release of ECS or OCSF the leader carries rather than `text`. */
+  /** Read a release of ECS or OCSF the leader carries rather than `text`. */
   builtIn?: boolean;
+  /** The release `builtIn` reads, by its version; absent, the newest. */
+  release?: string;
   /** Whose requirements an ECS schema's fields take. */
   requirements?: EcsRequirements;
   /** The OCSF class to read. */

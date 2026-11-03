@@ -35,6 +35,8 @@
     /** For ECS and OCSF, read the release the leader carries rather than `text`. Until the leader says which it
      * carries, a file is uploaded, and an upload turns this off. */
     builtIn: boolean;
+    /** The release `builtIn` reads, by its version; the newest where empty. */
+    release: string;
     /** The importer, by pipeline id, for `import`. */
     pipeline: string;
     /** The uploaded file, for `import`, cut into records on the leader. */
@@ -139,7 +141,12 @@
   import Field from './Field.svelte';
   import { suggestId } from './ids';
   import LineBreakerField from './LineBreakerField.svelte';
-  import { getSchemaStandards, readSchema, type SchemaStandards } from './api';
+  import {
+    getSchemaStandards,
+    readSchema,
+    type SchemaStandards,
+    type StandardRelease,
+  } from './api';
   import Segmented from './Segmented.svelte';
   import { count } from './time';
   import Help from './Help.svelte';
@@ -176,9 +183,23 @@
     return d.builtIn && standards !== null;
   }
 
+  /** A release of ECS or OCSF, with OCSF's classes. */
+  type Release = StandardRelease & { classes?: OcsfClass[] };
+
+  /** The releases of `d`'s standard the leader carries, newest first. */
+  function releasesOf(d: SchemaDraft): Release[] {
+    return (d.type === 'ocsf' ? standards?.ocsf : standards?.ecs) ?? [];
+  }
+
+  /** The release `d` reads where it reads one: the one chosen, else the newest. */
+  function releaseOf(d: SchemaDraft): Release | undefined {
+    const releases = releasesOf(d);
+    return releases.find((r) => r.version === d.release) ?? releases[0];
+  }
+
   /** The OCSF classes `d` may be read from. */
   function classesOf(d: SchemaDraft): OcsfClass[] {
-    return fromRelease(d) ? standards!.ocsf.classes : d.classes;
+    return fromRelease(d) ? (releaseOf(d)?.classes ?? []) : d.classes;
   }
 
   /** `classes` by category, each by caption; a class in no category comes last, under Other. */
@@ -212,16 +233,18 @@
     d.id = d.suggested = suggestId(name, unavailable);
   }
 
-  /** `d` reads the release, or an upload; its class stays where the other offers it. */
-  function setBuiltIn(d: SchemaDraft, on: boolean) {
-    d.builtIn = on;
+  /** `d` reads the release of version `source`, or, for `upload`, a file; its class stays where the other offers
+   * it. */
+  function setSource(d: SchemaDraft, source: string) {
+    d.builtIn = source !== 'upload';
+    if (d.builtIn) d.release = source;
     const classes = classesOf(d);
     if (d.type === 'ocsf' && !classes.some((c) => c.name === d.class))
       setClass(d, firstClass(classes));
   }
 
   function blank(type: SchemaStart, taken: string[]): SchemaDraft {
-    const first = type === 'ocsf' ? firstClass(standards?.ocsf.classes ?? []) : '';
+    const first = type === 'ocsf' ? firstClass(standards?.ocsf[0]?.classes ?? []) : '';
     const id = suggestId(type === 'ecs' ? 'ecs' : first || 'schema', taken);
     return {
       id,
@@ -229,6 +252,7 @@
       type,
       text: '',
       builtIn: true,
+      release: '',
       pipeline: '',
       file: '',
       lineBreaker: undefined,
@@ -395,19 +419,21 @@
   {oncancel}
 >
   {#snippet fields(draft)}
-    {#if (draft.type === 'ecs' || draft.type === 'ocsf') && standards}
-      {@const release = draft.type === 'ecs' ? standards.ecs : standards.ocsf}
+    {@const release = releaseOf(draft)}
+    {#if (draft.type === 'ecs' || draft.type === 'ocsf') && release}
       {@const name = draft.type === 'ecs' ? 'ECS' : 'OCSF'}
       <div class="source">
         <Segmented
           label="Read from"
           options={[
-            { value: 'built-in', label: `${name} ${release.version}, built in` },
+            ...releasesOf(draft).map((r) => ({
+              value: r.version,
+              label: `${name} ${r.version}, built in`,
+            })),
             { value: 'upload', label: 'Upload a file' },
           ]}
           bind:value={
-            () => (draft.builtIn ? 'built-in' : 'upload'),
-            (v) => setBuiltIn(draft, v === 'built-in')
+            () => (draft.builtIn ? release.version : 'upload'), (v) => setSource(draft, v)
           }
         />
       </div>
