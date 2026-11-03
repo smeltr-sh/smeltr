@@ -5069,7 +5069,6 @@ fn is_token_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)
 }
 
-/// How many requests of `request_bytes` the buffer holds at once.
 /// A destination over the HTTP core, sending records to `url` with no headers of its own, as its sizes and stall
 /// threshold say. Each kind sets what it sends on top of it.
 fn to_http_core(
@@ -5105,6 +5104,7 @@ fn check_http_compression(id: &str, compression: &CompressionDto, errors: &mut I
     }
 }
 
+/// How many requests of `request_bytes` the buffer holds at once.
 fn affords(buffer_bytes: Option<BufferBytes>, request_bytes: usize) -> usize {
     effective_buffer_bytes(buffer_bytes, request_bytes) / request_bytes.max(1)
 }
