@@ -101,7 +101,7 @@ where
         for outer in span.scope().skip(1) {
             lend(&outer.extensions(), &mut fields);
         }
-        let ms = u64::try_from(took.as_millis()).unwrap_or(u64::MAX);
+        let ms = super::millis(took);
         // The duration wins over a span field of the same name, so `ms` always means how long it was open.
         fields.retain(|(name, _)| name != "ms");
         fields.push(("ms".into(), super::event::Value::Uint(ms)));
@@ -280,6 +280,18 @@ mod tests {
         });
         let sites: Vec<String> = tap.drain(100).into_iter().map(|e| e.site.to_string()).collect();
         assert_eq!(sites, ["kafka.lag_unmeasured"]);
+    }
+
+    /// A span held and never entered, as a background pass holds one across its awaits, still says when it ends.
+    #[test]
+    fn a_span_never_entered_says_when_it_ends() {
+        let events = handed(|| {
+            let pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "check alerts");
+            drop(pass);
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].message, "a background pass finished");
+        assert!(field(&events[0], "task").is_some() && field(&events[0], "ms").is_some());
     }
 
     /// A library's span lends nothing and says nothing.

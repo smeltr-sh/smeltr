@@ -633,7 +633,7 @@ fn run(
     name: &str,
 ) {
     // Lends the destination to every line this thread says.
-    let _span = tracing::trace_span!(target: "egress.run", "an egress thread", destination = name).entered();
+    let _span = tracing::trace_span!(target: "egress.run", "an egress thread", subject = name).entered();
     // The destination's own batch ids, mapped back to the reader's.
     let mut owner: HashMap<BatchId, Owed> = HashMap::new();
     let mut next_local: BatchId = 0;
