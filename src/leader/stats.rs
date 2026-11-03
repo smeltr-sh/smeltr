@@ -31,7 +31,7 @@ use super::throughput::{self, ExpectedPoint};
 use super::warnings::{self, SubjectKind, WarningSpan, label, stale_after_ms};
 use super::{
     BYTES_DELIVERED_METRIC, BYTES_POLLED_METRIC, ROWS_DELIVERED_METRIC, ROWS_IN_METRIC, ROWS_OUT_METRIC,
-    ROWS_UNMATCHED_METRIC,
+    ROWS_UNMATCHED_METRIC, SOURCE_LAG_METRIC,
 };
 
 /// `route_masks`' count of rows each route's own condition matched (`plan::topology`), labeled with the route's id.
@@ -147,6 +147,10 @@ pub struct SourceStats {
     /// Microseconds inside the source's own read per row read, bucket by bucket. Only buckets that read a row count.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poll_per_row: Option<Spread>,
+    /// Its lag, bucket by bucket: each partition's highest reading in the bucket, summed over its partitions. Absent
+    /// for a source that reports no lag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lag: Option<Spread>,
     /// What the source was expected to read per second, bucket by bucket (`throughput::expected_over`). Empty while
     /// it has too little history.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -366,6 +370,7 @@ pub fn build(
                     &rows,
                 ),
                 polled: total(&polled, group, &at),
+                lag: shape.levels(&summed_peaks(&totals(SOURCE_LAG_METRIC), group, &at)),
                 unmatched: total(&totals(ROWS_UNMATCHED_METRIC), group, &[("source", id)]),
                 unmatched_policy: system.answer_by_name(
                     system
@@ -744,6 +749,18 @@ fn peaks(totals: &[SubjectTotal], group: &str, labels: &[(&str, &str)]) -> Bucke
     out
 }
 
+/// Like [`peaks`], for a gauge each subject holds a share of, such as a source's lag over its partitions: each
+/// subject's highest reading within each bucket, added across the subjects.
+fn summed_peaks(totals: &[SubjectTotal], group: &str, labels: &[(&str, &str)]) -> Buckets {
+    let mut out = Buckets::new();
+    for subject in totals.iter().filter(|s| s.matches(group, labels)) {
+        for (bucket, peak) in peaks(std::slice::from_ref(subject), group, labels) {
+            *out.entry(bucket).or_default() += peak;
+        }
+    }
+    out
+}
+
 fn matching_points<'a>(
     totals: &'a [SubjectTotal],
     group: &'a str,
@@ -751,14 +768,16 @@ fn matching_points<'a>(
 ) -> impl Iterator<Item = (i64, f64)> + 'a {
     totals
         .iter()
-        .filter(move |subject| {
-            subject.label("group") == Some(group)
-                && labels.iter().all(|(name, value)| subject.label(name) == Some(*value))
-        })
+        .filter(move |subject| subject.matches(group, labels))
         .flat_map(|subject| subject.points.iter().copied())
 }
 
 impl SubjectTotal {
+    /// Whether this subject is in `group` and carries every one of `labels`.
+    fn matches(&self, group: &str, labels: &[(&str, &str)]) -> bool {
+        self.label("group") == Some(group) && labels.iter().all(|(name, value)| self.label(name) == Some(*value))
+    }
+
     fn label(&self, name: &str) -> Option<&str> {
         self.labels
             .iter()
@@ -776,10 +795,7 @@ fn total(totals: &[SubjectTotal], group: &str, labels: &[(&str, &str)]) -> f64 {
     // that formats `-0.0` shows a minus sign no count should ever carry. `+ 0.0` clears the sign.
     totals
         .iter()
-        .filter(|subject| {
-            subject.label("group") == Some(group)
-                && labels.iter().all(|(name, value)| subject.label(name) == Some(*value))
-        })
+        .filter(|subject| subject.matches(group, labels))
         .map(|subject| subject.total)
         .sum::<f64>()
         + 0.0
@@ -790,29 +806,20 @@ fn total(totals: &[SubjectTotal], group: &str, labels: &[(&str, &str)]) -> f64 {
 /// hundreds of times. Summing is what a total means: a bucket holds a counter's increase over it, so the buckets in
 /// a window add up to the window's count.
 ///
-/// `maintain` moves a bucket to the next tier only once it ages out of its own, so the window's newest buckets are
-/// still in the finer tiers. Their points are read too and keyed by `tier`'s bucket they fall in; [`buckets`] adds
-/// a bucket's points and [`peaks`] takes their highest, as `maintain` will.
+/// A bucket may hold several points (`RegistryStore::series_at`): [`buckets`] adds them and [`peaks`] takes their
+/// highest.
 fn totals_by_subject(store: &RegistryStore, metric: &str, tier: Tier, since_ms: i64) -> Vec<SubjectTotal> {
-    match store.series_since_at(metric, tier.and_finer(), since_ms) {
-        Ok(read) => {
-            let mut by_subject: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
-            for (subject_key, points) in read.into_iter().flatten() {
-                let of = by_subject.entry(subject_key).or_default();
-                of.extend(points.into_iter().map(|(at, value)| (tier.align(at), value)));
-            }
-            by_subject
-                .into_iter()
-                .filter_map(|(subject_key, mut points)| {
-                    points.sort_by_key(|(at, _)| *at);
-                    Some(SubjectTotal {
-                        labels: serde_json::from_str(&subject_key).ok()?,
-                        total: points.iter().map(|(_, v)| v).sum(),
-                        points,
-                    })
+    match store.series_at(metric, tier, since_ms) {
+        Ok(read) => read
+            .into_iter()
+            .filter_map(|(subject_key, points)| {
+                Some(SubjectTotal {
+                    labels: serde_json::from_str(&subject_key).ok()?,
+                    total: points.iter().map(|(_, v)| v).sum(),
+                    points,
                 })
-                .collect()
-        }
+            })
+            .collect(),
         Err(e) => {
             tracing::warn!(
                 target: "stats.metric_unreadable",
@@ -1152,6 +1159,41 @@ mod tests {
             vec![4.0, 0.0]
         );
         assert_eq!((per_row.min, per_row.max, per_row.mean), (0.0, 4.0, 2.0));
+    }
+
+    #[test]
+    fn a_sources_lag_is_each_partitions_peak_in_the_bucket_summed() {
+        let store = RegistryStore::open(std::path::Path::new(":memory:")).unwrap();
+        let now = super::super::warnings::now_millis();
+        let minute = Tier::OneMinute.align(now) - Tier::OneMinute.bucket_ms();
+        let partition =
+            |p: &str| format!(r#"[["group","g"],["partition","{p}"],["source","orders-west"],["topic","orders"]]"#);
+        // Ten-second readings a two-hour window serves as minutes.
+        for (p, at, lag) in [
+            ("0", 0, 100.0),
+            ("0", 20_000, 300.0),
+            ("1", 0, 50.0),
+            ("1", 20_000, 20.0),
+        ] {
+            store
+                .record_gauge_max(SOURCE_LAG_METRIC, &partition(p), minute + at, lag)
+                .unwrap();
+        }
+        let window = Duration::from_secs(2 * 60 * 60);
+        let answer = build(
+            "g",
+            &with_dlq(),
+            NodeKind::Source,
+            "orders-west",
+            window,
+            Some(&store),
+            quiet(),
+        );
+        let lag = answer.body.source.unwrap().lag.unwrap();
+        assert_eq!((lag.min, lag.max), (350.0, 350.0));
+
+        let none = built_for(NodeKind::Source, "orders-west", None).body.source.unwrap();
+        assert!(none.lag.is_none(), "a source that reports no lag has none to chart");
     }
 
     /// A pipeline's rows per bucket are its routes' matches added within the bucket; its per-row time is every
