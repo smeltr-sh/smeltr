@@ -25,7 +25,8 @@ graph LR
     ps --> pt2[panos-trim] --> spl([splunk])
     ps --> arc([s3-archive])
     fg --> fp[fortigate-traffic] --> esn
-    asa & pt & vs & aed & snmp
+    pt & vs & aed & snmp --> as1[as-sent] --> arc
+    asa -. unrouted .-> dlq([kafka-dlq])
   end
   subgraph apps [Applications & cloud: app-collector-01, -02]
     ng --> np[nginx-access] --> esw([es-web])
@@ -33,7 +34,7 @@ graph LR
     ct --> cp[aws-cloudtrail] --> ess
     np -. 5xx .-> ka([kafka-alerts])
     cp -. failures .-> ka
-    eal & eaw & sen
+    eal & eaw & sen --> as2[as-sent] --> arc2([s3-archive])
   end
 ```
 
@@ -46,19 +47,20 @@ graph LR
   samples and the lookup tables come from the same generators, so the pipelines join on what the logs carry. Every
   value is synthetic; addresses outside 10/8 come from the MaxMind test ranges and the documentation ranges. Now
   and then an nginx line is cut short and fails to parse; it reaches es-web tagged with its exception.
-- **Something to fix.** No route takes cisco-asa or the seven feeds after it, so the leader warns that their streams
-  are unrouted. The network group sends what no route takes to kafka-dlq and the apps group drops it. The seven
-  feeds' samples wait on the `work` branch, since a deploy leaves out a sample no test names. FGT-SIN names
-  `proto` (`tcp`) where the FortiGate pipeline declares the protocol number, so the leader warns that the field is
-  not its declared type.
+- **Something to fix.** Two problems, the two the demo's guide fixes. No route takes cisco-asa, so the leader warns
+  that its stream is unrouted, and the network group sends it to kafka-dlq. FGT-SIN names `proto` (`tcp`) where the
+  FortiGate pipeline declares the protocol number, so the leader warns that the field is not its declared type. The
+  seven feeds after cisco-asa go to s3-archive as they arrived, waiting on their pipelines. Their samples wait on
+  the `work` branch, since a deploy leaves out a sample no test names.
 - **Pipelines** (`bundle.py`), each normalizing to ECS: grok and a positional CSV table for PAN-OS, with CIDR,
   directory and App-ID lookups; grok and key=value for FortiGate; grok with a custom pattern for nginx; grok and a
   code step for auth.log; JSON with nested structs for CloudTrail, unrolled to a document per event. Each has a
   sample and a locked test. Each group holds its own tables, pipelines and destinations.
 - **History** (`stage.py`). Three accounts write it through the leader's API. The admin adds a worker group,
   Priya Raman onboards the firewalls, Marcus Webb onboards the web and cloud feeds and adds a 5xx alert, Priya
-  sends PAN-OS to Splunk trimmed and to an S3 archive whole, and the admin rotates the Elasticsearch key. Priya's
-  App-ID risk change stays open for review; Marcus's Cisco ASA draft stays a branch.
+  sends PAN-OS to Splunk trimmed and to the S3 archive whole, and the admin rotates the Elasticsearch key. Each
+  onboarding sends the feeds no pipeline parses yet to the archive as they arrived. Priya's PAN-OS threats and
+  App-ID risk changes stay open for review.
 - **A week before it** (`demo-traffic history`). Once staged, every throughput series plays what it has read back
   on a loop for eight days, on a daily curve with a level for each day shared by the whole fleet, so the charts span
   a week with the live streams' waves, destinations keep step with their sources, and each source shows the band it
