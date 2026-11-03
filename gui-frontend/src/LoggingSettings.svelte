@@ -148,19 +148,21 @@
             </tr>
           {/each}
           <tr>
-            <td class="for">
-              <select bind:value={adding} aria-label="class or service">
-                <option value="" disabled>choose…</option>
-                <optgroup label="Classes">
-                  {#each classes as c (c)}<option value="class:{c}">{c}</option>{/each}
-                </optgroup>
-                <optgroup label="Services">
-                  {#each services as s (s)}<option value="service:{s}">{s}</option>{/each}
-                </optgroup>
-              </select>
-              {#if adding.startsWith('class:')}
-                <input bind:value={addingType} placeholder="type (optional)" aria-label="type" />
-              {/if}
+            <td>
+              <div class="for">
+                <select bind:value={adding} aria-label="class or service">
+                  <option value="" disabled>choose…</option>
+                  <optgroup label="Classes">
+                    {#each classes as c (c)}<option value="class:{c}">{c}</option>{/each}
+                  </optgroup>
+                  <optgroup label="Services">
+                    {#each services as s (s)}<option value="service:{s}">{s}</option>{/each}
+                  </optgroup>
+                </select>
+                {#if adding.startsWith('class:')}
+                  <input bind:value={addingType} placeholder="type (optional)" aria-label="type" />
+                {/if}
+              </div>
             </td>
             <td>
               <select bind:value={addingLevel} aria-label="level">
@@ -172,9 +174,11 @@
                 type="button"
                 disabled={added === null
                   ? 'Choose a class or a service first.'
-                  : rows.some((r) => key(r) === key(added))
-                    ? 'An override already names this.'
-                    : ''}
+                  : added.type !== undefined && !/^[a-z0-9_]+$/.test(added.type)
+                    ? 'A type is lower-case letters, digits and underscores.'
+                    : rows.some((r) => key(r) === key(added))
+                      ? 'An override already names this.'
+                      : ''}
                 onclick={() => {
                   if (added) rows.push(added);
                   adding = '';
