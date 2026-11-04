@@ -2304,7 +2304,7 @@
               "https://api.example.com/v1/events?limit=500",
               "https://siem.example.com:8443/api/alerts"
             ],
-            "what": "The whole address it asks, `http://` or `https://`, with any fixed query parameters. It sends a credential only over `https://`, or to this host."
+            "what": "The whole address it asks, `http://` or `https://`, with any fixed query parameters. It sends a credential only over `https://`, or to localhost."
           },
           {
             "name": "method",
@@ -2571,7 +2571,7 @@
             "type": "string",
             "required": true,
             "examples": ["https://acme.okta.com", "https://login.acme.com"],
-            "what": "The org's address, with no path. It sends the token only over `https://`, or to this host."
+            "what": "The org's address, with no path. It sends the token only over `https://`, or to localhost."
           },
           {
             "name": "token",
@@ -4706,7 +4706,7 @@
               "https://intake.example.com/v1/logs",
               "https://logs.example.com:8443/ingest?tenant=acme"
             ],
-            "what": "The whole address the destination POSTs each request to, `http://` or `https://`. It sends a credential only over `https://`, or to this host."
+            "what": "The whole address the destination POSTs each request to, `http://` or `https://`. It sends a credential only over `https://`, or to localhost."
           },
           {
             "name": "zoneUrls",
@@ -5052,7 +5052,7 @@
               "https://prometheus.example.com/api/v1/write",
               "https://mimir.example.com/api/v1/push"
             ],
-            "what": "The store's remote_write endpoint, `http://` or `https://`. It sends a credential only over `https://`, or to this host."
+            "what": "The store's remote_write endpoint, `http://` or `https://`. It sends a credential only over `https://`, or to localhost."
           },
           {
             "name": "version",
@@ -5166,7 +5166,7 @@
             "type": "string",
             "required": true,
             "examples": ["https://otel-collector.example.com:4318"],
-            "what": "The OTLP endpoint, `http://` or `https://`. Each request goes to the signal's path added to this URL: `/v1/logs`, `/v1/metrics` or `/v1/traces`. It sends a credential only over `https://`, or to the machine the worker runs on."
+            "what": "The OTLP endpoint, `http://` or `https://`. Each request goes to the signal's path added to this URL: `/v1/logs`, `/v1/metrics` or `/v1/traces`. It sends a credential only over `https://`, or to localhost."
           },
           {
             "name": "signal",
