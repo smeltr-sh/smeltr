@@ -62,6 +62,10 @@ and a CSV of fields, one row per field, its columns chosen by their place or
 found by the header's names (`schema::csv`). The leader carries one release of
 ECS and one of OCSF, compiled and cut to what `schema::ocsf` reads, so either
 is read without its file (`schema::standard`); another release is uploaded.
+A schema is also made from one OpenTelemetry signal's records, the fields an
+OTLP receiver gives and an OTLP destination reads, with the `resource` and
+`scope` a record came under (`schema::otlp`). A field is required where the
+destination refuses a record without it.
 An imported ECS schema's required fields are required and its core fields
 recommended, unless Elastic Security's requirements are asked for: then the
 fields its field reference requires are required, those it uses recommended

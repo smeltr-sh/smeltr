@@ -1,5 +1,5 @@
 // Schemas: a bundle's schemas opened and searched by field, added from the release of ECS or OCSF the leader carries,
-// from a standard's file (ECS, OCSF, a CSV of fields, JSON Schema) or by an importer pipeline, a pipeline's Produces and a destination's accepts, and what review finds
+// from an OpenTelemetry signal's records, from a standard's file (ECS, OCSF, a CSV of fields, JSON Schema) or by an importer pipeline, a pipeline's Produces and a destination's accepts, and what review finds
 // where rows do not fit.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -643,6 +643,35 @@ test('ECS and an OCSF class come in from the releases the leader carries', async
   field = await saved(admin, api, 'auth-13');
   expect(field('user')?.requirement).toBe('required');
   expect(field('actor'), 'optional in 1.3, recommended in 1.9').toBeUndefined();
+});
+
+test('an OpenTelemetry signal comes in as the records the OTLP receiver gives', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: '+ Add schema' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'OTLP', exact: true }).click();
+  const signal = dialog.getByRole('combobox', { name: 'Signal' });
+  await expect(signal).toHaveValue('logs');
+  const id = dialog.getByLabel('id', { exact: true });
+  await expect(id).toHaveValue(/^otlp-logs/);
+  // The id follows the signal until it is typed over.
+  await signal.selectOption('traces');
+  await expect(id).toHaveValue(/^otlp-traces/);
+  await id.fill('spans');
+  await signal.selectOption('metrics');
+  await signal.selectOption('traces');
+  await expect(id).toHaveValue('spans');
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const field = await saved(admin, api, 'spans');
+  expect(field('traceId')).toMatchObject({ type: 'str', requirement: 'required' });
+  expect(field('startTime')?.type).toBe('datetime');
+  expect(field('attributes')?.type).toBe('variant');
+  expect(field('scope.name')?.type).toBe('str');
 });
 
 test("ECS read with Elastic Security's requirements asks for the fields Elastic Security uses", async ({

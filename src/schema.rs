@@ -17,6 +17,7 @@ pub mod csv;
 pub mod ecs;
 pub mod json_schema;
 pub mod ocsf;
+pub mod otlp;
 pub mod standard;
 
 /// The type a common name for one means, as a schema spells it: what a database, a spreadsheet or a standard calls a

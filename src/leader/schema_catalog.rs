@@ -1,5 +1,5 @@
-//! A schema brought in from a file a standard publishes (JSON Schema, ECS, OCSF, a CSV of fields) or by an importer
-//! pipeline, and handed out in an export format. The leader's
+//! A schema brought in from a file a standard publishes (JSON Schema, ECS, OCSF, a CSV of fields), from an
+//! OpenTelemetry signal's records, or by an importer pipeline, and handed out in an export format. The leader's
 //! `/api/preview/schema-read`, `/api/preview/schema-export` and `/api/areas/:area/preview/schema-import`, and
 //! the website demo's service, answer from here. A bundle's schemas are config like any other: read with
 //! `GET /api/areas/:area`, saved with `PUT /api/areas/:area/schemas`.
@@ -23,6 +23,8 @@ pub enum ReadFormat {
     Ocsf,
     /// A spreadsheet of fields under a header row (`schema::csv`).
     Csv,
+    /// One OpenTelemetry signal's records, as smeltr's OTLP receiver gives them (`schema::otlp`). No file is read.
+    Otlp,
 }
 
 /// A file to read as the schema `id`.
@@ -50,6 +52,9 @@ pub struct ReadRequest {
     /// How much of an OCSF class to read.
     #[serde(default)]
     pub cut: crate::schema::ocsf::Cut,
+    /// The OpenTelemetry signal whose records an `otlp` schema holds.
+    #[serde(default)]
+    pub signal: crate::plan::topology::Signal,
     /// Which column of a CSV holds what; unsaid, its header says.
     #[serde(default)]
     pub columns: Option<crate::schema::csv::Columns>,
@@ -95,6 +100,7 @@ pub fn read(req: &ReadRequest) -> Result<ReadSchema, String> {
             crate::schema::ocsf::read(&ocsf, &req.class, &req.cut)?
         }
         ReadFormat::Ocsf => crate::schema::ocsf::read(&json()?, &req.class, &req.cut)?,
+        ReadFormat::Otlp => crate::schema::otlp::read(req.signal),
         _ if req.built_in => return Err("only ECS and OCSF are built in".to_string()),
         ReadFormat::Csv if req.preview => {
             return Ok(ReadSchema {
@@ -324,6 +330,7 @@ mod tests {
             requirements: Default::default(),
             class: String::new(),
             cut: Default::default(),
+            signal: Default::default(),
             columns: None,
             types: Default::default(),
             preview: false,
@@ -341,6 +348,7 @@ mod tests {
             requirements: Default::default(),
             class: class.to_string(),
             cut: Default::default(),
+            signal: Default::default(),
             columns: None,
             types: Default::default(),
             preview: false,
@@ -398,6 +406,7 @@ mod tests {
             requirements: Default::default(),
             class: "authentication".to_string(),
             cut: Default::default(),
+            signal: Default::default(),
             columns: None,
             types: Default::default(),
             preview: false,
@@ -453,6 +462,19 @@ mod tests {
     fn a_line_breaker_a_source_would_refuse_is_refused() {
         let err = records_of("a", Some("no group")).unwrap_err();
         assert!(err.contains("no capture group"), "{err}");
+    }
+
+    /// An `otlp` read takes its signal and no file, and names the schema as asked.
+    #[test]
+    fn an_otlp_signal_reads_as_its_records_schema() {
+        let req: ReadRequest =
+            serde_json::from_value(json!({ "id": "spans", "format": "otlp", "signal": "traces" })).unwrap();
+        let schema = read(&req).unwrap().schema;
+        assert_eq!(schema.id, "spans");
+        assert_eq!(
+            schema.fields,
+            crate::schema::otlp::read(crate::plan::topology::Signal::Traces)
+        );
     }
 
     #[test]
