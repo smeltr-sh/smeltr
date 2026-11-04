@@ -514,7 +514,7 @@ impl StdFunc {
     pub fn takes_constant_at(self, i: usize) -> bool {
         use StdFunc::*;
         match self {
-            Min | Max | Clamp | Idiv | IsNull | CommunityId | Decode | Encode => true,
+            Min | Max | Clamp | Idiv | IsNull | CommunityId | Decode | Encode | FormatTime => true,
             StartsWith | EndsWith | Includes | IndexOf | LastIndexOf | Split | Join | Repeat | At | Insert | Remove
             | Resize | Duration | CountIn | ParseInt | CidrNetwork | ToString | ParseBytes => i == 1,
             Slice | PadStart | PadEnd | ParseTime => i == 1 || i == 2,
