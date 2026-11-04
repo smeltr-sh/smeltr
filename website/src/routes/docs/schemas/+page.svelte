@@ -9,6 +9,7 @@
     { id: 'add', title: 'Add a schema' },
     { id: 'ecs', title: 'Read ECS' },
     { id: 'ocsf', title: 'Read an OCSF class' },
+    { id: 'otlp', title: 'Make one from an OpenTelemetry signal' },
     { id: 'csv', title: 'Read a CSV of fields' },
     { id: 'produces', title: 'Hold a pipeline to a schema' },
     { id: 'fields', title: "Fill in a schema's fields" },
@@ -151,6 +152,21 @@
     caption="An OCSF class, read two levels deep, with the fields OCSF requires or recommends."
   />
   <p>Add a schema for each class you send.</p>
+
+  <h2 id="otlp">Make one from an OpenTelemetry signal</h2>
+  <p>
+    Choose <strong>OTLP</strong> and the <strong>Signal</strong>: logs, metrics or traces. The
+    schema holds that signal's records as the
+    <a href="/docs/sources/otlp-receiver#records">OTLP receiver</a>
+    gives them, and the <code>resource</code> and <code>scope</code> the
+    <a href="/docs/destinations/otlp#records">OTLP destination</a> reads. A span's
+    <code>traceId</code> and <code>spanId</code> and a metric data point's <code>type</code> are required,
+    since the destination refuses a record without them. Every other field is optional.
+  </p>
+  <p>
+    Choose this schema in the pipeline's Produces bar, and the editor offers its fields and says
+    which ones the rows still lack.
+  </p>
 
   <h2 id="csv">Read a CSV of fields</h2>
   <p>

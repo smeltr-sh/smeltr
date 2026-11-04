@@ -5658,7 +5658,7 @@ export interface CsvTypeValue {
 
 /** A file a schema is read from: JSON Schema, ECS's `fields.csv` or `ecs_flat.yml`, `ocsf-schema-compiler`'s output,
  * or a CSV of fields under a header row. */
-export type SchemaReadFormat = 'json-schema' | 'ecs' | 'ocsf' | 'csv';
+export type SchemaReadFormat = 'json-schema' | 'ecs' | 'ocsf' | 'csv' | 'otlp';
 
 /** Whose requirements an ECS schema's fields take: ECS's own, or Elastic Security's in their place. */
 export type EcsRequirements = 'ecs' | 'elastic-security';
@@ -5703,6 +5703,8 @@ export function readSchema(req: {
   class?: string;
   /** How much of the OCSF class: how many keys deep, and which requirement levels. */
   cut?: { depth: number; levels: Requirement[] };
+  /** The OpenTelemetry signal whose records an `otlp` schema holds; absent, `logs`. */
+  signal?: OtlpSignal;
   /** Which column of a CSV holds what; absent, its header says. */
   columns?: CsvColumns;
   /** The type of each value of a CSV's type column the reader does not know. */
