@@ -24,7 +24,9 @@ export async function reachable(open, base) {
   const visit = async (hash) => {
     const page = await open(hash);
     try {
-      await page.goto(`${base}${hash}`, { waitUntil: 'networkidle' });
+      // A month's range reads every node's month of history at once, which a staged fleet's leader can take longer
+      // than Playwright's default 30 s to answer while other pages read too.
+      await page.goto(`${base}${hash}`, { waitUntil: 'networkidle', timeout: 120_000 });
       await settle(page);
       const links = await page.$$eval('a[href^="#/"]', (as) =>
         as.map((a) => a.getAttribute('href')),
