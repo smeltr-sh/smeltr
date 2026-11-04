@@ -107,14 +107,19 @@ export const NOT_IN_DEMO = import.meta.env.MODE === 'demo' ? 'Not in the demo' :
 
 /** Why approving and deploying a change touching `paths` is not `access`'s to do -- the person
  * signed in, unless another is named -- or `''` when it is. As the leader judges it: a deployer in
- * every area the change touches, and an administrator for a path in no area. */
-export function deployBlocker(paths: string[], access: AccessDto = mine()): string {
+ * every area the change touches, and an administrator for a path in no area. `doing` names which of the two the
+ * reason is asked for. */
+export function deployBlocker(
+  paths: string[],
+  access: AccessDto = mine(),
+  doing: 'Approving' | 'Deploying' = 'Deploying',
+): string {
   if (access.administrator) return '';
   const outside = paths.find((p) => areaOfPath(p) === null);
-  if (outside !== undefined) return `Deploying this takes an administrator: it changes ${outside}.`;
+  if (outside !== undefined) return `${doing} this takes an administrator: it changes ${outside}.`;
   const short = [...new Set(paths.map((p) => areaOfPath(p)!))]
     .sort()
     .filter((a) => !allows(access, a, 'deployer'));
   if (short.length === 0) return '';
-  return `Deploying this takes a deployer in ${short.join(', ')}.`;
+  return `${doing} this takes a deployer in ${short.join(', ')}.`;
 }
