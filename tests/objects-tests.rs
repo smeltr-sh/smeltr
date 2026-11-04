@@ -510,7 +510,7 @@ fn a_finishing_destination_does_not_wait_for_its_interval() {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "not finished inside the 60 s interval"
+                "not finished within 10 s, though its interval is 60 s"
             );
             std::thread::sleep(Duration::from_millis(20));
         }
