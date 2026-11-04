@@ -726,6 +726,61 @@ describe('DemoLeader', () => {
       },
     ]);
   });
+
+  it('keeps of each earlier save only the scope it changed, and rebuilds the rest', async () => {
+    const asked: { base: Record<string, unknown>; branch: Record<string, unknown> }[] = [];
+    vi.stubGlobal('fetch', async (_: string, init: RequestInit) => {
+      asked.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ ok: true, errors: [], files: [], diff: '' }));
+    });
+    const kept = new Map<string, string>();
+    const store = {
+      getItem: (k: string) => kept.get(k) ?? null,
+      setItem: (k: string, v: string) => void kept.set(k, v),
+    } as Storage;
+    const r = recording();
+    const leader = new DemoLeader(r, 'http://service', store, () => RECORDED);
+    const put = (topic: string) =>
+      leader.answer(
+        'PUT',
+        at('/api/areas/network/sources?branch=mine'),
+        JSON.stringify([{ id: 'fw', type: 'kafka', topics: [topic] }]),
+      );
+    await put('first');
+    await leader.answer(
+      'PUT',
+      at('/api/areas/shared/sources?branch=mine'),
+      JSON.stringify([{ id: 'all', type: 'kafka', topics: ['all'] }]),
+    );
+    await put('third');
+    const saved = JSON.parse([...kept.values()].at(-1)!) as {
+      branches: { mine: { past: { scope: string; bundle?: unknown }[] } };
+    };
+    expect(saved.branches.mine.past.map((e) => e.scope)).toEqual(['network', 'shared', 'network']);
+    expect(Object.keys(saved.branches.mine.past[1])).not.toContain('bundles');
+
+    await leader.answer('POST', at('/api/branches/mine/open'), JSON.stringify({ title: 'Three' }));
+    const timeline = (await leader.answer('GET', at('/api/branches/mine/timeline'), null)).body as {
+      events: { kind: string; commit: string; parent: string }[];
+    };
+    const second = timeline.events.filter((e) => e.kind === 'saved')[1];
+    asked.length = 0;
+    const q = new URLSearchParams({ from: second.parent, to: second.commit });
+    await leader.answer('GET', at(`/api/main/diff?${q}`), null);
+    // The shared save, between the network save before it and the one after.
+    expect(asked).toMatchObject([
+      {
+        base: { network: { config: { sources: [{ topics: ['first'] }] } } },
+        branch: {
+          shared: { config: { sources: [{ id: 'all' }] } },
+          network: { config: { sources: [{ topics: ['first'] }] } },
+        },
+      },
+    ]);
+    expect(
+      (asked[0].base.shared as { config: { sources?: unknown } }).config.sources,
+    ).toBeUndefined();
+  });
   it('answers a sample read at a commit the tab holds, as a review reads both ends of a change', async () => {
     const r = recording();
     const sample = { id: 's1', name: 'one', records: [{ _raw: 'a' }] };

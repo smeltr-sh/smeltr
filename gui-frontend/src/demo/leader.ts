@@ -107,8 +107,10 @@ interface Branch {
   tests: Record<string, Record<string, TestDto>>;
   /** Its change, once opened for review, as the leader lists it (`branch_api::ChangeOut`). */
   change?: Change;
-  /** By commit: what it held at each save before its latest, so a review can show one save at a time. */
-  past?: Record<string, Files>;
+  /** Oldest first, one for each save: the commit it left and what the scope it changed held there, so a review can
+   * show one save at a time. Only that scope, as git keeps only what a commit changed: a whole copy each save would
+   * outgrow the tab's storage. */
+  past?: Earlier[];
   /** What happened to it, oldest first, as its change's timeline shows it: every save, and once opened, what
    * reviewers did. */
   events?: TimelineEvent[];
@@ -116,6 +118,15 @@ interface Branch {
 
 /** What a branch holds at one commit. */
 type Files = Pick<Branch, 'bundles' | 'samples' | 'tests'>;
+
+/** The one scope a save changed, as it was at `commit`, the save's parent. No `bundle`: the scope was not there. */
+interface Earlier {
+  commit: string;
+  scope: string;
+  bundle?: Bundle;
+  samples?: Record<string, SampleDto>;
+  tests?: Record<string, TestDto>;
+}
 
 /** A change, as `branch_api::ChangeOut` lists it. */
 interface Change {
@@ -594,17 +605,18 @@ export class DemoLeader {
       const broken = await this.brokenGroup(branch, bundle);
       if (broken) return broken;
     }
-    // Only this scope changes, so the others are shared with what the branch holds now.
-    const was: Files = {
-      bundles: { ...branch.bundles },
-      samples: { ...branch.samples },
-      tests: { ...branch.tests },
+    const was: Earlier = {
+      commit: branch.commit,
+      scope,
+      bundle: branch.bundles[scope],
+      samples: branch.samples[scope],
+      tests: branch.tests[scope],
     };
     branch.bundles[scope] = bundle;
     branch.samples[scope] = held.samples;
     branch.tests[scope] = held.tests;
     const parent = branch.commit;
-    (branch.past ??= {})[parent] = was;
+    (branch.past ??= []).push(was);
     branch.commit = newCommit();
     branch.commits += 1;
     branch.lastSave = Math.floor(this.now() / 1000);
@@ -1191,8 +1203,25 @@ export class DemoLeader {
   private at(commit: string | null): Files | undefined {
     for (const b of Object.values(this.state.branches)) {
       if (b.commit === commit) return b;
-      const past = commit ? b.past?.[commit] : undefined;
-      if (past) return past;
+      const from = b.past?.findIndex((e) => e.commit === commit) ?? -1;
+      if (from < 0) continue;
+      // Each save undone, newest first, back to the one that left `commit`.
+      const files: Files = {
+        bundles: { ...b.bundles },
+        samples: { ...b.samples },
+        tests: { ...b.tests },
+      };
+      for (const e of b.past!.slice(from).reverse()) {
+        for (const [key, value] of [
+          ['bundles', e.bundle],
+          ['samples', e.samples],
+          ['tests', e.tests],
+        ] as const) {
+          if (value === undefined) delete files[key][e.scope];
+          else (files[key] as Record<string, unknown>)[e.scope] = value;
+        }
+      }
+      return files;
     }
     return undefined;
   }
