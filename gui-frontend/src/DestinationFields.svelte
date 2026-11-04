@@ -974,7 +974,7 @@
       >
         {#snippet help()}
           The longest time records wait before they are written. A longer wait makes larger files.
-          Records are acknowledged only once they land, so every source feeding this destination is
+          Records are acknowledged only once they are written, so every source feeding this destination is
           held open for up to this long, and after a crash reads up to this long of records again.
         {/snippet}
         <input
