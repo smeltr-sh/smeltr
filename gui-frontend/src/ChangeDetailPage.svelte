@@ -548,6 +548,7 @@
                 {lines}
                 onposted={loadTimeline}
                 onstatechanged={load}
+                touches={loaded.branch.touches}
               />
             {:else if tab === 'saves'}
               {#if timelineFailed}

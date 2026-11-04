@@ -33,6 +33,7 @@
   import { canSubmit, type ComposerChoice } from './review';
   import ThreadView from './ThreadView.svelte';
   import { anchorLabel, displayList, threads, type Thread } from './threads';
+  import { deployBlocker } from './access';
   import { session } from './session';
   import { ago, shortCommit } from './time';
 
@@ -45,6 +46,7 @@
     lines,
     onposted,
     onstatechanged,
+    touches,
   }: {
     branch: string;
     change: ChangeDto;
@@ -59,6 +61,8 @@
     onposted: () => Promise<void> | void;
     /** The change was closed or reopened: everything on the page may have moved. */
     onstatechanged: () => Promise<void> | void;
+    /** The files the change touches: a verdict takes deployer in all of them, as deploying does. */
+    touches: string[];
   } = $props();
 
   let body = $state('');
@@ -79,8 +83,8 @@
   const me = session().displayName || session().username || '';
   const NOTHING_TO_SUBMIT = 'Write a comment first.';
 
-  /** The leader refuses a verdict on a closed change. */
-  let reviewable = $derived(!closed);
+  /** The leader refuses a verdict on a closed change, and from whoever could not deploy it. */
+  let reviewable = $derived(!closed && deployBlocker(touches) === '');
   let sending = $derived<ComposerChoice>(reviewable ? choice : 'comment');
 
   async function act(call: () => Promise<BranchMutationResult>, after: () => Promise<void> | void) {
