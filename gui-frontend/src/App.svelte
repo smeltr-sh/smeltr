@@ -627,6 +627,7 @@
             group: route.group,
             class: route.class,
             type: route.type,
+            typeExact: route.typeExact,
             service: route.service,
             q: route.q,
             before: route.before,

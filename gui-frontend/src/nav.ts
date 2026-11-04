@@ -57,6 +57,7 @@ export type Route =
       group?: string;
       class?: string;
       type?: string;
+      typeExact?: boolean;
       service?: string;
       q?: string;
       /** The pager's position: rows below this id. Set from a previous read's `nextBefore`. */
@@ -488,6 +489,7 @@ export function parseRoute(hash: string): Route {
         group: one('group'),
         class: one('class'),
         type: one('type'),
+        ...(params.get('typeExact') === 'true' && { typeExact: true }),
         service: one('service'),
         q: one('q'),
         before: cursor('before'),

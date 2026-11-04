@@ -15,7 +15,10 @@ export type Filters = {
   worker?: string;
   group?: string;
   class?: string;
+  /** Matched anywhere in the type, or whole with `typeExact`: what clicking
+   * a line's type asks for, since a type can be part of another's. */
   type?: string;
+  typeExact?: boolean;
   service?: string;
   q?: string;
   /** The pager's position: rows below/above this id
@@ -44,6 +47,7 @@ function params(f: Filters): URLSearchParams {
   ] as const) {
     if (value) params.set(name, value);
   }
+  if (f.type && f.typeExact) params.set('typeExact', 'true');
   for (const [name, value] of [
     ['before', f.before],
     ['after', f.after],

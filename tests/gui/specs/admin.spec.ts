@@ -220,7 +220,8 @@ test('log levels under System → Logging name a class, a class and a type, or a
 
   await goto(admin, leader, '#/status/logs');
   await admin.getByRole('combobox').filter({ hasText: 'class' }).first().selectOption('deploy');
-  await admin.getByPlaceholder('type (exact)').fill('moved');
+  // Typed, a type is matched in part.
+  await admin.getByPlaceholder('type', { exact: true }).fill('mov');
   await admin.getByRole('button', { name: 'Search', exact: true }).click();
   const rows = admin.getByRole('row').filter({ hasText: 'the fleet was deployed to a commit' });
   await expect(rows.first()).toBeVisible();
@@ -228,6 +229,13 @@ test('log levels under System → Logging name a class, a class and a type, or a
     admin.getByRole('row').filter({ hasText: 'an audited action was recorded' }),
   ).toHaveCount(0);
   expect(admin.url()).toContain('class=deploy');
+  expect(admin.url()).not.toContain('typeExact');
+  // Clicked, it is matched whole, until the box is edited.
+  await rows.first().getByRole('button', { name: 'moved', exact: true }).click();
+  await expect(admin).toHaveURL(/type=moved&typeExact=true/);
+  await expect(rows.first()).toBeVisible();
+  await admin.getByPlaceholder('type', { exact: true }).fill('move');
+  await expect(admin).not.toHaveURL(/typeExact/);
 });
 
 test('the leader certificate is the certificate leader in the list', async ({ admin }) => {

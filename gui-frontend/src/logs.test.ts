@@ -42,6 +42,7 @@ describe('toHash', () => {
       group: 'west',
       class: 'sources',
       type: 'poll',
+      typeExact: true,
       service: 'kafka',
       q: '100%',
     };

@@ -160,6 +160,8 @@
       group: text('group'),
       class: text('class'),
       type: text('type'),
+      // Whole only while the box still holds the type that was clicked.
+      ...(filters.typeExact && text('type') === filters.type && { typeExact: true }),
       service: text('service'),
       q: text('q'),
     };
@@ -259,7 +261,7 @@
           <option value={c}>{c}</option>
         {/each}
       </select>
-      <input name="type" placeholder="type (exact)" value={filters.type ?? ''} oninput={onType} />
+      <input name="type" placeholder="type" value={filters.type ?? ''} oninput={onType} />
       <select name="service" value={filters.service ?? ''} onchange={onSelect}>
         <option value="">service</option>
         {#each withRouted(services, filters.service) as s (s)}
@@ -319,7 +321,12 @@
                 type="button"
                 class="link-button"
                 onclick={() =>
-                  go({ ...resetCursor(filters), class: row.class ?? undefined, type: row.type })}
+                  go({
+                    ...resetCursor(filters),
+                    class: row.class ?? undefined,
+                    type: row.type,
+                    typeExact: true,
+                  })}
               >
                 {row.type}
               </button>
