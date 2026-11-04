@@ -649,6 +649,8 @@ struct Writer {
 
 impl Writer {
     fn run(&mut self, inbox: Receiver<Message>, reports: Sender<Result<Vec<BatchCompletion>, IoError>>) {
+        // A message taken from the inbox ahead of a commit, handled before any other.
+        let mut next = None;
         loop {
             // Woken at least every `MEASURE_EVERY`, so what lands while no batch comes shows as it lands. A finishing
             // writer's commit is always due, so with nothing to commit it waits for a batch rather than spinning.
@@ -659,7 +661,11 @@ impl Writer {
                     .saturating_duration_since(Instant::now())
                     .min(MEASURE_EVERY)
             };
-            match inbox.recv_timeout(wait) {
+            let message = match next.take() {
+                Some(message) => Ok(message),
+                None => inbox.recv_timeout(wait),
+            };
+            match message {
                 Ok(Message::Job(job)) => {
                     if let Err(e) = self.take(job) {
                         let e = self.fail(e);
@@ -678,7 +684,16 @@ impl Writer {
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
-            let due = self.held >= commit_at(self.config.buffer_bytes) || Instant::now() >= self.next_commit;
+            let full = self.held >= commit_at(self.config.buffer_bytes);
+            let mut due = full || Instant::now() >= self.next_commit;
+            if due && !full && self.config.commit_interval.is_zero() {
+                // A finishing writer takes what is queued before it commits, so the queue lands as one commit rather
+                // than one per batch.
+                if let Ok(message) = inbox.try_recv() {
+                    next = Some(message);
+                    due = false;
+                }
+            }
             if due {
                 if self.holds_nothing() {
                     // Nothing to commit: the interval runs from now.
