@@ -1015,6 +1015,11 @@ impl Deployment {
 /// Signals stop, waits for the buffers to drain, commit to the source, and the threads to shut down.
 fn stop_deployment(mut deployment: Deployment) {
     let drain_by = Instant::now() + DRAIN_TIMEOUT;
+    // Before the readers wait on their commits: a destination that finishes on an interval would not commit inside
+    // the drain otherwise.
+    for e in &deployment.egress {
+        e.finish();
+    }
     for r in &deployment.readers {
         r.stop.raise(drain_by);
     }
@@ -1091,14 +1096,20 @@ fn run_reader_loop(
         published.connection_error = connection_error;
     }
 
-    // Batches already handed over are still being delivered, and their offsets are this thread's to commit.
+    // Batches already handed over are still being delivered, and their offsets are this thread's to commit. What the
+    // source took and has not handed over goes too, while there is time.
     let deadline = stop.drain_by().unwrap_or_else(Instant::now);
+    let mut handing = true;
     while Instant::now() < deadline {
+        handing = handing && reader.source.stop_taking();
+        if handing {
+            let _ = reader.step(&lane.batches, &acks, TICK_MAX_ROWS, batch_bytes, TICK_TIMEOUT);
+        }
         reader.apply(acks.drain());
         if reader.retire_and_commit().is_err() {
             break;
         }
-        if reader.commits.is_empty() {
+        if !handing && reader.commits.is_empty() {
             break;
         }
         std::thread::sleep(Duration::from_millis(10));

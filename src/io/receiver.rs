@@ -538,6 +538,11 @@ impl Source for ReceiverSource {
         self.shared.dropped.swap(0, std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// What a sender is already waiting on is delivered, so it hears success rather than sending it again.
+    fn stop_taking(&mut self) -> bool {
+        self.shared.stop_taking()
+    }
+
     fn take_full(&mut self) -> u64 {
         self.shared.holdings.full.swap(0, std::sync::atomic::Ordering::Relaxed)
     }
@@ -730,12 +735,14 @@ struct Inbox {
     /// The `ackId`s a HEC receiver has given.
     acks: hec::Acks,
     blocked: bool,
+    /// Its deployment is stopping: it takes nothing new, and hands over what it holds.
+    stopping: bool,
     closed: bool,
 }
 
 impl Inbox {
     fn open(&self) -> bool {
-        !self.closed && !self.blocked
+        !self.closed && !self.blocked && !self.stopping
     }
 
     fn queue(&mut self, request: Request) {
@@ -1073,6 +1080,13 @@ impl Shared {
             // A sender that hung up is not waiting for this.
             let _ = answer.send(());
         }
+    }
+
+    /// Every new request is answered busy from now on. Whether it still holds requests its reader has not taken.
+    fn stop_taking(&self) -> bool {
+        let mut inbox = self.state.lock().unwrap();
+        inbox.stopping = true;
+        !inbox.queued.is_empty()
     }
 
     /// Every held request is answered busy, and every new one too: its records were never delivered, and the sender

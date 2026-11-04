@@ -126,6 +126,9 @@ struct Queue {
     sender_bytes: OnceLock<usize>,
     /// The captures told this destination is sent to here. See [`Egress::with_captures`].
     captures: OnceLock<Arc<crate::worker::capture::Captures>>,
+    /// The deployment is stopping: whatever the destination holds is finished as soon as it has nothing new to take.
+    /// See [`Egress::finish`].
+    finishing: AtomicBool,
 }
 
 /// The bytes every borrowing queue of one deployment may hold above its reserve, together. A deployment has two: one
@@ -289,6 +292,7 @@ impl Queue {
             holds_refusals: AtomicBool::new(false),
             lend: OnceLock::new(),
             sender_bytes: OnceLock::new(),
+            finishing: AtomicBool::new(false),
             captures: OnceLock::new(),
         }
     }
@@ -595,6 +599,14 @@ impl Egress {
         }
     }
 
+    /// From now on, the destination finishes what it holds whenever its queue runs dry, rather than at its own
+    /// interval: a stopping deployment commits what it can before it ends, and what a source answered for on receipt
+    /// is delivered rather than abandoned.
+    pub fn finish(&self) {
+        self.queue.finishing.store(true, Ordering::Relaxed);
+        self.queue.work.notify_all();
+    }
+
     pub fn id(&self) -> DestId {
         self.id
     }
@@ -685,7 +697,18 @@ fn run(
             Some(i) => Some(again.swap_remove(i).1),
             None => match queue.pop(POLL_INTERVAL) {
                 Popped::Closed => break,
-                Popped::Idle => None,
+                Popped::Idle => {
+                    if queue.finishing.load(Ordering::Relaxed)
+                        && !owner.is_empty()
+                        && let Err(e) = destination.flush()
+                    {
+                        // What it said of each batch comes by `poll_completions`; this is only the wait between tries.
+                        note_stall(metrics, id, name, &e, &mut stalled);
+                        queue.sleep_unless_closed(backoff);
+                        backoff = (backoff * 2).min(RETRY_MAX);
+                    }
+                    None
+                }
                 Popped::Work(u, pressed) => {
                     pressing = pressed;
                     Some(u)

@@ -895,6 +895,13 @@ pub trait Source: Send {
         Ok(())
     }
 
+    /// Its deployment is stopping: take nothing more from outside, and say whether it still holds what it took and
+    /// must hand over before it ends. The reader polls it while it says so. The default holds nothing: a source that
+    /// reads at its own pace reads again after a restart.
+    fn stop_taking(&mut self) -> bool {
+        false
+    }
+
     /// Records the source let go before they were read, since the last call: ones a sender could not be made to wait
     /// for, which arrived while the source had no room. The default is none: a source that can wait never lets go.
     fn take_dropped(&mut self) -> u64 {
