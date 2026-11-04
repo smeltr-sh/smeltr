@@ -554,6 +554,13 @@ mod tests {
     }
 
     #[test]
+    fn an_octet_count_counts_octets_not_characters() {
+        // `é` is two octets and `€` three: counted as characters, each length would end its message short.
+        let cuts = cut_each(&["7 <13>éa".as_bytes(), "8 <13>€a".as_bytes(), b"<13>b\n"]).unwrap();
+        assert_eq!(cuts, [vec!["<13>éa"], vec!["<13>€a"], vec!["<13>b"]]);
+    }
+
+    #[test]
     fn framings_mix_in_one_stream() {
         let cuts = cut_each(&[b"<13>a\n5 <13>b3 xyz<13>c\r\n"]).unwrap();
         assert_eq!(cuts, [vec!["<13>a", "<13>b", "xyz", "<13>c"]]);
