@@ -438,7 +438,7 @@
         <div class="left">
           <PageHeader title={loaded.change.title}>
             {#snippet beside()}
-              <Locked refusedInDemo>
+              <Locked>
                 <button
                   type="button"
                   class="icon pencil"

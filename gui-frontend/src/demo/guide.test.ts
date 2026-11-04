@@ -14,6 +14,7 @@ const fresh = (over: Partial<World> = {}): World => ({
   tests: ['a'],
   mainTests: ['a'],
   mainPipelines: (network('main')?.pipelines ?? []).map((p) => p.id),
+  change: null,
   ...over,
 });
 
@@ -66,6 +67,12 @@ describe('the guide', () => {
 
   it('ticks the test for a test main lacks', () => {
     expect(done(fresh({ branch: 'fix', tests: ['a', 'b'] }))).toContain('test');
+  });
+
+  it("ticks the review while the branch's change is open, and not once it is closed", () => {
+    expect(done(fresh({ branch: 'fix', change: 'open' }))).toContain('review');
+    expect(done(fresh({ branch: 'fix', change: 'closed' }))).not.toContain('review');
+    expect(done(fresh({ branch: 'fix' }))).not.toContain('review');
   });
 });
 

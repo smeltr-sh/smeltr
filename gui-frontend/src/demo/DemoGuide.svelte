@@ -152,7 +152,8 @@
       <li class="last" class:next={next === -1}>
         <span class="mark" aria-hidden="true">→</span>
         <span class="text">
-          Ready to ship it? On a real fleet you'd deploy now, and Status would clear.
+          Ready to ship it? On a real fleet a reviewer would approve and deploy it now, and Status
+          would clear.
           <a href="https://smeltr.sh/get/" target="_blank" rel="noopener">Get smeltr</a>
         </span>
       </li>

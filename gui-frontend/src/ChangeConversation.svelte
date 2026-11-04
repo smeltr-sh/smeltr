@@ -249,7 +249,7 @@
         </div>
       {/if}
       <InlineError message={postError} />
-      <Locked refusedInDemo
+      <Locked
         ><div class="actions">
           {#if closed}
             <Button type="button" disabled={busy ? BUSY : ''} onclick={reopen}>Reopen change</Button

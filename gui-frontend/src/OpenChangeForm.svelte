@@ -251,10 +251,11 @@
   <div class="actions">
     <InlineError message={error} inline />
     <Button type="button" onclick={onclose} disabled={busy ? BUSY : ''}>Cancel</Button>
-    <Locked refusedInDemo>
+    <Locked>
       <Button
         type="submit"
         class="primary"
+        data-guide="review-submit"
         disabled={busy || drafting ? BUSY : !ready ? INCOMPLETE : ''}
       >
         {busy ? 'Opening…' : 'Open for review'}

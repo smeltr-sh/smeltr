@@ -2618,7 +2618,7 @@ pub struct BranchSummary {
 }
 
 /// One file's difference between two revisions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct FileChange {
     pub path: String,
     /// `A`, `M` or `D`. Rename detection is off, so a move is an add and a delete -- which is what a bundle's
@@ -2626,6 +2626,38 @@ pub struct FileChange {
     pub status: String,
     pub added: u32,
     pub removed: u32,
+}
+
+/// What two revisions differ in: each file, and the hunks of all of them or of one.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct Diff {
+    pub files: Vec<FileChange>,
+    /// Unified diff, for the whole change or for one path alone.
+    pub diff: String,
+}
+
+/// [`Diff`] between two sets of files, each by its forward-slash path, for the whole of them or for `path` alone.
+/// A file only one side has is added or deleted.
+pub fn diff_of_files(
+    before: &std::collections::BTreeMap<String, Vec<u8>>,
+    after: &std::collections::BTreeMap<String, Vec<u8>>,
+    path: Option<&str>,
+) -> Result<Diff, GitError> {
+    let mut out = Diff::default();
+    let paths: std::collections::BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+    for at in paths.into_iter().filter(|at| path.is_none_or(|p| p == at.as_str())) {
+        let (old, new) = (before.get(at), after.get(at));
+        let status = match (old, new) {
+            (None, _) => "A",
+            (_, None) => "D",
+            (Some(old), Some(new)) if old == new => continue,
+            _ => "M",
+        };
+        let (old, new) = (old.map_or(&[][..], Vec::as_slice), new.map_or(&[][..], Vec::as_slice));
+        out.files.push(file_change(at.clone(), status, old, new));
+        out.diff.push_str(&file_patch(at, old, new)?);
+    }
+    Ok(out)
 }
 
 /// One commit, as a history entry.
@@ -2840,21 +2872,12 @@ fn files_between(repo: &gix::Repository, old: gix::ObjectId, new: gix::ObjectId)
             gix::object::tree::diff::ChangeDetached::Deletion { .. } => "D",
             _ => "M",
         };
-        let before_bytes = side_bytes(repo, &before)?;
-        let after_bytes = side_bytes(repo, &after)?;
-        // A binary file has no lines to count, which is the `-` git writes for both.
-        let (added, removed) = if is_binary(&before_bytes) || is_binary(&after_bytes) {
-            (0, 0)
-        } else {
-            let (diff, _) = line_diff(&before_bytes, &after_bytes);
-            (diff.count_additions(), diff.count_removals())
-        };
-        changes.push(FileChange {
-            path: change.location().to_string(),
-            status: status.to_string(),
-            added,
-            removed,
-        });
+        changes.push(file_change(
+            change.location().to_string(),
+            status,
+            &side_bytes(repo, &before)?,
+            &side_bytes(repo, &after)?,
+        ));
     }
     Ok(changes)
 }
@@ -2898,27 +2921,47 @@ pub fn diff_between(repo_path: &Path, from: &str, to: &str, path: Option<&str>) 
     unified_between(&repo, old, new, path)
 }
 
-/// One file's hunks, under the line naming the file they are in.
-///
-/// What the file's presence, mode and blob ids did is not repeated here: the response carries a `files` list beside
-/// this text, and the path, the status and the counts are already on it. The naming line stays, because it is what
-/// separates one file's hunks from the next's.
+/// [`file_patch`] of one change between two trees.
 fn patch(
     repo: &gix::Repository,
     change: &gix::object::tree::diff::ChangeDetached,
     at: &str,
 ) -> Result<String, GitError> {
     let (before, after) = sides(change);
-    let before_bytes = side_bytes(repo, &before)?;
-    let after_bytes = side_bytes(repo, &after)?;
+    file_patch(at, &side_bytes(repo, &before)?, &side_bytes(repo, &after)?)
+}
 
+/// What one file's change between `before` and `after` adds and removes, as a branch's file list shows it. `status`
+/// is `A`, `M` or `D`.
+pub fn file_change(path: String, status: &str, before: &[u8], after: &[u8]) -> FileChange {
+    // A binary file has no lines to count, which is the `-` git writes for both.
+    let (added, removed) = if is_binary(before) || is_binary(after) {
+        (0, 0)
+    } else {
+        let (diff, _) = line_diff(before, after);
+        (diff.count_additions(), diff.count_removals())
+    };
+    FileChange {
+        path,
+        status: status.to_string(),
+        added,
+        removed,
+    }
+}
+
+/// The hunks of the file at `at` going from `before` to `after`, under the line naming the file they are in.
+///
+/// What the file's presence, mode and blob ids did is not repeated here: the response carries a `files` list beside
+/// this text, and the path, the status and the counts are already on it. The naming line stays, because it is what
+/// separates one file's hunks from the next's.
+pub fn file_patch(at: &str, before: &[u8], after: &[u8]) -> Result<String, GitError> {
     let mut out = format!("diff --git a/{at} b/{at}\n");
-    if is_binary(&before_bytes) || is_binary(&after_bytes) {
+    if is_binary(before) || is_binary(after) {
         out.push_str(&format!("Binary files a/{at} and b/{at} differ\n"));
         return Ok(out);
     }
 
-    let (diff, input) = line_diff(&before_bytes, &after_bytes);
+    let (diff, input) = line_diff(before, after);
     let body = gix::diff::blob::UnifiedDiff::new(
         &diff,
         &input,
@@ -4508,6 +4551,53 @@ mod tests {
                 git_diff(&repo, &range, Some(path)),
                 "{path}"
             );
+        }
+    }
+
+    /// Two trees held as files diff as the same two trees committed do, file list and text, whole and by path.
+    #[test]
+    fn files_diff_as_the_commits_holding_them_do() {
+        let data = temp_dir("diff-of-files");
+        let before = [
+            ("sources.json", "[\n  1,\n  2,\n  3\n]"),
+            ("destinations.json", "[]"),
+            ("same.json", "1"),
+        ];
+        let after = [
+            ("sources.json", "[\n  1,\n  9,\n  3,\n  4\n]"),
+            ("routes.json", "[\n  7\n]"),
+            ("same.json", "1"),
+        ];
+        save(&data, MAIN_BRANCH, &before, "main");
+        save(&data, "work", &after, "work");
+        let repo = repo_path(&data);
+        let tip = branch_tip(&repo, "work").unwrap();
+        commit_edits(
+            &repo,
+            "work",
+            &tip,
+            Some(&tip),
+            &[FileEdit {
+                path: "destinations.json".into(),
+                content: None,
+            }],
+            "drop destinations",
+            &Actor::system(),
+        )
+        .unwrap();
+        let held = |files: &[(&str, &str)]| -> std::collections::BTreeMap<String, Vec<u8>> {
+            files
+                .iter()
+                .map(|(p, c)| (p.to_string(), c.as_bytes().to_vec()))
+                .collect()
+        };
+
+        let whole = diff_of_files(&held(&before), &held(&after), None).unwrap();
+        assert_eq!(whole.diff, diff_unified(&repo, "work", None).unwrap());
+        assert_eq!(whole.files, changed_files(&repo, "work").unwrap());
+        for path in ["sources.json", "destinations.json", "routes.json", "same.json"] {
+            let one = diff_of_files(&held(&before), &held(&after), Some(path)).unwrap();
+            assert_eq!(one.diff, diff_unified(&repo, "work", Some(path)).unwrap(), "{path}");
         }
     }
 

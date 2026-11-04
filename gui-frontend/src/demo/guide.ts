@@ -20,6 +20,8 @@ export interface World {
   mainTests: string[];
   /** The ids of the network group's pipelines on `main`. */
   mainPipelines: string[];
+  /** Whether `branch`'s change is open for review, closed, or was never opened. */
+  change: 'open' | 'closed' | null;
 }
 
 /** A control a task is done with: the page it is on, by the start of its hash, and a selector for it. */
@@ -160,6 +162,25 @@ export const TASKS: Task[] = [
     ],
     done: (w) => w.branch !== MAIN && w.tests.some((t) => !w.mainTests.includes(t)),
   },
+  {
+    id: 'review',
+    text: 'Open your fix for review',
+    hash: '#/changes',
+    steps: [
+      // The strip that says which branch you are on carries it, on every page.
+      { on: '#/', at: guide('review-open') },
+      // The form drafts a title, so the hint sits on the button it is sent with.
+      {
+        on: '#/',
+        at: guide('review-submit'),
+        hint: {
+          text: 'Give it a title. The deployed commit takes it as its message:',
+          copy: 'Route cisco-asa and read FortiGate proto as text',
+        },
+      },
+    ],
+    done: (w) => w.branch !== MAIN && w.change === 'open',
+  },
 ];
 
 /** The control to point at for `task` on the page at `hash`: the furthest of its steps on screen that takes a click,
@@ -205,12 +226,16 @@ async function get<T>(path: string, q: Record<string, string>): Promise<T | null
 /** What the guide needs of `branch`, read through the API. */
 export async function look(branch: string, seen: boolean): Promise<World> {
   const area = `/api/areas/${GROUP}`;
-  const [config, mainConfig, samples, tests, mainTests] = await Promise.all([
+  const [config, mainConfig, samples, tests, mainTests, branches] = await Promise.all([
     get<{ config?: World['config'] }>(area, { branch }),
     get<{ config?: World['config'] }>(area, { branch: MAIN }),
     get<{ samples?: World['samples'] }>(`${area}/samples`, { branch }),
     get<{ tests?: { id: string }[] }>(`${area}/tests`, { branch }),
     get<{ tests?: { id: string }[] }>(`${area}/tests`, { branch: MAIN }),
+    get<{ branches?: { name: string; change?: { state: 'open' | 'closed' } }[] }>(
+      '/api/branches',
+      {},
+    ),
   ]);
   return {
     sawStatus: seen,
@@ -220,6 +245,7 @@ export async function look(branch: string, seen: boolean): Promise<World> {
     tests: (tests?.tests ?? []).map((t) => t.id),
     mainTests: (mainTests?.tests ?? []).map((t) => t.id),
     mainPipelines: (mainConfig?.config?.pipelines ?? []).map((p) => p.id),
+    change: branches?.branches?.find((b) => b.name === branch)?.change?.state ?? null,
   };
 }
 
