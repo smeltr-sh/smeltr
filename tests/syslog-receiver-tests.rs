@@ -236,25 +236,36 @@ fn a_sender_from_elsewhere_is_closed() {
     nothing_arrives(&mut source);
 }
 
-/// A message larger than the receiver reads closes the connection; what came before it is still delivered.
+/// A message larger than the receiver reads keeps its first bytes, up to the largest, and the rest of it is
+/// discarded (RFC 5424, 6.1); the connection reads on.
 #[test]
-fn a_message_too_large_closes_the_connection() {
+fn a_message_too_large_is_truncated_and_the_connection_reads_on() {
     let at = free_port();
     let mut source = receiver(at, &["127.0.0.1"], None, 1024, &HeldSecrets::default());
     let mut sender = TcpStream::connect(at).unwrap();
-    sender.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    sender.write_all(b"<13>Oct 11 22:14:15 web-1 app: small\n").unwrap();
+    let oversized = format!("<13>{}", "x".repeat(4096));
+    sender
+        .write_all(
+            format!(
+                "<13>Oct 11 22:14:15 web-1 app: small\n{} {oversized}{oversized}\n<13>Oct 11 22:14:16 web-1 app: after\n",
+                oversized.len()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
     assert_eq!(
-        text(&poll_until(&mut source, 1)),
-        ["<13>Oct 11 22:14:15 web-1 app: small"]
+        text(&poll_until(&mut source, 4)),
+        [
+            "<13>Oct 11 22:14:15 web-1 app: small",
+            &oversized[..1024],
+            &oversized[..1024],
+            "<13>Oct 11 22:14:16 web-1 app: after"
+        ]
     );
-    let _ = sender.write_all(format!("4096 {}", "x".repeat(4096)).as_bytes());
-    assert!(closed(&mut sender));
-    nothing_arrives(&mut source);
 }
 
-/// A syslog receiver on `at`, admitting senders from `allow_from`, serving TLS with a certificate for `localhost` that `authority` issued over `key`, and,
-/// given `trusted`, requiring each sender's certificate to chain to it.
+/// A syslog receiver on `at`, admitting senders from `allow_from`, serving TLS with a certificate for `localhost` that
+/// `authority` issued over `key`, and, given `trusted`, requiring each sender's certificate to chain to it.
 fn tls_receiver(
     at: SocketAddr,
     allow_from: &[&str],
@@ -538,7 +549,7 @@ fn a_receiver_answers_close_notify_with_its_own() {
     );
 }
 
-/// A receiver that closes a connection itself, here on a message larger than it reads, closes it with `close_notify`
+/// A receiver that closes a connection itself, here on a frame it does not read, closes it with `close_notify`
 /// (RFC 5425, 4.4).
 #[test]
 fn a_receiver_closing_a_connection_sends_close_notify() {
@@ -553,9 +564,7 @@ fn a_receiver_closing_a_connection_sends_close_notify() {
         2048,
     );
     let mut sender = tls_sender(at, &authority, Sending::default()).unwrap();
-    let _ = sender
-        .write_all(counted(&"x".repeat(4096)).as_bytes())
-        .and_then(|()| sender.flush());
+    let _ = sender.write_all(b"12a <13>abcdefgh").and_then(|()| sender.flush());
     let mut byte = [0; 1];
     let ended = sender.read(&mut byte);
     assert!(
@@ -726,19 +735,19 @@ fn a_datagram_from_elsewhere_is_dropped() {
     nothing_arrives(&mut source);
 }
 
-/// A datagram larger than the receiver reads is dropped alone; the sender's next is still read.
+/// A datagram larger than the receiver reads keeps its first bytes, up to the largest (RFC 5424, 6.1).
 #[test]
-fn a_datagram_too_large_is_dropped() {
+fn a_datagram_too_large_is_truncated() {
     let at = free_port_for_both();
     let mut source = udp_receiver(at, &["127.0.0.1"], 1024);
     let sender = datagram_sender(at);
-    sender.send("x".repeat(4096).as_bytes()).unwrap();
+    let oversized = format!("<13>{}", "x".repeat(4096));
+    sender.send(oversized.as_bytes()).unwrap();
     sender.send(b"<13>Oct 11 22:14:15 web-1 app: small").unwrap();
     assert_eq!(
-        text(&poll_until(&mut source, 1)),
-        ["<13>Oct 11 22:14:15 web-1 app: small"]
+        text(&poll_until(&mut source, 2)),
+        [&oversized[..1024], "<13>Oct 11 22:14:15 web-1 app: small"]
     );
-    nothing_arrives(&mut source);
 }
 
 /// Nothing makes a sender of datagrams wait, so one that arrives while the source is blocked is dropped and counted

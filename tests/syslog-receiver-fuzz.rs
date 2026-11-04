@@ -1,6 +1,7 @@
 //! Random syslog senders against syslog receivers of random settings. Syslog has no acknowledgement: a sender forgets
 //! a message once written. So every message a receiver admits must arrive once, as sent, and none it refuses: a
-//! malformed frame closes the connection, keeping what came before it.
+//! malformed frame closes the connection, keeping what came before it, and a message over the limit arrives truncated
+//! to it, the connection reading on.
 //!
 //! Each seed opens a receiver under settings an operator could save, over TCP or UDP, and sends it connections or
 //! datagrams from senders it admits and senders it does not: messages octet-counted or ended by a newline, or by the
@@ -166,14 +167,11 @@ const ENDINGS: &[&str] = &[
     "a length not followed by a space",
     "a line over the limit",
     "a last line over the limit",
-    "a line over the limit, the connection left open",
+    "a line over the limit, then a malformed frame, the connection left open",
 ];
 
-/// The first of `ENDINGS` the receiver takes as malformed: it closes the connection, keeping the messages before.
-const MALFORMED: usize = 6;
-
 /// The endings whose last line the receiver takes only once the connection ends.
-const ENDED_BY_HANGING_UP: &[usize] = &[1, 5];
+const ENDED_BY_HANGING_UP: &[usize] = &[1, 5, 9];
 
 /// Datagrams a UDP sender sends, each by what it holds.
 const DATAGRAMS: &[&str] = &[
@@ -311,23 +309,46 @@ fn connection(rng: &mut Rng, n: usize, max: usize, labels: &mut Vec<String>) -> 
             bytes.extend(b"\r");
             taken.push(line);
         }
-        // Whole, so a receiver that took the count would take it.
+        // Truncated to the limit, its rest discarded.
         6 => {
             let len = max + 1 + rng.below(1000);
             bytes.extend(format!("{len} ").bytes());
-            bytes.extend(padded(&named, len));
+            let message = padded(&named, len);
+            bytes.extend(&message);
+            taken.push(message[..max].to_vec());
         }
+        // Malformed: the connection closes there, keeping the messages before.
         7 => bytes.extend(b"12x message"),
         8 => {
-            bytes.extend(padded(&named, max + 1));
+            let line = padded(&named, max + 1);
+            bytes.extend(&line);
             bytes.extend(b"\n");
+            taken.push(line[..max].to_vec());
         }
-        9 => bytes.extend(padded(&named, max + 1)),
-        _ => bytes.extend(padded(&named, max + 2 + rng.below(100))),
+        9 => {
+            let line = padded(&named, max + 1);
+            bytes.extend(&line);
+            taken.push(line[..max].to_vec());
+        }
+        // Truncated before its newline arrives, and the malformed frame after it closes the connection.
+        _ => {
+            let line = padded(&named, max + 2 + rng.below(100));
+            bytes.extend(&line);
+            bytes.extend(b"\n12x message");
+            taken.push(line[..max].to_vec());
+        }
     }
-    // A malformed connection's frames after the malformed one are never read.
-    if (MALFORMED..9).contains(&ending) {
-        bytes.extend(format!("<13>c{n}never read\n").bytes());
+    let after = format!("<13>c{n}after").into_bytes();
+    match ending {
+        // What follows a truncated message is read.
+        6 | 8 => {
+            bytes.extend(&after);
+            bytes.extend(b"\n");
+            taken.push(after);
+        }
+        // What follows a malformed frame is never read.
+        7 => bytes.extend(format!("<13>c{n}never read\n").bytes()),
+        _ => {}
     }
     let pieces = pieces(rng, bytes.len(), labels);
     Connection {
@@ -357,7 +378,7 @@ const BROKEN_ENDINGS: &[&str] = &[
     "a last octet-counted message cut short beside a line breaker",
     "a broken message over the limit",
     "a last broken message over the limit",
-    "an unbroken run past the slack, the connection left open",
+    "an unbroken run past the slack, then a malformed frame, the connection left open",
 ];
 
 /// A random connection, the `n`th, to a receiver whose messages `breaker` breaks, of at most `max` bytes, and the
@@ -400,8 +421,9 @@ fn broken_connection(rng: &mut Rng, n: usize, max: usize, breaker: Breaker, labe
         bytes.extend(frame);
         taken.extend(record);
     }
+    // A message's start is no malformed frame, so with `Start` nothing closes a connection left open.
     let ending = match only_messages {
-        true => *rng.pick(&[0, 1, 3, 4, 5]),
+        true => *rng.pick(&[0, 1, 3, 4]),
         false => rng.below(BROKEN_ENDINGS.len()),
     };
     labels.push(BROKEN_ENDINGS[ending].to_string());
@@ -421,22 +443,34 @@ fn broken_connection(rng: &mut Rng, n: usize, max: usize, breaker: Breaker, labe
             bytes.extend(message);
             waits = false;
         }
-        // Malformed, so the connection closes there, keeping the messages before.
+        // Truncated to the limit, and what follows it read.
         3 => {
-            bytes.extend(padded(&named, max + 1 + rng.below(100)));
+            let message = padded(&named, max + 1 + rng.below(100));
+            bytes.extend(&message);
             bytes.extend(end);
-            bytes.extend(format!("<13>c{n}never read").bytes());
+            taken.push(message[..max].to_vec());
+            let after = format!("<13>c{n}after").into_bytes();
+            bytes.extend(&after);
             bytes.extend(end);
+            taken.push(after);
+            waits = true;
         }
-        4 => bytes.extend(padded(&named, max + 1 + rng.below(100))),
-        _ => bytes.extend(padded(
-            &named,
-            max + smeltr::io::line_breaker::BREAK_SLACK + 1 + rng.below(100),
-        )),
-    }
-    // A malformed ending's message is the last, and is never taken: what waited before it is taken when it breaks.
-    if ending >= 3 {
-        waits = false;
+        4 => {
+            let message = padded(&named, max + 1 + rng.below(100));
+            bytes.extend(&message);
+            taken.push(message[..max].to_vec());
+            waits = true;
+        }
+        // Truncated once past the slack, its rest discarded to its break, and the malformed frame after it closes
+        // the connection.
+        _ => {
+            let run = padded(&named, max + smeltr::io::line_breaker::BREAK_SLACK + 1 + rng.below(100));
+            bytes.extend(&run);
+            bytes.extend(end);
+            bytes.extend(b"12x message");
+            taken.push(run[..max].to_vec());
+            waits = false;
+        }
     }
     let pieces = pieces(rng, bytes.len(), labels);
     Connection {
@@ -520,8 +554,12 @@ fn datagram(rng: &mut Rng, n: usize, max: usize, label: &mut String) -> (Vec<u8>
         12 => (b"\n".to_vec(), None),
         13 => (b"\r".to_vec(), None),
         14 => (b"\r\n".to_vec(), None),
-        // Larger than the receiver reads, so it reads only part of it.
-        _ => (padded(&named, (max + 2 + rng.below(100)).min(LARGEST_DATAGRAM)), None),
+        // Larger than the receiver reads, so it is truncated to the limit, a line end and all.
+        _ => {
+            let datagram = padded(&named, (max + 2 + rng.below(100)).min(LARGEST_DATAGRAM));
+            let record = datagram[..max].to_vec();
+            (datagram, Some(record))
+        }
     }
 }
 
