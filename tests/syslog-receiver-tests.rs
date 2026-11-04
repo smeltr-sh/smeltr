@@ -158,6 +158,21 @@ fn each_message_is_a_record_however_it_is_framed() {
     );
 }
 
+/// A receiver does not fail on control characters, nor on bytes that are not UTF-8 or are UTF-8 in a form longer
+/// than the shortest (RFC 5424, 6.3.3 and 6.4): an octet-counted message arrives byte for byte, for decoding to judge.
+#[test]
+fn a_message_arrives_byte_for_byte_whatever_it_holds() {
+    let at = free_port();
+    let mut source = receiver(at, &["127.0.0.1"], None, 1 << 16, &HeldSecrets::default());
+    let message: &[u8] =
+        b"<34>1 2026-10-11T22:14:15Z web-1 su - ID47 [x@32473 v=\"a\x00\x07\x1b\"] \xEF\xBB\xBF\xC0\xAF\xFF tail\n";
+    let mut frame = format!("{} ", message.len()).into_bytes();
+    frame.extend_from_slice(message);
+    TcpStream::connect(at).unwrap().write_all(&frame).unwrap();
+    let records = poll_until(&mut source, 1);
+    assert_eq!(records[0].bytes().unwrap(), message);
+}
+
 /// Receivers share one runtime, so stopping one ends only what is its own: its connections close and its port is
 /// soon free to bind again, while another receiver keeps taking messages. The stop is asked of the runtime, which
 /// closes the socket on its own thread, so a connection the receiver ended itself may close first.

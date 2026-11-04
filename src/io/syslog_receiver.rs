@@ -638,6 +638,54 @@ mod tests {
         assert!(cut_all(broken(r"(\x00)"), &[&unbroken]).is_err());
     }
 
+    /// A stream mixing every framing, and what the framer cuts of it.
+    const MIXED: &[u8] = b"<13>a\r\n10 <13>b\nc\r\nd\n\n<13>e\n3 xyz";
+    const MIXED_CUT: [&str; 4] = ["<13>a", "<13>b\nc\r\nd", "<13>e", "xyz"];
+
+    /// What the framer cuts from `sent` in the pieces `at` splits it into, then from the connection's end.
+    fn cut_split(sent: &[u8], at: &[usize]) -> Result<Vec<String>, Malformed> {
+        let mut bounds = vec![0];
+        bounds.extend_from_slice(at);
+        bounds.push(sent.len());
+        let pieces: Vec<&[u8]> = bounds.windows(2).map(|w| &sent[w[0]..w[1]]).collect();
+        let (cuts, last) = cut_all(Framer::new(MAX, None), &pieces)?;
+        Ok(cuts.into_iter().flatten().chain(last).collect())
+    }
+
+    #[test]
+    fn a_stream_fragmented_anywhere_cuts_the_same_messages() {
+        for split in 1..MIXED.len() {
+            assert_eq!(cut_split(MIXED, &[split]).unwrap(), MIXED_CUT, "split at {split}");
+        }
+        let every_byte: Vec<usize> = (1..MIXED.len()).collect();
+        assert_eq!(cut_split(MIXED, &every_byte).unwrap(), MIXED_CUT);
+    }
+
+    #[test]
+    fn an_oversized_frame_is_refused_however_it_is_fragmented() {
+        let line = [&[b'a'; MAX + 2][..], b"\n"].concat();
+        for oversized in [b"65 ".to_vec(), b"100000 ".to_vec(), line] {
+            let sent = [b"<13>a\n".as_slice(), &oversized].concat();
+            for split in 1..sent.len() {
+                let refused = cut_split(&sent, &[split]).unwrap_err();
+                assert_eq!(refused.at, 6, "split at {split}");
+            }
+            let every_byte: Vec<usize> = (1..sent.len()).collect();
+            assert_eq!(cut_split(&sent, &every_byte).unwrap_err().at, 6);
+        }
+    }
+
+    #[test]
+    fn a_frame_of_the_largest_size_is_read_however_it_is_fragmented() {
+        let message = [b"<13>".as_slice(), &[b'a'; MAX - 4]].concat();
+        let sent = [format!("{MAX} ").as_bytes(), &message, &message, b"\n"].concat();
+        let message = String::from_utf8(message).unwrap();
+        let expected = [message.clone(), message];
+        for split in 1..sent.len() {
+            assert_eq!(cut_split(&sent, &[split]).unwrap(), expected, "split at {split}");
+        }
+    }
+
     #[test]
     fn a_length_not_followed_by_a_space_is_refused() {
         let refused = cut_each(&[b"12a <13>abcdefgh"]).unwrap_err();
