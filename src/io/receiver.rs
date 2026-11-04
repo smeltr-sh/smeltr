@@ -2,9 +2,11 @@
 //! sender, or a balancer in front of the group, picks the worker for each connection, so the transport assigns the
 //! work (`Source`'s own rule).
 //!
-//! A sender drops what it sent once it hears success, so a request is answered only once every destination has its
-//! records. Until then the sender holds the only other copy, and it sends again when no answer comes: a worker that
-//! stops with a request held costs a duplicate, never a loss.
+//! A sender drops what it sent once it hears success. A request is answered once it is in the inbox, so the sender
+//! never waits on a destination; a stop hands the inbox over before it ends, and a crash loses it. A receiver set to
+//! answer after delivery answers only once every destination has its records. Until then the sender holds the only
+//! other copy, and it sends again when no answer comes: a worker that stops with a request held costs a duplicate,
+//! never a loss.
 //!
 //! ```text
 //!   sender ── POST ──► server ── records ──► inbox ──► poll_batch ──► pipelines, destinations

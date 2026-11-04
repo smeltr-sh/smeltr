@@ -3187,6 +3187,12 @@
             "default": 10485760,
             "examples": [1048576, 67108864],
             "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
+          },
+          {
+            "name": "answerAfterDelivery",
+            "type": "boolean",
+            "default": false,
+            "what": "By default a request is answered as soon as it is received. Turn this on to answer only once every destination has its records, so a worker crash loses nothing. The sender waits until then; if its timeout is shorter, it sends the request again and the records arrive twice."
           }
         ],
         "fields": ["__source.name", "__source.type", "__source.remote", "__source.bytes"],
@@ -3196,7 +3202,7 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
+            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes", "answerAfterDelivery"]
           }
         ]
       },
@@ -3269,6 +3275,12 @@
             "default": 10485760,
             "examples": [1048576, 67108864],
             "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
+          },
+          {
+            "name": "answerAfterDelivery",
+            "type": "boolean",
+            "default": false,
+            "what": "By default a request is answered as soon as it is received. Turn this on to answer only once every destination has its records, so a worker crash loses nothing. The sender waits until then; if its timeout is shorter, it sends the request again and the records arrive twice."
           }
         ],
         "fields": [
@@ -3289,7 +3301,7 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "sourcetypes", "maxRequestBytes"]
+            "settings": ["certificate", "trustedAuthorities", "sourcetypes", "maxRequestBytes", "answerAfterDelivery"]
           }
         ]
       },
@@ -3459,6 +3471,12 @@
             "default": 10485760,
             "examples": [1048576, 67108864],
             "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
+          },
+          {
+            "name": "answerAfterDelivery",
+            "type": "boolean",
+            "default": false,
+            "what": "By default a request is answered as soon as it is received. Turn this on to answer only once every destination has its records, so a worker crash loses nothing. The sender waits until then; if its timeout is shorter, it sends the request again and the records arrive twice."
           }
         ],
         "fields": [
@@ -3476,7 +3494,7 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
+            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes", "answerAfterDelivery"]
           }
         ]
       },
@@ -3636,6 +3654,12 @@
             "default": 10485760,
             "examples": [1048576, 67108864],
             "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`, which a sender may drop."
+          },
+          {
+            "name": "answerAfterDelivery",
+            "type": "boolean",
+            "default": false,
+            "what": "By default a request is answered as soon as it is received. Turn this on to answer only once every destination has its records, so a worker crash loses nothing. The sender waits until then; if its timeout is shorter, it sends the request again and the records arrive twice."
           }
         ],
         "fields": ["__source.name", "__source.type", "__source.remote"],
@@ -3645,7 +3669,7 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
+            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes", "answerAfterDelivery"]
           }
         ]
       },
@@ -3700,6 +3724,12 @@
             "default": 10485760,
             "examples": [1048576, 67108864],
             "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`, so set a sender's bulk size below it."
+          },
+          {
+            "name": "answerAfterDelivery",
+            "type": "boolean",
+            "default": false,
+            "what": "By default a request is answered as soon as it is received. Turn this on to answer only once every destination has its records, so a worker crash loses nothing. The sender waits until then; if its timeout is shorter, it sends the request again and the records arrive twice."
           }
         ],
         "fields": [
@@ -3717,7 +3747,7 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
+            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes", "answerAfterDelivery"]
           }
         ]
       }

@@ -4519,7 +4519,7 @@ fn check_syslog_receiver(
 fn check_protocol_answers(what: &str, listener: &ReceiverSettingsDto, errors: &mut ItemErrors<'_>) {
     if listener.answer_after_delivery {
         errors.at("answerAfterDelivery").push(format!(
-            "{what} answers as its protocol says, so it takes no answerAfterDelivery; take it off"
+            "{what} answers as its protocol says, so it does not take answerAfterDelivery; remove that setting"
         ));
     }
 }

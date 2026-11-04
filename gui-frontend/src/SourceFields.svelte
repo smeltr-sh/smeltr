@@ -4,6 +4,7 @@
 -->
 <script lang="ts">
   import Advanced from './Advanced.svelte';
+  import Toggle from './Toggle.svelte';
   import TlsFields from './TlsFields.svelte';
   import Field from './Field.svelte';
   import Nested from './Nested.svelte';
@@ -130,6 +131,7 @@
       tlsSet(s) ||
       (s.maxRequestBytes ?? LIMITS.receiverRequestBytes.default) !==
         LIMITS.receiverRequestBytes.default ||
+      s.answerAfterDelivery === true ||
       (s.type === 'syslogReceiver' && (s.encoding ?? 'auto') !== 'auto') ||
       (s.type === 'syslogReceiver' && s.lineBreaker !== undefined) ||
       (s.type === 'hecReceiver' && s.sourcetypes !== undefined)
@@ -1089,6 +1091,23 @@
         onchange={(n) => (source.maxRequestBytes = n)}
       />
     </Field>
+    {#if source.type !== 's2sReceiver' && source.type !== 'syslogReceiver'}
+      <Field field="answerAfterDelivery" label="answer after delivery">
+        {#snippet help()}
+          By default a request is answered as soon as it is received. Turn this on to answer only
+          once every destination has its records, so a worker crash loses nothing. The sender waits
+          until then; if its timeout is shorter, it sends the request again and the records arrive
+          twice.
+        {/snippet}
+        <Toggle
+          bind:checked={
+            () => source.answerAfterDelivery === true,
+            (on) => (source.answerAfterDelivery = on ? true : undefined)
+          }
+          ariaLabel="answer after delivery"
+        />
+      </Field>
+    {/if}
     {#if source.type === 'syslogReceiver'}
       {@render encodingField(source)}
       {#if source.transport !== 'udp'}

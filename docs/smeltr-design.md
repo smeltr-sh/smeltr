@@ -101,7 +101,10 @@ Eval, Lookup, Parser, Remove, Rename, Unroll. Parsers: JSON, CSV, key-value, Gro
 Schemas a pipeline's rows are held to, read from JSON Schema, ECS, an OCSF
 class or a CSV of fields, written as JSON Schema or an Elasticsearch mapping,
 or imported by a pipeline; a row that does not fit is a finding and
-refuses nothing. Multiple routes per source. At-least-once delivery, metrics excepted. JSON
+refuses nothing. Multiple routes per source. At-least-once delivery, metrics excepted, and a
+receiver that answers requests on receipt, as one does unless set to answer
+after delivery: a worker that crashes loses what it answered and had not yet
+delivered. JSON
 output.
 
 ### Out of scope, permanently
