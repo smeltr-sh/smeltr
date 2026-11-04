@@ -696,7 +696,7 @@
           "examples": [
             {
               "expr": "1 << 8",
-              "result": "256"
+              "result": "255"
             }
           ]
         },
@@ -1186,7 +1186,7 @@
     {
       "id": "strings",
       "title": "Strings",
-      "blurb": "A `str` is text, always valid UTF-8. `+` joins two. [length](#length), [slice](#slice), [at](#at), [indexOf](#indexOf) and [includes](#includes) take a string or an array. Between backticks, `${...}` puts a value in text.",
+      "blurb": "A `str` is text, always valid UTF-8. `+` joins two. [length](#length), [slice](#slice), [at](#at), [indexOf](#indexOf) and [includes](#includes) take a string or an array. A [template string](#values) puts values in text.",
       "rows": [
         {
           "symbol": "+",
@@ -1195,26 +1195,6 @@
             {
               "expr": "\"GET\" + \" /health\"",
               "result": "\"GET /health\""
-            }
-          ]
-        },
-        {
-          "symbol": "${}",
-          "gloss": "put a value in text, between backticks",
-          "examples": [
-            {
-              "given": ["let status: i64 = 404"],
-              "expr": "`status ${status}`",
-              "result": "\"status 404\""
-            },
-            {
-              "given": ["let host: str = null"],
-              "expr": "`host=${host}`",
-              "result": "null"
-            },
-            {
-              "expr": "`cost \\${5}`",
-              "result": "\"cost ${5}\""
             }
           ]
         }
@@ -1226,8 +1206,7 @@
         }
       ],
       "notes": [
-        "There is no implicit stringification: a number has to go through `toString()` before it can be joined to text.",
-        "A template string is shorthand for `+` and `toString()`: `` `status ${status}` `` means `\"status \" + status.toString()`. A null in a hole makes the whole string null. A backslash escapes: `\\n`, `\\t`, `\\r`, `` \\` ``, `\\$` and `\\\\`, so `\\${` writes `${` itself."
+        "There is no implicit stringification: a number has to go through `toString()` before it can be joined to text."
       ],
       "functions": [
         {
@@ -3178,6 +3157,133 @@
       "type": "struct",
       "setBy": "Smeltr",
       "what": "The exceptions of a record answered tag or deliver: `route`, `pipeline`, and `exceptions`, a list of each one's `step`, `kind` and `message`."
+    }
+  ],
+  "literals": [
+    {
+      "form": "true",
+      "rule": "A `bool`, as is `false`.",
+      "examples": [
+        {
+          "expr": "true",
+          "result": "true"
+        }
+      ]
+    },
+    {
+      "form": "null",
+      "rule": "No value. A name that holds only `null` needs a type: `let host: str = null`.",
+      "examples": [
+        {
+          "given": ["let host: str = null"],
+          "expr": "host",
+          "result": "null"
+        }
+      ]
+    },
+    {
+      "form": "443",
+      "rule": "An `i64`. `_` separates digits, and `0x`, `0o` and `0b` start hexadecimal, octal and binary. An integer too large for an `i64` is an `f64`.",
+      "examples": [
+        {
+          "expr": "1_000_000",
+          "result": "1000000"
+        },
+        {
+          "expr": "0xff",
+          "result": "255"
+        },
+        {
+          "expr": "0b1010",
+          "result": "10"
+        }
+      ]
+    },
+    {
+      "form": "1.5",
+      "rule": "An `f64`: a number with a `.` or an exponent.",
+      "examples": [
+        {
+          "expr": "1.5",
+          "result": "1.5"
+        },
+        {
+          "expr": "1e3",
+          "result": "1000.0"
+        }
+      ]
+    },
+    {
+      "form": "\"GET\"",
+      "rule": "A `str`, between double or single quotes. A backslash escapes: `\\n`, `\\t`, `\\r`, `\\0`, `\\\\`, `\\'`, `\\\"`, and `\\u` with four hex digits or any number in braces.",
+      "examples": [
+        {
+          "expr": "'say \"hi\"'",
+          "result": "\"say \\\"hi\\\"\""
+        },
+        {
+          "expr": "\"caf\\u00e9\"",
+          "result": "\"café\""
+        },
+        {
+          "expr": "\"\\u{1F44B}\"",
+          "result": "\"👋\""
+        }
+      ]
+    },
+    {
+      "form": "`status ${status}`",
+      "rule": "A template string: a `str` with values in it. A template string is shorthand for `+` and `toString()`: `` `status ${status}` `` means `\"status \" + status.toString()`. A null in a hole makes the whole string null. A backslash escapes: `\\n`, `\\t`, `\\r`, `` \\` ``, `\\$` and `\\\\`, so `\\${` writes `${` itself.",
+      "examples": [
+        {
+          "given": ["let status: i64 = 404"],
+          "expr": "`status ${status}`",
+          "result": "\"status 404\""
+        },
+        {
+          "given": ["let host: str = null"],
+          "expr": "`host=${host}`",
+          "result": "null"
+        },
+        {
+          "expr": "`cost \\${5}`",
+          "result": "\"cost ${5}\""
+        }
+      ]
+    },
+    {
+      "form": "/[0-9]+/i",
+      "rule": "A [pattern](#regex), with its flags after the closing `/`.",
+      "examples": [
+        {
+          "expr": "\"GET /health\".test(/get/i)",
+          "result": "true"
+        }
+      ]
+    },
+    {
+      "form": "[200, 404]",
+      "rule": "An [array](#arrays). Its elements share one type.",
+      "examples": [
+        {
+          "expr": "[200, 404]",
+          "result": "[200,404]"
+        }
+      ]
+    },
+    {
+      "form": "{ip: \"10.0.0.1\"}",
+      "rule": "An [object](#objects). A key is a name, or a string when it holds any other character.",
+      "examples": [
+        {
+          "expr": "{ip: \"10.0.0.1\", port: 443}",
+          "result": "{\"ip\":\"10.0.0.1\",\"port\":443}"
+        },
+        {
+          "expr": "{\"x-y\": 1}",
+          "result": "{\"x-y\":1}"
+        }
+      ]
     }
   ],
   "types": [

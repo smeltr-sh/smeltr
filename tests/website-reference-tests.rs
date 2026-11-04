@@ -27,6 +27,8 @@ struct Reference {
     exceptions: Vec<ExceptionRow>,
     #[serde(rename = "recordFields")]
     record_fields: Vec<RecordField>,
+    /// How each kind of value is written, with what each example gives.
+    literals: Vec<LiteralRow>,
     types: Vec<TypeRow>,
     /// The examples How it works shows, by topic.
     topics: Vec<Topic>,
@@ -79,6 +81,14 @@ struct SpecifierRow {
     /// the run.
     #[serde(default)]
     group: Option<String>,
+}
+
+/// One row of Writing values: a literal's form, what it writes, and what each example gives.
+#[derive(serde::Deserialize)]
+struct LiteralRow {
+    form: String,
+    rule: String,
+    examples: Vec<Example>,
 }
 
 /// One line of an operator table: the symbol, what it does under these operand types, and an example or two.
@@ -293,8 +303,7 @@ fn specifier_rows(r: &Reference) -> impl Iterator<Item = &SpecifierRow> {
 
 /// Syntax the page documents alongside the operators that has no `BinOp`/`UnOp` of its own.
 /// `.` and `$[]` spell a field name. `[]` indexes a value or spells a named field path.
-/// `${}` is a template string's hole.
-const NOT_IN_THE_OPERATOR_ENUMS: [&str; 5] = [".", "?:", "[]", "$[]", "${}"];
+const NOT_IN_THE_OPERATOR_ENUMS: [&str; 4] = [".", "?:", "[]", "$[]"];
 
 /// One expression over a one-row batch, as the value of `out`, after any
 /// `given` bindings, each a `name = expr` statement, and the kinds of the
@@ -464,11 +473,16 @@ fn check_all<'a>(examples: impl Iterator<Item = &'a Example>) {
 #[test]
 fn every_documented_example_produces_its_documented_result() {
     let r = reference();
+    for l in &r.literals {
+        assert!(!l.rule.trim().is_empty(), "{} says nothing", l.form);
+        assert!(!l.examples.is_empty(), "{} has no example", l.form);
+    }
     let examples = functions(&r)
         .flat_map(|f| f.examples.iter())
         .chain(operator_rows(&r).flat_map(|row| row.examples.iter()))
         .chain(specifier_rows(&r).flat_map(|row| row.examples.iter()))
-        .chain(r.topics.iter().flat_map(|t| t.examples.iter()));
+        .chain(r.topics.iter().flat_map(|t| t.examples.iter()))
+        .chain(r.literals.iter().flat_map(|l| l.examples.iter()));
     check_all(examples);
 }
 

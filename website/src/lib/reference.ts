@@ -110,6 +110,15 @@ export interface RecordField {
 
 export const RECORD_FIELDS: RecordField[] = data.recordFields as RecordField[];
 
+/** How one kind of value is written: its form, what it writes, and examples. */
+export interface LiteralRow {
+  form: string;
+  rule: string;
+  examples: Example[];
+}
+
+export const LITERALS: LiteralRow[] = data.literals;
+
 /** One type of the language: its name as a declaration spells it, what it holds, and a value of it. */
 export interface TypeRow {
   name: string;
