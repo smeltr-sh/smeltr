@@ -674,6 +674,32 @@ fn each_datagram_is_a_record() {
     assert!(records.iter().all(|r| &*r.topic == "127.0.0.1"), "named by the sender");
 }
 
+/// A receiver reads a datagram of every size RFC 5426 (3.2) asks of it: 480 octets over IPv4 and 1180 over IPv6,
+/// which it must, and 2048 over either, which it should; and the largest a datagram can hold over IPv4.
+#[test]
+fn datagrams_of_every_size_rfc_5426_asks_for_are_read() {
+    let header = "<165>1 2026-10-11T22:14:15.003Z fw01 sshd 4123 AUTH - ";
+    let sized = |octets: usize| format!("{header}{}", "x".repeat(octets - header.len()));
+    let families = [("127.0.0.1", &[480, 2048, 65507][..]), ("::1", &[1180, 2048][..])];
+    // A host without IPv6 loopback checks IPv4 alone.
+    let families = &families[..if crate::harness::receiver::ipv6() { 2 } else { 1 }];
+    for &(loopback, sizes) in families {
+        let at = SocketAddr::new(loopback.parse().unwrap(), free_port_for_both().port());
+        let mut source = udp_receiver(at, &[loopback], 1 << 16);
+        let sender = UdpSocket::bind(SocketAddr::new(loopback.parse().unwrap(), 0)).unwrap();
+        sender.connect(at).unwrap();
+        let messages: Vec<String> = sizes.iter().map(|&octets| sized(octets)).collect();
+        for message in &messages {
+            sender.send(message.as_bytes()).unwrap();
+        }
+        assert_eq!(
+            text(&poll_until(&mut source, messages.len())),
+            messages,
+            "over {loopback}"
+        );
+    }
+}
+
 /// A datagram from a network the receiver does not admit becomes nothing.
 #[test]
 fn a_datagram_from_elsewhere_is_dropped() {
