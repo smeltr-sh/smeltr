@@ -537,6 +537,19 @@ export const LIMITS = {
   pollIntervalSecs: { min: 1, max: Number.MAX_SAFE_INTEGER, default: 60 },
 } as const;
 
+/** What the HTTP, Prometheus and OTLP destinations share: each POSTs to its url over the HTTP destination core. */
+type HttpRequestsDto = TlsDto & {
+  id: string;
+  exceptions?: ExceptionsDto;
+  /** Header name to its value, committed to the config repository. */
+  headers?: Record<string, string>;
+  /** Header name to where its value lives. */
+  credentials?: Record<string, SecretRef>;
+  maxRequestBytes?: ByteCount;
+  bufferBytes?: ByteCount;
+  stallAfterSecs?: number;
+};
+
 /** A destination, discriminated on `type`. A union rather than one flat
  * shape: the two kinds share only `id`, and the loader rejects unknown
  * fields, so a Kafka field left on an Elasticsearch destination would stop
@@ -631,10 +644,8 @@ export type DestinationDto = {
       bufferBytes?: ByteCount;
       stallAfterSecs?: number;
     })
-  | (TlsDto & {
-      id: string;
+  | (HttpRequestsDto & {
       type: 'http';
-      exceptions?: ExceptionsDto;
       /** The whole address each request is POSTed to. */
       url: string;
       /** Zone to the address a worker in that zone sends to instead of `url`. */
@@ -649,35 +660,17 @@ export type DestinationDto = {
       field?: string;
       /** Absent is `none`. */
       compression?: HttpCompression;
-      /** Header name to its value, committed to the config repository. */
-      headers?: Record<string, string>;
-      /** Header name to where its value lives. */
-      credentials?: Record<string, SecretRef>;
       inFlight?: number;
-      maxRequestBytes?: ByteCount;
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
     })
-  | (TlsDto & {
-      id: string;
+  | (HttpRequestsDto & {
       type: 'prometheus';
-      exceptions?: ExceptionsDto;
       /** The store's remote_write endpoint, the whole address each request is POSTed to. */
       url: string;
       /** The remote_write protocol version sent. Absent is `1.0`. */
       version?: '1.0' | '2.0';
-      /** Header name to its value, committed to the config repository. */
-      headers?: Record<string, string>;
-      /** Header name to where its value lives. */
-      credentials?: Record<string, SecretRef>;
-      maxRequestBytes?: ByteCount;
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
     })
-  | (TlsDto & {
-      id: string;
+  | (HttpRequestsDto & {
       type: 'otlp';
-      exceptions?: ExceptionsDto;
       /** The OTLP endpoint. Each request goes to its signal's path after it: `/v1/logs`, `/v1/metrics` or
        * `/v1/traces`. */
       url: string;
@@ -685,14 +678,7 @@ export type DestinationDto = {
       signal?: OtlpSignal;
       /** Absent is `none`. */
       compression?: HttpCompression;
-      /** Header name to its value, committed to the config repository. */
-      headers?: Record<string, string>;
-      /** Header name to where its value lives. */
-      credentials?: Record<string, SecretRef>;
       inFlight?: number;
-      maxRequestBytes?: ByteCount;
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
     })
   | (TlsDto &
       EntraSignIn & {
