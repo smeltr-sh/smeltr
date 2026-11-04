@@ -29,17 +29,13 @@ describe('the guide', () => {
     expect(done(fresh({ branch: 'fix' }))).toEqual(['branch']);
   });
 
-  it('ticks pipeline for a pipeline main lacks, and capture and route as each is there', () => {
+  it('ticks pipeline for a pipeline main lacks built on a capture of cisco-asa, and route once it is there', () => {
     const branch = 'fix';
     const main = network('main')!;
     const piped = { ...main, pipelines: [...(main.pipelines ?? []), { id: 'cisco-asa' }] };
-    expect(done(fresh({ branch, config: piped }))).toEqual(['branch', 'pipeline']);
+    expect(done(fresh({ branch, config: piped }))).toEqual(['branch']);
     const samples = [{ source: 'cisco-asa' }];
-    expect(done(fresh({ branch, config: piped, samples }))).toEqual([
-      'branch',
-      'capture',
-      'pipeline',
-    ]);
+    expect(done(fresh({ branch, config: piped, samples }))).toEqual(['branch', 'pipeline']);
     const unpiped = { ...piped, routes: [...(piped.routes ?? []), { source: 'cisco-asa' }] };
     expect(done(fresh({ branch, config: unpiped, samples }))).not.toContain('route');
     const routed = {

@@ -67,13 +67,6 @@ function protoType(world: World): unknown {
 
 export const TASKS: Task[] = [
   {
-    id: 'status',
-    text: 'Open Status and find the issues for cisco-asa and fortigate-traffic',
-    hash: '#/status/issues',
-    steps: [],
-    done: (w) => w.sawStatus,
-  },
-  {
     id: 'branch',
     text: 'Start a branch for your fix',
     hash: '#/changes',
@@ -84,17 +77,11 @@ export const TASKS: Task[] = [
     done: (w) => w.branch !== MAIN,
   },
   {
-    id: 'capture',
-    text: `Capture a sample of ${UNROUTED}`,
-    hash: MAP,
-    scope: GROUP,
-    steps: [
-      { on: '#/map', at: guide('capture') },
-      { on: '#/map', at: guide('capture-start') },
-      { on: '#/map', at: guide('capture-stop') },
-      { on: '#/map', at: guide('capture-save') },
-    ],
-    done: (w) => w.branch !== MAIN && w.samples.some((s) => s.source === UNROUTED),
+    id: 'status',
+    text: 'Open Status and find the issues for cisco-asa and fortigate-traffic',
+    hash: '#/status/issues',
+    steps: [],
+    done: (w) => w.sawStatus,
   },
   {
     id: 'pipeline',
@@ -110,8 +97,11 @@ export const TASKS: Task[] = [
       { on: '#/build/pipelines/new', at: guide('capture-save') },
       { on: '#/build/pipelines/new', at: guide('save') },
     ],
+    // Built on what its source sends, captured as the pipeline opens.
     done: (w) =>
-      w.branch !== MAIN && !!w.config?.pipelines?.some((p) => !w.mainPipelines.includes(p.id)),
+      w.branch !== MAIN &&
+      w.samples.some((s) => s.source === UNROUTED) &&
+      !!w.config?.pipelines?.some((p) => !w.mainPipelines.includes(p.id)),
   },
   {
     id: 'route',
