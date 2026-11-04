@@ -1,5 +1,17 @@
 [
   {
+    "version": "1.1.0",
+    "summary": "Receivers answer a request once they have received it, and a deployment that stops delivers what it holds first.",
+    "sections": [
+      {
+        "title": "Sources",
+        "items": [
+          "An HTTP, HEC, OTLP, Prometheus or Elasticsearch receiver answers a request as soon as it has received it, so its sender is not held while a destination writes its file. Receivers already deployed change too when the worker upgrades. A worker that crashes loses the records its receivers answered but had not yet delivered. To answer only once every destination has the records, as before, turn on `answerAfterDelivery` on the receiver."
+        ]
+      }
+    ]
+  },
+  {
     "version": "1.0.0",
     "date": "2026-11-01",
     "summary": "The first release. Build pipelines in a browser, test them on captured samples, review and deploy them as Git commits, and run them on a fleet of workers.",
