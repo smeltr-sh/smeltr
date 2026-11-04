@@ -25,10 +25,8 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{
-    Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError, channel, sync_channel,
-};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -372,8 +370,6 @@ enum Message {
     Job(Job),
     /// Commit now, and answer on the channel instead of the results channel.
     Barrier(Sender<Result<Vec<BatchCompletion>, IoError>>),
-    /// Commit whatever is held from now on, without waiting for the interval.
-    Finish,
 }
 
 pub struct FileDestination {
@@ -392,8 +388,8 @@ pub struct FileDestination {
     generation: u64,
     /// What the writer's open files buffer, as it last measured.
     open_bytes: Arc<AtomicUsize>,
-    /// `finish` was asked for and the writer's queue had no room for it, so it is asked again on the next poll.
-    finish_owed: bool,
+    /// Set by `finish`: the writer commits what it holds from then on, without waiting for its interval.
+    finishing: Arc<AtomicBool>,
 }
 
 impl FileDestination {
@@ -413,6 +409,8 @@ impl FileDestination {
         let (reports, results) = channel();
         let open_bytes = Arc::new(AtomicUsize::new(0));
         let measured = open_bytes.clone();
+        let finishing = Arc::new(AtomicBool::new(false));
+        let told = finishing.clone();
         let subject = subject.to_string();
         let thread = std::thread::Builder::new()
             .name(format!("{name}-file-writer"))
@@ -433,6 +431,7 @@ impl FileDestination {
                     seen: 0,
                     ended: None,
                     open_bytes: measured,
+                    finishing: told,
                 };
                 writer.next_commit += writer.config.commit_interval;
                 writer.run(inbox, reports);
@@ -448,17 +447,8 @@ impl FileDestination {
             failed: None,
             generation: 0,
             open_bytes,
-            finish_owed: false,
+            finishing,
         }
-    }
-
-    /// Asks the writer to finish without waiting on it: a writer busy with a store that does not answer would hold
-    /// the stopping deployment.
-    fn ask_finish(&mut self) {
-        self.finish_owed = match &self.jobs {
-            Some(jobs) => matches!(jobs.try_send(Message::Finish), Err(TrySendError::Full(_))),
-            None => false,
-        };
     }
 
     fn stopped(&self) -> IoError {
@@ -558,14 +548,12 @@ impl Destination for FileDestination {
         Some(self.open_bytes.load(Ordering::Relaxed))
     }
 
+    /// The writer sees it within `MEASURE_EVERY`. A flag rather than a message, so it never waits on a full queue.
     fn finish(&mut self) {
-        self.ask_finish();
+        self.finishing.store(true, Ordering::Relaxed);
     }
 
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
-        if self.finish_owed {
-            self.ask_finish();
-        }
         // What a barrier saw land is reported before the writer is asked: a failure there would otherwise take it
         // back.
         let drained = std::mem::take(&mut self.drained);
@@ -642,6 +630,8 @@ struct Writer {
     ended: Option<u64>,
     /// Where it reports what its open files buffer.
     open_bytes: Arc<AtomicUsize>,
+    /// See `FileDestination::finishing`.
+    finishing: Arc<AtomicBool>,
     /// Each reset's error names its own file, so a reset is told by time: once, then on the interval until a commit
     /// lands.
     reset_said: crate::logs::Repeat,
@@ -652,14 +642,17 @@ impl Writer {
         // A message taken from the inbox ahead of a commit, handled before any other.
         let mut next = None;
         loop {
-            // Woken at least every `MEASURE_EVERY`, so what lands while no batch comes shows as it lands. A finishing
-            // writer's commit is always due, so with nothing to commit it waits for a batch rather than spinning.
-            let wait = if self.config.commit_interval.is_zero() && self.holds_nothing() {
-                MEASURE_EVERY
-            } else {
-                self.next_commit
+            // Woken at least every `MEASURE_EVERY`, so what lands while no batch comes shows as it lands, and a
+            // `finish` is seen. A finishing writer's commit is always due, so with nothing to commit it waits for a
+            // batch rather than spinning.
+            let finishing = self.finishing.load(Ordering::Relaxed);
+            let wait = match (finishing, self.holds_nothing()) {
+                (true, true) => MEASURE_EVERY,
+                (true, false) => Duration::ZERO,
+                (false, _) => self
+                    .next_commit
                     .saturating_duration_since(Instant::now())
-                    .min(MEASURE_EVERY)
+                    .min(MEASURE_EVERY),
             };
             let message = match next.take() {
                 Some(message) => Ok(message),
@@ -677,16 +670,12 @@ impl Writer {
                 Ok(Message::Barrier(reply)) => {
                     let _ = reply.send(self.commit());
                 }
-                Ok(Message::Finish) => {
-                    self.config.commit_interval = Duration::ZERO;
-                    self.next_commit = Instant::now();
-                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
             let full = self.held >= commit_at(self.config.buffer_bytes);
-            let mut due = full || Instant::now() >= self.next_commit;
-            if due && !full && self.config.commit_interval.is_zero() {
+            let mut due = full || finishing || Instant::now() >= self.next_commit;
+            if due && !full && finishing {
                 // A finishing writer takes what is queued before it commits, so the queue lands as one commit rather
                 // than one per batch.
                 if let Ok(message) = inbox.try_recv() {
