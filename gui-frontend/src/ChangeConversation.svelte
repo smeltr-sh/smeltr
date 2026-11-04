@@ -83,8 +83,10 @@
   const me = session().displayName || session().username || '';
   const NOTHING_TO_SUBMIT = 'Write a comment first.';
 
-  /** The leader refuses a verdict on a closed change, and from whoever could not deploy it. */
-  let reviewable = $derived(!closed && deployBlocker(touches) === '');
+  /** Why the signed-in person gives no verdict: one takes deployer, as deploying does. The leader refuses it, and a
+   * verdict on a closed change. */
+  let verdictBlocker = $derived(deployBlocker(touches));
+  let reviewable = $derived(!closed && verdictBlocker === '');
   let sending = $derived<ComposerChoice>(reviewable ? choice : 'comment');
 
   async function act(call: () => Promise<BranchMutationResult>, after: () => Promise<void> | void) {
@@ -242,12 +244,19 @@
   <ConversationEntry author={me || undefined}>
     <form class="composer" onsubmit={submit}>
       <textarea rows="4" aria-label="Comment" placeholder="Comment" bind:value={body}></textarea>
-      {#if reviewable}
+      {#if !closed}
         <div class="verdict-pick" role="radiogroup" aria-label="Review">
           <label><input type="radio" value="comment" bind:group={choice} /> Comment</label>
-          <label><input type="radio" value="approve" bind:group={choice} /> Approve</label>
-          <label
-            ><input type="radio" value="request-changes" bind:group={choice} /> Request changes</label
+          <label data-why={verdictBlocker || undefined}
+            ><input type="radio" value="approve" bind:group={choice} disabled={!reviewable} /> Approve</label
+          >
+          <label data-why={verdictBlocker || undefined}
+            ><input
+              type="radio"
+              value="request-changes"
+              bind:group={choice}
+              disabled={!reviewable}
+            /> Request changes</label
           >
         </div>
       {/if}
