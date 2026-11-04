@@ -3897,7 +3897,7 @@
       {
         "name": "fileIntervalSecs",
         "type": "integer",
-        "default": 60,
+        "default": 300,
         "examples": [30, 240],
         "what": "The longest records wait, in seconds, before they land in the bucket. A longer wait makes larger files; records are acknowledged only once they land, so a source is held open up to this long, and after a crash reads that much again. 5 to 3600."
       }
@@ -5927,9 +5927,9 @@
           {
             "name": "fileIntervalSecs",
             "type": "integer",
-            "default": 60,
+            "default": 300,
             "examples": [30, 240],
-            "what": "The longest records wait, in seconds, before they are committed to the table. Each commit is a snapshot the table keeps until it is expired; records are acknowledged only once committed, so a source is held open up to this long. 5 to 240."
+            "what": "The longest records wait, in seconds, before they are committed to the table. Each commit is a snapshot the table keeps until it is expired; records are acknowledged only once committed, so a source is held open up to this long. 5 to 3600."
           }
         ],
         "reads": [],
@@ -6169,9 +6169,9 @@
           {
             "name": "fileIntervalSecs",
             "type": "integer",
-            "default": 60,
+            "default": 300,
             "examples": [30, 240],
-            "what": "The longest records wait, in seconds, before they are committed to the table. Each commit is an entry of the table's log; records are acknowledged only once committed, so a source is held open up to this long. 5 to 240."
+            "what": "The longest records wait, in seconds, before they are committed to the table. Each commit is an entry of the table's log; records are acknowledged only once committed, so a source is held open up to this long. 5 to 3600."
           }
         ],
         "reads": [],

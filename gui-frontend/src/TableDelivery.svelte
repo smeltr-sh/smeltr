@@ -28,8 +28,8 @@
       byteCount(d.bufferBytes, LIMITS.objectBufferBytes.default) !==
         LIMITS.objectBufferBytes.default ||
       (d.stallAfterSecs ?? LIMITS.stallAfterSecs.default) !== LIMITS.stallAfterSecs.default ||
-      (d.fileIntervalSecs ?? LIMITS.tableFileIntervalSecs.default) !==
-        LIMITS.tableFileIntervalSecs.default
+      (d.fileIntervalSecs ?? LIMITS.fileIntervalSecs.default) !==
+        LIMITS.fileIntervalSecs.default
     );
   }
 </script>
@@ -122,14 +122,14 @@
     {#snippet help()}
       The longest records wait before they are committed to the table. Each commit adds {commit}, so
       a short interval makes many. Sources feeding this destination are held open until their
-      records are committed, for up to this long. Between {LIMITS.tableFileIntervalSecs.min} and
-      {LIMITS.tableFileIntervalSecs.max} seconds.
+      records are committed, for up to this long. Between {LIMITS.fileIntervalSecs.min} and
+      {LIMITS.fileIntervalSecs.max} seconds.
     {/snippet}
     <input
       type="number"
-      min={LIMITS.tableFileIntervalSecs.min}
-      max={LIMITS.tableFileIntervalSecs.max}
-      value={d.fileIntervalSecs ?? LIMITS.tableFileIntervalSecs.default}
+      min={LIMITS.fileIntervalSecs.min}
+      max={LIMITS.fileIntervalSecs.max}
+      value={d.fileIntervalSecs ?? LIMITS.fileIntervalSecs.default}
       oninput={(e) => (d.fileIntervalSecs = numberOrUnset(e.currentTarget))}
     />
   </Field>

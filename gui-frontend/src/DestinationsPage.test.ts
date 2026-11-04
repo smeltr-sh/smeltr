@@ -41,7 +41,7 @@ describe('the object Advanced marker', () => {
     expect(objectModified({ ...s3(), compression: 'zstd' })).toBe(true);
     expect(objectModified({ ...s3(), maxObjectBytes: '32 MiB' })).toBe(true);
     expect(objectModified({ ...s3(), fileIntervalSecs: 600 })).toBe(true);
-    expect(objectModified({ ...s3(), fileIntervalSecs: 60 })).toBe(false);
+    expect(objectModified({ ...s3(), fileIntervalSecs: 300 })).toBe(false);
   });
 });
 

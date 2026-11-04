@@ -3900,10 +3900,6 @@ fn check_file_limits(id: &str, in_flight: InFlight, buffer_bytes: Option<BufferB
     }
 }
 
-/// The longest a table destination keeps its files open: the source waits that long for its batches'
-/// acknowledgement, and a Kafka reader that waits past its `max.poll.interval.ms` (300 s) is evicted.
-const TABLE_FILE_INTERVAL_MAX: u64 = 240;
-
 /// Everything an Iceberg destination is checked for: its delivery limits, where its catalog is, how it signs in,
 /// which table it writes and how a created one is partitioned.
 fn check_iceberg(d: &DestinationDto, errors: &mut ItemErrors<'_>) {
@@ -4050,15 +4046,16 @@ fn check_iceberg(d: &DestinationDto, errors: &mut ItemErrors<'_>) {
     check_table_file_interval(*file_interval_secs, &what, errors);
 }
 
-/// A table destination's files stay open no longer than a Kafka reader may wait for their acknowledgement.
+/// A source waits up to the interval for its batches' acknowledgement, and after a crash reads that much again.
 fn check_table_file_interval(file_interval: FileInterval, what: &str, errors: &mut ItemErrors<'_>) {
-    if file_interval.0 < FileInterval::MIN || file_interval.0 > TABLE_FILE_INTERVAL_MAX {
+    if file_interval.0 < FileInterval::MIN || file_interval.0 > FileInterval::MAX {
         errors.at("fileIntervalSecs").push(format!(
-            "{what} keeps a file open for {}s; a table destination's must be between {} and \
-             {TABLE_FILE_INTERVAL_MAX}. Its batches are acknowledged when the files are committed, and a Kafka \
-             reader that waits past its 300s poll interval is evicted from its group",
+            "{what} keeps a file open for {}s; it must be between {} and {}. Its batches are acknowledged when \
+             the files are committed, so a source waits up to this long for them, and after a crash reads that \
+             much again",
             file_interval.0,
             FileInterval::MIN,
+            FileInterval::MAX,
         ));
     }
 }
@@ -7184,12 +7181,6 @@ mod tests {
                 Buffer::DEFAULT as u64,
             ),
             ("fileIntervalSecs", File::MIN, Some(File::MAX), File::DEFAULT),
-            (
-                "tableFileIntervalSecs",
-                File::MIN,
-                Some(TABLE_FILE_INTERVAL_MAX),
-                File::DEFAULT,
-            ),
             (
                 "objectBufferBytes",
                 Buffer::MIN as u64,

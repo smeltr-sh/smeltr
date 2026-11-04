@@ -279,7 +279,7 @@ fn draw_objects(rng: &mut Rng, cov: &mut Reached, store: Store, d: &mut Map<Stri
     }
     if rng.chance(2) {
         cov.reach("fileIntervalSecs");
-        d.insert("fileIntervalSecs".into(), json!(rng.pick(&[5, 60, 3600])));
+        d.insert("fileIntervalSecs".into(), json!(rng.pick(&[5, 60, 300, 3600])));
     }
 }
 
@@ -477,7 +477,7 @@ fn check_loaded(draw: &Draw, c: &ObjectsDestinationConfig, named: &[SecretRef]) 
     cmp.expect("stallAfterSecs", uint(d, "stallAfterSecs", 30), c.stall_after.as_secs());
     cmp.expect(
         "fileIntervalSecs",
-        uint(d, "fileIntervalSecs", 60),
+        uint(d, "fileIntervalSecs", 300),
         c.file_interval.as_secs(),
     );
     cmp.expect("storageClass", text(d, "storageClass"), &c.storage_class);

@@ -2807,7 +2807,7 @@ fn a_minimal_iceberg_destination_loads_with_the_defaults() {
     assert_eq!(c.max_object_bytes, 64 * 1024 * 1024);
     assert_eq!(c.buffer_bytes, 256 * 1024 * 1024);
     assert_eq!(c.stall_after, Duration::from_secs(30));
-    assert_eq!(c.file_interval, Duration::from_secs(60));
+    assert_eq!(c.file_interval, Duration::from_secs(300));
     let dest = &system.topology.destinations[0];
     assert_eq!(dest.kind.payload(), Payload::Record);
     assert!(
@@ -2938,12 +2938,12 @@ fn an_iceberg_destination_with_bad_settings_is_refused() {
         (
             r#","fileIntervalSecs":4"#.to_string(),
             "fileIntervalSecs",
-            "between 5 and 240",
+            "between 5 and 3600",
         ),
         (
-            r#","fileIntervalSecs":241"#.to_string(),
+            r#","fileIntervalSecs":3601"#.to_string(),
             "fileIntervalSecs",
-            "between 5 and 240",
+            "between 5 and 3600",
         ),
         (
             r#","accessKeyId":"AWS_KEY""#.to_string(),
@@ -3155,12 +3155,12 @@ fn an_s3_destination_with_bad_settings_is_refused() {
     assert!(e.contains("names no bucket"), "{e}");
 }
 
-/// An object file stays open for a minute unless `fileIntervalSecs` says otherwise, within its bounds.
+/// An object file stays open for five minutes unless `fileIntervalSecs` says otherwise, within its bounds.
 #[test]
 fn an_object_destinations_file_interval_defaults_and_is_bounded() {
     use std::time::Duration;
     let system = load_str(&s3_config(r#","format":"parquet""#)).expect("must load");
-    assert_eq!(objects(&system).file_interval, Duration::from_secs(60));
+    assert_eq!(objects(&system).file_interval, Duration::from_secs(300));
     let json = s3_config(r#","format":"parquet","fileIntervalSecs":5"#);
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     assert_eq!(objects(&load_str(&json).unwrap()).file_interval, Duration::from_secs(5));
