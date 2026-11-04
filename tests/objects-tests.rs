@@ -521,6 +521,32 @@ fn a_finishing_destination_does_not_wait_for_its_interval() {
     assert_eq!(f.objects().len(), 2);
 }
 
+/// A finishing destination commits what is queued together, not once per batch.
+#[test]
+fn a_finishing_destination_commits_its_queue_together() {
+    let mut f = fixture(&config(ObjectFormat::Ndjson, Compression::Zstd));
+    f.destination.finish();
+    const BATCHES: u64 = 200;
+    for batch in 1..=BATCHES {
+        assert!(f.hand_over(batch, vec![row(r#"{"n":1}"#, None)]).is_empty());
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut done = 0;
+    while done < BATCHES {
+        done += f.destination.poll_completions().unwrap().len() as u64;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{done} of {BATCHES} batches finished within 10 s"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let objects = f.objects().len() as u64;
+    assert!(
+        objects < BATCHES / 2,
+        "{objects} objects for {BATCHES} batches handed over back to back"
+    );
+}
+
 /// A line object is finished at its interval with no `flush`, and its batch acknowledged then.
 #[test]
 fn a_line_object_is_finished_at_its_interval() {
