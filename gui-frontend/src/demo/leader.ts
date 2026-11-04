@@ -288,7 +288,7 @@ export function putBack(
   return { objects, same, name: typeof named === 'string' ? named : id };
 }
 
-/** `id` as `config_file::slugify` makes it a file's name. */
+/** `id` as `config_file::slugify` makes it a file's name. Not `slugify.ts`, which folds accents the leader drops. */
 function slugged(id: string): string {
   const slug = id
     .toLowerCase()
