@@ -2158,6 +2158,9 @@ pub struct ReceiverConfig {
     pub tls: Option<Tls>,
     /// The largest request body it reads. A larger one is refused whole.
     pub max_request_bytes: usize,
+    /// A request is answered once every destination has its records, rather than once it is in the inbox. A worker
+    /// that stops between the two loses what it answered for (design doc, delivery).
+    pub answer_after_delivery: bool,
 }
 
 /// Which protocol a receiver speaks.

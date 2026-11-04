@@ -1506,7 +1506,8 @@ fn a_receiver_answers_a_request_sent_while_its_runtime_was_being_replaced() {
         // The token is a variable the worker already has, so the test needs no secret of its own.
         standalone.deploy(
             &[format!(
-                r#"{{"id":"hook","type":"httpReceiver","port":{},
+                // Answered after delivery, so a runtime killed after answering has lost nothing it answered for.
+                r#"{{"id":"hook","type":"httpReceiver","port":{},"answerAfterDelivery":true,
                      "tokens":{{"t":"SMELTR_WORKER_GROUP"}}}}"#,
                 at.port()
             )],

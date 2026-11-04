@@ -942,6 +942,10 @@ pub struct ReceiverSettingsDto {
     pub port: u16,
     #[serde(default, skip_serializing_if = "MaxRequestBytes::is_default")]
     pub max_request_bytes: MaxRequestBytes,
+    /// Whether a request is answered only once every destination has its records, rather than as soon as it is
+    /// received. Only a receiver that answers each request takes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_after_delivery: bool,
 }
 
 /// A token a HEC receiver admits.
