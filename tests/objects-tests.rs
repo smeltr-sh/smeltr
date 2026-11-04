@@ -508,7 +508,10 @@ fn a_finishing_destination_does_not_wait_for_its_interval() {
             if !done.is_empty() {
                 break done.iter().map(|c| c.batch).collect::<Vec<_>>();
             }
-            assert!(std::time::Instant::now() < deadline, "not finished inside the 60 s interval");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "not finished inside the 60 s interval"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     };

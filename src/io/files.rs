@@ -26,7 +26,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError, channel, sync_channel};
+use std::sync::mpsc::{
+    Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError, channel, sync_channel,
+};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -648,11 +650,15 @@ struct Writer {
 impl Writer {
     fn run(&mut self, inbox: Receiver<Message>, reports: Sender<Result<Vec<BatchCompletion>, IoError>>) {
         loop {
-            // Woken at least every `MEASURE_EVERY`, so what lands while no batch comes shows as it lands.
-            let wait = self
-                .next_commit
-                .saturating_duration_since(Instant::now())
-                .min(MEASURE_EVERY);
+            // Woken at least every `MEASURE_EVERY`, so what lands while no batch comes shows as it lands. A finishing
+            // writer's commit is always due, so with nothing to commit it waits for a batch rather than spinning.
+            let wait = if self.config.commit_interval.is_zero() && self.holds_nothing() {
+                MEASURE_EVERY
+            } else {
+                self.next_commit
+                    .saturating_duration_since(Instant::now())
+                    .min(MEASURE_EVERY)
+            };
             match inbox.recv_timeout(wait) {
                 Ok(Message::Job(job)) => {
                     if let Err(e) = self.take(job) {
@@ -674,7 +680,7 @@ impl Writer {
             }
             let due = self.held >= commit_at(self.config.buffer_bytes) || Instant::now() >= self.next_commit;
             if due {
-                if self.pending.is_empty() && self.open.is_empty() && self.closed.is_empty() {
+                if self.holds_nothing() {
                     // Nothing to commit: the interval runs from now.
                     self.next_commit = Instant::now() + self.config.commit_interval;
                 } else if reports.send(self.commit()).is_err() {
@@ -691,6 +697,10 @@ impl Writer {
         // Stopped with files between a close and their commit: as on a failure, nothing of them is kept.
         self.abort_open();
         self.delete_closed();
+    }
+
+    fn holds_nothing(&self) -> bool {
+        self.pending.is_empty() && self.open.is_empty() && self.closed.is_empty()
     }
 
     /// Writes one batch's rows into their partitions' files. A job of an ended generation is skipped: its batch comes

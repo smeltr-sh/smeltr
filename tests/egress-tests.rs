@@ -108,7 +108,10 @@ fn a_finishing_destination_acknowledges_what_it_holds_without_waiting() {
     }
     assert_eq!(dest.outstanding().len(), 1, "the batch reached the destination");
     std::thread::sleep(Duration::from_millis(50));
-    assert!(reader.poll_completions().unwrap().is_empty(), "nothing is acknowledged before finishing");
+    assert!(
+        reader.poll_completions().unwrap().is_empty(),
+        "nothing is acknowledged before finishing"
+    );
 
     egress.finish();
     reader.flush().unwrap();
