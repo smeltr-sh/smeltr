@@ -77,11 +77,10 @@
 
   /** Who is writing, when the session names someone. */
   const me = session().displayName || session().username || '';
-  const myId = session().userId;
   const NOTHING_TO_SUBMIT = 'Write a comment first.';
 
-  /** The leader refuses a verdict on a closed change, and from the change's own author. */
-  let reviewable = $derived(!closed && !(myId !== undefined && myId === change.authorId));
+  /** The leader refuses a verdict on a closed change. */
+  let reviewable = $derived(!closed);
   let sending = $derived<ComposerChoice>(reviewable ? choice : 'comment');
 
   async function act(call: () => Promise<BranchMutationResult>, after: () => Promise<void> | void) {

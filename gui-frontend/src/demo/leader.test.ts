@@ -567,9 +567,10 @@ describe('DemoLeader', () => {
     expect((await thread(true)).body).toMatchObject({ ok: true });
     expect(message(await thread(true))).toBe('this thread is already resolved');
 
-    const own = await post('reviews', { verdict: 'approve', body: '' });
-    expect(own.status).toBe(403);
-    expect(message(own)).toBe('you opened this change, so somebody else reviews it');
+    // Whoever opened it may approve it: one administrator works alone.
+    expect((await post('reviews', { verdict: 'approve', body: '' })).body).toMatchObject({
+      ok: true,
+    });
     expect(message(await post('deploy', {}))).toBe(DEMO_REFUSAL);
 
     await post('close', { reason: '' });
@@ -582,6 +583,7 @@ describe('DemoLeader', () => {
       'comment',
       'comment',
       'resolved',
+      'approved',
       'closed',
       'reopened',
     ]);

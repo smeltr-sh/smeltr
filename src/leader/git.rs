@@ -1734,8 +1734,9 @@ fn thread_resolved(markers: &[Marker], root: &str) -> bool {
         .is_some_and(|m| m.kind == MarkerKind::Resolved)
 }
 
-/// Approve `branch`'s change or ask for changes to it, as `author`. Only an open change is reviewed, and not by
-/// whoever opened it. Asking for changes says what to change; an approval may say nothing.
+/// Approve `branch`'s change or ask for changes to it, as `author`. Only an open change is reviewed, by anyone,
+/// whoever opened it among them: one administrator works alone. Asking for changes says what to change; an approval
+/// may say nothing.
 pub fn review_change(
     repo_path: &Path,
     branch: &str,
@@ -1749,18 +1750,10 @@ pub fn review_change(
         return Err(GitError::invalid("asking for changes needs to say what to change"));
     }
     let tip = change_tip(repo_path, branch)?;
-    let change = match read_change(repo_path, branch)? {
-        Some(change) if change.state == ChangeState::Open => change,
+    match read_change(repo_path, branch)? {
+        Some(change) if change.state == ChangeState::Open => {}
         Some(_) => return Err(GitError::conflict(format!("{branch:?} is not open for review"))),
         None => return Err(GitError::conflict(format!("{branch:?} was never opened for review"))),
-    };
-    // An empty id is an identity no account owns -- the leader's own, or one a marker could not name -- and two of
-    // those are not the same person.
-    if !change.author.id.is_empty() && change.author.id == author.id {
-        return Err(GitError::of(
-            ErrorKind::Forbidden,
-            "you opened this change, so somebody else reviews it",
-        ));
     }
     write_marker(
         repo_path,
@@ -5923,15 +5916,13 @@ mod tests {
     }
 
     #[test]
-    fn whoever_opened_a_change_does_not_review_it() {
+    fn whoever_opened_a_change_may_review_it() {
         let data = data_with_branch("review-self", "work");
         let repo = repo_path(&data);
         open_change(&repo, "work", "First", "", &ann()).unwrap();
-        // A rename by somebody else does not make the change theirs, nor stop Ann being its author.
-        retitle_change(&repo, "work", "Second", "", &bob()).unwrap();
-        let err = review_change(&repo, "work", Verdict::Approved, "", &ann()).unwrap_err();
-        assert!(err.to_string().contains("somebody else reviews it"), "{err}");
+        review_change(&repo, "work", Verdict::Approved, "", &ann()).unwrap();
         review_change(&repo, "work", Verdict::Approved, "", &bob()).unwrap();
+        assert_eq!(verdicts(&repo, "work").len(), 2, "each is recorded");
     }
 
     #[test]

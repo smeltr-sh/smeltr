@@ -3182,6 +3182,10 @@ fn with_west_roles_and(label: &str, extra: &[(&str, &str)]) -> (Leader, Operator
             "smeltr-west-edit",
             serde_json::json!({ "groups": ["smeltr-west-edit"], "areas": { "west": "editor" } }),
         ),
+        (
+            "smeltr-west-deploy",
+            serde_json::json!({ "groups": ["smeltr-west-deploy"], "areas": { "west": "deployer" } }),
+        ),
     ];
     for (name, role) in roles {
         let (status, body) = leader.put_as(&op, &format!("/api/roles/{name}"), role);
@@ -3268,6 +3272,72 @@ fn an_editor_saves_in_their_group_and_does_not_deploy() {
     assert_eq!(status, 403, "an editor deployed a commit: {body}");
     let (status, body) = leader.get_as(&editor.session, "/api/accounts");
     assert_eq!(status, 403, "an editor read the roster: {body}");
+}
+
+/// `branch` saved in west and opened for review, as `who`.
+fn open_a_change(leader: &Leader, who: &Operator, branch: &str) {
+    let (status, body) = leader.put_as(who, &format!("/api/areas/west/sources?branch={branch}"), a_source());
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = leader.post_as(
+        who,
+        &format!("/api/branches/{branch}/open"),
+        serde_json::json!({ "title": "A storefront source", "description": "" }),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["ok"], true, "{body}");
+}
+
+/// What approving `branch`'s change as `who` answers.
+fn approve(leader: &Leader, who: &Operator, branch: &str) -> (u16, serde_json::Value) {
+    leader.post_as(
+        who,
+        &format!("/api/branches/{branch}/reviews"),
+        serde_json::json!({ "verdict": "approve", "body": "" }),
+    )
+}
+
+/// Approving takes deployer: a viewer approves nobody's change.
+#[test]
+fn a_viewer_approves_no_change() {
+    let (leader, op, provider) = with_west_roles("review-viewer");
+    open_a_change(&leader, &op, "theirs");
+    let viewer = provider_account(&leader, &provider, &["smeltr-west-view"]);
+    let (status, body) = approve(&leader, &viewer, "theirs");
+    assert_eq!(status, 403, "a viewer approved: {body}");
+}
+
+/// An editor opens a change but approves none, their own or anyone else's.
+#[test]
+fn an_editor_approves_no_change_not_even_their_own() {
+    let (leader, op, provider) = with_west_roles("review-editor");
+    open_a_change(&leader, &op, "theirs");
+    let editor = provider_account(&leader, &provider, &["smeltr-west-edit"]);
+    open_a_change(&leader, &editor, "dana");
+    let (status, body) = approve(&leader, &editor, "dana");
+    assert_eq!(status, 403, "an editor approved their own change: {body}");
+    let (status, body) = approve(&leader, &editor, "theirs");
+    assert_eq!(status, 403, "an editor approved somebody else's change: {body}");
+}
+
+/// A deployer approves any change in their group, their own among them: one person may work alone.
+#[test]
+fn a_deployer_approves_any_change_their_own_too() {
+    let (leader, op, provider) = with_west_roles("review-deployer");
+    open_a_change(&leader, &op, "theirs");
+    let deployer = provider_account(&leader, &provider, &["smeltr-west-deploy"]);
+    open_a_change(&leader, &deployer, "dana");
+    for branch in ["dana", "theirs"] {
+        let (status, body) = approve(&leader, &deployer, branch);
+        assert_eq!(status, 200, "{branch}: {body}");
+        assert_eq!(body["ok"], true, "{branch}: {body}");
+        let (_, timeline) = leader.get_as(&deployer.session, &format!("/api/branches/{branch}/timeline"));
+        let approved = timeline["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "approved");
+        assert!(approved, "{branch}: {timeline}");
+    }
 }
 
 /// Refreshes each OIDC session at the provider this often, so the tests below wait seconds rather than minutes.

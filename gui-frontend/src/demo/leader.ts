@@ -1161,7 +1161,7 @@ export class DemoLeader {
     });
   }
 
-  /** A verdict on `name`'s change, as `git::review_change` records it: never by whoever opened it. */
+  /** A verdict on `name`'s change, as `git::review_change` records it. */
   private review(name: string, req: { verdict?: string; body?: string }): Answer {
     const body = (req.body ?? '').trim();
     if (req.verdict !== 'approve' && req.verdict !== 'request-changes') {
@@ -1172,10 +1172,6 @@ export class DemoLeader {
     }
     const found = this.reviewed(name, true);
     if ('refusal' in found) return found.refusal;
-    const { authorId } = this.by(0);
-    if (found.change.authorId && found.change.authorId === authorId) {
-      return refused(403, [bareError('you opened this change, so somebody else reviews it')]);
-    }
     const kind = req.verdict === 'approve' ? 'approved' : 'changes-requested';
     return this.marked(found.branch, { kind, text: body });
   }
