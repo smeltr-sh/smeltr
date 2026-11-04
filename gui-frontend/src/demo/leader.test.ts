@@ -690,4 +690,36 @@ describe('DemoLeader', () => {
     await leader.answer('GET', at(`/api/main/diff?${q}`), null);
     expect(asked.map((a) => a.body.path)).toEqual([undefined, 'groups/network/sources.json']);
   });
+  it('answers a sample read at a commit the tab holds, as a review reads both ends of a change', async () => {
+    const r = recording();
+    const sample = { id: 's1', name: 'one', records: [{ _raw: 'a' }] };
+    r.answers['/api/areas/network/samples/s1?branch=main'] = config({ sample });
+    const leader = demoLeader(r, () => RECORDED);
+    const read = await leader.answer(
+      'GET',
+      at(`/api/areas/network/samples/s1?branch=mine&at=${COMMIT}`),
+      null,
+    );
+    expect(read.body).toMatchObject({ ok: true, sample, commit: COMMIT });
+
+    // A test is read by the file it is stored in, whose name is its id slugged.
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
+    const test = { name: 'Proto as text', sample: 's1', lockedAt: 0, rowsIn: 1, expected: [] };
+    await leader.answer(
+      'PUT',
+      at(`/api/areas/network/tests/${encodeURIComponent('Proto as text')}?branch=mine`),
+      JSON.stringify(test),
+    );
+    const head = (
+      (await leader.answer('GET', at('/api/branches'), null)).body as {
+        branches: { head: string }[];
+      }
+    ).branches[0].head;
+    const locked = await leader.answer(
+      'GET',
+      at(`/api/areas/network/tests/proto-as-text?branch=mine&at=${head}`),
+      null,
+    );
+    expect(locked.body).toMatchObject({ ok: true, test: { id: 'Proto as text' } });
+  });
 });

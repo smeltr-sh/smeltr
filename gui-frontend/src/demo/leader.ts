@@ -288,6 +288,24 @@ export function putBack(
   return { objects, same, name: typeof named === 'string' ? named : id };
 }
 
+/** `id` as `config_file::slugify` makes it a file's name. */
+function slugged(id: string): string {
+  const slug = id
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'pipeline';
+}
+
+/** The sample or test `id` names among `held`, found by the file it is stored in, as the leader's
+ * `read_sample` and `read_test` find it: two ids that slug alike are one file. */
+function stored<T extends { id: string }>(
+  held: Record<string, T> | undefined,
+  id: string,
+): T | undefined {
+  return held?.[id] ?? Object.values(held ?? {}).find((o) => slugged(o.id) === slugged(id));
+}
+
 /** Every scope of `branch` as the service writes it out: its bundle, with the samples and tests beside it. */
 function scopesOf(branch: Branch) {
   return Object.fromEntries(
@@ -659,11 +677,18 @@ export class DemoLeader {
     if (method === 'GET' && within === '/unreadable' && this.branch(name)) {
       return ok({ files: [], commit: q.get('at') ?? this.branch(name)!.commit });
     }
-    if (method === 'GET' && at && within === '') {
+    if (method === 'GET' && at) {
       const commit = q.get('at');
       const held = [this.branch(name), this.branch('main')].find((b) => b?.commit === commit);
       const own = held?.bundles[scope] ?? (scope === SHARED ? undefined : { version: 1 });
-      if (held && own) return ok({ config: own, commit });
+      if (within === '' && held && own) return ok({ config: own, commit });
+      // A change's review reads each sample and test it changed at both of its ends.
+      const file = within?.match(/^\/(samples|tests)\/([^/]+)$/);
+      const id = file && decodeURIComponent(file[2]);
+      const sample = file?.[1] === 'samples' ? stored(held?.samples[scope], id!) : undefined;
+      if (sample) return ok({ sample, commit });
+      const test = file?.[1] === 'tests' ? stored(held?.tests[scope], id!) : undefined;
+      if (test) return ok({ test, commit });
     }
 
     if (method === 'GET' && !at) {
@@ -702,7 +727,7 @@ export class DemoLeader {
       }
       const sample = within?.match(/^\/samples\/([^/]+)$/);
       if (sample && branch) {
-        const found = branch.samples[scope]?.[decodeURIComponent(sample[1])];
+        const found = stored(branch.samples[scope], decodeURIComponent(sample[1]));
         if (found) return ok({ sample: found, commit: branch.commit });
         const missing = refused(404, [bareError('there is no sample by that name on this branch')]);
         return {
@@ -719,7 +744,7 @@ export class DemoLeader {
       }
       const test = within?.match(/^\/tests\/([^/]+)$/);
       if (test && branch) {
-        const found = branch.tests[scope]?.[decodeURIComponent(test[1])];
+        const found = stored(branch.tests[scope], decodeURIComponent(test[1]));
         if (found) return ok({ test: found });
         return refused(404, [bareError('there is no test by that name on this branch')]);
       }
