@@ -1186,7 +1186,7 @@
     {
       "id": "strings",
       "title": "Strings",
-      "blurb": "A `str` is text, always valid UTF-8. `+` joins two. [length](#length), [slice](#slice), [at](#at), [indexOf](#indexOf) and [includes](#includes) take a string or an array.",
+      "blurb": "A `str` is text, always valid UTF-8. `+` joins two. [length](#length), [slice](#slice), [at](#at), [indexOf](#indexOf) and [includes](#includes) take a string or an array. Between backticks, `${...}` puts a value in text.",
       "rows": [
         {
           "symbol": "+",
@@ -1195,6 +1195,26 @@
             {
               "expr": "\"GET\" + \" /health\"",
               "result": "\"GET /health\""
+            }
+          ]
+        },
+        {
+          "symbol": "${}",
+          "gloss": "put a value in text, between backticks",
+          "examples": [
+            {
+              "given": ["let status: i64 = 404"],
+              "expr": "`status ${status}`",
+              "result": "\"status 404\""
+            },
+            {
+              "given": ["let host: str = null"],
+              "expr": "`host=${host}`",
+              "result": "null"
+            },
+            {
+              "expr": "`cost \\${5}`",
+              "result": "\"cost ${5}\""
             }
           ]
         }
@@ -1206,7 +1226,8 @@
         }
       ],
       "notes": [
-        "There is no implicit stringification: a number has to go through `toString()` before it can be joined to text."
+        "There is no implicit stringification: a number has to go through `toString()` before it can be joined to text.",
+        "A template string is shorthand for `+` and `toString()`: `` `status ${status}` `` means `\"status \" + status.toString()`. A null in a hole makes the whole string null. A backslash escapes: `\\n`, `\\t`, `\\r`, `` \\` ``, `\\$` and `\\\\`, so `\\${` writes `${` itself."
       ],
       "functions": [
         {

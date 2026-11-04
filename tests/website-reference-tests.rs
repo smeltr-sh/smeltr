@@ -293,7 +293,8 @@ fn specifier_rows(r: &Reference) -> impl Iterator<Item = &SpecifierRow> {
 
 /// Syntax the page documents alongside the operators that has no `BinOp`/`UnOp` of its own.
 /// `.` and `$[]` spell a field name. `[]` indexes a value or spells a named field path.
-const NOT_IN_THE_OPERATOR_ENUMS: [&str; 4] = [".", "?:", "[]", "$[]"];
+/// `${}` is a template string's hole.
+const NOT_IN_THE_OPERATOR_ENUMS: [&str; 5] = [".", "?:", "[]", "$[]", "${}"];
 
 /// One expression over a one-row batch, as the value of `out`, after any
 /// `given` bindings, each a `name = expr` statement, and the kinds of the
