@@ -538,6 +538,11 @@ impl Source for ReceiverSource {
         self.shared.dropped.swap(0, std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// What a sender is already waiting on is delivered, so it hears success rather than sending it again.
+    fn stop_taking(&mut self) -> bool {
+        self.shared.stop_taking()
+    }
+
     fn take_full(&mut self) -> u64 {
         self.shared.holdings.full.swap(0, std::sync::atomic::Ordering::Relaxed)
     }
@@ -730,12 +735,14 @@ struct Inbox {
     /// The `ackId`s a HEC receiver has given.
     acks: hec::Acks,
     blocked: bool,
+    /// Its deployment is stopping: it takes nothing new, and hands over what it holds.
+    stopping: bool,
     closed: bool,
 }
 
 impl Inbox {
     fn open(&self) -> bool {
-        !self.closed && !self.blocked
+        !self.closed && !self.blocked && !self.stopping
     }
 
     fn queue(&mut self, request: Request) {
@@ -1073,6 +1080,13 @@ impl Shared {
             // A sender that hung up is not waiting for this.
             let _ = answer.send(());
         }
+    }
+
+    /// Every new request is answered busy from now on. Whether it still holds requests its reader has not taken.
+    fn stop_taking(&self) -> bool {
+        let mut inbox = self.state.lock().unwrap();
+        inbox.stopping = true;
+        !inbox.queued.is_empty()
     }
 
     /// Every held request is answered busy, and every new one too: its records were never delivered, and the sender
@@ -3208,6 +3222,21 @@ mod tests {
         assert!(!answered(&mut second));
         shared.answer_through(2);
         assert!(answered(&mut second));
+    }
+
+    /// A stopping receiver takes nothing new, hands over what it holds, and answers its senders once that lands.
+    #[test]
+    fn a_stopping_receiver_refuses_new_requests_and_hands_over_the_rest() {
+        let shared = Shared::default();
+        let Admitted::Later(mut held) = admit(&shared, records(2)) else {
+            panic!()
+        };
+        assert!(shared.stop_taking(), "it still holds a request");
+        assert!(matches!(admit(&shared, records(1)), Admitted::Busy));
+        assert_eq!(shared.take(10, 1 << 20, Duration::ZERO).len(), 2);
+        assert!(!shared.stop_taking(), "it has handed everything over");
+        shared.answer_through(1);
+        assert!(answered(&mut held));
     }
 
     /// A request is held whole and its records cut as they are taken, so one taken over several polls is answered

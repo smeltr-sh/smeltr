@@ -188,6 +188,12 @@ on a timer: each try would stop the deployment that works.
                     as for a redeploy
 ```
 
+Ending a deployment is one drain, bounded like every other step. Every
+destination finishes what it holds at once rather than at its own interval, a
+receiver answers new requests busy and hands over what it already took, and
+each reader commits what lands. What has not landed when the drain ends is
+read again by the next deployment, or sent again by its sender.
+
 The notice comes last so that no beat lands after it to say the worker is
 back, and so that it carries what the deployment counted and said to its end.
 Each step is bounded: a deployment that will not end, or a leader that does

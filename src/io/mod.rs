@@ -895,6 +895,13 @@ pub trait Source: Send {
         Ok(())
     }
 
+    /// Its deployment is stopping: take nothing more from outside, and say whether it still holds what it took and
+    /// must hand over before it ends. The reader polls it while it says so. The default holds nothing: a source that
+    /// reads at its own pace reads again after a restart.
+    fn stop_taking(&mut self) -> bool {
+        false
+    }
+
     /// Records the source let go before they were read, since the last call: ones a sender could not be made to wait
     /// for, which arrived while the source had no room. The default is none: a source that can wait never lets go.
     fn take_dropped(&mut self) -> u64 {
@@ -1322,6 +1329,11 @@ pub trait Destination: Send {
     /// that spawns none ignores it.
     fn lend_senders(&mut self, _lend: Lend) {}
 
+    /// Its deployment is stopping: from now on, finish what it holds as soon as it can, rather than when its own
+    /// interval says. Returns at once; what lands is reported by `poll_completions`. The default does nothing: a
+    /// destination that acknowledges as it delivers has nothing to finish sooner.
+    fn finish(&mut self) {}
+
     /// How many requests this destination has open, for a transport that opens them itself. `None` from one whose
     /// requests are not its own to report -- librdkafka's are inside librdkafka.
     fn concurrency(&mut self) -> Option<usize> {
@@ -1641,6 +1653,11 @@ pub mod fake {
                 undelivered: None,
             }));
             Ok(())
+        }
+
+        /// As a file destination does: what it holds is acknowledged without waiting for `complete`.
+        fn finish(&mut self) {
+            let _ = self.flush();
         }
 
         fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
