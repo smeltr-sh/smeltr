@@ -508,7 +508,8 @@ pub fn check_format(fmt: &str) -> Result<(), String> {
 /// read back gives the instant written, to what its specifiers keep. Each specifier is written as wide as the parser
 /// reads it: `%m`, `%d`, `%H`, `%I`, `%M` and `%S` two digits, `%e` a day padded with a space, `%f` six digits,
 /// `%z` `+0000`, `%b`/`%a` the three-letter English name and `%B`/`%A` the whole one, `%s` and `%Q` the epoch in
-/// seconds and milliseconds, floored. `false`, with `out` partly written, where a `%` opens no specifier.
+/// seconds and milliseconds, floored. A year outside 0 to 9999 is written whole, which `%Y` does not read back.
+/// `false`, with `out` partly written, where a `%` opens no specifier.
 pub fn format_into(us: i64, fmt: &str, out: &mut Vec<u8>) -> bool {
     let days = us.div_euclid(MICROS_PER_DAY);
     let of_day = us.rem_euclid(MICROS_PER_DAY);
@@ -534,10 +535,10 @@ pub fn format_into(us: i64, fmt: &str, out: &mut Vec<u8>) -> bool {
             Some('S') => write!(out, "{:02}", of_day / 1_000_000 % 60),
             Some('f') => write!(out, "{:06}", of_day % 1_000_000),
             Some('z') => write!(out, "+0000"),
-            Some('b') => write!(out, "{}", capitalized(MONTHS[month as usize - 1])),
-            Some('B') => write!(out, "{}", capitalized(FULL_MONTHS[month as usize - 1])),
-            Some('a') => write!(out, "{}", capitalized(WEEKDAY_ABBREV[weekday])),
-            Some('A') => write!(out, "{}", capitalized(WEEKDAY_FULL[weekday])),
+            Some('b') => write_name(out, MONTHS[month as usize - 1]),
+            Some('B') => write_name(out, FULL_MONTHS[month as usize - 1]),
+            Some('a') => write_name(out, WEEKDAY_ABBREV[weekday]),
+            Some('A') => write_name(out, WEEKDAY_FULL[weekday]),
             Some('s') => write!(out, "{}", us.div_euclid(1_000_000)),
             Some('Q') => write!(out, "{}", us.div_euclid(1_000)),
             Some('%') => write!(out, "%"),
@@ -548,9 +549,13 @@ pub fn format_into(us: i64, fmt: &str, out: &mut Vec<u8>) -> bool {
     true
 }
 
-/// An English name as it is written: its first letter upper case.
-fn capitalized(name: &str) -> String {
-    name[..1].to_ascii_uppercase() + &name[1..]
+/// An English name, kept lower case for matching, written as it is spelled: its first letter upper case. Bytes,
+/// so no row allocates.
+fn write_name(out: &mut Vec<u8>, name: &str) -> std::io::Result<()> {
+    let (first, rest) = name.as_bytes().split_at(1);
+    out.push(first[0].to_ascii_uppercase());
+    out.extend_from_slice(rest);
+    Ok(())
 }
 
 /// `parse_auto_hinted` with the reference a yearless candidate infers its year from.
@@ -732,6 +737,10 @@ mod tests {
             "1969-12-31 23:59:59.999999 -1 -1"
         );
         assert_eq!(formatted(t, "100%% é").unwrap(), "100% é");
+        // Outside the four digits `%Y` reads back, a year is still written whole.
+        let y10000 = days_from_civil(10000, 1, 1) * MICROS_PER_DAY;
+        assert_eq!(formatted(y10000, "%Y%m%d").unwrap(), "100000101");
+        assert_eq!(parse_with_format_at("100000101", "%Y%m%d", None), None);
         assert_eq!(formatted(t, "%J"), None);
         assert_eq!(formatted(t, "%"), None);
     }
