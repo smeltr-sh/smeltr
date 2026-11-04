@@ -455,6 +455,8 @@ impl<'a> Lexer<'a> {
                     b'r' => lit.push('\r'),
                     b'0' => lit.push('\0'),
                     b'u' => lit.push(self.lex_unicode_escape(start)?),
+                    b'\'' => lit.push('\''),
+                    b'"' => lit.push('"'),
                     b'`' => lit.push('`'),
                     b'$' => lit.push('$'),
                     b'\\' => lit.push('\\'),
@@ -706,13 +708,13 @@ mod tests {
         ));
     }
 
-    /// A template string takes a string's `\0` and `\u` escapes, beside its own `` \` `` and `\$`.
+    /// A template string takes every escape a string does, beside its own `` \` `` and `\$`.
     #[test]
     fn a_template_takes_a_strings_escapes() {
-        let t = toks(r"`\0 \u00e9 \u{1F44B} \` \$`");
+        let t = toks(r#"`\0 \u00e9 \u{1F44B} \' \" \` \$`"#);
         assert_eq!(
             t[0],
-            Token::Template(vec![TemplatePart::Lit("\0 \u{e9} \u{1F44B} ` $".into())])
+            Token::Template(vec![TemplatePart::Lit("\0 \u{e9} \u{1F44B} ' \" ` $".into())])
         );
         assert!(
             Lexer::tokenize(r"`\u12`").is_err(),

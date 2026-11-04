@@ -6,8 +6,8 @@
   import {
     EXCEPTIONS as exceptions,
     GROUPS as groups,
-    SIGNATURES as signatures,
     LITERALS as literals,
+    SIGNATURES as signatures,
     TYPES as types,
     topic,
     type Example,
