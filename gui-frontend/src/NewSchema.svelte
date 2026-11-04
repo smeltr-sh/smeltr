@@ -1,7 +1,8 @@
 <!--
   Adding a schema (`NewObject`): read from a file a standard publishes (ECS, an OCSF class, a CSV of fields, JSON
-  Schema), made from an OpenTelemetry signal's records, imported by a pipeline of the bundle run over an uploaded file of any other format, or empty. What it starts
-  from is the draft's `type`; the schema itself is made on Add (`SchemasPage`).
+  Schema), made from an OpenTelemetry signal's records, imported by a pipeline of the bundle run over an uploaded
+  file of any other format, or empty. What it starts from is the draft's `type`; the schema itself is made on Add
+  (`SchemasPage`).
 -->
 <script lang="ts" module>
   import type { CatalogType } from './TypeCatalog.svelte';
