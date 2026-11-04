@@ -23,10 +23,10 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use super::line_breaker::{BREAK_SLACK, LineBreaker, Searched};
-use super::receiver::{Closed, Connection, Counted, Cutter, Held, STREAM_STEP};
+use super::receiver::{Closed, Connection, Counted, Cutter, Held, STREAM_STEP, admits};
 use crate::plan::topology::SyslogReceiverConfig;
 
 /// How much one read of the socket takes.
@@ -36,6 +36,9 @@ const READ_STEP: usize = 64 * 1024;
 /// it on the connection, and a sender writes a message whole, so only a sender stalled this long mid-message has it cut
 /// in two.
 const QUIET: Duration = Duration::from_secs(30);
+
+/// How long closing a connection waits for the sender to take its `close_notify`.
+const CLOSING: Duration = Duration::from_secs(5);
 
 /// Messages cut from what a connection read, each a record, filed under nothing. Held in one buffer, each message
 /// its bytes and where it ends, so many short messages cost about what was sent.
@@ -328,11 +331,6 @@ impl Framer {
     }
 }
 
-/// Whether a sender at `peer` may connect, or send a datagram. An empty list admits whoever TLS admitted.
-fn admits(allow_from: &[ipnetwork::IpNetwork], peer: IpAddr) -> bool {
-    allow_from.is_empty() || allow_from.iter().any(|network| network.contains(peer))
-}
-
 /// Why a connection ended.
 #[derive(Debug, PartialEq)]
 enum End {
@@ -372,24 +370,20 @@ impl Handler {
         }
     }
 
-    /// Serves one sender's connection until it ends, and logs why when it was refused.
+    /// Serves one sender's connection until it ends, logs why when it was refused, and closes it: under TLS with a
+    /// `close_notify`, which answers the sender's own (RFC 5425, 4.4).
     pub(super) async fn serve(self: Arc<Self>, connection: Connection) {
-        let Connection { stream, peer, inlet } = connection;
+        let Connection { mut stream, inlet } = connection;
         let remote = &*inlet.remote;
-        if !admits(&self.allow_from, peer) {
-            tracing::trace!(
-                name: "refused", target: "sources",
-                subject = %remote,
-                "a connection is closed: its address is in none of the receiver's allowFrom networks"
-            );
-            return;
-        }
         let admit = |messages, bytes| {
             let admitted = inlet.admit(Cutter::Messages(messages), bytes);
             // Syslog has no acknowledgement, so delivery is not waited for.
             async move { admitted.await.map(drop) }
         };
-        match self.read(stream, admit, &mut inlet.held()).await {
+        let ended = self.read(&mut stream, admit, &mut inlet.held()).await;
+        // A sender that no longer reads is not waited on.
+        let _ = tokio::time::timeout(CLOSING, stream.shutdown()).await;
+        match ended {
             End::Gone { partial: 0 } | End::Stopping => {}
             End::Gone { partial } => tracing::trace!(
                 name: "partial", target: "sources",

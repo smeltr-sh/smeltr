@@ -220,7 +220,7 @@ impl Handler {
 
     /// Serves one forwarder's connection until it ends, and logs why when it was refused.
     pub(super) async fn serve(self: Arc<Self>, connection: Connection) {
-        let Connection { stream, inlet, .. } = connection;
+        let Connection { stream, inlet } = connection;
         let (reader, writer) = tokio::io::split(stream);
         let mut wire = Wire {
             reader,
