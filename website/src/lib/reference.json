@@ -3183,7 +3183,7 @@
     },
     {
       "form": "443",
-      "rule": "An `i64`. `_` separates digits, and `0x`, `0o` and `0b` start hexadecimal, octal and binary. An integer too large for an `i64` is an `f64`.",
+      "rule": "An `i64`. `_` separates digits, and `0x`, `0o` and `0b` start hexadecimal, octal and binary. A decimal integer too large for an `i64` is an `f64`.",
       "examples": [
         {
           "expr": "1_000_000",
@@ -3222,6 +3222,10 @@
           "result": "\"say \\\"hi\\\"\""
         },
         {
+          "expr": "\"🔥 alert\"",
+          "result": "\"🔥 alert\""
+        },
+        {
           "expr": "\"caf\\u00e9\"",
           "result": "\"café\""
         },
@@ -3233,7 +3237,7 @@
     },
     {
       "form": "`status ${status}`",
-      "rule": "A `str` with values in it, between backticks. It is shorthand for `+` and `toString()`: `` `status ${status}` `` means `\"status \" + status.toString()`. A null in a hole makes the whole string null. A backslash escapes: `\\n`, `\\t`, `\\r`, `` \\` ``, `\\$` and `\\\\`, so `\\${` writes `${` itself.",
+      "rule": "A `str` with values in it, between backticks: each `${...}` holds an expression. A null in one makes the whole string null. A backslash escapes: `\\n`, `\\t`, `\\r`, `` \\` ``, `\\$` and `\\\\`, so `\\${` writes `${` itself.",
       "examples": [
         {
           "given": ["let status: i64 = 404"],
