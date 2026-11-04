@@ -1,6 +1,6 @@
 <!--
   Adding a schema (`NewObject`): read from a file a standard publishes (ECS, an OCSF class, a CSV of fields, JSON
-  Schema), imported by a pipeline of the bundle run over an uploaded file of any other format, or empty. What it starts
+  Schema), made from an OpenTelemetry signal's records, imported by a pipeline of the bundle run over an uploaded file of any other format, or empty. What it starts
   from is the draft's `type`; the schema itself is made on Add (`SchemasPage`).
 -->
 <script lang="ts" module>
@@ -10,18 +10,20 @@
     CsvPreview,
     EcsRequirements,
     OcsfClass,
+    OtlpSignal,
     Requirement,
     SchemaReadFormat,
   } from './api';
   import { FIELD_TYPES } from './api';
   import { REQUIREMENTS } from './schemas';
 
-  export type SchemaStart = 'ecs' | 'ocsf' | 'csv' | 'jsonSchema' | 'import' | 'empty';
+  export type SchemaStart = 'ecs' | 'ocsf' | 'otlp' | 'csv' | 'jsonSchema' | 'import' | 'empty';
 
   /** The format each start that reads a file reads it as. */
   export const READ_FORMATS: Partial<Record<SchemaStart, SchemaReadFormat>> = {
     ecs: 'ecs',
     ocsf: 'ocsf',
+    otlp: 'otlp',
     csv: 'csv',
     jsonSchema: 'json-schema',
   };
@@ -54,6 +56,8 @@
     levels: Requirement[];
     /** Whose requirements an ECS schema's fields take: ECS's own, or Elastic Security's in their place. */
     requirements: EcsRequirements;
+    /** The OpenTelemetry signal whose records an OTLP schema holds. */
+    signal: OtlpSignal;
     /** A CSV as the leader read it before its columns were chosen, or why it could not. */
     preview: CsvPreview | null;
     previewError: string;
@@ -79,6 +83,7 @@
   const LABELS: Record<SchemaStart, string> = {
     ecs: 'schema from ECS',
     ocsf: 'schema from an OCSF class',
+    otlp: 'schema from an OpenTelemetry signal',
     csv: 'schema from a CSV of fields',
     jsonSchema: 'schema from JSON Schema',
     import: 'schema imported from a file',
@@ -101,6 +106,14 @@
       help: "One class of the Open Cybersecurity Schema Framework: from the release built in, or from ocsf-schema-compiler's output.",
       // A shield.
       glyph: { d: 'M32 6 L52 14 V30 C52 44 42 54 32 58 C22 54 12 44 12 30 V14 Z' },
+    },
+    {
+      type: 'otlp',
+      label: 'OTLP',
+      category: 'From a standard',
+      help: 'The records of one OpenTelemetry signal (logs, metrics or traces), as the OTLP receiver gives them and the OTLP destination reads them.',
+      // A trace's spans, each starting within the one above.
+      glyph: { d: 'M8 10 H40 V18 H8 Z M16 26 H48 V34 H16 Z M24 42 H56 V50 H24 Z' },
     },
     {
       type: 'csv',
@@ -233,6 +246,13 @@
     d.id = d.suggested = suggestId(name, unavailable);
   }
 
+  /** `d` holds `signal`'s records, and its id follows, unless it was typed over. */
+  function setSignal(d: SchemaDraft, signal: OtlpSignal) {
+    d.signal = signal;
+    if (d.id !== d.suggested) return;
+    d.id = d.suggested = suggestId(`otlp-${signal}`, unavailable);
+  }
+
   /** `d` reads the release of version `source`, or, for `upload`, a file; its class stays where the other offers
    * it. */
   function setSource(d: SchemaDraft, source: string) {
@@ -245,7 +265,10 @@
 
   function blank(type: SchemaStart, taken: string[]): SchemaDraft {
     const first = type === 'ocsf' ? firstClass(standards?.ocsf[0]?.classes ?? []) : '';
-    const id = suggestId(type === 'ecs' ? 'ecs' : first || 'schema', taken);
+    const id = suggestId(
+      type === 'ecs' ? 'ecs' : type === 'otlp' ? 'otlp-logs' : first || 'schema',
+      taken,
+    );
     return {
       id,
       suggested: id,
@@ -261,6 +284,7 @@
       depth: 2,
       levels: ['required', 'recommended'],
       requirements: 'ecs',
+      signal: 'logs',
       preview: null,
       previewError: '',
       columns: {},
@@ -620,6 +644,14 @@
           {/each}
         </fieldset>
       {/if}
+    {:else if draft.type === 'otlp'}
+      <Field required label="Signal">
+        <select bind:value={() => draft.signal, (v) => setSignal(draft, v)}>
+          <option value="logs">logs</option>
+          <option value="metrics">metrics</option>
+          <option value="traces">traces</option>
+        </select>
+      </Field>
     {:else if draft.type === 'jsonSchema'}
       <Field required label="JSON Schema">
         <textarea
