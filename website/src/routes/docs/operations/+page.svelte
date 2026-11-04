@@ -35,7 +35,7 @@
       wide that range is in Admin → System → General.
     </li>
     <li>
-      Use Logs to narrow by severity, worker, worker group, message and time. Preserve timestamps,
+      Use Logs to narrow by level, worker, worker group, message and time. Preserve timestamps,
       commit IDs and error text for an incident report; omit secrets and sensitive sample records.
     </li>
   </ol>
@@ -46,8 +46,9 @@
   <p>
     The leader serves its active warnings at <code>/api/metrics</code>, in the format Prometheus
     scrapes. Each warning is a <code>smeltr_warning</code> series while it holds, labeled with its
-    condition, severity, subject kind, subject, worker group and site, so Alertmanager pages on it
-    and resolves it when it clears. <code>smeltr_warning_start_time_seconds</code> says when each began.
+    condition, severity, subject kind, subject, worker group, and, for a warning a worker logged,
+    the class and type of that log line, so Alertmanager pages on it and resolves it when it clears.
+    <code>smeltr_warning_start_time_seconds</code> says when each began.
   </p>
   <ol>
     <li>
@@ -91,8 +92,10 @@
   </p>
   <h2 id="logs">Change log verbosity</h2>
   <p>
-    Set log levels in Admin › System › Logging. The default level applies to every area, and an
-    override gives one area its own. The leader keeps a change at once and each worker from its next
+    Set log levels in Admin › System › Logging. The default level applies to every log line unless
+    an override names it. An override gives its own level to a class, a class and one type, or a
+    service, such as kafka. A line takes the first override that names it: its class and type, then
+    its service, then its class. The leader keeps a change at once and each worker from its next
     heartbeat, with no restart.
   </p>
   <p>

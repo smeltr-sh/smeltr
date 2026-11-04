@@ -55,7 +55,10 @@ export type Route =
       levels: string[];
       worker?: string;
       group?: string;
-      site?: string;
+      class?: string;
+      type?: string;
+      typeExact?: boolean;
+      service?: string;
       q?: string;
       /** The pager's position: rows below this id. Set from a previous read's `nextBefore`. */
       before?: number;
@@ -484,7 +487,10 @@ export function parseRoute(hash: string): Route {
         levels: (params.get('level') ?? '').split(',').filter((l) => l.length > 0),
         worker: one('worker'),
         group: one('group'),
-        site: one('site'),
+        class: one('class'),
+        type: one('type'),
+        ...(params.get('typeExact') === 'true' && { typeExact: true }),
+        service: one('service'),
         q: one('q'),
         before: cursor('before'),
         after: cursor('after'),

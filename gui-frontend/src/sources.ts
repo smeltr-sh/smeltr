@@ -15,7 +15,7 @@ export function setFraming(d: { framing?: Framing; lineBreaker?: string }, frami
   }
 }
 
-/** The severities a logs source carries, most severe first: `logs::LEVEL_LABELS` without trace, which a logs source
+/** The levels a logs source carries, most severe first: `logs::LEVEL_LABELS` without trace, which a logs source
  * reads as debug (`io::logs::CARRIED_AT_MOST`). */
 export const LEVELS = ['error', 'warn', 'info', 'debug'];
 /** What a source carries when it names no level. Mirrors `LevelLabel::DEFAULT`. */

@@ -1,6 +1,7 @@
 <!--
-  The levels the fleet keeps its log lines at (`leader::log_levels`): a default for every area, and an override for any
-  area kept at its own. The leader keeps a change at once, and each worker from its next heartbeat.
+  The levels the fleet keeps its log lines at (`leader::log_levels`): a default for every line, and overrides, each
+  for a class, a class and a type, or a service. The leader keeps a change at once, and each worker from its next
+  heartbeat.
 -->
 <script lang="ts">
   import { reported } from './errors.svelte';
@@ -9,20 +10,29 @@
   import CrossButton from './CrossButton.svelte';
   import Button, { BUSY } from './Button.svelte';
   import InlineSaveBar from './InlineSaveBar.svelte';
-  import { getLogLevels, putLogLevels, type LogLevelsDto, type LogLevelsResult } from './api';
+  import {
+    getLogLevels,
+    putLogLevels,
+    type LevelOverrideDto,
+    type LogLevelsDto,
+    type LogLevelsResult,
+  } from './api';
 
   /** An absent default, shown as a choice of its own: each process keeps its startup log level. */
   const STARTUP = '';
 
-  type Override = { key: string; level: string };
+  /** What an override names, as one value a select can hold: `class:sources` or `service:kafka`. */
+  type Named = string;
 
   let saved = $state<LogLevelsDto | null>(null);
   let labels = $state<string[]>([]);
-  let areas = $state<string[]>([]);
-  let adding = $state('');
+  let classes = $state<string[]>([]);
+  let services = $state<string[]>([]);
+  let adding = $state<Named>('');
+  let addingType = $state('');
   let addingLevel = $state('trace');
   let defaultShown = $state(STARTUP);
-  let rows = $state<Override[]>([]);
+  let rows = $state<LevelOverrideDto[]>([]);
   let busy = $state(false);
   let message = $state('');
 
@@ -30,24 +40,38 @@
     if (!result.levels) return;
     saved = result.levels;
     labels = result.labels;
-    if (result.areas.length > 0) areas = result.areas;
-    defaultShown = result.levels.default ?? STARTUP;
-    rows = Object.entries(result.levels.areas ?? {}).map(([key, level]) => ({ key, level }));
+    classes = result.classes;
+    services = result.services;
+    show(result.levels);
   }
 
-  /** What the form says, as the leader stores it. A row with no area, or one an earlier row names, is not written. */
-  const shown = $derived.by((): LogLevelsDto => {
-    const areas: Record<string, string> = {};
-    for (const row of rows) areas[row.key] = row.level;
-    return {
-      ...(defaultShown !== STARTUP && { default: defaultShown }),
-      ...(Object.keys(areas).length > 0 && { areas }),
-    };
+  /** Put `levels` on the form. */
+  function show(levels: LogLevelsDto) {
+    defaultShown = levels.default ?? STARTUP;
+    rows = (levels.overrides ?? []).map((o) => ({ ...o }));
+  }
+
+  /** What `o` names, one text for each thing an override can name. */
+  const key = (o: LevelOverrideDto) => `${o.class ?? ''}|${o.type ?? ''}|${o.service ?? ''}`;
+
+  /** The override the add row makes. */
+  const added = $derived.by((): LevelOverrideDto | null => {
+    const [kind, name] = adding.split(':');
+    if (!name) return null;
+    if (kind === 'service') return { service: name, level: addingLevel };
+    const type = addingType.trim();
+    return { class: name, ...(type && { type }), level: addingLevel };
   });
+
+  /** What the form says, as the leader stores it. */
+  const shown = $derived.by((): LogLevelsDto => ({
+    ...(defaultShown !== STARTUP && { default: defaultShown }),
+    ...(rows.length > 0 && { overrides: rows.map((o) => ({ ...o })) }),
+  }));
 
   /** Levels as one comparable text: the order overrides were added in is not a change. */
   const same = (l: LogLevelsDto) =>
-    JSON.stringify([l.default, Object.entries(l.areas ?? {}).sort()]);
+    JSON.stringify([l.default, (l.overrides ?? []).map((o) => `${key(o)}=${o.level}`).sort()]);
   const dirty = $derived(saved !== null && same(saved) !== same(shown));
 
   // A message about the last save says nothing once the form changes again.
@@ -81,8 +105,9 @@
   <Panel title="Log levels" onsubmit={save}>
     <Field label="Default level">
       {#snippet help()}
-        The level every area keeps unless an override names it. Choosing "startup log level" leaves
-        each process at the level it started with: <code>SMELTR_LOG_LEVEL</code> or the top-level
+        The level every log line keeps unless an override names it. Choosing "startup log level"
+        leaves each process at the level it started with: <code>SMELTR_LOG_LEVEL</code> or the
+        top-level
         <code>log_level</code>, or info if neither is set.
       {/snippet}
       <select bind:value={defaultShown}>
@@ -95,17 +120,26 @@
 
     <Field label="Overrides" group optional>
       {#snippet help()}
-        An area is the part of Smeltr a log line comes from, such as kafka or store. An override
-        keeps one area at its own level.
+        A log line has a class, the part of Smeltr it is about, and a type, what happened. A line
+        that talks to an outside service, such as kafka, names that service too. An override keeps a
+        class, a class and one type, or a service at its own level. A line takes the first override
+        that names it: its class and type, then its service, then its class.
       {/snippet}
       <table>
-        <thead><tr><th>Area</th><th>Level</th><th></th></tr></thead>
+        <thead><tr><th>For</th><th>Level</th><th></th></tr></thead>
         <tbody>
-          {#each rows as row, i (row.key)}
+          {#each rows as row, i (key(row))}
+            {@const named = row.service ?? [row.class, row.type].filter(Boolean).join(' ')}
             <tr>
-              <td><code>{row.key}</code></td>
               <td>
-                <select bind:value={row.level} aria-label="level for {row.key}">
+                {#if row.service}
+                  service <code>{row.service}</code>
+                {:else}
+                  class <code>{row.class}</code>{#if row.type}, type <code>{row.type}</code>{/if}
+                {/if}
+              </td>
+              <td>
+                <select bind:value={row.level} aria-label="level for {named}">
                   {#each labels as label (label)}<option value={label}>{label}</option>{/each}
                 </select>
               </td>
@@ -120,12 +154,20 @@
           {/each}
           <tr>
             <td>
-              <select bind:value={adding} aria-label="area">
-                <option value="" disabled>choose…</option>
-                {#each areas.filter((a) => !rows.some((r) => r.key === a)) as area (area)}
-                  <option value={area}>{area}</option>
-                {/each}
-              </select>
+              <div class="for">
+                <select bind:value={adding} aria-label="class or service">
+                  <option value="" disabled>choose…</option>
+                  <optgroup label="Classes">
+                    {#each classes as c (c)}<option value="class:{c}">{c}</option>{/each}
+                  </optgroup>
+                  <optgroup label="Services">
+                    {#each services as s (s)}<option value="service:{s}">{s}</option>{/each}
+                  </optgroup>
+                </select>
+                {#if adding.startsWith('class:')}
+                  <input bind:value={addingType} placeholder="type (optional)" aria-label="type" />
+                {/if}
+              </div>
             </td>
             <td>
               <select bind:value={addingLevel} aria-label="level">
@@ -135,10 +177,17 @@
             <td>
               <Button
                 type="button"
-                disabled={adding === '' ? 'Choose an area first.' : ''}
+                disabled={added === null
+                  ? 'Choose a class or a service first.'
+                  : added.type !== undefined && !/^[a-z][a-z0-9]*(_[a-z0-9]+)*$/.test(added.type)
+                    ? 'A type is lower-case letters, digits and underscores.'
+                    : rows.some((r) => key(r) === key(added))
+                      ? 'An override already names this.'
+                      : ''}
                 onclick={() => {
-                  rows.push({ key: adding, level: addingLevel });
+                  if (added) rows.push(added);
                   adding = '';
+                  addingType = '';
                   addingLevel = 'trace';
                 }}>Add</Button
               >
@@ -155,7 +204,7 @@
       {dirty}
       label="Save log levels"
       disabled={busy ? BUSY : ''}
-      ondiscard={() => saved && adopt({ ok: true, errors: [], levels: saved, areas: [], labels })}
+      ondiscard={() => saved && show(saved)}
     />
   </Panel>
 {/if}
@@ -179,5 +228,10 @@
   td {
     padding: 0.25rem 1.2rem 0.25rem 0;
     border-top: 1px solid var(--border);
+  }
+
+  .for {
+    display: flex;
+    gap: 0.5rem;
   }
 </style>
