@@ -77,10 +77,13 @@ worker's single-worker readers until it drains.
 A source the sender connects to is a **receiver**. Every worker of the group
 listens on its port, and the sender, or a balancer in front of the group,
 puts each connection on one of them. A sender drops what it sent once it is
-answered, so a receiver answers a request only once commit has retired the
-request's last record. Until then the sender holds the only other copy, and a
-worker that stops with a request held never answers it, so the sender sends
-it again. A protocol with acknowledgement IDs lets the sender take an ID at
+answered. A receiver answers a request once it is in the inbox, so a sender
+never waits on a destination, and a stop hands over what the inbox holds
+before it ends; a crash loses it. Set to answer after delivery, a receiver
+answers only once commit has retired the request's last record. Until then the
+sender holds the only other copy, and a worker that stops with a request held
+never answers it, so the sender sends it again. A protocol whose answer is
+its acknowledgement, as a forwarder's is, always answers after delivery. A protocol with acknowledgement IDs lets the sender take an ID at
 once instead and ask about it later; the ID reads acknowledged only once commit
 has retired the request, and a worker that stops forgets its IDs, so the
 sender sends again. The worker that gave an ID is the only one that can

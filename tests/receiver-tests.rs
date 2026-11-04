@@ -36,6 +36,11 @@ fn open(config: ReceiverConfig, secrets: &HeldSecrets) -> Box<dyn Source> {
 }
 
 fn receiver(listen: SocketAddr, records: ApiRecords) -> Box<dyn Source> {
+    receiver_answering(listen, records, true)
+}
+
+/// A receiver that answers after delivery, or as soon as a request is received.
+fn receiver_answering(listen: SocketAddr, records: ApiRecords, answer_after_delivery: bool) -> Box<dyn Source> {
     let mut secrets = HeldSecrets::default();
     secrets.set_stored([("hook".to_string(), 1, "s3cret".to_string())]);
     open(
@@ -48,6 +53,7 @@ fn receiver(listen: SocketAddr, records: ApiRecords) -> Box<dyn Source> {
             tokens: vec![("ci".into(), token())],
             tls: None,
             max_request_bytes: 1024,
+            answer_after_delivery,
         },
         &secrets,
     )
@@ -129,6 +135,17 @@ fn a_request_is_answered_once_its_records_are_committed() {
     assert!(!sent.is_finished(), "answered before its records were delivered");
     commit(&mut source, &records);
     assert_eq!(sent.join().unwrap().0, 200);
+}
+
+/// By default the sender hears 200 once its request is received, before anything is delivered, and its records
+/// still arrive.
+#[test]
+fn a_request_is_answered_once_received_by_default() {
+    let at = free_port();
+    let mut source = receiver_answering(at, ApiRecords::Lines, false);
+    assert_eq!(send(at, "/ingest", Some("s3cret"), b"{\"n\":1}\n").0, 200);
+    let records = poll_until(&mut source, 1);
+    assert_eq!(records[0].bytes().unwrap(), br#"{"n":1}"#);
 }
 
 /// A receiver given no address listens on `[::]` dual-stack: an IPv4 sender reaches it too, named by its IPv4 address
@@ -326,6 +343,7 @@ fn a_receiver_with_authorities_admits_only_a_sender_they_vouch_for() {
                 side: smeltr::io::trust::Side::Server,
             }),
             max_request_bytes: 1024,
+            answer_after_delivery: true,
         },
         &secrets,
     );
@@ -365,6 +383,7 @@ fn hec_receiver(listen: SocketAddr) -> Box<dyn Source> {
             tokens: vec![("forwarder".into(), token()), ("vector".into(), acker)],
             tls: None,
             max_request_bytes: 4096,
+            answer_after_delivery: true,
         },
         &secrets,
     )
@@ -601,6 +620,7 @@ fn otlp_receiver_of(listen: SocketAddr, signal: Signal, max_request_bytes: usize
             tokens: vec![("collector".into(), token())],
             tls: None,
             max_request_bytes,
+            answer_after_delivery: true,
         },
         &secrets,
     )
@@ -1279,6 +1299,7 @@ fn prometheus_receiver_reading(listen: SocketAddr, max_request_bytes: usize) -> 
             tokens: vec![("prometheus".into(), token())],
             tls: None,
             max_request_bytes,
+            answer_after_delivery: true,
         },
         &secrets,
     )
@@ -2304,6 +2325,7 @@ fn elastic_receiver_reading(listen: SocketAddr, max_request_bytes: usize) -> Box
             tokens: vec![("shippers".into(), token()), ("beats".into(), keyed)],
             tls: None,
             max_request_bytes,
+            answer_after_delivery: true,
         },
         &secrets,
     )

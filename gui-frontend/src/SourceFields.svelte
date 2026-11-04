@@ -4,6 +4,7 @@
 -->
 <script lang="ts">
   import Advanced from './Advanced.svelte';
+  import Toggle from './Toggle.svelte';
   import TlsFields from './TlsFields.svelte';
   import Field from './Field.svelte';
   import Nested from './Nested.svelte';
@@ -130,6 +131,7 @@
       tlsSet(s) ||
       (s.maxRequestBytes ?? LIMITS.receiverRequestBytes.default) !==
         LIMITS.receiverRequestBytes.default ||
+      s.answerAfterDelivery === true ||
       (s.type === 'syslogReceiver' && (s.encoding ?? 'auto') !== 'auto') ||
       (s.type === 'syslogReceiver' && s.lineBreaker !== undefined) ||
       (s.type === 'hecReceiver' && s.sourcetypes !== undefined)
@@ -1089,6 +1091,30 @@
         onchange={(n) => (source.maxRequestBytes = n)}
       />
     </Field>
+    {#if source.type !== 's2sReceiver' && source.type !== 'syslogReceiver'}
+      <Field field="answerAfterDelivery" label="answer after delivery">
+        {#snippet help()}
+          <p>
+            Off, the default: a request is answered as soon as it is received, so the sender never
+            waits on a destination. If the worker crashes before the records are delivered, they are
+            lost.
+          </p>
+          <p>
+            On: a request is answered only once every destination has its records, so a crash loses
+            nothing. But a destination can hold records for minutes before it delivers them, and
+            many senders give up sooner: they send the request again, the records arrive more than
+            once, and the sender can fall behind.
+          </p>
+        {/snippet}
+        <Toggle
+          bind:checked={
+            () => source.answerAfterDelivery === true,
+            (on) => (source.answerAfterDelivery = on ? true : undefined)
+          }
+          ariaLabel="answer after delivery"
+        />
+      </Field>
+    {/if}
     {#if source.type === 'syslogReceiver'}
       {@render encodingField(source)}
       {#if source.transport !== 'udp'}

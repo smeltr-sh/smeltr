@@ -1,5 +1,23 @@
 [
   {
+    "version": "1.1.0",
+    "summary": "Receivers answer a request as soon as they have received it, and a deployment that stops delivers what it holds before it stops.",
+    "sections": [
+      {
+        "title": "Sources",
+        "items": [
+          "An HTTP, HEC, OTLP, Prometheus or Elasticsearch receiver answers a request as soon as it has received it, so its sender is not held while a destination writes its file. Receivers already deployed change too when the worker is upgraded. A worker that crashes loses the records its receivers answered but had not yet delivered. To answer only after every destination has the records, as before, turn on `answerAfterDelivery`."
+        ]
+      },
+      {
+        "title": "Run a fleet",
+        "items": [
+          "A deployment that stops or is replaced first delivers what it holds, waiting up to 30 seconds. Each destination writes its open files at once instead of at its interval. Each receiver stops taking new data and passes on the records it already took. The receivers that take requests (HTTP, HEC, OTLP, Prometheus, Elasticsearch) answer 503, so their senders try again; S2S and Syslog over TCP stop reading; Syslog over UDP drops what arrives and counts it."
+        ]
+      }
+    ]
+  },
+  {
     "version": "1.0.0",
     "date": "2026-11-01",
     "summary": "The first release. Build pipelines in a browser, test them on captured samples, review and deploy them as Git commits, and run them on a fleet of workers.",

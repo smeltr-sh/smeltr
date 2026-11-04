@@ -5317,6 +5317,7 @@ fn a_minimal_http_receiver_loads_with_the_defaults() {
     assert_eq!(r.listen, "[::]:8088".parse().unwrap());
     assert_eq!(r.tokens.len(), 1);
     assert_eq!(r.max_request_bytes, 10 * 1024 * 1024);
+    assert!(!r.answer_after_delivery, "a request is answered once received");
     assert_eq!(kind.meta(), SourceMeta::HTTP_RECEIVER.with_encoding(kind.encoding()));
     assert_eq!(kind.single_worker(), None, "every worker of the group listens");
     assert_eq!(
@@ -5333,7 +5334,7 @@ fn an_http_receiver_loads_with_every_field() {
         9000,
         &format!(
             r#"{RECEIVER_TOKEN},"path":"/hooks/ci","records":"array",
-               "recordsAt":"/events","maxRequestBytes":2048"#
+               "recordsAt":"/events","maxRequestBytes":2048,"answerAfterDelivery":true"#
         ),
     );
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
@@ -5348,6 +5349,7 @@ fn an_http_receiver_loads_with_every_field() {
     assert_eq!(h.records, ApiRecords::Array("/events".into()));
     assert_eq!(r.listen, "[::]:9000".parse().unwrap());
     assert_eq!(r.max_request_bytes, 2048);
+    assert!(r.answer_after_delivery);
 }
 
 /// With neither a token nor authorities to vouch for a sender, anyone who reaches the port could send.
@@ -5690,6 +5692,16 @@ fn a_minimal_s2s_receiver_loads() {
         kind.listens().map(|l| (l.transport, l.address)),
         Some((smeltr::plan::topology::Transport::Tcp, r.listen))
     );
+}
+
+/// An S2S receiver answers as its protocol says, so answering after delivery is refused.
+#[test]
+fn an_s2s_receiver_that_answers_after_delivery_is_refused() {
+    let json = format!(
+        r#"{{"version":1,"sources":[{{"id":"forwarders","type":"s2sReceiver","port":9997{S2S_TOKEN},
+            "answerAfterDelivery":true}}]}}"#
+    );
+    assert!(refusal(&json).contains("answers as its protocol says"), "{}", refusal(&json));
 }
 
 /// Each sourcetype named breaks into events where its line breaker breaks; the file is written back as it was given.

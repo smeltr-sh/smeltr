@@ -330,8 +330,8 @@ setup.ilm.enabled: false`;
     </dd>
     <dt><strong>The same documents arrive twice</strong></dt>
     <dd>
-      A sender that hears no answer may send the request again. Give it a timeout longer than its
-      destinations take to deliver.
+      A sender that hears no answer may send the request again. With <code>answerAfterDelivery</code> on, give the
+      sender a timeout longer than its destinations take to deliver.
     </dd>
   </dl>
 

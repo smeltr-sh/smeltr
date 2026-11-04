@@ -775,8 +775,8 @@ pub enum SourceKindDto {
     /// The rows a query returns from a MySQL or MariaDB database, read as a `postgres` source reads its own.
     #[serde(rename = "mysql", deserialize_with = "SqlSourceDto::mysql")]
     MySql(SqlSourceDto),
-    /// What senders POST to `path` on `port`. Every worker of the group listens; a request is answered once every
-    /// destination has its records.
+    /// What senders POST to `path` on `port`. Every worker of the group listens; a request is answered as
+    /// `answerAfterDelivery` says.
     #[serde(rename_all = "camelCase")]
     HttpReceiver {
         #[serde(flatten)]
@@ -797,7 +797,7 @@ pub enum SourceKindDto {
         records_at: Option<String>,
     },
     /// What Splunk HTTP Event Collector clients send to `port`, at the paths Splunk serves. Every worker of the group
-    /// listens; a request is answered once every destination has its records.
+    /// listens; a request is answered as `answerAfterDelivery` says.
     #[serde(rename_all = "camelCase")]
     HecReceiver {
         #[serde(flatten)]
@@ -833,7 +833,7 @@ pub enum SourceKindDto {
     /// What OpenTelemetry exporters send to `port` over OTLP, over HTTP as protobuf or JSON and over gRPC: the
     /// exports of one `signal`, one record per log record, data point or span. The receivers of a group's other
     /// signals may share its port, as an exporter sends every signal to one. Every worker of the group listens; an
-    /// export is answered once every destination has its records.
+    /// export is answered as `answerAfterDelivery` says.
     #[serde(rename_all = "camelCase")]
     OtlpReceiver {
         #[serde(flatten)]
@@ -848,8 +848,8 @@ pub enum SourceKindDto {
         tokens: BTreeMap<String, SecretRefDto>,
     },
     /// What Prometheus and the agents speaking its remote_write protocol send to `port`, at `/api/v1/write`, one
-    /// record per sample. Every worker of the group listens; a request is answered once every destination has its
-    /// records.
+    /// record per sample. Every worker of the group listens; a request is answered as
+    /// `answerAfterDelivery` says.
     #[serde(rename_all = "camelCase")]
     PrometheusReceiver {
         #[serde(flatten)]
@@ -942,6 +942,10 @@ pub struct ReceiverSettingsDto {
     pub port: u16,
     #[serde(default, skip_serializing_if = "MaxRequestBytes::is_default")]
     pub max_request_bytes: MaxRequestBytes,
+    /// Whether a request is answered only once every destination has its records, rather than as soon as it is
+    /// received. Only a receiver that answers each request takes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_after_delivery: bool,
 }
 
 /// A token a HEC receiver admits.
@@ -951,7 +955,7 @@ pub struct HecTokenDto {
     /// The credential holding the token.
     pub token: SecretRefDto,
     /// Whether its senders use indexer acknowledgement, as Splunk's `useACK`: each request names a channel and is
-    /// answered at once with an `ackId`. Absent, a request is held until delivered. Two names holding the same token
+    /// answered at once with an `ackId`. Absent, a request is answered as the receiver's `answerAfterDelivery` says. Two names holding the same token
     /// value acknowledge if either does, since only the value is presented.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub acknowledgement: bool,

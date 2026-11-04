@@ -2,9 +2,11 @@
 //! sender, or a balancer in front of the group, picks the worker for each connection, so the transport assigns the
 //! work (`Source`'s own rule).
 //!
-//! A sender drops what it sent once it hears success, so a request is answered only once every destination has its
-//! records. Until then the sender holds the only other copy, and it sends again when no answer comes: a worker that
-//! stops with a request held costs a duplicate, never a loss.
+//! A sender drops what it sent once it hears success. A request is answered once it is in the inbox, so the sender
+//! never waits on a destination; a stop hands the inbox over before it ends, and a crash loses it. A receiver set to
+//! answer after delivery answers only once every destination has its records. Until then the sender holds the only
+//! other copy, and it sends again when no answer comes: a worker that stops with a request held costs a duplicate,
+//! never a loss.
 //!
 //! ```text
 //!   sender ── POST ──► server ── records ──► inbox ──► poll_batch ──► pipelines, destinations
@@ -130,6 +132,7 @@ pub fn open(
             speaks: Speaks::Otlp,
             tokens,
             max_request_bytes: config.max_request_bytes,
+            answer_after_delivery: config.answer_after_delivery,
         });
         let joined = OtlpPort::join(config, signal, server, secrets)?;
         return Ok(Box::new(ReceiverSource {
@@ -203,6 +206,7 @@ pub fn open(
         speaks,
         tokens,
         max_request_bytes: config.max_request_bytes,
+        answer_after_delivery: config.answer_after_delivery,
     });
     use axum::routing::{get, post};
     let router = match &config.receiver {
@@ -1341,6 +1345,8 @@ struct Server {
     tokens: Vec<Admits>,
     /// The largest body it reads. A request takes each chunk's bytes from the receiver's holdings as it arrives.
     max_request_bytes: usize,
+    /// Whether a request held for its answer waits for its records' commit, or is answered once it is in the inbox.
+    answer_after_delivery: bool,
 }
 
 /// A token a receiver admits.
@@ -2317,8 +2323,10 @@ async fn answer_request(
         Token::Admitted { acknowledges } => acknowledges,
         refused => return answer(Outcome::Refused(refused)),
     };
-    // `httpout` names no channel and asks after no `ackId`: its answer acks it, whatever its token says.
-    let acknowledges = acknowledges && !matches!(body, Incoming::Httpout(_));
+    // `httpout` names no channel and asks after no `ackId`: its answer acks it, whatever its token says, so it is
+    // answered only once delivered.
+    let forwarded = matches!(body, Incoming::Httpout(_));
+    let acknowledges = acknowledges && !forwarded;
     let channel = match (named, acknowledges) {
         (Err(refused), _) => return *refused,
         (Ok(Some(channel)), true) => Some(channel),
@@ -2365,6 +2373,9 @@ async fn answer_request(
     let admitted = server.shared.admit(records, bytes, remote, channel.as_ref(), reading);
     answer(match admitted {
         Admitted::Now => Outcome::Delivered,
+        // In the inbox is as far as the answer waits, unless the source answers after delivery: a stop hands what
+        // the inbox holds over before it ends.
+        Admitted::Later(_) if !server.answer_after_delivery && !forwarded => Outcome::Delivered,
         Admitted::Later(answer) => match answer.await {
             Ok(()) => Outcome::Delivered,
             Err(_) => Outcome::Busy,
@@ -3622,6 +3633,7 @@ mod tests {
                 })
                 .collect(),
             max_request_bytes: 1024,
+            answer_after_delivery: true,
         }
     }
 

@@ -48,6 +48,7 @@ pub fn receiver(listen: SocketAddr, signal: Signal) -> Box<dyn Source> {
         )],
         tls: None,
         max_request_bytes: 1 << 20,
+        answer_after_delivery: true,
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());

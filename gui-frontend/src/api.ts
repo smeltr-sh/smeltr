@@ -901,6 +901,8 @@ export interface ReceiverSettings extends Pick<TlsDto, 'certificate' | 'trustedA
   port: number;
   /** Absent is `LIMITS.receiverRequestBytes.default`. */
   maxRequestBytes?: number;
+  /** Absent answers a request once received. Only a receiver that answers each request takes it. */
+  answerAfterDelivery?: boolean;
 }
 
 /** A token a HEC receiver admits, mirroring `config_file::dto::HecTokenDto`. */

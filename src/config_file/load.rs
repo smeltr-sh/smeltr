@@ -2131,6 +2131,7 @@ fn receiver_config<'a>(
         tokens: tokens.map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
         tls: to_tls(&tls.tls(), of, Side::Server),
         max_request_bytes: usize::try_from(listener.max_request_bytes.0).unwrap_or(usize::MAX),
+        answer_after_delivery: listener.answer_after_delivery,
     })
 }
 
@@ -3180,6 +3181,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             } => {
                 let what = format!("source {:?}", s.id);
                 check_receiver(&what, listener, tls, tokens, errors);
+                check_protocol_answers(&what, listener, errors);
                 check_sourcetypes(&s.id, sourcetypes, errors);
             }
             SourceKindDto::OtlpReceiver {
@@ -3199,6 +3201,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             } => {
                 let what = format!("source {:?}", s.id);
                 check_syslog_receiver(&what, listener, tls, allow_from, *transport, errors);
+                check_protocol_answers(&what, listener, errors);
                 check_encoding(encoding, &s.id, errors);
                 if let Some(line_breaker) = line_breaker {
                     match transport {
@@ -4511,12 +4514,23 @@ fn check_syslog_receiver(
     }
 }
 
+/// A receiver whose protocol says when it answers: a forwarder's acknowledgement, and its httpout request's answer,
+/// wait for delivery, and syslog is never answered.
+fn check_protocol_answers(what: &str, listener: &ReceiverSettingsDto, errors: &mut ItemErrors<'_>) {
+    if listener.answer_after_delivery {
+        errors.at("answerAfterDelivery").push(format!(
+            "{what} answers as its protocol says, so it does not take answerAfterDelivery; remove that setting"
+        ));
+    }
+}
+
 /// What every receiver's listener must be: a port, and a certificate to serve where it serves TLS. Whether its
 /// authorities vouch for a sender, which then needs nothing else to be admitted.
 fn check_listener(what: &str, listener: &ReceiverSettingsDto, tls: &ServedTlsDto, errors: &mut ItemErrors<'_>) -> bool {
     let ReceiverSettingsDto {
         port,
         max_request_bytes,
+        answer_after_delivery: _,
     } = listener;
     let blank = |v: &str| v.trim().is_empty();
     if *port == 0 {
