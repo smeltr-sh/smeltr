@@ -123,6 +123,12 @@
       "result": "i64"
     }
   ],
+  "formatTime": [
+    {
+      "params": "(datetime, str)",
+      "result": "str"
+    }
+  ],
   "fromEpochMillis": [
     {
       "params": "(i64)",

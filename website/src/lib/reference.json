@@ -2275,6 +2275,32 @@
           ]
         },
         {
+          "name": "formatTime",
+          "signature": "value.formatTime(format)",
+          "group": "Writing text",
+          "summary": "Writes a datetime as text in a `strftime` format, in UTC. It is the reverse of `parseTime` and takes the same specifiers, so `parseTime` with the same format reads the text back to the same instant, less what the format leaves out. That holds only for years 0 to 9999, the years `%Y` reads. `%m`, `%d`, `%H`, `%I`, `%M` and `%S` are two digits, `%e` is the day padded with a space, `%f` is six digits, `%z` is `+0000`, `%b` and `%a` are the three-letter English name, `%B` and `%A` the whole name, `%s` and `%Q` the epoch in seconds and in milliseconds. A specifier `parseTime` does not read is null and throws a `CoercionRefused` exception. Other languages call this `strftime`.",
+          "examples": [
+            {
+              "expr": "\"1998-08-30T12:34:56Z\".parseTime().formatTime(\"%Y%m%d\")",
+              "result": "\"19980830\""
+            },
+            {
+              "expr": "\"1998-08-30T12:34:56Z\".parseTime().formatTime(\"%a, %d %b %Y %H:%M:%S %z\")",
+              "result": "\"Sun, 30 Aug 1998 12:34:56 +0000\""
+            },
+            {
+              "expr": "\"1998-08-30T12:34:56Z\".parseTime().formatTime(\"%d/%m/%Y %I:%M %p\").parseTime(\"%d/%m/%Y %I:%M %p\")",
+              "result": "\"1998-08-30T12:34:00.000000Z\"",
+              "note": "it reads back with the same format, without the seconds the format leaves out"
+            },
+            {
+              "expr": "\"1998-08-30\".parseTime().formatTime(\"%J\")",
+              "result": "null",
+              "throws": ["CoercionRefused"]
+            }
+          ]
+        },
+        {
           "name": "year",
           "signature": "value.year()",
           "group": "A part of the instant",

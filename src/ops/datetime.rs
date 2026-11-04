@@ -8,8 +8,9 @@ use std::io::Write as _;
 
 use super::civil::{MICROS_PER_DAY, civil_from_days};
 use super::helpers::{Operand, short_circuit_empty, side};
-use crate::core::column::{Column, DataType};
+use crate::core::column::{Column, DataType, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
+use crate::core::error::ExceptionKind;
 
 /// A span as the writer and `toString` render it: its count of microseconds, the unit it is held in, so every span
 /// is written exactly and `parse_duration_text` reads it back.
@@ -248,6 +249,35 @@ pub fn duration_count_in(ctx: &mut Ctx, ins: &[&Column]) -> Column {
         o.validity.recount();
     }
     out
+}
+
+/// `formatTime(t, format)`: `t` as text in `format`, UTC (`timeparse::format_into`). Null, and `CoercionRefused`,
+/// where the format opens a specifier `parseTime` does not read.
+pub fn format_time(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+    let len = ins[0].len();
+    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
+        return e;
+    }
+    let (Some(t), Some(formats)) = (side::datetime(ins[0]), side::var(ins[1])) else {
+        return Column::empty(DataType::Str, len);
+    };
+    let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
+    let mut text = Vec::new();
+    for i in 0..len {
+        if !t.is_valid(i) || !formats.is_valid(i) {
+            b.push_null();
+            continue;
+        }
+        text.clear();
+        let format = String::from_utf8_lossy(formats.at(i));
+        if super::timeparse::format_into(t.at(i), &format, &mut text) {
+            b.push_grow(ctx.pool, &text);
+        } else {
+            b.push_null();
+            ctx.raise(i, ExceptionKind::CoercionRefused { to: DataType::Str });
+        }
+    }
+    b.finish()
 }
 
 #[cfg(test)]

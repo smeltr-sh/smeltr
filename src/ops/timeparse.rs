@@ -27,6 +27,8 @@
 //! or more than eleven months behind it -- the reader's clock behind the writer's: next year. A `Feb 29` that lands
 //! in a non-leap year is unparseable. With no reference the year stays 1970.
 
+use std::io::Write as _;
+
 use super::civil::{MICROS_PER_DAY, civil_from_days, valid_date_days};
 
 /// Consume `min_digits..=max_digits` ASCII digits at `*pos`. Nothing is consumed unless the read succeeds, so a
@@ -502,6 +504,60 @@ pub fn check_format(fmt: &str) -> Result<(), String> {
     }
 }
 
+/// `us`, epoch microseconds, written into `out` in `fmt`, in UTC: the reverse of `parse_with_format_at`, so a format
+/// read back gives the instant written, to what its specifiers keep. Each specifier is written as wide as the parser
+/// reads it: `%m`, `%d`, `%H`, `%I`, `%M` and `%S` two digits, `%e` a day padded with a space, `%f` six digits,
+/// `%z` `+0000`, `%b`/`%a` the three-letter English name and `%B`/`%A` the whole one, `%s` and `%Q` the epoch in
+/// seconds and milliseconds, floored. A year outside 0 to 9999 is written whole, which `%Y` does not read back.
+/// `false`, with `out` partly written, where a `%` opens no specifier.
+pub fn format_into(us: i64, fmt: &str, out: &mut Vec<u8>) -> bool {
+    let days = us.div_euclid(MICROS_PER_DAY);
+    let of_day = us.rem_euclid(MICROS_PER_DAY);
+    let (year, month, day) = civil_from_days(days);
+    let hour = of_day / 3_600_000_000;
+    let weekday = (days + 4).rem_euclid(7) as usize;
+    let mut chars = fmt.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            let mut buf = [0; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        let written = match chars.next() {
+            Some('Y') => write!(out, "{year:04}"),
+            Some('m') => write!(out, "{month:02}"),
+            Some('d') => write!(out, "{day:02}"),
+            Some('e') => write!(out, "{day:>2}"),
+            Some('H') => write!(out, "{hour:02}"),
+            Some('I') => write!(out, "{:02}", (hour + 11) % 12 + 1),
+            Some('p') => write!(out, "{}", if hour < 12 { "AM" } else { "PM" }),
+            Some('M') => write!(out, "{:02}", of_day / 60_000_000 % 60),
+            Some('S') => write!(out, "{:02}", of_day / 1_000_000 % 60),
+            Some('f') => write!(out, "{:06}", of_day % 1_000_000),
+            Some('z') => write!(out, "+0000"),
+            Some('b') => write_name(out, MONTHS[month as usize - 1]),
+            Some('B') => write_name(out, FULL_MONTHS[month as usize - 1]),
+            Some('a') => write_name(out, WEEKDAY_ABBREV[weekday]),
+            Some('A') => write_name(out, WEEKDAY_FULL[weekday]),
+            Some('s') => write!(out, "{}", us.div_euclid(1_000_000)),
+            Some('Q') => write!(out, "{}", us.div_euclid(1_000)),
+            Some('%') => write!(out, "%"),
+            _ => return false,
+        };
+        written.expect("writing to memory");
+    }
+    true
+}
+
+/// An English name, kept lower case for matching, written as it is spelled: its first letter upper case. Bytes,
+/// so no row allocates.
+fn write_name(out: &mut Vec<u8>, name: &str) -> std::io::Result<()> {
+    let (first, rest) = name.as_bytes().split_at(1);
+    out.push(first[0].to_ascii_uppercase());
+    out.extend_from_slice(rest);
+    Ok(())
+}
+
 /// `parse_auto_hinted` with the reference a yearless candidate infers its year from.
 pub fn parse_auto_hinted_at(text: &str, hint: usize, reference: Option<i64>) -> Option<(i64, usize)> {
     // A run of digits: a compact date if it is one, else an epoch. The compact shapes are the first two candidates
@@ -655,6 +711,63 @@ mod tests {
         }
         assert!(is_epoch_count("1700000000000000000"));
         assert!(!is_epoch_count("1700000000x"));
+    }
+
+    fn formatted(us: i64, fmt: &str) -> Option<String> {
+        let mut out = Vec::new();
+        format_into(us, fmt, &mut out).then(|| String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn a_time_formats_as_each_specifier_says() {
+        // 1998-08-30T13:04:05.000123Z, a Sunday.
+        let t = parse_with_format_at("1998-08-30 13:04:05.000123", "%Y-%m-%d %H:%M:%S.%f", None).unwrap();
+        assert_eq!(formatted(t, "%Y%m%d").unwrap(), "19980830");
+        assert_eq!(formatted(t, "%a %A %b %B").unwrap(), "Sun Sunday Aug August");
+        assert_eq!(
+            formatted(t, "%I:%M %p, %H:%M:%S.%f %z").unwrap(),
+            "01:04 PM, 13:04:05.000123 +0000"
+        );
+        assert_eq!(formatted(t, "[%e]").unwrap(), "[30]");
+        assert_eq!(formatted(t - 29 * MICROS_PER_DAY, "[%e]").unwrap(), "[ 1]");
+        assert_eq!(formatted(t, "%s %Q").unwrap(), "904482245 904482245000");
+        assert_eq!(formatted(0, "%I %p").unwrap(), "12 AM");
+        assert_eq!(
+            formatted(-1, "%Y-%m-%d %H:%M:%S.%f %s %Q").unwrap(),
+            "1969-12-31 23:59:59.999999 -1 -1"
+        );
+        assert_eq!(formatted(t, "100%% é").unwrap(), "100% é");
+        // Outside the four digits `%Y` reads back, a year is still written whole.
+        let y10000 = days_from_civil(10000, 1, 1) * MICROS_PER_DAY;
+        assert_eq!(formatted(y10000, "%Y%m%d").unwrap(), "100000101");
+        assert_eq!(parse_with_format_at("100000101", "%Y%m%d", None), None);
+        assert_eq!(formatted(t, "%J"), None);
+        assert_eq!(formatted(t, "%"), None);
+    }
+
+    #[test]
+    fn every_specifier_reads_back_what_it_writes() {
+        let t = parse_with_format_at("1998-08-30 13:04:05.000123", "%Y-%m-%d %H:%M:%S.%f", None).unwrap();
+        for fmt in [
+            "%Y-%m-%d %H:%M:%S.%f%z",
+            "%a, %e %B %Y %I:%M:%S.%f %p",
+            "%A %d %b %Y %H:%M:%S.%f",
+            "%s",
+            "%Q",
+        ] {
+            let text = formatted(t, fmt).unwrap();
+            let back = parse_with_format_at(&text, fmt, None).unwrap();
+            let kept = match fmt {
+                "%s" => t - t.rem_euclid(1_000_000),
+                "%Q" => t - t.rem_euclid(1_000),
+                _ => t,
+            };
+            assert_eq!(back, kept, "{fmt}: {text}");
+        }
+        // Every specifier the parser reads is one the formatter writes.
+        for spec in FORMAT_SPECIFIERS {
+            assert!(formatted(t, spec).is_some(), "{spec}");
+        }
     }
 
     #[test]
