@@ -5701,7 +5701,11 @@ fn an_s2s_receiver_that_answers_after_delivery_is_refused() {
         r#"{{"version":1,"sources":[{{"id":"forwarders","type":"s2sReceiver","port":9997{S2S_TOKEN},
             "answerAfterDelivery":true}}]}}"#
     );
-    assert!(refusal(&json).contains("answers as its protocol says"), "{}", refusal(&json));
+    assert!(
+        refusal(&json).contains("answers as its protocol says"),
+        "{}",
+        refusal(&json)
+    );
 }
 
 /// Each sourcetype named breaks into events where its line breaker breaks; the file is written back as it was given.

@@ -390,8 +390,9 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$OTEL_TOKEN"`;
     </dd>
     <dt><strong>The same records arrive twice</strong></dt>
     <dd>
-      An exporter that hears no answer may send the export again. With <code>answerAfterDelivery</code> on, give the
-      exporter a timeout longer than its destinations take to deliver.
+      An exporter that hears no answer may send the export again. With <code
+        >answerAfterDelivery</code
+      > on, give the exporter a timeout longer than its destinations take to deliver.
     </dd>
   </dl>
 
