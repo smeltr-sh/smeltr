@@ -59,6 +59,7 @@ const NOT_DEFINED_HERE: &[(&str, &str)] = &[
     ("RFC3339Nano", "Go's layout constant, cited for contrast"),
     ("epochMilliseconds", "the Temporal API's property"),
     ("relativeTo", "the Temporal API's option"),
+    ("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "an OpenTelemetry SDK's variable"),
     // Crates and tools smeltr depends on or names.
     (
         "serde_urlencoded",
