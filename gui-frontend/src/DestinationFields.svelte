@@ -929,8 +929,8 @@
       </Field>
       <Field optional field="maxObjectBytes" label="largest file">
         {#snippet help()}
-          The largest file this destination puts in the bucket, compressed. Set it to what the tools
-          that read the bucket handle best.
+          The largest file this destination writes, compressed. Set it to what the tools that read
+          the files handle best.
         {/snippet}
         <BytesInput
           value={o.maxObjectBytes}
@@ -973,7 +973,7 @@
           : null}
       >
         {#snippet help()}
-          The longest records wait before they land in the bucket. A longer wait makes larger files.
+          The longest time records wait before they are written. A longer wait makes larger files.
           Records are acknowledged only once they land, so every source feeding this destination is
           held open for up to this long, and after a crash reads up to this long of records again.
         {/snippet}

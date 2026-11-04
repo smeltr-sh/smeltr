@@ -28,8 +28,7 @@
       byteCount(d.bufferBytes, LIMITS.objectBufferBytes.default) !==
         LIMITS.objectBufferBytes.default ||
       (d.stallAfterSecs ?? LIMITS.stallAfterSecs.default) !== LIMITS.stallAfterSecs.default ||
-      (d.fileIntervalSecs ?? LIMITS.fileIntervalSecs.default) !==
-        LIMITS.fileIntervalSecs.default
+      (d.fileIntervalSecs ?? LIMITS.fileIntervalSecs.default) !== LIMITS.fileIntervalSecs.default
     );
   }
 </script>
@@ -120,9 +119,9 @@
   </Field>
   <Field optional field="fileIntervalSecs" label="file interval (seconds)">
     {#snippet help()}
-      The longest records wait before they are committed to the table. Each commit adds {commit}, so
-      a short interval makes many. Sources feeding this destination are held open until their
-      records are committed, for up to this long. Between {LIMITS.fileIntervalSecs.min} and
+      The longest time records wait before they are committed to the table. Each commit adds
+      {commit}, so a short interval makes many. Sources feeding this destination are held open until
+      their records are committed, for up to this long. Between {LIMITS.fileIntervalSecs.min} and
       {LIMITS.fileIntervalSecs.max} seconds.
     {/snippet}
     <input
