@@ -174,7 +174,7 @@
     <a href="/docs/steps/code">Code step</a>:
   </p>
   <pre><code
-      >{'__destination.prefix = "ext/okta-auth/region=us-east-1/accountId=123456789012/eventDay=" + fromEpochMillis(time).formatTime("%Y%m%d") + "/";'}</code
+      >{'__destination.prefix = `ext/okta-auth/region=us-east-1/accountId=123456789012/eventDay=${fromEpochMillis(time).formatTime("%Y%m%d")}/`;'}</code
     ></pre>
 
   <h2 id="verify">Verify</h2>
