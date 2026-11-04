@@ -83,7 +83,7 @@ struct SpecifierRow {
     group: Option<String>,
 }
 
-/// One row of Writing values: a literal's form, what it writes, and what each example gives.
+/// One row of Writing values: a literal's form, what it is, and what each example gives.
 #[derive(serde::Deserialize)]
 struct LiteralRow {
     form: String,

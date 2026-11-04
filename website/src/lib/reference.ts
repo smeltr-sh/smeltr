@@ -110,7 +110,7 @@ export interface RecordField {
 
 export const RECORD_FIELDS: RecordField[] = data.recordFields as RecordField[];
 
-/** How one kind of value is written: its form, what it writes, and examples. */
+/** How one kind of value is written: its form, what it is, and examples. */
 export interface LiteralRow {
   form: string;
   rule: string;

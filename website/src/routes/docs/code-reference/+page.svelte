@@ -332,7 +332,7 @@
     <h2 id="values">Writing values</h2>
     <div class="tscroll">
       <table class="kinds">
-        <thead><tr><th>Literal</th><th>Writes</th><th>Example</th></tr></thead>
+        <thead><tr><th>Literal</th><th>Is</th><th>Example</th></tr></thead>
         <tbody>
           {#each literals as row (row.form)}
             <tr>
