@@ -6,8 +6,9 @@
 import type { DestinationDto, TlsDto } from './api';
 
 export type HttpDestination = Extract<DestinationDto, { type: 'http' }>;
-/** A destination that POSTs to a URL with headers: `http`, and `prometheus` with the remote_write body. */
-export type HeaderedDestination = Extract<DestinationDto, { type: 'http' | 'prometheus' }>;
+/** A destination that POSTs to a URL with headers: `http`, `prometheus` with the remote_write body, and `otlp`
+ * with an OTLP export. */
+export type HeaderedDestination = Extract<DestinationDto, { type: 'http' | 'prometheus' | 'otlp' }>;
 
 /** Headers smeltr writes from the batch itself, or that the client owns. */
 const OWNED_HEADERS = new Set([

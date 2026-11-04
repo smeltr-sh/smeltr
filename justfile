@@ -530,6 +530,7 @@ check-live: live-up check-all
     cargo test --test integration sql_live_fuzz::
     cargo test --test integration receiver_tests::an_opentelemetry_
     cargo test --test integration otlp_receiver_fuzz::live_
+    cargo test --test integration otlp_destination_fuzz::live_
     cargo test --test integration receiver_tests::prometheus_
     cargo test --test integration remote_write_tests::prometheus_
     cargo test --test integration prometheus_receiver_fuzz::live_

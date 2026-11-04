@@ -5,9 +5,10 @@ use std::sync::Arc;
 use prost::Message as _;
 
 use super::json::{self, Reader, each, enumerated, fields};
+use super::rows;
 use super::{
-    Cell, Cursor, Filed, InstrumentationScope, KeyValue, Resource, Row, Shape, id, int, micros, nonzero, pairs,
-    put_pairs, text, variant_of,
+    Cell, Cursor, Filed, InstrumentationScope, KeyValue, Nested, Resource, Row, Shape, id, int, micros, nest, nonzero,
+    pairs, put_pairs, text, variant_of,
 };
 use crate::core::variant::{begin_array, begin_object, end, put_datetime, put_i64, put_key, put_str};
 
@@ -34,7 +35,7 @@ struct ScopeSpans {
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct Span {
+pub(super) struct Span {
     #[prost(bytes = "vec", tag = "1")]
     trace_id: Vec<u8>,
     #[prost(bytes = "vec", tag = "2")]
@@ -309,6 +310,80 @@ fn put_count(out: &mut Vec<u8>, key: &str, n: i64) -> usize {
     put_key(out, key);
     put_i64(out, n);
     1
+}
+
+/// The traces request of `resources`, each with its scopes, each with its spans.
+pub(super) fn request(resources: Nested<Span>) -> Vec<u8> {
+    let resource_spans = nest(
+        resources,
+        |scope, spans| ScopeSpans { scope, spans },
+        |resource, scope_spans| ResourceSpans { resource, scope_spans },
+    );
+    ExportTraceServiceRequest { resource_spans }.encode_to_vec()
+}
+
+impl Span {
+    /// Reads field `key` of a row, as `SourceMeta::OTLP_TRACES` names it, where it is one of a span's.
+    pub(super) fn field(&mut self, key: &str, r: &mut Reader) -> Result<bool, String> {
+        match key {
+            "traceId" => self.trace_id = rows::trace_id(r, key)?,
+            "spanId" => self.span_id = rows::span_id(r, key)?,
+            "parentSpanId" => self.parent_span_id = rows::span_id(r, key)?,
+            "traceState" => self.trace_state = json::text(r, key)?,
+            "flags" => self.flags = json::int(r, key)?,
+            "name" => self.name = json::text(r, key)?,
+            "kind" => self.kind = enumerated(r, key, SPAN_KINDS)?,
+            "startTime" => self.start_time_unix_nano = rows::time(r, key)?,
+            "endTime" => self.end_time_unix_nano = rows::time(r, key)?,
+            "attributes" => self.attributes = rows::attributes(r, key)?,
+            "droppedAttributesCount" => self.dropped_attributes_count = json::int(r, key)?,
+            "events" => self.events = rows::objects(r, key, Event::field)?,
+            "droppedEventsCount" => self.dropped_events_count = json::int(r, key)?,
+            "links" => self.links = rows::objects(r, key, Link::field)?,
+            "droppedLinksCount" => self.dropped_links_count = json::int(r, key)?,
+            "statusCode" => self.status.get_or_insert_default().code = enumerated(r, key, STATUS_CODES)?,
+            "statusMessage" => self.status.get_or_insert_default().message = json::text(r, key)?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// Why OTLP would refuse it, if it would: a span is named by its trace and its own ID.
+    pub(super) fn refused(&self) -> Option<&'static str> {
+        // OTLP holds an all-zero ID to be none, as the receiver reads one.
+        let none = |id: &[u8]| id.iter().all(|b| *b == 0);
+        (none(&self.trace_id) || none(&self.span_id)).then_some("a span needs a traceId and a spanId")
+    }
+}
+
+impl Event {
+    /// Reads field `key` of an item of a row's `events`, as an OTLP receiver writes one.
+    fn field(key: &str, r: &mut Reader, event: &mut Event) -> Result<bool, String> {
+        match key {
+            "time" => event.time_unix_nano = rows::time(r, "events.time")?,
+            "name" => event.name = json::text(r, "events.name")?,
+            "attributes" => event.attributes = rows::attributes(r, "events.attributes")?,
+            "droppedAttributesCount" => event.dropped_attributes_count = json::int(r, "events.droppedAttributesCount")?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+}
+
+impl Link {
+    /// Reads field `key` of an item of a row's `links`, as an OTLP receiver writes one.
+    fn field(key: &str, r: &mut Reader, link: &mut Link) -> Result<bool, String> {
+        match key {
+            "traceId" => link.trace_id = rows::trace_id(r, "links.traceId")?,
+            "spanId" => link.span_id = rows::span_id(r, "links.spanId")?,
+            "traceState" => link.trace_state = json::text(r, "links.traceState")?,
+            "attributes" => link.attributes = rows::attributes(r, "links.attributes")?,
+            "droppedAttributesCount" => link.dropped_attributes_count = json::int(r, "links.droppedAttributesCount")?,
+            "flags" => link.flags = json::int(r, "links.flags")?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
 }
 
 fn resource_spans(r: &mut Reader) -> Result<ResourceSpans, String> {

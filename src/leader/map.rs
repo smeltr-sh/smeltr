@@ -121,9 +121,10 @@ impl From<&crate::plan::topology::DestinationKind> for System {
                 crate::plan::topology::Cloud::Azure(_) => System::AzureBlob,
                 crate::plan::topology::Cloud::Sftp(_) => System::Sftp,
             },
-            DestinationKind::Http(_) | DestinationKind::Prometheus(_) | DestinationKind::LogAnalytics(_) => {
-                System::Http
-            }
+            DestinationKind::Http(_)
+            | DestinationKind::Prometheus(_)
+            | DestinationKind::LogAnalytics(_)
+            | DestinationKind::Otlp(_) => System::Http,
             DestinationKind::Iceberg(_) => System::Iceberg,
             DestinationKind::Delta(_) => System::Delta,
         }
