@@ -1755,7 +1755,7 @@ pub async fn keep_own_logs(state: AppState) {
 #[derive(serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct LogsQuery {
-    /// Comma-separated: `?level=warn,error`. Severities do not nest here, so an operator wanting both names both.
+    /// Comma-separated: `?level=warn,error`. Levels do not nest here, so an operator wanting both names both.
     ///
     /// One key rather than a repeated one because `Query` decodes through `serde_urlencoded`, which has no
     /// notion of a repeated key and refuses a sequence outright -- a refused request rather than a wrong answer.
@@ -1763,7 +1763,9 @@ struct LogsQuery {
     worker: Option<String>,
     group: Option<String>,
     class: Option<String>,
+    /// Matched anywhere in the type, or the whole type with `typeExact=true`.
     r#type: Option<String>,
+    type_exact: bool,
     service: Option<String>,
     /// Matched anywhere in the message.
     q: Option<String>,
@@ -1885,6 +1887,7 @@ async fn get_logs(
                 group_id: query.group.as_deref(),
                 class: query.class.as_deref(),
                 r#type: query.r#type.as_deref(),
+                type_exact: query.type_exact,
                 service: query.service.as_deref(),
                 message_contains: query.q.as_deref(),
                 since_ms: query.since_millis,
