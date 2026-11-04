@@ -27,15 +27,17 @@ use crate::plan::config::{
     TimeSource,
 };
 use crate::plan::parse_call::split_dots_default;
+use crate::plan::topology::Signal;
 use crate::plan::topology::{
     AccessKey, Acknowledgement, AfterCommit, ApiRecords, AssumedRole, AzureAccess, AzureCredential, AzureStore,
     CatalogSignIn, Cloud, DeliverRule, DeltaDestinationConfig, DestinationConfig, DestinationKind, DocIdPolicy,
     Endpoint, EntraSignIn, Framing, GcsAccess, GcsStore, HttpDestinationConfig, IcebergDestinationConfig,
     KafkaDestinationConfig, KafkaProps, KafkaService, KafkaSourceConfig, ListPlace, ListStart,
     LogAnalyticsDestinationConfig, NamedCertificate, NamedSecret, Newlines, ObjectFormat, ObjectQueue,
-    ObjectSourceConfig, ObjectsDestinationConfig, OktaSignIn, PrometheusDestinationConfig, RemoteWriteVersion,
-    RequestBody, RouteConfig, S3Access, S3Store, SftpAccess, SftpCredential, SftpStore, SourceConfig, SourceKind,
-    SplunkHecDestinationConfig, StartPosition, StopPosition, Tls, TopologyConfig, Transport, UnityCatalogTable,
+    ObjectSourceConfig, ObjectsDestinationConfig, OktaSignIn, OtlpDestinationConfig, PrometheusDestinationConfig,
+    RemoteWriteVersion, RequestBody, RouteConfig, S3Access, S3Store, SftpAccess, SftpCredential, SftpStore,
+    SourceConfig, SourceKind, SplunkHecDestinationConfig, StartPosition, StopPosition, Tls, TopologyConfig, Transport,
+    UnityCatalogTable,
 };
 use crate::schema::Schema;
 
@@ -3663,12 +3665,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                     errors,
                 );
                 refuse_avro(*format, &d.id, errors);
-                if !matches!(compression, CompressionDto::None | CompressionDto::Gzip) {
-                    errors.at("compression").push(format!(
-                        "destination {:?} compresses with {compression:?}; an HTTP request is sent as none or gzip",
-                        d.id
-                    ));
-                }
+                check_http_compression(&d.id, compression, errors);
                 check_http_headers(
                     &format!("destination {:?}", d.id),
                     headers,
@@ -3712,6 +3709,56 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                     credentials,
                     PROMETHEUS_HEADERS,
                     "as remote_write asks",
+                    errors,
+                );
+            }
+            DestinationKindDto::Otlp {
+                url,
+                signal: _,
+                compression,
+                headers,
+                credentials,
+                tls,
+                in_flight,
+                max_request_bytes,
+                buffer_bytes,
+                stall_after_secs,
+            } => {
+                check_http_delivery(
+                    &HttpDelivery {
+                        id: &d.id,
+                        url,
+                        url_field: "url",
+                        zone_urls: None,
+                        request_field: "maxRequestBytes",
+                        tls,
+                        in_flight: Some(*in_flight),
+                        request_bytes: max_request_bytes.0,
+                        request_limits: (RequestBytes::MIN, RequestBytes::MAX),
+                        request_what: "a request size",
+                        limit_why: "a request is held whole in memory until the service answers it",
+                        buffer_bytes: *buffer_bytes,
+                        stall_after: *stall_after_secs,
+                    },
+                    errors,
+                );
+                check_http_compression(&d.id, compression, errors);
+                // An exporter's per-signal endpoint, as `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` holds one, names its path.
+                let signals = [Signal::Logs, Signal::Metrics, Signal::Traces].map(crate::io::otlp::http_path);
+                if let Some(path) = (signals.into_iter()).find(|path| url.trim().trim_end_matches('/').ends_with(path))
+                {
+                    errors.at("url").push(format!(
+                        "destination {:?} has a url ending in {path}; remove {path}, which the destination adds \
+                         itself for its signal",
+                        d.id
+                    ));
+                }
+                check_http_headers(
+                    &format!("destination {:?}", d.id),
+                    headers,
+                    credentials,
+                    DESTINATION_HEADERS,
+                    "as OTLP asks",
                     errors,
                 );
             }
@@ -5033,6 +5080,41 @@ fn is_token_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)
 }
 
+/// A destination over the HTTP core, sending records to `url` with no headers of its own, as its sizes and stall
+/// threshold say. Each kind sets what it sends on top of it.
+fn to_http_core(
+    url: String,
+    tls: Option<Tls>,
+    in_flight: &InFlight,
+    max_request_bytes: usize,
+    buffer_bytes: Option<BufferBytes>,
+    stall_after_secs: &StallAfter,
+) -> HttpDestinationConfig {
+    HttpDestinationConfig {
+        url,
+        zone_urls: BTreeMap::new(),
+        body: RequestBody::default(),
+        payload: Payload::Record,
+        compression: crate::plan::topology::Compression::None,
+        headers: Vec::new(),
+        credentials: Vec::new(),
+        tls,
+        in_flight: in_flight.start(affords(buffer_bytes, max_request_bytes)),
+        max_request_bytes,
+        buffer_bytes: effective_buffer_bytes(buffer_bytes, max_request_bytes),
+        stall_after: std::time::Duration::from_secs(stall_after_secs.0),
+    }
+}
+
+/// An HTTP request is sent as none or gzip.
+fn check_http_compression(id: &str, compression: &CompressionDto, errors: &mut ItemErrors<'_>) {
+    if !matches!(compression, CompressionDto::None | CompressionDto::Gzip) {
+        errors.at("compression").push(format!(
+            "destination {id:?} compresses with {compression:?}; set compression to none or gzip"
+        ));
+    }
+}
+
 /// How many requests of `request_bytes` the buffer holds at once.
 fn affords(buffer_bytes: Option<BufferBytes>, request_bytes: usize) -> usize {
     effective_buffer_bytes(buffer_bytes, request_bytes) / request_bytes.max(1)
@@ -5291,7 +5373,6 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             buffer_bytes,
             stall_after_secs,
         } => DestinationKind::Http(HttpDestinationConfig {
-            url: as_parsed(url),
             zone_urls: zone_urls
                 .iter()
                 .map(|(zone, url)| (zone.clone(), as_parsed(url)))
@@ -5305,11 +5386,14 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             compression: compression.to_plan(),
             headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             credentials: credentials.iter().map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
-            tls: to_tls(tls, &of, Side::Client),
-            in_flight: in_flight.start(affords(*buffer_bytes, max_request_bytes.0)),
-            max_request_bytes: max_request_bytes.0,
-            buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
-            stall_after: std::time::Duration::from_secs(stall_after_secs.0),
+            ..to_http_core(
+                as_parsed(url),
+                to_tls(tls, &of, Side::Client),
+                in_flight,
+                max_request_bytes.0,
+                *buffer_bytes,
+                stall_after_secs,
+            )
         }),
         DestinationKindDto::Prometheus {
             url,
@@ -5333,6 +5417,33 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
         }),
+        DestinationKindDto::Otlp {
+            url,
+            signal,
+            compression,
+            headers,
+            credentials,
+            tls,
+            in_flight,
+            max_request_bytes,
+            buffer_bytes,
+            stall_after_secs,
+        } => DestinationKind::Otlp(OtlpDestinationConfig {
+            http: HttpDestinationConfig {
+                compression: compression.to_plan(),
+                headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                credentials: credentials.iter().map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
+                ..to_http_core(
+                    as_parsed(url),
+                    to_tls(tls, &of, Side::Client),
+                    in_flight,
+                    max_request_bytes.0,
+                    *buffer_bytes,
+                    stall_after_secs,
+                )
+            },
+            signal: *signal,
+        }),
         DestinationKindDto::LogAnalytics {
             endpoint,
             rule_id,
@@ -5345,18 +5456,16 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             stall_after_secs,
         } => DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig {
             http: HttpDestinationConfig {
-                url: log_analytics_stream_url(endpoint, rule_id, stream),
-                zone_urls: BTreeMap::new(),
                 body: RequestBody::JsonArray,
-                payload: Payload::Record,
                 compression: crate::plan::topology::Compression::Gzip,
-                headers: Vec::new(),
-                credentials: Vec::new(),
-                tls: to_tls(tls, &of, Side::Client),
-                in_flight: in_flight.start(affords(*buffer_bytes, max_request_bytes.0)),
-                max_request_bytes: max_request_bytes.0,
-                buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
-                stall_after: std::time::Duration::from_secs(stall_after_secs.0),
+                ..to_http_core(
+                    log_analytics_stream_url(endpoint, rule_id, stream),
+                    to_tls(tls, &of, Side::Client),
+                    in_flight,
+                    max_request_bytes.0,
+                    *buffer_bytes,
+                    stall_after_secs,
+                )
             },
             sign_in: to_entra_sign_in(sign_in),
         }),

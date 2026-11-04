@@ -178,7 +178,7 @@ export const sources: Connection[] = [
     type: 'otlpReceiver',
     name: 'OTLP receiver',
     summary:
-      'Take the logs OpenTelemetry exporters send over OTLP/HTTP to a port every worker listens on.',
+      'Take the logs, metrics or traces OpenTelemetry exporters send over OTLP to a port every worker listens on.',
     category: 'Push, all workers',
     href: '/docs/sources/otlp-receiver',
   },
@@ -313,6 +313,15 @@ export const destinations: Connection[] = [
     summary: 'Write processed records to topics.',
     category: 'Streams',
     href: '/docs/destinations/kafka',
+  },
+  {
+    id: 'otlp',
+    type: 'otlp',
+    name: 'OTLP',
+    summary:
+      'Send logs, metrics or traces over OTLP to an OpenTelemetry Collector or any OTLP endpoint.',
+    category: 'Observability',
+    href: '/docs/destinations/otlp',
   },
   {
     id: 'prometheus',

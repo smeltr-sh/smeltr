@@ -96,7 +96,7 @@ Elasticsearch clients send to one's Bulk API, smeltr metrics and smeltr logs; an
 Kafka and Azure Event Hubs through its Kafka endpoint, writing Avro under a schema registry's schema or as other destinations write; Elasticsearch via the Bulk API and Splunk via its HTTP Event
 Collector, the destinations that refuse records rather than being
 unreachable; any service taking a POST of NDJSON, a JSON array or one record per request, with the headers it asks
-for; Prometheus and any store taking its remote_write; a Log Analytics workspace, through a data collection rule; S3, Google Cloud Storage, Azure Blob Storage and a directory on an SFTP server, as NDJSON, JSON, text, the bytes as they arrived, Parquet or Avro, one file per prefix across batches. Functions: Call, Code, Comment, Drop,
+for; Prometheus and any store taking its remote_write; any OpenTelemetry Collector or other service taking OTLP/HTTP, one signal each; a Log Analytics workspace, through a data collection rule; S3, Google Cloud Storage, Azure Blob Storage and a directory on an SFTP server, as NDJSON, JSON, text, the bytes as they arrived, Parquet or Avro, one file per prefix across batches. Functions: Call, Code, Comment, Drop,
 Eval, Lookup, Parser, Remove, Rename, Unroll. Parsers: JSON, CSV, key-value, Grok.
 Schemas a pipeline's rows are held to, read from JSON Schema, ECS, an OCSF
 class or a CSV of fields, written as JSON Schema or an Elasticsearch mapping,

@@ -91,6 +91,7 @@
         "splunkHec",
         "http",
         "logAnalytics",
+        "otlp",
         "prometheus"
       ],
       "least": "one batch",
@@ -101,7 +102,7 @@
     {
       "id": "senders",
       "part": "Senders",
-      "kinds": ["elasticsearch", "splunkHec", "http", "logAnalytics"],
+      "kinds": ["elasticsearch", "splunkHec", "http", "logAnalytics", "otlp"],
       "least": "6 MiB",
       "each": "request it starts sending at once, `inFlight`",
       "what": "Each request on its way, with its connection."

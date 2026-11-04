@@ -211,6 +211,16 @@ pub fn build_destination(
                 id,
             )))
         }
+        DestinationKind::Otlp(c) => {
+            let credentials = http::credential_headers("otlp destination", &c.http.credentials, secrets)?;
+            let config = http::agent_config(c.http.tls.as_ref(), secrets)?;
+            let make =
+                || http_post::transport_as(&c.http, otlp::Encoding::Protobuf.content_type(), &credentials, &config);
+            let protocol = otlp::export::Otlp::new(c).with_unwritten(http::Unwritten::new(metrics.clone(), id, name));
+            Ok(Box::new(http_post::destination_of(
+                protocol, &c.http, make, name, metrics, id,
+            )))
+        }
         DestinationKind::Prometheus(c) => {
             let credentials = http::credential_headers("prometheus destination", &c.credentials, secrets)?;
             let config = http::agent_config(c.tls.as_ref(), secrets)?;
