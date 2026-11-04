@@ -298,7 +298,7 @@ fn judge(store: &dyn Store, credential: LocalCredentialRecord, password: &str) -
         Ok(v) => v,
         Err(e) => {
             tracing::error!(
-                target: "leader.password_hash_unreadable",
+                name: "password_hash_unreadable", target: "accounts",
                 subject = %credential.user_id,
                 error = %e,
                 "a stored password hash could not be read, so its account cannot sign in"
@@ -430,7 +430,7 @@ pub fn record(store: &dyn Store, actor: &Actor, action: &str, target: &str, outc
     let event = event_for(actor, action, target, outcome);
     if let Err(e) = store.record_security_event(&event) {
         tracing::error!(
-            target: "leader.security_event_lost",
+            name: "security_event_lost", target: "accounts",
             action, outcome, error = %e,
             "a security event could not be recorded"
         );

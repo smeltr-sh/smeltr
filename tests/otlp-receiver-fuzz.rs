@@ -247,11 +247,14 @@ fn read_back(signal: Signal, records: &[SourceRecord]) -> Vec<Got> {
 // An export, as the model holds it: what an exporter means to send, before it is written in any encoding.
 
 /// What drawing one request takes from the seed, and the options it reached.
-struct Gen {
-    rng: Rng,
-    labels: Vec<String>,
+pub struct Gen {
+    pub rng: Rng,
+    pub labels: Vec<String>,
     /// Draws only what an OpenTelemetry Collector passes on as it was given.
-    collected: bool,
+    pub collected: bool,
+    /// Draws only doubles that a row and an OTLP request each carry as they are: no NaN or infinity, which a row's
+    /// JSON leaves out, and no -0, which protobuf writes as no value.
+    pub exact: bool,
 }
 
 impl Gen {
@@ -307,8 +310,8 @@ struct Scope {
 
 /// An `Export*ServiceRequest` of one signal.
 #[derive(Clone, Debug)]
-struct Export {
-    signal: Signal,
+pub struct Export {
+    pub signal: Signal,
     resources: Vec<Resourced>,
 }
 
@@ -591,10 +594,11 @@ fn double(g: &mut Gen) -> f64 {
         },
         false => *g.pick(DOUBLES),
     };
-    // The collector writes a -0 it was given as no value, which reads back as 0.
-    match g.collected && d == 0.0 {
-        true => 0.0,
-        false => d,
+    // Protobuf writes a -0 as no value, which reads back as 0, as the collector does.
+    match ((g.collected || g.exact) && d == 0.0, g.exact && !d.is_finite()) {
+        (true, _) => 0.0,
+        (_, true) => 1.5,
+        _ => d,
     }
 }
 
@@ -661,7 +665,7 @@ fn attributes(g: &mut Gen) -> Vec<Kv> {
     kvs(g, 0)
 }
 
-fn random_export(g: &mut Gen, signal: Signal) -> Export {
+pub fn random_export(g: &mut Gen, signal: Signal) -> Export {
     let resources = (0..g.below(4))
         .map(|_| Resourced {
             resource: (!g.chance(4)).then(|| Resource {
@@ -1436,7 +1440,7 @@ fn pb_kvs(g: &mut Gen, m: &mut Msg, tag: u32, kvs: &[Kv]) {
 }
 
 /// `export` as protobuf.
-fn pb_export(g: &mut Gen, export: &Export) -> Vec<u8> {
+pub fn pb_export(g: &mut Gen, export: &Export) -> Vec<u8> {
     let mut request = Msg::default();
     for resourced in &export.resources {
         let mut r = Msg::default();
@@ -2998,6 +3002,7 @@ fn every_setting_answers_random_otlp_exports_as_otlp_does() {
             rng: Rng::seeded(seed),
             labels: Vec::new(),
             collected: false,
+            exact: false,
         };
         let settings = random_settings(&mut g.rng, ipv6);
         cov.reach(format!("listen {}", settings.listen.ip()));
@@ -3194,6 +3199,7 @@ fn live_collectors_deliver_random_exports_under_random_configurations() {
             rng: Rng::seeded(seed),
             labels: Vec::new(),
             collected: true,
+            exact: false,
         };
         // Without IPv6, the collector reaches the receivers over IPv4 loopback, on the host's network.
         let mut settings = random_settings(&mut g.rng, false);

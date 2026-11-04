@@ -549,6 +549,7 @@ impl SqliteStore {
     /// A damaged file is refused: nothing else holds what it holds.
     pub fn open(path: &Path, secret_key: &Path) -> Result<SqliteStore, StoreError> {
         let mut conn = Connection::open(path)?;
+        super::steps::say_statements(&conn, super::steps::Store::Leader);
         // First, so the leader never acts on what a damaged file says.
         if let Some(found) = damage(&conn, check_for(&conn))? {
             return Err(StoreError::failed(refusal(path, &found)));
@@ -556,7 +557,7 @@ impl SqliteStore {
         // Before the steps, so it is the file as this start found it, in the format the last build left.
         if let Err(e) = keep_previous(&conn, path) {
             tracing::warn!(
-                target: "leader.store_not_copied",
+                name: "not_copied", target: "store",
                 path = %path.display(),
                 error = %e,
                 "the copy of leader.db kept for a damaged start was not made"
@@ -1529,7 +1530,7 @@ impl Store for SqliteStore {
             std::fs::rename(&self.secret_key, &aside)
                 .map_err(|e| StoreError::failed(format!("{}: {e}", self.secret_key.display())))?;
             tracing::warn!(
-                target: "secrets.key_replaced",
+                name: "key_replaced", target: "secrets",
                 path = %aside.display(),
                 "moved aside a secrets encryption key that did not match the stored secrets"
             );
@@ -2542,9 +2543,9 @@ fn insert_event(conn: &Connection, event: &SecurityEvent) -> Result<(), StoreErr
     let (actor_name, subject_name) = (account_name(conn, &event.actor), account_name(conn, &event.target));
     let (actor_name, subject_name) = (actor_name.as_deref(), subject_name.as_deref());
     if event.outcome == "refused" {
-        tracing::warn!(target: "audit.recorded", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, outcome = %event.outcome, "an audited action was recorded");
+        tracing::warn!(name: "recorded", target: "api", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, outcome = %event.outcome, "an audited action was recorded");
     } else {
-        tracing::info!(target: "audit.recorded", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, outcome = %event.outcome, "an audited action was recorded");
+        tracing::info!(name: "recorded", target: "api", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, outcome = %event.outcome, "an audited action was recorded");
     }
     Ok(())
 }
@@ -4683,8 +4684,8 @@ mod tests {
         });
         let fields: Vec<_> = said
             .iter()
-            .filter(|(_, site, _)| site == "audit.recorded")
-            .map(|(_, _, f)| f)
+            .filter(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("api", "recorded"))
+            .map(|(_, _, _, f)| f)
             .collect();
         let named = |f: &Vec<(String, String)>, key: &str| f.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
         assert_eq!(named(fields[0], "actor_name").as_deref(), Some("Dana"));
@@ -4752,8 +4753,8 @@ mod tests {
         });
         let levels: Vec<_> = said
             .iter()
-            .filter(|(_, site, _)| site == "audit.recorded")
-            .map(|(level, _, _)| *level)
+            .filter(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("api", "recorded"))
+            .map(|(level, _, _, _)| *level)
             .collect();
         assert_eq!(
             levels,

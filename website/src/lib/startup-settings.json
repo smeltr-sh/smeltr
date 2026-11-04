@@ -4,7 +4,7 @@
       "key": "log_level",
       "env": "SMELTR_LOG_LEVEL",
       "default": "`info`",
-      "what": "The lowest severity this install logs. A top-level key.",
+      "what": "The startup log level: the level a process starts at, until the leader's log levels reach it. A top-level key.",
       "values": [
         {
           "value": "error",

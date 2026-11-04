@@ -29,7 +29,7 @@
     <li>
       <strong>The source has a record to read.</strong> Check the input topic, broker access, and
       consumer group's saved position. A metrics source needs a full bucket interval; a log source
-      needs a new message at its selected severity.
+      needs a new message at its selected level.
       <a href="/docs/sources#verify">Check source input</a>.
     </li>
     <li>

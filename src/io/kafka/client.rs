@@ -410,7 +410,7 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
             Some(Err(KafkaError::MessageConsumption(_) | KafkaError::PartitionEOF(_))) => {}
             Some(Err(e)) => {
                 if let Some(error) = polling.fail_due(e.to_string()) {
-                    tracing::warn!(target: "kafka.poll_failed", group = %routes.group(), error, "a source could not read from Kafka; trying again");
+                    tracing::warn!(name: "poll_failed", target: "sources", group = %routes.group(), error, "a source could not read from Kafka; trying again");
                 }
             }
         }
@@ -612,7 +612,7 @@ impl Slot {
         if state.full && state.bytes <= self.cap / 2 {
             state.full = false;
             if let Err(e) = self.sync(consumer, state) {
-                tracing::warn!(target: "kafka.pause", error = %e, "could not resume a drained source");
+                tracing::warn!(name: "pause", target: "sources", error = %e, "could not resume a drained source");
             }
         }
         Some(p)
@@ -638,7 +638,7 @@ impl Slot {
         let mut seeks = TopicPartitionList::new();
         for ((topic, partition), offset) in &oldest {
             if let Err(e) = seeks.add_partition_offset(topic, *partition, Offset::Offset(*offset)) {
-                tracing::warn!(target: "kafka.headers", error = %e, "could not ask to fetch records again");
+                tracing::warn!(name: "refetch_failed", target: "sources", error = %e, "could not ask to fetch records again");
                 return;
             }
         }
@@ -650,7 +650,7 @@ impl Slot {
                 .map(|e| (e.topic().to_string(), e.partition()))
                 .collect(),
             Err(e) => {
-                tracing::warn!(target: "kafka.headers", error = %e, "could not fetch records again with their headers");
+                tracing::warn!(name: "refetch_failed", target: "sources", error = %e, "could not fetch records again with their headers");
                 return;
             }
         };
@@ -661,7 +661,7 @@ impl Slot {
         if state.full && state.bytes <= self.cap / 2 {
             state.full = false;
             if let Err(e) = self.sync(consumer, state) {
-                tracing::warn!(target: "kafka.pause", error = %e, "could not resume a drained source");
+                tracing::warn!(name: "pause", target: "sources", error = %e, "could not resume a drained source");
             }
         }
     }
@@ -769,7 +769,7 @@ impl Routes {
             if state.refused.is_some() {
                 return;
             }
-            tracing::warn!(target: "kafka.source_refused", topics = ?slot.topics, why = %why, "a Kafka source reads nothing");
+            tracing::warn!(name: "source_refused", target: "sources", topics = ?slot.topics, why = %why, "a Kafka source reads nothing");
             state.refused = Some(why);
             state.inbox.clear();
             state.bytes = 0;
@@ -827,7 +827,7 @@ impl Routes {
             if !gone.is_empty() {
                 let mut by_topic = self.0.by_topic.lock().unwrap();
                 for topic in &gone {
-                    tracing::info!(target: "kafka.topic_gone", topic = %topic, "a topic a Kafka source's pattern matched is gone");
+                    tracing::info!(name: "topic_gone", target: "sources", topic = %topic, "a topic a Kafka source's pattern matched is gone");
                     if by_topic.get(topic.as_ref()).is_some_and(|s| Arc::ptr_eq(s, &slot)) {
                         by_topic.remove(topic.as_ref());
                     }
@@ -858,7 +858,7 @@ impl Routes {
                         }
                     }
                 }
-                tracing::info!(target: "kafka.topic_matched", topic = %topic, "a Kafka source's pattern matched a topic");
+                tracing::info!(name: "topic_matched", target: "sources", topic = %topic, "a Kafka source's pattern matched a topic");
                 let mut state = slot.lock();
                 state.skipped.remove(topic.as_str());
                 state.matched.push(Arc::from(topic.as_str()));
@@ -879,7 +879,7 @@ impl Routes {
             let mut state = slot.lock();
             if !state.skipped.contains(topic) {
                 tracing::warn!(
-                    target: "kafka.topic_skipped",
+                    name: "topic_skipped", target: "sources",
                     topic = %topic,
                     group = %self.0.group,
                     "a Kafka source's pattern matches a topic another source on this worker reads in its consumer group, \
@@ -947,11 +947,11 @@ impl Routes {
         };
         match sent {
             Err(e) => {
-                tracing::warn!(target: "kafka.subscribe_failed", group = %self.group(), error = %e, "a source could not subscribe to its topics; trying again");
+                tracing::warn!(name: "subscribe_failed", target: "sources", group = %self.group(), error = %e, "a source could not subscribe to its topics; trying again");
                 self.changed();
             }
             Ok(()) => {
-                tracing::info!(target: "kafka.subscribed", group = %self.group(), topics = topics.len(), "the client subscribed to its topics")
+                tracing::info!(name: "subscribed", target: "sources", group = %self.group(), topics = topics.len(), "the client subscribed to its topics")
             }
         }
     }
@@ -965,7 +965,7 @@ impl Routes {
             if !state.stalled && state.refused.is_none() && state.seen.elapsed() >= MAX_POLL_INTERVAL {
                 state.stalled = true;
                 tracing::warn!(
-                    target: "kafka.reader_stalled",
+                    name: "reader_stalled", target: "sources",
                     topics = ?slot.topics,
                     "a Kafka source's reader has not read for five minutes; its partitions go to the group's other \
                      members until it reads again"
@@ -997,7 +997,7 @@ impl Routes {
         if !state.full && state.bytes >= slot.cap {
             state.full = true;
             if let Err(e) = slot.sync(consumer, &state) {
-                tracing::warn!(target: "kafka.pause", error = %e, "could not pause a full source");
+                tracing::warn!(name: "pause", target: "sources", error = %e, "could not pause a full source");
             }
         }
         drop(state);
@@ -1049,7 +1049,7 @@ impl Routes {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        target: "kafka.placement_failed",
+                        name: "placement_failed", target: "sources",
                         error = %e,
                         "a source could not place the partitions it was assigned; they wait, paused, and are placed again on a later poll"
                     );
@@ -1071,6 +1071,10 @@ impl Routes {
 impl ClientContext for Routes {
     const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
 
+    fn log(&self, level: rdkafka::config::RDKafkaLogLevel, fac: &str, message: &str) {
+        super::librdkafka_said("sources", level, fac, message);
+    }
+
     fn generate_oauth_token(
         &self,
         config: Option<&str>,
@@ -1079,12 +1083,12 @@ impl ClientContext for Routes {
         match super::entra::token(config) {
             Ok(token) => {
                 self.0.sign_in.lock().unwrap().clear();
-                tracing::debug!(target: "kafka.token_refreshed", group = %self.group(), principal = %token.principal_name, "signed in to Kafka as the pod's workload identity");
+                tracing::debug!(name: "token_refreshed", target: "sources", group = %self.group(), principal = %token.principal_name, "signed in to Kafka as the pod's workload identity");
                 Ok(token)
             }
             Err(e) => {
                 if let Some(error) = self.0.sign_in.lock().unwrap().fail_due(e.to_string()) {
-                    tracing::warn!(target: "kafka.sign_in_failed", group = %self.group(), error, "a source could not sign in to Kafka as the pod's workload identity, so it cannot connect until a sign-in works");
+                    tracing::warn!(name: "sign_in_failed", target: "sources", group = %self.group(), error, "a source could not sign in to Kafka as the pod's workload identity, so it cannot connect until a sign-in works");
                 }
                 Err(e)
             }
@@ -1119,7 +1123,7 @@ impl ConsumerContext for Routes {
         } else if revoke {
             Rebalance::Revoke(tpl)
         } else {
-            tracing::warn!(target: "kafka.rebalance_failed", group = %self.group(), error = %KafkaError::Rebalance(err.into()), "a rebalance failed, so this client's partitions stay as they were");
+            tracing::warn!(name: "rebalance_failed", target: "sources", group = %self.group(), error = %KafkaError::Rebalance(err.into()), "a rebalance failed, so this client's partitions stay as they were");
             Rebalance::Error(KafkaError::Rebalance(err.into()))
         };
         self.pre_rebalance(base_consumer, &rebalance);
@@ -1163,7 +1167,7 @@ impl ConsumerContext for Routes {
         }
         for slot in touched {
             if let Err(e) = slot.sync(base_consumer, &slot.lock()) {
-                tracing::warn!(target: "kafka.placement_failed", error = %e, "a source could not hold the partitions it was assigned; they are placed again on a later poll");
+                tracing::warn!(name: "placement_failed", target: "sources", error = %e, "a source could not hold the partitions it was assigned; they are placed again on a later poll");
             }
             slot.arrived.notify_all();
         }
@@ -1177,11 +1181,11 @@ impl ConsumerContext for Routes {
     fn post_rebalance(&self, _consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         match rebalance {
             Rebalance::Assign(tpl) => {
-                tracing::info!(target: "kafka.assigned", group = %self.group(), partitions = tpl.count(), "the group assigned partitions to this client");
+                tracing::info!(name: "assigned", target: "sources", group = %self.group(), partitions = tpl.count(), "the group assigned partitions to this client");
                 self.clear_error();
             }
             Rebalance::Revoke(tpl) => {
-                tracing::info!(target: "kafka.revoked", group = %self.group(), partitions = tpl.count(), "the group took partitions from this client");
+                tracing::info!(name: "revoked", target: "sources", group = %self.group(), partitions = tpl.count(), "the group took partitions from this client");
             }
             Rebalance::Error(_) => {}
         }
@@ -1215,7 +1219,7 @@ impl ConsumerContext for Routes {
                 if state.full && state.bytes <= slot.cap / 2 {
                     state.full = false;
                     if let Err(e) = slot.sync(consumer, &state) {
-                        tracing::warn!(target: "kafka.pause", error = %e, "could not resume a drained source");
+                        tracing::warn!(name: "pause", target: "sources", error = %e, "could not resume a drained source");
                     }
                 }
             }
@@ -1435,6 +1439,8 @@ impl Sampler {
                     // Both are due at once: a fresh source should show its backlog on the first heartbeat, and read
                     // what its patterns match without waiting out a listing.
                     let mut sampled: Option<Instant> = None;
+                    // Lag that goes unmeasured round after round is said at debug once in a while, not every round.
+                    let mut unmeasured = crate::logs::Relog::new();
                     let listed: Cell<Option<Instant>> = Cell::new(None);
                     // Also run between lag queries, so a slow broker behind one partition does not hold back a new
                     // topic. A source that names a pattern and attached since the last listing is listed for now.
@@ -1452,7 +1458,7 @@ impl Sampler {
                         list_if_due();
                         if sampled.is_none_or(|at| at.elapsed() >= LAG_SAMPLE_INTERVAL) {
                             sampled = Some(Instant::now());
-                            measure_lag(&consumer, &routes, &stopped, &list_if_due);
+                            measure_lag(&consumer, &routes, &stopped, &list_if_due, &mut unmeasured);
                         }
                         let (flag, wake) = &*stop;
                         let guard = flag.lock().unwrap();
@@ -1480,7 +1486,7 @@ fn list_topics(consumer: &BaseConsumer<Routes>, routes: &Routes, clients: &Weak<
     let metadata = match consumer.fetch_metadata(None, LAG_QUERY_TIMEOUT) {
         Ok(metadata) => metadata,
         Err(e) => {
-            tracing::debug!(target: "kafka.topic_list_failed", group = %routes.group(), error = %e, "the cluster's topics could not be listed, so sources on other clients are not checked against them this round");
+            tracing::debug!(name: "topic_list_failed", target: "sources", group = %routes.group(), error = %e, "the cluster's topics could not be listed, so sources on other clients are not checked against them this round");
             return;
         }
     };
@@ -1521,11 +1527,23 @@ type Committed = (String, i32, i64);
 /// and a broker to ask, so this reports through both -- exactly when lag is worth seeing grow. Each source's lag is
 /// handed to it as soon as its own partitions are measured, so a slow broker behind one source does not hold back the
 /// others. Nothing is handed over when the broker did not answer, or once `stopped` turns true.
-fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn Fn() -> bool, between: &dyn Fn()) {
+///
+/// Each failure is said at trace; while they go on, `unmeasured` says the latest at debug every
+/// [`crate::logs::RELOG_EVERY`].
+fn measure_lag(
+    consumer: &BaseConsumer<Routes>,
+    routes: &Routes,
+    stopped: &dyn Fn() -> bool,
+    between: &dyn Fn(),
+    unmeasured: &mut crate::logs::Relog,
+) {
+    // Each failure is said at trace, and at debug when it starts and every RELOG_EVERY while it goes on.
+    let mut failed = |why: String| unmeasured.fail_due(why).is_some();
     let assignment = match consumer.assignment() {
         Ok(assignment) => assignment,
         Err(e) => {
-            tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the assignment could not be read, so lag is not measured this round");
+            let due = failed(format!("the assignment could not be read: {e}"));
+            crate::debug_when!(due, name: "lag_unmeasured", target: "sources", group = %routes.group(), error = %e, "the assignment could not be read, so lag is not measured this round");
             return;
         }
     };
@@ -1536,7 +1554,8 @@ fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn F
     let committed = match consumer.committed_offsets(assignment, LAG_QUERY_TIMEOUT) {
         Ok(committed) => committed,
         Err(e) => {
-            tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), error = %e, "the committed offsets could not be read, so lag is not measured this round");
+            let due = failed(format!("the committed offsets could not be read: {e}"));
+            crate::debug_when!(due, name: "lag_unmeasured", target: "sources", group = %routes.group(), error = %e, "the committed offsets could not be read, so lag is not measured this round");
             return;
         }
     };
@@ -1558,6 +1577,7 @@ fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn F
         }
     }
 
+    let mut any_failed = false;
     for (slot, partitions) in by_slot {
         let mut lags = Vec::new();
         for (topic, partition, committed_offset) in partitions {
@@ -1570,7 +1590,10 @@ fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn F
             let (_, high) = match consumer.fetch_watermarks(&topic, partition, LAG_QUERY_TIMEOUT) {
                 Ok(marks) => marks,
                 Err(e) => {
-                    tracing::debug!(target: "kafka.lag_unmeasured", group = %routes.group(), %topic, partition, error = %e, "a partition's high watermark could not be read, so its lag is not measured this round");
+                    any_failed = true;
+                    // The partition is a field, not part of the fault: each failing partition would otherwise be a new one.
+                    let due = failed(format!("a high watermark could not be read: {e}"));
+                    crate::debug_when!(due, name: "lag_unmeasured", target: "sources", group = %routes.group(), %topic, partition, error = %e, "a partition's high watermark could not be read, so its lag is not measured this round");
                     continue;
                 }
             };
@@ -1588,6 +1611,9 @@ fn measure_lag(consumer: &BaseConsumer<Routes>, routes: &Routes, stopped: &dyn F
         if !lags.is_empty() {
             slot.lock().lag = lags;
         }
+    }
+    if !any_failed {
+        unmeasured.clear();
     }
 }
 

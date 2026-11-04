@@ -360,9 +360,9 @@ export type SourceDto =
   | {
       id: string;
       type: 'logs';
-      /** The lowest severity it carries: `error`, `warn`, `info` (absent),
-       * `debug` or `trace`. The process collects at `SMELTR_LOG_LEVEL`, and
-       * what it never collected is not there to read. */
+      /** The lowest level it carries: `error`, `warn`, `info` (absent),
+       * `debug` or `trace`. A line its process did not keep is not there to
+       * read. */
       minLevel?: string;
     };
 
@@ -474,7 +474,8 @@ export function sqlStatement(source: SourceDto): Promise<SqlStatementsResult> {
   return post('/api/preview/sql', { source }, 'quiet');
 }
 
-/** Which of OpenTelemetry's signals an OTLP receiver takes, mirroring `plan::topology::Signal`. */
+/** Which of OpenTelemetry's signals an OTLP receiver takes or an OTLP destination sends, mirroring
+ * `plan::topology::Signal`. */
 export type OtlpSignal = 'logs' | 'metrics' | 'traces';
 
 /** What happens when the same document reaches Elasticsearch twice.
@@ -532,6 +533,19 @@ export const LIMITS = {
   /** The load bounds it only from below. */
   pollIntervalSecs: { min: 1, max: Number.MAX_SAFE_INTEGER, default: 60 },
 } as const;
+
+/** What the HTTP, Prometheus and OTLP destinations share: each POSTs to its url over the HTTP destination core. */
+type HttpRequestsDto = TlsDto & {
+  id: string;
+  exceptions?: ExceptionsDto;
+  /** Header name to its value, committed to the config repository. */
+  headers?: Record<string, string>;
+  /** Header name to where its value lives. */
+  credentials?: Record<string, SecretRef>;
+  maxRequestBytes?: ByteCount;
+  bufferBytes?: ByteCount;
+  stallAfterSecs?: number;
+};
 
 /** A destination, discriminated on `type`. A union rather than one flat
  * shape: the two kinds share only `id`, and the loader rejects unknown
@@ -627,10 +641,8 @@ export type DestinationDto = {
       bufferBytes?: ByteCount;
       stallAfterSecs?: number;
     })
-  | (TlsDto & {
-      id: string;
+  | (HttpRequestsDto & {
       type: 'http';
-      exceptions?: ExceptionsDto;
       /** The whole address each request is POSTed to. */
       url: string;
       /** Zone to the address a worker in that zone sends to instead of `url`. */
@@ -645,30 +657,25 @@ export type DestinationDto = {
       field?: string;
       /** Absent is `none`. */
       compression?: HttpCompression;
-      /** Header name to its value, committed to the config repository. */
-      headers?: Record<string, string>;
-      /** Header name to where its value lives. */
-      credentials?: Record<string, SecretRef>;
       inFlight?: number;
-      maxRequestBytes?: ByteCount;
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
     })
-  | (TlsDto & {
-      id: string;
+  | (HttpRequestsDto & {
       type: 'prometheus';
-      exceptions?: ExceptionsDto;
       /** The store's remote_write endpoint, the whole address each request is POSTed to. */
       url: string;
       /** The remote_write protocol version sent. Absent is `1.0`. */
       version?: '1.0' | '2.0';
-      /** Header name to its value, committed to the config repository. */
-      headers?: Record<string, string>;
-      /** Header name to where its value lives. */
-      credentials?: Record<string, SecretRef>;
-      maxRequestBytes?: ByteCount;
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
+    })
+  | (HttpRequestsDto & {
+      type: 'otlp';
+      /** The OTLP endpoint. Each request goes to its signal's path after it: `/v1/logs`, `/v1/metrics` or
+       * `/v1/traces`. */
+      url: string;
+      /** The signal it sends. Absent is `logs`. */
+      signal?: OtlpSignal;
+      /** Absent is `none`. */
+      compression?: HttpCompression;
+      inFlight?: number;
     })
   | (TlsDto &
       EntraSignIn & {
@@ -2612,9 +2619,11 @@ export interface WarningDto {
    * that never heartbeated may have just enrolled, or been quiet since before a restart. */
   sinceMillis: number | null;
   message: string;
-  /** The log site a `workerLoggedWarnings` is about: one worker raises it once per site.
-   * Absent on every other condition. */
-  site?: string;
+  /** The class and type of the log line a `workerLoggedWarnings` is about: one worker raises
+   * it once per class and type. Absent on every other condition, and `class` on a library's
+   * line said outside any span. */
+  class?: string;
+  type?: string;
   /** The area whose bundle declares a pipeline subject: `shared` or its group. Absent on every
    * other subject, and where the deployed commit does not say. */
   area?: string;
@@ -3383,6 +3392,41 @@ export function putWarningSettings(sourceRowsBandPercent: number): Promise<Warni
   });
 }
 
+/** The level the lines one override names are kept at. It names a class and a type, a class,
+ * or a service (`heartbeat::LevelOverride`). */
+export interface LevelOverrideDto {
+  class?: string;
+  type?: string;
+  service?: string;
+  level: string;
+}
+
+/** The levels the fleet keeps its log lines at: `default` for every line no override names. An absent default
+ * is each process's startup log level. */
+export interface LogLevelsDto {
+  default?: string;
+  overrides?: LevelOverrideDto[];
+}
+
+export type LogLevelsResult = {
+  ok: boolean;
+  errors: ApiError[];
+  levels: LogLevelsDto | null;
+  /** Every class a line can be in, and every service one can name. */
+  classes: string[];
+  services: string[];
+  /** The levels, most severe first. */
+  labels: string[];
+};
+
+export function getLogLevels(): Promise<LogLevelsResult> {
+  return apiJson('/api/settings/log-levels');
+}
+
+export function putLogLevels(levels: LogLevelsDto): Promise<LogLevelsResult> {
+  return apiJson('/api/settings/log-levels', { method: 'PUT', body: JSON.stringify(levels) });
+}
+
 /** Whether this leader looks for a newer release. */
 export interface UpdateSettingsDto {
   check: boolean;
@@ -3876,7 +3920,10 @@ export type LogRowDto = {
   group?: string | null;
   thread?: string | null;
   level: string;
-  site: string;
+  /** Absent on a library's line said outside any span. */
+  class?: string | null;
+  type: string;
+  service?: string | null;
   message: string;
   fields: unknown[];
 };
@@ -3894,6 +3941,9 @@ export type LogsResponseDto = {
   /** The cursor for "newer", present only while a row exists above the page.
    * Absent from the head, which a page reached with no cursor already is. */
   nextAfter: number | null;
+  /** Every class a line can be in, and every service one can name. */
+  classes: string[];
+  services: string[];
 };
 
 /** `query` is `logs.ts`'s `toQuery` output: the filters plus a limit. */

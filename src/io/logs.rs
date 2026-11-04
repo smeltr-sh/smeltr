@@ -19,10 +19,13 @@ pub const LOGS_TOPIC: &str = "__smeltr_logs";
 /// How this source is configured. Nothing to reach and nothing to authenticate: what it reads is already here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LogsSourceConfig {
-    /// The lowest severity this source carries. A ceiling sits above it: the process collects at
-    /// `SMELTR_LOG_LEVEL`, and what it never collected is not here to read.
+    /// The lowest level this source carries. A line its process did not keep (`crate::logs::levels`) is not
+    /// here to read.
     pub min_level: tracing::Level,
 }
+
+/// The finest level any logs source carries. Below it is trace, which describes the pipelines themselves.
+pub(crate) const CARRIED_AT_MOST: tracing::Level = tracing::Level::DEBUG;
 
 /// An ordinary `Source` whose "waiting for data" is the buffer filling.
 pub struct LogsSource {
@@ -37,21 +40,20 @@ impl LogsSource {
     /// source alone.
     pub fn new(config: LogsSourceConfig) -> LogsSource {
         let tap = crate::logs::tap();
-        // Said here rather than refused at load: the ceiling belongs to this process, and the bundle is read by
-        // the leader too, where a different `SMELTR_LOG_LEVEL` would make the same bundle valid in one place and
-        // invalid in another. Refusing would also cost every other pipeline in it.
-        let ceiling = crate::startup_config::log_level();
-        if config.min_level > ceiling {
+        // Trace describes the pipelines that carry it, this one's included: carrying it would make the lines that
+        // the next batch is made of, and the source would never be idle.
+        let min_level = config.min_level.min(CARRIED_AT_MOST);
+        if min_level != config.min_level {
             tracing::warn!(
-                target: "logs_source.below_ceiling",
+                name: "trace_not_carried", target: "logs",
                 min_level = %config.min_level,
-                ceiling = %ceiling,
-                "a logs source asks for logs this process does not collect, and carries only what it does"
+                "a logs source is set to trace, but that would feed its own reading back into it, so it reads debug \
+                 and above"
             );
         }
         LogsSource {
             tap,
-            min_level: config.min_level,
+            min_level,
             next_offset: 0,
             topic: Arc::from(LOGS_TOPIC),
         }
@@ -69,12 +71,15 @@ impl Source for LogsSource {
         // hands itself that report to carry, and carrying it is what produces the next one.
         crate::logs::while_delivering(|| {
             let mut taken = self.tap.drain(max_rows);
-            if taken.is_empty() {
+            // Nothing this source carries waits too: otherwise, at trace, its own per-poll lines would skip the sleep.
+            if !taken.iter().any(|e| e.level <= self.min_level) {
                 // No logs is the steady state of a healthy process, so this is the common path, and
                 // returning straight away would spin a reader thread against an empty buffer for the life of the
                 // deployment. Waiting is this source's poll.
                 std::thread::sleep(timeout);
-                taken = self.tap.drain(max_rows);
+                if taken.is_empty() {
+                    taken = self.tap.drain(max_rows);
+                }
             }
 
             let mut out = crate::io::RecordChunkBuilder::new();
@@ -118,7 +123,13 @@ fn json(event: &Event) -> Vec<u8> {
     out.extend_from_slice(millis(event).to_string().as_bytes());
     out.extend_from_slice(br#","level":"#);
     write_json_string(event.level.as_str().to_lowercase().as_bytes(), &mut out);
-    field(&mut out, b"site", event.site.as_bytes());
+    if let Some(class) = &event.class {
+        field(&mut out, b"class", class.as_bytes());
+    }
+    field(&mut out, b"type", event.r#type.as_bytes());
+    if let Some(service) = &event.service {
+        field(&mut out, b"service", service.as_bytes());
+    }
     field(&mut out, b"message", event.message.as_bytes());
     if let Some(worker) = event.worker {
         field(&mut out, b"worker", worker.as_bytes());
@@ -191,7 +202,9 @@ mod tests {
         let event = Event {
             timestamp: std::time::SystemTime::UNIX_EPOCH,
             level: tracing::Level::ERROR,
-            site: "json.test".into(),
+            class: Some("logs".into()),
+            r#type: "json_test".into(),
+            service: None,
             message: "a site said something".into(),
             fields: fields.into_iter().map(|(name, value)| (name.into(), value)).collect(),
             worker: None,
@@ -235,6 +248,23 @@ mod tests {
         assert_eq!(parsed["message"], "a site said something");
     }
 
+    /// No logs source carries trace, which describes the pipeline carrying it: a source asked for it carries
+    /// debug and above, and says so.
+    #[test]
+    fn a_logs_source_never_carries_trace() {
+        let _taps = crate::logs::TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let said = crate::logs::said(|| {
+            let source = LogsSource::new(LogsSourceConfig {
+                min_level: tracing::Level::TRACE,
+            });
+            assert_eq!(source.min_level, tracing::Level::DEBUG);
+        });
+        assert!(
+            said.iter()
+                .any(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("logs", "trace_not_carried"))
+        );
+    }
+
     /// Two logs sources read side by side, and each sees the whole stream.
     #[test]
     fn two_logs_sources_each_read_every_event() {
@@ -248,7 +278,9 @@ mod tests {
         crate::logs::mirror([Event {
             timestamp: std::time::SystemTime::now(),
             level: tracing::Level::ERROR,
-            site: "two_sources.test".into(),
+            class: Some("logs".into()),
+            r#type: "two_sources_test".into(),
+            service: None,
             message: "said once".into(),
             fields: Vec::new(),
             worker: None,
@@ -260,7 +292,7 @@ mod tests {
             let got = source.poll_batch(64, 1 << 20, Duration::ZERO).expect("a poll");
             assert!(
                 got.iter()
-                    .any(|r| String::from_utf8_lossy(r.bytes().unwrap()).contains("two_sources.test")),
+                    .any(|r| String::from_utf8_lossy(r.bytes().unwrap()).contains("two_sources_test")),
                 "a reader missed an event the other read"
             );
         }

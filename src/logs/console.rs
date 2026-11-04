@@ -10,10 +10,21 @@ use crate::ops::civil::civil_from_days;
 
 /// Render one event for a person reading a terminal.
 ///
-/// The JSON form is what a machine reads; this is deliberately not that. Time, severity and site first because
-/// that is what an eye scans for, then the sentence, then what varied.
+/// The JSON form is what a machine reads; this is deliberately not that. Time, level, class, type and service
+/// first because that is what an eye scans for, then the sentence, then what varied.
 pub fn line(event: &Event) -> String {
-    let mut out = format!("{} {:<5} {}", stamp(event.timestamp), event.level.as_str(), event.site);
+    let mut out = format!("{} {:<5}", stamp(event.timestamp), event.level.as_str());
+    for part in [
+        event.class.as_deref(),
+        Some(event.r#type.as_ref()),
+        event.service.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        out.push(' ');
+        out.push_str(part);
+    }
     // Who spoke, where a reader is already looking. Eight reader threads holding one source are eight lines that
     // differ only here, so leaving it to a field would put the one distinguishing part last.
     match (event.worker, event.thread.as_deref()) {
@@ -47,7 +58,7 @@ pub(crate) fn render_fields<'a>(fields: impl IntoIterator<Item = (&'a str, Strin
 }
 
 /// One event is one line. A value carrying its own line breaks -- an Elasticsearch refusal, a TLS error -- would
-/// otherwise emit fragments with no timestamp, level or site, which a shipper indexes as separate malformed
+/// otherwise emit fragments with no timestamp, level or type, which a shipper indexes as separate malformed
 /// records. This makes them visible rather than reversible; the fields are what a machine reads.
 fn escaped(text: &str) -> std::borrow::Cow<'_, str> {
     if !text.contains(['\n', '\r', '\t']) {
@@ -84,8 +95,8 @@ pub(crate) fn stamp(at: std::time::SystemTime) -> String {
 /// All of it to stderr, and whether it landed.
 ///
 /// smeltr's stdout carries no data -- rows leave through destinations -- so there is nothing for logs to
-/// stay out of the way of, and splitting by severity only means an operator watching one stream sees a failure
-/// arrive and never sees it clear. Severity says how bad; it does not pick a stream.
+/// stay out of the way of, and splitting by level only means an operator watching one stream sees a failure
+/// arrive and never sees it clear. A level says how bad; it does not pick a stream.
 pub fn write(event: &Event) -> std::io::Result<()> {
     write_line(&mut std::io::stderr().lock(), &line(event))
 }
@@ -115,7 +126,9 @@ mod tests {
         let event = |worker, thread: Option<&str>| Event {
             timestamp: at(1_757_689_445_123),
             level: tracing::Level::WARN,
-            site: "runtime.source_blocked".into(),
+            class: Some("sources".into()),
+            r#type: "blocked".into(),
+            service: Some("kafka".into()),
             message: "a source is blocked".to_string(),
             fields: vec![],
             worker,
@@ -123,10 +136,10 @@ mod tests {
             local_only: false,
             seq: 0,
         };
-        assert!(line(&event(Some("w-1"), Some("reader-0"))).contains("runtime.source_blocked (w-1 reader-0): "));
-        assert!(line(&event(None, Some("reader-0"))).contains("runtime.source_blocked (reader-0): "));
-        assert!(line(&event(Some("w-1"), None)).contains("runtime.source_blocked (w-1): "));
-        assert!(line(&event(None, None)).contains("runtime.source_blocked: "));
+        assert!(line(&event(Some("w-1"), Some("reader-0"))).contains("sources blocked kafka (w-1 reader-0): "));
+        assert!(line(&event(None, Some("reader-0"))).contains("sources blocked kafka (reader-0): "));
+        assert!(line(&event(Some("w-1"), None)).contains("sources blocked kafka (w-1): "));
+        assert!(line(&event(None, None)).contains("sources blocked kafka: "));
     }
 
     /// One event is one line, whatever a destination put in its refusal.
@@ -135,7 +148,9 @@ mod tests {
         let event = Event {
             timestamp: at(1_757_689_445_123),
             level: tracing::Level::ERROR,
-            site: "runtime.rows_rejected".into(),
+            class: Some("destinations".into()),
+            r#type: "rows_rejected".into(),
+            service: None,
             message: "a destination refused rows".to_string(),
             fields: vec![(
                 "reason".into(),
@@ -159,7 +174,9 @@ mod tests {
         let event = Event {
             timestamp: at(1_757_689_445_123),
             level: tracing::Level::ERROR,
-            site: "runtime.row_rejected".into(),
+            class: Some("destinations".into()),
+            r#type: "rows_rejected".into(),
+            service: None,
             message: "destination refused rows and always will".to_string(),
             fields: vec![
                 ("subject".into(), Value::Str("d1".into())),
@@ -172,7 +189,7 @@ mod tests {
         };
         assert_eq!(
             line(&event),
-            "2025-09-12T15:04:05.123Z ERROR runtime.row_rejected: \
+            "2025-09-12T15:04:05.123Z ERROR destinations rows_rejected: \
              destination refused rows and always will [subject=d1 rows=4000]"
         );
     }

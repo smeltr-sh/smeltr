@@ -168,7 +168,7 @@ impl StorageQueue {
         self.receipts().remove(id);
         if let Err(why) = self.poison(text) {
             tracing::warn!(
-                target: "object_source.poison",
+                name: "poison", target: "sources",
                 id,
                 error = %why,
                 "a message received too many times could not be moved to the poison queue; it is left where it is"
@@ -176,7 +176,7 @@ impl StorageQueue {
             return;
         }
         tracing::warn!(
-            target: "object_source.poison",
+            name: "poison", target: "sources",
             id,
             deliveries,
             queue = %self.poison_url,
@@ -184,7 +184,7 @@ impl StorageQueue {
         );
         if let Some(why) = self.delete_one(id, receipt) {
             tracing::warn!(
-                target: "object_source.poison",
+                name: "poison", target: "sources",
                 id,
                 error = %why,
                 "a message moved to the poison queue was not deleted from its own; it will be moved again"
@@ -199,7 +199,7 @@ impl StorageQueue {
             Ok(_) => None,
             Err(f) if f.status == Some(http::StatusCode::NOT_FOUND) => {
                 tracing::warn!(
-                    target: "object_source.delete_failed",
+                    name: "delete_failed", target: "sources",
                     id,
                     error = %f.why,
                     "a finished message had already lapsed back onto the queue; it will be read again"

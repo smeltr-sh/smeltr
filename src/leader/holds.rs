@@ -157,6 +157,13 @@ impl Holds {
         heard.listed.retain(|_, &mut at| clock.within(at));
         heard.listed.extend(runs.into_iter().map(|key| (key, clock.now)));
         heard.answered = answered.clone();
+        tracing::trace!(
+            name: "holds_settled", target: "heartbeats",
+            %worker,
+            %group,
+            holds = answered.len(),
+            "the leader settled the holds a heartbeat listed"
+        );
         Ok(answered)
     }
 
@@ -220,6 +227,7 @@ impl Holds {
         if clock.up_for <= clock.hold_time.max(FORGET_AFTER_UP) {
             return Ok(Vec::new());
         }
+        let _pass = tracing::trace_span!(target: "heartbeats", "a background pass", task = "forget progress of sources nothing reads").entered();
         let listed = |group: &str, key: &SourceKey| {
             workers.heard.values().any(|w| {
                 w.group == group && clock.within(w.at) && w.listed.get(key).is_some_and(|&at| clock.within(at))
@@ -271,16 +279,38 @@ fn settle(workers: &Workers, store: &dyn Store, beat: &mut Beat<'_>, clock: Cloc
                 cursor: hold.cursor,
             }),
             Some(hold) if workers.reading(&hold.holder, group, key, clock) => {}
-            hold => free.push((key, hold.and_then(|h| h.cursor))),
+            hold => free.push((
+                key,
+                hold.as_ref().map(|h| h.holder.clone()),
+                hold.and_then(|h| h.cursor),
+            )),
         }
     }
     // After every source this worker keeps, so the count it is compared by is what it already reads.
-    for (key, cursor) in free {
+    for (key, from, cursor) in free {
         let fewer = workers.heard.iter().any(|(other, w)| {
             other != worker && workers.reading(other, group, key, clock) && w.answered.len() < held.len()
         });
         if !fewer {
             store.set_source_holder(group, key, worker)?;
+            match &from {
+                Some(from) if from != worker => tracing::info!(
+                    name: "hold_moved", target: "heartbeats",
+                    source = %key.source,
+                    %group,
+                    %from,
+                    to = %worker,
+                    "a source moved to another worker, which resumes from the saved progress"
+                ),
+                Some(_) => {}
+                None => tracing::info!(
+                    name: "hold_granted", target: "heartbeats",
+                    source = %key.source,
+                    %group,
+                    %worker,
+                    "a worker was given a source to read"
+                ),
+            }
             held.push(Hold {
                 key: key.clone(),
                 cursor,
@@ -296,7 +326,7 @@ fn admitted(worker: &str, key: &SourceKey, mut progress: Progress) -> Progress {
     let (cursor_refused, refused) = progress.admit();
     if cursor_refused {
         tracing::warn!(
-            target: "leader.progress_refused",
+            name: "progress_refused", target: "heartbeats",
             subject = %worker,
             source = %key.source,
             "a cursor longer than {MAX_CURSOR} bytes was refused, so the source resumes from the one before it"
@@ -304,7 +334,7 @@ fn admitted(worker: &str, key: &SourceKey, mut progress: Progress) -> Progress {
     }
     if refused > 0 {
         tracing::warn!(
-            target: "leader.progress_refused",
+            name: "progress_refused", target: "heartbeats",
             subject = %worker,
             source = %key.source,
             refused,

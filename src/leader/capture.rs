@@ -452,13 +452,18 @@ impl Captures {
     /// from anyone else is not a late answer -- it is records the leader never asked for, from a credential that
     /// has no part in this capture.
     pub fn record(&self, report: CaptureReport) {
+        // Late reports come in runs as a capture ends, so one is said at debug every RELOG_EVERY and the rest at trace.
+        static DROPPED: std::sync::Mutex<crate::logs::Repeat> = std::sync::Mutex::new(crate::logs::Repeat::new());
+        let dropped = |why: &str| {
+            crate::debug_when!(DROPPED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).due(), name: "report_dropped", target: "captures", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
+        };
         let mut sessions = self.0.lock().unwrap();
         let Some(session) = sessions.get_mut(&report.session) else {
-            tracing::debug!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why = "no such session", "a capture report was dropped");
+            dropped("no such session");
             return;
         };
         if !session.invited.contains(&report.worker_id) || session.answered.contains(&report.worker_id) {
-            tracing::debug!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why = "not invited, or answered already", "a capture report was dropped");
+            dropped("not invited, or answered already");
             return;
         }
         // Checked before this report's own answer is noted, so the final that completes the capture is folded.
@@ -583,6 +588,8 @@ impl Captures {
     /// Drop every session that finished more than `keep` ago. A capture nobody collected must not hold its records
     /// forever: this is the only thing that bounds the leader's memory across sessions.
     pub fn sweep(&self, keep: Duration) {
+        let _pass =
+            tracing::trace_span!(target: "captures", "a background pass", task = "drop finished captures").entered();
         let mut sessions = self.0.lock().unwrap();
         sessions.retain(|_, s| !s.done() || s.elapsed() < Duration::from_secs(s.invitation.deadline_secs) + keep);
     }

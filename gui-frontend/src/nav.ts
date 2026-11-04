@@ -15,10 +15,9 @@ import { SHARED_SCOPE, type MapNodeKind } from './api';
 /** `me` is what belongs to the person signed in, reached from their name chip rather than a tab of its own. */
 export type Tab = 'status' | 'map' | 'build' | 'changes' | 'admin' | 'me';
 
-/** The tabs of Admin -> System. Logging is named in the design and has no
- * leader-side settings yet, so it is not offered. */
+/** The tabs of Admin -> System. */
 export type SystemSection =
-  'general' | 'sessions' | 'certificates' | 'git' | 'agents' | 'license' | 'alerts';
+  'general' | 'sessions' | 'certificates' | 'git' | 'agents' | 'license' | 'alerts' | 'logging';
 
 export const SYSTEM_SECTIONS: { section: SystemSection; label: string }[] = [
   { section: 'general', label: 'General' },
@@ -28,6 +27,7 @@ export const SYSTEM_SECTIONS: { section: SystemSection; label: string }[] = [
   { section: 'agents', label: 'AI agents' },
   { section: 'license', label: 'License' },
   { section: 'alerts', label: 'Alerts' },
+  { section: 'logging', label: 'Logging' },
 ];
 
 /** The tabs of Admin -> Workers: the fleet's workers, and the enrollment codes that bring them in. */
@@ -55,7 +55,10 @@ export type Route =
       levels: string[];
       worker?: string;
       group?: string;
-      site?: string;
+      class?: string;
+      type?: string;
+      typeExact?: boolean;
+      service?: string;
       q?: string;
       /** The pager's position: rows below this id. Set from a previous read's `nextBefore`. */
       before?: number;
@@ -484,7 +487,10 @@ export function parseRoute(hash: string): Route {
         levels: (params.get('level') ?? '').split(',').filter((l) => l.length > 0),
         worker: one('worker'),
         group: one('group'),
-        site: one('site'),
+        class: one('class'),
+        type: one('type'),
+        ...(params.get('typeExact') === 'true' && { typeExact: true }),
+        service: one('service'),
         q: one('q'),
         before: cursor('before'),
         after: cursor('after'),

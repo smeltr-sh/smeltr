@@ -627,6 +627,13 @@ impl<'p> Compiler<'p> {
 
 /// Compile one pipeline against the fields `meta` declares: the instructions, in one pass, then slot liveness. Every
 /// error is collected rather than the first one returned, so one compile reports everything wrong with a pipeline.
+#[tracing::instrument(
+    level = "trace",
+    target = "pipelines",
+    name = "a compile",
+    skip_all,
+    fields(pipeline = %p.name)
+)]
 pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<CompileError>> {
     let ingest = ingest_fields(meta);
     let mut c = Compiler::new(p, &ingest, None);
@@ -647,6 +654,7 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
         }
     }
     if !c.errors.is_empty() {
+        tracing::trace!(name: "compile_failed", target: "pipelines", errors = c.errors.len(), "a pipeline did not compile");
         return Err(c.errors);
     }
 

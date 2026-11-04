@@ -343,7 +343,7 @@ async fn admit(
     let mut response = next.run(req).await;
     let unrecorded = !is_safe(method) && response.status().is_success() && !actor.recorded.is_marked();
     if unrecorded && !policy::changes_nothing(method, path) {
-        tracing::warn!(target: "audit.unrecorded", actor = %actor.id, method = %method, path, "a change recorded nothing, so the gate recorded it");
+        tracing::warn!(name: "unrecorded", target: "api", actor = %actor.id, method = %method, path, "a change recorded nothing, so the gate recorded it");
         let what = format!("{method} {path}");
         accounts::record_async(auth.store.clone(), &actor, "unrecorded", &what, "ok").await;
     }
@@ -382,7 +382,7 @@ async fn key_account_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Act
             && presented.last_used_at.is_none_or(|at| now - at >= LAST_USED_EVERY)
             && let Err(e) = store.mark_api_key_used(&presented.id, now)
         {
-            tracing::warn!(target: "leader.identity_unavailable", error = %e, "a key's last use could not be written");
+            tracing::warn!(name: "identity_unavailable", target: "enrollment", error = %e, "a key's last use could not be written");
         }
         Ok::<_, StoreError>(Some((user, access)))
     })
@@ -429,13 +429,13 @@ pub async fn harden(req: axum::extract::Request, next: axum::middleware::Next) -
 /// body: one can carry a key, an enrollment code or a token, and the log is shipped where those must not go.
 pub async fn traced(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let (method, path, started) = (req.method().clone(), req.uri().path().to_string(), Instant::now());
-    tracing::trace!(target: "http.request", method = %method, path, "a request arrived");
+    tracing::trace!(name: "request", target: "api", method = %method, path, "a request arrived");
     let response = next.run(req).await;
     let actor = response.extensions().get::<Actor>().map(|a| a.id.as_str());
     let bytes = http_body::Body::size_hint(response.body()).exact();
     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     tracing::trace!(
-        target: "http.response",
+        name: "response", target: "api",
         method = %method, path, status = response.status().as_u16(), actor, bytes, ms,
         "a response was sent"
     );

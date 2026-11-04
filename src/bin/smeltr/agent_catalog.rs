@@ -455,7 +455,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/logs",
-        what: "One page of fleet log rows. Query: level (comma-separated), worker, group, site, q, sinceMillis, untilMillis, limit, before, after.",
+        what: "One page of fleet log rows. Query: level (comma-separated), worker, group, class, type (part of one), typeExact (true matches type whole), service, q, sinceMillis, untilMillis, limit, before, after.",
         body: "",
     },
     Route {
@@ -706,6 +706,18 @@ pub const CATALOG: &[Route] = &[
         path: "/api/settings/workers",
         what: "Set how long a silent ephemeral worker is kept. No query.",
         body: "{ ephemeralForgetAfterSeconds: number }",
+    },
+    Route {
+        method: "GET",
+        path: "/api/settings/log-levels",
+        what: "The levels the fleet keeps its log lines at, and the classes, services and levels an override may name. No query.",
+        body: "",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/settings/log-levels",
+        what: "Set the levels the fleet keeps its log lines at. Replaces all current levels. No query.",
+        body: "{ default?: 'error'|'warn'|'info'|'debug'|'trace', overrides?: [{ class?: string, type?: string, service?: string, level: 'error'|'warn'|'info'|'debug'|'trace' }] }",
     },
     Route {
         method: "GET",

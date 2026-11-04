@@ -290,7 +290,7 @@ impl Committer for DeltaCommitter {
                 Ok(()) => {}
                 // A checkpoint is upkeep, and no reason to hold rows back: the log reads without it.
                 Err(why) => {
-                    tracing::warn!(target: "delta.checkpoint_failed", subject = self.log.subject(), error = %why, version = self.snapshot.version,
+                    tracing::warn!(name: "checkpoint_failed", target: "destinations", subject = self.log.subject(), error = %why, version = self.snapshot.version,
                         "a Delta table could not be checkpointed, so its log is read whole until a checkpoint lands")
                 }
             }
@@ -373,7 +373,7 @@ impl Committer for DeltaCommitter {
                 // The conflict may be a lost commit of these files that landed late.
                 self.advance().map_err(CommitError::Transient)?;
                 if self.landed() {
-                    tracing::debug!(target: "delta.commit_found", subject = self.log.subject(), version = self.snapshot.version, "a commit whose answer was lost had landed");
+                    tracing::debug!(name: "commit_found", target: "destinations", subject = self.log.subject(), version = self.snapshot.version, "a commit whose answer was lost had landed");
                     return Ok(());
                 }
                 Err(CommitError::Conflict)
@@ -456,7 +456,7 @@ impl DeltaCommitter {
             // Taken or lost, the table is read again: whoever made it, it is there.
             match log.create(&commit_name(0), create(record, partition_by)?.into_bytes()) {
                 Ok(true) => {
-                    tracing::info!(target: "delta.table_created", subject = log.subject(), partition_by = partition_by.len(), "a Delta table was created with the pipeline's record as its schema")
+                    tracing::info!(name: "table_created", target: "destinations", subject = log.subject(), partition_by = partition_by.len(), "a Delta table was created with the pipeline's record as its schema")
                 }
                 Ok(false) => {}
                 Err(e) => failed = Some(e),
@@ -514,7 +514,7 @@ impl DeltaCommitter {
             // Taken or lost, the log is read again, and the columns are added or widened if they still need it.
             match log.create(&commit_name(version), body.into_bytes()) {
                 Ok(true) => {
-                    tracing::info!(target: "delta.schema_evolved", subject = log.subject(), operation, version, "a Delta table's schema gained the pipeline's new columns");
+                    tracing::info!(name: "schema_evolved", target: "destinations", subject = log.subject(), operation, version, "a Delta table's schema gained the pipeline's new columns");
                     snapshot.committed(vec![committed, Action::Metadata(Box::new(metadata))]);
                     checkpoint_due = checkpoint::due(&snapshot.metadata, version);
                 }

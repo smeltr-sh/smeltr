@@ -386,7 +386,7 @@ pub fn build(
                     .transpose()
                     .unwrap_or_else(|e| {
                         tracing::warn!(
-                            target: "stats.expected_unreadable",
+                            name: "expected_unreadable", target: "status",
                             error = %e,
                             "could not read this source's history, so its chart draws no expected band"
                         );
@@ -423,7 +423,7 @@ pub fn build(
             Ok(spans) => answer.warnings = spans,
             // The counts stand without them: a chart with no marks still says what was read.
             Err(e) => tracing::warn!(
-                target: "stats.warnings_unreadable",
+                name: "issues_unreadable", target: "status",
                 error = %e,
                 "could not read when this object's warnings held, so its chart marks none"
             ),
@@ -822,7 +822,7 @@ fn totals_by_subject(store: &RegistryStore, metric: &str, tier: Tier, since_ms: 
             .collect(),
         Err(e) => {
             tracing::warn!(
-                target: "stats.metric_unreadable",
+                name: "stats_metric_unreadable", target: "status",
                 subject = %metric,
                 error = %e,
                 "could not read a metric for an object's stats, so its total reads as zero"

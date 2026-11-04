@@ -10,16 +10,16 @@ fn what_was_said_before_the_exit_is_written_by_it() {
     // Through `tracing`, not through any smeltr API: the call sites this replaces are ordinary `tracing` macros,
     // and the point of the spine is that nothing else is needed to reach the buffer.
     for row in 0..3u64 {
-        tracing::error!(target: "shutdown.test", subject = "d1", row, "a destination refused a row");
+        tracing::error!(name: "shutdown_test", target: "logs", subject = "d1", row, "a destination refused a row");
     }
 
     let began = std::time::Instant::now();
     smeltr::logs::stop();
 
-    let written = smeltr::logs::written_by_site();
-    let mine = written.iter().find(|(site, _)| site == "shutdown.test");
+    let written = smeltr::logs::written_by_type();
+    let mine = written.iter().find(|(_, kind, _)| kind == "shutdown_test");
     assert_eq!(
-        mine.map(|(_, n)| *n),
+        mine.map(|(_, _, n)| *n),
         Some(3),
         "every event reached the drain thread and was written: {written:?}"
     );

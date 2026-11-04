@@ -92,7 +92,7 @@ impl Updates {
         if let Some((release, _)) = &newest
             && held.0.as_ref().is_none_or(|n| n.release != *release)
         {
-            tracing::info!(target: "leader.release_available", %release, "a newer release of Smeltr is out");
+            tracing::info!(name: "available", target: "updates", %release, "a newer release of Smeltr is out");
         }
         held.0 = newest.map(|(release, url)| Newer {
             since: since(&release),
@@ -111,7 +111,7 @@ impl Updates {
         self.held().1 = Some(Looked {
             checked_at: now,
             failure: Some(crate::noted!(
-                target: "leader.release_check_failed",
+                name: "check_failed", target: "updates",
                 "the list of releases could not be read",
                 why
             )),
@@ -136,7 +136,7 @@ pub async fn poll(state: AppState) {
     };
     loop {
         let checking = run_store(state.store.clone(), checking).await.unwrap_or_else(|e| {
-            tracing::debug!(target: "updates.setting_unreadable", error = %e, "the update-check setting could not be read, so the check runs");
+            tracing::debug!(name: "setting_unreadable", target: "updates", error = %e, "the update-check setting could not be read, so the check runs");
             true
         });
         if !checking {
@@ -144,8 +144,9 @@ pub async fn poll(state: AppState) {
             state.updates.settings_changed.notified().await;
             continue;
         }
+        let pass = tracing::trace_span!(target: "updates", "a background pass", task = "check for a newer release");
         let now = super::warnings::now_millis();
-        match fetch(own).await {
+        match tracing::Instrument::instrument(fetch(own), pass).await {
             Ok(newest) => state.updates.found(newest, now),
             Err(why) => state.updates.failed(why, now),
         }

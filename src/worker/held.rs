@@ -173,7 +173,7 @@ impl Held {
             match resume_point(&holding.hold, file) {
                 Ok(from) => slot.grant(from),
                 Err(e) => tracing::warn!(
-                    target: "runtime.ledger_unreadable",
+                    name: "ledger_unreadable", target: "pipelines",
                     subject = %holding.hold.key.source,
                     error = %e,
                     "the ledger of a source this worker now holds could not be read, so it is not read until the \
@@ -266,14 +266,14 @@ impl Outbox {
         {
             if now {
                 tracing::warn!(
-                    target: "runtime.progress_backlogged",
+                    name: "progress_backlogged", target: "pipelines",
                     weight,
                     "more progress is waiting for the supervisor than this runtime keeps, so held sources read \
                      nothing new until it drains"
                 );
             } else {
                 tracing::info!(
-                    target: "runtime.progress_drained",
+                    name: "progress_drained", target: "pipelines",
                     weight,
                     "the progress waiting for the supervisor has drained, so held sources read again"
                 );
@@ -390,14 +390,14 @@ fn admitted(key: &SourceKey, mut progress: Progress) -> Progress {
     let (cursor_refused, refused) = progress.admit();
     if cursor_refused {
         tracing::warn!(
-            target: "runtime.progress_refused",
+            name: "progress_refused", target: "pipelines",
             subject = %key.source,
             "a cursor longer than {MAX_CURSOR} bytes was refused, so the source resumes from the one before it"
         );
     }
     if refused > 0 {
         tracing::warn!(
-            target: "runtime.progress_refused",
+            name: "progress_refused", target: "pipelines",
             subject = %key.source,
             refused,
             "ledger entries over {MAX_LEDGER_ITEM} bytes of item or {MAX_LEDGER_ENTRY} of entry were refused, so \

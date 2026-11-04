@@ -39,7 +39,7 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
         name: "logs-out".into(),
         body: vec![code(
             0,
-            "level: str; site: str; message: str; Object.assign($, json(_raw));",
+            "level: str; class: str; type: str; message: str; Object.assign($, json(_raw));",
         )],
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
@@ -54,7 +54,7 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
         min_level: tracing::Level::INFO,
     });
     tracing::error!(
-        target: "logs_source.test",
+        name: "logs_source_test", target: "logs",
         subject = "d1",
         rows = 5u64,
         "a destination refused a batch"
@@ -86,7 +86,7 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
         let sent = dest.sent();
         if sent.iter().any(|r| {
             serde_json::from_slice::<serde_json::Value>(&r.value)
-                .map(|v| v["site"] == "logs_source.test")
+                .map(|v| v["type"] == "logs_source_test")
                 .unwrap_or(false)
         }) {
             break sent;
@@ -101,7 +101,7 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
     let mine: Vec<serde_json::Value> = sent
         .iter()
         .map(|r| serde_json::from_slice(&r.value).unwrap())
-        .filter(|v: &serde_json::Value| v["site"] == "logs_source.test")
+        .filter(|v: &serde_json::Value| v["type"] == "logs_source_test")
         .collect();
     assert_eq!(mine.len(), 1, "one call, one record: {mine:?}");
     let row = &mine[0];

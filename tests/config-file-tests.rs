@@ -583,7 +583,7 @@ fn a_logs_source_loads_with_the_level_it_names() {
         other => panic!("a logs source: {other:?}"),
     }
 
-    // Absent is `info`, which is what a process collects unless `SMELTR_LOG_LEVEL` says otherwise.
+    // Absent is `info`, which is what a process keeps until an operator sets other levels.
     let json = r#"{ "version": 1, "sources": [{ "id": "own-logs", "type": "logs" }] }"#;
     let system = load_str(json).unwrap_or_else(|e| panic!("load failed: {e}"));
     match &system.topology.sources[0].kind {

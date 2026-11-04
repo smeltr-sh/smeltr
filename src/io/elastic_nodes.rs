@@ -113,7 +113,7 @@ impl Nodes {
         let now = Instant::now();
         if let Some(why) = state.failing.due() {
             tracing::warn!(
-                target: "elasticsearch.sniff_failed",
+                name: "sniff_failed", target: "destinations",
                 subject = %self.subject,
                 error = %why,
                 "an Elasticsearch destination could not learn the cluster's nodes, so it sends to the URL it was given"
@@ -136,7 +136,7 @@ impl Nodes {
         let until = Instant::now() + DEAD_FOR;
         for live in state.nodes.iter_mut().filter(|l| l.node.url == url) {
             if live.dead_until.is_none_or(|at| at <= Instant::now()) {
-                tracing::debug!(target: "elasticsearch.node_passed_over", subject = %self.subject, node = %url, for_secs = DEAD_FOR.as_secs(), "a node did not answer, so it is passed over for a while");
+                tracing::debug!(name: "node_passed_over", target: "destinations", subject = %self.subject, node = %url, for_secs = DEAD_FOR.as_secs(), "a node did not answer, so it is passed over for a while");
             }
             live.dead_until = Some(until);
         }
@@ -193,12 +193,12 @@ impl Nodes {
             Ok(nodes) => {
                 state.failing.clear();
                 if state.refreshing.clear() {
-                    tracing::info!(target: "elasticsearch.refresh_recovered", subject = %self.subject, "an Elasticsearch destination learned the cluster's nodes again");
+                    tracing::info!(name: "refresh_recovered", target: "destinations", subject = %self.subject, "an Elasticsearch destination learned the cluster's nodes again");
                 }
                 let before: Vec<&Node> = state.nodes.iter().map(|l| &l.node).collect();
                 if before != nodes.iter().collect::<Vec<_>>() {
                     tracing::info!(
-                        target: "elasticsearch.nodes_learned",
+                        name: "nodes_learned", target: "destinations",
                         subject = %self.subject,
                         nodes = nodes.len(),
                         in_zone = nodes.iter().filter(|n| n.in_zone).count(),
@@ -227,7 +227,7 @@ impl Nodes {
             Err(why) => {
                 if let Some(error) = state.refreshing.fail_due(why) {
                     tracing::warn!(
-                        target: "elasticsearch.refresh_failed",
+                        name: "refresh_failed", target: "destinations",
                         subject = %self.subject,
                         error,
                         "an Elasticsearch destination could not refresh the cluster's nodes, so it sends to those it knew"

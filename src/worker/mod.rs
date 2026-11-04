@@ -95,7 +95,7 @@ fn expires(pem: &[u8]) -> Option<i64> {
         Ok(described) => described.iter().map(|d| d.not_after_millis).max(),
         Err(e) => {
             tracing::warn!(
-                target: "worker.authority_unreadable",
+                name: "authority_unreadable", target: "enrollment",
                 error = %e,
                 "could not read when this worker's copy of the leader's authority expires"
             );
@@ -150,13 +150,13 @@ fn load_or_create_worker_id(state_dir: &Path) -> String {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
-            tracing::warn!(target: "worker.id_unreadable", path = %path.display(), error = %e, "this worker's id could not be read, so it mints a new one")
+            tracing::warn!(name: "id_unreadable", target: "enrollment", path = %path.display(), error = %e, "this worker's id could not be read, so it mints a new one")
         }
     }
     let id = generate_worker_id();
     if let Err(e) = crate::leader::private_file::replace(&path, id.as_bytes()) {
         tracing::warn!(
-            target: "worker.id_not_written",
+            name: "id_not_written", target: "enrollment",
             path = %path.display(),
             error = %e,
             "could not write this worker's id, so it will mint a new one next start and enroll again"
@@ -178,7 +178,7 @@ fn load_credential(state_dir: &Path) -> Option<String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         // Read as never enrolled, which is wrong: a worker that enrolls again under a new id is the worst of it.
         Err(e) => {
-            tracing::error!(target: "worker.credential_unreadable", path = %path.display(), error = %e, "this worker's credential could not be read, so it reads as never enrolled");
+            tracing::error!(name: "credential_unreadable", target: "enrollment", path = %path.display(), error = %e, "this worker's credential could not be read, so it reads as never enrolled");
             None
         }
     }
@@ -354,7 +354,7 @@ fn resolve_authority_from(config: &WorkerConfig) -> Result<Option<Vec<u8>>, Unre
         // superseded, and every heartbeat would go out under the authority of a leader this worker has left.
         std::fs::remove_file(&path).map_err(|e| Unresolved::Refused(format!("{}: {e}", path.display())))?;
         tracing::info!(
-            target: "worker.authority_replaced",
+            name: "authority_replaced", target: "enrollment",
             path = %path.display(),
             "this enrollment code names a different certificate authority than the one kept here, and is the newer word"
         );
@@ -376,7 +376,7 @@ fn resolve_authority_from(config: &WorkerConfig) -> Result<Option<Vec<u8>>, Unre
     crate::leader::private_file::replace(&pinned_path(&config.state_dir), &pem)
         .map_err(|e| Unresolved::Refused(format!("keep the authority this enrollment code names: {e}")))?;
     tracing::info!(
-        target: "worker.authority_pinned",
+        name: "authority_pinned", target: "enrollment",
         fingerprint = %fingerprint,
         "took the certificate authority this enrollment code names, and will accept no other"
     );
@@ -395,7 +395,7 @@ fn resolve_authority_waiting(config: &WorkerConfig) -> Option<Vec<u8>> {
             Ok(pem) => return pem,
             Err(refused @ Unresolved::Refused(_)) => {
                 tracing::error!(
-                    target: "worker.authority_refused",
+                    name: "authority_refused", target: "enrollment",
                     error = %refused.message(),
                     "this worker cannot verify its leader"
                 );
@@ -404,7 +404,7 @@ fn resolve_authority_waiting(config: &WorkerConfig) -> Option<Vec<u8>> {
             }
             Err(unreachable) => {
                 tracing::warn!(
-                    target: "worker.authority_unreachable",
+                    name: "authority_unreachable", target: "enrollment",
                     error = %unreachable.message(),
                     retry_in = ?backoff,
                     "could not fetch the authority this enrollment code names, and will try again"
@@ -856,7 +856,7 @@ fn hold_running(repo_dir: &Path, commit: &str) {
         .and_then(|repo| set_ref(&repo, RUNNING_REF, commit));
     if let Err(e) = held {
         tracing::warn!(
-            target: "worker.running_ref_failed",
+            name: "running_ref_failed", target: "deploy",
             subject = %commit,
             error = %e,
             "could not hold the running commit, so a repack could drop what this deployment was built from"
@@ -1104,7 +1104,7 @@ fn run_reader_loop(
         std::thread::sleep(Duration::from_millis(10));
     }
     if !reader.commits.is_empty() {
-        tracing::info!(target: "runtime.drain_incomplete", subject = %reader.source_id, "the time allowed for finishing in-flight batches passed with some uncommitted, so they are read again by the next deployment");
+        tracing::info!(name: "drain_incomplete", target: "pipelines", subject = %reader.source_id, "the time allowed for finishing in-flight batches passed with some uncommitted, so they are read again by the next deployment");
     }
     reader.report_in_flight();
 }
@@ -1540,7 +1540,7 @@ fn deploy(
         }
     }
 
-    tracing::info!(target: "runtime.deployed", readers = readers.len(), transform_threads = pool.len(), egress = egress.len(), "the deployment's threads started");
+    tracing::info!(name: "deployed", target: "deploy", readers = readers.len(), transform_threads = pool.len(), egress = egress.len(), "the deployment's threads started");
     registry_gauge(&registry, "smeltr_worker_readers", readers.len() as f64);
     registry_gauge(&registry, "smeltr_worker_transform_threads", pool.len() as f64);
     registry_gauge(&registry, "smeltr_worker_egress_threads", egress.len() as f64);
@@ -2016,20 +2016,20 @@ const COUNTERS_BYTES_PER_HEARTBEAT: usize = heartbeat::HEARTBEAT_BODY_LIMIT / 4;
 ///
 /// Written straight to the registry rather than through a `MetricsHandle`, which would stamp a `thread` label and
 /// so hand them to `retire_threads_except` to throw away on the next redeploy. The buffer belongs to the process,
-/// and so does what it reports about itself. A site is a call site or a library's target, so the label's
-/// cardinality is a property of the code rather than of the traffic.
+/// and so does what it reports about itself. A line's class and type are its call site's, or a library's name and the
+/// class of the span around it, so the labels' cardinality is a property of the code rather than of the traffic.
 pub(crate) fn record_log_counts(registry: &Metrics, process: &str) {
     let process = ("process", process);
     registry.count_to("smeltr_logs_dropped_total", &[process], crate::logs::dropped());
     registry.count_to("smeltr_logs_unwritable_total", &[process], crate::logs::unwritable());
     registry.count_to("smeltr_logs_undelivered_total", &[process], crate::logs::undelivered());
     registry.count_to("smeltr_logs_unread_total", &[process], crate::logs::unread());
-    for (site, written) in crate::logs::written_by_site() {
-        registry.count_to(
-            "smeltr_logs_written_total",
-            &[process, ("site", site.as_str())],
-            written,
-        );
+    for (class, kind, written) in crate::logs::written_by_type() {
+        let labels: Vec<_> = [process, ("type", kind.as_str())]
+            .into_iter()
+            .chain(class.as_deref().map(|class| ("class", class)))
+            .collect();
+        registry.count_to("smeltr_logs_written_total", &labels, written);
     }
 }
 
@@ -2180,7 +2180,7 @@ fn warn_if_heartbeat_body_large(req: &HeartbeatRequest) {
     };
     if heartbeat_body_is_large(bytes.len()) {
         tracing::warn!(
-            target: "worker.heartbeat_body_large",
+            name: "body_large", target: "heartbeats",
             bytes = bytes.len(),
             limit = heartbeat::HEARTBEAT_BODY_LIMIT,
             "a heartbeat has grown past half of what the leader will accept"
@@ -2197,7 +2197,7 @@ pub fn run_worker(mut config: WorkerConfig) {
     // nothing to call itself. From here every event it carries says which worker spoke.
     crate::logs::set_worker(&worker_id);
     tracing::info!(
-        target: "worker.started",
+        name: "started", target: "processes",
         subject = %worker_id,
         group = %config.group_id,
         "worker starting"
@@ -2229,7 +2229,7 @@ pub fn run_worker(mut config: WorkerConfig) {
                     Ok(t) => break t,
                     Err(refused @ Unresolved::Refused(_)) => {
                         tracing::error!(
-                            target: "worker.enroll_refused",
+                            name: "was_refused", target: "enrollment",
                             error = %refused.message(),
                             "this worker cannot enroll with the enrollment code it was given"
                         );
@@ -2238,7 +2238,7 @@ pub fn run_worker(mut config: WorkerConfig) {
                     }
                     Err(unreachable) => {
                         tracing::warn!(
-                            target: "worker.enroll_failed",
+                            name: "failed", target: "enrollment",
                             error = %unreachable.message(),
                             retry_in = ?backoff,
                             "enrollment failed, and will be retried"
@@ -2253,7 +2253,7 @@ pub fn run_worker(mut config: WorkerConfig) {
                 // means enrolling again with an enrollment code that no longer works, so stopping here is what leaves
                 // an operator something to fix.
                 tracing::error!(
-                    target: "worker.credential_not_saved",
+                    name: "credential_not_saved", target: "enrollment",
                     error = %e,
                     "this worker enrolled and could not keep the credential it was given, so it would have to \
                      enroll again with an enrollment code that is now spent"
@@ -2262,7 +2262,7 @@ pub fn run_worker(mut config: WorkerConfig) {
                 std::process::exit(1);
             }
             tracing::info!(
-                target: "worker.enrolled",
+                name: "enrolled", target: "enrollment",
                 path = %config.state_dir.display(),
                 "enrolled, and the credential is saved"
             );
@@ -2313,6 +2313,7 @@ pub fn run_worker(mut config: WorkerConfig) {
         secrets: Mutex::new(crate::plan::topology::HeldSecrets::default()),
         last_contact: Mutex::new(None),
         heartbeat_failing: Default::default(),
+        log_levels: Default::default(),
         deployed_cue: Mutex::new(None),
         target: Mutex::new(None),
         arrived: Condvar::new(),
@@ -2348,14 +2349,14 @@ pub fn run_worker(mut config: WorkerConfig) {
         let scraping = supervisor.clone();
         match port.serve(move || scraping.scrape()) {
             Ok(address) => tracing::info!(
-                target: "worker.metrics_endpoint",
+                name: "metrics_endpoint", target: "logs",
                 address = %address,
                 path = metrics_endpoint::PATH,
                 "serving metrics for Prometheus"
             ),
             // Bound already, so what is left to fail is the server's own runtime, which every receiver needs too.
             Err(e) => tracing::error!(
-                target: "worker.metrics_endpoint_failed",
+                name: "metrics_endpoint_failed", target: "logs",
                 error = %e,
                 "this worker could not serve its metrics endpoint"
             ),
@@ -2363,7 +2364,7 @@ pub fn run_worker(mut config: WorkerConfig) {
     }
 
     tracing::info!(
-        target: "worker.awaiting_first_heartbeat",
+        name: "awaiting_first_heartbeat", target: "enrollment",
         "nothing runs until this worker has checked into the leader with a heartbeat request"
     );
 
@@ -2428,7 +2429,7 @@ fn trim_outbox(outbox: &mut Vec<crate::heartbeat::CaptureReport>) {
         outbox.remove(victim);
     }
     tracing::warn!(
-        target: "worker.captures_dropped",
+        name: "dropped", target: "captures",
         dropped = over,
         waiting = CAPTURES_WAITING,
         "more captures are waiting for the leader than this worker will hold, so some are dropped"
@@ -2547,6 +2548,8 @@ struct Supervisor {
     last_contact: Mutex<Option<Instant>>,
     /// The heartbeat failing, and since when: said once per change and on the interval, not on every beat.
     heartbeat_failing: Mutex<(crate::logs::Relog, Option<Instant>)>,
+    /// The levels the leader last sent, and whether the running runtime has them.
+    log_levels: Mutex<(heartbeat::LogLevels, bool)>,
     /// The commit the leader's last answer said it deploys. `None` when the last beat went unanswered or the leader
     /// did not say, and then discovery fetches to find out.
     deployed_cue: Mutex<Option<String>>,
@@ -2921,7 +2924,7 @@ impl Supervisor {
                 // A torn read while the leader is mid-change, most likely. Said out loud because every other
                 // failure here is, and a silent one here looks like a worker that simply never noticed.
                 tracing::warn!(
-                    target: "worker.authority_unreadable",
+                    name: "authority_unreadable", target: "enrollment",
                     error = %e,
                     "could not read what this leader is serving TLS with"
                 );
@@ -2941,7 +2944,7 @@ impl Supervisor {
             Ok(rebuilt) => rebuilt,
             Err(e) => {
                 tracing::warn!(
-                    target: "worker.authority_unusable",
+                    name: "authority_unusable", target: "enrollment",
                     error = %e,
                     "the leader's authority changed and this worker cannot use what replaced it"
                 );
@@ -2959,7 +2962,7 @@ impl Supervisor {
             self.config.leader_trust_public,
         ) {
             tracing::warn!(
-                target: "worker.authority_not_written",
+                name: "authority_not_written", target: "enrollment",
                 error = %e,
                 path = %self.git_roots.display(),
                 "the leader replaced its authority and git's copy could not be written, so the old one is kept \
@@ -2975,7 +2978,7 @@ impl Supervisor {
         *trusting = Some(materials.ca_pem);
         *client = Arc::new(rebuilt);
         tracing::info!(
-            target: "worker.authority_replaced",
+            name: "authority_replaced", target: "enrollment",
             "the leader replaced its certificate authority, and this worker took the new one"
         );
     }
@@ -2999,7 +3002,7 @@ impl Supervisor {
             Ok(rebuilt) => rebuilt,
             Err(e) => {
                 tracing::warn!(
-                    target: "worker.authority_unusable",
+                    name: "authority_unusable", target: "enrollment",
                     error = %e,
                     "the leader is rotating its authority and this worker cannot use what it was handed"
                 );
@@ -3012,7 +3015,7 @@ impl Supervisor {
         let kept = pinned_path(&self.config.state_dir);
         if let Err(e) = crate::leader::private_file::replace(&kept, &pem) {
             tracing::warn!(
-                target: "worker.authority_not_kept",
+                name: "authority_not_kept", target: "enrollment",
                 error = %e,
                 path = %kept.display(),
                 "the leader is rotating its authority and this worker could not keep the new one, so it is not \
@@ -3025,7 +3028,7 @@ impl Supervisor {
         // it should accept.
         if let Err(e) = write_git_roots(&self.git_roots, Some(&pem), self.config.leader_trust_public) {
             tracing::warn!(
-                target: "worker.authority_not_written",
+                name: "authority_not_written", target: "enrollment",
                 error = %e,
                 path = %self.git_roots.display(),
                 "the leader is rotating its authority and git's copy could not be written. The next start writes \
@@ -3040,7 +3043,7 @@ impl Supervisor {
         *trusting = Some(pem);
         *client = Arc::new(rebuilt);
         tracing::info!(
-            target: "worker.authority_taken",
+            name: "authority_taken", target: "enrollment",
             "this worker took the certificate authority its leader is rotating to"
         );
     }
@@ -3069,11 +3072,11 @@ impl Supervisor {
             if stopping {
                 match &answered {
                     Ok(_) => tracing::info!(
-                        target: "worker.said_stopping",
+                        name: "stopping_told", target: "processes",
                         "told the leader this worker is stopping, so it will not report it silent"
                     ),
                     Err(e) => tracing::warn!(
-                        target: "worker.stopping_not_said",
+                        name: "stopping_not_told", target: "processes",
                         error = %e,
                         "could not tell the leader this worker is stopping, so it will report it silent"
                     ),
@@ -3104,7 +3107,7 @@ impl Supervisor {
                     let renewed: Vec<&String> = replaced.iter().filter(|c| presenting.contains(c)).collect();
                     if !renewed.is_empty() {
                         tracing::info!(
-                            target: "worker.certificate_renewed",
+                            name: "renewed", target: "certificates",
                             certificates = %renewed.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", "),
                             "a certificate this worker uses has a new version, so it restarts what uses it"
                         );
@@ -3123,6 +3126,7 @@ impl Supervisor {
                     self.hand_back_captures();
                     self.follow_captures(resp.captures);
                     self.follow_holds(resp.holds);
+                    self.follow_log_levels(resp.log_levels);
                     if let Some(ms) = resp.heartbeat_interval_ms {
                         self.heartbeat_interval_ms.store(ms, Ordering::Relaxed);
                     }
@@ -3161,7 +3165,7 @@ impl Supervisor {
         failing.1.get_or_insert_with(Instant::now);
         if let Some(error) = failing.0.fail_due(error) {
             tracing::warn!(
-                target: "worker.heartbeat_failed",
+                name: "failed", target: "heartbeats",
                 error,
                 "the heartbeat failed, so the leader has not heard from this worker"
             );
@@ -3173,10 +3177,10 @@ impl Supervisor {
         let mut failing = self.heartbeat_failing.lock().unwrap_or_else(|e| e.into_inner());
         if failing.0.clear() {
             let down_for_secs = failing.1.take().map_or(0, |since| since.elapsed().as_secs());
-            tracing::info!(target: "worker.heartbeat_recovered", down_for_secs, "the leader answers heartbeats again");
+            tracing::info!(name: "recovered", target: "heartbeats", down_for_secs, "the leader answers heartbeats again");
         }
         tracing::trace!(
-            target: "worker.heartbeat_answered",
+            name: "answer_received", target: "heartbeats",
             holds = resp.holds.len(),
             captures = resp.captures.len(),
             directive = resp.directive.is_some(),
@@ -3281,7 +3285,7 @@ impl Supervisor {
             held.gathered.progress.extend(since);
         }
         tracing::warn!(
-            target: "worker.heartbeat_too_large",
+            name: "too_large", target: "heartbeats",
             bytes = serde_json::to_vec(req).map_or(0, |body| body.len()),
             limit = heartbeat::HEARTBEAT_BODY_LIMIT,
             "a heartbeat was past what the leader accepts, so this window of counts, logs and streams is dropped"
@@ -3304,18 +3308,23 @@ impl Supervisor {
         use heartbeat::DirectiveAction;
         let mut took = self.took.lock().unwrap();
         if took.as_deref() == Some(directive.id.as_str()) {
+            tracing::trace!(
+                name: "directive_repeated", target: "deploy",
+                id = %directive.id,
+                "the leader repeated a directive this worker already took, so it is ignored"
+            );
             return;
         }
         *took = Some(directive.id);
         drop(took);
         match directive.action {
             DirectiveAction::Restart if self.accepts().contains(&DirectiveAction::Restart) => {
-                tracing::info!(target: "worker.restart_asked", "the leader asked this worker to restart its deployment");
+                tracing::info!(name: "restart_asked", target: "processes", "the leader asked this worker to restart its deployment");
                 self.restart_due.store(true, Ordering::Relaxed);
                 self.arrived.notify_all();
             }
             DirectiveAction::Shutdown if self.accepts().contains(&DirectiveAction::Shutdown) => {
-                tracing::info!(target: "worker.shutdown_asked", "the leader asked this worker to shut down");
+                tracing::info!(name: "shutdown_asked", target: "processes", "the leader asked this worker to shut down");
                 // Off this thread: the stop waits for the notice, and the notice is this thread's to send.
                 let spawned = std::thread::Builder::new().name("smeltr-exit".to_string()).spawn(|| {
                     stop_before_exit();
@@ -3324,14 +3333,14 @@ impl Supervisor {
                 });
                 if let Err(e) = spawned {
                     tracing::warn!(
-                        target: "worker.shutdown_not_started",
+                        name: "shutdown_not_started", target: "processes",
                         error = %e,
                         "could not start the thread that shuts this worker down, so it keeps running"
                     );
                 }
             }
             action => tracing::warn!(
-                target: "worker.directive_unknown",
+                name: "directive_unknown", target: "deploy",
                 action = ?action,
                 "the leader asked this worker for something it does not do, so it does nothing"
             ),
@@ -3378,7 +3387,7 @@ impl Supervisor {
                     }
                 }
                 crate::heartbeat::Invited::Unreadable { session } if inv.wants(&session) => {
-                    tracing::warn!(target: "worker.capture_unreadable", %session, "a capture invitation could not be read, so the capture is answered as not served");
+                    tracing::warn!(name: "unreadable", target: "captures", %session, "a capture invitation could not be read, so the capture is answered as not served");
                     unreadable.push(crate::heartbeat::CaptureReport {
                         session,
                         worker_id: self.worker_id.clone(),
@@ -3413,7 +3422,7 @@ impl Supervisor {
         let keys = |list: &[heartbeat::Hold]| list.iter().map(|h| h.key.clone()).collect::<HashSet<_>>();
         if keys(&held.listed) != keys(&holds) {
             held.epoch += 1;
-            tracing::info!(target: "worker.holds_changed", held = holds.len(), epoch = held.epoch, "the single-worker sources this worker holds changed");
+            tracing::info!(name: "holds_changed", target: "heartbeats", held = holds.len(), epoch = held.epoch, "the single-worker sources this worker holds changed");
         }
         held.listed = holds;
     }
@@ -3510,7 +3519,7 @@ impl Supervisor {
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    target: "worker.capture_handback_failed",
+                                    name: "handback_failed", target: "captures",
                                     subject = %report.session,
                                     error = %e,
                                     "could not hand a finished capture back, so it is offered again"
@@ -3522,7 +3531,7 @@ impl Supervisor {
                         Ok(handle) => running.push(handle),
                         Err(e) => {
                             tracing::warn!(
-                                target: "worker.capture_upload_not_started",
+                                name: "upload_not_started", target: "captures",
                                 subject = %report.session,
                                 error = %e,
                                 "could not start an upload, so this capture is offered again"
@@ -3590,7 +3599,7 @@ impl Supervisor {
             Ok(token) => token,
             Err(refused) => {
                 tracing::warn!(
-                    target: "worker.not_enrolled_again",
+                    name: "not_enrolled_again", target: "enrollment",
                     error = %refused.message(),
                     retry_in = ?ENROLL_AGAIN_EVERY,
                     "the leader no longer knows this worker's credential, and the enrollment code it holds did not \
@@ -3606,14 +3615,14 @@ impl Supervisor {
             .and_then(|()| save_credential(&self.config.state_dir, &token))
         {
             tracing::error!(
-                target: "worker.not_kept_enrolled_again",
+                name: "not_kept_enrolled_again", target: "enrollment",
                 error = %e,
                 "this worker enrolled again and could not keep what it was given, so it will try again"
             );
             return;
         }
         tracing::info!(
-            target: "worker.enrolled_again",
+            name: "enrolled_again", target: "enrollment",
             subject = %worker_id,
             "the leader no longer knew this worker's credential, so it enrolled again as a new worker, and stops \
              to start as it"
@@ -3622,7 +3631,7 @@ impl Supervisor {
         self.arrived.notify_all();
         if !self.exit_reaches(Exit::Notice, EXIT_BUDGET) {
             tracing::warn!(
-                target: "worker.exit_not_drained",
+                name: "exit_not_drained", target: "processes",
                 budget = ?EXIT_BUDGET,
                 "this worker is ending before its runtime was confirmed stopped"
             );
@@ -3659,14 +3668,14 @@ impl Supervisor {
             && let Err(e) = fetched_reads(&self.repo_dir)
         {
             tracing::warn!(
-                target: "worker.clone_damaged",
+                name: "clone_damaged", target: "deploy",
                 path = %self.repo_dir.display(),
                 error = %e,
                 "this worker's clone does not read, so it is removed and cloned again"
             );
             if let Err(e) = std::fs::remove_dir_all(&self.repo_dir) {
                 tracing::warn!(
-                    target: "worker.clone_not_removed",
+                    name: "clone_not_removed", target: "deploy",
                     path = %self.repo_dir.display(),
                     error = %e,
                     "this worker's clone does not read and could not be removed"
@@ -3676,12 +3685,12 @@ impl Supervisor {
         for (oid, removed) in crate::lookup::store::remove_damaged(&self.repo_dir) {
             match removed {
                 Ok(()) => tracing::warn!(
-                    target: "worker.lookup_file_damaged",
+                    name: "lookup_file_damaged", target: "deploy",
                     subject = %oid,
                     "a stored lookup file's bytes are not the ones its name says, so it is removed and fetched again"
                 ),
                 Err(e) => tracing::warn!(
-                    target: "worker.lookup_file_damaged",
+                    name: "lookup_file_damaged", target: "deploy",
                     subject = %oid,
                     error = %e,
                     "a stored lookup file's bytes are not the ones its name says, and it could not be removed"
@@ -3703,11 +3712,18 @@ impl Supervisor {
                 supervising.discovered_ms = supervising.attempted_ms;
             } else if self.contacted() {
                 self.supervising.lock().unwrap().attempted_ms = Some(now_ms());
+                let began = std::time::Instant::now();
                 match fetch_deployed(&self.repo_dir, &self.config.leader_url, &self.token, &self.git_roots) {
                     Ok(head) => {
+                        tracing::trace!(
+                            name: "fetched", target: "deploy",
+                            commit = %head,
+                            ms = crate::logs::millis(began.elapsed()),
+                            "the worker fetched the deployed commit from the leader"
+                        );
                         if failing.take().is_some() {
                             tracing::info!(
-                                target: "worker.fetch_recovered",
+                                name: "fetch_recovered", target: "deploy",
                                 "fetched what the leader deploys again"
                             );
                         }
@@ -3719,7 +3735,7 @@ impl Supervisor {
                         drop(supervising);
                         if let Err(e) = merge_packs(&self.repo_dir) {
                             tracing::warn!(
-                                target: "worker.packs_not_merged",
+                                name: "packs_not_merged", target: "git",
                                 error = %e,
                                 "the clone's packs could not be merged, so it is tried again after the next fetch"
                             );
@@ -3731,7 +3747,7 @@ impl Supervisor {
                         let cause = without_timings(&e);
                         if failing.as_ref() != Some(&cause) {
                             tracing::warn!(
-                                target: "worker.fetch_failed",
+                                name: "fetch_failed", target: "deploy",
                                 error = %e,
                                 "could not fetch what the leader deploys, so this worker keeps running what it has"
                             );
@@ -3761,7 +3777,7 @@ impl Supervisor {
             return;
         }
         let generation = target.as_ref().map_or(1, |t| t.generation + 1);
-        tracing::debug!(target: "worker.target_discovered", subject = %commit, generation, "the worker saw a new commit to deploy");
+        tracing::debug!(name: "target_discovered", target: "heartbeats", subject = %commit, generation, "the worker saw a new commit to deploy");
         *target = Some(Target { generation, commit });
         drop(target);
         self.arrived.notify_all();
@@ -3800,14 +3816,15 @@ impl Supervisor {
             let wedged = self.route_invitations(running.as_mut())
                 || self.mirror_to(running.as_mut())
                 || self.route_holds(running.as_mut())
-                || self.route_backlog(running.as_mut());
+                || self.route_backlog(running.as_mut())
+                || self.route_log_levels(running.as_mut());
 
             // A control pipe that has stopped taking frames: every capture forwarded to it from here on fails
             // the same way. `send_within`'s caller owes the tree a kill, and this is where that is paid -- the
             // tree may still be running, and ending it is what lets a replacement take its place.
             if wedged && let Some(mut handle) = running.take() {
                 tracing::warn!(
-                    target: "worker.runtime_unresponsive",
+                    name: "unresponsive", target: "processes",
                     subject = %handle.commit,
                     "a runtime stopped taking frames on its control pipe, so it is being ended"
                 );
@@ -3836,7 +3853,7 @@ impl Supervisor {
                     child::Exit::Unconfirmed => {
                         if !blocked {
                             tracing::error!(
-                                target: "worker.runtime_exit_unconfirmed",
+                                name: "exit_unconfirmed", target: "processes",
                                 subject = %handle.commit,
                                 "the runtime ended but something it started may still be reading, so this worker deploys nothing until it is gone"
                             );
@@ -3846,7 +3863,7 @@ impl Supervisor {
                     }
                     child::Exit::Confirmed(exit) => {
                         tracing::warn!(
-                            target: "worker.runtime_exited",
+                            name: "exited", target: "processes",
                             subject = %handle.commit,
                             %exit,
                             "the runtime ended on its own, so this worker is running nothing"
@@ -3866,7 +3883,7 @@ impl Supervisor {
                 && let Some(mut handle) = running.take()
             {
                 tracing::warn!(
-                    target: "worker.stopped_unreachable",
+                    name: "stopped_unreachable", target: "processes",
                     limit = ?self.config.stop_after_unreachable_secs,
                     "stopping the deployment: the leader has been unreachable for longer than this worker's \
                      stop_after_unreachable_secs"
@@ -3894,7 +3911,7 @@ impl Supervisor {
             if self.restart_due.swap(false, Ordering::Relaxed) {
                 if blocked {
                     tracing::warn!(
-                        target: "worker.restart_blocked",
+                        name: "restart_blocked", target: "processes",
                         "a restart was asked for, but this worker's runtime could not be confirmed dead, so nothing \
                          restarts"
                     );
@@ -3907,14 +3924,14 @@ impl Supervisor {
                 };
                 if let Some(why) = refused {
                     tracing::warn!(
-                        target: "worker.restart_refused",
+                        name: "restart_refused", target: "processes",
                         error = %why,
                         "this worker keeps running as it was, because restarting with the certificates it holds now would fail"
                     );
                     self.note_failure(Some(&why));
                 } else {
                     if !blocked && let Some(mut handle) = running.take() {
-                        tracing::info!(target: "worker.restarting", subject = %handle.commit, "restarting the deployment");
+                        tracing::info!(name: "restarting", target: "processes", subject = %handle.commit, "restarting the deployment");
                         self.phase("stopping");
                         match self.end(&mut handle, &inbox) {
                             Ok(()) => {
@@ -3983,7 +4000,7 @@ impl Supervisor {
                 Ok(arriving) => arriving,
                 Err(why) => {
                     tracing::warn!(
-                        target: "worker.commit_unreadable",
+                        name: "commit_unreadable", target: "deploy",
                         subject = %target.commit,
                         error = %why,
                         "a commit could not be read, so this worker keeps running what it has"
@@ -3996,7 +4013,7 @@ impl Supervisor {
             };
             if running.is_some() && content.as_ref() == Some(&arriving) {
                 // Same configuration under a new commit: what this worker represents moves, and nothing restarts.
-                tracing::debug!(target: "worker.commit_represented", subject = %target.commit, "a new commit holds what this worker already runs, so nothing restarts");
+                tracing::debug!(name: "commit_represented", target: "deploy", subject = %target.commit, "a new commit holds what this worker already runs, so nothing restarts");
                 *self.commit.lock().unwrap() = Some(target.commit.clone());
                 last_good = Some((target.commit.clone(), arriving));
                 self.note_failure(None);
@@ -4015,14 +4032,14 @@ impl Supervisor {
                     let since = *refused_since.get_or_insert_with(Instant::now);
                     if since.elapsed() >= REFUSAL_WARN_AFTER {
                         tracing::warn!(
-                            target: "worker.commit_refused",
+                            name: "commit_refused", target: "deploy",
                             subject = %target.commit,
                             error = %why,
                             "a commit was fetched but will not run, so this worker keeps running what it has"
                         );
                     } else {
                         tracing::debug!(
-                            target: "worker.commit_refused",
+                            name: "commit_refused", target: "deploy",
                             subject = %target.commit,
                             error = %why,
                             "a commit was fetched but will not run yet, so this worker keeps running what it has \
@@ -4072,7 +4089,7 @@ impl Supervisor {
                 // target did not start, since the target is what this worker is not running.
                 let why = self.supervising.lock().unwrap().failure.clone();
                 tracing::warn!(
-                    target: "worker.restoring",
+                    name: "restoring", target: "deploy",
                     subject = %was,
                     refused = %target.commit,
                     "a commit would not start, so this worker starts again the one it ran before"
@@ -4093,7 +4110,7 @@ impl Supervisor {
                         restored = true;
                     }
                     Err(e) => tracing::warn!(
-                        target: "worker.restore_refused",
+                        name: "restore_refused", target: "deploy",
                         subject = %was,
                         error = %e,
                         "the commit this worker ran before will not run either, so it is running nothing"
@@ -4104,7 +4121,7 @@ impl Supervisor {
             let (commit, arriving, validated) = started;
             match begun {
                 Begun::Started(handle) => {
-                    tracing::info!(target: "worker.deployed", subject = %commit, incarnation, restored, "the runtime is running the commit");
+                    tracing::info!(name: "deployed", target: "deploy", subject = %commit, incarnation, restored, "the runtime is running the commit");
                     // What this process itself may have opened a capture against, it no longer may. Its sources
                     // are all it needs: this process's own registry labels no subject.
                     self.captures.set_deployed(&Arc::new(crate::metrics::Subjects {
@@ -4119,6 +4136,10 @@ impl Supervisor {
                     // It holds nothing yet. Its first turn tells it what the leader holds here, each ledger
                     // fetched afresh: the last runtime's reports have moved them since.
                     self.holds.lock().unwrap().restarted();
+                    self.log_levels
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .1 = false;
                     running = Some(handle);
                     content = Some(arriving.clone());
                     last_good = Some((commit.clone(), arriving));
@@ -4158,7 +4179,7 @@ impl Supervisor {
                     // The same target again once the backoff has run: a broker that was not up and a secret that
                     // had not arrived are both answered by asking again, not by waiting for another deploy.
                     retry_at = Some(Instant::now() + backoff(failures));
-                    tracing::debug!(target: "worker.retry_scheduled", subject = %target.commit, failures, retry_in_secs = backoff(failures).as_secs(), "the deploy is tried again after a backoff");
+                    tracing::debug!(name: "retry_scheduled", target: "deploy", subject = %target.commit, failures, retry_in_secs = backoff(failures).as_secs(), "the deploy is tried again after a backoff");
                 }
                 Begun::Unconfirmed(handle) => {
                     content = None;
@@ -4179,7 +4200,7 @@ impl Supervisor {
         incarnation: u64,
         inbox: &Arc<child::RuntimeInbox>,
     ) -> Begun {
-        tracing::info!(target: "worker.runtime_starting", subject = %target.commit, "starting a runtime for a commit");
+        tracing::info!(name: "runtime_starting", target: "processes", subject = %target.commit, "starting a runtime for a commit");
         self.phase("starting");
         // Before the runtime is handed its certificates, so a new version arriving while it starts restarts it
         // rather than leaving it on the one it was handed.
@@ -4216,7 +4237,7 @@ impl Supervisor {
             Ok(h) => h,
             Err(e) => {
                 tracing::warn!(
-                    target: "worker.runtime_not_started",
+                    name: "not_started", target: "processes",
                     subject = %target.commit,
                     error = %e,
                     "could not start a runtime process, so this worker is running nothing"
@@ -4232,7 +4253,7 @@ impl Supervisor {
             }
             if let Some(reason) = inbox.failed.lock().unwrap().clone() {
                 tracing::warn!(
-                    target: "worker.commit_refused",
+                    name: "commit_refused", target: "deploy",
                     subject = %target.commit,
                     error = %reason,
                     "a commit was fetched but will not run, so this worker keeps running what it has"
@@ -4252,7 +4273,7 @@ impl Supervisor {
             std::thread::sleep(Duration::from_millis(10));
         }
         tracing::warn!(
-            target: "worker.runtime_not_ready",
+            name: "not_ready", target: "processes",
             subject = %target.commit,
             budget = ?STARTUP_BUDGET,
             "a runtime did not report itself ready in time, so it is being ended"
@@ -4277,7 +4298,7 @@ impl Supervisor {
             Ok(()) => Ok(()),
             Err(e) => {
                 tracing::error!(
-                    target: "worker.runtime_unkillable",
+                    name: "unkillable", target: "processes",
                     subject = %handle.commit,
                     error = %e,
                     "a runtime could not be confirmed dead, so nothing will be started in its place until it is: \
@@ -4386,7 +4407,7 @@ impl Supervisor {
         self.arrived.notify_all();
         if !self.exit_reaches(Exit::Notice, EXIT_BUDGET) {
             tracing::warn!(
-                target: "worker.exit_not_drained",
+                name: "exit_not_drained", target: "processes",
                 budget = ?EXIT_BUDGET,
                 "this worker is ending before its runtime was confirmed stopped"
             );
@@ -4394,7 +4415,7 @@ impl Supervisor {
         }
         if !self.exit_reaches(Exit::Told, NOTICE_BUDGET) {
             tracing::warn!(
-                target: "worker.exit_not_told",
+                name: "exit_not_told", target: "processes",
                 budget = ?NOTICE_BUDGET,
                 "this worker is ending before its leader was told it is stopping, so the leader will report it silent"
             );
@@ -4418,7 +4439,7 @@ impl Supervisor {
         }
         self.phase("stopped");
         tracing::info!(
-            target: "worker.stopped_for_exit",
+            name: "stopped_for_exit", target: "processes",
             "this worker's runtime has stopped, and nothing more will start before the process ends"
         );
         self.exit_to(Exit::Notice);
@@ -4468,7 +4489,7 @@ impl Supervisor {
             Err(e) => {
                 tap.put_back(said);
                 tracing::warn!(
-                    target: "worker.not_mirrored",
+                    name: "not_mirrored", target: "logs",
                     error = %e,
                     "could not hand the runtime this process's metrics and logs, so it is being ended"
                 );
@@ -4507,7 +4528,7 @@ impl Supervisor {
             && let Err(e) = handle.listed(sessions)
         {
             tracing::warn!(
-                target: "worker.capture_listing_not_forwarded",
+                name: "listing_not_forwarded", target: "captures",
                 error = %e,
                 "could not tell the runtime which captures the leader still lists, so it is being ended"
             );
@@ -4544,7 +4565,7 @@ impl Supervisor {
                     }
                     if let Err(e) = handle.capture(invitation) {
                         tracing::warn!(
-                            target: "worker.capture_not_forwarded",
+                            name: "not_forwarded", target: "captures",
                             subject = %session,
                             error = %e,
                             "could not hand a capture to the runtime, so it is not being served"
@@ -4630,9 +4651,57 @@ impl Supervisor {
             }
             Err(e) => {
                 tracing::warn!(
-                    target: "worker.holds_not_forwarded",
+                    name: "holds_not_forwarded", target: "heartbeats",
                     error = %e,
                     "could not tell the runtime which sources the leader holds for it, so it is being ended"
+                );
+                true
+            }
+        }
+    }
+
+    /// Keep this process's lines at the levels the leader sent, and have the runtime keep its at them too.
+    fn follow_log_levels(&self, levels: heartbeat::LogLevels) {
+        let mut held = self
+            .log_levels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.0 == levels {
+            return;
+        }
+        levels.apply();
+        *held = (levels, false);
+        drop(held);
+        self.arrived.notify_all();
+    }
+
+    /// Hand the running runtime the levels the leader last sent, when it does not have them. Whether the control
+    /// pipe has stopped taking frames.
+    fn route_log_levels(&self, running: Option<&mut child::RuntimeHandle>) -> bool {
+        let Some(handle) = running else { return false };
+        let levels = {
+            let held = self
+                .log_levels
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if held.1 {
+                return false;
+            }
+            held.0.clone()
+        };
+        match handle.log_levels(levels) {
+            Ok(()) => {
+                self.log_levels
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .1 = true;
+                false
+            }
+            Err(e) => {
+                tracing::warn!(
+                    name: "levels_not_forwarded", target: "logs",
+                    error = %e,
+                    "could not pass the log levels to the runtime, so it is being ended"
                 );
                 true
             }
@@ -4660,14 +4729,14 @@ impl Supervisor {
                 holds.backlogged = full;
                 if full {
                     tracing::warn!(
-                        target: "worker.progress_backlogged",
+                        name: "progress_backlogged", target: "pipelines",
                         weight,
                         "more progress is waiting for the leader than this worker keeps, so its held sources read \
                          nothing new until the leader takes it"
                     );
                 } else {
                     tracing::info!(
-                        target: "worker.progress_drained",
+                        name: "progress_drained", target: "pipelines",
                         weight,
                         "the progress waiting for the leader has drained, so this worker's held sources read again"
                     );
@@ -4686,7 +4755,7 @@ impl Supervisor {
             }
             Err(e) => {
                 tracing::warn!(
-                    target: "worker.backlog_not_forwarded",
+                    name: "backlog_not_forwarded", target: "pipelines",
                     error = %e,
                     "could not tell the runtime whether its progress is backlogged, so it is being ended"
                 );
@@ -4716,7 +4785,7 @@ impl Supervisor {
                             Ok(file) => (held::Holding { hold, ledger_file: Some(file) }, offer),
                             Err(e) => {
                                 tracing::warn!(
-                                    target: "worker.ledger_not_fetched",
+                                    name: "ledger_not_fetched", target: "deploy",
                                     subject = %hold.key.source,
                                     error = %e,
                                     "could not fetch the ledger of a source the leader holds for this worker, so it \
@@ -4742,7 +4811,7 @@ impl Supervisor {
                 });
         if let Err(e) = spawned {
             tracing::warn!(
-                target: "worker.ledger_fetch_not_started",
+                name: "ledger_fetch_not_started", target: "deploy",
                 error = %e,
                 "could not start the thread that fetches ledgers, so the sources waiting on one are not read yet"
             );
@@ -4867,7 +4936,7 @@ fn load_target(
         // it. Nothing to run is a state, not a failure.
         Err(_) if content.group.is_none() => {
             // Debug: the supervisor validates the commit and the runtime loads it, so an info line would be two.
-            tracing::debug!(target: "worker.group_not_authored", %group_id, subject = %commit, "the commit has nothing for this worker's group, so it runs nothing");
+            tracing::debug!(name: "group_not_authored", target: "deploy", %group_id, subject = %commit, "the commit has nothing for this worker's group, so it runs nothing");
             LoadedSystem::default()
         }
         Err(e) => return Err(format!("a commit was fetched but does not load: {e}")),
@@ -4954,7 +5023,7 @@ fn start_deployment(spec: &child::StartSpec, runtime: &child::Runtime) -> Result
         None => None,
     };
     if let Some(fit) = &fitted {
-        tracing::debug!(target: "worker.memory_fitted", columnar_bytes = fit.columnar, "the deployment was sized to this worker's memory");
+        tracing::debug!(name: "memory_fitted", target: "processes", columnar_bytes = fit.columnar, "the deployment was sized to this worker's memory");
     }
     process_memory_budget().set_limit(fitted.map_or_else(crate::startup_config::memory_budget_bytes, |f| f.columnar));
     deploy(
@@ -5003,7 +5072,7 @@ fn serve_capture(
             .spawn(move || capture::run_cold_capture(&thread_captures, &driven, &registry, &secrets))
         {
             tracing::warn!(
-                target: "worker.capture_thread_failed",
+                name: "thread_failed", target: "captures",
                 subject = %session,
                 error = %e,
                 "could not start a capture thread"
@@ -5243,6 +5312,7 @@ mod tests {
                     updates: Default::default(),
                     alerts: Default::default(),
                     directives: Default::default(),
+                    log_levels: Default::default(),
                     data_dir: data_dir_for_leader,
                 };
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -5432,6 +5502,7 @@ mod tests {
                     updates: Default::default(),
                     alerts: Default::default(),
                     directives: Default::default(),
+                    log_levels: Default::default(),
                     data_dir: data_dir_for_leader,
                 };
                 let tls = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem)
@@ -6325,6 +6396,7 @@ mod tests {
             secrets: Mutex::new(crate::plan::topology::HeldSecrets::default()),
             last_contact: Mutex::new(None),
             heartbeat_failing: Default::default(),
+            log_levels: Default::default(),
             deployed_cue: Mutex::new(None),
             target: Mutex::new(None),
             arrived: Condvar::new(),
@@ -6814,7 +6886,9 @@ mod tests {
         let said = crate::logs::Event {
             timestamp: std::time::SystemTime::now(),
             level: crate::logs::Level::INFO,
-            site: "mirror_to.test".into(),
+            class: Some("logs".into()),
+            r#type: "mirror_to_test".into(),
+            service: None,
             message: String::new(),
             fields: Vec::new(),
             worker: None,
@@ -6842,7 +6916,7 @@ mod tests {
             .expect("a runtime is running, so the logs mirror is open")
             .drain(usize::MAX);
         assert!(
-            owed_logs.iter().any(|e| e.site == "mirror_to.test"),
+            owed_logs.iter().any(|e| e.r#type == "mirror_to_test"),
             "what the failed frame carried is no longer owed: {owed_logs:?}"
         );
 
@@ -7208,7 +7282,10 @@ mod tests {
                 seq,
                 timestamp_ms: 0,
                 level: "INFO".to_string(),
-                site: "runtime".to_string(),
+                class: Some("logs".to_string()),
+                r#type: "runtime".to_string(),
+                service: None,
+                site: String::new(),
                 message: format!("log {seq}"),
                 thread: None,
                 boot_id: Some(7),
@@ -7970,6 +8047,51 @@ mod tests {
             frames[1]
         );
         assert_eq!(fetches.load(Ordering::SeqCst), 2, "the regrant fetched no ledger");
+    }
+
+    #[test]
+    fn the_runtime_is_told_the_log_levels_once_each_time_they_change_and_again_when_it_restarts() {
+        let dir = temp_dir("runtime-log-levels");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("frames");
+        let inbox = Arc::new(child::RuntimeInbox::default());
+        let mut handle = recording_runtime(&file, &inbox);
+        let supervisor = supervisor_for(temp_dir("runtime-log-levels-supervisor"));
+        let frames = |count: usize| {
+            recorded_until(&file, |lines| {
+                lines.iter().filter(|l| l.contains(r#""kind":"log_levels""#)).count() >= count
+            })
+            .into_iter()
+            .filter(|l| l.contains(r#""kind":"log_levels""#))
+            .collect::<Vec<_>>()
+        };
+        let kafka = heartbeat::LogLevels {
+            default: None,
+            overrides: vec![heartbeat::LevelOverride {
+                service: Some("kafka".to_string()),
+                level: "trace".to_string(),
+                ..Default::default()
+            }],
+        };
+
+        assert!(!supervisor.route_log_levels(Some(&mut handle)));
+        assert_eq!(frames(1), [r#"{"kind":"log_levels","levels":{}}"#]);
+        supervisor.follow_log_levels(kafka.clone());
+        assert_eq!(
+            crate::logs::levels::kept_at(Some("sources"), "lag_unmeasured", Some("kafka")),
+            tracing::Level::TRACE
+        );
+        assert!(!supervisor.route_log_levels(Some(&mut handle)));
+        assert!(!supervisor.route_log_levels(Some(&mut handle)));
+        supervisor.follow_log_levels(kafka);
+        assert!(!supervisor.route_log_levels(Some(&mut handle)));
+        assert_eq!(
+            frames(2)[1],
+            r#"{"kind":"log_levels","levels":{"overrides":[{"service":"kafka","level":"trace"}]}}"#
+        );
+        supervisor.log_levels.lock().unwrap().1 = false;
+        assert!(!supervisor.route_log_levels(Some(&mut handle)));
+        assert_eq!(frames(3).len(), 3, "a runtime that restarted is told again");
     }
 
     /// The runtime hears when the progress waiting here passes its bound and when it has eased, once each, and a

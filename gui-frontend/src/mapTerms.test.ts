@@ -240,10 +240,15 @@ describe('attention', () => {
       subjectId: 'tls',
     });
     expect(attention([node('quiet', 'destination')], readingOf, [twice, twice])).toHaveLength(1);
-    const logged = (site: string) =>
-      warning('workerLoggedWarnings', 'warning', { subjectKind: 'worker', subjectId: 'w1', site });
-    const sites = [logged('worker.fetch_failed'), logged('worker.heartbeat_failed')];
-    expect(attention([node('quiet', 'destination')], readingOf, sites)).toHaveLength(2);
+    const logged = (type: string) =>
+      warning('workerLoggedWarnings', 'warning', {
+        subjectKind: 'worker',
+        subjectId: 'w1',
+        class: 'deploy',
+        type,
+      });
+    const lines = [logged('fetch_failed'), logged('commit_refused')];
+    expect(attention([node('quiet', 'destination')], readingOf, lines)).toHaveLength(2);
   });
 });
 

@@ -47,6 +47,7 @@ fn app_state(store: SqliteStore, data_dir: std::path::PathBuf) -> AppState {
         alerts: Default::default(),
         data_dir,
         directives: Default::default(),
+        log_levels: Default::default(),
     }
 }
 

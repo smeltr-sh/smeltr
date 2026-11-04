@@ -1230,7 +1230,7 @@ impl DestinationDto {
             DestinationKindDto::Gcs { access, .. } => access.urls(),
             DestinationKindDto::AzureBlob { access, .. } => access.urls(),
             DestinationKindDto::Sftp { .. } => Vec::new(),
-            DestinationKindDto::Prometheus { url, .. } => vec![("url", url)],
+            DestinationKindDto::Prometheus { url, .. } | DestinationKindDto::Otlp { url, .. } => vec![("url", url)],
             DestinationKindDto::LogAnalytics { endpoint, sign_in, .. } => {
                 std::iter::once(("endpoint", endpoint.as_str()))
                     .chain(sign_in.urls())
@@ -1280,7 +1280,9 @@ impl DestinationDto {
             DestinationKindDto::Gcs { access, .. } => access.secrets(),
             DestinationKindDto::AzureBlob { access, .. } => access.secrets(),
             DestinationKindDto::Sftp { access, .. } => access.secrets(),
-            DestinationKindDto::Http { credentials, .. } | DestinationKindDto::Prometheus { credentials, .. } => {
+            DestinationKindDto::Http { credentials, .. }
+            | DestinationKindDto::Prometheus { credentials, .. }
+            | DestinationKindDto::Otlp { credentials, .. } => {
                 credentials.values().map(|r| ("credentials", r)).collect()
             }
             DestinationKindDto::LogAnalytics { sign_in, .. } => sign_in.secrets(),
@@ -1327,9 +1329,9 @@ impl DestinationDto {
             DestinationKindDto::Gcs { access, .. } => access.secrets_mut(),
             DestinationKindDto::AzureBlob { access, .. } => access.secrets_mut(),
             DestinationKindDto::Sftp { access, .. } => access.secrets_mut(),
-            DestinationKindDto::Http { credentials, .. } | DestinationKindDto::Prometheus { credentials, .. } => {
-                credentials.values_mut().collect()
-            }
+            DestinationKindDto::Http { credentials, .. }
+            | DestinationKindDto::Prometheus { credentials, .. }
+            | DestinationKindDto::Otlp { credentials, .. } => credentials.values_mut().collect(),
             DestinationKindDto::LogAnalytics { sign_in, .. } => sign_in.secrets_mut(),
             DestinationKindDto::Iceberg {
                 token,
@@ -1358,6 +1360,7 @@ impl DestinationDto {
             | DestinationKindDto::AzureBlob { tls, .. }
             | DestinationKindDto::Http { tls, .. }
             | DestinationKindDto::Prometheus { tls, .. }
+            | DestinationKindDto::Otlp { tls, .. }
             | DestinationKindDto::LogAnalytics { tls, .. }
             | DestinationKindDto::Iceberg { tls, .. }
             | DestinationKindDto::Delta { tls, .. } => Some(tls.clone()),
@@ -1631,6 +1634,37 @@ pub enum DestinationKindDto {
         #[serde(default, skip_serializing_if = "StallAfter::is_default")]
         stall_after_secs: StallAfter,
     },
+    /// Rows sent as OTLP/HTTP exports of one signal to an OpenTelemetry endpoint.
+    #[serde(rename_all = "camelCase")]
+    Otlp {
+        /// The endpoint, which each request goes to with its signal's path, `/v1/logs`, `/v1/metrics` or
+        /// `/v1/traces`, after it.
+        url: String,
+        /// The signal it sends. Absent is logs.
+        #[serde(default, skip_serializing_if = "is_logs")]
+        signal: Signal,
+        /// `"none"` (default) or `"gzip"`.
+        #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
+        compression: CompressionDto,
+        /// Header name -> its value, committed to the config repository.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        headers: BTreeMap<String, String>,
+        /// Header name -> the credential holding its value.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        credentials: BTreeMap<String, SecretRefDto>,
+        #[serde(flatten)]
+        tls: TlsDto,
+        #[serde(default, skip_serializing_if = "InFlight::is_default")]
+        in_flight: InFlight,
+        #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
+        max_request_bytes: RequestBytes,
+        /// Unset means the default, or one whole request if that is larger.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        buffer_bytes: Option<BufferBytes>,
+        /// Seconds one batch may take to deliver before it is a stall.
+        #[serde(default, skip_serializing_if = "StallAfter::is_default")]
+        stall_after_secs: StallAfter,
+    },
     /// Rows sent to a stream of a data collection rule through Azure Monitor's Logs Ingestion API, which lands
     /// them in the rule's Log Analytics table, where Microsoft Sentinel reads them.
     #[serde(rename_all = "camelCase")]
@@ -1768,6 +1802,7 @@ impl DestinationKindDto {
             | DestinationKindDto::SplunkHec { buffer_bytes, .. }
             | DestinationKindDto::Http { buffer_bytes, .. }
             | DestinationKindDto::Prometheus { buffer_bytes, .. }
+            | DestinationKindDto::Otlp { buffer_bytes, .. }
             | DestinationKindDto::LogAnalytics { buffer_bytes, .. }
             | DestinationKindDto::Iceberg { buffer_bytes, .. }
             | DestinationKindDto::Delta { buffer_bytes, .. } => buffer_bytes.is_some(),
@@ -3031,8 +3066,8 @@ impl Default for EncodingLabel {
 pub struct LevelLabel(pub String);
 
 impl LevelLabel {
-    /// What a process collects at unless `SMELTR_LOG_LEVEL` says otherwise, so a source that names nothing
-    /// carries everything its process gathers.
+    /// The startup level unless one is set, so a source that names nothing carries what a process keeps until an
+    /// operator sets levels.
     pub const DEFAULT: &str = "info";
 
     pub fn is_default(&self) -> bool {

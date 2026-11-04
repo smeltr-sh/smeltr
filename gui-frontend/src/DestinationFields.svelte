@@ -41,6 +41,7 @@
     type Compression,
     type SchemaRegistry,
     type HttpCompression,
+    type OtlpSignal,
     type Acks,
     type KafkaFacts,
     COMPRESSIONS,
@@ -591,7 +592,7 @@
         help={zoneHelp}
       />
     </Advanced>
-  {:else if destination.type === 'http' || destination.type === 'prometheus'}
+  {:else if destination.type === 'http' || destination.type === 'prometheus' || destination.type === 'otlp'}
     {@const h = destination}
     <UrlField
       required
@@ -602,8 +603,32 @@
       error={tlsRefusal(h.url, h) ?? null}
       placeholder={h.type === 'prometheus'
         ? 'https://prometheus.internal/api/v1/write'
-        : 'https://collector.internal/ingest'}
+        : h.type === 'otlp'
+          ? 'https://otel-collector.internal:4318'
+          : 'https://collector.internal/ingest'}
     />
+    {#if h.type === 'otlp'}
+      <Field field="signal" label="signal">
+        {#snippet help()}
+          The one signal this destination sends. Each record goes as a log record, a metric data
+          point or a span to that signal's path after the url. To send more than one signal, add a
+          destination for each.
+        {/snippet}
+        <select
+          value={h.signal ?? 'logs'}
+          onchange={(e) => {
+            if (h.type !== 'otlp') return;
+            const v = e.currentTarget.value as OtlpSignal;
+            if (v === 'logs') delete h.signal;
+            else h.signal = v;
+          }}
+        >
+          <option value="logs">logs (/v1/logs)</option>
+          <option value="metrics">metrics (/v1/metrics)</option>
+          <option value="traces">traces (/v1/traces)</option>
+        </select>
+      </Field>
+    {/if}
     {#if h.type === 'prometheus'}
       <Field field="version" label="remote_write version">
         {#snippet help()}
@@ -693,7 +718,7 @@
     </PropsEditor>
     <Advanced label="Advanced" modified={httpModified(h)}>
       <TlsFields value={h} farEnd="destination" />
-      {#if h.type === 'http'}
+      {#if h.type === 'http' || h.type === 'otlp'}
         <Field field="compression" label="compression">
           {#snippet help()}
             Each request body is sent gzipped, with <code>Content-Encoding: gzip</code>; the service
@@ -715,7 +740,7 @@
       <RequestDelivery
         value={h}
         sizeDefault={(h.type === 'http' ? LIMITS.httpRequestBytes : LIMITS.maxRequestBytes).default}
-        concurrent={h.type === 'http'}
+        concurrent={h.type !== 'prometheus'}
       >
         {#snippet sizeHelp()}
           A request is sent as soon as it reaches this size. Keep it under the largest body the

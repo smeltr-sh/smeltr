@@ -323,7 +323,7 @@ pub(crate) fn serve_router(
     // else watches the task.
     let stopped = move |served: std::io::Result<()>| {
         if let Err(e) = served {
-            tracing::error!(target: "worker.receiver_stopped", listen = %address, error = %e, "a receiver stopped serving its address, so nothing it would take arrives until the deployment restarts");
+            tracing::error!(name: "receiver_stopped", target: "sources", listen = %address, error = %e, "a receiver stopped serving its address, so nothing it would take arrives until the deployment restarts");
         }
     };
     let served = match tls {
@@ -895,7 +895,7 @@ impl Shared {
         *count += 1;
         if since.is_none_or(|at| at.elapsed() >= crate::logs::RELOG_EVERY) {
             tracing::warn!(
-                target: "worker.receiver_refused",
+                name: "receiver_refused", target: "sources",
                 subject = %peer.ip().to_canonical(),
                 reason,
                 status = answer.status().as_u16(),
@@ -2831,7 +2831,7 @@ where
             Err(e) => {
                 if let Some(error) = failing.fail_due(e.to_string()) {
                     tracing::warn!(
-                        target: "worker.receiver_datagram_failed",
+                        name: "receiver_datagram_failed", target: "sources",
                         error,
                         "a receiver could not read a datagram"
                     );
@@ -2895,7 +2895,7 @@ async fn serve_streams<H, F>(
             Err(e) => {
                 if let Some(error) = accepting.fail_due(e.to_string()) {
                     tracing::warn!(
-                        target: "worker.receiver_accept_failed",
+                        name: "receiver_accept_failed", target: "sources",
                         error,
                         "a receiver could not accept a connection"
                     );
@@ -2912,8 +2912,8 @@ async fn serve_streams<H, F>(
                 Some(tls) => match tls.accept(tcp, ()).await {
                     Ok((stream, ())) => Box::new(stream),
                     Err(e) => {
-                        tracing::debug!(
-                            target: "worker.receiver_handshake_failed",
+                        tracing::trace!(
+                            name: "receiver_handshake_failed", target: "sources",
                             subject = %peer,
                             error = %e,
                             "a sender's TLS handshake failed"
@@ -3105,7 +3105,7 @@ impl Sockets {
                     self.held.insert(listen, socket);
                 }
                 Err(e) => tracing::warn!(
-                    target: "worker.receiver_not_bound",
+                    name: "receiver_not_bound", target: "sources",
                     subject = %named(listen),
                     error = %e,
                     "the worker could not hold a receiver's address across deploys; the runtime will try it itself"

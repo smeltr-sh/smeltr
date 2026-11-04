@@ -17,7 +17,8 @@ use std::time::Instant;
 use crate::config_file::{BufferBytes, FetchBytes};
 use crate::core::id::{DestId, SourceId};
 use crate::plan::topology::{
-    DestinationConfig, DestinationKind, KafkaSourceConfig, SourceConfig, SourceKind, StartPosition, TopologyConfig,
+    DestinationConfig, DestinationKind, KafkaSourceConfig, LogAnalyticsDestinationConfig, OtlpDestinationConfig,
+    SourceConfig, SourceKind, StartPosition, TopologyConfig,
 };
 
 /// One thing a deployment holds memory for, and the most it may hold.
@@ -171,7 +172,8 @@ fn senders(kind: &DestinationKind) -> Option<Senders> {
         DestinationKind::Elasticsearch(e) => (e.max_in_flight(), e.in_flight),
         DestinationKind::SplunkHec(s) => (s.max_in_flight(), s.in_flight),
         DestinationKind::Http(h) => (h.max_in_flight(), h.in_flight),
-        DestinationKind::LogAnalytics(s) => (s.http.max_in_flight(), s.http.in_flight),
+        DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig { http, .. })
+        | DestinationKind::Otlp(OtlpDestinationConfig { http, .. }) => (http.max_in_flight(), http.in_flight),
         // Prometheus sends from the destination's own thread, one request at a time.
         DestinationKind::Kafka(_)
         | DestinationKind::Prometheus(_)
@@ -516,7 +518,7 @@ fn warn_if_overcommitted(parts: &[Part], limit: Option<u64>) -> bool {
     };
     let described = describe(parts);
     tracing::warn!(
-        target: "worker.memory_overcommitted",
+        name: "memory_overcommitted", target: "processes",
         parts = %described,
         sum_bytes = sum,
         limit_bytes = limit,

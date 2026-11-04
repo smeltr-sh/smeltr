@@ -313,7 +313,7 @@ impl Inner {
                 Err(SftpError::Status(s))
                     if !top && self.skip_unreadable && s.status_code == StatusCode::PermissionDenied =>
                 {
-                    tracing::warn!(target: "sftp.unreadable_directory", directory = %dir, "skipping a directory this user may not read");
+                    tracing::warn!(name: "unreadable_directory", target: "sources", directory = %dir, "skipping a directory this user may not read");
                     Ok(None)
                 }
                 Err(e @ SftpError::Status(_)) => match c.sftp.metadata(dir.clone()).await {

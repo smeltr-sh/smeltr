@@ -281,7 +281,7 @@ impl Listing {
         state.in_flight.remove(&found.key);
         let keep = self.after_commit == AfterCommit::Keep;
         tracing::warn!(
-            target: "listing.unreadable",
+            name: "listing_unreadable", target: "sources",
             bucket = %self.bucket,
             key = %found.key,
             lapses = MAX_LAPSES,
@@ -338,7 +338,7 @@ impl Listing {
             // A folder marker is gone by its listed key, so it counts as done and is left; any other failure is
             // tried again on the next listing.
             if let Err(why) = self.after_commit(&key, e_tag.as_deref()) {
-                tracing::warn!(target: "listing.empty", bucket = %self.bucket, key, error = %why,
+                tracing::warn!(name: "empty", target: "sources", bucket = %self.bucket, key, error = %why,
                     "an empty object was not removed; trying again on the next listing");
             }
         }
@@ -480,7 +480,7 @@ impl Listing {
                     // Something else removed it, and no retry can move what is not there.
                     Err(e) => {
                         tracing::warn!(
-                            target: "listing.moved_away",
+                            name: "moved_away", target: "sources",
                             bucket = %self.bucket,
                             key,
                             error = %e,

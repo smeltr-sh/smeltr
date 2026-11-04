@@ -149,7 +149,7 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Envelope<Star
     if !granted.is_empty() {
         let named: Vec<String> = granted.iter().map(|d| format!("{} v{}", d.name, d.version)).collect();
         tracing::info!(
-            target: "capture.secrets_granted",
+            name: "secrets_granted", target: "captures",
             subject = %session,
             group = %request.group,
             secrets = %named.join(", "),

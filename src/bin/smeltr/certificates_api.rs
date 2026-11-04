@@ -404,6 +404,7 @@ pub async fn keep_renewed(auth: Auth, serving: Arc<Tls>, leader: smeltr::leader:
             _ = tokio::time::sleep(crate::acme_api::RENEWAL_TICK) => {}
             _ = smeltr::leader::RENEW_NOW.notified() => {}
         }
+        let _pass = tracing::trace_span!(target: "certificates", "a background pass", task = "renew certificates");
         renew_issued(&state, &serving).await;
         crate::acme_api::renew_if_due(&auth, &serving).await;
     }
@@ -416,12 +417,12 @@ async fn renew_issued(state: &Certificates, serving: &Arc<Tls>) {
     let tried = match smeltr::leader::renew_issued(&state.leader, now_ms).await {
         Ok(tried) => tried,
         Err(e) => {
-            tracing::warn!(target: "leader.certificate_renewal_failed", error = %e, "could not read the certificates to renew");
+            tracing::warn!(name: "renewal_failed", target: "certificates", error = %e, "could not read the certificates to renew");
             return;
         }
     };
     let served = smeltr::leader::served_names(&serving.dir).unwrap_or_else(|e| {
-        tracing::warn!(target: "leader.served_list_unreadable", error = %e, "which certificates the socket serves could not be read, so a renewed one is not put on it until the next pass");
+        tracing::warn!(name: "served_list_unreadable", target: "heartbeats", error = %e, "which certificates the socket serves could not be read, so a renewed one is not put on it until the next pass");
         Default::default()
     });
     for (name, outcome) in tried {
@@ -434,10 +435,10 @@ async fn renew_issued(state: &Certificates, serving: &Arc<Tls>) {
         };
         match outcome {
             Ok(()) => {
-                tracing::info!(target: "leader.certificate_renewed", certificate = %name, "renewed a certificate this leader issued")
+                tracing::info!(name: "renewed", target: "certificates", certificate = %name, "renewed a certificate this leader issued")
             }
             Err(e) => tracing::warn!(
-                target: "leader.certificate_renewal_failed",
+                name: "renewal_failed", target: "certificates",
                 certificate = %name,
                 error = %e,
                 "could not renew a certificate this leader issued"

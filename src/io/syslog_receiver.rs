@@ -377,8 +377,8 @@ impl Handler {
         let Connection { stream, peer, inlet } = connection;
         let remote = &*inlet.remote;
         if !admits(&self.allow_from, peer) {
-            tracing::debug!(
-                target: "worker.receiver_syslog_refused",
+            tracing::trace!(
+                name: "refused", target: "sources",
                 subject = %remote,
                 "a connection is closed: its address is in none of the receiver's allowFrom networks"
             );
@@ -391,14 +391,14 @@ impl Handler {
         };
         match self.read(stream, admit, &mut inlet.held()).await {
             End::Gone { partial: 0 } | End::Stopping => {}
-            End::Gone { partial } => tracing::debug!(
-                target: "worker.receiver_syslog_partial",
+            End::Gone { partial } => tracing::trace!(
+                name: "partial", target: "sources",
                 subject = %remote,
                 bytes = partial,
                 "a sender hung up partway through an octet-counted message, which is dropped"
             ),
             End::Malformed(Malformed { at, what }) => tracing::warn!(
-                target: "worker.receiver_syslog_malformed",
+                name: "malformed", target: "sources",
                 subject = %remote,
                 offset = at,
                 what = %what,
@@ -411,8 +411,8 @@ impl Handler {
     /// datagram from a sender this receiver does not admit, one larger than its largest message, or an empty one.
     pub(super) fn datagram(&self, datagram: &[u8], peer: IpAddr) -> Option<Cutter> {
         if !admits(&self.allow_from, peer) {
-            tracing::debug!(
-                target: "worker.receiver_syslog_refused",
+            tracing::trace!(
+                name: "refused", target: "sources",
                 subject = %peer,
                 "a datagram is dropped: its address is in none of the receiver's allowFrom networks"
             );
@@ -420,7 +420,7 @@ impl Handler {
         }
         if datagram.len() > self.max_message_bytes {
             tracing::warn!(
-                target: "worker.receiver_syslog_malformed",
+                name: "malformed", target: "sources",
                 subject = %peer,
                 limit = self.max_message_bytes,
                 "a datagram larger than the receiver's maxRequestBytes is dropped"

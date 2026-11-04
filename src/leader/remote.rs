@@ -166,7 +166,7 @@ pub fn sync(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>
     }
     if let Some(from) = git::main_head(repo).filter(|main| *main != head) {
         git::follow(repo, &head).map_err(|e| refused(e.message))?;
-        tracing::info!(target: "remote.followed", %from, to = %head, "main followed the remote");
+        tracing::info!(name: "followed", target: "git", %from, to = %head, "main followed the remote");
     }
     // Asked on every sync, not only the one that moved `main`: the fleet stays held until the remote mends it.
     if let Some(why) = git::worse_than_running(repo, &head).map_err(|e| refused(e.message))?
@@ -229,9 +229,22 @@ fn fetch(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, S
     if prepare.ref_map().is_missing_required_mapping() {
         return Ok(None);
     }
+    let held = |git: &gix::Repository| {
+        git.find_reference(git::FETCHED_MAIN_REF)
+            .ok()
+            .and_then(|r| r.target().try_id().map(|id| id.to_string()))
+    };
+    // Read only to be said, so only when it will be.
+    let saying = crate::log_enabled!(name: "ref_moved", target: "git", tracing::Level::TRACE);
+    let from = saying.then(|| held(&git)).flatten();
     let outcome = prepare
         .receive(gix::progress::Discard, &AtomicBool::new(false))
         .map_err(|e| unreachable(&with_cause(&e)))?;
+    // The one ref the leader moves outside `git::edit_refs`: gix's fetch moves it, so it is said here.
+    let to = saying.then(|| held(&git)).flatten();
+    if saying && to != from {
+        tracing::trace!(name: "ref_moved", target: "git", reference = git::FETCHED_MAIN_REF, from, to, "a ref moved");
+    }
     Ok(outcome
         .ref_map
         .mappings
@@ -662,7 +675,7 @@ pub async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
     match synced {
         Ok(head) => {
             if let Some(failure) = held.failure.take() {
-                tracing::info!(target: "remote.sync_recovered", failed_secs = (now - failure.since) / 1000, "syncing the remote works again");
+                tracing::info!(name: "sync_recovered", target: "git", failed_secs = (now - failure.since) / 1000, "syncing the remote works again");
             }
             *held = SyncState {
                 synced_at: Some(now),
@@ -683,7 +696,7 @@ pub async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
                 // The failure is the catalog's "remote not followed" issue, which `issue` says, so the catalog's
                 // "leader logged warnings" entry leaves this line out rather than raising the same thing twice.
                 _ => crate::noted!(
-                    target: "remote.sync_failed",
+                    name: "sync_failed", target: "git",
                     "syncing the remote failed",
                     message,
                     issue = super::warnings::Condition::RemoteNotFollowed.name(),
@@ -704,7 +717,7 @@ pub async fn poll(state: AppState) {
             Ok(remote) => remote.and_then(|remote| remote.poll),
             // Tried again on the default interval: a store that could not say is not one that said "no remote".
             Err(e) => {
-                tracing::warn!(target: "remote.settings_unreadable", error = %e, "the git remote settings could not be read, so the sync is tried again later");
+                tracing::warn!(name: "settings_unreadable", target: "git", error = %e, "the git remote settings could not be read, so the sync is tried again later");
                 Some(DEFAULT_POLL)
             }
         };
@@ -712,7 +725,9 @@ pub async fn poll(state: AppState) {
             state.remote.settings_changed.notified().await;
             continue;
         };
-        let _ = sync_now(&state).await;
+        // Here and not in `sync_now`, which an administrator's sync also takes.
+        let pass = tracing::trace_span!(target: "git", "a background pass", task = "sync with the git remote");
+        let _ = tracing::Instrument::instrument(sync_now(&state), pass).await;
         tokio::select! {
             _ = tokio::time::sleep(every) => {}
             _ = state.remote.settings_changed.notified() => {}
@@ -750,6 +765,7 @@ pub async fn push_saves(state: AppState) {
     let mut failing = crate::logs::Relog::default();
     loop {
         tokio::time::sleep(PUSH_SCAN).await;
+        let _pass = tracing::trace_span!(target: "git", "a background pass", task = "push saves to the git remote");
         let _pushing = state.remote.pushing.lock().await;
         let remote = match run_store(state.store.clone(), configured).await {
             Ok(Some(remote)) => remote,
@@ -769,7 +785,7 @@ pub async fn push_saves(state: AppState) {
         match pushed {
             Ok(failures) => {
                 if failing.clear() {
-                    tracing::info!(target: "remote.push_scan_recovered", "branches are being checked for pushes again");
+                    tracing::info!(name: "push_scan_recovered", target: "git", "branches are being checked for pushes again");
                 }
                 *state.remote.pushes.lock().unwrap_or_else(|e| e.into_inner()) = failures;
             }
@@ -781,7 +797,7 @@ pub async fn push_saves(state: AppState) {
 fn scan_failed(failing: &mut crate::logs::Relog, why: String) {
     failing.fail(why);
     if let Some(error) = failing.due() {
-        tracing::warn!(target: "remote.push_scan_failed", error, "branches could not be checked for pushes, so none is pushed until the check works again");
+        tracing::warn!(name: "push_scan_failed", target: "git", error, "branches could not be checked for pushes, so none is pushed until the check works again");
     }
 }
 
@@ -851,7 +867,7 @@ pub fn push_all(
 /// The host's branch has moved past what this leader pushed, so the lease refused the push.
 fn refused_push(branch: &str) -> crate::logs::Noted {
     crate::noted!(
-        target: "remote.push_refused",
+        name: "push_refused", target: "git",
         "the host refused a push: its branch has commits this leader did not push",
         format!("{branch} on the remote has commits this leader did not push"),
         %branch
@@ -866,7 +882,7 @@ fn same_failure(a: &str, b: &str) -> bool {
 
 /// The push did not reach the host, or the host would not take it, for `message`.
 fn failed_push(branch: &str, message: String) -> crate::logs::Noted {
-    crate::noted!(target: "remote.push_failed", "a branch was not pushed", message, %branch)
+    crate::noted!(name: "push_failed", target: "git", "a branch was not pushed", message, %branch)
 }
 
 /// Push `tip` to `branch` on the host, or delete it there for `None`, while the host's branch is at `lease`. Lookup
@@ -1019,7 +1035,7 @@ pub fn approve_at(
     // The host has it, so the change is merged whatever happens here; a sync follows it.
     if let Err(e) = git::deploy_squash(data_dir, &squash, author) {
         if let Err(e) = git::delete_branch(data_dir, branch, Some(&squash.tip)) {
-            tracing::debug!(target: "git.branch_not_deleted", %branch, error = %e.message, "a merged branch was not deleted");
+            tracing::debug!(name: "branch_not_deleted", target: "git", %branch, error = %e.message, "a merged branch was not deleted");
         }
         return Err(Refusal::internal(format!(
             "{branch} is on the remote's main, but this leader did not deploy it ({}); the next sync follows it",
@@ -1154,7 +1170,7 @@ pub async fn forget(state: &AppState) {
     state.remote.pushes.lock().unwrap_or_else(|e| e.into_inner()).clear();
     let repo = git::repo_path(&state.data_dir);
     if let Ok(Err(e)) = tokio::task::spawn_blocking(move || git::forget_host(&repo)).await {
-        tracing::warn!(target: "remote.forget", error = %e.message, "the old remote's branches could not be forgotten");
+        tracing::warn!(name: "forget", target: "git", error = %e.message, "the old remote's branches could not be forgotten");
     }
     state.remote.settings_changed.notify_one();
 }
@@ -2014,7 +2030,9 @@ mod tests {
             assert_eq!(again["al/fix"].at, 61_000);
         });
         assert!(
-            !said.iter().any(|(_, site, _)| site == "remote.push_failed"),
+            !said
+                .iter()
+                .any(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("git", "push_failed")),
             "{said:?}"
         );
 
@@ -2172,6 +2190,7 @@ mod tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir,
         }
     }
