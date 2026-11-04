@@ -56,7 +56,9 @@ describe('rankedSuggestions', () => {
   });
 
   it('weighs use a little: it orders close matches, never a weak match over a word start', () => {
-    const plain = rankedSuggestions(CONDITION_FUNCTIONS, 'parse').map((f) => f.name);
+    const plain = rankedSuggestions(CONDITION_FUNCTIONS, 'parse', { matchDescription: false }).map(
+      (f) => f.name,
+    );
     const last = plain.at(-1)!;
     const used = rankedSuggestions(CONDITION_FUNCTIONS, 'parse', { usage: new Map([[last, 500]]) });
     expect(used[0].name).toBe(last);
