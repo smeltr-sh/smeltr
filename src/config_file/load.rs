@@ -3931,7 +3931,7 @@ fn check_objects(id: &str, o: &ObjectSettingsDto, url: &str, tls: &TlsDto, error
             "destination {id:?} writes Avro compressed with lz4, which Avro has no codec for; use \"gzip\", \"snappy\", \"zstd\" or \"none\""
         ));
     }
-    check_file_interval(o.file_interval_secs, id, errors);
+    check_file_interval(o.file_interval_secs, &format!("destination {id:?}"), "written", errors);
 }
 
 /// The buffer and upload concurrency of a destination that writes files: one that uploads them in parts, so its
@@ -3956,10 +3956,6 @@ fn check_file_limits(id: &str, in_flight: InFlight, buffer_bytes: Option<BufferB
         ));
     }
 }
-
-/// The longest a table destination keeps its files open: the source waits that long for its batches'
-/// acknowledgement, and a Kafka reader that waits past its `max.poll.interval.ms` (300 s) is evicted.
-const TABLE_FILE_INTERVAL_MAX: u64 = 240;
 
 /// Everything an Iceberg destination is checked for: its delivery limits, where its catalog is, how it signs in,
 /// which table it writes and how a created one is partitioned.
@@ -4104,18 +4100,20 @@ fn check_iceberg(d: &DestinationDto, errors: &mut ItemErrors<'_>) {
     if !access.is_empty() {
         check_s3_access(access, &what, errors);
     }
-    check_table_file_interval(*file_interval_secs, &what, errors);
+    check_file_interval(*file_interval_secs, &what, "committed", errors);
 }
 
-/// A table destination's files stay open no longer than a Kafka reader may wait for their acknowledgement.
-fn check_table_file_interval(file_interval: FileInterval, what: &str, errors: &mut ItemErrors<'_>) {
-    if file_interval.0 < FileInterval::MIN || file_interval.0 > TABLE_FILE_INTERVAL_MAX {
+/// A source waits up to the interval for its batches' acknowledgement, and after a crash reads that much again.
+/// `finished` is what becomes of a file in its destination's words: an object store's is written, a table's committed.
+fn check_file_interval(file_interval: FileInterval, what: &str, finished: &str, errors: &mut ItemErrors<'_>) {
+    if file_interval.0 < FileInterval::MIN || file_interval.0 > FileInterval::MAX {
         errors.at("fileIntervalSecs").push(format!(
-            "{what} keeps a file open for {}s; a table destination's must be between {} and \
-             {TABLE_FILE_INTERVAL_MAX}. Its batches are acknowledged when the files are committed, and a Kafka \
-             reader that waits past its 300s poll interval is evicted from its group",
+            "{what} has fileIntervalSecs {}; it must be between {} and {} seconds. A file stays open that long, \
+             and its batches are acknowledged only when it is {finished}, so a source waits up to that long for \
+             them and, after a crash, reads that much again.",
             file_interval.0,
             FileInterval::MIN,
+            FileInterval::MAX,
         ));
     }
 }
@@ -4199,7 +4197,7 @@ fn check_delta(d: &DestinationDto, errors: &mut ItemErrors<'_>) {
                 .push(format!("{what} partitions by {column:?} twice; name each column once"));
         }
     }
-    check_table_file_interval(*file_interval_secs, &what, errors);
+    check_file_interval(*file_interval_secs, &what, "committed", errors);
 }
 
 /// Refuses a Unity Catalog table that cannot be found or signed in to as written.
@@ -4251,20 +4249,6 @@ fn check_unity_catalog(uc: &UnityCatalogDto, access: &S3AccessDto, what: &str, e
 /// The services an Iceberg catalog signed with AWS signatures answers as: Glue's Iceberg endpoint, and S3 Tables.
 /// Another name signs for a service that is no catalog, and AWS signs `s3` unlike the rest.
 const SIGNING_NAMES: [&str; 2] = ["glue", "s3tables"];
-
-/// A source waits up to the interval for its batches' acknowledgement, and after a crash reads that much again.
-fn check_file_interval(t: FileInterval, id: &str, errors: &mut ItemErrors<'_>) {
-    if t.0 < FileInterval::MIN || t.0 > FileInterval::MAX {
-        errors.at("fileIntervalSecs").push(format!(
-            "destination {id:?} keeps a file open for {}s; it must be between {} and {}. \
-             Its batches are acknowledged when the file is finished, so a source waits up to this long for \
-             them, and after a crash reads that much again",
-            t.0,
-            FileInterval::MIN,
-            FileInterval::MAX
-        ));
-    }
-}
 
 /// A cloud destination's storage class is one of `classes`, the cloud's own.
 fn check_storage_class(id: &str, cloud: &CloudSettingsDto, classes: &[&str], errors: &mut ItemErrors<'_>) {
@@ -7303,12 +7287,6 @@ mod tests {
                 Buffer::DEFAULT as u64,
             ),
             ("fileIntervalSecs", File::MIN, Some(File::MAX), File::DEFAULT),
-            (
-                "tableFileIntervalSecs",
-                File::MIN,
-                Some(TABLE_FILE_INTERVAL_MAX),
-                File::DEFAULT,
-            ),
             (
                 "objectBufferBytes",
                 Buffer::MIN as u64,

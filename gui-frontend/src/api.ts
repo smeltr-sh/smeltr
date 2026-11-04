@@ -517,11 +517,8 @@ export const LIMITS = {
   maxObjectBytes: { min: 64 * 1024, max: 64 * 1024 * 1024 * 1024, default: 64 * 1024 * 1024 },
   stallAfterSecs: { min: 1, max: 120, default: 30 },
   bufferBytes: { min: 4 * 1024 * 1024, max: 1024 * 1024 * 1024, default: 64 * 1024 * 1024 },
-  /** An object store destination's `fileIntervalSecs` (`FileInterval`). */
-  fileIntervalSecs: { min: 5, max: 3600, default: 60 },
-  /** A table destination's `fileIntervalSecs` (`config_file::load::TABLE_FILE_INTERVAL_MAX`): a source waits that
-   * long for its batches' acknowledgement, and a Kafka reader that waits past its poll interval is evicted. */
-  tableFileIntervalSecs: { min: 5, max: 240, default: 60 },
+  /** An object store or table destination's `fileIntervalSecs` (`FileInterval`). */
+  fileIntervalSecs: { min: 5, max: 3600, default: 300 },
   /** An object store destination's `bufferBytes`: it sizes the files (`BufferBytes::OBJECT_DEFAULT`). */
   objectBufferBytes: {
     min: 4 * 1024 * 1024,
@@ -762,7 +759,7 @@ export type DestinationDto = {
         /** Memory for records not yet committed. Absent is `LIMITS.objectBufferBytes.default`. */
         bufferBytes?: ByteCount;
         stallAfterSecs?: number;
-        /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
+        /** Seconds files stay open before they are committed. Within `LIMITS.fileIntervalSecs`. */
         fileIntervalSecs?: number;
       })
   | (TlsDto &
@@ -784,7 +781,7 @@ export type DestinationDto = {
         /** Memory for records not yet committed. Absent is `LIMITS.objectBufferBytes.default`. */
         bufferBytes?: ByteCount;
         stallAfterSecs?: number;
-        /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
+        /** Seconds files stay open before they are committed. Within `LIMITS.fileIntervalSecs`. */
         fileIntervalSecs?: number;
       })
 );

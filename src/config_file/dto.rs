@@ -2611,15 +2611,17 @@ pub struct ObjectSettingsDto {
     pub file_interval_secs: FileInterval,
 }
 
-/// Seconds an object file stays open before it is finished. A source waits this long for its batches'
-/// acknowledgement, which no source bounds: a Kafka reader keeps its membership while it waits, and a queue source
-/// extends its messages' visibility. What it costs is replay: after a crash, an interval's rows are read again.
+/// Seconds an object or table destination's files stay open before they are finished or committed. A source waits
+/// this long for its batches' acknowledgement, which no source bounds: a Kafka reader keeps its membership while it
+/// waits, and a queue source extends its messages' visibility. What it costs is delay, and replay: after a crash, an
+/// interval's rows are read again, though no more than `maxObjectBytes` or `bufferBytes` holds. Five minutes is the
+/// least Amazon Security Lake takes, and long enough that a quiet stream makes files a query engine reads well.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct FileInterval(pub u64);
 
 impl FileInterval {
-    pub const DEFAULT: u64 = 60;
+    pub const DEFAULT: u64 = 300;
     pub const MIN: u64 = 5;
     pub const MAX: u64 = 3600;
 

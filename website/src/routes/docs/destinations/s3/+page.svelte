@@ -165,6 +165,17 @@
     <code>accepts</code> names the schema from step 2, so review flags a route whose pipeline does not
     produce it.
   </p>
+  <p>
+    <code>%Y%m%d</code> is the day the file is written, in UTC, so a record written after midnight
+    gets the next day's <code>eventDay</code>. Security Lake expects <code>eventDay</code> to be the
+    record's own day. To give each record its own day, set <code>__destination.prefix</code> from
+    its
+    <code>time</code> in a
+    <a href="/docs/steps/code">Code step</a>:
+  </p>
+  <pre><code
+      >{'__destination.prefix = `ext/okta-auth/region=us-east-1/accountId=123456789012/eventDay=${fromEpochMillis(time).formatTime("%Y%m%d")}/`;'}</code
+    ></pre>
 
   <h2 id="verify">Verify</h2>
   <p>
