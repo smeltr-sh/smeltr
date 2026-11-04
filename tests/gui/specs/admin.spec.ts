@@ -220,7 +220,7 @@ test('log levels under System → Logging name a class, a class and a type, or a
 
   await goto(admin, leader, '#/status/logs');
   await admin.getByRole('combobox').filter({ hasText: 'class' }).first().selectOption('deploy');
-  await admin.getByPlaceholder('type', { exact: true }).fill('moved');
+  await admin.getByPlaceholder('type (exact)').fill('moved');
   await admin.getByRole('button', { name: 'Search', exact: true }).click();
   const rows = admin.getByRole('row').filter({ hasText: 'the fleet was deployed to a commit' });
   await expect(rows.first()).toBeVisible();

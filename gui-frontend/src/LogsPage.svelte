@@ -259,7 +259,7 @@
           <option value={c}>{c}</option>
         {/each}
       </select>
-      <input name="type" placeholder="type" value={filters.type ?? ''} oninput={onType} />
+      <input name="type" placeholder="type (exact)" value={filters.type ?? ''} oninput={onType} />
       <select name="service" value={filters.service ?? ''} onchange={onSelect}>
         <option value="">service</option>
         {#each withRouted(services, filters.service) as s (s)}
