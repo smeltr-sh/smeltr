@@ -4050,9 +4050,9 @@ fn check_iceberg(d: &DestinationDto, errors: &mut ItemErrors<'_>) {
 fn check_table_file_interval(file_interval: FileInterval, what: &str, errors: &mut ItemErrors<'_>) {
     if file_interval.0 < FileInterval::MIN || file_interval.0 > FileInterval::MAX {
         errors.at("fileIntervalSecs").push(format!(
-            "{what} keeps a file open for {}s; it must be between {} and {}. Its batches are acknowledged when \
-             the files are committed, so a source waits up to this long for them, and after a crash reads that \
-             much again",
+            "{what} has fileIntervalSecs {}; it must be between {} and {} seconds. A file stays open that long, \
+             and its batches are acknowledged only when it is committed, so a source waits up to that long for \
+             them and, after a crash, reads that much again.",
             file_interval.0,
             FileInterval::MIN,
             FileInterval::MAX,
