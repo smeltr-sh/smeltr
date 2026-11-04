@@ -6,6 +6,7 @@
   import {
     EXCEPTIONS as exceptions,
     GROUPS as groups,
+    LITERALS as literals,
     SIGNATURES as signatures,
     TYPES as types,
     topic,
@@ -46,6 +47,7 @@
     { id: 'fields', title: 'Fields' },
     ...recordGroups.map((g) => ({ id: g.id, title: g.title })),
     { id: 'statements', title: 'Statements' },
+    { id: 'values', title: 'Writing values' },
     { id: 'types', title: 'Types' },
     { id: 'nulls', title: 'Null' },
     ...typeGroups.map((g) => ({ id: g.id, title: g.title })),
@@ -320,6 +322,28 @@
         <tbody>
           {#each language.statements as row (row.form)}
             <tr><td><code>{row.form}</code></td><td><Prose text={row.rule} /></td></tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="group">
+    <h2 id="values">Writing values</h2>
+    <div class="tscroll">
+      <table class="kinds">
+        <thead><tr><th>Literal</th><th>Is</th><th>Example</th></tr></thead>
+        <tbody>
+          {#each literals as row (row.form)}
+            <tr>
+              <td><code>{row.form}</code></td>
+              <td><Prose text={row.rule} /></td>
+              <td class="ex">
+                {#each row.examples as ex, i (i)}<div class="exline">
+                    {@render example(ex)}
+                  </div>{/each}
+              </td>
+            </tr>
           {/each}
         </tbody>
       </table>

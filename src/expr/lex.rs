@@ -453,6 +453,10 @@ impl<'a> Lexer<'a> {
                     b'n' => lit.push('\n'),
                     b't' => lit.push('\t'),
                     b'r' => lit.push('\r'),
+                    b'0' => lit.push('\0'),
+                    b'u' => lit.push(self.lex_unicode_escape(start)?),
+                    b'\'' => lit.push('\''),
+                    b'"' => lit.push('"'),
                     b'`' => lit.push('`'),
                     b'$' => lit.push('$'),
                     b'\\' => lit.push('\\'),
@@ -512,46 +516,46 @@ impl<'a> Lexer<'a> {
                 b'\\' => out.push('\\'),
                 b'\'' => out.push('\''),
                 b'"' => out.push('"'),
-                b'u' => {
-                    // \uXXXX and \u{...}
-                    let hex_start;
-                    let hex_end;
-                    if self.peek() == Some(b'{') {
-                        self.pos += 1;
-                        hex_start = self.pos;
-                        while self.peek().is_some_and(|c| c != b'}') {
-                            self.pos += 1;
-                        }
-                        hex_end = self.pos;
-                        if self.bump() != Some(b'}') {
-                            return Err(self.err(start, "unterminated \\u{...}"));
-                        }
-                    } else {
-                        // Four hex digits, so the slice below ends on a character boundary whatever follows.
-                        hex_start = self.pos;
-                        while self.pos - hex_start < 4 && self.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
-                            self.pos += 1;
-                        }
-                        hex_end = self.pos;
-                        if hex_end - hex_start < 4 {
-                            return Err(self.err(start, "bad \\u escape: four hex digits are needed"));
-                        }
-                    }
-                    let code = u32::from_str_radix(&self.text[hex_start..hex_end], 16)
-                        .map_err(|e| self.err(start, format!("bad \\u escape: {e}")))?;
-                    match char::from_u32(code) {
-                        Some(ch) => out.push(ch),
-                        None => {
-                            return Err(self.err(start, format!("invalid code point U+{code:04X}")));
-                        }
-                    }
-                }
+                b'u' => out.push(self.lex_unicode_escape(start)?),
                 other => {
                     return Err(self.err(start, format!("unknown escape \\{}", other as char)));
                 }
             }
         }
         Ok(self.emit(Token::Str(out), start, true))
+    }
+
+    /// The character a `\u` escape names, after its `\u`: four hex digits, or any number of them in braces.
+    fn lex_unicode_escape(&mut self, start: usize) -> Result<char, LexError> {
+        let hex_start;
+        let hex_end;
+        if self.peek() == Some(b'{') {
+            self.pos += 1;
+            hex_start = self.pos;
+            while self.peek().is_some_and(|c| c != b'}') {
+                self.pos += 1;
+            }
+            hex_end = self.pos;
+            if self.bump() != Some(b'}') {
+                return Err(self.err(start, "unterminated \\u{...}"));
+            }
+        } else {
+            // Four hex digits, so the slice below ends on a character boundary whatever follows.
+            hex_start = self.pos;
+            while self.pos - hex_start < 4 && self.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
+                self.pos += 1;
+            }
+            hex_end = self.pos;
+            if hex_end - hex_start < 4 {
+                return Err(self.err(start, "bad \\u escape: four hex digits are needed"));
+            }
+        }
+        let code = u32::from_str_radix(&self.text[hex_start..hex_end], 16)
+            .map_err(|e| self.err(start, format!("bad \\u escape: {e}")))?;
+        match char::from_u32(code) {
+            Some(ch) => Ok(ch),
+            None => Err(self.err(start, format!("invalid code point U+{code:04X}"))),
+        }
     }
 
     fn lex_regex(&mut self, start: usize) -> Result<Spanned, LexError> {
@@ -702,6 +706,20 @@ mod tests {
             &parts[0],
             TemplatePart::Hole { src, .. } if src == " \"}\" "
         ));
+    }
+
+    /// A template string takes every escape a string does, beside its own `` \` `` and `\$`.
+    #[test]
+    fn a_template_takes_a_strings_escapes() {
+        let t = toks(r#"`\0 \u00e9 \u{1F44B} \' \" \` \$`"#);
+        assert_eq!(
+            t[0],
+            Token::Template(vec![TemplatePart::Lit("\0 \u{e9} \u{1F44B} ' \" ` $".into())])
+        );
+        assert!(
+            Lexer::tokenize(r"`\u12`").is_err(),
+            "a short \\u escape is refused, as in a string"
+        );
     }
 
     fn toks(s: &str) -> Vec<Token> {
