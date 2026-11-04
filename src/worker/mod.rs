@@ -1043,8 +1043,8 @@ const ENROLL_RETRY_MIN: Duration = Duration::from_millis(250);
 const ENROLL_RETRY_MAX: Duration = Duration::from_secs(10);
 
 /// How long shutdown gives the readers to commit what they already handed over. What is not committed inside it is
-/// redelivered.
-const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+/// redelivered. Long enough for a file destination told to finish to put and commit its open files.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Backoff bounds between retries of a failing turn, so an outage settles into a slow retry rather than a spin.
 const TICK_RETRY_MIN: Duration = Duration::from_millis(250);
