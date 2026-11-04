@@ -43,12 +43,13 @@ export function objectModified(d: ObjectDestination): boolean {
   );
 }
 
-/** Drives the HTTP and Prometheus Advanced header's marker: the TLS settings and every delivery setting it hides. */
+/** Drives the HTTP, Prometheus and OTLP Advanced header's marker: the TLS settings and every delivery setting it
+ * hides. */
 export function httpModified(d: HeaderedDestination): boolean {
   return (
     tlsSet(d) ||
     (d.type === 'http' && d.zoneUrls !== undefined) ||
-    (d.type === 'http' && (d.compression ?? 'none') !== 'none') ||
+    (d.type !== 'prometheus' && (d.compression ?? 'none') !== 'none') ||
     requestDeliveryModified(
       d,
       'maxRequestBytes',
@@ -71,11 +72,11 @@ export function logAnalyticsModified(
 
 /** Where a destination writes, as its row says it. */
 /** Whether `d` sends a credential besides one in its URL, as `UrlField` and `ZoneUrls` take it: Elasticsearch's
- * auth, Splunk's token, or an HTTP or Prometheus credential header. */
+ * auth, Splunk's token, or an HTTP, Prometheus or OTLP credential header. */
 export function sendsCredential(d: DestinationDto): boolean {
   if (d.type === 'elasticsearch') return d.auth !== undefined || d.password !== undefined;
   if (d.type === 'splunkHec') return true;
-  if (d.type === 'http' || d.type === 'prometheus')
+  if (d.type === 'http' || d.type === 'prometheus' || d.type === 'otlp')
     return Object.keys(d.credentials ?? {}).length > 0;
   return false;
 }
@@ -93,6 +94,8 @@ export function writes(d: DestinationDto): string {
     case 'http':
     case 'prometheus':
       return '';
+    case 'otlp':
+      return d.signal ?? 'logs';
     case 'logAnalytics':
       return d.stream;
     case 's3':
@@ -123,6 +126,7 @@ export function at(d: DestinationDto): string {
     case 'splunkHec':
     case 'http':
     case 'prometheus':
+    case 'otlp':
       return d.url;
     case 'logAnalytics':
       return d.endpoint;
@@ -140,8 +144,9 @@ export function at(d: DestinationDto): string {
 }
 
 /** A destination the map draws as the HTTP requests it sends, so it has no system label or glyph of its own. */
-const HTTP_LABELS: Record<'prometheus' | 'logAnalytics', string> = {
+const HTTP_LABELS: Record<'prometheus' | 'otlp' | 'logAnalytics', string> = {
   prometheus: 'Prometheus remote_write',
+  otlp: 'OTLP',
   logAnalytics: 'Log Analytics workspace',
 };
 function isHttpDrawn(type: DestinationDto['type']): type is keyof typeof HTTP_LABELS {
@@ -163,6 +168,7 @@ export const DESTINATION_TYPES: CatalogType<DestinationDto['type']>[] = (
     ['logAnalytics', 'Log analytics'],
     ['http', 'Web'],
     ['prometheus', 'Observability'],
+    ['otlp', 'Observability'],
     ['s3', 'Object storage'],
     ['gcs', 'Object storage'],
     ['azureBlob', 'Object storage'],
@@ -191,6 +197,7 @@ export function blankDestination(type: DestinationDto['type'], taken: string[]):
       return { id, type, url: '', token: '' };
     case 'http':
     case 'prometheus':
+    case 'otlp':
       return { id, type, url: '' };
     case 'logAnalytics':
       return { id, type, endpoint: '', ruleId: '', stream: '' };
