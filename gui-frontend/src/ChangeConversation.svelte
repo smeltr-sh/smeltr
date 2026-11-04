@@ -85,8 +85,9 @@
 
   /** Why the signed-in person gives no verdict: one takes deployer, as deploying does. The leader refuses it, and a
    * verdict on a closed change. */
-  let verdictBlocker = $derived(deployBlocker(touches, undefined, 'Approving'));
-  let reviewable = $derived(!closed && verdictBlocker === '');
+  let approveBlocker = $derived(deployBlocker(touches, undefined, 'Approving this'));
+  let requestBlocker = $derived(deployBlocker(touches, undefined, 'Requesting changes'));
+  let reviewable = $derived(!closed && approveBlocker === '');
   let sending = $derived<ComposerChoice>(reviewable ? choice : 'comment');
 
   async function act(call: () => Promise<BranchMutationResult>, after: () => Promise<void> | void) {
@@ -247,10 +248,10 @@
       {#if !closed}
         <div class="verdict-pick" role="radiogroup" aria-label="Review">
           <label><input type="radio" value="comment" bind:group={choice} /> Comment</label>
-          <label data-why={verdictBlocker || undefined}
+          <label data-why={approveBlocker || undefined}
             ><input type="radio" value="approve" bind:group={choice} disabled={!reviewable} /> Approve</label
           >
-          <label data-why={verdictBlocker || undefined}
+          <label data-why={requestBlocker || undefined}
             ><input
               type="radio"
               value="request-changes"
