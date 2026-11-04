@@ -26,7 +26,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError, channel, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -370,6 +370,8 @@ enum Message {
     Job(Job),
     /// Commit now, and answer on the channel instead of the results channel.
     Barrier(Sender<Result<Vec<BatchCompletion>, IoError>>),
+    /// Commit whatever is held from now on, without waiting for the interval.
+    Finish,
 }
 
 pub struct FileDestination {
@@ -388,6 +390,8 @@ pub struct FileDestination {
     generation: u64,
     /// What the writer's open files buffer, as it last measured.
     open_bytes: Arc<AtomicUsize>,
+    /// `finish` was asked for and the writer's queue had no room for it, so it is asked again on the next poll.
+    finish_owed: bool,
 }
 
 impl FileDestination {
@@ -442,7 +446,17 @@ impl FileDestination {
             failed: None,
             generation: 0,
             open_bytes,
+            finish_owed: false,
         }
+    }
+
+    /// Asks the writer to finish without waiting on it: a writer busy with a store that does not answer would hold
+    /// the stopping deployment.
+    fn ask_finish(&mut self) {
+        self.finish_owed = match &self.jobs {
+            Some(jobs) => matches!(jobs.try_send(Message::Finish), Err(TrySendError::Full(_))),
+            None => false,
+        };
     }
 
     fn stopped(&self) -> IoError {
@@ -542,7 +556,14 @@ impl Destination for FileDestination {
         Some(self.open_bytes.load(Ordering::Relaxed))
     }
 
+    fn finish(&mut self) {
+        self.ask_finish();
+    }
+
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
+        if self.finish_owed {
+            self.ask_finish();
+        }
         // What a barrier saw land is reported before the writer is asked: a failure there would otherwise take it
         // back.
         let drained = std::mem::take(&mut self.drained);
@@ -643,6 +664,10 @@ impl Writer {
                 }
                 Ok(Message::Barrier(reply)) => {
                     let _ = reply.send(self.commit());
+                }
+                Ok(Message::Finish) => {
+                    self.config.commit_interval = Duration::ZERO;
+                    self.next_commit = Instant::now();
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,

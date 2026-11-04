@@ -3224,6 +3224,21 @@ mod tests {
         assert!(answered(&mut second));
     }
 
+    /// A stopping receiver takes nothing new, hands over what it holds, and answers its senders once that lands.
+    #[test]
+    fn a_stopping_receiver_refuses_new_requests_and_hands_over_the_rest() {
+        let shared = Shared::default();
+        let Admitted::Later(mut held) = admit(&shared, records(2)) else {
+            panic!()
+        };
+        assert!(shared.stop_taking(), "it still holds a request");
+        assert!(matches!(admit(&shared, records(1)), Admitted::Busy));
+        assert_eq!(shared.take(10, 1 << 20, Duration::ZERO).len(), 2);
+        assert!(!shared.stop_taking(), "it has handed everything over");
+        shared.answer_through(1);
+        assert!(answered(&mut held));
+    }
+
     /// A request is held whole and its records cut as they are taken, so one taken over several polls is answered
     /// only once its last record is delivered, and its body is counted until then.
     #[test]

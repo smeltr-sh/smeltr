@@ -494,6 +494,30 @@ fn batches_within_the_interval_share_one_line_object() {
     }
 }
 
+/// A destination asked to finish, as a stopping deployment asks, finishes its open object well before its interval,
+/// and each batch handed over after that too.
+#[test]
+fn a_finishing_destination_does_not_wait_for_its_interval() {
+    let mut f = fixture(&config(ObjectFormat::Ndjson, Compression::Zstd));
+    assert!(f.hand_over(1, vec![row(r#"{"n":1}"#, None)]).is_empty());
+    f.destination.finish();
+    let completed = |f: &mut Fixture| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let done = f.destination.poll_completions().unwrap();
+            if !done.is_empty() {
+                break done.iter().map(|c| c.batch).collect::<Vec<_>>();
+            }
+            assert!(std::time::Instant::now() < deadline, "not finished inside the 60 s interval");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    assert_eq!(completed(&mut f), [1]);
+    assert!(f.hand_over(2, vec![row(r#"{"n":2}"#, None)]).is_empty());
+    assert_eq!(completed(&mut f), [2]);
+    assert_eq!(f.objects().len(), 2);
+}
+
 /// A line object is finished at its interval with no `flush`, and its batch acknowledged then.
 #[test]
 fn a_line_object_is_finished_at_its_interval() {
