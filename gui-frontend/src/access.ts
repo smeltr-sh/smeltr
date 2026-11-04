@@ -109,7 +109,6 @@ export const NOT_IN_DEMO = import.meta.env.MODE === 'demo' ? 'Not in the demo' :
  * signed in, unless another is named -- or `''` when it is. As the leader judges it: a deployer in
  * every area the change touches, and an administrator for a path in no area. */
 export function deployBlocker(paths: string[], access: AccessDto = mine()): string {
-  if (NOT_IN_DEMO) return NOT_IN_DEMO;
   if (access.administrator) return '';
   const outside = paths.find((p) => areaOfPath(p) === null);
   if (outside !== undefined) return `Deploying this takes an administrator: it changes ${outside}.`;
