@@ -3237,7 +3237,7 @@
     },
     {
       "form": "`status ${status}`",
-      "rule": "A `str` with values in it, between backticks: each `${...}` holds an expression, and a null in any of them makes the whole string null. A backslash escapes: `\\n`, `\\t`, `\\r`, `` \\` ``, `\\$` and `\\\\`, so `\\${` writes `${` itself.",
+      "rule": "A `str` with values in it, between backticks: each `${...}` holds an expression, and a null in any of them makes the whole string null. A backslash escapes: `\\n`, `\\t`, `\\r`, `\\0`, `\\\\`, `\\u`, `` \\` `` and `\\$`, so `\\${` writes `${` itself.",
       "examples": [
         {
           "given": ["let status: i64 = 404"],
