@@ -148,6 +148,9 @@ pub enum ToRuntime {
     /// Whether the progress the supervisor holds for the leader is past its bound. While it is, held sources read
     /// nothing new (`super::held::BACKLOG_FULL`). Sent when it changes, and to a runtime as it starts.
     Backlogged { full: bool },
+    /// The levels this runtime keeps its lines at, as the leader last sent them. Sent when they change, and to a
+    /// runtime as it starts.
+    LogLevels { levels: crate::heartbeat::LogLevels },
     /// Drain and exit. The supervisor kills the process tree if this is not answered in time.
     Stop,
 }
@@ -410,7 +413,8 @@ impl Frame for ToRuntime {
             | ToRuntime::Listed { .. }
             | ToRuntime::Mirror { .. }
             | ToRuntime::Holds { .. }
-            | ToRuntime::Backlogged { .. } => MAX_FRAME,
+            | ToRuntime::Backlogged { .. }
+            | ToRuntime::LogLevels { .. } => MAX_FRAME,
         }
     }
 }
@@ -447,7 +451,7 @@ fn frame_unreadable(e: &serde_json::Error) {
     if let Some(error) = failing.fail_due(e.to_string()) {
         let count = *count;
         crate::logs::while_delivering(|| {
-            tracing::warn!(target: "runtime.frame_unreadable", count, error, "a message between the supervisor and the runtime could not be read, so what it carried is lost");
+            tracing::warn!(name: "frame_unreadable", target: "pipelines", count, error, "a message between the supervisor and the runtime could not be read, so what it carried is lost");
         });
         unread.1 = 0;
     }
@@ -462,7 +466,7 @@ fn logs_dropped(dropped: usize) {
     if dropping.0.fail_due("dropping".to_string()).is_some() {
         let dropped = dropping.1;
         crate::logs::while_delivering(|| {
-            tracing::warn!(target: "worker.runtime_logs_dropped", dropped, "the runtime's logs outgrew what this worker can hold for the leader, so the oldest were dropped");
+            tracing::warn!(name: "dropped", target: "logs", dropped, "the runtime's logs outgrew what this worker can hold for the leader, so the oldest were dropped");
         });
         dropping.1 = 0;
     }
@@ -545,7 +549,7 @@ pub fn run_runtime_child() -> ! {
             // consumer nobody can stop, so it stops itself -- and bounds its own stop, because the deadline that
             // would otherwise end it belonged to the process that has just disappeared.
             stopping.store(true, Ordering::Relaxed);
-            tracing::warn!(target: "runtime.orphaned", budget_secs = ORPHAN_DRAIN_BUDGET.as_secs(), "the supervisor is gone, so the runtime stops itself");
+            tracing::warn!(name: "orphaned", target: "pipelines", budget_secs = ORPHAN_DRAIN_BUDGET.as_secs(), "the supervisor is gone, so the runtime stops itself");
             let armed = std::thread::Builder::new().spawn(|| {
                 std::thread::sleep(ORPHAN_DRAIN_BUDGET);
                 // The cooperative stop joins threads that may never return, which is the hang this boundary
@@ -583,7 +587,7 @@ pub fn run_runtime_child() -> ! {
     // this process's -- it is this one that opens the deployment's connections.
     let (suites, groups) = crate::crypto::offered();
     tracing::debug!(
-        target: "runtime.tls_offered",
+        name: "tls_offered", target: "pipelines",
         suites = suites.join(", "),
         groups = groups.join(", "),
         "this runtime offers these TLS algorithms"
@@ -610,7 +614,7 @@ pub fn run_runtime_child() -> ! {
             Err(Refused::TooLarge { bytes, limit }) => {
                 owed.committed(registry);
                 tracing::warn!(
-                    target: "runtime.report_too_large",
+                    name: "report_too_large", target: "pipelines",
                     bytes,
                     limit,
                     "a report was past what one frame may carry, so this window of counts and logs is dropped"
@@ -622,7 +626,7 @@ pub fn run_runtime_child() -> ! {
                     facts.streams.give_back(streams);
                 }
                 tracing::warn!(
-                    target: "runtime.report_not_written",
+                    name: "report_not_written", target: "pipelines",
                     error = %e,
                     "a report did not reach the supervisor, so its counts and logs are offered again"
                 )
@@ -661,7 +665,7 @@ pub fn run_runtime_child() -> ! {
 
     if SIGNALED.load(Ordering::Relaxed) {
         tracing::info!(
-            target: "runtime.stopping_on_signal",
+            name: "stopping_on_signal", target: "processes",
             "this runtime was signaled to stop, so it is draining"
         );
     }
@@ -719,7 +723,7 @@ fn obey(frame: ToRuntime, runtime: &Runtime) -> bool {
     } = runtime;
     match frame {
         ToRuntime::Stop => {
-            tracing::info!(target: "runtime.stopping", "the supervisor asked the runtime to stop");
+            tracing::info!(name: "stopping", target: "processes", "the supervisor asked the runtime to stop");
             return false;
         }
         ToRuntime::Capture(invitation) => super::serve_capture(captures, *invitation, registry, secrets),
@@ -729,12 +733,13 @@ fn obey(frame: ToRuntime, runtime: &Runtime) -> bool {
             let offered = logs.len();
             let events: Vec<_> = logs.into_iter().filter_map(LogDto::into_event).collect();
             if events.len() < offered {
-                tracing::debug!(target: "runtime.mirror_skipped", count = offered - events.len(), "mirrored logs of a severity this build does not know were skipped");
+                tracing::trace!(name: "mirror_skipped", target: "pipelines", count = offered - events.len(), "mirrored logs of a severity this build does not know were skipped");
             }
             crate::logs::mirror(events);
         }
         ToRuntime::Holds { seq, holds } => held.apply(seq, holds),
         ToRuntime::Backlogged { full } => held.set_upstream_backlogged(full),
+        ToRuntime::LogLevels { levels } => levels.apply(),
         ToRuntime::Start(_) => {}
     }
     true
@@ -1035,6 +1040,12 @@ impl RuntimeHandle {
             .send_within(ToRuntime::Backlogged { full }, CONTROL_FRAME_BUDGET)
     }
 
+    /// Tell this runtime the levels to keep its lines at.
+    pub fn log_levels(&mut self, levels: crate::heartbeat::LogLevels) -> std::io::Result<()> {
+        self.control
+            .send_within(ToRuntime::LogLevels { levels }, CONTROL_FRAME_BUDGET)
+    }
+
     /// Hand this runtime what the supervisor recorded and said, to mirror.
     pub fn mirror(&mut self, samples: Vec<MetricSampleDto>, logs: Vec<LogDto>) -> std::io::Result<()> {
         self.control
@@ -1048,7 +1059,7 @@ impl RuntimeHandle {
     /// says so, rather than claiming a replacement over a runtime that may still be running.
     pub fn stop(&mut self, graceful: Duration, hard: Duration, inbox: &RuntimeInbox) -> std::io::Result<()> {
         if let Err(e) = self.control.send_within(ToRuntime::Stop, CONTROL_FRAME_BUDGET) {
-            tracing::debug!(target: "worker.stop_not_sent", error = %e, "the runtime could not be asked to stop, so it is ended at the deadline");
+            tracing::debug!(name: "stop_not_sent", target: "processes", error = %e, "the runtime could not be asked to stop, so it is ended at the deadline");
         }
         let deadline = Instant::now() + graceful;
         while Instant::now() < deadline {
@@ -1062,7 +1073,7 @@ impl RuntimeHandle {
             std::thread::sleep(Duration::from_millis(10));
         }
         tracing::warn!(
-            target: "worker.runtime_drain_timed_out",
+            name: "drain_timed_out", target: "processes",
             subject = %self.commit,
             graceful = ?graceful,
             "a runtime did not drain in time, so its process tree is being killed"
@@ -1201,7 +1212,7 @@ fn read_from_runtime_frames(from: impl std::io::Read, inbox: &Arc<RuntimeInbox>,
             FromRuntime::Captured { report, .. } => inbox.captured.lock().unwrap().push(*report),
             // Said here, where it can still reach the leader: the runtime sends nothing after this.
             FromRuntime::Stopped { .. } => {
-                tracing::info!(target: "runtime.stopped", incarnation, "the runtime stopped");
+                tracing::info!(name: "stopped", target: "processes", incarnation, "the runtime stopped");
                 inbox.exited.store(true, Ordering::Relaxed)
             }
         }
@@ -1762,7 +1773,10 @@ mod tests {
                         .map(|d| d.as_millis() as i64 + 1_000)
                         .unwrap_or_default(),
                     level: "info".into(),
-                    site: "mirror.obey.test".into(),
+                    class: Some("logs".into()),
+                    r#type: "mirror_obey_test".into(),
+                    service: None,
+                    site: String::new(),
                     message: "a supervisor said something".into(),
                     thread: None,
                     boot_id: None,
@@ -1781,7 +1795,7 @@ mod tests {
         let said: Vec<_> = reader
             .drain(usize::MAX)
             .into_iter()
-            .filter(|e| e.site == "mirror.obey.test")
+            .filter(|e| e.r#type == "mirror_obey_test")
             .collect();
         assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(

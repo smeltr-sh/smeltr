@@ -121,9 +121,10 @@ impl From<&crate::plan::topology::DestinationKind> for System {
                 crate::plan::topology::Cloud::Azure(_) => System::AzureBlob,
                 crate::plan::topology::Cloud::Sftp(_) => System::Sftp,
             },
-            DestinationKind::Http(_) | DestinationKind::Prometheus(_) | DestinationKind::LogAnalytics(_) => {
-                System::Http
-            }
+            DestinationKind::Http(_)
+            | DestinationKind::Prometheus(_)
+            | DestinationKind::LogAnalytics(_)
+            | DestinationKind::Otlp(_) => System::Http,
             DestinationKind::Iceberg(_) => System::Iceberg,
             DestinationKind::Delta(_) => System::Delta,
         }
@@ -602,7 +603,7 @@ fn latest_by_group_pair(store: &RegistryStore, metric: &str, since_ms: i64) -> H
         Ok(series) => series,
         Err(e) => {
             tracing::warn!(
-                target: "map.metric_unreadable",
+                name: "map_metric_unreadable", target: "status",
                 subject = %metric,
                 error = %e,
                 "could not read a metric for the topology map, so it draws no poison edges"
@@ -1020,7 +1021,8 @@ mod tests {
             area: None,
             condition: warnings::Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: "orders-west".to_string(),
             group: Some("ingest-1".to_string()),
             severity: warnings::Severity::Failed,

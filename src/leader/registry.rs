@@ -243,7 +243,7 @@ impl Registry {
         }
         if unreadable.0 > 0 {
             tracing::warn!(
-                target: "registry.latest_state_unreadable",
+                name: "latest_state_unreadable", target: "heartbeats",
                 rows = unreadable.0,
                 first = %unreadable.1,
                 "saved worker status rows could not be read, so they are dropped"
@@ -360,7 +360,7 @@ impl Registry {
             && let Err(e) = store.forget_worker(worker_id)
         {
             tracing::warn!(
-                target: "registry.worker_not_forgotten",
+                name: "not_forgotten", target: "heartbeats",
                 subject = %worker_id,
                 error = %e,
                 "a forgotten worker's rows could not be dropped from disk, so they come back at the next restart"
@@ -517,7 +517,7 @@ impl Registry {
                     failing.fail(e.to_string());
                     if let Some(error) = failing.due() {
                         tracing::warn!(
-                            target: "registry.logs_not_persisted",
+                            name: "logs_not_persisted", target: "heartbeats",
                             subject = %worker_id,
                             events = events.len(),
                             error,
@@ -528,7 +528,7 @@ impl Registry {
                 }
                 Ok(()) => {
                     if failing.clear() {
-                        tracing::info!(target: "registry.logs_persisted_again", "the fleet's logs are being persisted again");
+                        tracing::info!(name: "logs_persisted_again", target: "heartbeats", "the fleet's logs are being persisted again");
                     }
                 }
             }
@@ -596,7 +596,7 @@ impl Registry {
         for k in &inserted {
             let it = k.logged();
             tracing::warn!(
-                target: "issues.began",
+                name: "began", target: "status",
                 issue = it.issue,
                 group = it.group,
                 subject = it.subject,
@@ -607,7 +607,7 @@ impl Registry {
         for (k, start) in &removed {
             let it = k.logged();
             tracing::info!(
-                target: "issues.cleared",
+                name: "cleared", target: "status",
                 issue = it.issue,
                 group = it.group,
                 subject = it.subject,
@@ -622,7 +622,7 @@ impl Registry {
             let inserted: Vec<(String, String)> = inserted.into_iter().map(|k| (k.entry, k.subject)).collect();
             if let Err(e) = store.sync_fact_clock(&removed, &inserted, now_ms) {
                 tracing::warn!(
-                    target: "registry.fact_clock_not_persisted",
+                    name: "fact_clock_not_persisted", target: "heartbeats",
                     error = %e,
                     "could not persist the fact clock, so first-seen times restart from this moment"
                 );
@@ -716,7 +716,7 @@ fn persist_heartbeat(
             // restart, not a reason to lose the window's counts.
             Err(e) => {
                 tracing::warn!(
-                    target: "registry.heartbeat_not_encoded",
+                    name: "not_encoded", target: "heartbeats",
                     subject = %worker_id,
                     thread_id = %report.thread_id,
                     error = %e,
@@ -752,7 +752,7 @@ fn persist_heartbeat(
             failing.fail(e.to_string());
             if let Some(error) = failing.due() {
                 tracing::warn!(
-                    target: "registry.heartbeat_not_persisted",
+                    name: "not_persisted", target: "heartbeats",
                     subject = %worker_id,
                     threads = threads.len(),
                     points = points.len(),
@@ -766,7 +766,7 @@ fn persist_heartbeat(
         }
         Ok(()) => {
             if failing.clear() {
-                tracing::info!(target: "registry.heartbeats_persisted_again", "heartbeats are being mirrored to disk again");
+                tracing::info!(name: "persisted_again", target: "heartbeats", "heartbeats are being mirrored to disk again");
             }
         }
     }
@@ -1100,8 +1100,11 @@ mod tests {
             r.observe_facts(&HashSet::from([key.clone()]), 2_000);
         });
         assert_eq!(began.len(), 1, "{began:?}");
-        let (level, site, fields) = &began[0];
-        assert_eq!((*level, site.as_str()), (tracing::Level::WARN, "issues.began"));
+        let (level, class, kind, fields) = &began[0];
+        assert_eq!(
+            (*level, class.as_str(), kind.as_str()),
+            (tracing::Level::WARN, "status", "began")
+        );
         let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(field("issue"), Some("sourceBlocked"));
         assert_eq!(field("group"), Some("prod"));
@@ -1112,8 +1115,11 @@ mod tests {
             r.observe_facts(&HashSet::new(), 61_000);
         });
         assert_eq!(cleared.len(), 1, "{cleared:?}");
-        let (level, site, fields) = &cleared[0];
-        assert_eq!((*level, site.as_str()), (tracing::Level::INFO, "issues.cleared"));
+        let (level, class, kind, fields) = &cleared[0];
+        assert_eq!(
+            (*level, class.as_str(), kind.as_str()),
+            (tracing::Level::INFO, "status", "cleared")
+        );
         let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(field("held_secs"), Some("60"));
         assert_eq!(field("message"), Some("an issue cleared"));

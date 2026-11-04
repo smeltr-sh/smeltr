@@ -67,7 +67,7 @@ pub fn backfill_env(env_var: &str, value: Option<impl ToString>) {
     let Some(value) = value else { return };
     let current = std::env::var(env_var).ok();
     if should_backfill(current.as_deref()) {
-        tracing::debug!(target: "startup.setting_from_file", var = env_var, "a setting the environment did not give was taken from the config file");
+        tracing::debug!(name: "setting_from_file", target: "processes", var = env_var, "a setting the environment did not give was taken from the config file");
         unsafe { std::env::set_var(env_var, value.to_string()) };
     }
 }
@@ -175,8 +175,9 @@ fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
-/// How much a process says about itself: `error`, `warn`, `info` (the default), `debug` or `trace`. Everything
-/// below it is refused at its call site, so a level nobody reads costs nothing to leave in the code.
+/// The level a process keeps its lines at until the fleet's levels reach it (`crate::leader::log_levels`), which
+/// then replace it: `error`, `warn`, `info` (the default), `debug` or `trace`. It is how a worker that never
+/// reaches the leader says more.
 pub fn log_level() -> tracing::Level {
     let Some(value) = env("SMELTR_LOG_LEVEL") else {
         return tracing::Level::INFO;

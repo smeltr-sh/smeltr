@@ -83,8 +83,9 @@ impl Unwritten {
         &self.subject
     }
 
-    /// Counts `count` of `kind` unwritten, and warns, saying `why`, when no warning of this destination's is recent.
-    pub fn note(&self, kind: &str, count: u64, why: &str) {
+    /// Counts `count` of `kind` unwritten, and warns, saying what `why` makes, when no warning of this destination's is
+    /// recent. `why` runs only for a warning, as most notes make none.
+    pub fn note(&self, kind: &str, count: u64, why: impl FnOnce() -> String) {
         if count == 0 {
             return;
         }
@@ -94,11 +95,11 @@ impl Unwritten {
             return;
         }
         tracing::warn!(
-            target: "egress.destination_unwritten",
+            name: "unwritten", target: "destinations",
             subject = %self.subject,
             kind,
             count,
-            error = why,
+            error = why(),
             "a destination's store took a request, but its answer says it stored fewer rows than it was sent"
         );
     }
@@ -194,8 +195,10 @@ pub trait Protocol: Clone + Send + 'static {
     /// The item for `row`, or why the service could never take it.
     fn admit(&self, row: &OwnedRecord) -> Result<Self::Item, String>;
 
-    /// What `item` adds to a request body, counted against the request size limit.
-    fn size(&self, item: &Self::Item) -> usize;
+    /// What `item` adds to a request body after `previous`, the item before it in the same request, or as the
+    /// request's first item where `previous` is `None`. Counted against the request size limit, so never less than
+    /// what it adds.
+    fn size(&self, item: &Self::Item, previous: Option<&Self::Item>) -> usize;
 
     fn body(&self, items: &[Self::Item]) -> Vec<u8>;
 
@@ -234,6 +237,15 @@ pub struct HttpDestination<P: Protocol, T: Transport> {
     throttle: Option<Throttle>,
     /// The destination as its author named it, for its lines. The service's name until [`HttpDestination::with_subject`].
     subject: Arc<str>,
+    said: Arc<Said>,
+}
+
+/// When a destination last said at debug what goes on for as long as its service is under load, shared by its
+/// senders. Each time is said at trace, and at debug once every [`crate::logs::RELOG_EVERY`].
+#[derive(Default)]
+struct Said {
+    throttled: std::sync::Mutex<crate::logs::Repeat>,
+    halved: std::sync::Mutex<crate::logs::Repeat>,
 }
 
 /// Where a destination counts the time it held its sends back because the service asked it to slow down, as
@@ -267,6 +279,7 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
             pool: None,
             throttle: None,
             subject,
+            said: Arc::default(),
         }
     }
 
@@ -326,6 +339,7 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
                     stall_after: self.stall_after,
                     throttle: self.throttle.clone(),
                     subject: self.subject.clone(),
+                    said: self.said.clone(),
                 })
                 .collect(),
             start,
@@ -343,14 +357,23 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
         sorted.sort_by(|a, b| order(&a.0, &b.0));
         group.bytes = 0;
         for (item, index) in sorted {
-            let size = self.protocol.size(&item);
-            if self.overflows(group, size) {
-                full.push(group.cut());
-            }
+            let size = self.sized(group, &item);
+            let size = match self.overflows(group, size) {
+                true => {
+                    full.push(group.cut());
+                    self.protocol.size(&item, None)
+                }
+                false => size,
+            };
             group.bytes += size;
             group.pending.push(item);
             group.sent_index.push(index);
         }
+    }
+
+    /// What `item` adds to `group` as its next item.
+    fn sized(&self, group: &Group<P::Item>, item: &P::Item) -> usize {
+        self.protocol.size(item, group.pending.last())
     }
 
     /// Whether `group` must go before an item of `size` joins it: a request stays within `max_request_bytes`, and an
@@ -362,7 +385,7 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
     /// One round on this thread, with retries, against `group`: the refusals, each carrying its row out of `rows`.
     fn post(&mut self, rows: &[OwnedRecord], group: &mut Group<P::Item>) -> Result<Vec<Rejection>, IoError> {
         group.bytes = 0;
-        let mut round = Round::new(self.stall_after, self.subject.clone());
+        let mut round = Round::new(self.stall_after, self.subject.clone(), self.said.clone());
         let delivered = deliver(&self.protocol, &mut self.transport, group, &mut round);
         Throttle::note(&self.throttle, round.waited);
         delivered?;
@@ -388,12 +411,13 @@ struct Round {
     rejections: Vec<Rejection>,
     /// The destination as its author named it, for the round's lines.
     subject: Arc<str>,
+    said: Arc<Said>,
     /// Whether this round has said the service asked it to slow down.
     throttle_said: bool,
 }
 
 impl Round {
-    fn new(stall_after: Duration, subject: Arc<str>) -> Round {
+    fn new(stall_after: Duration, subject: Arc<str>, said: Arc<Said>) -> Round {
         Round {
             stall_after,
             deadline: Instant::now() + stall_after,
@@ -401,6 +425,7 @@ impl Round {
             waited: Duration::ZERO,
             rejections: Vec::new(),
             subject,
+            said,
             throttle_said: false,
         }
     }
@@ -419,7 +444,7 @@ fn in_halves<P: Protocol, T: Transport>(
         return None;
     }
     let half = group.pending.len() / 2;
-    tracing::debug!(target: "http.request_halved", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
+    crate::debug_when!(round.said.halved.lock().unwrap_or_else(std::sync::PoisonError::into_inner).due(), name: "request_halved", target: "destinations", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
     let mut tail = Group {
         route: group.route.clone(),
         part: group.part,
@@ -470,7 +495,7 @@ fn deliver<P: Protocol, T: Transport>(
                     return halves;
                 }
                 // One document whose answer alone is past the bound: refused, since asking again reads the same answer.
-                tracing::debug!(target: "http.answer_too_large", subject = %round.subject, service = protocol.name(), limit_mib = MAX_ANSWER_BYTES >> 20, "the answer to one document was larger than the worker holds, so the worker rejects the document and the destination's Refused answer decides what happens to it");
+                tracing::debug!(name: "answer_too_large", target: "destinations", subject = %round.subject, service = protocol.name(), limit_mib = MAX_ANSWER_BYTES >> 20, "the answer to one document was larger than the worker holds, so the worker rejects the document and the destination's Refused answer decides what happens to it");
                 round.rejections.push(Rejection {
                     doc: group.sent_index[0],
                     reason: format!(
@@ -536,7 +561,7 @@ fn deliver<P: Protocol, T: Transport>(
         }
         if !round.throttle_said {
             round.throttle_said = true;
-            tracing::debug!(target: "http.throttled", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
+            crate::debug_when!(round.said.throttled.lock().unwrap_or_else(std::sync::PoisonError::into_inner).due(), name: "throttled", target: "destinations", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
         }
         std::thread::sleep(nap);
         round.waited += nap;
@@ -576,6 +601,7 @@ struct HttpSender<P: Protocol, T: Transport> {
     stall_after: Duration,
     throttle: Option<Throttle>,
     subject: Arc<str>,
+    said: Arc<Said>,
 }
 
 impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
@@ -583,7 +609,7 @@ impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
     type Job = Group<P::Item>;
 
     fn send_one(&mut self, mut group: Group<P::Item>) -> pipelined::Delivered {
-        let mut round = Round::new(self.stall_after, self.subject.clone());
+        let mut round = Round::new(self.stall_after, self.subject.clone(), self.said.clone());
         let delivered = deliver(&self.protocol, &mut self.transport, &mut group, &mut round);
         Throttle::note(&self.throttle, round.waited);
         pipelined::Delivered {
@@ -644,10 +670,14 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
                     groups.len() - 1
                 }
             };
-            let size = self.protocol.size(&item);
-            if order.is_none() && self.overflows(&groups[at], size) {
-                full.push(groups[at].cut());
-            }
+            let size = self.sized(&groups[at], &item);
+            let size = match order.is_none() && self.overflows(&groups[at], size) {
+                true => {
+                    full.push(groups[at].cut());
+                    self.protocol.size(&item, None)
+                }
+                false => size,
+            };
             let group = &mut groups[at];
             group.bytes += size;
             group.sent_index.push(i);

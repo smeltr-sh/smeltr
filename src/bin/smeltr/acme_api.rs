@@ -363,7 +363,7 @@ async fn settings_writes<'a>(auth: &'a Auth, progress: &acme::Progress) -> tokio
         Ok(held) => held,
         Err(_) => {
             progress.set(acme::Step::Queued);
-            tracing::info!(target: "leader.acme_queued", "waiting for another change to the settings to finish");
+            tracing::info!(name: "queued", target: "certificates", "waiting for another change to the settings to finish");
             auth.settings_writes.lock().await
         }
     }
@@ -381,13 +381,13 @@ async fn run(
     serve: bool,
 ) -> Result<(), String> {
     let now_ms = smeltr::leader::warnings::now_millis();
-    tracing::info!(target: "leader.acme_order_started", names = %settings.names.join(","), challenge = settings.challenge.as_str(), "ordering a certificate");
+    tracing::info!(name: "order_started", target: "certificates", names = %settings.names.join(","), challenge = settings.challenge.as_str(), "ordering a certificate");
     let progress = &serving.ordering.progress;
     let _cleared = Cleared(progress);
     progress.set(acme::Step::Account);
     let mut outcome = order_once(auth, serving, settings, actor, required, serve, now_ms).await;
     if outcome.is_ok() {
-        tracing::info!(target: "leader.acme_order_issued", names = %settings.names.join(","), "the certificate authority issued a certificate");
+        tracing::info!(name: "order_issued", target: "certificates", names = %settings.names.join(","), "the certificate authority issued a certificate");
     }
     if let Err(e) = &outcome {
         let _writes = settings_writes(auth, progress).await;
@@ -469,7 +469,7 @@ pub(crate) async fn renew_if_due(auth: &Auth, serving: &Arc<Tls>) {
     let settings = match settings(auth).await {
         Ok(settings) => settings,
         Err(e) => {
-            tracing::warn!(target: "leader.acme_settings_unreadable", error = %e, "could not read the ACME settings");
+            tracing::warn!(name: "settings_unreadable", target: "certificates", error = %e, "could not read the ACME settings");
             return;
         }
     };
@@ -484,7 +484,7 @@ pub(crate) async fn renew_if_due(auth: &Auth, serving: &Arc<Tls>) {
     let (due, served) = match (acme::state(&serving.dir), acme::source(&serving.dir)) {
         (Ok(state), Ok(source)) => (acme::renews(&state, now_ms), source == acme::Source::Acme),
         (Err(e), _) | (_, Err(e)) => {
-            tracing::warn!(target: "leader.acme_state_unreadable", error = %e, "could not read what the last order left");
+            tracing::warn!(name: "state_unreadable", target: "certificates", error = %e, "could not read what the last order left");
             return;
         }
     };

@@ -48,8 +48,8 @@
 
   <h2 id="how-it-works">How it works</h2>
   <p>
-    The source reads only what the process collects. To collect debug records, also set the worker's
-    startup log level to debug and restart it. See
+    The source reads only the log lines its worker keeps. To read debug log lines, also give their
+    class, their class and type, or their service an override at debug. See
     <a href="/docs/operations#logs">Change log verbosity</a>.
   </p>
 

@@ -301,8 +301,8 @@ export type Attention = {
   rank: number;
   /** The catalog's own sentence, for a row that is a catalog warning. */
   message?: string;
-  /** The log site of a worker's logged warning, which tells two of one worker's rows apart. */
-  site?: string;
+  /** The class and type of a worker's logged warning, which tell two of one worker's rows apart. */
+  line?: string;
 };
 
 function fromWarning(group: string, w: WarningDto, node?: MapNode): Attention {
@@ -313,7 +313,7 @@ function fromWarning(group: string, w: WarningDto, node?: MapNode): Attention {
     text: conditionLabel(w.condition),
     rank: w.severity === 'failed' ? 0 : 1,
     message: w.message,
-    site: w.site,
+    line: w.type === undefined ? undefined : `${w.class ?? ''} ${w.type}`,
   };
 }
 
@@ -343,10 +343,10 @@ export function attention(
   }
   const drawn = new Set(groups);
   // One subject can hold one condition twice, as a connector does for its certificate and its authorities.
-  // A worker holds its logged warnings once per site, and each site is its own row.
+  // A worker holds its logged warnings once per class and type, and each is its own row.
   const listed = new Set<string>();
   for (const w of groupWarnings) {
-    const key = `${w.group}|${w.subjectKind}|${w.subjectId}|${w.condition}|${w.site ?? ''}`;
+    const key = `${w.group}|${w.subjectKind}|${w.subjectId}|${w.condition}|${w.class ?? ''}|${w.type ?? ''}`;
     if (w.group === null || !drawn.has(w.group) || listed.has(key)) continue;
     listed.add(key);
     out.push(fromWarning(w.group, w));

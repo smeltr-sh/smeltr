@@ -8,14 +8,14 @@ fn a_process_with_no_worker_queues_nothing_for_a_leader() {
     smeltr::logs::start();
 
     for row in 0..20u64 {
-        tracing::error!(target: "leader.local.test", subject = "d1", row, "a leader said something");
+        tracing::error!(name: "leader_local_test", target: "logs", subject = "d1", row, "a leader said something");
     }
 
     // Wait for the drain thread to have written them, which is where queuing would happen.
     let began = std::time::Instant::now();
-    while smeltr::logs::written_by_site()
+    while smeltr::logs::written_by_type()
         .iter()
-        .all(|(site, n)| site != "leader.local.test" || *n < 20)
+        .all(|(_, kind, n)| kind != "leader_local_test" || *n < 20)
     {
         assert!(
             began.elapsed() < std::time::Duration::from_secs(5),

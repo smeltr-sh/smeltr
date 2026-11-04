@@ -2893,6 +2893,66 @@ test('A10: a Prometheus remote_write destination is added from its form, its Aut
   );
 });
 
+// A10, sources and destinations from a form. An OTLP destination takes the HTTP form's URL, headers and
+// credentials, and sends one signal to that signal's path after the url.
+test('A10: an OTLP destination is added from its form, sending spans gzipped, its Authorization as a credential', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.post('/api/secrets', {
+    name: 'otlp-token',
+    custody: 'leader-stored',
+    description: "the collector's bearer token",
+    value: 'Bearer abc',
+  });
+
+  await goto(admin, leader, '#/build/destinations');
+  await expect(admin.getByRole('heading', { name: 'Destinations' })).toBeVisible();
+  await admin.getByRole('button', { name: '+ Add destination' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'OTLP', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: 'new OTLP destination' })).toBeVisible();
+  await dialog.getByRole('textbox', { name: /^id/ }).fill('otel-out');
+  await dialog
+    .getByRole('textbox', { name: /^url/ })
+    .fill('https://otel-collector.example.com:4318');
+  await expect(dialog.getByRole('combobox', { name: /^format/ })).toHaveCount(0);
+  await dialog.getByRole('combobox', { name: /^signal/ }).selectOption('traces');
+
+  await dialog.getByRole('button', { name: '+ credential' }).click();
+  await dialog.getByRole('textbox', { name: 'header name' }).last().fill('Authorization');
+  await dialog
+    .getByRole('combobox', { name: /source$/ })
+    .last()
+    .selectOption('otlp-token');
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
+  await dialog.getByRole('combobox', { name: /^compression/ }).selectOption('gzip');
+  await expect(dialog.getByRole('spinbutton', { name: /^starting concurrency/ })).toBeVisible();
+  await dialog.screenshot({ path: test.info().outputPath('otlp-destination-form.png') });
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+
+  const saved = await api.get(`/api/areas/shared${ON}`);
+  expect(saved.config.destinations).toEqual([
+    {
+      id: 'otel-out',
+      type: 'otlp',
+      url: 'https://otel-collector.example.com:4318',
+      signal: 'traces',
+      compression: 'gzip',
+      credentials: { Authorization: { secret: 'otlp-token', version: 1 } },
+    },
+  ]);
+
+  await admin.reload();
+  await expect(admin.getByRole('button', { name: /^otel-out\b/ })).toContainText(
+    'otel-collector.example.com',
+  );
+});
+
 // A10, sources and destinations from a form. A Log Analytics workspace takes rows through a data collection rule,
 // signed in with Entra as Event Hubs is, less the connection string.
 test('A10: a Log Analytics workspace destination is added from its form, signed in as a service principal', async ({
@@ -3136,6 +3196,28 @@ test('A10: the Sources page names the worker that holds a listing source', async
   // A holder gone quiet keeps the source, and the row says how long since it was heard.
   w1.child.kill('SIGSTOP');
   await expect(row).toContainText(/held by w1, last heard \d+s ago/, { timeout: 60_000 });
+});
+
+// A10, a logs source's level. Trace would feed its own reading back into it, so the form never offers it, and a
+// source a file sets to trace shows the debug it reads.
+test('A10: a logs source never offers trace, and one set to trace shows debug', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'own-logs', type: 'logs', minLevel: 'trace' },
+  ]);
+  await goto(admin, leader, '#/build/sources');
+  const row = admin.getByRole('button', { name: /^own-logs\b/ });
+  await expect(row).toContainText('debug and above');
+  await row.click();
+  const level = admin.getByRole('combobox', { name: /^min level/ });
+  await expect(level).toHaveValue('debug');
+  await expect(level.locator('option')).toHaveText(['error', 'warn', 'info', 'debug']);
+  await admin.getByRole('button', { name: 'About min level' }).click();
+  await expect(admin.getByText('never reads trace')).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('logs-min-level.png'), fullPage: true });
 });
 
 test('A6: the lock page shows five rows a side, and a button shows the rest', async ({

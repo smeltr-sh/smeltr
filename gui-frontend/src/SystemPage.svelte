@@ -1,9 +1,7 @@
 <!--
   What belongs to this leader rather than to any person using it.
 
-  `nav.ts` holds the tab list. Logging is named in the design and has no
-  leader-side settings behind it yet, so offering it would be offering a form
-  that saves nothing.
+  `nav.ts` holds the tab list.
 -->
 <script lang="ts">
   import { BUSY, INCOMPLETE } from './Button.svelte';
@@ -24,6 +22,7 @@
   import GitRemoteSettings from './GitRemoteSettings.svelte';
   import LicenseSettings from './LicenseSettings.svelte';
   import AlertsSettings from './AlertsSettings.svelte';
+  import LoggingSettings from './LoggingSettings.svelte';
   import AgentSettings from './AgentSettings.svelte';
   import SecondaryTabs from './SecondaryTabs.svelte';
   import { SYSTEM_SECTIONS, type SystemSection } from './nav';
@@ -334,6 +333,8 @@
       <LicenseSettings />
     {:else if section === 'alerts'}
       <AlertsSettings />
+    {:else if section === 'logging'}
+      <LoggingSettings />
     {:else if loadFailed}
       <!-- The error bar says why. -->
     {:else if settings === null}

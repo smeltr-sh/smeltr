@@ -297,12 +297,12 @@ fn settle(out: &mut Vec<Turn>, owed: &mut Vec<String>) {
 /// Run one call, as the model is told its result.
 async fn run_call(host: &dyn Host, catalog: &[Route], call: &Call) -> Said {
     let (output, is_error) = if call.name != TOOL {
-        tracing::debug!(target: "agent.call_refused", name = %call.name, "the agent asked for a tool it has none of");
+        tracing::debug!(name: "call_refused", target: "api", name = %call.name, "the agent asked for a tool it has none of");
         (format!("there is no tool named {:?}", call.name), true)
     } else {
         match parse(catalog, &call.input) {
             Err(why) => {
-                tracing::debug!(target: "agent.call_refused", name = %call.name, %why, "the agent asked for a call outside its catalog");
+                tracing::debug!(name: "call_refused", target: "api", name = %call.name, %why, "the agent asked for a call outside its catalog");
                 (why, true)
             }
             Ok(request) => {

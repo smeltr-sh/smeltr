@@ -1160,7 +1160,7 @@
           {:else}
             <MapRows
               rows={needs.map((a) => ({
-                key: `${a.group}|${a.node ? nodeKey(a.group, a.node.kind, a.node.authorId) : a.subject}|${a.text}|${a.site ?? ''}`,
+                key: `${a.group}|${a.node ? nodeKey(a.group, a.node.kind, a.node.authorId) : a.subject}|${a.text}|${a.line ?? ''}`,
                 href: attentionHash(a),
                 subject: a.subject,
                 note: a.text,

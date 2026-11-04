@@ -564,7 +564,7 @@ pub fn startup_validate(reading: &Reading) {
     let shown = format!("{}/{}", reading.branch, reading.prefix);
     if !raw.unreadable.is_empty() {
         tracing::warn!(
-            target: "config.files_unreadable",
+            name: "files_unreadable", target: "deploy",
             subject = %shown,
             files = raw.unreadable.len(),
             detail = %raw.unreadable.iter().map(|(p, m)| format!("{p}: {m}")).collect::<Vec<_>>().join("; "),
@@ -574,7 +574,7 @@ pub fn startup_validate(reading: &Reading) {
     let errors = errors_in(raw.file, &reading.at());
     if !errors.is_empty() {
         tracing::warn!(
-            target: "config.does_not_compile",
+            name: "does_not_compile", target: "deploy",
             subject = %shown,
             errors = errors.len(),
             detail = %errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "),
@@ -792,11 +792,11 @@ fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(),
         // The group list is unreadable, so there is nothing to check against. The scope's own validation still
         // ran; refusing here would block every save on a repository this cannot enumerate.
         Err(e) if writing_shared => {
-            tracing::debug!(target: "config.merge_unchecked", error = %e, "the worker group list could not be read, so a save to shared was not checked against the worker groups");
+            tracing::debug!(name: "merge_unchecked", target: "deploy", error = %e, "the worker group list could not be read, so a save to shared was not checked against the worker groups");
             return Ok(());
         }
         Err(e) => {
-            tracing::debug!(target: "config.merge_unchecked", error = %e, "the worker group list could not be read, so a save was checked against its own worker group only");
+            tracing::debug!(name: "merge_unchecked", target: "deploy", error = %e, "the worker group list could not be read, so a save was checked against its own worker group only");
             written.map(|id| vec![id.to_string()]).unwrap_or_default()
         }
     };

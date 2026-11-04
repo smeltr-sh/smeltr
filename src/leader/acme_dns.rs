@@ -156,7 +156,7 @@ impl Publishing {
         loop {
             let asked = self.nameservers.all_answer(record).await;
             if let Ok(true) = asked {
-                tracing::info!(target: "leader.acme_dns_visible", record = %record.name, zone = %record.zone, "every nameserver answers the DNS-01 record");
+                tracing::info!(name: "dns_visible", target: "certificates", record = %record.name, zone = %record.zone, "every nameserver answers the DNS-01 record");
                 return Ok(());
             }
             if told.elapsed() >= TELL_EVERY {
@@ -165,7 +165,7 @@ impl Publishing {
                     Err(e) => e.clone(),
                     Ok(_) => "not every nameserver answers it yet".to_string(),
                 };
-                tracing::info!(target: "leader.acme_dns_waiting", record = %record.name, zone = %record.zone, waited_secs = started.elapsed().as_secs(), %answer, "waiting for the nameservers to answer the DNS-01 record");
+                tracing::info!(name: "dns_waiting", target: "certificates", record = %record.name, zone = %record.zone, waited_secs = started.elapsed().as_secs(), %answer, "waiting for the nameservers to answer the DNS-01 record");
             }
             if started.elapsed() >= self.within {
                 let why = match asked {
@@ -200,7 +200,7 @@ impl Prover for Publishing {
         }
         self.progress.set(Step::Publishing);
         let record = self.provider.publish(&record_name(name), value).await?;
-        tracing::info!(target: "leader.acme_dns_published", record = %record.name, zone = %record.zone, "published the DNS-01 record");
+        tracing::info!(name: "dns_published", target: "certificates", record = %record.name, zone = %record.zone, "published the DNS-01 record");
         self.published.lock().await.push(record.clone());
         self.progress.set(Step::Propagating);
         self.visible(&record).await
@@ -210,10 +210,10 @@ impl Prover for Publishing {
         for record in self.published.lock().await.drain(..) {
             match self.provider.remove(&record).await {
                 Ok(()) => {
-                    tracing::info!(target: "leader.acme_dns_removed", record = %record.name, "removed the DNS-01 record")
+                    tracing::info!(name: "dns_removed", target: "certificates", record = %record.name, "removed the DNS-01 record")
                 }
                 Err(e) => {
-                    tracing::warn!(target: "leader.acme_dns_left", record = %record.name, error = %e, "could not remove a DNS-01 record")
+                    tracing::warn!(name: "dns_left", target: "certificates", record = %record.name, error = %e, "could not remove a DNS-01 record")
                 }
             }
         }
@@ -458,7 +458,7 @@ impl Provider for Cloudflare {
             // Left by an earlier order that did not remove it: taken as this order's own, and removed with it.
             Err((codes, _)) if codes.iter().any(|c| IDENTICAL.contains(c)) => {
                 let id = self.existing(&zone_id, name, value).await?;
-                tracing::info!(target: "leader.acme_dns_adopted", record = %name, "the DNS-01 record was already there, and is taken as this order's");
+                tracing::info!(name: "dns_adopted", target: "certificates", record = %name, "the DNS-01 record was already there, and is taken as this order's");
                 id
             }
             Err((_, e)) => return Err(e),

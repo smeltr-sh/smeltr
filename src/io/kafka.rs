@@ -175,7 +175,7 @@ pub fn total_partitions(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Op
         let md = match consumer.fetch_metadata(Some(topic), SETUP_TIMEOUT) {
             Ok(md) => md,
             Err(e) => {
-                tracing::debug!(target: "kafka.size_unknown", %topic, group = %config.group_id, error = %e, "a topic's partitions could not be counted, so the source's size is unknown");
+                tracing::debug!(name: "size_unknown", target: "sources", %topic, group = %config.group_id, error = %e, "a topic's partitions could not be counted, so the source's size is unknown");
                 return None;
             }
         };
@@ -365,6 +365,8 @@ pub struct KafkaSource {
     stop: Option<StopPosition>,
     /// When `place_held` may next ask the broker.
     place_retry_at: Instant,
+    /// Placement that keeps failing, said at debug once in a while rather than every poll.
+    place_failing: crate::logs::Relog,
     /// Commits dropped because the group had moved on (`is_stale_commit`). Logged once per burst rather than per
     /// commit.
     stale_commits: u64,
@@ -432,6 +434,7 @@ impl KafkaSource {
             revoked: Vec::new(),
             stop: config.stop,
             place_retry_at: Instant::now(),
+            place_failing: crate::logs::Relog::new(),
             stale_commits: 0,
             stale_burst_at: None,
             stale_commit_logged: false,
@@ -447,7 +450,7 @@ impl KafkaSource {
     fn touch(&self) {
         if self.slot.touch() {
             tracing::info!(
-                target: "kafka.reader_resumed",
+                name: "reader_resumed", target: "sources",
                 subject = %self.topic,
                 "a Kafka source's reader is reading again; its topics rejoin the subscription"
             );
@@ -494,7 +497,11 @@ impl KafkaSource {
         let resolved = match client::resolve_starts(self.consumer(), &held) {
             Ok(resolved) => resolved,
             Err(e) => {
-                tracing::debug!(target: "kafka.placement_failed", error = %e, "a source still cannot place its held partitions; they wait for the next poll");
+                let due = self
+                    .place_failing
+                    .fail_due(format!("its partitions' starts could not be resolved: {e}"))
+                    .is_some();
+                crate::debug_when!(due, name: "placement_failed", target: "sources", group = %self.client.routes.group(), topic = %self.topic, error = %e, "a source still cannot place its held partitions; they wait for the next poll");
                 return Ok(());
             }
         };
@@ -522,11 +529,18 @@ impl KafkaSource {
                     }
                 }
                 Err(e) => {
-                    tracing::debug!(target: "kafka.placement_failed", group = %self.client.routes.group(), error = %e, "a source could not seek its held partitions; they wait for the next poll")
+                    let due = self
+                        .place_failing
+                        .fail_due(format!("its partitions could not be sought: {e}"))
+                        .is_some();
+                    crate::debug_when!(due, name: "placement_failed", target: "sources", group = %self.client.routes.group(), topic = %self.topic, error = %e, "a source could not seek its held partitions; they wait for the next poll");
                 }
             }
         }
         let mut state = self.slot.lock();
+        if state.unplaced.iter().all(|k| placed.contains(k)) {
+            self.place_failing.clear();
+        }
         for (topic, partition) in placed {
             // Revoked meanwhile: no longer this source's to place.
             if !state.unplaced.remove(&(topic.clone(), partition)) {
@@ -542,7 +556,7 @@ impl KafkaSource {
     /// Marks a partition exhausted and pauses it so librdkafka stops fetching from it. Idempotent.
     fn mark_exhausted(&self, state: &mut client::SlotState, topic: &str, partition: i32) -> Result<(), IoError> {
         if state.exhausted.insert((topic.to_string(), partition)) {
-            tracing::info!(target: "kafka.partition_at_stop", group = %self.client.routes.group(), topic, partition, "a partition reached the stop time set for the source, so it is no longer fetched");
+            tracing::info!(name: "partition_at_stop", target: "sources", group = %self.client.routes.group(), topic, partition, "a partition reached the stop time set for the source, so it is no longer fetched");
             self.slot.sync(self.consumer(), state)?;
         }
         Ok(())
@@ -605,7 +619,7 @@ impl KafkaSource {
             self.stale_burst_at = Some(Instant::now());
             if repeated {
                 tracing::warn!(
-                    target: "kafka.commit_stale",
+                    name: "commit_stale", target: "sources",
                     subject = %self.topic,
                     error = cause,
                     "dropping an offset commit, in the second rebalance within ten minutes: the group is \
@@ -615,7 +629,7 @@ impl KafkaSource {
                 );
             } else {
                 tracing::info!(
-                    target: "kafka.commit_stale",
+                    name: "commit_stale", target: "sources",
                     subject = %self.topic,
                     error = cause,
                     "dropping an offset commit: the consumer group rebalanced and these partitions are no \
@@ -631,7 +645,7 @@ impl KafkaSource {
             Ok(()) => {
                 if self.stale_commit_logged {
                     tracing::info!(
-                        target: "kafka.commit_current",
+                        name: "commit_current", target: "sources",
                         subject = %self.topic,
                         dropped = self.stale_commits,
                         "commits are landing again after some were dropped while the consumer group rebalanced"
@@ -1116,8 +1130,30 @@ fn any_broker_up(stats: &Statistics) -> bool {
         .any(|b| matches!(b.source.as_str(), "configured" | "learned") && b.state == "UP")
 }
 
+/// A line librdkafka said for a client of `class`'s, at `level`, from its facility `fac`.
+pub(super) fn librdkafka_said(class: &'static str, level: rdkafka::config::RDKafkaLogLevel, fac: &str, message: &str) {
+    use rdkafka::config::RDKafkaLogLevel as Said;
+    let level = match level {
+        Said::Emerg | Said::Alert | Said::Critical | Said::Error => tracing::Level::ERROR,
+        Said::Warning => tracing::Level::WARN,
+        Said::Notice | Said::Info => tracing::Level::INFO,
+        Said::Debug => tracing::Level::DEBUG,
+    };
+    crate::logs::library_said(
+        class,
+        "librdkafka",
+        level,
+        message.to_string(),
+        vec![("facility".into(), crate::logs::Value::Str(fac.to_string()))],
+    );
+}
+
 impl ClientContext for DeliveryTracker {
     const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
+
+    fn log(&self, level: rdkafka::config::RDKafkaLogLevel, fac: &str, message: &str) {
+        librdkafka_said("destinations", level, fac, message);
+    }
 
     fn generate_oauth_token(&self, config: Option<&str>) -> Result<OAuthToken, Box<dyn std::error::Error>> {
         entra::token(config)
@@ -1306,7 +1342,7 @@ impl KafkaDestination {
             message_ceiling(&producer_config, &config.default_topic).unwrap_or((DEFAULT_BATCH_BYTES, "default"));
         let (message_bytes, batch_bytes) = request_sizes(ceiling);
         tracing::info!(
-            target: "kafka.message_ceiling",
+            name: "message_ceiling", target: "destinations",
             destination = %id,
             topic = %config.default_topic,
             ceiling_bytes = ceiling,

@@ -4,7 +4,7 @@
 
 import type { LogRowDto } from './api';
 
-/** The severities a filter may name, most severe first. Mirrors
+/** The levels a filter may name, most severe first. Mirrors
  * `logs::LEVEL_LABELS`. */
 export const LEVELS = ['error', 'warn', 'info', 'debug', 'trace'];
 
@@ -14,7 +14,12 @@ export type Filters = {
   levels: string[];
   worker?: string;
   group?: string;
-  site?: string;
+  class?: string;
+  /** Matched anywhere in the type, or whole with `typeExact`: what clicking
+   * a line's type asks for, since a type can be part of another's. */
+  type?: string;
+  typeExact?: boolean;
+  service?: string;
   q?: string;
   /** The pager's position: rows below/above this id
    * (`LogsResponseDto.nextBefore` / `.nextAfter`). Carried like a filter, in
@@ -35,11 +40,14 @@ function params(f: Filters): URLSearchParams {
   for (const [name, value] of [
     ['worker', f.worker],
     ['group', f.group],
-    ['site', f.site],
+    ['class', f.class],
+    ['type', f.type],
+    ['service', f.service],
     ['q', f.q],
   ] as const) {
     if (value) params.set(name, value);
   }
+  if (f.type && f.typeExact) params.set('typeExact', 'true');
   for (const [name, value] of [
     ['before', f.before],
     ['after', f.after],
@@ -73,7 +81,7 @@ export function toQuery(f: Filters, limit: number): string {
   return q.toString();
 }
 
-/** `levels` with `level` added or taken away -- what a severity chip does.
+/** `levels` with `level` added or taken away -- what a level chip does.
  * Kept in `LEVELS` order so the same set is always the same hash. */
 export function toggleLevel(levels: string[], level: string): string[] {
   const next = levels.includes(level) ? levels.filter((l) => l !== level) : [...levels, level];
@@ -83,7 +91,9 @@ export function toggleLevel(levels: string[], level: string): string[] {
 /** True when anything is narrowed, which is what decides whether a "clear"
  * control has something to do. */
 export function isFiltered(f: Filters): boolean {
-  return f.levels.length > 0 || Boolean(f.worker || f.group || f.site || f.q);
+  return (
+    f.levels.length > 0 || Boolean(f.worker || f.group || f.class || f.type || f.service || f.q)
+  );
 }
 
 /** One field of a row, flattened for display from the delivered

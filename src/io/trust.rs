@@ -28,7 +28,7 @@ pub fn public() -> &'static [CertificateDer<'static>] {
     PUBLIC.get_or_init(|| {
         let host = rustls_native_certs::load_native_certs();
         for error in &host.errors {
-            tracing::warn!(target: "trust", %error, "a certificate in the host's trust store could not be read");
+            tracing::warn!(name: "host_trust_unreadable", target: "certificates", %error, "a certificate in the host's trust store could not be read");
         }
         let mut seen = std::collections::HashSet::new();
         webpki_root_certs::TLS_SERVER_ROOT_CERTS
