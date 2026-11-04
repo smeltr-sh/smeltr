@@ -399,6 +399,16 @@ fn issue_held(dir: &Path, names: Vec<String>, validity: Duration, unusable: &str
     cap_at(&mut params, &authority)?;
     let (leaf, key) = sign(params, &ca_key_pem, "the certificate")?;
     let (_, root) = signing_root_pem(&ca_pem, leaf.as_bytes())?;
+    let described = tracing::enabled!(target: "tls.issued", tracing::Level::TRACE)
+        .then(|| describe(leaf.as_bytes(), "the certificate").ok())
+        .flatten();
+    tracing::trace!(
+        target: "tls.issued",
+        names = ?described.as_ref().map(|d| &d.names),
+        fingerprint = described.as_ref().map(|d| d.fingerprint.as_str()),
+        validity_days = validity.as_secs() / 86_400,
+        "the leader issued a certificate"
+    );
     Ok((format!("{}\n{root}", leaf.trim_end()), key))
 }
 
@@ -630,6 +640,7 @@ pub fn reload(dir: &Path) {
 /// says nothing at all, leaving the socket on the older state it still serves.
 pub fn socket_took(dir: &Path, generation: u64) {
     with_generations(dir, |held| held.socket = generation);
+    tracing::trace!(target: "tls.socket_took", generation, "the leader's listener loaded its certificate");
 }
 
 /// Says what this leader presents has been replaced, and asks for the socket to catch up.
@@ -639,11 +650,13 @@ pub fn socket_took(dir: &Path, generation: u64) {
 /// built then settles. Asking for the reload here is what makes the two numbers meet again -- without it a
 /// replacement could leave the leader refusing every authority read with nothing scheduled to put it right.
 fn replaced_what_is_served(dir: &Path) {
-    with_generations(dir, |held| {
+    let generation = with_generations(dir, |held| {
         held.disk += 1;
         held.unserved = None;
         held.temporary = None;
+        held.disk
     });
+    tracing::trace!(target: "tls.replaced", generation, "the leader's certificate was replaced, so its listener reloads");
     reload(dir);
 }
 
@@ -1390,6 +1403,12 @@ pub fn cut_over_if_due(
     }
     let fleet_ready = holders.is_some_and(|holders| holders.iter().all(|held| held.contains(&state.incoming)));
     if !fleet_ready && now_ms < state.deadline_millis {
+        tracing::trace!(
+            target: "tls.cutover_not_due",
+            incoming = %state.incoming,
+            due_in_secs = (state.deadline_millis - now_ms) / 1000,
+            "a rotation's cutover waits until the fleet holds the incoming authority, or its deadline passes"
+        );
         return Ok(false);
     }
     cut_over(dir, sans, validity)?;

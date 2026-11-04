@@ -206,6 +206,7 @@ fn start_leader_tls() -> (
                 updates: Default::default(),
                 alerts: Default::default(),
                 directives: Default::default(),
+                log_levels: Default::default(),
             };
             let tls = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem)
                 .await

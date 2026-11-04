@@ -709,6 +709,18 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "GET",
+        path: "/api/settings/log-levels",
+        what: "The levels the fleet keeps its log lines at, by area, and the areas and levels it may name. No query.",
+        body: "",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/settings/log-levels",
+        what: "Set the levels the fleet keeps its log lines at. Replaces all current levels. No query.",
+        body: "{ default?: 'error'|'warn'|'info'|'debug'|'trace', areas?: { [area: string]: 'error'|'warn'|'info'|'debug'|'trace' } }",
+    },
+    Route {
+        method: "GET",
         path: "/api/settings/git-remote",
         what: "Git remote settings and sync state (whether a token is set, poll bounds). No query.",
         body: "",

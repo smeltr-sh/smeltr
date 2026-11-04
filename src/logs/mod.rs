@@ -27,6 +27,7 @@
 mod console;
 mod event;
 mod layer;
+pub mod levels;
 mod noted;
 
 pub(crate) use console::{render_fields, render_value, stamp};
@@ -334,7 +335,26 @@ fn level_of(ord: usize) -> Level {
     }
 }
 
-/// The threshold every call site is measured against.
+/// A line said at debug when `due` and at trace otherwise, so a thing that happens again and again is said each
+/// time and stands at debug now and then, as a [`Repeat`] or a [`Relog`] decides. One line for each time either
+/// way. A level must be a constant, which is why this picks between two.
+#[macro_export]
+macro_rules! debug_when {
+    ($due:expr, $($line:tt)+) => {
+        if $due {
+            ::tracing::debug!($($line)+)
+        } else {
+            ::tracing::trace!($($line)+)
+        }
+    };
+}
+
+/// `took` in whole milliseconds, as a line's `ms` says how long something took.
+pub fn millis(took: Duration) -> u64 {
+    u64::try_from(took.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The highest level any area keeps (`levels`): no line below it is kept anywhere.
 pub fn max_level() -> Level {
     level_of(MAX_LEVEL.load(Ordering::Relaxed))
 }
@@ -651,8 +671,9 @@ pub fn start() {
         .spawn(move || drain(receiver))
         .expect("start the logs drain thread (called once, at startup)");
 
+    // Until the fleet's levels arrive: the leader reads them as it starts, a worker on its first heartbeat.
     let level = crate::startup_config::log_level();
-    MAX_LEVEL.store(level_ord(level), Ordering::Relaxed);
+    levels::set(levels::Levels::at(level));
 
     // A second installation is somebody else's subscriber, not a failure of ours: leave it alone and keep our own
     // call sites working.

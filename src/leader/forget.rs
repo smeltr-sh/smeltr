@@ -121,6 +121,7 @@ pub async fn sweep(state: &AppState, now_ms: i64) {
     if !state.registry.sweep_due(now_ms, LOOK_EVERY) {
         return;
     }
+    let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "forget departed workers");
     let read = run_store(state.store.clone(), |s| {
         let forget_after = forget_after(s).map_err(crate::leader::store::StoreError::failed)?;
         Ok((forget_after, s.list_worker_credentials()?))

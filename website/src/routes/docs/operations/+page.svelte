@@ -91,15 +91,16 @@
   </p>
   <h2 id="logs">Change log verbosity</h2>
   <p>
-    Set the top-level <code>log_level</code> before any TOML section header, or set SMELTR_LOG_LEVEL in
-    the process environment, and restart the affected leader or worker:
+    Set log levels in Admin › System › Logging. The default level applies to every area, and an
+    override gives one area its own. The leader keeps a change at once and each worker from its next
+    heartbeat, with no restart.
   </p>
-  <pre><code
-      >log_level = "debug"
-
-[leader]
-enabled = true</code
-    ></pre>
+  <p>
+    A process starts at its startup log level and keeps it until the leader's levels reach it. To
+    see more from a worker that cannot reach the leader, set <code>SMELTR_LOG_LEVEL</code> or the
+    top-level
+    <code>log_level</code> and restart it.
+  </p>
   <p>
     Levels: error, warn, info (default), debug and trace. Use debug or trace briefly, then restore
     info. Do not share logs containing credentials or sensitive records.

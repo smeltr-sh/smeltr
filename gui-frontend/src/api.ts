@@ -361,8 +361,8 @@ export type SourceDto =
       id: string;
       type: 'logs';
       /** The lowest severity it carries: `error`, `warn`, `info` (absent),
-       * `debug` or `trace`. The process collects at `SMELTR_LOG_LEVEL`, and
-       * what it never collected is not there to read. */
+       * `debug` or `trace`. A line its process did not keep is not there to
+       * read. */
       minLevel?: string;
     };
 
@@ -3391,6 +3391,31 @@ export function putWarningSettings(sourceRowsBandPercent: number): Promise<Warni
     method: 'PUT',
     body: JSON.stringify({ sourceRowsBandPercent }),
   });
+}
+
+/** The levels the fleet keeps its log lines at: `default` for every area `areas` does not name. An absent default
+ * is each process's startup log level. */
+export interface LogLevelsDto {
+  default?: string;
+  areas?: Record<string, string>;
+}
+
+export type LogLevelsResult = {
+  ok: boolean;
+  errors: ApiError[];
+  levels: LogLevelsDto | null;
+  /** Every area smeltr's own lines are in. */
+  areas: string[];
+  /** The levels, most severe first. */
+  labels: string[];
+};
+
+export function getLogLevels(): Promise<LogLevelsResult> {
+  return apiJson('/api/settings/log-levels');
+}
+
+export function putLogLevels(levels: LogLevelsDto): Promise<LogLevelsResult> {
+  return apiJson('/api/settings/log-levels', { method: 'PUT', body: JSON.stringify(levels) });
 }
 
 /** Whether this leader looks for a newer release. */
