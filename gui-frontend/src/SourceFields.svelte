@@ -1094,10 +1094,17 @@
     {#if source.type !== 's2sReceiver' && source.type !== 'syslogReceiver'}
       <Field field="answerAfterDelivery" label="answer after delivery">
         {#snippet help()}
-          By default a request is answered as soon as it is received. Turn this on to answer only
-          once every destination has its records, so a worker crash loses nothing. The sender waits
-          until then; if its timeout is shorter, it sends the request again and the records arrive
-          twice.
+          <p>
+            Off, the default: a request is answered as soon as it is received, so the sender never
+            waits on a destination. If the worker crashes before the records are delivered, they are
+            lost.
+          </p>
+          <p>
+            On: a request is answered only once every destination has its records, so a crash loses
+            nothing. But a destination can hold records for minutes before it delivers them, and
+            many senders give up sooner: they send the request again, the records arrive more than
+            once, and the sender can fall behind.
+          </p>
         {/snippet}
         <Toggle
           bind:checked={
