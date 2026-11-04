@@ -690,6 +690,42 @@ describe('DemoLeader', () => {
     await leader.answer('GET', at(`/api/main/diff?${q}`), null);
     expect(asked.map((a) => a.body.path)).toEqual([undefined, 'groups/network/sources.json']);
   });
+
+  it('diffs one save of several, as a review shows a save on its own', async () => {
+    const asked: { base: object; branch: object }[] = [];
+    vi.stubGlobal('fetch', async (_: string, init: RequestInit) => {
+      asked.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ ok: true, errors: [], files: [], diff: '' }));
+    });
+    const leader = demoLeader(recording(), () => RECORDED);
+    const put = (topic: string) =>
+      leader.answer(
+        'PUT',
+        at('/api/areas/network/sources?branch=mine'),
+        JSON.stringify([{ id: 'fw', type: 'kafka', topics: [topic] }]),
+      );
+    await put('first');
+    await put('second');
+    await leader.answer(
+      'POST',
+      at('/api/branches/mine/open'),
+      JSON.stringify({ title: 'Two saves' }),
+    );
+    const timeline = (await leader.answer('GET', at('/api/branches/mine/timeline'), null)).body as {
+      events: { kind: string; commit: string; parent: string }[];
+    };
+    const second = timeline.events.filter((e) => e.kind === 'saved')[1];
+    asked.length = 0;
+    const q = new URLSearchParams({ from: second.parent, to: second.commit });
+    const diff = await leader.answer('GET', at(`/api/main/diff?${q}`), null);
+    expect(diff.body).toMatchObject({ ok: true });
+    expect(asked).toMatchObject([
+      {
+        base: { network: { config: { sources: [{ topics: ['first'] }] } } },
+        branch: { network: { config: { sources: [{ topics: ['second'] }] } } },
+      },
+    ]);
+  });
   it('answers a sample read at a commit the tab holds, as a review reads both ends of a change', async () => {
     const r = recording();
     const sample = { id: 's1', name: 'one', records: [{ _raw: 'a' }] };

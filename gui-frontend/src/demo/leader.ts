@@ -107,10 +107,15 @@ interface Branch {
   tests: Record<string, Record<string, TestDto>>;
   /** Its change, once opened for review, as the leader lists it (`branch_api::ChangeOut`). */
   change?: Change;
+  /** By commit: what it held at each save before its latest, so a review can show one save at a time. */
+  past?: Record<string, Files>;
   /** What happened to it, oldest first, as its change's timeline shows it: every save, and once opened, what
    * reviewers did. */
   events?: TimelineEvent[];
 }
+
+/** What a branch holds at one commit. */
+type Files = Pick<Branch, 'bundles' | 'samples' | 'tests'>;
 
 /** A change, as `branch_api::ChangeOut` lists it. */
 interface Change {
@@ -307,7 +312,7 @@ function stored<T extends { id: string }>(
 }
 
 /** Every scope of `branch` as the service writes it out: its bundle, with the samples and tests beside it. */
-function scopesOf(branch: Branch) {
+function scopesOf(branch: Files) {
   return Object.fromEntries(
     Object.entries(branch.bundles).map(([scope, config]) => [
       scope,
@@ -589,10 +594,17 @@ export class DemoLeader {
       const broken = await this.brokenGroup(branch, bundle);
       if (broken) return broken;
     }
+    // Only this scope changes, so the others are shared with what the branch holds now.
+    const was: Files = {
+      bundles: { ...branch.bundles },
+      samples: { ...branch.samples },
+      tests: { ...branch.tests },
+    };
     branch.bundles[scope] = bundle;
     branch.samples[scope] = held.samples;
     branch.tests[scope] = held.tests;
     const parent = branch.commit;
+    (branch.past ??= {})[parent] = was;
     branch.commit = newCommit();
     branch.commits += 1;
     branch.lastSave = Math.floor(this.now() / 1000);
@@ -679,7 +691,7 @@ export class DemoLeader {
     }
     if (method === 'GET' && at) {
       const commit = q.get('at');
-      const held = [this.branch(name), this.branch('main')].find((b) => b?.commit === commit);
+      const held = this.at(commit);
       const own = held?.bundles[scope] ?? (scope === SHARED ? undefined : { version: 1 });
       if (within === '' && held && own) return ok({ config: own, commit });
       // A change's review reads each sample and test it changed at both of its ends.
@@ -1174,6 +1186,17 @@ export class DemoLeader {
     });
   }
 
+  /** What some branch held at `commit`, at its latest save or an earlier one, or `undefined` for a commit the tab
+   * never held. */
+  private at(commit: string | null): Files | undefined {
+    for (const b of Object.values(this.state.branches)) {
+      if (b.commit === commit) return b;
+      const past = commit ? b.past?.[commit] : undefined;
+      if (past) return past;
+    }
+    return undefined;
+  }
+
   /** What landed between two commits the tab holds, as `branch_api::commit_diff` answers it: every file, and the
    * text of `path`'s alone when it names one. `undefined` for a commit the tab no longer holds. */
   private async between(
@@ -1181,9 +1204,7 @@ export class DemoLeader {
     to: string | null,
     path: string | null,
   ): Promise<Answer | undefined> {
-    const held = (commit: string | null) =>
-      Object.values(this.state.branches).find((b) => b.commit === commit);
-    const [before, after] = [held(from), held(to)];
+    const [before, after] = [this.at(from), this.at(to)];
     if (!before || !after) return undefined;
     const [all, one] = await Promise.all([
       this.ask('/diff', { base: scopesOf(before), branch: scopesOf(after) }),
