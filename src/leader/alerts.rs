@@ -184,7 +184,7 @@ impl Alerts {
             Some(was) if *was.message == why => (was.since, was.message),
             was => {
                 let message = crate::noted!(
-                    target: "alerts.send_failed",
+                    name: "send_failed", target: "alerts",
                     "an alert channel did not take what was sent",
                     why,
                     channel = %channel.name
@@ -220,9 +220,11 @@ pub fn channels(store: &dyn Store) -> Result<Vec<Channel>, StoreError> {
 }
 
 /// Names one warning across looks: the catalog entry and what it is about. Its start and message are left out, so a
-/// warning whose message changes is the same warning.
+/// warning whose message changes is the same warning. The log line one is about is one element, absent on every
+/// other condition, so a key told before log lines had a class and a type is still the same key.
 pub fn key(w: &Warning) -> String {
-    serde_json::to_string(&(w.condition, w.subject_kind, &w.group, &w.subject_id, &w.site)).unwrap_or_default()
+    let line = w.r#type.as_ref().map(|kind| (&w.class, kind));
+    serde_json::to_string(&(w.condition, w.subject_kind, &w.group, &w.subject_id, line)).unwrap_or_default()
 }
 
 /// Whether `channel` takes `w`.
@@ -615,7 +617,7 @@ async fn record(state: &AppState, told: Vec<AlertTold>, cleared: Vec<(String, St
 
 /// One look: tell every channel what has changed since it was last told.
 pub async fn look(state: &AppState) -> Result<(), StoreError> {
-    let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "check alerts");
+    let _pass = tracing::trace_span!(target: "alerts", "a background pass", task = "check alerts");
     let now = super::warnings::now_millis();
     let (channels, mail, told) =
         run_store(state.store.clone(), |s| Ok((channels(s)?, mail(s)?, s.alerts_told()?))).await?;
@@ -632,7 +634,7 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
         // What an email channel would be told waits for the mail server, which the page says is off.
         if matches!(channel.kind, Kind::Email { .. }) && mail.is_none() {
             tracing::trace!(
-                target: "alerts.skipped",
+                name: "skipped", target: "alerts",
                 channel = %channel.name,
                 why = "the mail server is off",
                 "an alert channel was told nothing on this check"
@@ -641,7 +643,7 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
         }
         let mut changes = changes(channel, now, &warnings, &told);
         tracing::trace!(
-            target: "alerts.changes",
+            name: "changes_found", target: "alerts",
             channel = %channel.name,
             raised = changes.raised.len(),
             cleared = changes.cleared.len(),
@@ -664,7 +666,7 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
             Ok(()) => {
                 // Info: an alert sent is something an admin wants to see without asking for detail.
                 tracing::info!(
-                    target: "alerts.sent",
+                    name: "sent", target: "alerts",
                     channel = %channel.name,
                     raised,
                     cleared,
@@ -673,7 +675,7 @@ pub async fn look(state: &AppState) -> Result<(), StoreError> {
                 state.alerts.took(&channel.id)
             }
             Err(Unsent::Later(why)) => {
-                tracing::info!(target: "alerts.later", channel = %channel.name, "an alert channel asked to be sent it later: {why}");
+                tracing::info!(name: "deferred", target: "alerts", channel = %channel.name, "an alert channel asked to be sent it later: {why}");
             }
             Err(Unsent::Failed(why)) => state.alerts.failed(channel, why, now),
         }
@@ -690,7 +692,7 @@ pub async fn run(state: AppState) {
             Ok(()) => {
                 if failing.clear() {
                     let failed_secs = failed_since.take().map_or(0, |at| at.elapsed().as_secs());
-                    tracing::info!(target: "alerts.look_recovered", failed_secs, "checking for issues to send to the alert channels works again");
+                    tracing::info!(name: "check_recovered", target: "alerts", failed_secs, "checking for issues to send to the alert channels works again");
                 }
             }
             Err(e) => {
@@ -700,7 +702,7 @@ pub async fn run(state: AppState) {
         }
         if let Some(why) = failing.due() {
             tracing::warn!(
-                target: "alerts.look_failed",
+                name: "check_failed", target: "alerts",
                 error = %why,
                 "could not check for issues to send to the alert channels, so none is sent until the check works"
             );
@@ -1059,7 +1061,7 @@ pub async fn post_test(
             Envelope::ok(tested)
         }
         Err(why) => {
-            tracing::warn!(target: "alerts.test_failed", channel = %channel.name, "the test send to the alert channel failed: {why}");
+            tracing::warn!(name: "test_failed", target: "alerts", channel = %channel.name, "the test send to the alert channel failed: {why}");
             Envelope::refused(Refusal::invalid(why))
         }
     }
@@ -1156,7 +1158,8 @@ mod tests {
             severity: Severity::Failed,
             since_millis: Some(1_000),
             message: "orders: connection refused for row 42".into(),
-            site: None,
+            class: None,
+            r#type: None,
             area: None,
         }
     }

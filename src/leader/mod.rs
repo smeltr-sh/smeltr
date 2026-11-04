@@ -223,7 +223,7 @@ fn entitled(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) ->
         return names.clone();
     }
     let names = secrets_at(&repo, &head, group_id).unwrap_or_else(|e| {
-        tracing::debug!(target: "leader.bundle_unentitled", group = %group_id, commit = %head, error = %e, "a group's bundle does not load at the deployed commit, so it is entitled to no secret");
+        tracing::debug!(name: "bundle_unentitled", target: "deploy", group = %group_id, commit = %head, error = %e, "a group's bundle does not load at the deployed commit, so it is entitled to no secret");
         Default::default()
     });
     cache
@@ -332,7 +332,7 @@ async fn heartbeat(
     // ask for `/api/warnings`, since nothing else has a source of "now" if a fact starts and clears between two reads.
     let now_ms = warnings::now_millis();
     tracing::trace!(
-        target: "leader.heartbeat_received",
+        name: "received", target: "heartbeats",
         worker = %worker_id,
         group = %req.group_id,
         threads = req.threads.len(),
@@ -397,7 +397,7 @@ async fn heartbeat(
         // whose report never landed reads as silent on `/api/health` while still being answered here.
         match recorded {
             Err(e) => tracing::warn!(
-                target: "leader.heartbeat_not_recorded",
+                name: "not_recorded", target: "heartbeats",
                 subject = %worker_id,
                 error = %e,
                 "a heartbeat could not be recorded, so this worker's threads stay as they were until the next one"
@@ -456,7 +456,7 @@ async fn heartbeat(
                 // Unreadable, a beat entitles no certificate and the next one tries again.
                 &certificate_versions(&*store).unwrap_or_else(|e| {
                     if let Some(error) = relog(&CERTIFICATES_UNREADABLE, e) {
-                        tracing::warn!(target: "leader.certificates_unreadable", subject = %for_group, error, "the certificate versions could not be read, so this heartbeat is answered with none");
+                        tracing::warn!(name: "unreadable", target: "certificates", subject = %for_group, error, "the certificate versions could not be read, so this heartbeat is answered with none");
                     }
                     Default::default()
                 }),
@@ -504,7 +504,7 @@ async fn heartbeat(
             match looked {
                 Ok(_) => said.clear(),
                 Err(e) if said.due() => {
-                    tracing::warn!(target: "leader.issues_unreadable", error = %e, "the issues could not be read, so none are logged as beginning or ending")
+                    tracing::warn!(name: "issues_unreadable", target: "status", error = %e, "the issues could not be read, so none are logged as beginning or ending")
                 }
                 Err(_) => {}
             }
@@ -528,7 +528,7 @@ async fn heartbeat(
             .secrets_for_delivery(&entitled, &req.secret_versions)
             .unwrap_or_else(|e| {
                 if let Some(error) = relog(&SECRETS_NOT_DELIVERED, e.to_string()) {
-                    tracing::warn!(target: "leader.secrets_not_delivered", subject = %worker_id, group = %group_id, error, "the secrets a worker is entitled to could not be read, so this heartbeat delivers none");
+                    tracing::warn!(name: "not_delivered", target: "secrets", subject = %worker_id, group = %group_id, error, "the secrets a worker is entitled to could not be read, so this heartbeat delivers none");
                 }
                 Default::default()
             });
@@ -538,7 +538,7 @@ async fn heartbeat(
     .unwrap_or_default();
 
     tracing::trace!(
-        target: "leader.heartbeat_answered",
+        name: "answered", target: "heartbeats",
         worker = %answering,
         holds = holds.len(),
         deployed = pointer.as_deref(),
@@ -694,7 +694,7 @@ async fn ledger(
                 Ok(page) => page,
                 Err(e) => {
                     if let Some(error) = relog(&LEDGER_UNREADABLE, e.to_string()) {
-                        tracing::warn!(target: "leader.ledger_unreadable", %group, source = %key.source, place = %key.place, error, "what a source has already read could not be listed in full, so the worker may read some of it again");
+                        tracing::warn!(name: "ledger_unreadable", target: "store", %group, source = %key.source, place = %key.place, error, "what a source has already read could not be listed in full, so the worker may read some of it again");
                     }
                     let _ = pages.blocking_send(Err(std::io::Error::other(e.to_string())));
                     return;
@@ -778,7 +778,7 @@ async fn pack_repo(state: &AppState) {
     let repo = git::repo_path(&state.data_dir);
     if let Err(e) = blocking(move || git::pack(&repo).map_err(|e| e.message)).await {
         tracing::warn!(
-            target: "leader.repo_not_packed",
+            name: "repo_not_packed", target: "git",
             error = %e,
             "the configuration repository could not be packed, so it is tried again later"
         );
@@ -799,7 +799,7 @@ pub async fn prune_source_progress(state: &AppState) {
         Ok(read) => read,
         Err(e) => {
             tracing::warn!(
-                target: "leader.progress_not_pruned",
+                name: "progress_not_pruned", target: "heartbeats",
                 error = %e,
                 "could not read which sources the fleet reads, so no source's progress is forgotten this time"
             );
@@ -815,7 +815,7 @@ pub async fn prune_source_progress(state: &AppState) {
         });
         if let Err(e) = forgotten.await {
             tracing::warn!(
-                target: "leader.streams_not_pruned",
+                name: "streams_not_pruned", target: "heartbeats",
                 error = %e,
                 "the streams of sources no bundle reads could not be forgotten, so they are looked for again"
             );
@@ -834,12 +834,12 @@ pub async fn prune_source_progress(state: &AppState) {
     match forgotten {
         Ok(forgotten) if forgotten.is_empty() => {}
         Ok(forgotten) => tracing::info!(
-            target: "leader.progress_forgotten",
+            name: "progress_forgotten", target: "heartbeats",
             sources = %forgotten.join(", "),
             "the progress of sources no deployed bundle reads was forgotten"
         ),
         Err(e) => tracing::warn!(
-            target: "leader.progress_not_pruned",
+            name: "progress_not_pruned", target: "heartbeats",
             error = %e,
             "the progress of sources no bundle reads could not be forgotten, so it is looked for again"
         ),
@@ -910,7 +910,7 @@ fn read_sources(
         }
     }
     if unread > 0 {
-        tracing::trace!(target: "leader.sources_unread", bundles = unread, "bundles that do not load were left out of what the fleet reads");
+        tracing::trace!(name: "sources_unread", target: "heartbeats", bundles = unread, "bundles that do not load were left out of what the fleet reads");
     }
     Ok(ReadSources {
         single: out,
@@ -979,7 +979,7 @@ async fn git_http(
         }
         Err(error) => {
             // The worker sees only a 500, so this is the one place the cause is said.
-            tracing::error!(target: "leader.git_serve_failed", error = %error, "a worker's fetch could not be served");
+            tracing::error!(name: "serve_failed", target: "git", error = %error, "a worker's fetch could not be served");
             axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -1237,13 +1237,13 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
         };
     }
     // Every warnings read derives them, so the counts are made only when they will be said.
-    if tracing::enabled!(target: "warnings.derived", tracing::Level::TRACE) {
+    if crate::log_enabled!(name: "derived", target: "status", tracing::Level::TRACE) {
         let mut by_condition = std::collections::BTreeMap::new();
         for w in &out {
             *by_condition.entry(w.condition.name()).or_insert(0usize) += 1;
         }
         tracing::trace!(
-            target: "warnings.derived",
+            name: "derived", target: "status",
             warnings = out.len(),
             by_condition = ?by_condition,
             "the current issues were worked out"
@@ -1617,7 +1617,7 @@ fn flow_series(
     }
     if unreadable > 0 {
         tracing::warn!(
-            target: "leader.series_subjects_unreadable",
+            name: "series_subjects_unreadable", target: "status",
             subject = %metric,
             subjects = unreadable,
             exemplar = exemplar.as_deref(),
@@ -1755,15 +1755,18 @@ pub async fn keep_own_logs(state: AppState) {
 #[derive(serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct LogsQuery {
-    /// Comma-separated: `?level=warn,error`. Severities do not nest here, so an operator wanting both names both.
+    /// Comma-separated: `?level=warn,error`. Levels do not nest here, so an operator wanting both names both.
     ///
     /// One key rather than a repeated one because `Query` decodes through `serde_urlencoded`, which has no
     /// notion of a repeated key and refuses a sequence outright -- a refused request rather than a wrong answer.
     level: Option<String>,
     worker: Option<String>,
     group: Option<String>,
-    /// Matched anywhere in the dotted call site.
-    site: Option<String>,
+    class: Option<String>,
+    /// Matched anywhere in the type, or the whole type with `typeExact=true`.
+    r#type: Option<String>,
+    type_exact: bool,
+    service: Option<String>,
     /// Matched anywhere in the message.
     q: Option<String>,
     since_millis: Option<i64>,
@@ -1793,7 +1796,9 @@ pub struct LogRow {
     pub group: Option<String>,
     pub thread: Option<String>,
     pub level: String,
-    pub site: String,
+    pub class: Option<String>,
+    pub r#type: String,
+    pub service: Option<String>,
     pub message: String,
     pub fields: serde_json::Value,
 }
@@ -1817,6 +1822,9 @@ pub struct LogsResponse {
     /// The cursor for "newer", present only while a row exists above the page. Absent on the head, which a
     /// page reached with no cursor already is.
     pub next_after: Option<i64>,
+    /// Every class and service a line can name, for a reader to narrow by.
+    pub classes: &'static [&'static str],
+    pub services: Vec<&'static str>,
 }
 
 #[cfg(test)]
@@ -1836,7 +1844,15 @@ mod logs_query_tests {
     #[test]
     fn several_severities_travel_as_one_comma_separated_key() {
         assert_eq!(decode("level=warn,error").level.as_deref(), Some("warn,error"));
-        assert_eq!(decode("level=info&site=worker.").site.as_deref(), Some("worker."));
+        let query = decode("level=info&class=sources&type=poll&service=kafka");
+        assert_eq!(
+            (
+                query.class.as_deref(),
+                query.r#type.as_deref(),
+                query.service.as_deref()
+            ),
+            (Some("sources"), Some("poll"), Some("kafka"))
+        );
         assert!(decode("").level.is_none(), "the bare path asks for everything");
     }
 }
@@ -1869,7 +1885,10 @@ async fn get_logs(
                 levels: &levels,
                 worker_id: query.worker.as_deref(),
                 group_id: query.group.as_deref(),
-                site_contains: query.site.as_deref(),
+                class: query.class.as_deref(),
+                r#type: query.r#type.as_deref(),
+                type_exact: query.type_exact,
+                service: query.service.as_deref(),
                 message_contains: query.q.as_deref(),
                 since_ms: query.since_millis,
                 until_ms: query.until_millis,
@@ -1921,7 +1940,9 @@ async fn get_logs(
                 group: r.group_id,
                 thread: r.thread_name,
                 level: r.level,
-                site: r.site,
+                class: r.class,
+                r#type: r.r#type,
+                service: r.service,
                 message: r.message,
                 // Stored as the delivered list; a row whose JSON will not parse carries an empty list rather
                 // than failing the page it is one row of.
@@ -1932,6 +1953,8 @@ async fn get_logs(
         message_limit: crate::heartbeat::MAX_TEXT_LEN,
         next_before,
         next_after,
+        classes: crate::logs::levels::CLASSES,
+        services: crate::logs::levels::services(),
     }))
 }
 
@@ -2037,7 +2060,7 @@ async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -
                 None => (false, false),
             };
             if usable {
-                tracing::info!(target: "leader.worker_enrolled", subject = %worker_id, "a worker enrolled");
+                tracing::info!(name: "enrolled", target: "enrollment", subject = %worker_id, "a worker enrolled");
                 return Json(EnrollResult {
                     ok: true,
                     error: None,
@@ -2055,7 +2078,7 @@ async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -
                 let taken_back = run_store(state.store, move |s| s.remove_worker_credential(&worker_id, &issued)).await;
                 if let Err(e) = taken_back {
                     tracing::error!(
-                        target: "leader.enrollment_not_taken_back",
+                        name: "not_taken_back", target: "enrollment",
                         error = %e,
                         "this leader replaced its authority while a worker was enrolling and could not take back \
                          the credential it had just issued, so a worker that can never reach it reads as enrolled"
@@ -2078,7 +2101,7 @@ async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -
                 .await;
                 if let Err(e) = given_back {
                     tracing::error!(
-                        target: "leader.enrollment_not_taken_back",
+                        name: "not_taken_back", target: "enrollment",
                         error = %e,
                         "this leader could not read which certificate authority it signs under while a worker was \
                          enrolling and could not give back the enrollment code it had just spent, so a retry the \
@@ -2159,9 +2182,9 @@ fn refused_enrollment(subject: &str, error: String, retry: bool) -> Json<EnrollR
     // A worker told to retry does, on a backoff, and is refused the same way until this leader mends: said once
     // per change and on the interval. A settled refusal is each worker's own, and is said each time.
     if !retry {
-        tracing::warn!(target: "leader.enrollment_refused", %subject, %error, retry, "an enrollment was refused");
+        tracing::warn!(name: "refused", target: "enrollment", %subject, %error, retry, "an enrollment was refused");
     } else if let Some(error) = relog(&ENROLLMENT_RETRIED, error.clone()) {
-        tracing::warn!(target: "leader.enrollment_refused", %subject, error, retry, "an enrollment was refused");
+        tracing::warn!(name: "refused", target: "enrollment", %subject, error, retry, "an enrollment was refused");
     }
     Json(EnrollResult {
         ok: false,
@@ -2272,7 +2295,7 @@ async fn remove_worker(
     let now_ms = warnings::now_millis();
     match run_store(state.store.clone(), move |s| s.remove_worker(&id, now_ms, Some(&event))).await {
         Ok(true) => {
-            tracing::info!(target: "leader.worker_removed", subject = %worker_id, "a worker was removed");
+            tracing::info!(name: "removed", target: "enrollment", subject = %worker_id, "a worker was removed");
             state.registry.forget_worker(&worker_id);
             state.directives.forget(&worker_id);
             forget::free_holds(&state, &worker_id).await;
@@ -2309,7 +2332,7 @@ async fn revoke_worker(
     .await;
     match result {
         Ok(true) => {
-            tracing::info!(target: "leader.worker_revoked", subject = %worker_id, "a worker was revoked");
+            tracing::info!(name: "revoked", target: "enrollment", subject = %worker_id, "a worker was revoked");
             forget::free_holds(&state, &worker_id).await;
             Envelope::done()
         }
@@ -3148,7 +3171,7 @@ async fn verify_secret(
 ) -> Result<Envelope<VerifySecretResponse>, Refusal> {
     if !state.verify_limiter.allow(&name, std::time::Instant::now()) {
         tracing::warn!(
-            target: "leader.secret_verify_refused",
+            name: "verify_refused", target: "secrets",
             subject = %name,
             "refused a secret verification: too many attempts"
         );
@@ -3174,10 +3197,10 @@ async fn verify_secret(
     .await?;
     // Two sites, so an outcome is never folded into its opposite or lost among the other's count.
     if matches {
-        tracing::info!(target: "leader.secret_verified", subject = %asked, version, "a secret verification matched");
+        tracing::info!(name: "verified", target: "secrets", subject = %asked, version, "a secret verification matched");
     } else {
         tracing::info!(
-            target: "leader.secret_verify_failed",
+            name: "verify_failed", target: "secrets",
             subject = %asked,
             version,
             "a secret verification did not match"
@@ -3747,7 +3770,7 @@ async fn expected_workers(state: &AppState) -> Result<std::collections::HashSet<
         Ok(credentials) => Ok(credentials),
         Err(e) => {
             tracing::warn!(
-                target: "leader.rotation_roster_unreadable",
+                name: "rotation_roster_unreadable", target: "enrollment",
                 error = %e,
                 "could not read which workers are enrolled, so this leader cannot tell whether its fleet holds the \
                  authority it is rotating to. The deadline still decides"
@@ -3804,7 +3827,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
         Ok(None) => return,
         Err(e) => {
             if let Some(error) = relog(&ROTATION_UNREADABLE, e) {
-                tracing::warn!(target: "leader.rotation_unreadable", error, "the fleet's certificate authority rotation could not be read, so it does not cut over");
+                tracing::warn!(name: "rotation_unreadable", target: "enrollment", error, "the fleet's certificate authority rotation could not be read, so it does not cut over");
             }
             return;
         }
@@ -3823,7 +3846,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
         Ok(cut_over) => cut_over,
         Err(e) => {
             tracing::warn!(
-                target: "leader.authority_not_cut_over",
+                name: "authority_not_cut_over", target: "enrollment",
                 error = %e,
                 "this leader could not sign under the authority it is rotating to, and keeps serving the one it \
                  was signing under"
@@ -3843,7 +3866,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
         );
         if let Err(e) = run_store(state.store.clone(), move |s| s.record_security_event(&event)).await {
             tracing::warn!(
-                target: "leader.cut_over_unrecorded",
+                name: "cut_over_unrecorded", target: "enrollment",
                 error = %e,
                 "this leader cut over to the authority it was rotating to, and the audit row for it did not land"
             );
@@ -5179,12 +5202,16 @@ mod logs_endpoint_tests {
         }
     }
 
-    fn said(seq: u64, level: &str, site: &str, message: &str) -> crate::heartbeat::LogDto {
+    /// A line of `class` and `kind`.
+    fn said(seq: u64, level: &str, (class, kind): (&str, &str), message: &str) -> crate::heartbeat::LogDto {
         crate::heartbeat::LogDto {
             seq,
             timestamp_ms: 1_000 + seq as i64,
             level: level.to_string(),
-            site: site.to_string(),
+            class: Some(class.to_string()),
+            r#type: kind.to_string(),
+            service: None,
+            site: String::new(),
             message: message.to_string(),
             thread: Some("main".to_string()),
             boot_id: None,
@@ -5207,14 +5234,18 @@ mod logs_endpoint_tests {
             7,
             Some("west"),
             &[
-                said(0, "info", "worker.started", "worker starting"),
-                said(1, "error", "runtime.rows_rejected", "a destination refused rows"),
+                said(0, "info", ("processes", "started"), "worker starting"),
+                said(1, "error", ("pipelines", "rows_rejected"), "a destination refused rows"),
             ],
         );
 
         let answer = get(&state, LogsQuery::default()).await;
         assert_eq!(answer.rows.len(), 2);
-        assert_eq!(answer.rows[0].site, "runtime.rows_rejected", "newest first");
+        assert_eq!(
+            (answer.rows[0].class.as_deref(), answer.rows[0].r#type.as_str()),
+            (Some("pipelines"), "rows_rejected"),
+            "newest first"
+        );
         assert_eq!(answer.rows[0].group.as_deref(), Some("west"));
         assert_eq!(answer.rows[0].worker_id, "w-1");
         // The fields pass through as delivered rather than reshaped, so what a call site said is what is indexed.
@@ -5232,8 +5263,8 @@ mod logs_endpoint_tests {
             7,
             Some("west"),
             &[
-                said(0, "info", "worker.started", "worker starting"),
-                said(1, "error", "runtime.rows_rejected", "a destination refused rows"),
+                said(0, "info", ("processes", "started"), "worker starting"),
+                said(1, "error", ("pipelines", "rows_rejected"), "a destination refused rows"),
             ],
         );
 
@@ -5247,6 +5278,18 @@ mod logs_endpoint_tests {
         .await;
         assert_eq!(only_errors.rows.len(), 1);
         assert_eq!(only_errors.rows[0].level, "error");
+
+        let by_class = get(
+            &state,
+            LogsQuery {
+                class: Some("processes".to_string()),
+                r#type: Some("art".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(by_class.rows.len(), 1);
+        assert_eq!(by_class.rows[0].r#type, "started");
 
         // Asked for more than a page may carry, and told what it was given rather than refused.
         let huge = get(
@@ -5290,13 +5333,13 @@ mod logs_endpoint_tests {
             7,
             None,
             &[
-                said(0, "info", "a", "row 0"),
-                said(1, "info", "a", "row 1"),
-                said(2, "info", "a", "row 2"),
-                said(3, "info", "a", "row 3"),
-                said(4, "info", "a", "row 4"),
-                said(5, "info", "a", "row 5"),
-                said(6, "info", "a", "row 6"),
+                said(0, "info", ("logs", "a"), "row 0"),
+                said(1, "info", ("logs", "a"), "row 1"),
+                said(2, "info", ("logs", "a"), "row 2"),
+                said(3, "info", ("logs", "a"), "row 3"),
+                said(4, "info", ("logs", "a"), "row 4"),
+                said(5, "info", ("logs", "a"), "row 5"),
+                said(6, "info", ("logs", "a"), "row 6"),
             ],
         );
         let msgs = |r: &LogsResponse| r.rows.iter().map(|row| row.message.clone()).collect::<Vec<_>>();
@@ -5358,9 +5401,9 @@ mod logs_endpoint_tests {
             3,
             None,
             &[
-                said(0, "info", "a", "row 0"),
-                said(1, "info", "a", "row 1"),
-                said(2, "info", "a", "row 2"),
+                said(0, "info", ("logs", "a"), "row 0"),
+                said(1, "info", ("logs", "a"), "row 1"),
+                said(2, "info", ("logs", "a"), "row 2"),
             ],
         );
         let page = get(

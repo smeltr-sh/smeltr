@@ -787,7 +787,7 @@ pub async fn sweep(auth: Auth) {
     let mut every = tokio::time::interval(SWEEP_EVERY);
     loop {
         every.tick().await;
-        let _pass = tracing::trace_span!(target: "background.pass", "a background pass", task = "delete old agent conversations");
+        let _pass = tracing::trace_span!(target: "api", "a background pass", task = "delete old agent conversations");
         // A slot only read, with no run and nobody holding it, is made again when next asked for. Never waited on:
         // the map is held here.
         let idle = |slot: &Slot| Arc::strong_count(slot) == 1 && slot.try_lock().is_ok_and(|run| run.is_none());
@@ -801,12 +801,12 @@ pub async fn sweep(auth: Auth) {
         match swept {
             Ok(0) => {}
             Ok(n) => tracing::info!(
-                target: "leader.conversations_swept",
+                name: "conversations_swept", target: "store",
                 conversations = n,
                 "conversations nobody added to were deleted"
             ),
             Err(e) => tracing::warn!(
-                target: "leader.conversations_unswept",
+                name: "conversations_unswept", target: "store",
                 error = %e,
                 "could not delete the conversations nobody added to"
             ),

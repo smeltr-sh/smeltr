@@ -518,7 +518,7 @@ fn warn_if_overcommitted(parts: &[Part], limit: Option<u64>) -> bool {
     };
     let described = describe(parts);
     tracing::warn!(
-        target: "worker.memory_overcommitted",
+        name: "memory_overcommitted", target: "processes",
         parts = %described,
         sum_bytes = sum,
         limit_bytes = limit,

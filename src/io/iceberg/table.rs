@@ -303,7 +303,7 @@ impl WriteSettings {
         let codec = match property(CODEC).map(str::to_ascii_lowercase).as_deref() {
             None => config.compression,
             Some(name) => codec(name).unwrap_or_else(|| {
-                tracing::warn!(target: "iceberg.write", table = config.table, codec = name,
+                tracing::warn!(name: "write", target: "destinations", table = config.table, codec = name,
                     "the table asks for a codec this writer has not, and its files take the destination's");
                 config.compression
             }),
@@ -365,7 +365,7 @@ fn create(
         (CODEC.to_string(), codec_name(config.compression).to_string()),
     ]);
     let created = catalog.create_table(&config.namespace, &config.table, &fresh.schema, &spec, &properties)?;
-    tracing::info!(target: "iceberg.table_created", subject, table = %config.table, partition_by = config.partition_by.len(), "an Iceberg table was created with the pipeline's record as its schema");
+    tracing::info!(name: "table_created", target: "destinations", subject, table = %config.table, partition_by = config.partition_by.len(), "an Iceberg table was created with the pipeline's record as its schema");
     Ok(created)
 }
 
@@ -445,7 +445,7 @@ fn evolve(
         ];
         match catalog.commit(&config.namespace, &config.table, &requirements, &updates) {
             Ok(committed) => {
-                tracing::info!(target: "iceberg.schema_evolved", subject, table = %config.table, schema_id = committed.metadata.current_schema_id, "an Iceberg table's schema gained the pipeline's new columns");
+                tracing::info!(name: "schema_evolved", target: "destinations", subject, table = %config.table, schema_id = committed.metadata.current_schema_id, "an Iceberg table's schema gained the pipeline's new columns");
                 loaded.metadata = committed.metadata
             }
             // Another writer changed the table, or the change's answer was lost: the table as it is now says which.
@@ -792,7 +792,7 @@ impl Committer for IcebergCommitter {
                 self.reload().map_err(CommitError::Transient)?;
                 // The conflict may be a lost commit of these files that landed late.
                 if self.landed() {
-                    tracing::debug!(target: "iceberg.commit_found", subject = %self.subject, table = %self.table, "a commit whose answer was lost had landed");
+                    tracing::debug!(name: "commit_found", target: "destinations", subject = %self.subject, table = %self.table, "a commit whose answer was lost had landed");
                     return Ok(());
                 }
                 Err(CommitError::Conflict)

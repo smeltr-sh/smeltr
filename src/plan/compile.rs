@@ -629,7 +629,7 @@ impl<'p> Compiler<'p> {
 /// error is collected rather than the first one returned, so one compile reports everything wrong with a pipeline.
 #[tracing::instrument(
     level = "trace",
-    target = "plan.compile",
+    target = "pipelines",
     name = "a compile",
     skip_all,
     fields(pipeline = %p.name)
@@ -654,7 +654,7 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
         }
     }
     if !c.errors.is_empty() {
-        tracing::trace!(target: "plan.compile_failed", errors = c.errors.len(), "a pipeline did not compile");
+        tracing::trace!(name: "compile_failed", target: "pipelines", errors = c.errors.len(), "a pipeline did not compile");
         return Err(c.errors);
     }
 

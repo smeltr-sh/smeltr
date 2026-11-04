@@ -18,7 +18,7 @@
 //! - **A call site reports once per event, not once per element.** A loop that refuses a thousand rows says so
 //!   once, with a thousand in a field. That is what keeps output proportional to what happened rather than to how
 //!   much data it happened to.
-//! - **A log is data.** A timestamp, a severity, a site, a sentence and typed fields. The console
+//! - **A log is data.** A timestamp, a level, a class and a type, a sentence and typed fields. The console
 //!   rendering is one view of it; what a SIEM reads is the fields, not a parse of the sentence.
 //!
 //! A path that is about to exit does not write here. It prints and goes: a buffer has nothing to offer a process
@@ -33,6 +33,7 @@ mod noted;
 pub(crate) use console::{render_fields, render_value, stamp};
 #[cfg(test)]
 pub(crate) use layer::LogLayer;
+pub use layer::library_said;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -44,9 +45,9 @@ pub use event::{Event, Value};
 pub use noted::Noted;
 pub use tracing::Level;
 
-/// One event as a test reads it: its level, its target, and its fields with the sentence under `message`.
+/// One event as a test reads it: its level, its class and type, and its fields with the sentence under `message`.
 #[cfg(test)]
-pub(crate) type Said = (Level, String, Vec<(String, String)>);
+pub(crate) type Said = (Level, String, String, Vec<(String, String)>);
 
 /// Every event raised on this thread while `f` runs.
 #[cfg(test)]
@@ -71,6 +72,7 @@ pub(crate) fn said(f: impl FnOnce()) -> Vec<Said> {
             self.0.lock().unwrap().push((
                 *event.metadata().level(),
                 event.metadata().target().to_string(),
+                event.metadata().name().to_string(),
                 fields.0,
             ));
         }
@@ -227,7 +229,7 @@ fn log_panics() {
                 let panic = panic_text(info.payload());
                 let thread = std::thread::current();
                 tracing::error!(
-                    target: "process.panicked",
+                    name: "panicked", target: "processes",
                     thread = thread.name().unwrap_or_default(),
                     location = info.location().map(|l| l.to_string()).unwrap_or_default(),
                     %panic,
@@ -241,8 +243,9 @@ fn log_panics() {
 
 /// What the channel carries. `Stop` rides it so that it arrives behind every event already sent.
 enum Message {
-    /// An event, and whether a thread of this process's leader raised it.
-    Event(Event, bool),
+    /// An event, and whether a thread of this process's leader raised it. Boxed, so the channel's slots are a
+    /// pointer wide rather than an event wide.
+    Event(Box<Event>, bool),
     Stop,
 }
 
@@ -255,16 +258,18 @@ static UNWRITABLE: AtomicU64 = AtomicU64::new(0);
 static STOPPING: AtomicBool = AtomicBool::new(false);
 /// Raised by the drain thread once it has written what it held, and waited on by [`stop`].
 static FLUSHED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
-/// The severity threshold, as `Level`'s discriminant. `Level` is not an atomic-sized type of its own.
+/// The level threshold, as `Level`'s discriminant. `Level` is not an atomic-sized type of its own.
 static MAX_LEVEL: AtomicUsize = AtomicUsize::new(level_ord(Level::INFO));
 /// This process's worker id, once it has one. `start` runs before either role begins, so early events have none.
 static WORKER: OnceLock<String> = OnceLock::new();
 /// Whether this process runs a leader and no worker, so that what no thread of the leader's raised is the leader's
 /// all the same: a thread it spawned itself, or one before it started.
 static NO_WORKER: AtomicBool = AtomicBool::new(false);
-/// What the drain thread has written, by site. Whoever holds a registry publishes it; `logs` stays underneath
-/// `metrics` rather than depending on it. This is what says whether one site is drowning the rest.
-static WRITTEN: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Default::default);
+/// What the drain thread has written, by class and type. Whoever holds a registry publishes it; `logs` stays
+/// underneath `metrics` rather than depending on it. This is what says whether one line is drowning the rest.
+static WRITTEN: LazyLock<Mutex<HashMap<Written, u64>>> = LazyLock::new(Default::default);
+/// A line's class and type, as [`WRITTEN`] counts it.
+type Written = (Option<std::borrow::Cow<'static, str>>, std::borrow::Cow<'static, str>);
 /// Written, and not yet acknowledged by the leader. Drained by the heartbeat, which drops only what landed.
 static PENDING: LazyLock<Mutex<VecDeque<Event>>> = LazyLock::new(Default::default);
 /// What this process's leader raised and has not yet written into its own store. Apart from [`PENDING`], so a
@@ -349,17 +354,31 @@ macro_rules! debug_when {
     };
 }
 
+/// Whether a line of this type and class said here at this level would be kept, for a site that does work only to
+/// say it: `tracing::enabled!` cannot name a type.
+#[macro_export]
+macro_rules! log_enabled {
+    (name: $name:literal, target: $target:literal, $level:expr) => {
+        $crate::logs::kept($target, $name, ::std::module_path!(), $level)
+    };
+}
+
+/// Whether a line of `class` and `kind` said in `module` at `level` would be kept. [`log_enabled!`]'s.
+pub fn kept(class: &str, kind: &str, module: &str, level: Level) -> bool {
+    levels::keeps(level, Some(class), kind, levels::service(module))
+}
+
 /// `took` in whole milliseconds, as a line's `ms` says how long something took.
 pub fn millis(took: Duration) -> u64 {
     u64::try_from(took.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// The highest level any area keeps (`levels`): no line below it is kept anywhere.
+/// The highest level any line is kept at (`levels`): no line below it is kept anywhere.
 pub fn max_level() -> Level {
     level_of(MAX_LEVEL.load(Ordering::Relaxed))
 }
 
-/// The severities anything written down may name, most severe first.
+/// The levels anything written down may name, most severe first.
 pub const LEVEL_LABELS: &[&str] = &["error", "warn", "info", "debug", "trace"];
 
 /// One of [`LEVEL_LABELS`], in any case and with surrounding space. Nothing else, the numbers `tracing`'s own
@@ -532,14 +551,15 @@ pub fn unwritable() -> u64 {
     UNWRITABLE.load(Ordering::Relaxed)
 }
 
-/// What has been written, by site, for the life of the process. The answer to "is one site drowning the rest",
-/// which is the question that decides whether these events ever need folding.
-pub fn written_by_site() -> Vec<(String, u64)> {
+/// What has been written, by class and type, for the life of the process. The answer to "is one line drowning the
+/// rest", which is the question that decides whether these events ever need folding. A library's line outside any
+/// span of ours has no class.
+pub fn written_by_type() -> Vec<(Option<String>, String, u64)> {
     WRITTEN
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .map(|(site, n)| (site.clone(), *n))
+        .map(|((class, kind), n)| (class.as_deref().map(str::to_string), kind.to_string(), *n))
         .collect()
 }
 
@@ -574,7 +594,7 @@ pub fn report_losses() {
             let count = |n: u64| (n > 0).then_some(n);
             while_delivering(|| {
                 tracing::warn!(
-                    target: "logs.events_lost",
+                    name: "events_lost", target: "logs",
                     dropped = count(dropped),
                     undelivered = count(undelivered),
                     unread = count(unread),
@@ -585,7 +605,7 @@ pub fn report_losses() {
         }
     } else if last.1.clear() {
         while_delivering(|| {
-            tracing::info!(target: "logs.events_kept_again", "no log event has been lost since the last report");
+            tracing::info!(name: "events_kept_again", target: "logs", "no log event has been lost since the last report");
         });
     }
 }
@@ -645,7 +665,7 @@ fn hand_off(event: Event) {
     let leader = LEADER_THREAD.with(std::cell::Cell::get);
     match SENDER.get() {
         Some(sender) if !STOPPING.load(Ordering::Relaxed) => {
-            if sender.try_send(Message::Event(event, leader)).is_err() {
+            if sender.try_send(Message::Event(Box::new(event), leader)).is_err() {
                 DROPPED.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -732,7 +752,7 @@ pub fn stop() {
 fn drain(receiver: Receiver<Message>) {
     loop {
         match receiver.recv() {
-            Ok(Message::Event(event, leader)) => take(event, leader),
+            Ok(Message::Event(event, leader)) => take(*event, leader),
             // Behind every event already sent, so nothing recorded before a stop is left unwritten.
             Ok(Message::Stop) => break,
             // `SENDER` is a static and outlives every thread, so this cannot fire: `Stop` is what ends this
@@ -746,7 +766,7 @@ fn drain(receiver: Receiver<Message>) {
     wake.notify_all();
 }
 
-/// Write one event, raised by a thread of the leader's where `leader`, and count it against its site. The drain thread's job, and also the caller's own on the paths
+/// Write one event, raised by a thread of the leader's where `leader`, and count it against its class and type. The drain thread's job, and also the caller's own on the paths
 /// that have no drain thread to hand to.
 ///
 /// Counted after the write and only when it landed: a count of what was said is worth nothing if it also counts
@@ -765,15 +785,12 @@ fn take(event: Event, leader: bool) {
     // from whether anybody here did, and gating one on the other means a daemon with a closed stderr tells the
     // leader nothing -- the one shape where its console was already useless.
     if console::write(&event).is_ok() {
-        let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
-        // A site is almost always one this map already holds, and its key is a `&'static str` for everything
-        // smeltr writes itself, so the common path neither allocates nor copies.
-        match written.get_mut(event.site.as_ref()) {
-            Some(count) => *count += 1,
-            None => {
-                written.insert(event.site.to_string(), 1);
-            }
-        }
+        // The key is borrowed for everything smeltr says itself, so the common path neither allocates nor copies.
+        *WRITTEN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry((event.class.clone(), event.r#type.clone()))
+            .or_default() += 1;
     } else {
         UNWRITABLE.fetch_add(1, Ordering::Relaxed);
     }
@@ -834,7 +851,9 @@ mod tests {
         Event {
             timestamp: std::time::SystemTime::UNIX_EPOCH,
             level: Level::ERROR,
-            site: "put_back.test".into(),
+            class: Some("logs".into()),
+            r#type: "put_back_test".into(),
+            service: None,
             message: String::new(),
             fields: Vec::new(),
             worker: None,
@@ -849,7 +868,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .any(|e| e.site == site)
+            .any(|e| e.r#type == site)
     }
 
     #[test]
@@ -865,12 +884,12 @@ mod tests {
     /// though a worker runs in the same process; what any other thread raises is never the leader's.
     #[test]
     fn a_leader_thread_s_logs_are_kept_apart_from_a_worker_s() {
-        let leader_site = "leader_thread.marked.test";
-        let other_site = "leader_thread.unmarked.test";
+        let leader_site = "leader_thread_marked_test";
+        let other_site = "leader_thread_unmarked_test";
         std::thread::spawn(move || {
             mark_leader_thread();
             hand_off(Event {
-                site: leader_site.into(),
+                r#type: leader_site.into(),
                 ..event(1)
             });
         })
@@ -878,7 +897,7 @@ mod tests {
         .unwrap();
         std::thread::spawn(move || {
             hand_off(Event {
-                site: other_site.into(),
+                r#type: other_site.into(),
                 ..event(2)
             });
         })
@@ -969,10 +988,10 @@ mod tests {
     #[test]
     fn a_mirrored_event_reaches_the_readers_only() {
         let _taps = TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let site = "mirror.readers_only.test";
+        let site = "mirror_readers_only_test";
         let mirrored = || Event {
             timestamp: SystemTime::now(),
-            site: site.into(),
+            r#type: site.into(),
             ..event(7)
         };
 
@@ -984,10 +1003,10 @@ mod tests {
         mirror([mirrored()]);
         let got = reader.drain(8);
         assert_eq!(got.len(), 1, "{got:?}");
-        assert_eq!(got[0].site, site);
+        assert_eq!(got[0].r#type, site);
         assert_eq!(got[0].worker, worker());
         assert!(
-            written_by_site().iter().all(|(s, _)| s != site),
+            written_by_type().iter().all(|(_, kind, _)| kind != site),
             "a mirrored event was written to this process's console"
         );
     }
@@ -999,13 +1018,13 @@ mod tests {
         let _taps = TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let said_before = Event {
             timestamp: SystemTime::now() - Duration::from_secs(5),
-            site: "mirror.before_open.test".into(),
+            r#type: "mirror_before_open_test".into(),
             ..event(1)
         };
         let reader = tap();
         mirror([said_before]);
         assert!(
-            reader.drain(8).iter().all(|e| e.site != "mirror.before_open.test"),
+            reader.drain(8).iter().all(|e| e.r#type != "mirror_before_open_test"),
             "a reader was handed what was said before it opened"
         );
     }

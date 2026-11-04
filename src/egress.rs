@@ -634,7 +634,7 @@ fn run(
 ) {
     // Lends the destination to every line this thread says while it is kept at trace. It opens once, so a line at
     // trace names its destination itself too, for when trace is turned on after the thread started.
-    let _span = tracing::trace_span!(target: "egress.run", "an egress thread", subject = name).entered();
+    let _span = tracing::trace_span!(target: "destinations", "an egress thread", subject = name).entered();
     // The destination's own batch ids, mapped back to the reader's.
     let mut owner: HashMap<BatchId, Owed> = HashMap::new();
     let mut next_local: BatchId = 0;
@@ -701,7 +701,7 @@ fn run(
             // Borrowed: the unit is kept until acknowledged, to send again or to hand a refused row back.
             let delivered = destination.deliver(local, Cow::Borrowed(&unit.rows));
             tracing::trace!(
-                target: "egress.delivered",
+                name: "delivered", target: "destinations",
                 subject = name,
                 batch = unit.batch,
                 sent_as = local,
@@ -785,7 +785,7 @@ fn run(
                         continue;
                     };
                     tracing::trace!(
-                        target: "egress.completed",
+                        name: "completed", target: "destinations",
                         subject = name,
                         batch = owed.unit.batch,
                         sent_as = c.batch,
@@ -929,7 +929,7 @@ fn finish(
     };
     let holds = queue.holds_refusals.load(Ordering::Relaxed);
     tracing::trace!(
-        target: "egress.finished",
+        name: "finished", target: "destinations",
         subject = name,
         batch = unit.batch,
         rows = unit.rows.len(),
@@ -1093,7 +1093,7 @@ fn note_stall(metrics: &MetricsHandle, id: DestId, name: &str, e: &IoError, stal
     if stall_log_due(*stalled) {
         *stalled = Some(Instant::now());
         tracing::warn!(
-            target: "egress.destination_stalled",
+            name: "stalled", target: "destinations",
             subject = name,
             error = %e,
             "a destination is stalled: its rows are held here and re-sent until it recovers. Nothing is committed \
@@ -1260,7 +1260,7 @@ fn clear_stall(metrics: &MetricsHandle, id: DestId, name: &str, stalled: &mut Op
     metrics.gauge("smeltr_destination_healthy", &[("destination", label.as_str())], 1.0);
     if stalled.take().is_some() {
         tracing::info!(
-            target: "egress.destination_recovered",
+            name: "recovered", target: "destinations",
             subject = name,
             "a destination recovered"
         );

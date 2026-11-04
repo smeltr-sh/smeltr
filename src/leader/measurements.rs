@@ -340,7 +340,7 @@ fn read(store: &RegistryStore, metric: &str, since_ms: i64) -> Vec<(String, Subj
         .series_since(metric, Tier::TenSeconds, since_ms)
         .unwrap_or_else(|e| {
             tracing::warn!(
-                target: "map.metric_unreadable",
+                name: "map_metric_unreadable", target: "status",
                 subject = %metric,
                 error = %e,
                 "could not read a metric for the map's measurements, so its nodes show no reading"
@@ -667,7 +667,8 @@ mod tests {
             area: None,
             condition,
             subject_kind,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: id.to_string(),
             group: Some("g".to_string()),
             severity: Severity::Warning,
@@ -712,7 +713,8 @@ mod tests {
             area: None,
             condition: Condition::WorkerSilent,
             subject_kind: SubjectKind::Worker,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: format!("w-{group}"),
             group: Some(group.to_string()),
             severity: Severity::Warning,
@@ -769,7 +771,8 @@ mod tests {
             area: None,
             condition: Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: "unheld".to_string(),
             group: Some("g".to_string()),
             severity: Severity::Warning,

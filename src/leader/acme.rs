@@ -440,7 +440,7 @@ pub fn failed(tls_dir: &Path, now_ms: i64, directory: &str, error: &str) -> Resu
     let mut state = state(tls_dir)?;
     state.last_attempt_millis = Some(now_ms);
     state.last_error = Some(crate::noted!(
-        target: "leader.acme_order_failed",
+        name: "order_failed", target: "certificates",
         "ordering a certificate failed",
         error.to_string(),
         directory
@@ -593,7 +593,7 @@ struct SavedAccount {
 impl Issuer for Directory {
     async fn issue(&self, names: &[String], csr_der: &[u8], prover: &dyn Prover) -> Result<String, String> {
         let account = self.account().await?;
-        tracing::info!(target: "leader.acme_account", directory = %self.settings.directory, "holding an account at the certificate authority");
+        tracing::info!(name: "account", target: "certificates", directory = %self.settings.directory, "holding an account at the certificate authority");
         let identifiers: Vec<Identifier> = names
             .iter()
             .map(|name| match name.parse() {
@@ -605,7 +605,7 @@ impl Issuer for Directory {
             .new_order(&NewOrder::new(&identifiers))
             .await
             .map_err(|e| format!("the order was refused: {e}"))?;
-        tracing::info!(target: "leader.acme_order_placed", names = %names.join(","), "the certificate authority took the order");
+        tracing::info!(name: "order_placed", target: "certificates", names = %names.join(","), "the certificate authority took the order");
 
         let kind = match self.settings.challenge {
             Challenge::TlsAlpn01 => ChallengeType::TlsAlpn01,
@@ -626,7 +626,7 @@ impl Issuer for Directory {
                 )
             })?;
             self.progress.set(Step::Proving);
-            tracing::info!(target: "leader.acme_proving", %name, challenge = self.settings.challenge.as_str(), "proving a name to the certificate authority");
+            tracing::info!(name: "proving", target: "certificates", %name, challenge = self.settings.challenge.as_str(), "proving a name to the certificate authority");
             let key_authorization = challenge.key_authorization();
             match self.settings.challenge {
                 Challenge::TlsAlpn01 => prover.tls_alpn(&name, key_authorization.digest().as_ref()).await?,
@@ -637,7 +637,7 @@ impl Issuer for Directory {
                 .set_ready()
                 .await
                 .map_err(|e| format!("the challenge for {name}: {e}"))?;
-            tracing::info!(target: "leader.acme_proof_ready", %name, "told the certificate authority to check the proof");
+            tracing::info!(name: "proof_ready", target: "certificates", %name, "told the certificate authority to check the proof");
         }
 
         self.progress.set(Step::Validating);
@@ -652,7 +652,7 @@ impl Issuer for Directory {
             }
             Err(e) => return Err(format!("waiting for the authority to validate: {e}")),
         }
-        tracing::info!(target: "leader.acme_validated", "the certificate authority validated every name");
+        tracing::info!(name: "validated", target: "certificates", "the certificate authority validated every name");
         order
             .finalize_csr(csr_der)
             .await
@@ -769,7 +769,7 @@ impl Proving {
                 let _ = told.await;
             });
             if let Err(e) = served.await {
-                tracing::warn!(target: "leader.acme_http", error = %e, "the HTTP-01 listener stopped");
+                tracing::warn!(name: "http_listener_stopped", target: "certificates", error = %e, "the HTTP-01 listener stopped");
             }
         });
         *held = Some(Listening { stop, stopped });
@@ -807,7 +807,7 @@ impl Prover for Proving {
                 .await
                 .is_err()
             {
-                tracing::debug!(target: "leader.acme_http_not_stopped", within_secs = LISTENER_STOP_WAIT.as_secs(), "the HTTP-01 listener did not stop in time, so the next order may find its port held");
+                tracing::debug!(name: "http_not_stopped", target: "certificates", within_secs = LISTENER_STOP_WAIT.as_secs(), "the HTTP-01 listener did not stop in time, so the next order may find its port held");
             }
         }
     }

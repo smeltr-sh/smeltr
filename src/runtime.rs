@@ -833,14 +833,14 @@ impl Reader {
             Some(reason) => reason,
             None => {
                 if self.unreachable.clear() {
-                    tracing::info!(target: "runtime.source_reachable", subject = %self.subject, "a source reaches the system it reads from again");
+                    tracing::info!(name: "source_reachable", target: "pipelines", subject = %self.subject, "a source reaches the system it reads from again");
                 }
                 return None;
             }
         };
         // One line for every source kind that knows its client's health, said once per change and on the interval.
         if let Some(error) = self.unreachable.fail_due(reason.clone()) {
-            tracing::warn!(target: "runtime.source_unreachable", subject = %self.subject, error, "a source cannot reach the system it reads from");
+            tracing::warn!(name: "source_unreachable", target: "pipelines", subject = %self.subject, error, "a source cannot reach the system it reads from");
         }
         Some(crate::heartbeat::MetricSampleDto {
             metric: "smeltr_source_connection_error".to_string(),
@@ -995,7 +995,7 @@ impl Transform {
         let source_label = lane.source_id.to_string();
         // Opened once there is a batch, so an idle turn's wait is not timed as a transform.
         let _span = tracing::trace_span!(
-            target: "runtime.transform",
+            target: "pipelines",
             "a transform",
             subject = lane.source_name.as_deref().unwrap_or(&source_label),
             batch
@@ -1021,7 +1021,7 @@ impl Transform {
         match outcome {
             Ok(Ok(())) => {
                 tracing::trace!(
-                    target: "runtime.transformed",
+                    name: "transformed", target: "pipelines",
                     rows = row_count,
                     out = out.rows.values().map(Vec::len).sum::<usize>(),
                     destinations = out.rows.len(),
@@ -1037,7 +1037,7 @@ impl Transform {
                     // Parked, not blocked: the reader learns of a wait only once it has become a stall.
                     Ok(HandOff::Parked) => {
                         tracing::trace!(
-                            target: "runtime.parked",
+                            name: "parked", target: "pipelines",
                             "a destination has no room, so the batch waits for it"
                         );
                         self.metrics.incr(
@@ -1063,7 +1063,7 @@ impl Transform {
             // Only a new config clears it: the same rows meet the same routes and pipelines, and block the same way.
             Ok(Err(held)) => {
                 tracing::trace!(
-                    target: "runtime.held",
+                    name: "held", target: "pipelines",
                     rows = row_count,
                     "a pipeline blocked a batch, so it is held until a new config is deployed"
                 );
@@ -1084,7 +1084,7 @@ impl Transform {
                     .incr("smeltr_batches_poisoned_total", &[("source", source_label.as_str())], 1);
                 let panic = crate::logs::panic_text(&*panic);
                 tracing::error!(
-                    target: "runtime.batch_poisoned",
+                    name: "batch_poisoned", target: "pipelines",
                     subject = lane.source_name.as_deref().unwrap_or(&source_label),
                     rows = turn.records.len(),
                     %panic,
@@ -1223,7 +1223,7 @@ impl Transform {
                     // Unreachable: nothing else takes an entry out. Dropping the report would leave the batch
                     // outstanding forever, so say so rather than lose it silently.
                     tracing::error!(
-                        target: "runtime.completion_unclaimed",
+                        name: "completion_unclaimed", target: "pipelines",
                         subject = %dest,
                         batch = c.batch,
                         "a destination completed a batch this thread never dispatched, so its reader will wait for it"
@@ -1514,7 +1514,7 @@ impl Transform {
         }
         if let Some(over) = refusal {
             tracing::error!(
-                target: "runtime.records_over_budget",
+                name: "records_over_budget", target: "pipelines",
                 subject = %lane.source_id,
                 records = diverted,
                 over = %over,
@@ -1625,7 +1625,7 @@ impl Transform {
         }
 
         tracing::trace!(
-            target: "runtime.routing",
+            name: "routing", target: "pipelines",
             records = slice.len(),
             routes = masks.len(),
             taken = bits::popcount(&taken),
@@ -1741,7 +1741,7 @@ impl Transform {
             }
             let (dropped, no_rule, no_rule_dropped) = (docs.dropped, docs.no_rule, docs.no_rule_dropped);
             tracing::trace!(
-                target: "runtime.route_ran",
+                name: "route_ran", target: "pipelines",
                 route = %self.topology.routes[route_idx].id,
                 rows = docs.rows.len(),
                 dropped,
@@ -2399,7 +2399,7 @@ fn report_rejections(
     if ring.due(dest) {
         let reasons: HashSet<&str> = rows.iter().map(|(_, reason)| reason.as_str()).collect();
         tracing::warn!(
-            target: "runtime.rows_rejected",
+            name: "rows_rejected", target: "pipelines",
             subject = dest_name,
             rows = rows.len(),
             reasons = reasons.len(),
@@ -2436,7 +2436,7 @@ impl Reader {
     /// limit, wait up to `timeout` for an acknowledgment instead.
     #[tracing::instrument(
         level = "trace",
-        target = "runtime.read",
+        target = "pipelines",
         name = "a source read",
         skip_all,
         fields(subject = %self.subject)
@@ -2476,7 +2476,7 @@ impl Reader {
             self.dropped_unsaid += dropped;
             if self.losing.fail_due("dropping".to_string()).is_some() {
                 tracing::warn!(
-                    target: "runtime.source_dropped",
+                    name: "source_dropped", target: "pipelines",
                     subject = %source_label,
                     dropped = self.dropped_unsaid,
                     "a source dropped records that arrived while it had no room for them"
@@ -2484,7 +2484,7 @@ impl Reader {
                 self.dropped_unsaid = 0;
             }
         } else if self.losing.clear() {
-            tracing::info!(target: "runtime.source_dropping_ended", subject = %source_label, dropped = self.dropped_unsaid, "a source has room for records again");
+            tracing::info!(name: "source_dropping_ended", target: "pipelines", subject = %source_label, dropped = self.dropped_unsaid, "a source has room for records again");
             self.dropped_unsaid = 0;
         }
         for (reason, refused) in self.source.take_refused() {
@@ -2571,7 +2571,7 @@ impl Reader {
             // A blocked source polls empty because it is blocked, so this is the turn that has to notice there is nothing
             // left to wait for.
             self.release_if_idle();
-            tracing::trace!(target: "runtime.polled", rows = 0, "a source polled and found nothing new");
+            tracing::trace!(name: "polled", target: "pipelines", rows = 0, "a source polled and found nothing new");
             return Ok(Polled::Idle);
         }
         // Tracked at poll time, in poll order: what makes the tracker's prefix rule a watermark.
@@ -2586,7 +2586,7 @@ impl Reader {
         let waiting = self.destinations.iter().copied().collect();
         let bytes = records.iter().map(|r| r.read_size()).sum();
         tracing::trace!(
-            target: "runtime.polled",
+            name: "polled", target: "pipelines",
             batch = id,
             rows = records.len(),
             bytes,
@@ -2609,7 +2609,7 @@ impl Reader {
             Ok(()) => Ok(Polled::Handed),
             Err(unsent) => {
                 tracing::trace!(
-                    target: "runtime.queue_full",
+                    name: "queue_full", target: "pipelines",
                     batch = id,
                     "the transform's queue is full, so the batch waits in the reader"
                 );
@@ -2635,7 +2635,7 @@ impl Reader {
         };
         let source_label = self.source_id.to_string();
         tracing::trace!(
-            target: "runtime.committing",
+            name: "committing", target: "pipelines",
             source = %self.subject,
             batches = retired.batches,
             partitions = retired.tokens.len(),
@@ -2647,7 +2647,7 @@ impl Reader {
             if !self.commit_failing {
                 self.commit_failing = true;
                 tracing::warn!(
-                    target: "runtime.commit_dropped",
+                    name: "commit_dropped", target: "pipelines",
                     subject = %self.source_id,
                     error = %e,
                     "could not commit offsets, so the commit is dropped and reading continues. These records are \
@@ -2661,7 +2661,7 @@ impl Reader {
         if self.commit_failing {
             self.commit_failing = false;
             tracing::info!(
-                target: "runtime.commit_resumed",
+                name: "commit_resumed", target: "pipelines",
                 subject = %self.source_id,
                 "a source is committing offsets again"
             );
@@ -2687,7 +2687,7 @@ impl Reader {
         {
             self.poll_failing = Some(std::time::Instant::now());
             tracing::warn!(
-                target: "runtime.source_poll_failed",
+                name: "source_poll_failed", target: "pipelines",
                 subject = %self.source_id,
                 error = %e,
                 "a source could not be read, and is read again after a wait"
@@ -2699,7 +2699,7 @@ impl Reader {
     fn poll_landed(&mut self) {
         if self.poll_failing.take().is_some() {
             tracing::info!(
-                target: "runtime.source_poll_recovered",
+                name: "source_poll_recovered", target: "pipelines",
                 subject = %self.source_id,
                 "a source is being read again"
             );
@@ -2757,14 +2757,14 @@ impl Reader {
             self.blocked = true;
             if let Err(e) = self.source.block() {
                 tracing::warn!(
-                    target: "runtime.source_block_failed",
+                    name: "source_block_failed", target: "pipelines",
                     subject = %self.source_id,
                     error = %e,
                     "a source could not be blocked"
                 );
             }
             tracing::warn!(
-                target: "runtime.source_blocked",
+                name: "source_blocked", target: "pipelines",
                 subject = %self.source_id,
                 why,
                 "a source is blocked: no offsets are being committed and nothing is being consumed on this thread, \
@@ -2783,14 +2783,14 @@ impl Reader {
             self.blocked = false;
             if let Err(e) = self.source.release() {
                 tracing::warn!(
-                    target: "runtime.source_release_failed",
+                    name: "source_release_failed", target: "pipelines",
                     subject = %self.source_id,
                     error = %e,
                     "a source could not be resumed"
                 );
             }
             tracing::info!(
-                target: "runtime.source_resumed",
+                name: "source_resumed", target: "pipelines",
                 subject = %self.source_id,
                 "a source resumed: the destination is accepting records again"
             );

@@ -95,7 +95,7 @@ impl Unwritten {
             return;
         }
         tracing::warn!(
-            target: "egress.destination_unwritten",
+            name: "unwritten", target: "destinations",
             subject = %self.subject,
             kind,
             count,
@@ -444,7 +444,7 @@ fn in_halves<P: Protocol, T: Transport>(
         return None;
     }
     let half = group.pending.len() / 2;
-    crate::debug_when!(round.said.halved.lock().unwrap_or_else(std::sync::PoisonError::into_inner).due(), target: "http.request_halved", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
+    crate::debug_when!(round.said.halved.lock().unwrap_or_else(std::sync::PoisonError::into_inner).due(), name: "request_halved", target: "destinations", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
     let mut tail = Group {
         route: group.route.clone(),
         part: group.part,
@@ -495,7 +495,7 @@ fn deliver<P: Protocol, T: Transport>(
                     return halves;
                 }
                 // One document whose answer alone is past the bound: refused, since asking again reads the same answer.
-                tracing::debug!(target: "http.answer_too_large", subject = %round.subject, service = protocol.name(), limit_mib = MAX_ANSWER_BYTES >> 20, "the answer to one document was larger than the worker holds, so the worker rejects the document and the destination's Refused answer decides what happens to it");
+                tracing::debug!(name: "answer_too_large", target: "destinations", subject = %round.subject, service = protocol.name(), limit_mib = MAX_ANSWER_BYTES >> 20, "the answer to one document was larger than the worker holds, so the worker rejects the document and the destination's Refused answer decides what happens to it");
                 round.rejections.push(Rejection {
                     doc: group.sent_index[0],
                     reason: format!(
@@ -561,7 +561,7 @@ fn deliver<P: Protocol, T: Transport>(
         }
         if !round.throttle_said {
             round.throttle_said = true;
-            crate::debug_when!(round.said.throttled.lock().unwrap_or_else(std::sync::PoisonError::into_inner).due(), target: "http.throttled", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
+            crate::debug_when!(round.said.throttled.lock().unwrap_or_else(std::sync::PoisonError::into_inner).due(), name: "throttled", target: "destinations", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
         }
         std::thread::sleep(nap);
         round.waited += nap;

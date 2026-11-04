@@ -184,7 +184,7 @@ fn run_tests(runner: TestRunner, state: Arc<Mutex<State>>, data_dir: PathBuf) {
     if let Err(e) = spawned {
         state.lock().unwrap().running = false;
         tracing::warn!(
-            target: "leader.deploy_tests_not_run",
+            name: "tests_not_run", target: "deploy",
             error = %e,
             "the deployed commit's tests could not be started, so the failures last found stand"
         );

@@ -8,9 +8,9 @@ use smeltr::logs;
 /// dependency raises while that happens is queued alongside -- asserting on the queue's total length made this
 /// test depend on other people's silence.
 fn mine() -> Vec<u64> {
-    logs::pending_map(1024, |event| (event.site.to_string(), event.seq))
+    logs::pending_map(1024, |event| (event.r#type.to_string(), event.seq))
         .into_iter()
-        .filter(|(site, _)| site == "delivery.test")
+        .filter(|(kind, _)| kind == "delivery_test")
         .map(|(_, seq)| seq)
         .collect()
 }
@@ -23,7 +23,7 @@ fn a_worker_keeps_what_the_leader_has_not_acknowledged() {
     logs::set_worker("w-1");
 
     for row in 0..5u64 {
-        tracing::error!(target: "delivery.test", subject = "d1", row, "a destination refused a row");
+        tracing::error!(name: "delivery_test", target: "logs", subject = "d1", row, "a destination refused a row");
     }
     // The drain thread is what queues them, so wait for it rather than race it.
     let began = std::time::Instant::now();

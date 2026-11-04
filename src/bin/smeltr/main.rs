@@ -182,7 +182,7 @@ async fn get_map_measurements(
         let commit = config_api::Reading::open(&branch, config_file::SHARED_DIR)?.commit;
         let held = state.store.held_sources().unwrap_or_else(|e| {
             tracing::warn!(
-                target: "map.holds_unreadable",
+                name: "holds_unreadable", target: "status",
                 error = %e,
                 "could not read who holds the single-worker sources, so the map names no holder"
             );
@@ -844,7 +844,7 @@ async fn leader_tls_config(
 
     if materials.authority_created {
         tracing::info!(
-            target: "leader.tls_authority_created",
+            name: "authority_created", target: "certificates",
             path = %tls_dir.join(smeltr::leader::tls::CA_CERT).display(),
             "created this leader's certificate authority: copy this file into every worker's bootstrap config, \
              and trust it in any browser that opens this leader. It is what says a leader really is this one; \
@@ -1017,7 +1017,7 @@ fn start_worker(
     });
 
     let describe = if in_leader { "an embedded worker" } else { "worker" };
-    tracing::info!(target: "worker.starting", role = %describe, group = %group_id, "starting a worker");
+    tracing::info!(name: "starting", target: "processes", role = %describe, group = %group_id, "starting a worker");
     smeltr::worker::run_worker(smeltr::worker::WorkerConfig {
         leader_url,
         leader_ca_pem,
@@ -1623,7 +1623,7 @@ async fn sweep_sessions(auth: gate::Auth) {
         tokio::time::sleep(EVERY).await;
         let dropped = auth.sessions.sweep(std::time::Instant::now());
         if dropped > 0 {
-            tracing::debug!(target: "leader.sessions_swept", dropped, "expired sessions were dropped");
+            tracing::debug!(name: "sessions_swept", target: "accounts", dropped, "expired sessions were dropped");
         }
     }
 }
@@ -1647,7 +1647,7 @@ fn load_and_apply_config_file() {
 
     let file: FileConfig = match find_config_file("smeltr.toml") {
         Some(path) => {
-            tracing::info!(target: "startup.config_loaded", path = %path.display(), "settings were read from a config file");
+            tracing::info!(name: "config_loaded", target: "processes", path = %path.display(), "settings were read from a config file");
             parse_config_file(&path)
         }
         None => FileConfig::default(),
@@ -1775,7 +1775,7 @@ fn stop_on_signal() {
 
 /// Never returns. Typed `()` rather than `!` so a thread can be spawned on it.
 fn exit_after_stopping() {
-    tracing::info!(target: "process.stopping", "Smeltr is stopping: a stop was requested");
+    tracing::info!(name: "stopping", target: "processes", "Smeltr is stopping: a stop was requested");
     smeltr::worker::stop_before_exit();
     smeltr::logs::stop();
     service::stopped();
@@ -1852,7 +1852,7 @@ fn start() {
     // carries that process's buffer alone. This one would not reach such a pipeline at all.
     let (suites, groups) = smeltr::crypto::offered();
     tracing::info!(
-        target: "tls.offered",
+        name: "offered", target: "certificates",
         suites = suites.join(", "),
         groups = groups.join(", "),
         "TLS algorithms offered"
@@ -1923,7 +1923,7 @@ fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path:
         std::process::exit(1);
     }
     if let Some(problem) = standing.problem() {
-        tracing::error!(target: "secrets.key_unusable", path = %path.display(), %problem, "the secrets encryption key is not usable, so secrets cannot be read or stored until it is");
+        tracing::error!(name: "key_unusable", target: "secrets", path = %path.display(), %problem, "the secrets encryption key is not usable, so secrets cannot be read or stored until it is");
     }
 }
 
@@ -1980,7 +1980,7 @@ fn admit_an_administrator(store: &dyn smeltr::leader::store::Store) {
 
 async fn run_leader() {
     tracing::info!(
-        target: "leader.starting",
+        name: "starting", target: "processes",
         version = smeltr::version::VERSION,
         release = smeltr::version::RELEASE,
         data_dir = %smeltr::startup_config::leader_data_dir().display(),
@@ -1988,7 +1988,7 @@ async fn run_leader() {
     );
     if assets::is_placeholder_only() {
         tracing::warn!(
-            target: "leader.gui_missing",
+            name: "gui_missing", target: "api",
             "this binary has no GUI baked in: the API works, but `/` will explain itself rather than render. \
              Build gui-frontend and rebuild."
         );
@@ -2028,7 +2028,7 @@ async fn run_leader() {
     });
     let listener = bind_listener(addr);
     tracing::info!(
-        target: "leader.origin",
+        name: "origin_set", target: "api",
         origin = %origin.value,
         aliases = ?origin.aliases,
         secure_cookies = origin.secure,
@@ -2041,7 +2041,7 @@ async fn run_leader() {
     let data_dir = smeltr::startup_config::leader_data_dir();
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
         tracing::warn!(
-            target: "leader.data_dir_not_created",
+            name: "data_dir_not_created", target: "processes",
             path = %data_dir.display(),
             error = %e,
             "could not create the leader data directory"
@@ -2091,12 +2091,12 @@ async fn run_leader() {
     for (oid, removed) in smeltr::lookup::store::remove_damaged(&repo) {
         match removed {
             Ok(()) => tracing::warn!(
-                target: "leader.lookup_file_damaged",
+                name: "lookup_file_damaged", target: "deploy",
                 subject = %oid,
                 "a stored lookup file did not hash to its name and was removed"
             ),
             Err(e) => tracing::warn!(
-                target: "leader.lookup_file_damaged",
+                name: "lookup_file_damaged", target: "deploy",
                 subject = %oid,
                 error = %e,
                 "a stored lookup file did not hash to its name and could not be removed"
@@ -2123,11 +2123,11 @@ async fn run_leader() {
     };
     match seeded {
         Ok(true) => {
-            tracing::info!(target: "leader.group_seeded", subject = %seed_group, "seeded the default worker group")
+            tracing::info!(name: "group_seeded", target: "deploy", subject = %seed_group, "seeded the default worker group")
         }
         Ok(false) => {}
         Err(e) => tracing::warn!(
-            target: "leader.group_not_seeded",
+            name: "group_not_seeded", target: "deploy",
             subject = %seed_group,
             error = %e,
             "the default worker group was not seeded"
@@ -2135,10 +2135,10 @@ async fn run_leader() {
     }
 
     match worker_groups_api::seed_shared_hue(store.as_ref()) {
-        Ok(true) => tracing::info!(target: "leader.shared_hue_seeded", "seeded shared's color"),
+        Ok(true) => tracing::info!(name: "shared_hue_seeded", target: "deploy", "seeded shared's color"),
         Ok(false) => {}
         Err(e) => tracing::warn!(
-            target: "leader.shared_hue_not_seeded",
+            name: "shared_hue_not_seeded", target: "deploy",
             error = %e,
             "shared's color was not seeded"
         ),
@@ -2148,7 +2148,7 @@ async fn run_leader() {
     match config_api::Reading::open(smeltr::leader::git::MAIN_BRANCH, config_file::SHARED_DIR) {
         Ok(reading) => config_api::startup_validate(&reading),
         Err(e) => tracing::warn!(
-            target: "leader.main_unreadable",
+            name: "main_unreadable", target: "deploy",
             subject = smeltr::leader::git::MAIN_BRANCH,
             error = %e.message(),
             "could not read the branch the fleet runs, so nothing was validated at startup"
@@ -2334,7 +2334,7 @@ async fn run_leader() {
                 // the socket on this one, which is the two having parted and is what every read then says.
                 if let Err(e) = certificates_api::reload_socket(&serving) {
                     tracing::warn!(
-                        target: "leader.certificate_not_reloaded",
+                        name: "not_reloaded", target: "certificates",
                         error = %e,
                         "the certificate on disk changed and this leader is still serving the previous one"
                     );
@@ -2375,7 +2375,7 @@ async fn run_leader() {
 
     match tls {
         Some((resolver, _ca_pem)) => {
-            tracing::info!(target: "leader.listening", %addr, tls = true, "smeltr is listening");
+            tracing::info!(name: "listening", target: "api", %addr, tls = true, "smeltr is listening");
             let config = axum_server::tls_rustls::RustlsConfig::from_config(
                 resolver
                     .server_config()
@@ -2390,7 +2390,7 @@ async fn run_leader() {
                 .expect("smeltr server error");
         }
         None => {
-            tracing::info!(target: "leader.listening", %addr, tls = false, "smeltr is listening, with TLS disabled by SMELTR_LEADER_TLS");
+            tracing::info!(name: "listening", target: "api", %addr, tls = false, "smeltr is listening, with TLS disabled by SMELTR_LEADER_TLS");
             let mut server = axum_server::from_tcp(listener).expect("hand smeltr listener to the server");
             smeltr::leader::listen::bound(server.http_builder(), smeltr::leader::listen::HEADER_READ);
             // `into_make_service_with_connect_info` rather than the plain one: the login throttle keys on the

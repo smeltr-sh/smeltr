@@ -432,10 +432,10 @@ impl ObjectSource {
     fn tend(&mut self) {
         if let Err(e) = self.receive(Duration::ZERO, false) {
             if let Some(error) = self.receive_failing.fail_due(e.message.clone()) {
-                tracing::warn!(target: "object_source.receive_failed", queue = %self.queue.name(), error, "a source could not receive from its queue; trying again");
+                tracing::warn!(name: "receive_failed", target: "sources", queue = %self.queue.name(), error, "a source could not receive from its queue; trying again");
             }
         } else if self.receive_failing.clear() {
-            tracing::info!(target: "object_source.receive_recovered", queue = %self.queue.name(), "the queue answers receives again");
+            tracing::info!(name: "receive_recovered", target: "sources", queue = %self.queue.name(), "the queue answers receives again");
         }
         self.delete_finished();
     }
@@ -451,7 +451,7 @@ impl ObjectSource {
             Some((_, why)) => {
                 if let Some(error) = self.delete_failing.fail_due(why.clone()) {
                     tracing::warn!(
-                        target: "object_source.delete_failed",
+                        name: "delete_failed", target: "sources",
                         queue = %self.queue.name(),
                         count = failed.len(),
                         error,
@@ -510,7 +510,7 @@ impl ObjectSource {
                     // Left unextended, so the queue shows it again and in time dead-letters it.
                     self.unreadable += 1;
                     tracing::warn!(
-                        target: "object_source.unreadable",
+                        name: "object_unreadable", target: "sources",
                         error = %why,
                         unreadable = self.unreadable,
                         "a message announces no objects; it is left on the queue"
@@ -622,7 +622,7 @@ impl ObjectSource {
     fn give_up(&mut self, message: u64, bucket: &str, key: &str, why: &str) {
         self.unreadable += 1;
         tracing::warn!(
-            target: "object_source.unreadable",
+            name: "object_unreadable", target: "sources",
             bucket,
             key,
             error = why,
@@ -726,7 +726,7 @@ impl Drop for ObjectSource {
         handles.extend(lock(&self.held).drain().map(|(_, h)| h.handle));
         if let Some((_, why)) = self.queue.extend(&handles, Duration::ZERO).first() {
             tracing::warn!(
-                target: "object_source.extend",
+                name: "extend", target: "sources",
                 error = %why,
                 "held messages were not shown again; they show when their visibility lapses"
             );
@@ -756,7 +756,7 @@ fn keep(queue: &dyn Queue, held: &Mutex<HashMap<u64, Held>>, visibility: Duratio
         }
         if let Some((_, why)) = failed.first() {
             tracing::warn!(
-                target: "object_source.extend",
+                name: "extend", target: "sources",
                 failed = failed.len(),
                 error = %why,
                 "held messages were not extended; trying again"
@@ -775,7 +775,7 @@ fn sample_lag(queue: &dyn Queue, lag: &Mutex<Vec<PartitionLag>>, stop: &Receiver
             None => return,
             Some(Err(Unread::Denied(why))) => {
                 tracing::warn!(
-                    target: "object_source.depth",
+                    name: "depth_unread", target: "sources",
                     queue = %queue.name(),
                     error = %why,
                     "the queue's depth could not be read, so its lag is not reported"
@@ -784,7 +784,7 @@ fn sample_lag(queue: &dyn Queue, lag: &Mutex<Vec<PartitionLag>>, stop: &Receiver
             }
             Some(Ok(depth)) => {
                 if failing.clear() {
-                    tracing::info!(target: "object_source.depth", "the queue's depth is read again");
+                    tracing::info!(name: "depth_unread", target: "sources", "the queue's depth is read again");
                 }
                 *lag.lock().unwrap_or_else(PoisonError::into_inner) = vec![depth];
             }
@@ -792,7 +792,7 @@ fn sample_lag(queue: &dyn Queue, lag: &Mutex<Vec<PartitionLag>>, stop: &Receiver
                 failing.fail(why);
                 if let Some(why) = failing.due() {
                     tracing::warn!(
-                        target: "object_source.depth",
+                        name: "depth_unread", target: "sources",
                         error = %why,
                         "the queue's depth could not be read, so its lag is not reported"
                     );

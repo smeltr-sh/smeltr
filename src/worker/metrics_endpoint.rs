@@ -57,7 +57,7 @@ pub fn open() -> Result<Option<MetricsEndpoint>, String> {
         let ignored = settings.given();
         if !ignored.is_empty() {
             tracing::warn!(
-                target: "worker.metrics_endpoint_ignored",
+                name: "metrics_endpoint_ignored", target: "logs",
                 settings = %ignored.join(", "),
                 "ignoring the metrics endpoint's settings, since worker.metrics_endpoint.enabled is false"
             );
@@ -180,7 +180,7 @@ async fn answer(axum::extract::State(scraped): axum::extract::State<Arc<Scraped>
             .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("basic"))
             .map(|(_, credentials)| crate::leader::auth::hash_secret(credentials.trim()));
         if !sent.is_some_and(|sent| verify_slices_are_equal(sent.as_bytes(), expected.as_bytes()).is_ok()) {
-            tracing::debug!(target: "worker.metrics_scrape_refused", "a metrics scrape sent no usable credential");
+            tracing::debug!(name: "metrics_scrape_refused", target: "logs", "a metrics scrape sent no usable credential");
             let mut refused = StatusCode::UNAUTHORIZED.into_response();
             refused.headers_mut().insert(
                 header::WWW_AUTHENTICATE,

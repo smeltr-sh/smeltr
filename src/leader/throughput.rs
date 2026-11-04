@@ -189,7 +189,7 @@ fn compute(store: &RegistryStore, ended_ms: i64, share: f64) -> Vec<Reading> {
         Ok(buckets) => buckets,
         Err(e) => {
             tracing::warn!(
-                target: "throughput.series_unreadable",
+                name: "series_unreadable", target: "status",
                 error = %e,
                 "could not read rows read, so no source is judged against its normal this pass"
             );
@@ -462,7 +462,7 @@ fn record_swings(store: &RegistryStore, ended_ms: i64, heartbeat_interval: Durat
     let from = match store.last_swing_ms() {
         Ok(last) => last.map_or(reached, |last| (last + width).max(reached)),
         Err(e) => {
-            tracing::warn!(target: "throughput.swings_unreadable", error = %e, "could not read which swings are held, so none are recorded this pass");
+            tracing::warn!(name: "swings_unreadable", target: "status", error = %e, "could not read which swings are held, so none are recorded this pass");
             return;
         }
     };
@@ -473,7 +473,7 @@ fn record_swings(store: &RegistryStore, ended_ms: i64, heartbeat_interval: Durat
     let fine = match history(store, &[Tier::TenSeconds], Tier::TenSeconds, from - width) {
         Ok(fine) => fine,
         Err(e) => {
-            tracing::warn!(target: "throughput.series_unreadable", error = %e, "could not read rows read, so no swing is recorded this pass");
+            tracing::warn!(name: "series_unreadable", target: "status", error = %e, "could not read rows read, so no swing is recorded this pass");
             return;
         }
     };
@@ -493,7 +493,7 @@ fn record_swings(store: &RegistryStore, ended_ms: i64, heartbeat_interval: Durat
         })
         .collect();
     if let Err(e) = store.record_swings(&swings) {
-        tracing::warn!(target: "throughput.swings_not_recorded", error = %e, "could not record how far sources' rates swung, so their charts' bands miss these buckets");
+        tracing::warn!(name: "swings_not_recorded", target: "status", error = %e, "could not record how far sources' rates swung, so their charts' bands miss these buckets");
     }
 }
 
@@ -578,7 +578,7 @@ pub async fn readings(state: &AppState, now_ms: i64, heartbeat_interval: Duratio
     let percent = match read.unwrap_or_else(|e| Err(e.to_string())) {
         Ok(percent) => percent,
         Err(e) => {
-            tracing::warn!(target: "throughput.band_unreadable", error = %e, "using the default band");
+            tracing::warn!(name: "band_unreadable", target: "status", error = %e, "using the default band");
             DEFAULT_BAND_PERCENT
         }
     };

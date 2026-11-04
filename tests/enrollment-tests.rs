@@ -629,7 +629,7 @@ fn a_worker_given_only_an_enrollment_code_pins_the_authority_and_enrolls() {
     let arrived = heartbeating(&base, &ca_pem, Duration::from_secs(60));
     let said = stop(worker);
     assert!(arrived, "the worker never heartbeated:\n{said}");
-    assert!(said.contains("worker.authority_pinned"), "{said}");
+    assert!(said.contains("enrollment authority_pinned"), "{said}");
 
     // Kept, so the unverified fetch happens once in this worker's life rather than at every start.
     let kept = std::fs::read(state_dir.join("pinned-ca.pem")).expect("the authority it pinned");
@@ -669,7 +669,7 @@ fn an_enrollment_code_naming_another_authority_is_refused_rather_than_trusted() 
         said.contains("did not offer the certificate authority this enrollment code names"),
         "{said}"
     );
-    assert!(!said.contains("worker.enrolled"), "it enrolled anyway:\n{said}");
+    assert!(!said.contains("enrollment enrolled"), "it enrolled anyway:\n{said}");
     assert!(
         !state_dir.join("pinned-ca.pem").exists(),
         "it kept an authority it could not match"
@@ -693,7 +693,7 @@ fn a_second_worker_cannot_spend_an_enrollment_code_minted_for_one() {
     let said = gives_up(&base, value, &temp_dir("second-worker"), Duration::from_secs(30));
     assert!(said.contains("already brought in every worker"), "{said}");
     assert!(
-        said.contains("worker.enroll_refused"),
+        said.contains("enrollment was_refused"),
         "it treated a spent enrollment code as something to wait out:\n{said}"
     );
 }
@@ -729,7 +729,7 @@ fn an_enrollment_code_minted_for_several_workers_brings_in_that_many() {
         let child = spawn_worker(&base, value, &temp_dir(label));
         std::thread::sleep(Duration::from_secs(6));
         let said = stop(child);
-        assert!(said.contains("worker.enrolled"), "{label} never enrolled:\n{said}");
+        assert!(said.contains("enrollment enrolled"), "{label} never enrolled:\n{said}");
     }
     let said = refused(&base, value, &temp_dir("fleet-3"));
     assert!(said.contains("already brought in every worker"), "{said}");
@@ -1036,7 +1036,7 @@ fn an_enrolled_worker_starts_with_an_enrollment_code_it_can_no_longer_read() {
         !said.contains("refusing to start"),
         "an enrolled worker refused over an enrollment code it never needed:\n{said}"
     );
-    assert!(said.contains("worker.started"), "{said}");
+    assert!(said.contains("processes started"), "{said}");
 }
 
 /// Re-pointed from a leader with its own authority to one a public certificate covers. The enrollment code says the
@@ -1066,7 +1066,7 @@ fn an_enrollment_code_naming_the_platforms_roots_puts_aside_a_kept_private_autho
     let said = stop(worker);
 
     assert!(
-        said.contains("worker.authority_replaced"),
+        said.contains("enrollment authority_replaced"),
         "it kept the private authority against an enrollment code naming the platform's roots:\n{said}"
     );
     // Gone, not merely passed over. An enrollment code is spent once, so the next start has none to say this file is

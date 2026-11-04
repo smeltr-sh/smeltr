@@ -1325,7 +1325,7 @@ impl Protocol for RemoteWrite {
             400 | 409 | 413 | 422 if self.version == RemoteWriteVersion::V2 && wrote_any(response) => {
                 // Only this line carries the store's refusal: the rows it did not write are dropped, not sent again.
                 tracing::error!(
-                    target: "remote_write.partly_written",
+                    name: "partly_written", target: "destinations",
                     subject = self.unwritten.as_ref().map_or("prometheus", |u| u.subject()),
                     status = response.status,
                     error = %response.describe(),

@@ -234,7 +234,7 @@ pub async fn login(
         // recording it whole would let an unauthenticated caller write a body-sized row per attempt and fill the
         // leader's disk through the throttle.
         let subject = bounded_subject(&canonical);
-        tracing::warn!(target: "leader.sign_in_refused", subject = %subject, source = %address, "a sign-in was refused");
+        tracing::warn!(name: "sign_in_refused", target: "accounts", subject = %subject, source = %address, "a sign-in was refused");
         accounts::record(auth.store.as_ref(), &Actor::anonymous(), "login", &subject, "refused");
         return refuse(StatusCode::UNAUTHORIZED, GENERIC_REFUSAL);
     };
@@ -280,7 +280,7 @@ pub async fn login(
     // was verified. Refused like any other sign-in that no longer matches: the next attempt is judged afresh.
     if current.generation != verified {
         let subject = bounded_subject(&canonical);
-        tracing::warn!(target: "leader.sign_in_refused", subject = %subject, source = %address, "a sign-in was refused");
+        tracing::warn!(name: "sign_in_refused", target: "accounts", subject = %subject, source = %address, "a sign-in was refused");
         accounts::record(auth.store.as_ref(), &Actor::anonymous(), "login", &subject, "refused");
         return refuse(StatusCode::UNAUTHORIZED, GENERIC_REFUSAL);
     }

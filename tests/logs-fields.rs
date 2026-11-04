@@ -47,7 +47,7 @@ fn a_text_field_carries_the_text_and_not_rusts_rendering_of_it() {
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut starting = None;
     for line in stderr.lines().map_while(Result::ok) {
-        if line.contains("worker.starting") {
+        if line.contains("processes starting") {
             starting = Some(line);
             break;
         }
