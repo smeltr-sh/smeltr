@@ -655,7 +655,10 @@ pub struct LogFilter<'a> {
     pub worker_id: Option<&'a str>,
     pub group_id: Option<&'a str>,
     pub class: Option<&'a str>,
+    /// Matched anywhere in the type, the same as `message_contains` is against the message, or whole when
+    /// `type_exact`: a type that names one line can be part of another's.
     pub r#type: Option<&'a str>,
+    pub type_exact: bool,
     pub service: Option<&'a str>,
     /// Matched anywhere in the message. Truncated at delivery, so this cannot find what was cut.
     pub message_contains: Option<&'a str>,
@@ -1230,7 +1233,7 @@ impl RegistryStore {
             ("worker_id", filter.worker_id),
             ("group_id", filter.group_id),
             ("class", filter.class),
-            ("type", filter.r#type),
+            ("type", filter.r#type.filter(|_| filter.type_exact)),
             ("service", filter.service),
         ] {
             if let Some(value) = value {
@@ -1238,10 +1241,14 @@ impl RegistryStore {
                 args.push(Box::new(value.to_string()));
             }
         }
-        // `escape`d, so a message containing `%` or `_` searches for those characters rather than for every row.
-        if let Some(text) = filter.message_contains {
-            sql.push_str(" AND message LIKE ? ESCAPE '\\'");
-            args.push(Box::new(format!("%{}%", like_escape(text))));
+        // `escape`d, so a type or message containing `%` or `_` searches for those characters rather than for
+        // every row.
+        let type_contains = filter.r#type.filter(|_| !filter.type_exact);
+        for (column, value) in [("type", type_contains), ("message", filter.message_contains)] {
+            if let Some(text) = value {
+                sql.push_str(&format!(" AND {column} LIKE ? ESCAPE '\\'"));
+                args.push(Box::new(format!("%{}%", like_escape(text))));
+            }
         }
         for (op, value) in [(">=", filter.since_ms), ("<=", filter.until_ms)] {
             if let Some(value) = value {
@@ -2733,21 +2740,24 @@ mod tests {
             })),
             vec!["destinations.bulk_refused"]
         );
-        // The whole type, not a part of one: "refused" is in "bulk_refused" and names no line.
+        // Matched anywhere, not just at the front: "refused" ends the one type that has it.
         assert_eq!(
             lines(&one(LogFilter {
-                r#type: Some("bulk_refused"),
+                r#type: Some("refused"),
                 ..Default::default()
             })),
             vec!["destinations.bulk_refused"]
         );
-        assert!(
+        // Whole, when asked: "refused" is only part of "bulk_refused".
+        let whole = |kind| {
             lines(&one(LogFilter {
-                r#type: Some("refused"),
+                r#type: Some(kind),
+                type_exact: true,
                 ..Default::default()
             }))
-            .is_empty()
-        );
+        };
+        assert!(whole("refused").is_empty());
+        assert_eq!(whole("bulk_refused"), vec!["destinations.bulk_refused"]);
         assert_eq!(
             lines(&one(LogFilter {
                 class: Some("pipelines"),

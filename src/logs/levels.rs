@@ -107,6 +107,7 @@ const SERVICES: &[(&str, &str)] = &[
     ("smeltr::io::s2s_receiver", "s2sReceiver"),
     ("smeltr::io::s2s", "s2sReceiver"),
     ("smeltr::io::hec", "hecReceiver"),
+    ("smeltr::io::otlp::export", "otlp"),
     ("smeltr::io::otlp", "otlpReceiver"),
     ("smeltr::io::prometheus", "prometheusReceiver"),
     ("smeltr::io::sqs", "s3Sqs"),
