@@ -263,16 +263,26 @@ fn asa_line(rng: &mut Rng, cov: &mut Coverage, i: usize) -> String {
         cov.reach("asa device id");
         *rng.pick(&["fw-01", "10.0.0.1", "2001:db8::1", "asa.example.com"])
     });
-    let colon = rng.chance(2);
     let header = match (timestamp, host) {
         (None, None) => String::new(),
         (Some(t), None) => format!("{t}: "),
         (t, Some(h)) => {
-            if colon {
-                cov.reach("asa device id and colon");
-            }
             let t = t.map(|t| format!("{t} ")).unwrap_or_default();
-            format!("{t}{h}{} ", if colon { " :" } else { "" })
+            let tag = if rng.chance(4) {
+                cov.reach("asa relay tag");
+                " asa[42]"
+            } else {
+                ""
+            };
+            let after = match rng.below(3) {
+                0 => "",
+                1 => " :",
+                _ => {
+                    cov.reach("asa device id written host:");
+                    ":"
+                }
+            };
+            format!("{t}{h}{tag}{after} ")
         }
     };
     let device = if rng.chance(3) {
@@ -281,6 +291,12 @@ fn asa_line(rng: &mut Rng, cov: &mut Coverage, i: usize) -> String {
     } else {
         "ASA"
     };
+    let class = if rng.chance(4) {
+        cov.reach("asa class");
+        "-session"
+    } else {
+        ""
+    };
     let relay = if rng.chance(4) {
         cov.reach("asa relay header");
         format!("Oct {:>2} 00:31:0{} relay-1 ", 1 + i % 31, i % 10)
@@ -288,7 +304,7 @@ fn asa_line(rng: &mut Rng, cov: &mut Coverage, i: usize) -> String {
         String::new()
     };
     format!(
-        "{pri}{relay}{header}%{device}-{}-{}: {}",
+        "{pri}{relay}{header}%{device}{class}-{}-{}: {}",
         rng.below(8),
         rng.pick(&["302013", "106023", "430003", "733100"]),
         rng.pick(WORDS)
@@ -362,7 +378,9 @@ fn fuzz_sniff_names_the_format_it_was_given() {
         "asa timestamp without a year",
         "asa iso timestamp",
         "asa device id",
-        "asa device id and colon",
+        "asa relay tag",
+        "asa device id written host:",
+        "asa class",
         "ftd",
         "value int",
         "value float",
