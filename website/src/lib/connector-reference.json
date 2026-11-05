@@ -630,15 +630,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
               },
               {
                 "value": "lengthPrefix",
-                "what": "Gives one record per record, each carrying its own length where `lengthPrefix` says."
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
               },
               {
                 "value": "fixed",
-                "what": "Gives one record per `fixedBytes` bytes."
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -664,7 +664,7 @@
                 "counts": "message"
               }
             ],
-            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included."
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
           },
           {
             "name": "fixedBytes",
@@ -903,15 +903,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
               },
               {
                 "value": "lengthPrefix",
-                "what": "Gives one record per record, each carrying its own length where `lengthPrefix` says."
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
               },
               {
                 "value": "fixed",
-                "what": "Gives one record per `fixedBytes` bytes."
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -937,7 +937,7 @@
                 "counts": "message"
               }
             ],
-            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included."
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
           },
           {
             "name": "fixedBytes",
@@ -1212,15 +1212,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
               },
               {
                 "value": "lengthPrefix",
-                "what": "Gives one record per record, each carrying its own length where `lengthPrefix` says."
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
               },
               {
                 "value": "fixed",
-                "what": "Gives one record per `fixedBytes` bytes."
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -1246,7 +1246,7 @@
                 "counts": "message"
               }
             ],
-            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included."
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
           },
           {
             "name": "fixedBytes",
@@ -1526,15 +1526,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
               },
               {
                 "value": "lengthPrefix",
-                "what": "Gives one record per record, each carrying its own length where `lengthPrefix` says."
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
               },
               {
                 "value": "fixed",
-                "what": "Gives one record per `fixedBytes` bytes."
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -1560,7 +1560,7 @@
                 "counts": "message"
               }
             ],
-            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included."
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
           },
           {
             "name": "fixedBytes",
@@ -1846,15 +1846,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
               },
               {
                 "value": "lengthPrefix",
-                "what": "Gives one record per record, each carrying its own length where `lengthPrefix` says."
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
               },
               {
                 "value": "fixed",
-                "what": "Gives one record per `fixedBytes` bytes."
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -1880,7 +1880,7 @@
                 "counts": "message"
               }
             ],
-            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included."
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
           },
           {
             "name": "fixedBytes",
@@ -2128,15 +2128,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
               },
               {
                 "value": "lengthPrefix",
-                "what": "Gives one record per record, each carrying its own length where `lengthPrefix` says."
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
               },
               {
                 "value": "fixed",
-                "what": "Gives one record per `fixedBytes` bytes."
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -2162,7 +2162,7 @@
                 "counts": "message"
               }
             ],
-            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included."
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
           },
           {
             "name": "fixedBytes",
@@ -2359,15 +2359,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
               },
               {
                 "value": "lengthPrefix",
-                "what": "Gives one record per record, each carrying its own length where `lengthPrefix` says."
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
               },
               {
                 "value": "fixed",
-                "what": "Gives one record per `fixedBytes` bytes."
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -2393,7 +2393,7 @@
                 "counts": "message"
               }
             ],
-            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included."
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
           },
           {
             "name": "fixedBytes",
@@ -3863,7 +3863,7 @@
       {
         "type": "socketReceiver",
         "name": "Socket receiver",
-        "summary": "Takes what senders send to its port over TCP or UDP, in a protocol of their own: lines, length-prefixed binary messages, or messages of a fixed size. Over TCP `framing` says where each message ends. With a `certificate`, TCP is served over TLS. Over UDP each datagram is one message, served without TLS. Every worker of the group listens, and a sender, or a balancer in front of the workers, picks one. What it receives carries no token, so a receiver admits senders by the networks in `allowFrom`, by a certificate that chains to its `trustedAuthorities`, or both; over UDP by `allowFrom` alone. Delivery is best-effort: what a connection carries when it is cut, and what a worker holds when it stops, is lost. A full or blocked receiver stops reading TCP, so the sender's TCP window fills. It drops a datagram that arrives while it is full or blocked, and counts it in `smeltr_source_dropped_total`. Each message is a record whose `__source.bytes` is the message as sent, and whose `_raw` is its text; a pipeline parses it.",
+        "summary": "Takes what senders send to its port over TCP or UDP, in a protocol of their own: lines, length-prefixed binary messages, or messages of a fixed size. Over TCP `framing` says where each message ends. Delivery is best-effort: what a connection carries when it is cut, and what a worker holds when it stops, is lost.",
         "settings": [
           {
             "name": "port",
@@ -3906,7 +3906,7 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
               },
               {
                 "value": "lengthPrefix",
