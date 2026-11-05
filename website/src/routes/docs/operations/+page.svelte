@@ -40,6 +40,13 @@
     </li>
   </ol>
   <p>
+    A source whose level changes for good keeps warning, because windows that held a warning don't
+    teach its normal. An editor in the source's worker group can act on the warning in Status →
+    Issues. <strong>Lower to info</strong> keeps it on the page as info until it ends, and alert
+    channels hear nothing more of it. <strong>Reset history</strong> makes the source learn its normal
+    again from now. It raises neither warning until it has 3 days of rows.
+  </p>
+  <p>
     <a href="/docs/git/configuration#verify">How to compare the deployed and running commits →</a>
   </p>
   <h2 id="alerts">Page on warnings</h2>
