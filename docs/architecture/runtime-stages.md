@@ -146,7 +146,7 @@ raise the estimate but never lower it, so a quiet source does not shrink a
 fast link's target, and a slow link
 stops the queue growing where more bytes would buy no more throughput. A link
 measured to carry the limit or more, on average over five minutes of
-delivering, when the worker sized the limit from memory, is a notice: memory,
+delivering, when the worker sized the limit from memory, is info: memory,
 not the link, is what bounds the destination.
 
 ```mermaid

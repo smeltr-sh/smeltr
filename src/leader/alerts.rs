@@ -1339,14 +1339,14 @@ mod tests {
         assert_eq!(open["payload"]["summary"], "Source unreachable: orders");
     }
 
-    /// A notice is ticked like any issue, and PagerDuty is told it is one rather than paged for it.
+    /// Info is ticked like any issue, and PagerDuty is told it is one rather than paged for it.
     #[test]
-    fn a_notice_is_sent_to_pagerduty_as_info() {
+    fn info_is_sent_to_pagerduty_as_info() {
         let mut c = channel(None);
         c.conditions = vec![Condition::NewerRelease];
-        let mut notice = warning(Condition::NewerRelease, "leader", None);
-        notice.severity = Severity::Info;
-        let told = changes(&c, 5, &[notice], &[]).raised;
+        let mut info = warning(Condition::NewerRelease, "leader", None);
+        info.severity = Severity::Info;
+        let told = changes(&c, 5, &[info], &[]).raised;
         let open = webhook_body(Format::PagerDuty, Status::Raised, &told[0], Some("R0UT1NG"));
         assert_eq!(open["payload"]["severity"], "info");
     }

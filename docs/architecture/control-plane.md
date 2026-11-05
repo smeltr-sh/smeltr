@@ -306,11 +306,11 @@ drops one. A channel muted until a time is told nothing meanwhile; what still
 holds when the mute ends is told then. A channel that does not take a send is
 itself a warning about the leader.
 
-An entry is a failure, a warning or a notice. A notice is a fact worth knowing
-that asks nothing of anyone, such as a worker on another release of the
-leader's major. The Issues page, a scraper and the alert channels that take it
-are given a notice, marked as one. The views that judge health leave notices
-out, so none of them counts one as trouble.
+An entry is a failure, a warning or info. Info is a fact worth knowing that
+asks nothing of anyone, such as a worker on another release of the leader's
+major. The Issues page, a scraper and the alert channels that take it are given
+info, marked as such. The views that judge health leave info out, so none of
+them counts it as trouble.
 
 A blocked source warns by what holds it, because each releases differently:
 rows only a new config lets through, rows a destination refused, or a
@@ -319,12 +319,22 @@ destination is back, so it is a warning where the other two are failures.
 
 A source reading more or fewer rows than it normally does warns either way.
 Its normal is the last seven days at the same time of day, and holds the
-share of those windows the operator sets. A source with too little history
-has no normal yet. One held, unreachable or on a silent worker is not judged
-against it: a warning that names the cause is already up. Nor is one for a
-window after such a warning ends, while the window still holds the stop and
-the catch-up after it. The leader keeps when each warning held, for as long as
-it keeps hourly rows, so the end is known across a restart.
+share of those windows the operator sets. A window that overlaps any warning
+about the source is not learned, so an outage does not widen the normal, and a
+lasting change of level keeps warning until an admin says otherwise. A source
+with too little history has no normal yet. One held, unreachable or on a
+silent worker is not judged against it: a warning that names the cause is
+already up. Nor is one for a window after such a warning ends, while the
+window still holds the stop and the catch-up after it. The leader keeps when
+each warning held, for as long as it keeps hourly rows, so the end is known
+across a restart. The Status page ranks sources by how far each is from the
+same normal.
+
+An editor in the source's worker group may say either of two things about
+it. Lower turns the warning that holds into info until it ends, and it stays
+on the Issues page for everyone. Reset history forgets what the source read
+before now, so it has no normal until it has enough history again. The leader
+keeps both, with who said each.
 
 ## Upgrades
 
@@ -386,7 +396,7 @@ flowchart TD
 - **A leader says when a newer release is out.** A release leader reads the
   releases published on GitHub, through smeltr.sh, when it starts and once a
   day after, unless an administrator turns that off. The highest release that is
-  no pre-release, when it is newer than the leader's, is announced in a notice
+  no pre-release, when it is newer than the leader's, is announced as info
   that links that release's page on smeltr.sh. The request
   names the leader's release, operating system and CPU architecture and nothing
   else about the install. smeltr.sh counts leaders by those, and by the country
