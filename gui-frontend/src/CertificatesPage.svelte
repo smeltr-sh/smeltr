@@ -17,6 +17,7 @@
   import Segmented from './Segmented.svelte';
   import { ask } from './Confirm.svelte';
   import SortButton from './SortButton.svelte';
+  import FingerprintCopy from './FingerprintCopy.svelte';
   import { TableSort } from './sort.svelte';
   import {
     listCertificates,
@@ -308,6 +309,9 @@
               </td>
               <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
               <td class="row-actions">
+                {#if leaf(c)}
+                  <FingerprintCopy fingerprint={leaf(c).fingerprint} />
+                {/if}
                 {#if !c.kept}
                   <button type="button" onclick={() => open(c.name)}>Replace</button>
                 {/if}

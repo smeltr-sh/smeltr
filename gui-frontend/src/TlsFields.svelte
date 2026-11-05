@@ -13,11 +13,13 @@
   import Field from './Field.svelte';
   import InlineError from './InlineError.svelte';
   import Toggle from './Toggle.svelte';
+  import TokenListInput from './TokenListInput.svelte';
   import {
     describeCertificates,
     errorMessage,
     type DescribedCertificate,
     type TlsDto,
+    shownFingerprint,
   } from './api';
   import { expiry } from './time';
 
@@ -53,6 +55,11 @@
     const text = (value.trustedAuthorities ?? '').trim();
     return text === '' ? null : (described[text] ?? null);
   });
+
+  /** An empty list unsets the field rather than naming `[]`. */
+  function listed(values: string[]): string[] | undefined {
+    return values.length > 0 ? values : undefined;
+  }
 
   /** An empty text box unsets the field rather than naming `""`. */
   function optional(text: string): string | undefined {
@@ -110,11 +117,35 @@
       <span class="sep">&middot;</span>
       <span>{expiry(cert.notAfterMillis)}</span>
       <span class="sep">&middot;</span>
-      <span class="mono">{cert.fingerprint.slice(0, 16)}&hellip;</span>
+      <span class="mono">{shownFingerprint(cert.fingerprint).slice(0, 20)}&hellip;</span>
     </p>
   {/each}
 {/if}
-{#if !serves}
+{#if serves}
+  <Field optional field="senderFingerprints" label="sender fingerprints">
+    {#snippet help()}
+      Senders admitted by their own certificate's fingerprint, whoever issued it, as
+      <code>sha-256:AB:CD:…</code> or <code>sha-1:…</code>. With any, every sender must present a
+      certificate.
+    {/snippet}
+    <TokenListInput
+      bind:values={
+        () => value.senderFingerprints ?? [], (v) => (value.senderFingerprints = listed(v))
+      }
+      placeholder="sha-256:AB:CD:…"
+    />
+  </Field>
+  <Field optional field="senderNames" label="sender names">
+    {#snippet help()}
+      Of the senders whose certificate chains to the trusted authorities, only those issued to one
+      of these hosts. <code>*.example.com</code> stands for any one host in example.com.
+    {/snippet}
+    <TokenListInput
+      bind:values={() => value.senderNames ?? [], (v) => (value.senderNames = listed(v))}
+      placeholder="host.example.com"
+    />
+  </Field>
+{:else}
   <Advanced label="Advanced TLS" modified={value.trustPublic === false}>
     <Field field="trustPublic" label="trust public roots">
       {#snippet help()}

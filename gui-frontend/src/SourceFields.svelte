@@ -942,6 +942,8 @@
           if (v === 'udp') {
             source.certificate = undefined;
             source.trustedAuthorities = undefined;
+            delete source.senderFingerprints;
+            delete source.senderNames;
             delete source.lineBreaker;
           }
         }}

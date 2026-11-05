@@ -40,6 +40,7 @@
     type CertificatesDto,
     type DescribedCertificate,
     type RotationDto,
+    shownFingerprint,
   } from './api';
   import { ask } from './Confirm.svelte';
   import Help from './Help.svelte';
@@ -53,6 +54,7 @@
   import LeaderSecretField from './LeaderSecretField.svelte';
   import TokenListInput from './TokenListInput.svelte';
   import CertificatePicker from './CertificatePicker.svelte';
+  import FingerprintCopy from './FingerprintCopy.svelte';
   import {
     countdown,
     expiringSoon,
@@ -261,9 +263,10 @@
   }
 
   /** Long enough to compare by eye without being a wall of hex. Anybody
-   * matching it against a worker's copy is checking the ends. */
+   * matching it against a worker's copy is checking the ends; the whole of it is copied. */
   function short(fingerprint: string): string {
-    return `${fingerprint.slice(0, 16)}…${fingerprint.slice(-8)}`;
+    const shown = shownFingerprint(fingerprint);
+    return `${shown.slice(0, 20)}…${shown.slice(-8)}`;
   }
 
   /** What to say once a source change landed: served at once under the root in force, or published to the
@@ -460,7 +463,10 @@
 {#snippet who(cert: DescribedCertificate, tail: string)}
   <div class="who">
     <h3>{cert.subject || cert.names[0] || 'no name'}</h3>
-    <p class="mono">{short(cert.fingerprint)}</p>
+    <p class="mono">
+      {short(cert.fingerprint)}
+      <FingerprintCopy fingerprint={cert.fingerprint} label="copy" link />
+    </p>
     <p class="dim">
       <span class:soon={expiringSoon(cert)}>{expiry(cert.notAfterMillis)}</span>
       · {tail}

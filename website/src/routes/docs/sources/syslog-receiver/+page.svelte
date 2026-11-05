@@ -167,8 +167,9 @@ log { source(s_src); destination(d_smeltr); };`;
   <h2 id="senders">Who it admits</h2>
   <p>
     Anyone a receiver admits can put records into the worker group's pipelines. Syslog carries no
-    token, so a receiver needs <code>allowFrom</code>, an <code>certificate</code> and
-    <code>trustedAuthorities</code>, or both. The leader refuses a receiver with neither.
+    token, so a receiver needs <code>allowFrom</code>, a <code>certificate</code> and
+    <code>trustedAuthorities</code> or <code>senderFingerprints</code>, or both. The leader refuses
+    a receiver with neither.
   </p>
   <ul>
     <li>
@@ -182,6 +183,17 @@ log { source(s_src); destination(d_smeltr); };`;
       with it. With
       <code>trustedAuthorities</code>, every sender must present a certificate that chains to one of
       them. With <code>allowFrom</code> empty, every sender TLS admits is admitted.
+    </li>
+    <li>
+      <strong>Fingerprints:</strong> <code>senderFingerprints</code> admits a sender by its own
+      certificate, whoever issued it, as a self-signed one. Each is the certificate's fingerprint as
+      RFC 5425 writes one, <code>sha-256:AB:CD:…</code>, which
+      <a href="/docs/certificates">Admin &rarr; Certificates</a> copies for a certificate it holds.
+    </li>
+    <li>
+      <strong>Host names:</strong> with <code>senderNames</code>, of the senders whose certificate
+      chains to <code>trustedAuthorities</code>, only those issued to one of the names are admitted.
+      <code>*.example.com</code> stands for any one host in example.com.
     </li>
   </ul>
   <p>With both, a sender must connect from a listed network and present a certificate.</p>
@@ -353,8 +365,9 @@ log { source(s_src); destination(d_smeltr); };`;
     <dt><strong>The sender cannot connect</strong></dt>
     <dd>
       Check that the port is open on every worker and that the sender's address reaches them. A
-      receiver with <code>trustedAuthorities</code> refuses a connection without a certificate that chains
-      to one of them.
+      receiver with <code>trustedAuthorities</code> or <code>senderFingerprints</code> refuses, in
+      the handshake, a sender whose certificate neither chains to one of the authorities nor is
+      named by its fingerprint, and one with <code>senderNames</code> a sender issued to none of them.
     </dd>
     <dt><strong>The sender connects and is closed at once</strong></dt>
     <dd>
@@ -387,9 +400,8 @@ log { source(s_src); destination(d_smeltr); };`;
     </dd>
     <dt><strong>Datagrams are missing, and nothing is counted</strong></dt>
     <dd>
-      The receiver drops a datagram from an address outside <code>allowFrom</code> before counting
-      anything. A datagram can also be lost on the
-      network, or in the host's receive buffer when it fills.
+      The receiver drops a datagram from an address outside <code>allowFrom</code> before counting anything.
+      A datagram can also be lost on the network, or in the host's receive buffer when it fills.
     </dd>
     <dt><strong>Messages are missing after a worker stopped</strong></dt>
     <dd>

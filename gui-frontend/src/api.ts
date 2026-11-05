@@ -90,6 +90,11 @@ export type TlsDto = {
   trustedAuthorities?: string;
   /** Absent is true: a client trusts the public roots and `trustedAuthorities` both. False trusts `trustedAuthorities` alone. */
   trustPublic?: boolean;
+  /** A receiver's: senders it admits by their own certificate, whoever issued it, as RFC 5425 writes a fingerprint,
+   * `sha-256:AB:CD:…`. Mirrors `config_file::dto::ServedTlsDto`. */
+  senderFingerprints?: string[];
+  /** A receiver's: of the senders `trustedAuthorities` vouch for, only those issued to one of these hosts. */
+  senderNames?: string[];
 };
 
 /** Extra librdkafka properties, split by whether the value is a secret.
@@ -897,7 +902,10 @@ export type ApiRecords = 'body' | 'lines' | 'array';
 /** What every receiver takes, mirroring `config_file::dto::ReceiverSettingsDto`: where it listens, the TLS it serves
  * and how large a request it reads. Every worker of the group listens on `port`, at the address its own startup
  * settings name. */
-export interface ReceiverSettings extends Pick<TlsDto, 'certificate' | 'trustedAuthorities'> {
+export interface ReceiverSettings extends Pick<
+  TlsDto,
+  'certificate' | 'trustedAuthorities' | 'senderFingerprints' | 'senderNames'
+> {
   port: number;
   /** Absent is `LIMITS.receiverRequestBytes.default`. */
   maxRequestBytes?: number;
@@ -5325,6 +5333,7 @@ export function putAgentSettings(req: {
  * other time the leader sends. */
 export interface DescribedCertificate {
   subject: string;
+  /** SHA-256 over its DER, lowercase hex. [`shownFingerprint`] is how a person reads it. */
   fingerprint: string;
   names: string[];
   notBeforeMillis: number;
@@ -5812,4 +5821,10 @@ export function branchSchemaFindings(
   branch: string,
 ): Promise<{ ok: boolean; errors: ApiError[]; findings: SchemaFindingDto[] }> {
   return apiJson(`/api/branches/${encodeURIComponent(branch)}/schema-findings`, undefined, 'quiet');
+}
+
+/** `fingerprint`, a [`DescribedCertificate`]'s, as RFC 5425 (4.2.1) writes one: `sha-256:AB:CD:…`. The form a
+ * receiver's sender fingerprints take, and a syslog sender pins. */
+export function shownFingerprint(fingerprint: string): string {
+  return `sha-256:${(fingerprint.toUpperCase().match(/../g) ?? []).join(':')}`;
 }

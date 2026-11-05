@@ -239,8 +239,12 @@ A receiver is where a worker takes the data it did not fetch: every
 worker of the group listens on the receiver's port, and whoever is admitted
 there puts records into the group's pipelines. So a receiver admits a sender
 that presents one of its tokens, each a credential like any other, or, served
-under a certificate with trusted authorities, a sender whose certificate chains to one
-of them, and a receiver that would admit anyone is refused at load. A token
+under a certificate, a sender whose certificate chains to one of its trusted
+authorities or is one it names by fingerprint, whoever issued it (RFC 5425,
+5.1), and a receiver that would admit anyone is refused at load. Naming hosts, it
+admits of the senders its authorities vouch for only those issued to one of them
+(RFC 5425, 5.2). A sender it refuses by its certificate is refused in the
+handshake. A token
 crosses the network in every request; without a certificate it crosses in the
 clear, which suits a receiver behind a balancer that ends TLS for it. A
 token is checked before any of the body is read, and the bodies being read
