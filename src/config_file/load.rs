@@ -1177,6 +1177,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             tokens,
             records,
             records_at,
+            answer_after_delivery,
         } => receiver_config(
             crate::plan::topology::Receiver::Http(crate::plan::topology::HttpReceiverConfig {
                 path: path.clone(),
@@ -1186,6 +1187,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
                     ApiRecordsDto::Array => ApiRecords::Array(records_at.clone().unwrap_or_default()),
                 },
             }),
+            *answer_after_delivery,
             listener,
             tls,
             tokens.iter(),
@@ -1196,22 +1198,36 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             tls,
             signal,
             tokens,
+            answer_after_delivery,
         } => receiver_config(
             crate::plan::topology::Receiver::Otlp(*signal),
+            *answer_after_delivery,
             listener,
             tls,
             tokens.iter(),
             &of,
         ),
-        SourceKindDto::PrometheusReceiver { listener, tls, tokens } => receiver_config(
+        SourceKindDto::PrometheusReceiver {
+            listener,
+            tls,
+            tokens,
+            answer_after_delivery,
+        } => receiver_config(
             crate::plan::topology::Receiver::Prometheus,
+            *answer_after_delivery,
             listener,
             tls,
             tokens.iter(),
             &of,
         ),
-        SourceKindDto::ElasticReceiver { listener, tls, tokens } => receiver_config(
+        SourceKindDto::ElasticReceiver {
+            listener,
+            tls,
+            tokens,
+            answer_after_delivery,
+        } => receiver_config(
             crate::plan::topology::Receiver::Elastic,
+            *answer_after_delivery,
             listener,
             tls,
             tokens.iter(),
@@ -1222,6 +1238,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             tls,
             tokens,
             sourcetypes,
+            answer_after_delivery,
         } => receiver_config(
             crate::plan::topology::Receiver::Hec(crate::plan::topology::HecReceiverConfig {
                 acknowledging: tokens
@@ -1231,6 +1248,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
                     .collect(),
                 sourcetypes: to_line_breakers(sourcetypes),
             }),
+            *answer_after_delivery,
             listener,
             tls,
             tokens.iter().map(|(name, t)| (name, &t.token)),
@@ -1245,6 +1263,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             crate::plan::topology::Receiver::S2s(crate::plan::topology::S2sReceiverConfig {
                 sourcetypes: to_line_breakers(sourcetypes),
             }),
+            false,
             listener,
             tls,
             tokens.iter(),
@@ -1266,6 +1285,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
                 transport: *transport,
                 line_breaker: line_breaker.as_deref().and_then(to_line_breaker),
             }),
+            false,
             listener,
             tls,
             std::iter::empty(),
@@ -2120,6 +2140,7 @@ fn refuse_unless_certificates(pem: &str) -> Result<(), String> {
 /// own startup settings name (`startup_config::worker_listen_address`), since an address is a fact about one host.
 fn receiver_config<'a>(
     receiver: crate::plan::topology::Receiver,
+    answer_after_delivery: bool,
     listener: &ReceiverSettingsDto,
     tls: &ServedTlsDto,
     tokens: impl Iterator<Item = (&'a String, &'a SecretRefDto)>,
@@ -2132,7 +2153,7 @@ fn receiver_config<'a>(
         tls: to_tls(&tls.tls(), of, Side::Server),
         max_request_bytes: usize::try_from(listener.max_request_bytes.0.max(MaxRequestBytes::FLOOR))
             .unwrap_or(usize::MAX),
-        answer_after_delivery: listener.answer_after_delivery,
+        answer_after_delivery,
     })
 }
 
@@ -3146,6 +3167,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 tokens,
                 records,
                 records_at,
+                ..
             } => {
                 let what = format!("source {:?}", s.id);
                 check_receiver(&what, listener, tls, tokens, errors);
@@ -3169,6 +3191,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 tls,
                 tokens,
                 sourcetypes,
+                ..
             } => {
                 let what = format!("source {:?}", s.id);
                 check_receiver(&what, listener, tls, tokens, errors);
@@ -3182,16 +3205,17 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             } => {
                 let what = format!("source {:?}", s.id);
                 check_receiver(&what, listener, tls, tokens, errors);
-                check_protocol_answers(&what, listener, errors);
                 check_sourcetypes(&s.id, sourcetypes, errors);
             }
             SourceKindDto::OtlpReceiver {
                 listener, tls, tokens, ..
             }
-            | SourceKindDto::PrometheusReceiver { listener, tls, tokens }
-            | SourceKindDto::ElasticReceiver { listener, tls, tokens } => {
-                check_receiver(&format!("source {:?}", s.id), listener, tls, tokens, errors)
+            | SourceKindDto::PrometheusReceiver {
+                listener, tls, tokens, ..
             }
+            | SourceKindDto::ElasticReceiver {
+                listener, tls, tokens, ..
+            } => check_receiver(&format!("source {:?}", s.id), listener, tls, tokens, errors),
             SourceKindDto::SyslogReceiver {
                 listener,
                 tls,
@@ -3202,7 +3226,6 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             } => {
                 let what = format!("source {:?}", s.id);
                 check_syslog_receiver(&what, listener, tls, allow_from, *transport, errors);
-                check_protocol_answers(&what, listener, errors);
                 check_encoding(encoding, &s.id, errors);
                 if let Some(line_breaker) = line_breaker {
                     match transport {
@@ -4515,23 +4538,12 @@ fn check_syslog_receiver(
     }
 }
 
-/// A receiver whose protocol says when it answers: a forwarder's acknowledgement, and its httpout request's answer,
-/// wait for delivery, and syslog is never answered.
-fn check_protocol_answers(what: &str, listener: &ReceiverSettingsDto, errors: &mut ItemErrors<'_>) {
-    if listener.answer_after_delivery {
-        errors.at("answerAfterDelivery").push(format!(
-            "{what} answers as its protocol says, so it does not take answerAfterDelivery; remove that setting"
-        ));
-    }
-}
-
 /// What every receiver's listener must be: a port, and a certificate to serve where it serves TLS. Whether its
 /// authorities vouch for a sender, which then needs nothing else to be admitted.
 fn check_listener(what: &str, listener: &ReceiverSettingsDto, tls: &ServedTlsDto, errors: &mut ItemErrors<'_>) -> bool {
     let ReceiverSettingsDto {
         port,
         max_request_bytes,
-        answer_after_delivery: _,
     } = listener;
     let blank = |v: &str| v.trim().is_empty();
     if *port == 0 {

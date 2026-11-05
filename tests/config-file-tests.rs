@@ -5694,14 +5694,15 @@ fn a_minimal_s2s_receiver_loads() {
     );
 }
 
-/// An S2S receiver answers as its protocol says, so answering after delivery is refused.
+/// An S2S receiver answers as its protocol says, so it takes no answerAfterDelivery.
 #[test]
 fn an_s2s_receiver_that_answers_after_delivery_is_refused() {
     let json = format!(
         r#"{{"version":1,"sources":[{{"id":"forwarders","type":"s2sReceiver","port":9997{S2S_TOKEN},
             "answerAfterDelivery":true}}]}}"#
     );
-    assert!(refusal(&json).contains("answers as its protocol says"), "{}", refusal(&json));
+    let e = serde_json::from_str::<smeltr::config_file::FileConfig>(&json).unwrap_err();
+    assert!(e.to_string().contains("unknown field `answerAfterDelivery`"), "{e}");
 }
 
 /// Each sourcetype named breaks into events where its line breaker breaks; the file is written back as it was given.

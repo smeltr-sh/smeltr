@@ -3190,8 +3190,9 @@
           },
           {
             "name": "answerAfterDelivery",
-            "type": "boolean",
+            "type": "bool",
             "default": false,
+            "examples": [true],
             "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
           }
         ],
@@ -3283,8 +3284,9 @@
           },
           {
             "name": "answerAfterDelivery",
-            "type": "boolean",
+            "type": "bool",
             "default": false,
+            "examples": [true],
             "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
           }
         ],
@@ -3485,8 +3487,9 @@
           },
           {
             "name": "answerAfterDelivery",
-            "type": "boolean",
+            "type": "bool",
             "default": false,
+            "examples": [true],
             "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
           }
         ],
@@ -3673,8 +3676,9 @@
           },
           {
             "name": "answerAfterDelivery",
-            "type": "boolean",
+            "type": "bool",
             "default": false,
+            "examples": [true],
             "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
           }
         ],
@@ -3748,8 +3752,9 @@
           },
           {
             "name": "answerAfterDelivery",
-            "type": "boolean",
+            "type": "bool",
             "default": false,
+            "examples": [true],
             "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
           }
         ],

@@ -135,6 +135,21 @@ kbd {
   display: block;
 }
 
+/* One code block, on every docs page. `:where` keeps the block below a component's own rules; its code
+   still outranks the docs' inline `code`. */
+:where(.docs-content) pre {
+  overflow-x: auto;
+  margin: 1.25rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--panel);
+}
+.docs-content pre code {
+  padding: 0;
+  background: none;
+}
+
 /* One table, in the docs and on every page that holds one in an article. */
 article .table-scroll {
   overflow-x: auto;
