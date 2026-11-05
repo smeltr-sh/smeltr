@@ -193,3 +193,11 @@ fn a_layout_that_cannot_be_read_is_refused_when_it_compiles() {
     assert!(refused(r#"unpack(b, {a: "u8"}, {endian: "big"})"#).contains("takes no option `endian`"));
     assert!(refused(r#"unpack("text", {a: "u8"})"#).contains("bytes"));
 }
+
+/// A field's name may hold a control character.
+#[test]
+fn a_field_may_have_any_name() {
+    let (rows, kinds) = run(r#"unpack(b, {"\u0008\u{c}\u0001": "u8"})"#, &["07"]);
+    assert_eq!(rows, [json!({"\u{8}\u{c}\u{1}": 7})]);
+    assert!(kinds.is_empty(), "{kinds:?}");
+}

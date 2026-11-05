@@ -511,7 +511,6 @@ fn check_body(body: &[Stmt], what: &str) -> Result<(), InlineError> {
     Ok(())
 }
 
-/// `e`, leaving a null in its place.
 /// The arguments of a call of `unpack`, the bytes first, where `name` is one: `unpack(b, layout)` or
 /// `b.unpack(layout)`.
 fn unpack_args(name: &str, args: &[Expr], span: Span) -> Option<Vec<Expr>> {
@@ -525,6 +524,7 @@ fn unpack_args(name: &str, args: &[Expr], span: Span) -> Option<Vec<Expr>> {
     })
 }
 
+/// `e`, leaving a null in its place.
 fn take(e: &mut Expr) -> Expr {
     let null = Expr::new(e.span, ExprKind::Literal(Value::Null));
     std::mem::replace(e, null)

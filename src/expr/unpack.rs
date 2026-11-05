@@ -234,7 +234,7 @@ fn source(names: &[&str], reads: &[Read]) -> String {
                 let bytes = format!("readBytes(b, at, n{i})");
                 let value = match charset {
                     None => bytes,
-                    Some(c) => format!("decode({bytes}, {})", json(c)),
+                    Some(c) => format!("decode({bytes}, {})", literal(c)),
                 };
                 lines.push(format!("let f{i} = {value};"));
                 lines.push(advance(&format!("n{i}")));
@@ -244,7 +244,7 @@ fn source(names: &[&str], reads: &[Read]) -> String {
     let fields: Vec<String> = names
         .iter()
         .enumerate()
-        .map(|(i, n)| format!("{}: f{i}", json(n)))
+        .map(|(i, n)| format!("{}: f{i}", literal(n)))
         .collect();
     lines.push(format!("return {{{}}};", fields.join(", ")));
     lines.push("}".to_string());
@@ -256,8 +256,18 @@ fn advance(n: &str) -> String {
     format!("at = {n} >= 0 && at + {n} <= length(b) ? at + {n} : null;")
 }
 
-fn json(s: &str) -> String {
-    serde_json::to_string(s).expect("a string serializes")
+/// `s` as a string literal of the language, which spells every control character as a `\u{..}` escape.
+fn literal(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' | '\\' => out.extend(['\\', c]),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// `stmt` with every span `span`: the call's, which an error in what it expands to points at.
