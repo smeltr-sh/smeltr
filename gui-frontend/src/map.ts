@@ -272,12 +272,7 @@ function orderByLines(
   edges: Pick<MapEdge, 'kind' | 'from' | 'to'>[],
 ): void {
   const row = new Map<string, number>();
-  const kindOf = new Map<string, MapNodeKind>();
-  for (const k of COLUMNS)
-    byKind[k].forEach((c, i) => {
-      row.set(cardKey(c), i);
-      kindOf.set(cardKey(c), k);
-    });
+  for (const k of COLUMNS) byKind[k].forEach((c, i) => row.set(cardKey(c), i));
   // A fallback line is drawn only on a selected path, so it does not place a card.
   const near = new Map<string, string[]>();
   for (const e of edges) {
@@ -291,7 +286,7 @@ function orderByLines(
     }
   }
   const linked = (c: MapCard, by: MapNodeKind[]) =>
-    (near.get(cardKey(c)) ?? []).filter((k) => by.includes(kindOf.get(k)!));
+    (near.get(cardKey(c)) ?? []).filter((k) => by.includes(kindOfKey(k)));
   const place = (kind: MapNodeKind, by: MapNodeKind[]) => {
     const at = new Map<MapCard, number>();
     for (const c of byKind[kind]) {
@@ -314,7 +309,7 @@ function orderByLines(
     let n = 0;
     for (const a of linked(upper, by))
       for (const b of linked(lower, by))
-        if (kindOf.get(a) === kindOf.get(b) && row.get(a)! > row.get(b)!) n++;
+        if (kindOfKey(a) === kindOfKey(b) && row.get(a)! > row.get(b)!) n++;
     return n;
   };
   const swap = (kind: MapNodeKind, by: MapNodeKind[]) => {
