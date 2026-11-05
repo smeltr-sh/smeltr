@@ -2470,10 +2470,7 @@ fn random_request(g: &mut Gen, settings: &Settings) -> Sent {
         _ => *g.pick(&[Presents::Nothing, Presents::Trusted, Presents::Stranger]),
     };
     order.reach(format!("presents {presents:?} under {:?}", settings.tls));
-    order.decide(
-        settings.tls.checks_sender() && presents != Presents::Trusted,
-        Expected::Nothing,
-    );
+    order.decide(!settings.tls.admits(presents), Expected::Nothing);
     let mut sent = Sent {
         get: false,
         path: String::new(),
@@ -3127,7 +3124,7 @@ fn collector_config(listening: SocketAddr, at: SocketAddr, tls: Tls, exporters: 
     let tls = match tls {
         Tls::None => "{insecure: true}",
         Tls::Served => "{ca_file: /smeltr/ca.pem, server_name_override: localhost}",
-        Tls::Vouched | Tls::Pinned | Tls::Named => {
+        Tls::Vouched | Tls::Pinned | Tls::Named | Tls::Misnamed => {
             "{ca_file: /smeltr/ca.pem, server_name_override: localhost, cert_file: /smeltr/exporter.pem, key_file: \
              /smeltr/exporter-key.pem}"
         }

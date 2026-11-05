@@ -634,7 +634,7 @@ fn random_request(rng: &mut Rng, settings: &Settings) -> Sent {
         headers.extend(b"\r\n");
     }
 
-    let (expected, reached) = if settings.tls.checks_sender() && presents != Presents::Trusted {
+    let (expected, reached) = if !settings.tls.admits(presents) {
         (Expected::Nothing, Stage::Sent)
     } else {
         let (expected, reached) = match serves {

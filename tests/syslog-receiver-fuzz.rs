@@ -739,7 +739,7 @@ fn every_setting_takes_each_message_once_however_it_is_framed() {
                     if settings.tls.checks_sender() && allowed {
                         cov.reach(format!("presents {:?} under {:?}", connection.presents, settings.tls));
                     }
-                    let tls_admits = !settings.tls.checks_sender() || connection.presents == Presents::Trusted;
+                    let tls_admits = settings.tls.admits(connection.presents);
                     what.push(format!(
                         "connection {n}, presenting {:?}: {:?}",
                         connection.presents,
@@ -917,7 +917,7 @@ impl Sender {
                 let tls = match tls {
                     Tls::None => "{insecure: true}".to_string(),
                     Tls::Served => "{ca_file: /smeltr/ca.pem, server_name_override: localhost}".to_string(),
-                    Tls::Vouched | Tls::Pinned | Tls::Named => {
+                    Tls::Vouched | Tls::Pinned | Tls::Named | Tls::Misnamed => {
                         "{ca_file: /smeltr/ca.pem, server_name_override: localhost, cert_file: \
                                      /smeltr/sender.pem, key_file: /smeltr/sender-key.pem}"
                             .to_string()

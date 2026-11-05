@@ -784,7 +784,7 @@ fn random_request(rng: &mut Rng, settings: &Settings, cov: &mut Coverage) -> Sen
         headers.extend(format!("Content-Encoding: {encoding}\r\n").bytes());
     }
 
-    let (expected, reached) = if settings.tls.checks_sender() && presents != Presents::Trusted {
+    let (expected, reached) = if !settings.tls.admits(presents) {
         (Expected::Nothing, None)
     } else {
         let (expected, reached) = match serves {
@@ -1258,7 +1258,7 @@ fn collector_config(at: SocketAddr, token: &str, tls: Tls, told: &Told) -> Strin
     match tls {
         Tls::None => {}
         Tls::Served => exporter.push_str("    tls: {ca_file: /smeltr/ca.pem}\n"),
-        Tls::Vouched | Tls::Pinned | Tls::Named => exporter.push_str(
+        Tls::Vouched | Tls::Pinned | Tls::Named | Tls::Misnamed => exporter.push_str(
             "    tls: {ca_file: /smeltr/ca.pem, cert_file: /smeltr/sender.pem, key_file: /smeltr/sender-key.pem}\n",
         ),
     }

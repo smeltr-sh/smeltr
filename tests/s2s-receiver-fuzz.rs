@@ -1379,7 +1379,7 @@ fn random_connection(rng: &mut Rng, settings: &Settings, n: usize) -> Plan {
         labels: vec![(Stage::Tls, format!("presents {presents:?} under {:?}", settings.tls))],
     };
     let label = |plan: &mut Plan, label: &str| plan.labels.push((plan.reached, label.to_string()));
-    if settings.tls.checks_sender() && presents != Presents::Trusted {
+    if !settings.tls.admits(presents) {
         return plan;
     }
 
@@ -2174,6 +2174,8 @@ fn hec_receivers_read_random_httpout_requests_as_an_indexer_breaks_them() {
             } = stream;
             let body = compressed(&mut rng, &out.0);
             let expected = match () {
+                // Refused in the handshake, so nothing answers.
+                () if !settings.tls.admits(Presents::Trusted) => 0,
                 () if body.len() > max => {
                     cov.reach("a body past the limit");
                     413

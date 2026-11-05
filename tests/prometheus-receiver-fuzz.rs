@@ -1067,7 +1067,7 @@ fn random_request(rng: &mut Rng, settings: &Settings, cov: &mut Coverage) -> Sen
         records: 0,
         written: None,
     };
-    let expected = if settings.tls.checks_sender() && presents != Presents::Trusted {
+    let expected = if !settings.tls.admits(presents) {
         refused(0)
     } else if path == "/health" {
         refused(if method == "POST" { 405 } else { 200 })
