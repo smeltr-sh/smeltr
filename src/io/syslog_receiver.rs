@@ -371,7 +371,7 @@ impl Framer {
                     if len > INBOX_BYTES as u64 {
                         return Err(self.malformed(
                             start,
-                            "a frame's length is over 64 MiB, more than any receiver takes".into(),
+                            "a message's length is over 64 MiB, the most any receiver takes".into(),
                         ));
                     }
                 }
@@ -387,7 +387,7 @@ impl Framer {
                     });
                 }
                 _ => {
-                    return Err(self.malformed(start, "a frame's length is not followed by a space".into()));
+                    return Err(self.malformed(start, "a message's length is not followed by a space".into()));
                 }
             }
         }
