@@ -50,7 +50,7 @@ use super::otlp;
 use super::prometheus;
 use super::raw::{RawRead, RawTap, Tapped, Tapping, offer_closed};
 use super::s2s_receiver;
-use super::syslog_receiver;
+use super::socket_receiver;
 use super::{CommitMap, IoError, RecordChunkBuilder, Source, SourceRecord};
 use crate::egress::QueuePool;
 use crate::format::json::write_json_string;
@@ -158,7 +158,7 @@ pub fn open(
             tokio::net::UdpSocket::from_std(socket)
         }
         .map_err(|e| IoError::transient(format!("receiver could not serve {}: {e}", named(config.listens()))))?;
-        let handler = syslog_receiver::Handler::new(datagrams, config.max_request_bytes);
+        let handler = socket_receiver::Handler::new(datagrams, config.max_request_bytes);
         let cut = move |datagram: &[u8], peer| handler.datagram(datagram, peer);
         let allow_from = datagrams.allow_from.clone();
         let task = runtime.spawn(serve_datagrams(
@@ -195,7 +195,7 @@ pub fn open(
                 runtime.spawn(serve_streams(listener, Vec::new(), limits, tls, shared.clone(), handle))
             }
             Receiver::Syslog(socket) | Receiver::Socket(socket) => {
-                let handler = Arc::new(syslog_receiver::Handler::new(socket, config.max_request_bytes));
+                let handler = Arc::new(socket_receiver::Handler::new(socket, config.max_request_bytes));
                 let handle = move |connection| handler.clone().serve(connection);
                 let allow_from = socket.allow_from.clone();
                 let limits = config.connections;

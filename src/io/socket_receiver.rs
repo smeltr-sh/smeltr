@@ -1,5 +1,6 @@
-//! What a syslog receiver makes of a sender's TCP connection: messages framed by octet count or ended by a newline
-//! (RFC 6587), each a record.
+//! What a syslog or socket receiver makes of a sender's TCP connection, or of its datagrams: messages cut by the
+//! receiver's framing (`io::framing`), each a record. A socket receiver's framing is the one it names; a syslog
+//! receiver's is syslog's own, framed by octet count or ended by a newline (RFC 6587):
 //!
 //! ```text
 //!   sender ── allowFrom ──► bytes ──► Framer: each frame by its first byte ──► Messages ──► admitted, then read on
