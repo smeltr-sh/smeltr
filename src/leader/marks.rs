@@ -5,8 +5,8 @@
 //! it out. It is named by when it began, so it stays lowered until it ends, and the next one is a warning again.
 //! Nothing is learned from the time it held.
 //!
-//! A source whose history was reset learns its normal only from what it read after the reset, so it has none, and does not
-//! warn, until it has [`super::throughput::MIN_DAYS`] days of that.
+//! A source whose history was reset learns its normal only from what it read after the reset, so it has none, and
+//! does not warn, until it has [`super::throughput::MIN_DAYS`] days of that.
 //!
 //! Both are kept in one setting, with who said each.
 
@@ -175,7 +175,8 @@ pub async fn lower(
         .await
 }
 
-/// `POST /api/areas/:area/sources/:id/reset-history`: resets the source's history, so its normal is learned again from now.
+/// `POST /api/areas/:area/sources/:id/reset-history`: resets the source's history, so its normal is learned again
+/// from now.
 pub async fn reset_history(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,

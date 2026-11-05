@@ -2203,7 +2203,7 @@ pub fn outside_normal_facts(
 }
 
 /// A source reading fewer rows than it normally does at this time of day, or more. A warning either way: it is
-/// reading, and how much is off. A notice instead where an admin lowered it (`marks`).
+/// reading, and how much is off. Info instead where an admin lowered it (`marks`).
 pub fn outside_normal_warnings(
     readings: &[throughput::Reading],
     snapshot: &[ThreadHealth],
@@ -4636,7 +4636,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lowered_rows_warning_is_a_notice_until_it_ends() {
+    fn a_lowered_rows_warning_is_info_until_it_ends() {
         let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("s")])];
         let readings = [reading_of("s", 0.0)];
         let facts = outside_normal_facts(&readings, &snapshot, &HashSet::new(), INTERVAL);

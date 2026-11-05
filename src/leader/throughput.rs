@@ -148,7 +148,8 @@ impl Reading {
 }
 
 /// The last answer, and what it was computed for: the window's end and what the normal is learned with. A new
-/// five-minute bucket, a new setting or a new mark is a new question. One caller computes a new answer at a time; the rest read the last meanwhile.
+/// five-minute bucket, a new setting or a new mark is a new question. One caller computes a new answer at a time; the
+/// rest read the last meanwhile.
 #[derive(Default)]
 pub struct Readings {
     last: Mutex<Option<Answer>>,
@@ -158,7 +159,8 @@ pub struct Readings {
 type Answer = (i64, Learning, Arc<Vec<Reading>>);
 
 impl Readings {
-    /// Every source with enough history to judge, as of `now_ms`. Waits for every heartbeat sent before `now_ms - heartbeat_interval` to land in the window it judges.
+    /// Every source with enough history to judge, as of `now_ms`. Waits for every heartbeat sent before
+    /// `now_ms - heartbeat_interval` to land in the window it judges.
     ///
     /// While another caller computes the new answer, this returns the last one rather than wait for it. Only a
     /// caller with no answer at all to fall back on waits.
@@ -317,8 +319,8 @@ fn only(rows: Option<f64>) -> Option<Band> {
 struct Warned(Vec<(i64, Option<i64>)>);
 
 impl Warned {
-    /// `group`'s `source`'s warnings that held since `since_ms`, and the time before its history was reset. Warnings the
-    /// store cannot read are logged and left out: the band is then learned from those windows too.
+    /// `group`'s `source`'s warnings that held since `since_ms`, and the time before its history was reset. Warnings
+    /// the store cannot read are logged and left out: the band is then learned from those windows too.
     fn of(store: &RegistryStore, group: &str, source: &str, since_ms: i64, learning: &Learning) -> Warned {
         let mut spans = match warnings::spans(store, SubjectKind::Source, group, source, since_ms) {
             Ok(spans) => spans.into_iter().map(|s| (s.started_millis, s.ended_millis)).collect(),
