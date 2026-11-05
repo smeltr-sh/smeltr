@@ -2228,10 +2228,10 @@ pub struct FramingSettingsDto {
     /// `LINE_BREAKER`. Without one, an event ends at a line end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_breaker: Option<String>,
-    /// `"lengthPrefix"` only, and required there: where a message's length is and what it counts.
+    /// `"lengthPrefix"` only, and required there: where each message's or record's length is and what it counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub length_prefix: Option<LengthPrefixDto>,
-    /// `"fixed"` only, and required there: how many bytes every message is.
+    /// `"fixed"` only, and required there: how many bytes every message or record is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_bytes: Option<u64>,
 }
