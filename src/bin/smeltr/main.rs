@@ -1176,8 +1176,8 @@ async fn setup_leader(
         .route("/api/areas/:area/sources", put(config_api::put_sources))
         .route("/api/areas/:area/sources/:id/lower", post(smeltr::leader::marks::lower))
         .route(
-            "/api/areas/:area/sources/:id/relearn",
-            post(smeltr::leader::marks::relearn),
+            "/api/areas/:area/sources/:id/reset-history",
+            post(smeltr::leader::marks::reset_history),
         )
         .route("/api/areas/:area/destinations", put(config_api::put_destinations))
         // Not on `app` below with the rest of the samples routes: the capture a sample is made from is held in

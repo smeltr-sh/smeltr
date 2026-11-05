@@ -88,7 +88,7 @@ async function shoot(page: Page, name: string) {
   await page.emulateMedia({ colorScheme: 'light' });
 }
 
-test('a source that drops below its normal is ranked and warned of, and an editor lowers it or relearns it', async ({
+test('a source that drops below its normal is ranked and warned of, and an editor lowers it or resets its history', async ({
   admin,
   api,
   fleet,
@@ -138,11 +138,11 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await expect(row.getByRole('button', { name: 'Lower to info' })).toHaveCount(0);
   await shoot(admin, '3-lowered');
 
-  await row.getByRole('button', { name: 'Learn a new normal' }).click();
+  await row.getByRole('button', { name: 'Reset history' }).click();
   const dialog = admin.getByRole('dialog');
   await expect(dialog).toBeVisible();
-  await shoot(admin, '4-new-normal');
-  await dialog.getByRole('button', { name: 'Learn a new normal' }).click();
+  await shoot(admin, '4-reset-history');
+  await dialog.getByRole('button', { name: 'Reset history' }).click();
   await expect(row).toHaveCount(0, { timeout: 30_000 });
-  await shoot(admin, '5-relearned');
+  await shoot(admin, '5-reset');
 });

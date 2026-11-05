@@ -76,18 +76,18 @@ pub struct Band {
 }
 
 /// What a normal is learned with: the share of past windows its band holds, in (0, 1), and the sources an admin said
-/// to learn again from a time on ([`marks::Relearned`]).
+/// to learn again from a time on ([`marks::Reset`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Learning {
     pub share: f64,
-    pub relearned: Vec<marks::Relearned>,
+    pub reset: Vec<marks::Reset>,
 }
 
 impl Default for Learning {
     fn default() -> Learning {
         Learning {
             share: DEFAULT_BAND_PERCENT / 100.0,
-            relearned: Vec::new(),
+            reset: Vec::new(),
         }
     }
 }
@@ -102,13 +102,13 @@ impl Learning {
         });
         Learning {
             share: percent / 100.0,
-            relearned: marks::Marks::read(store).relearned,
+            reset: marks::Marks::read(store).reset,
         }
     }
 
     /// When `group`'s `source` was last said to learn again from, if it was.
-    fn relearned_from(&self, group: &str, source: &str) -> Option<i64> {
-        self.relearned
+    fn reset_from(&self, group: &str, source: &str) -> Option<i64> {
+        self.reset
             .iter()
             .filter(|r| r.group == group && r.source == source)
             .map(|r| r.from_millis)
@@ -317,7 +317,7 @@ fn only(rows: Option<f64>) -> Option<Band> {
 struct Warned(Vec<(i64, Option<i64>)>);
 
 impl Warned {
-    /// `group`'s `source`'s warnings that held since `since_ms`, and the time before it was relearned. Warnings the
+    /// `group`'s `source`'s warnings that held since `since_ms`, and the time before its history was reset. Warnings the
     /// store cannot read are logged and left out: the band is then learned from those windows too.
     fn of(store: &RegistryStore, group: &str, source: &str, since_ms: i64, learning: &Learning) -> Warned {
         let mut spans = match warnings::spans(store, SubjectKind::Source, group, source, since_ms) {
@@ -331,7 +331,7 @@ impl Warned {
                 Vec::new()
             }
         };
-        if let Some(from) = learning.relearned_from(group, source) {
+        if let Some(from) = learning.reset_from(group, source) {
             spans.push((i64::MIN, Some(from)));
         }
         Warned(spans)
@@ -780,7 +780,7 @@ mod tests {
     fn learning(share: f64) -> Learning {
         Learning {
             share,
-            relearned: Vec::new(),
+            reset: Vec::new(),
         }
     }
 
@@ -1022,10 +1022,10 @@ mod tests {
     }
 
     #[test]
-    fn a_relearned_source_has_no_normal_until_it_has_days_of_what_came_after() {
+    fn a_source_whose_history_was_reset_has_no_normal_until_it_has_days_of_what_came_after() {
         let store = store_with(7, |_| Some(100.0));
-        let relearned = |from_millis| Learning {
-            relearned: vec![marks::Relearned {
+        let reset = |from_millis| Learning {
+            reset: vec![marks::Reset {
                 group: "g".into(),
                 source: "s".into(),
                 from_millis,
@@ -1033,8 +1033,8 @@ mod tests {
             }],
             ..learning(0.99)
         };
-        assert_eq!(compute(&store, END, &relearned(END - DAY_MS)), Vec::new());
-        assert!(!compute(&store, END, &relearned(END - 4 * DAY_MS)).is_empty());
+        assert_eq!(compute(&store, END, &reset(END - DAY_MS)), Vec::new());
+        assert!(!compute(&store, END, &reset(END - 4 * DAY_MS)).is_empty());
     }
 
     #[test]

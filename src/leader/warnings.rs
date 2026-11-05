@@ -4647,7 +4647,7 @@ mod tests {
                 since_millis: NOW - 60_000,
                 by: "John".into(),
             }],
-            relearned: Vec::new(),
+            reset: Vec::new(),
         };
         let at = |since: i64| -> Warning {
             let starts: HashMap<FactKey, i64> = facts.iter().map(|k| (k.clone(), since)).collect();

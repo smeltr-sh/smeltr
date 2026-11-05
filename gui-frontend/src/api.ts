@@ -3969,7 +3969,7 @@ export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
   return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
 }
 
-/** Lowers the Rows below or above normal warning that holds for `group`'s `source` to a notice until it ends. */
+/** Lowers the Rows below or above normal warning that holds for `group`'s `source` to info until it ends. */
 export function lowerSourceRows(
   group: string,
   source: string,
@@ -3977,12 +3977,12 @@ export function lowerSourceRows(
   return apiJson(inArea(`/sources/${encodeURIComponent(source)}/lower`, group), { method: 'POST' });
 }
 
-/** Learns `group`'s `source`'s normal again from now. */
-export function relearnSource(
+/** Resets `group`'s `source`'s history, so its normal is learned again from now. */
+export function resetSourceHistory(
   group: string,
   source: string,
 ): Promise<{ ok: boolean; errors: ApiError[] }> {
-  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/relearn`, group), {
+  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/reset-history`, group), {
     method: 'POST',
   });
 }

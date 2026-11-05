@@ -662,13 +662,13 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/areas/:area/sources/:id/lower",
-        what: "Lower the source's Rows below or above normal warning that holds to a notice until it ends. The area is the source's group. No query.",
+        what: "Lower the source's Rows below or above normal warning that holds to info until it ends. The area is the source's worker group. No query.",
         body: "",
     },
     Route {
         method: "POST",
-        path: "/api/areas/:area/sources/:id/relearn",
-        what: "Learn the source's normal again from now: it has none, and does not warn on rows, for the first three days. The area is the source's group. No query.",
+        path: "/api/areas/:area/sources/:id/reset-history",
+        what: "Reset the source's history, so its normal is learned again from now: it has none, and does not warn on rows, for the first 3 days. The area is the source's worker group. No query.",
         body: "",
     },
     Route {

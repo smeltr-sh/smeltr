@@ -1,11 +1,11 @@
-//! What an admin said about a source's rows read against its normal (`throughput`): lower the warning that holds to a
-//! notice, or learn the source's normal again from now.
+//! What an admin said about a source's rows read against its normal (`throughput`): lower the warning that holds to
+//! info, or reset the source's history, so its normal is learned again from now.
 //!
-//! A lowered warning stays on the Issues page for everyone, marked as a notice, and the views that judge health leave
+//! A lowered warning stays on the Issues page for everyone, marked as info, and the views that judge health leave
 //! it out. Channels already told of it are told nothing more until it clears. It is named by when it began, so it
 //! stays lowered until it ends, and the next one is a warning again. Nothing is learned from the time it held.
 //!
-//! A relearned source's normal is learned only from what it read after it was relearned, so it has none, and does not
+//! A source whose history was reset learns its normal only from what it read after the reset, so it has none, and does not
 //! warn, until it has [`super::throughput::MIN_DAYS`] days of that.
 //!
 //! Both are kept in one setting, with who said each.
@@ -28,10 +28,10 @@ pub struct Marks {
     #[serde(default)]
     pub lowered: Vec<Lowered>,
     #[serde(default)]
-    pub relearned: Vec<Relearned>,
+    pub reset: Vec<Reset>,
 }
 
-/// A source's rows warning that began at `since_millis`, lowered to a notice by `by`.
+/// A source's rows warning that began at `since_millis`, lowered to info by `by`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Lowered {
@@ -44,7 +44,7 @@ pub struct Lowered {
 /// A source whose normal `by` said to learn again from `from_millis` on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Relearned {
+pub struct Reset {
     pub group: String,
     pub source: String,
     pub from_millis: i64,
@@ -58,7 +58,7 @@ impl Marks {
         let text = match store.setting(MARKS_KEY) {
             Ok(text) => text,
             Err(e) => {
-                tracing::warn!(name: "marks_unreadable", target: "status", error = %e, "could not read which rows warnings were lowered or relearned, so none is");
+                tracing::warn!(name: "marks_unreadable", target: "status", error = %e, "could not read which rows warnings were lowered or had their history reset, so none is");
                 return Marks::default();
             }
         };
@@ -142,7 +142,7 @@ impl Marking {
     }
 }
 
-/// `POST /api/areas/:area/sources/:id/lower`: lowers the rows warning that holds for the source to a notice until it
+/// `POST /api/areas/:area/sources/:id/lower`: lowers the rows warning that holds for the source to info until it
 /// ends. Refused when none holds.
 pub async fn lower(
     State(state): State<AppState>,
@@ -175,8 +175,8 @@ pub async fn lower(
         .await
 }
 
-/// `POST /api/areas/:area/sources/:id/relearn`: learns the source's normal again from now.
-pub async fn relearn(
+/// `POST /api/areas/:area/sources/:id/reset-history`: resets the source's history, so its normal is learned again from now.
+pub async fn reset_history(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Path((group, source)): Path<(String, String)>,
@@ -184,15 +184,13 @@ pub async fn relearn(
     let marking = Marking {
         group,
         source,
-        action: "source-rows-relearn",
+        action: "source-rows-reset-history",
     };
     marking
         .write(state, actor, |marks, m, _, actor, now_ms| {
-            // Only the last relearn says anything: it forgets more than every one before it.
-            marks
-                .relearned
-                .retain(|r| (&r.group, &r.source) != (&m.group, &m.source));
-            marks.relearned.push(Relearned {
+            // Only the last reset says anything: it forgets more than every one before it.
+            marks.reset.retain(|r| (&r.group, &r.source) != (&m.group, &m.source));
+            marks.reset.push(Reset {
                 group: m.group.clone(),
                 source: m.source.clone(),
                 from_millis: now_ms,
@@ -216,7 +214,7 @@ mod tests {
                 since_millis: 5,
                 by: "John".into(),
             }],
-            relearned: Vec::new(),
+            reset: Vec::new(),
         };
         assert_eq!(marks.lowered_by("g", "s", Some(5)), Some("John"));
         assert_eq!(
@@ -236,7 +234,7 @@ mod tests {
         assert_eq!(Marks::read(&store), Marks::default());
         let marks = Marks {
             lowered: Vec::new(),
-            relearned: vec![Relearned {
+            reset: vec![Reset {
                 group: "g".into(),
                 source: "s".into(),
                 from_millis: 7,

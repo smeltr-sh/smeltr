@@ -1560,8 +1560,7 @@ impl FlowResponse {
         ] {
             series.retain(|s| access.allows(&s.group, access::Level::Viewer));
         }
-        self.normals
-            .retain(|n| access.allows(&n.group, access::Level::Viewer));
+        self.normals.retain(|n| access.allows(&n.group, access::Level::Viewer));
         self
     }
 }

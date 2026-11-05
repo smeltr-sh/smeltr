@@ -18,7 +18,7 @@
   import {
     listWarnings,
     lowerSourceRows,
-    relearnSource,
+    resetSourceHistory,
     setScope,
     conditionLabel,
     type WarningCondition,
@@ -74,13 +74,13 @@
     }
   }
 
-  async function relearn(w: WarningDto, group: string) {
+  async function resetHistory(w: WarningDto, group: string) {
     const ok = await ask({
-      title: 'new normal',
-      body: `${w.subjectId} forgets what it learned as normal and learns a new one. Until it has 3 days of rows, it raises neither Rows below normal nor Rows above normal.`,
-      action: 'Learn a new normal',
+      title: 'reset history',
+      body: `${w.subjectId} forgets its history and learns its normal again from now. Until it has 3 days of rows, it raises neither Rows below normal nor Rows above normal.`,
+      action: 'Reset history',
     });
-    if (ok) await mark(() => relearnSource(group, w.subjectId));
+    if (ok) await mark(() => resetSourceHistory(group, w.subjectId));
   }
 
   $effect(() => {
@@ -246,7 +246,7 @@
                   <Button
                     class="compact"
                     disabled={marking ? BUSY : ''}
-                    onclick={() => relearn(warning, group)}>Learn a new normal</Button
+                    onclick={() => resetHistory(warning, group)}>Reset history</Button
                   >
                 {/if}
               </span>
