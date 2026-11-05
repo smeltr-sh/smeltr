@@ -547,12 +547,12 @@
     {
       "id": "binary",
       "title": "Binary messages",
-      "blurb": "Reading a binary message out of `bytes`: a number, bytes or text at a byte position, counted from 0. A read that runs past the end of the bytes is null and throws an `IndexOutOfRange` exception. A number's type is `\"u8\"`, `\"u16\"`, `\"u32\"` or `\"u64\"` unsigned, `\"i8\"`, `\"i16\"`, `\"i32\"` or `\"i64\"` signed, or `\"f32\"` or `\"f64\"`. Its byte order is `\"big\"` or `\"little\"`, and big when the call names none.",
+      "blurb": "Reading a binary message out of `bytes`: a number, bytes or text at a byte position, counted from 0. A read that runs past the end of the bytes is null and throws an `IndexOutOfRange` exception. A number's type is `\"u8\"`, `\"u16\"`, `\"u32\"` or `\"u64\"` unsigned, `\"i8\"`, `\"i16\"`, `\"i32\"` or `\"i64\"` signed, or `\"f32\"` or `\"f64\"`. Its byte order is `\"big\"` or `\"little\"`, and big when the call names none. `unpack` reads a whole layout of fields at once.",
       "functions": [
         {
           "name": "readInt",
           "signature": "bytes.readInt(at, type, order)",
-          "summary": "The integer of `type`, `\"u8\"` to `\"i64\"`, starting at byte `at`. A `\"u64\"` above the largest `i64` is null and throws an `Overflow` exception. A type or an order it does not know is null and throws a `CoercionRefused` exception.",
+          "summary": "The integer of the given `type`, `\"u8\"` to `\"i64\"`, starting at byte `at`. A `\"u64\"` above the largest `i64` is null and throws an `Overflow` exception. A type or an order it does not know is null and throws a `CoercionRefused` exception.",
           "examples": [
             {
               "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
@@ -586,7 +586,7 @@
         {
           "name": "readFloat",
           "signature": "bytes.readFloat(at, type, order)",
-          "summary": "The number of `type`, `\"f32\"` or `\"f64\"`, starting at byte `at`. A type or an order it does not know is null and throws a `CoercionRefused` exception.",
+          "summary": "The number of the given `type`, `\"f32\"` or `\"f64\"`, starting at byte `at`. A type or an order it does not know is null and throws a `CoercionRefused` exception.",
           "examples": [
             {
               "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
@@ -620,7 +620,7 @@
         {
           "name": "unpack",
           "signature": "bytes.unpack({field: type, ...}, {order})",
-          "summary": "A binary message read into an object, each field starting where the one before it ends, in the order the layout names them. A field is a number type; `\"bytes\"` or `\"str\"`, which run to the end of the message; or an object naming its `type` and what that type takes. A number takes an `order`. A `bytes` or `str` field takes a `length`, which is a count or the name of an integer field before it, or a `prefix`, the integer type of a length written just before it, and that prefix's `order`. A `str` field takes a `charset`, and is `\"utf-8\"` when it names none. The options' `order` is the byte order of every number that names none. A field the message is too short for is null and throws an `IndexOutOfRange` exception, and every field after it is null.",
+          "summary": "A binary message read into an object, one field after another in the order the layout names them, each starting where the one before it ends. A field is a number type; `\"bytes\"` or `\"str\"`, which run to the end of the message unless given a `length`; or an object naming its `type` and what that type takes. A number takes an `order`. A `\"bytes\"` or `\"str\"` field takes a `length`, which is a count or the name of an integer field before it, or else a `prefix`, the integer type of a length written just before it, with its own `order`. A `\"str\"` field takes a `charset`, `\"utf-8\"` when it names none. The options' `order` is the byte order of every number that names none. A field the message is too short for is null and throws an `IndexOutOfRange` exception, and every field after it is null, so the object leaves them out.",
           "examples": [
             {
               "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
