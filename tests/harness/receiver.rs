@@ -180,6 +180,20 @@ pub fn build(
     max_request_bytes: usize,
     pki: &Pki,
 ) -> Box<dyn Source> {
+    let (config, secrets) = configured(receiver, listen, tls, tokens, sender, max_request_bytes, pki);
+    opened(config, &secrets)
+}
+
+/// What [`build`] opens, for a caller that changes it first, and the secrets it is opened with.
+pub fn configured(
+    receiver: Receiver,
+    listen: SocketAddr,
+    tls: Tls,
+    tokens: &[String],
+    sender: &str,
+    max_request_bytes: usize,
+    pki: &Pki,
+) -> (ReceiverConfig, HeldSecrets) {
     let mut secrets = HeldSecrets::default();
     let stored: Vec<_> = (tokens.iter().enumerate())
         .map(|(i, token)| (format!("token{i}"), 1, token.clone()))
@@ -215,9 +229,14 @@ pub fn build(
         answer_after_delivery: true,
         connections: Default::default(),
     };
+    (config, secrets)
+}
+
+/// `config` opened with `secrets`.
+pub fn opened(config: ReceiverConfig, secrets: &HeldSecrets) -> Box<dyn Source> {
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());
-    build_source(&SourceKind::Receiver(config), &registry, &subjects, &secrets, None).expect("opens")
+    build_source(&SourceKind::Receiver(config), &registry, &subjects, secrets, None).expect("opens")
 }
 
 /// Commits every record of `records`, as far as each partition's last.

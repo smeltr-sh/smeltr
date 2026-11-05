@@ -18,7 +18,7 @@ use smeltr::format::encoding::Encoding;
 use smeltr::io::framing::{ByteOrder, Counts, Framing, LengthPrefix};
 use smeltr::io::line_breaker::{BREAK_SLACK, LineBreaker};
 use smeltr::io::{Source, SourceRecord};
-use smeltr::plan::topology::{Receiver, SocketReceiverConfig, SourceMeta, Transport};
+use smeltr::plan::topology::{ConnectionLimits, Receiver, SocketReceiverConfig, SourceMeta, Transport};
 
 use crate::harness::docker::{Container, Hook, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
@@ -36,6 +36,7 @@ struct Settings {
     max_request_bytes: usize,
     framing: Framing,
     encoding: Encoding,
+    connections: ConnectionLimits,
 }
 
 /// Networks a receiver may admit senders from, and whether a sender on each loopback address is in them.
@@ -48,7 +49,14 @@ const NETWORKS: &[(&str, bool, bool)] = &[
 ];
 
 /// The framings a receiver is given, by name.
-const FRAMINGS: &[&str] = &["lines", "escapedLines", "lineBreaker", "lengthPrefix", "fixed", "object"];
+const FRAMINGS: &[&str] = &[
+    "lines",
+    "escapedLines",
+    "lineBreaker",
+    "lengthPrefix",
+    "fixed",
+    "object",
+];
 
 /// A line breaker that ends each event with a NUL.
 const NUL: &str = r"(\x00)";
@@ -115,6 +123,7 @@ fn random_settings(rng: &mut Rng, ipv6: bool, labels: &mut Vec<String>) -> Setti
         max_request_bytes,
         framing,
         encoding: Encoding::Auto,
+        connections: ConnectionLimits::default(),
     }
 }
 
@@ -136,7 +145,7 @@ fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
         framing: settings.framing.clone(),
         encoding: settings.encoding,
     });
-    receiver::build(
+    let (mut config, secrets) = receiver::configured(
         socket,
         settings.listen,
         settings.tls,
@@ -144,7 +153,9 @@ fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
         "sender",
         settings.max_request_bytes,
         pki,
-    )
+    );
+    config.connections = settings.connections;
+    receiver::opened(config, &secrets)
 }
 
 /// What one connection writes, and the records the receiver must take of it.
@@ -359,7 +370,12 @@ fn pieces(rng: &mut Rng, len: usize, labels: &mut Vec<String>) -> Vec<usize> {
 }
 
 /// The kinds of datagram a sender sends.
-const DATAGRAMS: &[&str] = &["a datagram", "a datagram with a line end", "an empty datagram", "a datagram over the limit"];
+const DATAGRAMS: &[&str] = &[
+    "a datagram",
+    "a datagram with a line end",
+    "an empty datagram",
+    "a datagram over the limit",
+];
 
 /// One datagram, and the record it must give, if any: what was sent, a line end and all, up to the limit.
 fn datagram(rng: &mut Rng, n: usize, max: usize, label: &mut String) -> (Vec<u8>, Option<Vec<u8>>) {
@@ -451,33 +467,36 @@ fn send(at: SocketAddr, tls: Tls, pki: &Pki, connection: &Connection) -> Result<
 
 /// Every label a seed range must reach.
 fn options(ipv6: bool) -> impl Iterator<Item = String> {
-    (["0.0.0.0", "127.0.0.1"].iter().chain(ipv6.then_some(&"::")).chain(ipv6.then_some(&"::1")))
-        .map(|ip| format!("listen {ip}"))
-        .chain(["Tcp", "Udp"].map(|t| format!("transport {t}")))
-        .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
-        .chain(["Nothing", "Trusted", "Stranger"].map(|p| format!("presents {p} under Vouched")))
-        .chain(FRAMINGS.iter().map(|f| format!("framing {f}")))
-        .chain([1, 2, 3, 4, 8].map(|w| format!("length of {w} bytes")))
-        .chain(["Big", "Little"].map(|o| format!("order {o}")))
-        .chain(["Rest", "Message"].map(|c| format!("counts {c}")))
-        .chain(DATAGRAMS.iter().map(|d| d.to_string()))
-        .chain(
-            [
-                "no networks",
-                "a sender in its networks",
-                "a sender in none of its networks",
-                "a header before the length",
-                "a blank line",
-                "escaped lines",
-                "an unterminated last frame",
-                "a frame over the limit",
-                "a length shorter than its header",
-                "a frame cut short",
-                "a connection written in pieces",
-                "a TLS sender hanging up without saying so",
-            ]
-            .map(String::from),
-        )
+    (["0.0.0.0", "127.0.0.1"]
+        .iter()
+        .chain(ipv6.then_some(&"::"))
+        .chain(ipv6.then_some(&"::1")))
+    .map(|ip| format!("listen {ip}"))
+    .chain(["Tcp", "Udp"].map(|t| format!("transport {t}")))
+    .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
+    .chain(["Nothing", "Trusted", "Stranger"].map(|p| format!("presents {p} under Vouched")))
+    .chain(FRAMINGS.iter().map(|f| format!("framing {f}")))
+    .chain([1, 2, 3, 4, 8].map(|w| format!("length of {w} bytes")))
+    .chain(["Big", "Little"].map(|o| format!("order {o}")))
+    .chain(["Rest", "Message"].map(|c| format!("counts {c}")))
+    .chain(DATAGRAMS.iter().map(|d| d.to_string()))
+    .chain(
+        [
+            "no networks",
+            "a sender in its networks",
+            "a sender in none of its networks",
+            "a header before the length",
+            "a blank line",
+            "escaped lines",
+            "an unterminated last frame",
+            "a frame over the limit",
+            "a length shorter than its header",
+            "a frame cut short",
+            "a connection written in pieces",
+            "a TLS sender hanging up without saying so",
+        ]
+        .map(String::from),
+    )
 }
 
 /// A receiver under any settings an operator can save takes every frame an admitted sender writes whole, once and as
@@ -510,8 +529,12 @@ fn every_framing_takes_each_frame_once_however_it_is_written() {
                     let mut reached = Vec::new();
                     let mut connection = connection(&mut rng, n, &settings.framing, max, &mut reached);
                     if settings.tls != Tls::None {
-                        connection.presents =
-                            *rng.pick(&[Presents::Trusted, Presents::Trusted, Presents::Nothing, Presents::Stranger]);
+                        connection.presents = *rng.pick(&[
+                            Presents::Trusted,
+                            Presents::Trusted,
+                            Presents::Nothing,
+                            Presents::Stranger,
+                        ]);
                     }
                     if settings.tls != Tls::None && rng.chance(4) {
                         connection.abrupt = true;
@@ -636,7 +659,14 @@ enum Admitted {
     Certificate,
     /// Plain TCP to a TLS receiver.
     Plain,
+    /// At its maxConnections, every connection it holds too lately busy to give way.
+    Full,
+    /// At its maxConnectionsPerSender from the sender, the same way.
+    FullFromSender,
 }
+
+/// The idle timeout a seed that draws one sets: longer than any pause a connection makes partway.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The records a live sender's connection must give, and those it may.
 struct Expect {
@@ -673,7 +703,8 @@ fn bulk(framing: &Framing, max: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
                 }
                 bytes.extend(&message);
                 let mut frame = vec![b'h'; prefix.offset];
-                frame.extend_from_slice(&bytes[bytes.len() - message.len() - prefix.width..bytes.len() - message.len()]);
+                frame
+                    .extend_from_slice(&bytes[bytes.len() - message.len() - prefix.width..bytes.len() - message.len()]);
                 frame.extend(&message);
                 frame.truncate(max);
                 taken.push(frame);
@@ -708,7 +739,7 @@ fn live_options() -> impl Iterator<Item = String> {
         .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
         .chain(FRAMINGS.iter().map(|f| format!("framing {f}")))
         .chain(["HangUp", "Unsaid", "Reset", "HalfClose"].map(|e| format!("end {e}")))
-        .chain(["Address", "Certificate", "Plain"].map(|a| format!("refused by {a}")))
+        .chain(["Address", "Certificate", "Plain", "Full", "FullFromSender"].map(|a| format!("refused by {a}")))
         .chain(DATAGRAMS.iter().map(|d| d.to_string()))
         .chain(
             [
@@ -721,6 +752,7 @@ fn live_options() -> impl Iterator<Item = String> {
                 "a connection stalled partway",
                 "connections at once",
                 "an idle connection held",
+                "an idle connection closed by its timeout",
                 "a handshake stalled",
                 "a storm of connections",
                 "a receiver left full",
@@ -790,7 +822,29 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
             }
             false => Encoding::Auto,
         };
-        let listen = SocketAddr::new(std::net::IpAddr::V4(*rng.pick(&[Ipv4Addr::LOCALHOST, Ipv4Addr::UNSPECIFIED])), port);
+        let listen = SocketAddr::new(
+            std::net::IpAddr::V4(*rng.pick(&[Ipv4Addr::LOCALHOST, Ipv4Addr::UNSPECIFIED])),
+            port,
+        );
+        // A receiver at its cap, filled by idle connections it will not close for a new one before they have idled a
+        // minute; or one that closes idle connections.
+        let mut connections = ConnectionLimits::default();
+        let mut full = None;
+        if transport == Transport::Tcp && rng.chance(2) {
+            let holders = 1 + rng.below(3);
+            match rng.below(3) {
+                0 => {
+                    connections.max = holders;
+                    full = Some((holders, Admitted::Full));
+                }
+                1 => {
+                    connections.max = holders + 1 + rng.below(4);
+                    connections.per_sender = Some(holders);
+                    full = Some((holders, Admitted::FullFromSender));
+                }
+                _ => connections.idle = Some(IDLE_TIMEOUT),
+            }
+        }
         let settings = Settings {
             listen,
             connect: SocketAddr::new(connect.ip(), port),
@@ -800,6 +854,7 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
             max_request_bytes: max,
             framing: framing.clone(),
             encoding,
+            connections,
         };
         labels.push(format!("transport {transport:?}"));
         labels.push(format!("tls {tls:?}"));
@@ -826,15 +881,34 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
         let (mut plan_datagrams, mut flood) = (Vec::new(), Value::Null);
         let mut what = Vec::new();
         let mut leave_full = false;
+        let mut hold_ms = 0;
+        // Whether each holder the receiver must have closed by the end, where that is known.
+        let mut closes: Vec<Option<bool>> = Vec::new();
         match transport {
             Transport::Tcp => {
+                if let Some((n, _)) = full {
+                    for _ in 0..n {
+                        holders.push(serde_json::json!({"kind": "idle", "from": "127.0.0.1"}));
+                        // Under TLS its handshake times out, which frees its place.
+                        closes.push((tls == Tls::None).then_some(false));
+                    }
+                }
+                if connections.idle.is_some() {
+                    holders.push(serde_json::json!({"kind": "idle", "from": "127.0.0.1"}));
+                    closes.push(Some(true));
+                    hold_ms = 2 * IDLE_TIMEOUT.as_millis() as u64;
+                    labels.push("an idle connection closed by its timeout".into());
+                }
                 let count = 1 + rng.below(12);
                 if count > 1 {
                     labels.push("connections at once".into());
                 }
                 for n in 0..count {
                     let mut reached = Vec::new();
-                    let mut c = match n == 0 && framing != Framing::Object && rng.chance(3) {
+                    // Left full, the receiver reads nothing from a connection it is not waiting on, which an idle
+                    // timeout does not close; the sender of the bulk waits on it, so it is left out there anyway.
+                    let fill = connections.idle.is_none() && n == 0 && framing != Framing::Object;
+                    let mut c = match fill && rng.chance(3) {
                         true => {
                             reached.push("a receiver left full".into());
                             leave_full = true;
@@ -875,6 +949,9 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
                             (Tls::Vouched, "nothing" | "stranger") => Admitted::Certificate,
                             _ => Admitted::Yes,
                         };
+                    }
+                    if let (Admitted::Yes, Some((_, refused))) = (admitted, full) {
+                        admitted = refused;
                     }
                     let end = match (tls, rng.below(4)) {
                         (_, 0) => End::Reset,
@@ -948,12 +1025,15 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
                         },
                     });
                 }
-                if rng.chance(3) {
+                if full.is_none() && rng.chance(3) {
                     holders.push(serde_json::json!({"kind": "idle", "from": "127.0.0.1"}));
+                    // Without TLS, whose handshake would time it out, a receiver with no idle timeout keeps it.
+                    closes.push((tls == Tls::None && connections.idle.is_none()).then_some(false));
                     labels.push("an idle connection held".into());
                 }
                 if tls != Tls::None && rng.chance(3) {
                     holders.push(serde_json::json!({"kind": "handshake", "from": "127.0.0.1"}));
+                    closes.push(None);
                     labels.push("a handshake stalled".into());
                 }
             }
@@ -1006,6 +1086,7 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
                 }),
             },
             "holders": holders,
+            "hold_ms": hold_ms,
             "storm": storm,
             "storm_from": "127.0.0.1",
             "connections": plan_connections,
@@ -1020,7 +1101,7 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o777)).unwrap();
         }
         let what = format!(
-            "seed {seed}: {transport:?} receiver on {listen} allowing {:?} under {tls:?}, limit {max}, framing {framing:?}, {encoding:?}: {}",
+            "seed {seed}: {transport:?} receiver on {listen} allowing {:?} under {tls:?}, limit {max}, framing {framing:?}, {encoding:?}, {connections:?}: {}",
             settings.allow_from,
             what.join("; ")
         );
@@ -1028,7 +1109,13 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
         let started = std::process::Command::new("docker")
             .args(["run", "-d", "--network", "host", "--name", &container, "-v"])
             .arg(format!("{}:/smeltr", dir.display()))
-            .args([image.as_str(), "python", "/smeltr/send.py", "/smeltr/plan.json", "/smeltr/report.json"])
+            .args([
+                image.as_str(),
+                "python",
+                "/smeltr/send.py",
+                "/smeltr/plan.json",
+                "/smeltr/report.json",
+            ])
             .output()
             .expect("docker runs");
         let container = Container(container);
@@ -1127,6 +1214,23 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
                     Some(i) => at += i + 1,
                     None => return Err(format!("{what}\nmessages of one connection arrived out of order")),
                 }
+            }
+        }
+        // A holder at the cap kept its place, and one idle past the timeout lost it.
+        for (n, (h, closes)) in report["holders"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .zip(&closes)
+            .enumerate()
+        {
+            if let Some(closes) = closes
+                && h["closed"].as_bool() != Some(*closes)
+            {
+                return Err(format!(
+                    "{what}\nholder {n} must be closed: {closes}, is: {}\nreport {report}",
+                    h["closed"]
+                ));
             }
         }
         // A connection the receiver had to read whole was not refused partway.

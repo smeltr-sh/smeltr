@@ -994,6 +994,35 @@ pub struct ReceiverSettingsDto {
     pub port: u16,
     #[serde(default, skip_serializing_if = "MaxRequestBytes::is_default")]
     pub max_request_bytes: MaxRequestBytes,
+    /// The most connections it holds at once, on each worker, for a receiver whose senders stream over TCP.
+    #[serde(default, skip_serializing_if = "MaxConnections::is_default")]
+    pub max_connections: MaxConnections,
+    /// The most it holds from one address. Absent, as many as `maxConnections`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections_per_sender: Option<u64>,
+    /// How long a connection may read nothing before it is closed. Absent, an idle one is held while there is room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_secs: Option<u64>,
+}
+
+/// The most connections a receiver that streams holds at once.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct MaxConnections(pub u64);
+
+impl MaxConnections {
+    pub const DEFAULT: u64 = crate::plan::topology::ConnectionLimits::DEFAULT_MAX as u64;
+    pub const MAX: u64 = 1_000_000;
+
+    pub fn is_default(&self) -> bool {
+        self.0 == Self::DEFAULT
+    }
+}
+
+impl Default for MaxConnections {
+    fn default() -> Self {
+        MaxConnections(Self::DEFAULT)
+    }
 }
 
 /// A token a HEC receiver admits.

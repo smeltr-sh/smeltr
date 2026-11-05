@@ -2195,7 +2195,11 @@ fn receiver_config<'a>(
         max_request_bytes: usize::try_from(listener.max_request_bytes.0.max(MaxRequestBytes::FLOOR))
             .unwrap_or(usize::MAX),
         answer_after_delivery,
-        connections: Default::default(),
+        connections: crate::plan::topology::ConnectionLimits {
+            max: usize::try_from(listener.max_connections.0).unwrap_or(usize::MAX),
+            per_sender: (listener.max_connections_per_sender).map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+            idle: listener.idle_timeout_secs.map(std::time::Duration::from_secs),
+        },
     })
 }
 
@@ -3249,7 +3253,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 ..
             } => {
                 let what = format!("source {:?}", s.id);
-                check_receiver(&what, listener, tls, tokens, errors);
+                check_receiver(&what, listener, tls, tokens, false, errors);
                 check_records_at(&what, *records, records_at, errors);
                 if !path.starts_with('/')
                     || path.contains(['?', '#', ':', '*'])
@@ -3273,7 +3277,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 ..
             } => {
                 let what = format!("source {:?}", s.id);
-                check_receiver(&what, listener, tls, tokens, errors);
+                check_receiver(&what, listener, tls, tokens, false, errors);
                 check_sourcetypes(&s.id, sourcetypes, errors);
             }
             SourceKindDto::S2sReceiver {
@@ -3283,7 +3287,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 sourcetypes,
             } => {
                 let what = format!("source {:?}", s.id);
-                check_receiver(&what, listener, tls, tokens, errors);
+                check_receiver(&what, listener, tls, tokens, true, errors);
                 check_sourcetypes(&s.id, sourcetypes, errors);
             }
             SourceKindDto::OtlpReceiver {
@@ -3294,7 +3298,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             }
             | SourceKindDto::ElasticReceiver {
                 listener, tls, tokens, ..
-            } => check_receiver(&format!("source {:?}", s.id), listener, tls, tokens, errors),
+            } => check_receiver(&format!("source {:?}", s.id), listener, tls, tokens, false, errors),
             SourceKindDto::SyslogReceiver {
                 listener,
                 tls,
@@ -4588,9 +4592,10 @@ fn check_receiver<T>(
     listener: &ReceiverSettingsDto,
     tls: &ServedTlsDto,
     tokens: &BTreeMap<String, T>,
+    streams: bool,
     errors: &mut ItemErrors<'_>,
 ) {
-    let vouches = check_listener(what, listener, tls, errors);
+    let vouches = check_listener(what, listener, tls, streams, errors);
     if tokens.is_empty() && !vouches {
         errors.at("tokens").push(format!(
             "{what} admits anyone who can reach its port; give it a token, or trusted authorities a sender's certificate \
@@ -4616,7 +4621,7 @@ fn check_syslog_receiver(
     transport: Transport,
     errors: &mut ItemErrors<'_>,
 ) {
-    let vouches = check_listener(what, listener, tls, errors);
+    let vouches = check_listener(what, listener, tls, transport == Transport::Tcp, errors);
     if transport == Transport::Udp && tls.is_set() {
         errors.at("certificate").push(format!(
             "{what} takes UDP, which it serves without TLS; take its certificate and trusted authorities off, or switch it to \
@@ -4640,13 +4645,56 @@ fn check_syslog_receiver(
     }
 }
 
-/// What every receiver's listener must be: a port, and a certificate to serve where it serves TLS. Whether its
-/// authorities vouch for a sender, which then needs nothing else to be admitted.
-fn check_listener(what: &str, listener: &ReceiverSettingsDto, tls: &ServedTlsDto, errors: &mut ItemErrors<'_>) -> bool {
+/// What every receiver's listener must be: a port, a certificate to serve where it serves TLS, and connection limits
+/// only where `streams`, its senders holding a connection open. Whether its authorities vouch for a sender, which then
+/// needs nothing else to be admitted.
+fn check_listener(
+    what: &str,
+    listener: &ReceiverSettingsDto,
+    tls: &ServedTlsDto,
+    streams: bool,
+    errors: &mut ItemErrors<'_>,
+) -> bool {
     let ReceiverSettingsDto {
         port,
         max_request_bytes,
+        max_connections,
+        max_connections_per_sender,
+        idle_timeout_secs,
     } = listener;
+    let limits = [
+        ("maxConnections", !max_connections.is_default()),
+        ("maxConnectionsPerSender", max_connections_per_sender.is_some()),
+        ("idleTimeoutSecs", idle_timeout_secs.is_some()),
+    ];
+    for (field, set) in limits {
+        if set && !streams {
+            errors.at(field).push(format!(
+                "{what} sets {field}, which only S2S, syslog and socket receivers over TCP read"
+            ));
+        }
+    }
+    if !(1..=MaxConnections::MAX).contains(&max_connections.0) {
+        errors.at("maxConnections").push(format!(
+            "{what} holds up to {} connections; maxConnections is between 1 and {}",
+            max_connections.0,
+            MaxConnections::MAX
+        ));
+    }
+    if let Some(n) = max_connections_per_sender
+        && !(1..=max_connections.0).contains(n)
+    {
+        errors.at("maxConnectionsPerSender").push(format!(
+            "{what} holds up to {n} connections from one sender; maxConnectionsPerSender is between 1 and its \
+             maxConnections, {}",
+            max_connections.0
+        ));
+    }
+    if *idle_timeout_secs == Some(0) {
+        errors.at("idleTimeoutSecs").push(format!(
+            "{what} closes a connection idle for 0 seconds; idleTimeoutSecs is at least 1"
+        ));
+    }
     let blank = |v: &str| v.trim().is_empty();
     if *port == 0 {
         errors

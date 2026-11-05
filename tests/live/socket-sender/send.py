@@ -4,7 +4,8 @@ and reports what it did, so the test can say what the receiver must have taken.
 python send.py PLAN REPORT
 
 The plan names the receiver, and what to send it:
-- holders: connections opened first and held, idle or stalled partway through a TLS handshake, until all else is done;
+- holders: connections opened first and held, idle or stalled partway through a TLS handshake, until all else is done
+  and at least hold_ms have passed, each then reported closed or not by the receiver;
 - storm: how many connections to open and close at once;
 - connections: each from an address, under TLS presenting a certificate or none, or plain to a TLS receiver, written
   in pieces with a pause after each, and ended by a hang-up, a reset, a half-close or, under TLS, a hang-up unsaid;
@@ -125,7 +126,18 @@ def hold(plan, h, held, out):
             sock.sendall(b"\x16\x03\x01\x02\x00\x01")
         except OSError:
             pass
-    held.append(sock)
+    held.append((sock, out))
+
+
+def closed(sock):
+    """Whether the receiver has closed the connection."""
+    sock.settimeout(0.5)
+    try:
+        return sock.recv(1) == b""
+    except socket.timeout:
+        return False
+    except OSError:
+        return True
 
 
 def storm(plan, n, source):
@@ -178,6 +190,7 @@ def main():
         report["datagrams"], report["flood"] = datagrams(plan)
     else:
         held = []
+        opened = time.monotonic()
         for h in plan["holders"]:
             out = {}
             hold(plan, h, held, out)
@@ -192,7 +205,9 @@ def main():
             threads.append(t)
         for t in threads:
             t.join()
-        for sock in held:
+        time.sleep(max(0, plan.get("hold_ms", 0) / 1000 - (time.monotonic() - opened)))
+        for sock, out in held:
+            out["closed"] = closed(sock)
             sock.close()
     with open(sys.argv[2], "w") as f:
         json.dump(report, f)

@@ -6006,8 +6006,9 @@ fn a_socket_receiver_takes_a_framing_over_tcp() {
         (socket.framing.clone(), socket.transport)
     };
     assert_eq!(framing(&socket("")), (Framing::Lines, Transport::Tcp));
-    let json =
-        socket(r#","framing":"lengthPrefix","lengthPrefix":{"offset":2,"bytes":4,"order":"little","counts":"message"}"#);
+    let json = socket(
+        r#","framing":"lengthPrefix","lengthPrefix":{"offset":2,"bytes":4,"order":"little","counts":"message"}"#,
+    );
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     assert_eq!(
         framing(&json).0,
@@ -6640,4 +6641,78 @@ fn an_http_api_source_with_a_muddled_sign_in_is_refused() {
         let json = http_api_config(at, &sign_in);
         assert!(refusal(&json).is_empty(), "{sign_in}: {}", refusal(&json));
     }
+}
+
+/// A receiver that streams holds 10,000 connections unless told otherwise, and an admin may tighten that, cap one
+/// sender, and close idle connections. A receiver that holds no connection open refuses the settings.
+#[test]
+fn a_receiver_that_streams_takes_connection_limits() {
+    use smeltr::plan::topology::{ConnectionLimits, SourceKind};
+
+    let socket = |extra: &str| {
+        format!(
+            r#"{{"version":1,"sources":[{{"id":"raw","type":"socketReceiver","port":9000,
+            "allowFrom":["10.0.0.0/8"]{extra}}}]}}"#
+        )
+    };
+    let limits = |json: &str| {
+        let system = load_str(json).expect("must load");
+        let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
+            panic!("a receiver")
+        };
+        r.connections
+    };
+    assert_eq!(limits(&socket("")), ConnectionLimits::default());
+    assert_eq!(ConnectionLimits::default().max, 10_000);
+    let json = socket(r#","maxConnections":500,"maxConnectionsPerSender":20,"idleTimeoutSecs":600"#);
+    assert_eq!(refusal(&json), "");
+    assert_eq!(
+        limits(&json),
+        ConnectionLimits {
+            max: 500,
+            per_sender: Some(20),
+            idle: Some(std::time::Duration::from_secs(600)),
+        }
+    );
+    let file: smeltr::config_file::FileConfig = serde_json::from_str(&json).unwrap();
+    let written = &serde_json::to_value(&file).unwrap()["sources"][0];
+    assert_eq!(written["maxConnections"], 500);
+    let file: smeltr::config_file::FileConfig = serde_json::from_str(&socket("")).unwrap();
+    assert!(
+        serde_json::to_value(&file).unwrap()["sources"][0]
+            .get("maxConnections")
+            .is_none()
+    );
+
+    assert!(refused_at(
+        &socket(r#","maxConnections":0"#),
+        "maxConnections",
+        "maxConnections is between 1 and"
+    ));
+    assert!(refused_at(
+        &socket(r#","maxConnections":10,"maxConnectionsPerSender":11"#),
+        "maxConnectionsPerSender",
+        "between 1 and its maxConnections, 10"
+    ));
+    assert!(refused_at(
+        &socket(r#","idleTimeoutSecs":0"#),
+        "idleTimeoutSecs",
+        "at least 1"
+    ));
+    assert!(refused_at(
+        &socket(r#","transport":"udp","idleTimeoutSecs":60"#),
+        "idleTimeoutSecs",
+        "only S2S, syslog and socket receivers over TCP read"
+    ));
+    assert!(refused_at(
+        &http_receiver_config(8088, &format!(r#"{RECEIVER_TOKEN},"maxConnections":5"#)),
+        "maxConnections",
+        "only S2S, syslog and socket receivers over TCP read"
+    ));
+    assert_eq!(
+        refusal(&s2s_receiver_config(&format!(
+            r#"{S2S_TOKEN},"maxConnectionsPerSender":4"#
+        ))),
+        ""
+    );
 }

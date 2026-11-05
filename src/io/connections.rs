@@ -1,8 +1,13 @@
 //! The connections a receiver that streams holds open, held to its `ConnectionLimits`. Each connection's stream is
-//! wrapped so every read marks it live. At the cap, a new connection takes the place of the one idle longest, if that
-//! one has been idle at least [`EVICTABLE_AFTER`]; otherwise the new one is closed. So a quiet sender keeps its
-//! connection as long as there is room, and a sender that opens connections and leaves them idle cannot take the room
-//! every other sender needs.
+//! wrapped so it marks when the receiver began to wait on it for a read. A connection is idle while the receiver
+//! waits on it and it sends nothing; one the receiver is busy with, or has stopped reading while it is full, is not.
+//! At the cap, a new connection takes the place of the one idle longest, if that one has been idle at least
+//! [`EVICTABLE_AFTER`]; otherwise the new one is closed. So a quiet sender keeps its connection as long as there is
+//! room, and a sender that opens connections and leaves them idle cannot take the room every other sender needs.
+//!
+//! A sender that sends a little before each connection has idled [`EVICTABLE_AFTER`] keeps every place it takes. Only
+//! `maxConnectionsPerSender` stops it, and it is unset by default, since a balancer or NAT in front of the workers
+//! sends every sender through one address.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -41,9 +46,12 @@ pub(super) enum Refused {
     FullFromSender,
 }
 
+/// A connection's mark while the receiver is not waiting on it: never idle.
+const BUSY: u64 = u64::MAX;
+
 struct Open {
     peer: IpAddr,
-    /// When it last read, in milliseconds since `Connections::epoch`.
+    /// Since when the receiver has waited on it for a read, in milliseconds since `Connections::epoch`; or [`BUSY`].
     read: Arc<AtomicU64>,
     abort: Option<AbortHandle>,
 }
@@ -56,7 +64,7 @@ pub(super) struct Connections {
     open: HashMap<u64, Open>,
 }
 
-/// A connection's place among the receiver's: its id, and the clock its stream marks reads on.
+/// A connection's place among the receiver's: its id, and the clock its stream marks its waits on.
 pub(super) struct Place {
     pub(super) id: u64,
     pub(super) read: Arc<AtomicU64>,
@@ -126,7 +134,7 @@ impl Connections {
         self.open.remove(&id);
     }
 
-    /// Closes the connection, of `peer`'s where given, that has read nothing longest, if it has read nothing for
+    /// Closes the connection, of `peer`'s where given, that has been idle longest, if it has been idle for
     /// [`EVICTABLE_AFTER`]. Its sender.
     fn close_idlest(&mut self, peer: Option<IpAddr>) -> Option<IpAddr> {
         let now = self.now();
@@ -139,7 +147,7 @@ impl Connections {
         self.close(id)
     }
 
-    /// Closes every connection that has read nothing for the idle timeout. Their senders.
+    /// Closes every connection that has been idle for the idle timeout. Their senders.
     pub(super) fn close_idle(&mut self) -> Vec<IpAddr> {
         let Some(idle) = self.limits.idle else {
             return Vec::new();
@@ -168,11 +176,12 @@ impl Connections {
     }
 }
 
-/// A stream that marks its place read each time it reads.
+/// A stream that marks when its reader began to wait on it, and that it is busy once a read returns.
 pub(super) struct Marked<S> {
     stream: S,
     read: Arc<AtomicU64>,
     epoch: Instant,
+    waiting: bool,
 }
 
 impl<S> Marked<S> {
@@ -181,17 +190,25 @@ impl<S> Marked<S> {
             stream,
             read: place.read.clone(),
             epoch: place.epoch,
+            waiting: false,
         }
     }
 }
 
 impl<S: AsyncRead + Unpin> AsyncRead for Marked<S> {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
-        let before = buf.filled().len();
         let polled = Pin::new(&mut self.stream).poll_read(cx, buf);
-        if matches!(polled, Poll::Ready(Ok(()))) && buf.filled().len() > before {
-            self.read
-                .store(self.epoch.elapsed().as_millis() as u64, Ordering::Relaxed);
+        match polled {
+            Poll::Ready(_) => {
+                self.read.store(BUSY, Ordering::Relaxed);
+                self.waiting = false;
+            }
+            Poll::Pending if !self.waiting => {
+                self.read
+                    .store(self.epoch.elapsed().as_millis() as u64, Ordering::Relaxed);
+                self.waiting = true;
+            }
+            Poll::Pending => {}
         }
         polled
     }
@@ -232,7 +249,7 @@ mod tests {
         // The clock runs `by` ahead, and every other connection reads at its new now.
         c.epoch -= by;
         for (other, o) in &c.open {
-            if *other != id {
+            if *other != id && o.read.load(Ordering::Relaxed) != BUSY {
                 o.read.fetch_add(by.as_millis() as u64, Ordering::Relaxed);
             }
         }
@@ -302,6 +319,22 @@ mod tests {
         age(&mut c, quiet.id, Duration::from_secs(30));
         assert_eq!(c.close_idle(), vec![ip(1)]);
         assert_eq!(c.open.len(), 1);
+    }
+
+    /// A receiver that stops reading a connection, as it does while it is full, does not make it idle.
+    #[test]
+    fn a_connection_the_receiver_is_not_waiting_on_never_idles() {
+        let c = Connections::new(ConnectionLimits {
+            max: 1,
+            per_sender: None,
+            idle: Some(Duration::from_secs(30)),
+        });
+        let mut c = c.lock().unwrap();
+        let busy = c.admit(ip(1)).1.unwrap();
+        busy.read.store(BUSY, Ordering::Relaxed);
+        c.epoch -= EVICTABLE_AFTER * 2;
+        assert!(c.close_idle().is_empty());
+        assert_eq!(c.admit(ip(2)).1.err(), Some(Refused::Full));
     }
 
     #[test]
