@@ -255,7 +255,7 @@ no certificate to check, and a datagram's source address can be forged, so a
 UDP receiver's networks admit whoever can send from inside them or claim to.
 
 A receiver that holds connections open bounds them so that connections
-cannot exhaust a worker: a cap on each worker, an optional cap per address,
+cannot exhaust a worker: a cap on each worker, an optional cap per sender,
 and an optional idle timeout.
 
 ```mermaid
@@ -267,13 +267,13 @@ flowchart TD
   D -- no --> F[new connection is closed]
 ```
 
-The per-address cap applies the same rule to one address's connections. A
-connection is idle only while the receiver waits to read from it, so a
-receiver that has stopped reading because it cannot take more closes none for
-idleness. By default there is no per-address cap, because behind a balancer or
-NAT every sender comes from one address, and no idle timeout, so a sender that
-writes on every connection often enough can hold every place; an administrator
-who faces one sets the per-address cap.
+The per-sender cap, which counts by address, applies the same rule to one
+address's connections. A connection is idle only while the receiver waits to
+read from it, so a receiver that has stopped reading because it cannot take
+more closes none for idleness. By default there is no per-sender cap, because
+behind a balancer or NAT every sender comes from one address, and no idle
+timeout, so a sender that writes on every connection often enough can hold
+every place; an administrator who faces one sets the per-sender cap.
 
 ## Scrapers
 
