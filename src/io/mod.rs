@@ -50,6 +50,7 @@ pub mod pipelined;
 pub mod postgres;
 pub mod prometheus;
 pub mod pubsub;
+pub mod raw;
 pub mod reads;
 pub mod receiver;
 pub mod remote_write;
@@ -939,6 +940,10 @@ pub trait Source: Send {
     fn take_refused(&mut self) -> Vec<(&'static str, u64)> {
         Vec::new()
     }
+
+    /// Copy what arrives to `tap` before it is framed, while it is watching. Only a receiver has bytes a sender
+    /// sent before they are records, so the default copies nothing.
+    fn tap_raw(&mut self, _tap: std::sync::Arc<dyn raw::RawTap>) {}
 
     /// Whether to fill `SourceRecord::headers` from now on. Copying them costs an allocation per header, so a source
     /// leaves them out until a reader asks. A source whose records have no headers does nothing.

@@ -926,6 +926,7 @@ fn dropping_an_egress_ends_the_capture_at_its_destination() {
         .with_captures(captures.clone());
     assert!(captures.sends_to("es"));
     captures.admit(&[CaptureInvitation {
+        raw: false,
         session: "s1".to_string(),
         group: "g".to_string(),
         source: None,
@@ -977,6 +978,7 @@ fn a_capture_at_a_blocking_destination_sees_its_held_rows_once() {
     .holding_refusals()
     .with_captures(captures.clone());
     captures.admit(&[CaptureInvitation {
+        raw: false,
         session: "s1".to_string(),
         group: "g".to_string(),
         source: None,

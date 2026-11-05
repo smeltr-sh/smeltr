@@ -47,6 +47,7 @@ use super::hec;
 use super::line_breaker::LineBreaker;
 use super::otlp;
 use super::prometheus;
+use super::raw::{RawRead, RawTap, Tapped, Tapping, offer_closed};
 use super::s2s_receiver;
 use super::syslog_receiver;
 use super::{CommitMap, IoError, RecordChunkBuilder, Source, SourceRecord};
@@ -155,7 +156,14 @@ pub fn open(
         .map_err(|e| IoError::transient(format!("receiver could not serve {}: {e}", named(config.listens()))))?;
         let handler = syslog_receiver::Handler::new(syslog, config.max_request_bytes);
         let cut = move |datagram: &[u8], peer| handler.datagram(datagram, peer);
-        let task = runtime.spawn(serve_datagrams(socket, shared.clone(), config.max_request_bytes, cut));
+        let allow_from = syslog.allow_from.clone();
+        let task = runtime.spawn(serve_datagrams(
+            socket,
+            allow_from,
+            shared.clone(),
+            config.max_request_bytes,
+            cut,
+        ));
         return Ok(Box::new(ReceiverSource {
             shared,
             serving: Some(Serving::Task(task)),
@@ -273,12 +281,78 @@ pub fn open(
         router,
         config.listen,
         "receiver",
+        Some(shared.clone()),
     )?;
     Ok(Box::new(ReceiverSource {
         shared,
         serving: Some(Serving::Server(server)),
         port: None,
     }))
+}
+
+/// Serves `config`'s address for a capture of it as sent, and nothing else: each connection is read to its end, after
+/// TLS where `config` serves it, and each datagram taken, every read offered to the tap the caller attaches
+/// (`Source::tap_raw`). Nothing is answered and nothing becomes a record: a sender that heard success would drop what
+/// it sent, and this delivers nothing.
+///
+/// Binds the address afresh rather than taking a socket the supervisor handed over, so a port a deployment's receiver
+/// holds is refused rather than split between the two.
+pub fn open_raw(config: &ReceiverConfig, secrets: &HeldSecrets) -> Result<Box<dyn Source>, IoError> {
+    let listen = config.listens();
+    let unserved = |e: std::io::Error| {
+        IoError::transient(format!(
+            "could not listen on {}: {e}. A receiver this worker runs may hold the port",
+            named(listen)
+        ))
+    };
+    let socket = bind_alone(listen).map_err(unserved)?;
+    socket.set_nonblocking(true).map_err(unserved)?;
+    let shared = Arc::new(Shared::default());
+    let runtime = receiver_runtime()?;
+    // `from_std` registers the socket with the runtime it is called in.
+    let _entered = runtime.enter();
+    let allow_from = match &config.receiver {
+        Receiver::Syslog(syslog) => syslog.allow_from.clone(),
+        Receiver::Http(_)
+        | Receiver::Hec(_)
+        | Receiver::Otlp(_)
+        | Receiver::Prometheus
+        | Receiver::S2s(_)
+        | Receiver::Elastic => Vec::new(),
+    };
+    let task = match listen.transport {
+        Transport::Udp => {
+            let socket = tokio::net::UdpSocket::from_std(socket.into()).map_err(unserved)?;
+            let nothing = |_: &[u8], _| None;
+            runtime.spawn(serve_datagrams(
+                socket,
+                allow_from,
+                shared.clone(),
+                MAX_DATAGRAM,
+                nothing,
+            ))
+        }
+        Transport::Tcp => {
+            let tls = match &config.tls {
+                Some(tls) => Some(server_tls(tls, secrets)?),
+                None => None,
+            };
+            let listener = tokio::net::TcpListener::from_std(socket.into()).map_err(unserved)?;
+            runtime.spawn(serve_streams(listener, allow_from, tls, shared.clone(), read_to_end))
+        }
+    };
+    Ok(Box::new(ReceiverSource {
+        shared,
+        serving: Some(Serving::Task(task)),
+        port: None,
+    }))
+}
+
+/// Reads `connection` to its end and keeps none of it: each read is offered to the receiver's tap as it is read.
+async fn read_to_end(mut connection: Connection) {
+    use tokio::io::AsyncReadExt;
+    let mut scratch = vec![0; STREAM_STEP];
+    while connection.stream.read(&mut scratch).await.is_ok_and(|read| read > 0) {}
 }
 
 /// `listen`'s socket, or why a receiver cannot listen on it.
@@ -312,6 +386,8 @@ pub(crate) fn http_alpn() -> Vec<Vec<u8>> {
 
 /// Serves `router` on `listener` on `runtime`, under TLS when there is some, until the returned handle shuts it down.
 /// `serving` names what serves it, for an operator reading the failure.
+///
+/// `tap`, where given, is offered every read of every connection, after TLS, and every failed handshake.
 pub(crate) fn serve_router(
     runtime: &tokio::runtime::Runtime,
     listener: TcpListener,
@@ -319,6 +395,7 @@ pub(crate) fn serve_router(
     router: axum::Router,
     address: SocketAddr,
     serving: &str,
+    tap: Option<Arc<dyn RawTap>>,
 ) -> Result<axum_server::Handle<SocketAddr>, IoError> {
     // `from_tcp` registers the socket with the runtime it is called in.
     let _entered = runtime.enter();
@@ -332,12 +409,22 @@ pub(crate) fn serve_router(
         }
     };
     let served = match tls {
-        Some(tls) => axum_server::tls_rustls::from_tcp_rustls(listener, tls).map(|server| {
-            let server = server.handle(handle.clone());
+        Some(tls) => axum_server::from_tcp(listener).map(|server| {
+            let acceptor = Tapping {
+                inner: axum_server::tls_rustls::RustlsAcceptor::new(tls),
+                tap,
+                tls: true,
+            };
+            let server = server.acceptor(acceptor).handle(handle.clone());
             runtime.spawn(async move { stopped(server.serve(service).await) })
         }),
         None => axum_server::from_tcp(listener).map(|server| {
-            let server = server.handle(handle.clone());
+            let acceptor = Tapping {
+                inner: axum_server::accept::DefaultAcceptor,
+                tap,
+                tls: false,
+            };
+            let server = server.acceptor(acceptor).handle(handle.clone());
             runtime.spawn(async move { stopped(server.serve(service).await) })
         }),
     };
@@ -400,6 +487,24 @@ struct OtlpReceivers(Mutex<HashMap<Signal, Arc<Server>>>);
 impl OtlpReceivers {
     fn of(&self, signal: Signal) -> Option<Arc<Server>> {
         self.0.lock().unwrap().get(&signal).cloned()
+    }
+
+    fn servers(&self) -> Vec<Arc<Server>> {
+        self.0.lock().unwrap().values().cloned().collect()
+    }
+}
+
+/// What arrives at an OTLP port is offered to the receiver of each signal it serves: a read is not yet an export of
+/// any one signal.
+impl RawTap for OtlpReceivers {
+    fn watching(&self) -> bool {
+        self.servers().iter().any(|s| s.shared.watching())
+    }
+
+    fn offer(&self, read: RawRead<'_>) {
+        for server in self.servers() {
+            server.shared.offer(read);
+        }
     }
 }
 
@@ -471,6 +576,7 @@ impl OtlpPort {
             router.with_state(receivers.clone()),
             config.listen,
             "receiver",
+            Some(receivers.clone()),
         )?;
         Ok(OtlpPort {
             receivers,
@@ -541,6 +647,11 @@ impl Source for ReceiverSource {
 
     fn take_dropped(&mut self) -> u64 {
         self.shared.dropped.swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn tap_raw(&mut self, tap: Arc<dyn RawTap>) {
+        // A source is tapped once, by the deployment that opened it.
+        self.shared.raw.get_or_init(|| tap);
     }
 
     /// What a sender is already waiting on is delivered, so it hears success rather than sending it again.
@@ -716,6 +827,20 @@ struct Shared {
     /// Datagrams let go for want of room since the reader last asked.
     dropped: std::sync::atomic::AtomicU64,
     refused: Mutex<Refused>,
+    /// Where what arrives is copied before it is framed, once the deployment reading this receiver has attached it.
+    raw: OnceLock<Arc<dyn RawTap>>,
+}
+
+impl RawTap for Shared {
+    fn watching(&self) -> bool {
+        self.raw.get().is_some_and(|tap| tap.watching())
+    }
+
+    fn offer(&self, read: RawRead<'_>) {
+        if let Some(tap) = self.raw.get() {
+            tap.offer(read);
+        }
+    }
 }
 
 /// The requests a receiver refused, by reason.
@@ -2839,13 +2964,18 @@ impl Drop for Held {
 /// The largest datagram UDP carries.
 const MAX_DATAGRAM: usize = u16::MAX as usize;
 
-/// Serves `socket` for a receiver that takes datagrams: `cut` makes a datagram from a sender the records it holds, or
-/// `None` for one it refuses. Nothing slows a sender of datagrams, so one that arrives while the inbox has no room, or
+/// Serves `socket` for a receiver that takes datagrams from the senders `allow_from` admits: `cut` makes a datagram
+/// the records it holds, or `None` for one it refuses. Nothing slows a sender of datagrams, so one that arrives while the inbox has no room, or
 /// the source is blocked, is dropped and counted. A datagram larger than `max` and a line end reaches `cut` as
 /// `max + 3` bytes, so `cut` tells it from one of `max` bytes and a CRLF.
 /// Runs until dropped.
-async fn serve_datagrams<C>(socket: tokio::net::UdpSocket, shared: Arc<Shared>, max: usize, cut: C)
-where
+async fn serve_datagrams<C>(
+    socket: tokio::net::UdpSocket,
+    allow_from: Vec<ipnetwork::IpNetwork>,
+    shared: Arc<Shared>,
+    max: usize,
+    cut: C,
+) where
     C: Fn(&[u8], std::net::IpAddr) -> Option<Cutter> + Send + 'static,
 {
     let mut buffer = vec![0; max.min(MAX_DATAGRAM) + 3];
@@ -2865,6 +2995,27 @@ where
             }
         };
         let peer = peer.ip().to_canonical();
+        let admitted = admits(&allow_from, peer);
+        if !admitted {
+            tracing::trace!(
+                name: "refused", target: "sources",
+                subject = %peer,
+                "a datagram is dropped: its address is in none of the receiver's allowFrom networks"
+            );
+        }
+        if shared.watching() {
+            let why = (!admitted).then(|| refused(peer));
+            shared.offer(RawRead {
+                remote: &peer.to_string(),
+                transport: Transport::Udp,
+                tls: false,
+                bytes: if admitted { &buffer[..length] } else { &[] },
+                closed: why.as_deref(),
+            });
+        }
+        if !admitted {
+            continue;
+        }
         let Some(records) = cut(&buffer[..length], peer) else {
             continue;
         };
@@ -2934,20 +3085,22 @@ async fn serve_streams<H, F>(
         };
         // A dual-stack socket sees an IPv4 sender as `::ffff:a.b.c.d`; it is named as the IPv4 address it is.
         let peer = peer.ip().to_canonical();
+        let remote: Arc<str> = Arc::from(peer.to_string());
         if !admits(&allow_from, peer) {
             tracing::trace!(
                 name: "refused", target: "sources",
                 subject = %peer,
                 "a connection is closed: its address is in none of the receiver's allowFrom networks"
             );
+            offer_closed(&*shared, &remote, tls.is_some(), &refused(peer));
             continue;
         }
         let (tls, shared, handle) = (tls.clone(), shared.clone(), handle.clone());
         connections.spawn(async move {
-            let stream: Box<dyn Stream> = match tls {
-                None => Box::new(tcp),
+            let (inner, tls): (Box<dyn Stream>, bool) = match tls {
+                None => (Box::new(tcp), false),
                 Some(tls) => match tls.accept(tcp, ()).await {
-                    Ok((stream, ())) => Box::new(stream),
+                    Ok((stream, ())) => (Box::new(stream), true),
                     Err(e) => {
                         tracing::trace!(
                             name: "receiver_handshake_failed", target: "sources",
@@ -2955,11 +3108,17 @@ async fn serve_streams<H, F>(
                             error = %e,
                             "a sender's TLS handshake failed"
                         );
+                        offer_closed(&*shared, &remote, true, &format!("TLS handshake failed: {e}"));
                         return;
                     }
                 },
             };
-            let remote = Arc::from(peer.to_string());
+            let stream = Box::new(Tapped {
+                inner,
+                tap: Some(shared.clone() as Arc<dyn RawTap>),
+                remote: remote.clone(),
+                tls,
+            });
             handle(Connection {
                 stream,
                 inlet: Inlet { remote, shared },
@@ -2970,6 +3129,11 @@ async fn serve_streams<H, F>(
 }
 
 /// Whether a sender at `peer` may connect, or send a datagram. An empty list admits any.
+/// Why a sender from `peer` was refused unread, naming it so an administrator can add it to allowFrom.
+fn refused(peer: std::net::IpAddr) -> String {
+    format!("refused: {peer} is not in any of the receiver's allowFrom networks")
+}
+
 pub(super) fn admits(allow_from: &[ipnetwork::IpNetwork], peer: std::net::IpAddr) -> bool {
     allow_from.is_empty() || allow_from.iter().any(|network| network.contains(peer))
 }
@@ -3066,19 +3230,35 @@ fn socket(listen: Listen) -> std::io::Result<socket2::Socket> {
 /// `[::]` is every address of the host, so it is bound dual-stack, taking IPv4 senders as well; on a host without
 /// IPv6, it binds `0.0.0.0` instead.
 pub(crate) fn bind(listen: Listen) -> std::io::Result<socket2::Socket> {
+    bind_reusing(listen, cfg!(unix))
+}
+
+/// Binds `listen` without `SO_REUSEADDR`, so no socket shares it: a UDP port another socket holds is refused rather
+/// than split between the two, as a TCP port that is listened on already is.
+fn bind_alone(listen: Listen) -> std::io::Result<socket2::Socket> {
+    bind_reusing(listen, false)
+}
+
+fn bind_reusing(listen: Listen, reuse: bool) -> std::io::Result<socket2::Socket> {
     let address = listen.address;
     let every_v6 = address.ip() == std::net::Ipv6Addr::UNSPECIFIED;
-    match bind_one(listen.transport, address, every_v6) {
+    match bind_one(listen.transport, address, every_v6, reuse) {
         Err(e) if every_v6 && no_ipv6(&e) => bind_one(
             listen.transport,
             SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), address.port()),
             false,
+            reuse,
         ),
         bound => bound,
     }
 }
 
-fn bind_one(transport: Transport, address: SocketAddr, dual_stack: bool) -> std::io::Result<socket2::Socket> {
+fn bind_one(
+    transport: Transport,
+    address: SocketAddr,
+    dual_stack: bool,
+    reuse: bool,
+) -> std::io::Result<socket2::Socket> {
     let protocol = match transport {
         Transport::Tcp => socket2::Protocol::TCP,
         Transport::Udp => socket2::Protocol::UDP,
@@ -3088,8 +3268,9 @@ fn bind_one(transport: Transport, address: SocketAddr, dual_stack: bool) -> std:
         socket_type(transport),
         Some(protocol),
     )?;
-    #[cfg(unix)]
-    socket.set_reuse_address(true)?;
+    if reuse {
+        socket.set_reuse_address(true)?;
+    }
     if dual_stack {
         socket.set_only_v6(false)?;
     }
@@ -3178,6 +3359,16 @@ impl Sockets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allow_from_admits_only_its_networks() {
+        let allow: Vec<ipnetwork::IpNetwork> = vec!["10.0.0.0/8".parse().unwrap(), "fd00::/8".parse().unwrap()];
+        assert!(admits(&allow, "10.1.2.3".parse().unwrap()));
+        assert!(admits(&allow, "fd00::1".parse().unwrap()));
+        assert!(!admits(&allow, "192.168.1.1".parse().unwrap()));
+        assert!(!admits(&allow, "::1".parse().unwrap()));
+        assert!(admits(&[], "192.168.1.1".parse().unwrap()));
+    }
 
     impl Queued {
         /// The bytes of a record sent as bytes.

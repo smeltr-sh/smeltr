@@ -69,6 +69,9 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Envelope<Star
             "only a Kafka or Event Hubs source's capture takes a start",
         ));
     }
+    if let Some(why) = not_as_sent(&request) {
+        return Envelope::refused(Refusal::invalid(why));
+    }
     // What the fleet ran when it opened, for a sample saved from it to record. A capture is no less worth taking for a
     // leader that cannot read its own history, so a failed read records none.
     let repo = smeltr::leader::git::repo_path(&state.data_dir);
@@ -489,6 +492,52 @@ fn savable(captures: &Captures, access: &Access, session: &str) -> Result<Captur
     Ok(status)
 }
 
+/// What `status`, the capture `session`, holds, as a sample of it holds it: its columns, and its records with how it
+/// was taken on each, as its `__source` fields are.
+fn held_records(
+    captures: &Captures,
+    session: &str,
+    status: &CaptureStatus,
+) -> (Vec<smeltr::heartbeat::CaptureColumn>, Vec<smeltr::io::RecordObject>) {
+    let mut columns = sample_columns(&status.batches);
+    let mut records: Vec<smeltr::io::RecordObject> = status.batches.iter().flat_map(sample_records).collect();
+    for (column, value) in captures.capture_fields(session) {
+        for record in &mut records {
+            put_path(record, &column.name, value.clone());
+        }
+        columns.push(column);
+    }
+    (columns, records)
+}
+
+/// A finished capture's records as a file to keep or send on: one JSON record a line, each as a sample of it holds
+/// it. The session stays, to be saved or discarded after.
+pub async fn download_capture(
+    State(state): State<AppState>,
+    Extension(access): Extension<Access>,
+    AxPath(session): AxPath<String>,
+) -> Response {
+    let status = match savable(&state.captures, &access, &session) {
+        Ok(status) => status,
+        Err(e) => return Envelope::<()>::refused(e).into_response(),
+    };
+    let (_, records) = held_records(&state.captures, &session, &status);
+    let mut body = Vec::new();
+    for record in &records {
+        serde_json::to_writer(&mut body, record).expect("a record object serializes");
+        body.push(b'\n');
+    }
+    let disposition = format!("attachment; filename=\"capture-{session}.ndjson\"");
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "application/x-ndjson".to_string()),
+            (axum::http::header::CONTENT_DISPOSITION, disposition),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 /// Save a finished capture as a sample, and forget the session.
 ///
 /// This is the seam the whole design turns on: a capture ends at a sample file, exactly as a paste does, and nothing
@@ -515,15 +564,7 @@ pub async fn save_capture(
             ));
         }
     };
-    let mut columns = sample_columns(&status.batches);
-    let mut records: Vec<smeltr::io::RecordObject> = status.batches.iter().flat_map(sample_records).collect();
-    // How it was taken, on every record as its `__source` fields are.
-    for (column, value) in state.captures.capture_fields(&session) {
-        for record in &mut records {
-            put_path(record, &column.name, value.clone());
-        }
-        columns.push(column);
-    }
+    let (columns, records) = held_records(&state.captures, &session, &status);
     let sample = config_file::SampleDto {
         id: request.sample_id(),
         name: request.name,
@@ -604,6 +645,22 @@ fn discard(captures: &Captures, access: &Access, session: &str) -> bool {
     followed(captures, access, session) && captures.close(session).is_some()
 }
 
+/// Why `request` cannot be captured as sent, where it asks to be.
+fn not_as_sent(request: &CaptureRequest) -> Option<&'static str> {
+    if !request.raw {
+        return None;
+    }
+    if !request
+        .source
+        .as_ref()
+        .is_some_and(|s| s.kind.receiver_port().is_some())
+    {
+        return Some("only a receiver is captured as sent");
+    }
+    // What it keeps arrives before there is a record for a filter to read.
+    request.filter.is_some().then_some("a capture as sent takes no filter")
+}
+
 /// Whether whatever `request` captures has a position to start from, where it names a start. Anywhere else a start
 /// would be read by nothing.
 fn takes_its_start(request: &CaptureRequest) -> bool {
@@ -638,6 +695,38 @@ mod tests {
         assert!(!takes_its_start(&ask(
             serde_json::json!({"group":"g","destination":"es","start":earliest})
         )));
+    }
+
+    /// Only a receiver has bytes before records, and a filter reads a record, so a capture as sent is of a receiver and
+    /// takes no filter.
+    #[test]
+    fn only_a_receiver_is_captured_as_sent_and_without_a_filter() {
+        let ask = |json: serde_json::Value| -> CaptureRequest { serde_json::from_value(json).unwrap() };
+        let syslog = serde_json::json!({"id":"s","type":"syslogReceiver","port":1514,"allowFrom":["10.0.0.0/8"]});
+        let metrics = serde_json::json!({"id":"s","type":"metrics","bucketSeconds":5});
+
+        assert_eq!(
+            not_as_sent(&ask(serde_json::json!({"group":"g","source":syslog,"raw":true}))),
+            None
+        );
+        assert_eq!(
+            not_as_sent(&ask(serde_json::json!({"group":"g","source":metrics}))),
+            None
+        );
+        assert_eq!(
+            not_as_sent(&ask(serde_json::json!({"group":"g","source":metrics,"raw":true}))),
+            Some("only a receiver is captured as sent")
+        );
+        assert_eq!(
+            not_as_sent(&ask(serde_json::json!({"group":"g","destination":"es","raw":true}))),
+            Some("only a receiver is captured as sent")
+        );
+        assert_eq!(
+            not_as_sent(&ask(
+                serde_json::json!({"group":"g","source":syslog,"raw":true,"filter":"true"})
+            )),
+            Some("a capture as sent takes no filter")
+        );
     }
 
     /// The mechanism a leaked allocation address stood in for: many calls in a tight loop must not repeat.

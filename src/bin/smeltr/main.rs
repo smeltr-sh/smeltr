@@ -1163,6 +1163,7 @@ async fn setup_leader(
             get(capture_api::capture_status).delete(capture_api::discard_capture),
         )
         .route("/api/captures/:session/stop", post(capture_api::stop_capture))
+        .route("/api/captures/:session/download", get(capture_api::download_capture))
         // Not on `app` below with the rest of the worker-groups routes: both need `State<AppState>` -- the listing
         // for `shared`'s hue, the create for a new group's -- the same reason `get_map` is here. `deploy_change`
         // asks the store whether a remote owns `main`.

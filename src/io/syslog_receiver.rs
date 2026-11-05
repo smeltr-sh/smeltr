@@ -29,7 +29,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use super::line_breaker::{BREAK_SLACK, LineBreaker, Searched};
-use super::receiver::{Closed, Connection, Counted, Cutter, Held, INBOX_BYTES, STREAM_STEP, admits};
+use super::receiver::{Closed, Connection, Counted, Cutter, Held, INBOX_BYTES, STREAM_STEP};
 use crate::plan::topology::SyslogReceiverConfig;
 
 /// How much one read of the socket takes.
@@ -467,8 +467,6 @@ impl From<Closed> for End {
 
 /// What a connection does that a syslog receiver serves.
 pub(super) struct Handler {
-    /// The networks a datagram may come from. Empty admits any.
-    allow_from: Vec<ipnetwork::IpNetwork>,
     /// The largest message.
     max_message_bytes: usize,
     /// Where a non-transparent message ends, when not at a newline.
@@ -482,7 +480,6 @@ pub(super) struct Handler {
 impl Handler {
     pub(super) fn new(config: &SyslogReceiverConfig, max_message_bytes: usize) -> Handler {
         Handler {
-            allow_from: config.allow_from.clone(),
             max_message_bytes,
             line_breaker: config.line_breaker.clone(),
             quiet: QUIET,
@@ -522,17 +519,8 @@ impl Handler {
     }
 
     /// The message one datagram holds (RFC 5426), its trailing newline dropped where a sender adds one, and truncated
-    /// to the largest message (RFC 5424, 6.1). `None` for a datagram from a sender this receiver does not admit, or
-    /// an empty one.
+    /// to the largest message (RFC 5424, 6.1). `None` for an empty one.
     pub(super) fn datagram(&self, datagram: &[u8], peer: IpAddr) -> Option<Cutter> {
-        if !admits(&self.allow_from, peer) {
-            tracing::trace!(
-                name: "refused", target: "sources",
-                subject = %peer,
-                "a datagram is dropped: its address is in none of the receiver's allowFrom networks"
-            );
-            return None;
-        }
         let message = datagram.strip_suffix(b"\n").unwrap_or(datagram);
         let mut message = message.strip_suffix(b"\r").unwrap_or(message);
         if message.len() > self.max_message_bytes {
@@ -657,12 +645,8 @@ mod tests {
         messages.map(|m| String::from_utf8(m).unwrap()).collect()
     }
 
-    fn handler(allow_from: &[&str]) -> Handler {
-        let config = SyslogReceiverConfig {
-            allow_from: allow_from.iter().map(|n| n.parse().unwrap()).collect(),
-            ..Default::default()
-        };
-        Handler::new(&config, MAX)
+    fn handler() -> Handler {
+        Handler::new(&SyslogReceiverConfig::default(), MAX)
     }
 
     /// What `serve`'s read loop admits from a connection that sends `sent` and hangs up, one entry per admission,
@@ -672,7 +656,7 @@ mod tests {
         sender.write_all(sent).await.unwrap();
         drop(sender);
         let mut admitted = Vec::new();
-        let ended = (handler(&[]))
+        let ended = (handler())
             .read(
                 receiver,
                 "127.0.0.1",
@@ -933,19 +917,9 @@ mod tests {
         assert_eq!((cut, finished, partial), (vec!["<13>a".into()], vec![], 0));
     }
 
-    #[test]
-    fn allow_from_admits_only_its_networks() {
-        let allow: Vec<ipnetwork::IpNetwork> = vec!["10.0.0.0/8".parse().unwrap(), "fd00::/8".parse().unwrap()];
-        assert!(admits(&allow, "10.1.2.3".parse().unwrap()));
-        assert!(admits(&allow, "fd00::1".parse().unwrap()));
-        assert!(!admits(&allow, "192.168.1.1".parse().unwrap()));
-        assert!(!admits(&allow, "::1".parse().unwrap()));
-        assert!(admits(&[], "192.168.1.1".parse().unwrap()));
-    }
-
     /// The message `datagram` holds from a loopback sender, or `None` where the handler refuses it.
-    fn datagram(allow_from: &[&str], datagram: &[u8]) -> Option<Vec<String>> {
-        match handler(allow_from).datagram(datagram, "127.0.0.1".parse().unwrap())? {
+    fn datagram(datagram: &[u8]) -> Option<Vec<String>> {
+        match handler().datagram(datagram, "127.0.0.1".parse().unwrap())? {
             Cutter::Messages(messages) => Some(strings(messages)),
             _ => panic!("a syslog datagram is cut into messages"),
         }
@@ -953,41 +927,34 @@ mod tests {
 
     #[test]
     fn a_datagram_drops_one_trailing_newline() {
-        assert_eq!(datagram(&[], b"<13>a"), Some(vec!["<13>a".into()]));
-        assert_eq!(datagram(&[], b"<13>a\n"), Some(vec!["<13>a".into()]));
-        assert_eq!(datagram(&[], b"<13>a\r\n"), Some(vec!["<13>a".into()]));
+        assert_eq!(datagram(b"<13>a"), Some(vec!["<13>a".into()]));
+        assert_eq!(datagram(b"<13>a\n"), Some(vec!["<13>a".into()]));
+        assert_eq!(datagram(b"<13>a\r\n"), Some(vec!["<13>a".into()]));
         // Only the one a sender ends its message with: what comes before it is the message's own.
-        assert_eq!(datagram(&[], b"<13>a\n\n"), Some(vec!["<13>a\n".into()]));
-        assert_eq!(datagram(&[], b"<13>a\nb\r"), Some(vec!["<13>a\nb".into()]));
+        assert_eq!(datagram(b"<13>a\n\n"), Some(vec!["<13>a\n".into()]));
+        assert_eq!(datagram(b"<13>a\nb\r"), Some(vec!["<13>a\nb".into()]));
     }
 
     #[test]
     fn an_empty_datagram_is_refused() {
-        assert_eq!(datagram(&[], b""), None);
-        assert_eq!(datagram(&[], b"\n"), None);
-        assert_eq!(datagram(&[], b"\r\n"), None);
+        assert_eq!(datagram(b""), None);
+        assert_eq!(datagram(b"\n"), None);
+        assert_eq!(datagram(b"\r\n"), None);
     }
 
     #[test]
-    fn a_datagram_from_elsewhere_is_refused_and_one_over_the_largest_message_truncated() {
-        assert_eq!(datagram(&["10.0.0.0/8"], b"<13>a"), None);
-        assert_eq!(
-            datagram(&["127.0.0.1"], run('a', MAX).as_bytes()),
-            Some(vec![run('a', MAX)])
-        );
+    fn a_datagram_over_the_largest_message_is_truncated() {
+        assert_eq!(datagram(run('a', MAX).as_bytes()), Some(vec![run('a', MAX)]));
         // The largest message keeps its line end, which is not counted, and is not truncated.
         for end in ["\n", "\r\n"] {
             assert_eq!(
-                datagram(&["127.0.0.1"], format!("{}{end}", run('a', MAX)).as_bytes()),
+                datagram(format!("{}{end}", run('a', MAX)).as_bytes()),
                 Some(vec![run('a', MAX)])
             );
         }
         // Its newline was cut off with the rest, so what it keeps is all message.
         let over = format!("{}\n", run('a', MAX - 1));
-        assert_eq!(
-            datagram(&["127.0.0.1"], format!("{over}b").as_bytes()),
-            Some(vec![over])
-        );
+        assert_eq!(datagram(format!("{over}b").as_bytes()), Some(vec![over]));
     }
 
     #[tokio::test]
@@ -1015,7 +982,7 @@ mod tests {
     async fn a_closed_receiver_ends_the_connection() {
         let (mut sender, receiver) = tokio::io::duplex(1024);
         sender.write_all(b"<13>a\n").await.unwrap();
-        let ended = handler(&[])
+        let ended = handler()
             .read(receiver, "127.0.0.1", |_, _| async { Err(Closed) }, &mut Held::alone())
             .await;
         assert_eq!(ended, End::Stopping);
@@ -1026,7 +993,7 @@ mod tests {
         let (mut sender, receiver) = tokio::io::duplex(1024);
         // The NUL ends the first message as it arrives; nothing but the quiet ends the second.
         sender.write_all(b"<13>a\x00<13>b").await.unwrap();
-        let mut handler = handler(&[]);
+        let mut handler = handler();
         handler.line_breaker = Some(line_breaker(r"(\x00)"));
         handler.quiet = Duration::from_millis(20);
         let mut admitted = Vec::new();

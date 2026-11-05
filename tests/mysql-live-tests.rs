@@ -913,8 +913,9 @@ fn run_describes_the_query_and_reads_before_any_field_is_declared() {
                 "query": format!("SELECT id, name FROM {table}"), "mode": mode, "fields": fields
             }))
             .unwrap();
-            let captures = smeltr::worker::capture::Captures::default();
+            let captures = std::sync::Arc::new(smeltr::worker::capture::Captures::default());
             let admitted = captures.admit(&[smeltr::heartbeat::CaptureInvitation {
+                raw: false,
                 session: "s1".to_string(),
                 group: "g".to_string(),
                 source: Some(source),
