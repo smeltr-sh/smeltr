@@ -266,7 +266,7 @@
    * matching it against a worker's copy is checking the ends; the whole of it is copied. */
   function short(fingerprint: string): string {
     const shown = shownFingerprint(fingerprint);
-    return `${shown.slice(0, 20)}…${shown.slice(-8)}`;
+    return `${shown.slice(0, 19)}…${shown.slice(-8)}`;
   }
 
   /** What to say once a source change landed: served at once under the root in force, or published to the

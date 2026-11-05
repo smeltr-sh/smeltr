@@ -117,7 +117,7 @@
       <span class="sep">&middot;</span>
       <span>{expiry(cert.notAfterMillis)}</span>
       <span class="sep">&middot;</span>
-      <span class="mono">{shownFingerprint(cert.fingerprint).slice(0, 20)}&hellip;</span>
+      <span class="mono">{shownFingerprint(cert.fingerprint).slice(0, 19)}&hellip;</span>
     </p>
   {/each}
 {/if}
