@@ -817,11 +817,13 @@ export function stackNodes(
   return { cards: cards.concat(stacks), edges: [...lines.values()] };
 }
 
-/** The longest start `a` and `b` share, empty if they start differently. */
+/** The longest start `a` and `b` share, ignoring case as the name sort does, spelled as `a`
+ * spells it; empty if they start differently. */
 export function namePrefix(a: string, b: string): string {
+  const [x, y] = [[...a], [...b]];
   let i = 0;
-  while (i < a.length && i < b.length && a[i] === b[i]) i++;
-  return a.slice(0, i);
+  while (i < x.length && i < y.length && x[i].toLowerCase() === y[i].toLowerCase()) i++;
+  return x.slice(0, i).join('');
 }
 
 /** What a stack reads: its members' rates summed, and the worst of everything else -- the most

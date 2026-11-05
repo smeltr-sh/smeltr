@@ -1304,6 +1304,8 @@ describe('namePrefix', () => {
     expect(namePrefix('fw-0001', 'fw-0300')).toBe('fw-0');
     expect(namePrefix('fortigate-a', 'fw-1')).toBe('f');
     expect(namePrefix('sales', 'web')).toBe('');
+    expect(namePrefix('FW-1', 'fw-2')).toBe('FW-');
+    expect(namePrefix('a😀b', 'a😁b')).toBe('a');
   });
 });
 
