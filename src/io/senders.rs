@@ -78,7 +78,11 @@ impl Fingerprint {
         let hex: String = hex.chars().filter(|&c| c != ':').collect();
         let digest = (0..hex.len())
             .step_by(2)
-            .map(|i| hex.get(i..i + 2).and_then(|byte| u8::from_str_radix(byte, 16).ok()))
+            .map(|i| {
+                hex.get(i..i + 2)
+                    .filter(|byte| byte.bytes().all(|b| b.is_ascii_hexdigit()))
+            })
+            .map(|byte| byte.and_then(|byte| u8::from_str_radix(byte, 16).ok()))
             .collect::<Option<Vec<u8>>>()
             .ok_or("its hash is not hexadecimal bytes")?;
         let length = hash.algorithm().output_len();
@@ -136,26 +140,21 @@ fn matches(host: &str, named: &str) -> bool {
     }
 }
 
-/// The host names `der` is issued to: its subjectAltName's dNSNames, or, where it has none, its subject's common
-/// name, which RFC 6125 (6.4.4) has a client read only then.
+/// The host names `der` is issued to: its subjectAltName's dNSNames, or, where it has no subjectAltName names at all,
+/// its subject's common name, which RFC 6125 (6.4.4) has a client read only then.
 fn hosts(der: &[u8]) -> Vec<String> {
     let Ok((_, cert)) = x509_parser::parse_x509_certificate(der) else {
         return Vec::new();
     };
-    let dns: Vec<String> = match cert.subject_alternative_name() {
-        Ok(Some(san)) => san
-            .value
-            .general_names
-            .iter()
+    if let Ok(Some(san)) = cert.subject_alternative_name()
+        && !san.value.general_names.is_empty()
+    {
+        return (san.value.general_names.iter())
             .filter_map(|name| match name {
                 x509_parser::extensions::GeneralName::DNSName(n) => Some((*n).to_string()),
                 _ => None,
             })
-            .collect(),
-        _ => Vec::new(),
-    };
-    if !dns.is_empty() {
-        return dns;
+            .collect();
     }
     cert.subject()
         .iter_common_name()
@@ -285,6 +284,7 @@ mod tests {
         assert!(Fingerprint::parse("ABCD").is_err());
         assert!(Fingerprint::parse("sha-1:zz").is_err());
         assert!(Fingerprint::parse("sha-256:é").is_err());
+        assert!(Fingerprint::parse(&format!("sha-1{}", ":+F".repeat(20))).is_err());
     }
 
     #[test]

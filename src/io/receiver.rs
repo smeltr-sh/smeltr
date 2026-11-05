@@ -2707,7 +2707,8 @@ pub(crate) fn serving_tls(
             Ok(roots)
         })
         .transpose()?;
-    let builder = match roots.is_none() && senders.fingerprints.is_empty() {
+    // Names alone admit no one, as no authority can vouch for them; the verifier refuses every sender then.
+    let builder = match roots.is_none() && senders.fingerprints.is_empty() && senders.names.is_empty() {
         true => builder.with_no_client_auth(),
         false => builder.with_client_cert_verifier(
             super::senders::verifier(roots, senders, provider).map_err(|e| (Some("what it trusts"), e))?,

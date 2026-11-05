@@ -4494,8 +4494,8 @@ fn check_records_at(what: &str, records: ApiRecordsDto, records_at: &Option<Stri
 }
 
 /// What a receiver must be before it can listen: a port, an address that is one, a certificate to serve, and someone
-/// it admits. With neither a token nor authorities that vouch for a sender, anyone who can reach the port could
-/// send.
+/// it admits. With no token, authorities or sender fingerprints to admit a sender by, anyone who can reach the port
+/// could send.
 fn check_receiver<T>(
     what: &str,
     listener: &ReceiverSettingsDto,

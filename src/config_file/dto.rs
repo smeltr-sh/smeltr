@@ -71,8 +71,8 @@ impl TlsDto {
 
 /// The TLS a receiver serves: the certificate it serves to every sender, and whom it admits by theirs. It serves TLS
 /// when it names a certificate. Naming authorities or sender fingerprints, it admits only a sender whose certificate
-/// chains to one of the authorities, or is one of the fingerprints' (`io::senders`). A receiver trusts no public root,
-/// so it has no say over them.
+/// is one of the fingerprints', or chains to one of the authorities and, when it names sender names, is issued to one
+/// of them (`io::senders`). A receiver trusts no public root, so it has no say over them.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ServedTlsDto {
