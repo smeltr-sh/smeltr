@@ -1120,9 +1120,10 @@
           <h2>
             Furthest from normal — {selectionLabel}
             <Help label="Furthest from normal"
-              ><b>Normally</b> is the range of rows per second a source reads at this time of day, learned
-              from the last 7 days. When its last half hour falls outside that range, it raises Rows below
-              normal or Rows above normal.</Help
+              ><b>Normally</b> is the range of rows per second a source reads at this time of day,
+              learned from the last 7 days. When its last half hour falls outside that range, it
+              raises Rows below normal or Rows above normal. <b>Away by</b> is how far the last half hour
+              is past the nearest end of that range, as a percent of it.</Help
             >
           </h2>
           {#if flow !== null}<p class="note">{count(normals.length, 'source')}.</p>{/if}

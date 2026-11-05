@@ -133,12 +133,12 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await expect(row).toBeVisible({ timeout: 60_000 });
   await shoot(admin, '2-issue');
 
-  await row.getByRole('button', { name: 'Lower to notice' }).click();
-  await expect(row).toContainText('lowered to a notice by');
-  await expect(row.getByRole('button', { name: 'Lower to notice' })).toHaveCount(0);
+  await row.getByRole('button', { name: 'Lower to info' }).click();
+  await expect(row).toContainText('lowered to info by');
+  await expect(row.getByRole('button', { name: 'Lower to info' })).toHaveCount(0);
   await shoot(admin, '3-lowered');
 
-  await row.getByRole('button', { name: 'New normal' }).click();
+  await row.getByRole('button', { name: 'Learn a new normal' }).click();
   const dialog = admin.getByRole('dialog');
   await expect(dialog).toBeVisible();
   await shoot(admin, '4-new-normal');

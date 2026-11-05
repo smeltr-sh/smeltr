@@ -2252,7 +2252,7 @@ pub fn outside_normal_warnings(
                         )
                     },
                     lowered_by
-                        .map(|by| format!("; lowered to a notice by {by}"))
+                        .map(|by| format!("; lowered to info by {by}"))
                         .unwrap_or_default(),
                 ),
             }
@@ -4656,7 +4656,7 @@ mod tests {
         let lowered = at(NOW - 60_000);
         assert_eq!(lowered.severity, Severity::Info);
         assert!(
-            lowered.message.ends_with("lowered to a notice by John"),
+            lowered.message.ends_with("lowered to info by John"),
             "{}",
             lowered.message
         );

@@ -154,7 +154,7 @@ pub async fn lower(
         .write(state, actor, |marks, m, since, actor, _| {
             let Some(since) = since else {
                 return Err(Refusal::not_found(format!(
-                    "source {} in {} reads as it normally does, so there is no warning to lower",
+                    "source {} in {} has no warning to lower",
                     m.source, m.group
                 )));
             };
