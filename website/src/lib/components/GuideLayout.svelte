@@ -66,18 +66,6 @@
     color: var(--ink);
     font-size: 0.9em;
   }
-  :global(article pre) {
-    overflow-x: auto;
-    margin: 1.25rem 0;
-    padding: 1rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-card);
-    background: var(--panel);
-  }
-  :global(article pre code) {
-    padding: 0;
-    background: none;
-  }
   :global(.eyebrow) {
     margin: 0;
     color: var(--dim);
