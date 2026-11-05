@@ -214,6 +214,15 @@ export function cardWidth(room: number): number {
   return Math.max(MIN_NODE_W, Math.min(NODE_W, fit));
 }
 
+/** Name order, as a column draws it: by name, then id, then group, so no two objects tie. */
+function byName(a: MapNode, b: MapNode): number {
+  return (
+    a.name.localeCompare(b.name) ||
+    a.authorId.localeCompare(b.authorId) ||
+    a.group.localeCompare(b.group)
+  );
+}
+
 /** Each kind in its own column. Sources are ordered by name; a pipeline then sits at the mean
  * row of the cards it connects to, and a destination at the mean row of its pipelines, so lines
  * run level rather than cross. Every step starts from name order and breaks ties by the order
@@ -228,14 +237,7 @@ export function layout(
 ): Layout {
   const byKind: Record<MapNodeKind, MapCard[]> = { source: [], pipeline: [], destination: [] };
   for (const n of nodes) byKind[n.kind].push(n);
-  for (const k of COLUMNS) {
-    byKind[k].sort(
-      (a, b) =>
-        a.name.localeCompare(b.name) ||
-        a.authorId.localeCompare(b.authorId) ||
-        a.group.localeCompare(b.group),
-    );
-  }
+  for (const k of COLUMNS) byKind[k].sort(byName);
   orderByLines(byKind, edges);
 
   const positions: Positioned[] = [];
@@ -782,10 +784,7 @@ export function stackNodes(
     stacks.push(card);
   };
   for (const column of columns.values()) {
-    column.sort(
-      (a, b) =>
-        a.node.name.localeCompare(b.node.name) || a.node.authorId.localeCompare(b.node.authorId),
-    );
+    column.sort((a, b) => byName(a.node, b.node));
     let run: MapNode[] = [];
     let on: string | null = null;
     let prefix = '';
