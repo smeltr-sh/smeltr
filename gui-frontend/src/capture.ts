@@ -22,6 +22,14 @@ export function heldCount(status: CaptureStatus): number {
   return status.batches.reduce((n, b) => n + b.rows.length, 0);
 }
 
+/** Whether any record holds what a sender wrote: a capture as sent keeps a refused sender with no `_raw`. */
+export function heldBytes(status: CaptureStatus): boolean {
+  return status.batches.some((b) => {
+    const raw = b.columns.findIndex((c) => c.name === '_raw');
+    return raw >= 0 && b.rows.some((r) => r.values[raw] !== null && r.values[raw] !== undefined);
+  });
+}
+
 /** Every worker the capture knows of, in the leader's order. The leader never
  * drops one, so a chosen chip stays on screen. */
 export function workerChips(status: CaptureStatus): WorkerChip[] {

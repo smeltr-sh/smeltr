@@ -19,6 +19,7 @@
     cellText,
     filledColumns,
     firstRows,
+    heldBytes,
     heldCount,
     progressText,
     shownRecords,
@@ -76,6 +77,8 @@
   let chips = $derived(status ? workerChips(status) : []);
   let shown = $derived(status ? shownRecords(status, only) : []);
   let held = $derived(status ? heldCount(status) : 0);
+  /** Whether a capture as sent kept any sender's bytes, which the dialog warns of. */
+  let bytes = $derived(status ? heldBytes(status) : false);
   /** How many rows the tables show in all; a button shows the rest. */
   const ROWS = 8;
   let shownRows = $derived(shown.reduce((n, b) => n + b.rows.length, 0));
@@ -210,7 +213,7 @@
         </p>
       {/if}
 
-      {#if done && raw && held > 0}
+      {#if done && raw && bytes}
         <p class="critical">
           These are the exact bytes senders wrote, so they may hold passwords or tokens. Check them
           before you save or share them.

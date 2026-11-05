@@ -6,6 +6,7 @@ import {
   filledColumns,
   filterHelp,
   firstRows,
+  heldBytes,
   heldCount,
   progressText,
   settled,
@@ -88,6 +89,15 @@ describe('heldCount', () => {
   it('counts rows across every batch', () => {
     expect(heldCount(status())).toBe(3);
     expect(heldCount(status({ batches: [] }))).toBe(0);
+  });
+});
+
+describe('heldBytes', () => {
+  it('is whether any record has its _raw, which a refused sender has not', () => {
+    expect(heldBytes(status())).toBe(true);
+    const refused = { worker: 'w-a', values: [null, 't'], failed: [] };
+    expect(heldBytes(status({ batches: [{ columns, rows: [refused] }] }))).toBe(false);
+    expect(heldBytes(status({ batches: [] }))).toBe(false);
   });
 });
 
