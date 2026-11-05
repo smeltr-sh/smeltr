@@ -385,7 +385,7 @@
           value={source.fixedBytes ?? ''}
           oninput={(e) => {
             const n = numberOrUnset(e.currentTarget);
-            if (n !== undefined && n >= 1) source.fixedBytes = Math.round(n);
+            source.fixedBytes = n !== undefined && n >= 1 ? Math.round(n) : undefined;
           }}
         />
       </Field>
