@@ -133,14 +133,17 @@ pub const BUILTINS: &[(&str, &str)] = &[
         ),
     ),
     // A Cisco ASA or Firepower Threat Defense line: the header every message ID shares, the body left whole. The
-    // device writes a timestamp, with a year or without, and a device ID only where it is set to, and a relay may put
-    // its own date and host ahead of `%ASA`. A device ID ends before a `:`, which an IPv6 one may also hold.
+    // device writes a timestamp, with a year or without and with a time zone or without, and a device ID only where it
+    // is set to. A relay may put its own date and host ahead of all that, which is left out: the line's own are the
+    // device's. The relay's part is lazy, so a line with one date and host takes them as the device's. A time zone is
+    // followed by `:` and a device ID by a space, which is how `UTC:` and `ASA :` tell apart.
     (
         "CISCOASALINE",
         concat!(
             r"(?:<(?P<log.syslog.priority>[0-9]{1,3})>)?",
-            r"(?:(?P<timestamp>%{MONTH} +%{MONTHDAY}(?: [0-9]{4})? %{TIME}|%{TIMESTAMP_ISO8601}):? )?",
-            r"(?:(?P<host.hostname>\S*[^\s:]) ?)?(?:: )?",
+            r"(?:(?:%{SYSLOGTIMESTAMP}|%{TIMESTAMP_ISO8601}) \S+ )??",
+            r"(?:(?P<timestamp>%{MONTH} +%{MONTHDAY}(?: [0-9]{4})? %{TIME}(?: [A-Z]{2,5})?|%{TIMESTAMP_ISO8601}):? )?",
+            r"(?:(?P<host.hostname>[^\s:]\S*?):? (?:: )?)?",
             r"%(?:ASA|FTD)-(?P<log.syslog.severity.code>[0-7])-(?P<event.code>[0-9]{6}): %{GREEDYDATA:message}",
         ),
     ),
@@ -584,6 +587,36 @@ mod tests {
                 "CISCOASALINE",
                 "<166>fw-01 : %ASA-4-106023: Deny tcp",
                 &[("timestamp", None), ("host.hostname", Some("fw-01"))],
+            ),
+            (
+                "CISCOASALINE",
+                "<166>Oct 15 2026 00:31:02 UTC: %ASA-4-106023: Deny tcp",
+                &[("timestamp", Some("Oct 15 2026 00:31:02 UTC")), ("host.hostname", None)],
+            ),
+            (
+                "CISCOASALINE",
+                "Oct 15 2026 00:31:02 ASA : %ASA-4-106023: Deny tcp",
+                &[
+                    ("timestamp", Some("Oct 15 2026 00:31:02")),
+                    ("host.hostname", Some("ASA")),
+                ],
+            ),
+            (
+                "CISCOASALINE",
+                "Oct 15 00:31:05 10.0.0.1 Oct 15 2026 00:31:02 CEST: %ASA-4-106023: Deny tcp",
+                &[
+                    ("timestamp", Some("Oct 15 2026 00:31:02 CEST")),
+                    ("host.hostname", None),
+                ],
+            ),
+            (
+                "CISCOASALINE",
+                "<166>2026-10-15T00:31:05Z relay-1 Oct 15 2026 00:31:02 fw-01 : %ASA-4-106023: Deny tcp",
+                &[
+                    ("log.syslog.priority", Some("166")),
+                    ("timestamp", Some("Oct 15 2026 00:31:02")),
+                    ("host.hostname", Some("fw-01")),
+                ],
             ),
             (
                 "COMMONAPACHELOG",
@@ -1099,6 +1132,8 @@ mod tests {
                 "Oct 15 2026 00:31:02 fw-01 : %ASA-6-302013: Built",
                 "Oct  5 00:31:02.250 fw-01: %FTD-6-430003: Built",
                 "2026-10-15T00:31:02+02:00 fw-01 %ASA-6-302013: Built",
+                "Oct 15 2026 00:31:02 EST: %ASA-6-302013: Built",
+                "Oct 15 00:31:05 relay Oct 15 2026 00:31:02 fw-01 : %ASA-6-302013: Built",
             ],
             &[
                 "",

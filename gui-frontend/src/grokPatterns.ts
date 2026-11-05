@@ -275,7 +275,7 @@ export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
       '<166>Oct 15 2026 00:31:02 fw-01 : %ASA-6-302013: Built inbound TCP connection 1 for outside:10.0.0.1/443',
     ],
     ['%ASA-6-302013 Built'],
-    '(?:<(?P<log.syslog.priority>[0-9]{1,3})>)?(?:(?P<timestamp>%{MONTH} +%{MONTHDAY}(?: [0-9]{4})? %{TIME}|%{TIMESTAMP_ISO8601}):? )?(?:(?P<host.hostname>\\S*[^\\s:]) ?)?(?:: )?%(?:ASA|FTD)-(?P<log.syslog.severity.code>[0-7])-(?P<event.code>[0-9]{6}): %{GREEDYDATA:message}',
+    '(?:<(?P<log.syslog.priority>[0-9]{1,3})>)?(?:(?:%{SYSLOGTIMESTAMP}|%{TIMESTAMP_ISO8601}) \\S+ )??(?:(?P<timestamp>%{MONTH} +%{MONTHDAY}(?: [0-9]{4})? %{TIME}(?: [A-Z]{2,5})?|%{TIMESTAMP_ISO8601}):? )?(?:(?P<host.hostname>[^\\s:]\\S*?):? (?:: )?)?%(?:ASA|FTD)-(?P<log.syslog.severity.code>[0-7])-(?P<event.code>[0-9]{6}): %{GREEDYDATA:message}',
   ),
   builtin(
     'COMMONAPACHELOG',
