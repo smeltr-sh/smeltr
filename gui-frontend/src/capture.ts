@@ -106,6 +106,8 @@ export interface CaptureAsk {
   deadlineSecs: number;
   /** Where a stream source's capture starts. Absent, it reads from the latest. */
   start?: StartPosition;
+  /** A receiver captured as sent, which takes no filter. */
+  raw?: boolean;
 }
 
 /** The request that starts a capture. An empty filter is left out: it keeps everything. */
@@ -113,7 +115,7 @@ export function captureRequest(
   target: CaptureTarget,
   ask: CaptureAsk,
 ): Parameters<typeof startCapture>[0] {
-  const filter = ask.filter.trim() || undefined;
+  const filter = (!ask.raw && ask.filter.trim()) || undefined;
   const bounds = { maxMatches: ask.maxMatches, deadlineSecs: ask.deadlineSecs };
   if ('destination' in target)
     return { group: ask.group, destination: target.destination, filter, ...bounds };
@@ -122,6 +124,7 @@ export function captureRequest(
     source: target.source,
     filter,
     start: ask.start,
+    ...(ask.raw ? { raw: true } : {}),
     ...bounds,
   };
 }

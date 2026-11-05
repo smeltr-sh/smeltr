@@ -2195,6 +2195,7 @@ fn receiver_config<'a>(
         max_request_bytes: usize::try_from(listener.max_request_bytes.0.max(MaxRequestBytes::FLOOR))
             .unwrap_or(usize::MAX),
         answer_after_delivery,
+        connections: Default::default(),
     })
 }
 

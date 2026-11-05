@@ -179,6 +179,17 @@ describe('captureRequest', () => {
     });
   });
 
+  it('captures a receiver as sent with no filter, since there is no record yet to read', () => {
+    const source = { id: 'sys', type: 'syslogReceiver', port: 1514 } as SourceDto;
+    expect(captureRequest({ source }, { ...ask, raw: true })).toEqual({
+      group: 'east',
+      source,
+      raw: true,
+      maxMatches: 50,
+      deadlineSecs: 20,
+    });
+  });
+
   it('carries a source as the form has it', () => {
     const source = { id: 'm', type: 'metrics' } as SourceDto;
     expect(captureRequest({ source }, ask)).toEqual({

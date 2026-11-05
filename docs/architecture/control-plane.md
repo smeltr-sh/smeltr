@@ -264,7 +264,13 @@ starts where it asks, at the latest unless it names another start; one that
 names another start reads the source itself on every worker, a worker whose
 deployment already reads the source included. For a source, the leader runs the
 transform over them in process, with preview destinations in place of real
-ones. One such request, from invitation to end, is a **capture**. A worker
+ones. A capture of a receiver may take what arrives **as sent** in place of its
+records: each read of a sender's connection, after TLS, and each datagram,
+before the receiver frames any of it, with who sent it, how, and why it closed
+a connection unread. It takes no filter, since there is no record yet to read.
+A worker running the receiver taps it; one that is not listens on its address
+itself, answers nothing, and is refused a port a receiver there holds. One such
+request, from invitation to end, is a **capture**. A worker
 fills its buffer only while the leader still wants the capture from it. A
 credential lent for a capture stays only while the capture is wanted from that
 worker or the worker's answer to it is still owed. What the leader holds for

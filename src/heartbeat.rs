@@ -1008,6 +1008,12 @@ pub struct CaptureInvitation {
     /// since what a deployment taps is only what arrives now. `None` reads from the latest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<crate::config_file::StartPositionDto>,
+    /// The source is a receiver, captured as sent: each read of a sender's connection and each datagram, before the
+    /// receiver frames any of it (`io::raw`), in place of its records. It takes no filter, since a filter reads a
+    /// record. A worker running the receiver taps it; one that is not listens on its address itself and answers
+    /// nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub raw: bool,
     /// Bounds, each holding back a different thing: how many records this worker may return, how much memory its
     /// buffer may hold, and how long it may wait. The first one reached ends the capture here, and an answer that
     /// no longer lists it ends it sooner.
@@ -2490,6 +2496,7 @@ mod tests {
         assert!(direct.contains("kafka-cred") && direct.contains("v4"), "{direct}");
 
         let invitation = CaptureInvitation {
+            raw: false,
             session: "s1".to_string(),
             group: "g".to_string(),
             source: serde_json::from_str(r#"{"id":"probe","type":"metrics","bucketSeconds":5}"#).unwrap(),

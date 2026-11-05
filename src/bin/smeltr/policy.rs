@@ -95,6 +95,7 @@ pub fn need(method: &Method, path: &str) -> Need {
         (Method::POST, ["captures"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["captures", _])
         | (Method::POST, ["captures", _, "stop"])
+        | (Method::GET | Method::HEAD, ["captures", _, "download"])
         | (Method::POST, ["preview", _])
         // Names, versions and where each is used, never a value: what a secret picker offers whoever saves a form.
         | (Method::GET | Method::HEAD, ["secrets"])
@@ -348,6 +349,7 @@ mod tests {
             (Method::POST, "/api/captures"),
             (Method::GET, "/api/captures/c1"),
             (Method::POST, "/api/captures/c1/stop"),
+            (Method::GET, "/api/captures/c1/download"),
             (Method::DELETE, "/api/captures/c1"),
             (Method::POST, "/api/preview/grok"),
             (Method::POST, "/api/preview/onboard"),

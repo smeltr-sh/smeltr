@@ -57,6 +57,7 @@ fn open(
         tls,
         max_request_bytes: max,
         answer_after_delivery: false,
+        connections: Default::default(),
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());

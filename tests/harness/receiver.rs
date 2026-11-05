@@ -213,6 +213,7 @@ pub fn build(
         tls,
         max_request_bytes,
         answer_after_delivery: true,
+        connections: Default::default(),
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());

@@ -602,6 +602,77 @@ test('A1: a capture of a Kafka source starts where it is asked to', async ({
   expect((await sent).postDataJSON().start).toEqual({ type: 'earliest' });
 });
 
+// A1, a receiver that makes no records of what its senders send: a capture as sent keeps what they wrote, before any
+// framing, from a worker that listens on the receiver's port itself, warns that it may hold secrets, and downloads.
+test('A1: a receiver is captured as sent, warned of, and downloaded', async ({
+  admin,
+  leader,
+  api,
+  fleet,
+}) => {
+  const port = await freePort();
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'firewall', type: 'syslogReceiver', port, allowFrom: ['127.0.0.1'] },
+  ]);
+  await fleet.startWorker(leader, api, 'default', 'w1');
+
+  await goto(admin, leader, '#/build');
+  await admin.getByRole('button', { name: 'Add sample' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Capture' }).click();
+  await expect(dialog.getByRole('combobox', { name: /^Capture target/ })).toHaveValue(
+    'source:firewall',
+  );
+  await dialog.getByRole('button', { name: /Advanced/ }).click();
+  await dialog.getByRole('switch', { name: 'Capture as sent' }).check();
+  await expect(dialog.getByLabel(/^Keep records where/)).toBeHidden();
+  await dialog.getByLabel('records').fill('3');
+  await dialog.getByRole('button', { name: 'Start', exact: true }).click();
+
+  // What a sender wrote reaches the capture however little of it frames as syslog.
+  const capture = admin.getByRole('dialog', { name: /Save the capture/ });
+  const sent = 'not syslog at all\0';
+  const deadline = Date.now() + 60_000;
+  while (!(await capture.isVisible())) {
+    expect(Date.now(), 'the capture never filled').toBeLessThan(deadline);
+    await send(port, sent).catch(() => {});
+    await admin.waitForTimeout(250);
+  }
+  await expect(capture.getByText(/3\s*of 3/)).toBeVisible();
+  await expect(capture.getByText(/may hold passwords or tokens/)).toBeVisible();
+
+  const download = capture.getByRole('link', { name: 'Download' });
+  const href = await download.getAttribute('href');
+  const lines = (await (await admin.request.get(new URL(href!, leader.url).toString())).text())
+    .trim()
+    .split('\n')
+    .map((l) => JSON.parse(l));
+  expect(lines).toHaveLength(3);
+  expect(lines[0]._raw).toBe(sent);
+  expect(lines[0].__source.remote).toBe('127.0.0.1');
+  expect(lines[0].__source.transport).toBe('tcp');
+});
+
+/** A TCP port nothing listens on. */
+async function freePort(): Promise<number> {
+  const net = await import('node:net');
+  return new Promise((resolve) => {
+    const server = net.createServer().listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as { port: number };
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+/** Write `text` to `port` on one connection, and close it. */
+async function send(port: number, text: string): Promise<void> {
+  const net = await import('node:net');
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(port, '127.0.0.1', () => socket.end(text, () => resolve()));
+    socket.on('error', reject);
+  });
+}
+
 // A1, at a destination: the same form, wherever it is opened, offers sources and destinations.
 test('A1: a capture from the pipeline page can target a destination', async ({
   admin,
