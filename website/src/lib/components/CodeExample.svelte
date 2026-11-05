@@ -177,7 +177,6 @@
   }
   pre {
     margin: 0;
-    overflow-x: auto;
   }
   pre.record + pre.record {
     margin-top: 0.5rem;
