@@ -195,6 +195,13 @@ impl Framer {
         }
     }
 
+    /// Adds every message held whole to `messages`, as `cut` does, its line breaker searching all it holds however
+    /// little arrived since it last searched: nothing more is coming.
+    fn cut_whole(&mut self, messages: &mut Messages) -> Result<(), Malformed> {
+        self.searched.found();
+        self.cut(messages)
+    }
+
     /// Adds a whole frame's message to `messages` and moves past it. `false` for a partial frame, which stays held.
     fn take(&mut self, frame: Frame, messages: &mut Messages) -> bool {
         let next = match frame {
@@ -569,13 +576,19 @@ impl Handler {
                 false => Some(reading.await),
             };
             let mut messages = Messages::default();
+            let mut broke = false;
             let cut = match read {
                 Some(Ok(0)) => break,
                 Some(Ok(n)) => {
                     framer.push(&buf[..n]);
                     framer.cut(&mut messages)
                 }
-                Some(Err(_)) => return End::Gone { partial: 0 },
+                // The connection broke, as a TLS sender's does that hangs up without a `close_notify`. What is held
+                // whole is the sender's, and what is not is cut short.
+                Some(Err(_)) => {
+                    broke = true;
+                    framer.cut_whole(&mut messages)
+                }
                 // The sender went quiet: nothing more is coming for what is held.
                 None => framer.flush(&mut messages),
             };
@@ -586,9 +599,12 @@ impl Handler {
                     return closed.into();
                 }
             }
-            self.log_truncated(&mut framer, remote, false);
+            self.log_truncated(&mut framer, remote, broke);
             if let Err(malformed) = cut {
                 return End::Malformed(malformed);
+            }
+            if broke {
+                return End::Gone { partial: 0 };
             }
         }
         let mut messages = Messages::default();
@@ -1014,5 +1030,47 @@ mod tests {
         assert_eq!(ended, End::Stopping);
         assert_eq!(admitted, vec![vec!["<13>a".to_string()], vec!["<13>b".to_string()]]);
         drop(sender);
+    }
+
+    /// Reads its chunks, one a read, then fails, as a connection that breaks.
+    struct Breaks(std::collections::VecDeque<Vec<u8>>);
+
+    impl AsyncRead for Breaks {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(match self.0.pop_front() {
+                Some(chunk) => {
+                    buf.put_slice(&chunk);
+                    Ok(())
+                }
+                None => Err(std::io::ErrorKind::UnexpectedEof.into()),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_broken_connection_keeps_what_its_line_breaker_holds_whole() {
+        let mut handler = Handler::new(&SyslogReceiverConfig::default(), 1024);
+        handler.line_breaker = Some(line_breaker(r"(\x00)"));
+        // The second read is too little beside the first for the line breaker to search again as it arrives.
+        let long = format!("<13>a{}", run('x', 900));
+        let mut admitted = Vec::new();
+        let ended = handler
+            .read(
+                Breaks([long.clone().into_bytes(), b"\x00<13>b".to_vec()].into()),
+                "127.0.0.1",
+                |messages: Messages, _| {
+                    admitted.extend(strings(messages));
+                    async { Ok(()) }
+                },
+                &mut Held::alone(),
+            )
+            .await;
+        assert_eq!(ended, End::Gone { partial: 0 });
+        // What follows the last break was cut short.
+        assert_eq!(admitted, [long]);
     }
 }
