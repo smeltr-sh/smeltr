@@ -168,17 +168,20 @@ the groups. Its panel says where else it runs, and its pencil opens it in
 ### Stacks
 
 A fleet of hundreds draws a card per kind of thing rather than per thing.
-Sources or destinations of one system that connect to exactly the same
-pipelines are one card, a stack, once there are three of them; two cards read
-fine side by side. Their lines become the stack's, so a stack's path is
+Sources or destinations that sit together in name order, are of one system,
+connect to exactly the same pipelines and whose names start alike are one
+card, a stack, once there are three of them; two cards read fine side by
+side. Anything else between them in name order ends the run. The stack takes
+the longest start its members' names share as its title, so it sits in the
+column where its members would. Their lines become the stack's, so a stack's path is
 drawn like any other card's. A stack reads its members' rates summed, their
 most lag and their fullest buffer. A column's head still counts objects, not
 cards.
 
 ```mermaid
 graph LR
-  k(["23 sources · Kafka"]) --> p["firewall-normalize"]
-  h(["8 sources · Splunk HEC"]) --> p
+  k(["fw-kafka-* · 23 sources"]) --> p["firewall-normalize"]
+  h(["fw-hec-* · 8 sources"]) --> p
   w(["fw-kafka-07 · lag climbing"]) --> p
   p --> e(["es-firewall"])
 ```

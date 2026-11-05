@@ -349,8 +349,8 @@
   }
 
   /** A stack's card title. */
-  function stackTitle(count: number, kind: MapNode['kind']): string {
-    return `${count} ${kind === 'source' ? 'sources' : 'destinations'}`;
+  function stackTitle(count: number, kind: MapNode['kind'], prefix: string): string {
+    return `${prefix}* · ${count} ${kind === 'source' ? 'sources' : 'destinations'}`;
   }
 
   /** Whether the warning catalog names a node now: its polled warnings once there are any
