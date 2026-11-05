@@ -449,7 +449,7 @@ impl From<Closed> for End {
 
 /// What a connection does that a syslog receiver serves.
 pub(super) struct Handler {
-    /// The networks a sender may connect from. Empty admits whoever TLS admitted.
+    /// The networks a datagram may come from. Empty admits any.
     allow_from: Vec<ipnetwork::IpNetwork>,
     /// The largest message.
     max_message_bytes: usize,

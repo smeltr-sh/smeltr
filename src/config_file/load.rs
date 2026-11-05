@@ -7284,7 +7284,7 @@ mod tests {
             ),
             (
                 "receiverRequestBytes",
-                // A form offers no less than a receiver runs at; a save takes less only as older files hold it.
+                // A form offers no less than a receiver runs at.
                 Receiver::FLOOR,
                 Some(Receiver::MAX),
                 Receiver::DEFAULT,

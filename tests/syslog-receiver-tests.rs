@@ -604,6 +604,7 @@ fn a_receiver_takes_no_early_data() {
         .early_data()
         .map(|mut data| data.write(early.as_bytes()).unwrap());
     let resumed = handshake(at, connection).unwrap();
+    assert_eq!(resumed.conn.handshake_kind(), Some(rustls::HandshakeKind::Resumed));
     assert!(
         !resumed.conn.is_early_data_accepted(),
         "the receiver accepted {offered:?} bytes of early data"

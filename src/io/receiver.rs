@@ -2968,7 +2968,7 @@ async fn serve_streams<H, F>(
     }
 }
 
-/// Whether a sender at `peer` may connect, or send a datagram. An empty list admits whoever TLS admitted.
+/// Whether a sender at `peer` may connect, or send a datagram. An empty list admits any.
 pub(super) fn admits(allow_from: &[ipnetwork::IpNetwork], peer: std::net::IpAddr) -> bool {
     allow_from.is_empty() || allow_from.iter().any(|network| network.contains(peer))
 }
