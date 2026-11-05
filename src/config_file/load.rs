@@ -2495,8 +2495,9 @@ fn check_encoding(encoding: &EncodingLabel, id: &str, errors: &mut ItemErrors<'_
 }
 
 /// Refuses a line breaker on any framing but lines, and one `check_line_breaker` refuses; a length prefix and a fixed
-/// size on any framing but their own, absent from their own, or that no frame of `max` bytes could hold.
-fn check_framing(dto: &FramingSettingsDto, id: &str, max: u64, errors: &mut ItemErrors<'_>) {
+/// size on any framing but their own, absent from their own, or that no frame of `max` bytes could hold. `unit` names a
+/// frame to the reader: a receiver's "message", an object's "record".
+fn check_framing(dto: &FramingSettingsDto, id: &str, max: u64, unit: &str, errors: &mut ItemErrors<'_>) {
     let what = format!("source {id:?}");
     if let Some(line_breaker) = &dto.line_breaker {
         if dto.framing == FramingDto::Lines {
@@ -2509,7 +2510,7 @@ fn check_framing(dto: &FramingSettingsDto, id: &str, max: u64, errors: &mut Item
     }
     match (dto.framing, dto.length_prefix) {
         (FramingDto::LengthPrefix, None) => errors.at("lengthPrefix").push(format!(
-            "{what} cuts messages by a length prefix; give its bytes, and its offset if any, in lengthPrefix"
+            "{what} cuts {unit}s by a length prefix; give the length's size in bytes, and its offset if any, in lengthPrefix"
         )),
         (FramingDto::LengthPrefix, Some(prefix)) => {
             if !(1..=8).contains(&prefix.bytes) {
@@ -2519,7 +2520,7 @@ fn check_framing(dto: &FramingSettingsDto, id: &str, max: u64, errors: &mut Item
                 ));
             } else if prefix.offset.saturating_add(prefix.bytes) > max {
                 errors.at("lengthPrefix").push(format!(
-                    "{what} reads a length that ends {} bytes into a message, past the largest message of {}",
+                    "{what} reads a length that ends {} bytes into a {unit}, past the largest {unit} of {}",
                     prefix.offset.saturating_add(prefix.bytes),
                     bytes::exact(max as usize)
                 ));
@@ -2532,10 +2533,10 @@ fn check_framing(dto: &FramingSettingsDto, id: &str, max: u64, errors: &mut Item
     }
     match (dto.framing, dto.fixed_bytes) {
         (FramingDto::Fixed, None) => errors.at("fixedBytes").push(format!(
-            "{what} cuts messages by a fixed size; give how many bytes in fixedBytes"
+            "{what} cuts {unit}s by a fixed size; give how many bytes in fixedBytes"
         )),
         (FramingDto::Fixed, Some(size)) if size == 0 || size > max => errors.at("fixedBytes").push(format!(
-            "{what} cuts a message every {size} bytes; it must be 1 to {}, the largest message",
+            "{what} cuts a {unit} every {size} bytes; it must be 1 to {}, the largest {unit}",
             bytes::exact(max as usize)
         )),
         (FramingDto::Fixed, Some(_)) | (_, None) => {}
@@ -3060,7 +3061,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_s3_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 check_queue(queue_url, *visibility_secs, &what, errors);
             }
             SourceKindDto::S3List {
@@ -3080,7 +3081,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_s3_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 check_bucket_name(bucket, &what, errors);
                 check_listing(
                     prefix,
@@ -3109,7 +3110,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_endpoint(access.endpoint.as_deref(), "endpoint", &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 if bucket.trim().is_empty() {
                     errors.at("bucket").push(format!("{what} names no bucket"));
                 }
@@ -3140,7 +3141,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_azure_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 if container.trim().is_empty() {
                     errors.at("container").push(format!("{what} names no container"));
                 }
@@ -3168,7 +3169,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 let what = format!("source {:?}", s.id);
                 check_sftp_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 check_listing(
                     prefix,
                     *poll_interval_secs,
@@ -3332,7 +3333,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                     // A frame is a record, which a receiver keeps to its largest request.
                     Transport::Tcp => {
                         let max = listener.max_request_bytes.0.max(MaxRequestBytes::FLOOR);
-                        check_framing(framing, &s.id, max, errors);
+                        check_framing(framing, &s.id, max, "message", errors);
                     }
                 }
             }
@@ -3443,7 +3444,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_azure_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 check_queue(queue_url, *visibility_secs, &what, errors);
                 let poison = crate::io::storage_queue::POISON_SUFFIX;
                 let name = queue_url
@@ -3483,7 +3484,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 let what = format!("source {:?}", s.id);
                 check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 check_subscription(subscription, &what, errors);
                 check_endpoint(pubsub_endpoint.as_deref(), "pubsubEndpoint", &what, errors);
                 check_endpoint(access.endpoint.as_deref(), "endpoint", &what, errors);

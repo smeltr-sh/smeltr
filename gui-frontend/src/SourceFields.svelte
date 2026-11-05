@@ -1027,7 +1027,7 @@
         What senders send over. Over UDP each datagram is one {source.type === 'syslogReceiver'
           ? 'message'
           : 'record'}, without TLS. A UDP sender can't be slowed, so datagrams that arrive while the
-        receiver is full are dropped.
+        receiver can't take them are dropped.
       {/snippet}
       <select
         value={source.transport ?? 'tcp'}

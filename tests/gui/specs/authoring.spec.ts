@@ -2242,6 +2242,10 @@ test('A10: a socket receiver is cut by the framing its form chooses, and over UD
   await expect(admin.getByText('one record per message, each carrying its own length.')).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('socket-framing-help.png') });
   await admin.keyboard.press('Escape');
+  await admin.getByRole('button', { name: 'About transport' }).click();
+  await expect(admin.getByText(/each datagram is one record, without TLS/)).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('socket-transport-help.png') });
+  await admin.keyboard.press('Escape');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   let saved = await api.get(`/api/areas/shared${ON}`);

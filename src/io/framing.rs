@@ -543,7 +543,8 @@ impl Framer {
                 return Err(self.malformed(
                     start,
                     format!(
-                        "a message's length is {length} bytes, shorter than the {} bytes of its header and length",
+                        "a {}'s length is {length} bytes, shorter than the {} bytes of its header and length",
+                        self.unit(),
                         prefix.header()
                     ),
                 ));
@@ -560,7 +561,10 @@ impl Framer {
         match len > INBOX_BYTES as u64 {
             true => Err(self.malformed(
                 start,
-                "a message's length is over 64 MiB, the most any receiver takes".into(),
+                match self.truncates {
+                    true => "a message's length is over 64 MiB, the most any receiver takes".into(),
+                    false => "a record's length is over 64 MiB, the most a record holds".into(),
+                },
             )),
             false => Ok(()),
         }
@@ -623,6 +627,11 @@ impl Framer {
             ),
             false => Frame::Message(start, end, next),
         }
+    }
+
+    /// What a frame is called to whoever reads the error: a receiver's sender sends messages, an object holds records.
+    fn unit(&self) -> &'static str {
+        if self.truncates { "message" } else { "record" }
     }
 
     fn malformed(&self, at: usize, what: String) -> Malformed {

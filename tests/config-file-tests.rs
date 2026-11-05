@@ -6039,7 +6039,7 @@ fn a_socket_receiver_takes_a_framing_over_tcp() {
     assert!(refused_at(
         &socket(r#","framing":"lengthPrefix""#),
         "lengthPrefix",
-        "give its bytes, and its offset if any, in lengthPrefix"
+        "give the length's size in bytes, and its offset if any, in lengthPrefix"
     ));
     assert!(refused_at(
         &socket(r#","framing":"lengthPrefix","lengthPrefix":{"bytes":9}"#),
