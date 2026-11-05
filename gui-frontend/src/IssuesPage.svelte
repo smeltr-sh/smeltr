@@ -12,8 +12,13 @@
   import PageHeader from './PageHeader.svelte';
   import Collapsible from './Collapsible.svelte';
   import Chips from './Chips.svelte';
+  import Button, { BUSY } from './Button.svelte';
+  import { ask } from './Confirm.svelte';
+  import { holds } from './access';
   import {
     listWarnings,
+    lowerSourceRows,
+    relearnSource,
     setScope,
     conditionLabel,
     type WarningCondition,
@@ -49,6 +54,33 @@
       .finally(() => {
         loading = false;
       });
+  }
+
+  /** Whether `w` is a source's rows against its normal that the reader may mark: an editor in its group. */
+  const markable = (w: WarningDto) =>
+    (w.condition === 'sourceRowsBelow' || w.condition === 'sourceRowsAbove') &&
+    w.group !== null &&
+    holds(w.group, 'editor');
+
+  let marking = $state(false);
+
+  async function mark(call: () => Promise<unknown>) {
+    marking = true;
+    try {
+      await call();
+      refresh();
+    } finally {
+      marking = false;
+    }
+  }
+
+  async function relearn(w: WarningDto, group: string) {
+    const ok = await ask({
+      title: 'new normal',
+      body: `${w.subjectId} has no normal, and raises neither Rows below normal nor Rows above normal, for the 3 days it takes to learn a new one.`,
+      action: 'Learn a new normal',
+    });
+    if (ok) await mark(() => relearnSource(group, w.subjectId));
   }
 
   $effect(() => {
@@ -200,6 +232,24 @@
                   ? 'since unknown'
                   : ago(warning.sinceMillis / 1000)}</span
               >
+              <span class="issue-actions">
+                {#if markable(warning) && warning.group !== null}
+                  {@const group = warning.group}
+                  {#if warning.severity === 'warning'}
+                    <Button
+                      class="compact"
+                      disabled={marking ? BUSY : ''}
+                      onclick={() => mark(() => lowerSourceRows(group, warning.subjectId))}
+                      >Lower to notice</Button
+                    >
+                  {/if}
+                  <Button
+                    class="compact"
+                    disabled={marking ? BUSY : ''}
+                    onclick={() => relearn(warning, group)}>New normal</Button
+                  >
+                {/if}
+              </span>
             </div>
           {/each}
         </div>
@@ -264,7 +314,7 @@
   }
   .issue-row {
     display: grid;
-    grid-template-columns: 0.9rem minmax(9rem, 14rem) 1fr auto;
+    grid-template-columns: 0.9rem minmax(9rem, 14rem) 1fr auto auto;
     align-items: start;
     gap: 0.75rem;
     font-size: var(--text-note);
@@ -289,6 +339,11 @@
     min-width: 0;
     overflow-wrap: anywhere;
   }
+  .issue-actions {
+    display: flex;
+    gap: 0.4rem;
+    justify-content: flex-end;
+  }
   .issue-since {
     color: var(--dim);
     font-size: var(--text-micro);
@@ -302,8 +357,12 @@
     }
     /* Under the subject, in its column: the narrow first column holds only the severity mark. */
     .issue-message,
-    .issue-since {
+    .issue-since,
+    .issue-actions {
       grid-column: 2;
+    }
+    .issue-actions {
+      justify-content: flex-start;
     }
   }
 </style>

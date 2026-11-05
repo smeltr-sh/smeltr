@@ -1520,6 +1520,33 @@ pub struct FlowResponse {
     pub rows_out: Vec<FlowSeries>,
     pub bytes_in: Vec<FlowSeries>,
     pub bytes_out: Vec<FlowSeries>,
+    /// Every source's last [`throughput::WINDOW`] against its normal, whatever the window asked for.
+    pub normals: Vec<FlowNormal>,
+}
+
+/// One source's last [`throughput::WINDOW`] against its normal, as rows per second: what the Status page ranks by
+/// how far each source is from its normal.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowNormal {
+    pub group: String,
+    pub subject_id: String,
+    pub now: f64,
+    pub low: f64,
+    pub high: f64,
+}
+
+impl From<&throughput::Reading> for FlowNormal {
+    fn from(r: &throughput::Reading) -> FlowNormal {
+        let seconds = throughput::WINDOW.as_secs_f64();
+        FlowNormal {
+            group: r.group.clone(),
+            subject_id: r.source.clone(),
+            now: r.rows / seconds,
+            low: r.band.low / seconds,
+            high: r.band.high / seconds,
+        }
+    }
 }
 
 impl FlowResponse {
@@ -1533,6 +1560,8 @@ impl FlowResponse {
         ] {
             series.retain(|s| access.allows(&s.group, access::Level::Viewer));
         }
+        self.normals
+            .retain(|n| access.allows(&n.group, access::Level::Viewer));
         self
     }
 }
@@ -1576,6 +1605,7 @@ pub fn flow_snapshot(state: &AppState, window: Duration) -> Result<FlowResponse,
             rows_out: Vec::new(),
             bytes_in: Vec::new(),
             bytes_out: Vec::new(),
+            normals: Vec::new(),
         });
     };
     let since_ms = warnings::now_millis() - window.as_millis() as i64;
@@ -1585,6 +1615,7 @@ pub fn flow_snapshot(state: &AppState, window: Duration) -> Result<FlowResponse,
         rows_out: flow_series(store, ROWS_OUT_METRIC, "destination", tier, since_ms)?,
         bytes_in: flow_series(store, BYTES_POLLED_METRIC, "source", tier, since_ms)?,
         bytes_out: flow_series(store, BYTES_DELIVERED_METRIC, "destination", tier, since_ms)?,
+        normals: Vec::new(),
     })
 }
 
@@ -1647,9 +1678,12 @@ async fn get_flow(
     Query(query): Query<FlowQuery>,
 ) -> Result<Envelope<FlowResponse>, Refusal> {
     let minutes = query.window_minutes.clamp(1, MAX_WINDOW_MINUTES);
-    flow_snapshot(&state, Duration::from_secs((minutes * 60) as u64))
-        .map(|flow| Envelope::ok(flow.visible_to(&access)))
-        .map_err(|e| Refusal::internal(e.to_string()))
+    let mut flow = flow_snapshot(&state, Duration::from_secs((minutes * 60) as u64))
+        .map_err(|e| Refusal::internal(e.to_string()))?;
+    let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
+    let readings = throughput::readings(&state, warnings::now_millis(), heartbeat_interval, false).await;
+    flow.normals = readings.iter().map(FlowNormal::from).collect();
+    Ok(Envelope::ok(flow.visible_to(&access)))
 }
 
 // -- streams ------------------------------------------------------------------
