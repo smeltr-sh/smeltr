@@ -460,7 +460,8 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
     }
     let max = field("maxRequestBytes")
         .and_then(Value::as_u64)
-        .unwrap_or(MaxRequestBytes::DEFAULT);
+        .unwrap_or(MaxRequestBytes::DEFAULT)
+        .max(MaxRequestBytes::FLOOR);
     if r.max_request_bytes as u64 != max {
         return Err(format!("built maxRequestBytes {}, not {max}", r.max_request_bytes));
     }

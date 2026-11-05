@@ -2130,7 +2130,8 @@ fn receiver_config<'a>(
         listen: std::net::SocketAddr::new(std::net::Ipv6Addr::UNSPECIFIED.into(), listener.port),
         tokens: tokens.map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
         tls: to_tls(&tls.tls(), of, Side::Server),
-        max_request_bytes: usize::try_from(listener.max_request_bytes.0).unwrap_or(usize::MAX),
+        max_request_bytes: usize::try_from(listener.max_request_bytes.0.max(MaxRequestBytes::FLOOR))
+            .unwrap_or(usize::MAX),
         answer_after_delivery: listener.answer_after_delivery,
     })
 }
@@ -7283,7 +7284,8 @@ mod tests {
             ),
             (
                 "receiverRequestBytes",
-                Receiver::MIN,
+                // A form offers no less than a receiver runs at; a save takes less only as older files hold it.
+                Receiver::FLOOR,
                 Some(Receiver::MAX),
                 Receiver::DEFAULT,
             ),

@@ -6091,6 +6091,22 @@ fn syslog_receivers_share_a_port_only_across_transports() {
     );
 }
 
+/// A receiver whose file holds a `maxRequestBytes` below 2048, saved before that was the least a form takes, still
+/// loads, and runs at 2048: RFC 5425 has a syslog receiver take messages of 2048 octets.
+#[test]
+fn a_receiver_saved_below_2048_bytes_still_loads_and_runs_at_2048() {
+    use smeltr::plan::topology::SourceKind;
+
+    let json = r#"{"version":1,"sources":[
+        {"id":"a","type":"syslogReceiver","port":514,"allowFrom":["10.0.0.0/8"],"maxRequestBytes":1500}]}"#;
+    assert!(refusal(json).is_empty(), "{}", refusal(json));
+    let system = load_str(json).expect("must load");
+    let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
+        unreachable!()
+    };
+    assert_eq!(r.max_request_bytes, 2048);
+}
+
 /// One PostgreSQL source reading `auth.events` by `mode`, its password in the leader's store, with `extra` spliced
 /// into its object.
 fn postgres_config(query: &str, mode: &str, extra: &str) -> String {
