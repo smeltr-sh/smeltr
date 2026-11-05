@@ -10,15 +10,17 @@
 //! its seeds reached every option it knows.
 
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream, UdpSocket};
+use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpStream, UdpSocket};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use smeltr::format::encoding::Encoding;
 use smeltr::io::framing::{ByteOrder, Counts, Framing, LengthPrefix};
 use smeltr::io::line_breaker::{BREAK_SLACK, LineBreaker};
 use smeltr::io::{Source, SourceRecord};
 use smeltr::plan::topology::{Receiver, SocketReceiverConfig, SourceMeta, Transport};
 
+use crate::harness::docker::{Container, Hook, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::harness::receiver::{self, Pki, Presents, Tls};
 
@@ -33,6 +35,7 @@ struct Settings {
     tls: Tls,
     max_request_bytes: usize,
     framing: Framing,
+    encoding: Encoding,
 }
 
 /// Networks a receiver may admit senders from, and whether a sender on each loopback address is in them.
@@ -111,6 +114,7 @@ fn random_settings(rng: &mut Rng, ipv6: bool, labels: &mut Vec<String>) -> Setti
         tls,
         max_request_bytes,
         framing,
+        encoding: Encoding::Auto,
     }
 }
 
@@ -130,7 +134,7 @@ fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
         allow_from: settings.allow_from.iter().map(|n| n.parse().unwrap()).collect(),
         transport: settings.transport,
         framing: settings.framing.clone(),
-        ..Default::default()
+        encoding: settings.encoding,
     });
     receiver::build(
         socket,
@@ -601,6 +605,541 @@ fn every_framing_takes_each_frame_once_however_it_is_written() {
             for label in setting_labels.into_iter().chain(labels) {
                 cov.reach(label);
             }
+        }
+        Ok(())
+    });
+    cov.assert_complete();
+}
+
+// -- live: our own sender, misbehaving ----------------------------------------------------------------------------
+
+/// How a live connection ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum End {
+    /// A hang-up; under TLS, one said first with close_notify.
+    HangUp,
+    /// Under TLS, a hang-up unsaid.
+    Unsaid,
+    /// A reset.
+    Reset,
+    /// It shuts down writing and holds the connection open a while.
+    HalfClose,
+}
+
+/// What one live connection is to the receiver.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Admitted {
+    Yes,
+    /// From an address in none of its networks.
+    Address,
+    /// Under TLS, presenting no certificate or a stranger's where one is required.
+    Certificate,
+    /// Plain TCP to a TLS receiver.
+    Plain,
+}
+
+/// The records a live sender's connection must give, and those it may.
+struct Expect {
+    must: Vec<Vec<u8>>,
+    may: Vec<Vec<u8>>,
+}
+
+/// Many well-formed messages in `framing`, enough that a receiver not drained fills and stops reading.
+fn bulk(framing: &Framing, max: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let (mut bytes, mut taken) = (Vec::new(), Vec::new());
+    for i in 0..40_000 {
+        let message = format!("bulk {i} {}", "b".repeat(i % 64)).into_bytes();
+        match framing {
+            Framing::Lines | Framing::EscapedLines => {
+                bytes.extend(&message);
+                bytes.push(b'\n');
+            }
+            Framing::LineBreaker(_) => {
+                bytes.extend(&message);
+                bytes.push(0);
+            }
+            Framing::LengthPrefix(prefix) => {
+                let len = match prefix.counts {
+                    Counts::Rest => message.len(),
+                    Counts::Message => prefix.offset + prefix.width + message.len(),
+                } as u64;
+                if prefix.width < 8 && len >= 1 << (8 * prefix.width) {
+                    continue;
+                }
+                bytes.extend(vec![b'h'; prefix.offset]);
+                match prefix.order {
+                    ByteOrder::Big => bytes.extend_from_slice(&len.to_be_bytes()[8 - prefix.width..]),
+                    ByteOrder::Little => bytes.extend_from_slice(&len.to_le_bytes()[..prefix.width]),
+                }
+                bytes.extend(&message);
+                let mut frame = vec![b'h'; prefix.offset];
+                frame.extend_from_slice(&bytes[bytes.len() - message.len() - prefix.width..bytes.len() - message.len()]);
+                frame.extend(&message);
+                frame.truncate(max);
+                taken.push(frame);
+                continue;
+            }
+            Framing::Fixed(size) => {
+                let mut frame = message.clone();
+                frame.resize(*size, b'.');
+                bytes.extend(&frame);
+                taken.push(frame);
+                continue;
+            }
+            Framing::Object | Framing::Syslog(_) => unreachable!("no bulk for one record"),
+        }
+        let mut kept = message;
+        kept.truncate(max);
+        taken.push(kept);
+    }
+    (bytes, taken)
+}
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Every label the live seed range must reach.
+fn live_options() -> impl Iterator<Item = String> {
+    ["Tcp", "Udp"]
+        .map(|t| format!("transport {t}"))
+        .into_iter()
+        .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
+        .chain(FRAMINGS.iter().map(|f| format!("framing {f}")))
+        .chain(["HangUp", "Unsaid", "Reset", "HalfClose"].map(|e| format!("end {e}")))
+        .chain(["Address", "Certificate", "Plain"].map(|a| format!("refused by {a}")))
+        .chain(DATAGRAMS.iter().map(|d| d.to_string()))
+        .chain(
+            [
+                "encoding none",
+                "a frame over the limit",
+                "a frame cut short",
+                "a length shorter than its header",
+                "an unterminated last frame",
+                "a connection written in pieces",
+                "a connection stalled partway",
+                "connections at once",
+                "an idle connection held",
+                "a handshake stalled",
+                "a storm of connections",
+                "a receiver left full",
+                "a datagram from outside its networks",
+                "a flood of datagrams",
+            ]
+            .map(String::from),
+        )
+}
+
+/// Our own sender, in a container on the host's network, misbehaves at receivers of random settings in every way
+/// a bad sender may: messages in pieces down to a byte, over the limit, misframed, cut short; connections
+/// at once, stalled, held idle, half-closed, reset, refused by address, by certificate and for speaking plain TCP to
+/// TLS; handshakes stalled; storms of connections; a receiver left full; empty, oversized, foreign and flooding
+/// datagrams. Every message an admitted connection completes arrives once and as sent, nothing arrives that was
+/// not sent, a reset connection gives none of what it cut short, and the receiver never panics.
+#[test]
+fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
+    const TEST: &str = "live_misbehaving_senders_never_get_a_record_invented_or_lost";
+    let Some(image) = crate::live::socket_sender(TEST) else {
+        return;
+    };
+    let panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = panicked.clone();
+    let _hook = Hook::set(Box::new(move |info| {
+        if std::thread::current().name() == Some("smeltr-receiver") {
+            seen.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        eprintln!("{info}");
+    }));
+    crate::certs::install_provider();
+    let pki = Pki::new();
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/live/socket-sender/send.py");
+    let mut cov = Coverage::new(live_options());
+    fuzz::run(1..61, |seed| {
+        let mut rng = Rng::seeded(seed);
+        let mut labels: Vec<String> = Vec::new();
+        let transport = match seed % 3 {
+            0 => Transport::Udp,
+            _ => Transport::Tcp,
+        };
+        let connect: SocketAddr = (Ipv4Addr::LOCALHOST, 0).into();
+        let port = loop {
+            let port = receiver::free_port(connect.ip());
+            if transport == Transport::Tcp || UdpSocket::bind((connect.ip(), port)).is_ok() {
+                break port;
+            }
+        };
+        let tls = match transport {
+            Transport::Tcp => *rng.pick(&[Tls::None, Tls::Served, Tls::Vouched]),
+            Transport::Udp => Tls::None,
+        };
+        // 127.0.0.2 is a loopback address outside these networks, from which the sender sends as a stranger.
+        let allow_from = match tls == Tls::Vouched && rng.chance(2) {
+            true => Vec::new(),
+            false => vec!["127.0.0.1/32"],
+        };
+        let max = receiver::random_limit(&mut rng, 6);
+        let framing = match transport {
+            Transport::Tcp => random_framing(&mut rng, max, &mut labels),
+            Transport::Udp => Framing::Lines,
+        };
+        let encoding = match rng.chance(2) {
+            true => {
+                labels.push("encoding none".into());
+                Encoding::None
+            }
+            false => Encoding::Auto,
+        };
+        let listen = SocketAddr::new(std::net::IpAddr::V4(*rng.pick(&[Ipv4Addr::LOCALHOST, Ipv4Addr::UNSPECIFIED])), port);
+        let settings = Settings {
+            listen,
+            connect: SocketAddr::new(connect.ip(), port),
+            transport,
+            allow_from,
+            tls,
+            max_request_bytes: max,
+            framing: framing.clone(),
+            encoding,
+        };
+        labels.push(format!("transport {transport:?}"));
+        labels.push(format!("tls {tls:?}"));
+        let mut source = open(&settings, &pki);
+
+        let scratch = Scratch(std::env::temp_dir().join(format!("smeltr-socket-fuzz-{}-{seed}", std::process::id())));
+        let dir = &scratch.0;
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::copy(&script, dir.join("send.py")).unwrap();
+        for (name, pem) in [
+            ("ca.pem", &pki.authority.pem),
+            ("sender.pem", &pki.sender.certificate),
+            ("sender-key.pem", &pki.sender.key),
+            ("stranger.pem", &pki.stranger.certificate),
+            ("stranger-key.pem", &pki.stranger.key),
+        ] {
+            std::fs::write(dir.join(name), pem).unwrap();
+        }
+
+        let outside = !settings.allow_from.is_empty();
+        let mut expects: Vec<Expect> = Vec::new();
+        let mut plan_connections = Vec::new();
+        let mut holders = Vec::new();
+        let (mut plan_datagrams, mut flood) = (Vec::new(), Value::Null);
+        let mut what = Vec::new();
+        let mut leave_full = false;
+        match transport {
+            Transport::Tcp => {
+                let count = 1 + rng.below(12);
+                if count > 1 {
+                    labels.push("connections at once".into());
+                }
+                for n in 0..count {
+                    let mut reached = Vec::new();
+                    let mut c = match n == 0 && framing != Framing::Object && rng.chance(3) {
+                        true => {
+                            reached.push("a receiver left full".into());
+                            leave_full = true;
+                            let (bytes, taken) = bulk(&framing, max);
+                            let pieces = vec![bytes.len()];
+                            Connection {
+                                bytes,
+                                pieces,
+                                presents: Presents::Nothing,
+                                abrupt: false,
+                                taken,
+                                ended_by_hanging_up: matches!(framing, Framing::LineBreaker(_)),
+                            }
+                        }
+                        false => connection(&mut rng, n, &framing, max, &mut reached),
+                    };
+                    let mut admitted = Admitted::Yes;
+                    let from = match outside && rng.chance(8) {
+                        true => {
+                            admitted = Admitted::Address;
+                            "127.0.0.2"
+                        }
+                        false => "127.0.0.1",
+                    };
+                    let presents = match tls {
+                        Tls::None => "nothing",
+                        _ => match rng.below(8) {
+                            0 => "plain",
+                            1 => "nothing",
+                            2 => "stranger",
+                            _ => "trusted",
+                        },
+                    };
+                    if admitted == Admitted::Yes {
+                        admitted = match (tls, presents) {
+                            (Tls::None, _) => Admitted::Yes,
+                            (_, "plain") => Admitted::Plain,
+                            (Tls::Vouched, "nothing" | "stranger") => Admitted::Certificate,
+                            _ => Admitted::Yes,
+                        };
+                    }
+                    let end = match (tls, rng.below(4)) {
+                        (_, 0) => End::Reset,
+                        (Tls::None, 1) => End::HalfClose,
+                        (Tls::None, _) => End::HangUp,
+                        (_, 1) => End::Unsaid,
+                        _ => End::HangUp,
+                    };
+                    // A plain sender's hang-up and a TLS sender's close_notify end the stream; an unsaid one or a reset
+                    // cuts it short, so what waits on the end of the stream is not taken, and a reset may lose what
+                    // the receiver had not read yet.
+                    let mut pauses = vec![0u64; c.pieces.len()];
+                    if c.pieces.len() > 1 && rng.chance(4) {
+                        let at = rng.below(c.pieces.len() - 1);
+                        pauses[at] = 1500;
+                        reached.push("a connection stalled partway".into());
+                    }
+                    for pause in &mut pauses {
+                        if rng.chance(16) {
+                            *pause = rng.below(30) as u64;
+                        }
+                    }
+                    let mut at = 0;
+                    let pieces: Vec<String> = (c.pieces.iter())
+                        .map(|&piece| {
+                            at += piece;
+                            b64(&c.bytes[at - piece..at])
+                        })
+                        .collect();
+                    what.push(format!(
+                        "connection {n} from {from} presenting {presents}, ending {end:?}, {} bytes in {} pieces: {:?}",
+                        c.bytes.len(),
+                        c.pieces.len(),
+                        String::from_utf8_lossy(&c.bytes[..c.bytes.len().min(200)])
+                    ));
+                    plan_connections.push(serde_json::json!({
+                        "id": n,
+                        "from": from,
+                        "tls": presents,
+                        "pieces": pieces,
+                        "pauses_ms": pauses,
+                        "end": match end {
+                            End::HangUp if tls != Tls::None => "notify",
+                            End::HangUp | End::Unsaid => "fin",
+                            End::Reset => "rst",
+                            End::HalfClose => "half_close",
+                        },
+                    }));
+                    if admitted != Admitted::Yes {
+                        cov.reach(format!("refused by {admitted:?}"));
+                        expects.push(Expect {
+                            must: Vec::new(),
+                            may: Vec::new(),
+                        });
+                        continue;
+                    }
+                    cov.reach(format!("end {end:?}"));
+                    if matches!(end, End::Unsaid | End::Reset) && c.ended_by_hanging_up {
+                        c.taken.pop();
+                        reached.retain(|label| label != "an unterminated last frame");
+                    }
+                    labels.extend(reached);
+                    expects.push(match end {
+                        End::Reset => Expect {
+                            must: Vec::new(),
+                            may: c.taken,
+                        },
+                        _ => Expect {
+                            must: c.taken,
+                            may: Vec::new(),
+                        },
+                    });
+                }
+                if rng.chance(3) {
+                    holders.push(serde_json::json!({"kind": "idle", "from": "127.0.0.1"}));
+                    labels.push("an idle connection held".into());
+                }
+                if tls != Tls::None && rng.chance(3) {
+                    holders.push(serde_json::json!({"kind": "handshake", "from": "127.0.0.1"}));
+                    labels.push("a handshake stalled".into());
+                }
+            }
+            Transport::Udp => {
+                for n in 0..1 + rng.below(12) {
+                    let mut label = String::new();
+                    let (datagram, record) = datagram(&mut rng, n, max, &mut label);
+                    let from = match outside && rng.chance(4) {
+                        true => {
+                            labels.push("a datagram from outside its networks".into());
+                            "127.0.0.2"
+                        }
+                        false => {
+                            labels.push(label);
+                            expects.push(Expect {
+                                must: record.into_iter().collect(),
+                                may: Vec::new(),
+                            });
+                            "127.0.0.1"
+                        }
+                    };
+                    what.push(format!("datagram {n} of {} bytes from {from}", datagram.len()));
+                    plan_datagrams.push(serde_json::json!({"from": from, "bytes": b64(&datagram)}));
+                }
+                if rng.chance(2) {
+                    labels.push("a flood of datagrams".into());
+                    flood = serde_json::json!({"from": "127.0.0.1", "count": 2000 + rng.below(20_000), "size": rng.below(1200)});
+                }
+            }
+        }
+        let storm = match transport == Transport::Tcp && rng.chance(3) {
+            true => {
+                labels.push("a storm of connections".into());
+                200 + rng.below(800)
+            }
+            false => 0,
+        };
+        let plan = serde_json::json!({
+            "host": "127.0.0.1",
+            "port": port,
+            "transport": match transport { Transport::Tcp => "tcp", Transport::Udp => "udp" },
+            "tls": match tls {
+                Tls::None => Value::Null,
+                _ => serde_json::json!({
+                    "ca": "/smeltr/ca.pem",
+                    "cert": "/smeltr/sender.pem",
+                    "key": "/smeltr/sender-key.pem",
+                    "stranger_cert": "/smeltr/stranger.pem",
+                    "stranger_key": "/smeltr/stranger-key.pem",
+                }),
+            },
+            "holders": holders,
+            "storm": storm,
+            "storm_from": "127.0.0.1",
+            "connections": plan_connections,
+            "datagrams": plan_datagrams,
+            "flood": flood,
+        });
+        std::fs::write(dir.join("plan.json"), plan.to_string()).unwrap();
+        share(dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        }
+        let what = format!(
+            "seed {seed}: {transport:?} receiver on {listen} allowing {:?} under {tls:?}, limit {max}, framing {framing:?}, {encoding:?}: {}",
+            settings.allow_from,
+            what.join("; ")
+        );
+        let container = format!("smeltr-socket-fuzz-{}-{seed}", std::process::id());
+        let started = std::process::Command::new("docker")
+            .args(["run", "-d", "--network", "host", "--name", &container, "-v"])
+            .arg(format!("{}:/smeltr", dir.display()))
+            .args([image.as_str(), "python", "/smeltr/send.py", "/smeltr/plan.json", "/smeltr/report.json"])
+            .output()
+            .expect("docker runs");
+        let container = Container(container);
+        if !started.status.success() {
+            return Err(format!("docker run: {}", String::from_utf8_lossy(&started.stderr)));
+        }
+        // Left undrained a while, a receiver given a bulk fills and stops reading, and its sender waits.
+        if leave_full {
+            std::thread::sleep(Duration::from_secs(3));
+        }
+
+        let must: Vec<Vec<u8>> = expects.iter().flat_map(|e| e.must.iter().cloned()).collect();
+        let remote = settings.connect.ip().to_string();
+        let mut records: Vec<Vec<u8>> = Vec::new();
+        let report_path = dir.join("report.json");
+        let deadline = Instant::now() + Duration::from_secs(120);
+        receiver::drain(
+            &mut source,
+            Duration::from_millis(50),
+            Duration::from_millis(1500),
+            deadline,
+            |batch| {
+                records.extend(read_back(batch, &remote).map_err(|why| format!("{what}: {why}"))?);
+                if panicked.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(format!("{what}: the receiver panicked"));
+                }
+                Ok(records.len() >= must.len() && report_path.exists())
+            },
+        )?;
+        let report: Value = match std::fs::read_to_string(&report_path) {
+            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{what}: the report: {e}"))?,
+            Err(_) => {
+                return Err(format!(
+                    "{what}: the sender wrote no report\n{}",
+                    container_logs(&container.0)
+                ));
+            }
+        };
+        let show = |r: &[u8]| String::from_utf8_lossy(&r[..r.len().min(80)]).to_string();
+
+        // Every record a whole message some connection sent, each taken at most as often as sent; a flood's
+        // datagrams named and whole.
+        let mut left: Vec<Vec<u8>> = records.clone();
+        for e in &expects {
+            for m in &e.must {
+                match left.iter().position(|r| r == m) {
+                    Some(i) => {
+                        left.remove(i);
+                    }
+                    None => {
+                        return Err(format!(
+                            "{what}\na message that must arrive did not: {:?}\ntook {} records, of which {:?}\nreport {report}",
+                            show(m),
+                            records.len(),
+                            records.iter().take(20).map(|r| show(r)).collect::<Vec<_>>()
+                        ));
+                    }
+                }
+            }
+        }
+        for e in &expects {
+            for m in &e.may {
+                if let Some(i) = left.iter().position(|r| r == m) {
+                    left.remove(i);
+                }
+            }
+        }
+        if let Some(size) = flood.get("size").and_then(Value::as_u64) {
+            let filler = "f".repeat(size as usize);
+            let mut named = std::collections::BTreeSet::new();
+            let mut extra = Vec::new();
+            for r in left.drain(..) {
+                let text = String::from_utf8_lossy(&r).to_string();
+                let name = text.split(' ').next().unwrap_or("").to_string();
+                let whole = format!("{name} {filler}");
+                let kept = &whole.as_bytes()[..whole.len().min(max)];
+                match name.starts_with('f') && r == kept && named.insert(name) {
+                    true => {}
+                    false => extra.push(r),
+                }
+            }
+            left = extra;
+        }
+        if let Some(r) = left.first() {
+            return Err(format!(
+                "{what}\na record no sender sent whole, or sent fewer times: {:?} (of {} left)\nreport {report}",
+                show(r),
+                left.len()
+            ));
+        }
+        // Each connection's whole messages in the order sent.
+        for e in &expects {
+            let mut at = 0;
+            for m in &e.must {
+                match records[at..].iter().position(|r| r == m) {
+                    Some(i) => at += i + 1,
+                    None => return Err(format!("{what}\nmessages of one connection arrived out of order")),
+                }
+            }
+        }
+        // A connection the receiver had to read whole was not refused partway.
+        for c in report["connections"].as_array().into_iter().flatten() {
+            if let Some(open) = c["open"].as_str() {
+                return Err(format!("{what}\nconnection {}: {open}", c["id"]));
+            }
+        }
+        if let Some(logs) = Some(container_logs(&container.0)).filter(|l| l.contains("Traceback")) {
+            return Err(format!("{what}\nthe sender failed\n{logs}"));
+        }
+        for label in labels {
+            cov.reach(label);
         }
         Ok(())
     });

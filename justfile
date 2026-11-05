@@ -500,6 +500,7 @@ live-up: need-docker
 [env("FLUENT_BIT_TEST_IMAGE", "fluent/fluent-bit:3.2.10")]
 [env("TELEMETRYGEN_TEST_IMAGE", "ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.135.0")]
 [env("SYSLOG_SENDER_TEST_IMAGE", "debian:bookworm-slim")]
+[env("SOCKET_SENDER_TEST_IMAGE", "python:3.13-slim@sha256:d0a9e379c0c588befb0e427db17ca9731751d281f32c6cb1a90a1277b680bdad")]
 [env("S2S_FORWARDER_TEST_IMAGE", "splunk/universalforwarder:10.6.0.5@sha256:944fd52a8da3cb5709532a8d8e349732fdccaf6e09c165d1877be7c41f1c88e3")]
 [env("SMELTR_LIVE_TESTS", "required")]
 check-live: live-up check-all
@@ -541,6 +542,7 @@ check-live: live-up check-all
     cargo test --test integration elastic_receiver_fuzz::live_
     cargo test --test integration syslog_receiver_tests::a_real_
     cargo test --test integration syslog_receiver_fuzz::live_
+    cargo test --test integration socket_receiver_fuzz::live_
     cargo test --test integration okta_live_tests:: -- --ignored
     cargo test --test integration log_analytics_fuzz::live_ -- --ignored
     cargo test --test integration gate_tests::live_ -- --test-threads=4

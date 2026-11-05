@@ -191,6 +191,16 @@ pub fn syslog_sender(test_name: &str) -> Option<String> {
     )
 }
 
+/// A Python image, which runs the socket receiver fuzzer's own sender (`tests/live/socket-sender/send.py`) on the
+/// host's network, or `None` to skip this test.
+pub fn socket_sender(test_name: &str) -> Option<String> {
+    service(
+        test_name,
+        "SOCKET_SENDER_TEST_IMAGE",
+        "a Python image and Docker (`just check-live`)",
+    )
+}
+
 /// The image of a Splunk universal forwarder, which the test runs itself, or `None` to skip this test.
 pub fn universal_forwarder(test_name: &str) -> Option<String> {
     service(
