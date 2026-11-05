@@ -3360,6 +3360,16 @@ impl Sockets {
 mod tests {
     use super::*;
 
+    #[test]
+    fn allow_from_admits_only_its_networks() {
+        let allow: Vec<ipnetwork::IpNetwork> = vec!["10.0.0.0/8".parse().unwrap(), "fd00::/8".parse().unwrap()];
+        assert!(admits(&allow, "10.1.2.3".parse().unwrap()));
+        assert!(admits(&allow, "fd00::1".parse().unwrap()));
+        assert!(!admits(&allow, "192.168.1.1".parse().unwrap()));
+        assert!(!admits(&allow, "::1".parse().unwrap()));
+        assert!(admits(&[], "192.168.1.1".parse().unwrap()));
+    }
+
     impl Queued {
         /// The bytes of a record sent as bytes.
         fn bytes(&self) -> &[u8] {
