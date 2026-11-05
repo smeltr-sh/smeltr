@@ -254,9 +254,9 @@ pub struct Proposal {
 /// A JSON, Key/value or CSV record gets a Parser step; CSV's columns are the header row's names where the first record
 /// is one, and "column_1" onward where it is not, each typed from its values. A source sends a file's header row as a
 /// record of its own, which the CSV parser would read as data, so a Drop step ahead of the parser takes it out. CEF
-/// has no Parser kind, so it gets a Code step that spreads `cef()` into the record. A syslog or access-log line gets a
-/// Grok Parser on the built-in pattern for the whole line, written out (`grok_pattern::unfold`) so each field it fills
-/// shows in the step.
+/// has no Parser kind, so it gets a Code step that spreads `cef()` into the record. A syslog, Cisco ASA or access-log
+/// line gets a Grok Parser on the built-in pattern for the whole line, written out (`grok_pattern::unfold`) so each
+/// field it fills shows in the step.
 ///
 /// The format is read from the first [`PROPOSED_FROM`] records, which is plenty to tell one; the condition holds of
 /// every record `filed` says where it was filed (each one's `__source`), and of `records` where it is `None`.
