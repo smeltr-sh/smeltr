@@ -23,6 +23,7 @@
     void text;
     copied = false;
   });
+  $effect(() => () => clearTimeout(reset));
 
   async function copy() {
     try {
