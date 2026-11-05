@@ -6610,7 +6610,7 @@ fn a_receiver_admits_senders_by_fingerprint_and_by_name() {
     let e = refusal(&syslog_tls_config(
         r#","senderNames":["host.example.com"],"allowFrom":["10.0.0.0/8"]"#,
     ));
-    assert!(e.contains("trusts no authority to vouch for those names"), "{e}");
+    assert!(e.contains("trusts no authority, so no certificate can match those names"), "{e}");
     let e = refusal(&syslog_tls_config(""));
     assert!(e.contains("admits anyone"), "{e}");
 }

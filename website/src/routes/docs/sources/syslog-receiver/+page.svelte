@@ -167,9 +167,9 @@ log { source(s_src); destination(d_smeltr); };`;
   <h2 id="senders">Who it admits</h2>
   <p>
     Anyone a receiver admits can put records into the worker group's pipelines. Syslog carries no
-    token, so a receiver needs <code>allowFrom</code>, a <code>certificate</code> and
-    <code>trustedAuthorities</code> or <code>senderFingerprints</code>, or both. The leader refuses
-    a receiver with neither.
+    token, so a receiver needs <code>allowFrom</code>, or a <code>certificate</code> with
+    <code>trustedAuthorities</code> or <code>senderFingerprints</code>, or both of those. The leader
+    refuses a receiver with neither.
   </p>
   <ul>
     <li>
@@ -181,13 +181,14 @@ log { source(s_src); destination(d_smeltr); };`;
       <strong>Client certificates:</strong> with a
       <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS (RFC 5425)
       with it. With
-      <code>trustedAuthorities</code>, every sender must present a certificate that chains to one of
-      them. With <code>allowFrom</code> empty, every sender TLS admits is admitted.
+      <code>trustedAuthorities</code> or <code>senderFingerprints</code>, every sender must present
+      a certificate that chains to one of the authorities or is named by its fingerprint. With
+      <code>allowFrom</code> empty, every sender TLS admits is admitted.
     </li>
     <li>
       <strong>Fingerprints:</strong> <code>senderFingerprints</code> admits a sender by its own
-      certificate, whoever issued it, as a self-signed one. Each is the certificate's fingerprint as
-      RFC 5425 writes one, <code>sha-256:AB:CD:…</code>, which
+      certificate, whoever issued it, such as a self-signed one. Each is the certificate's
+      fingerprint as RFC 5425 writes one, <code>sha-256:AB:CD:…</code>, which
       <a href="/docs/certificates">Admin &rarr; Certificates</a> copies for a certificate it holds.
     </li>
     <li>

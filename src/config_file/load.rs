@@ -4507,8 +4507,8 @@ fn check_receiver<T>(
     let vouches = check_listener(what, listener, tls, errors);
     if tokens.is_empty() && !vouches {
         errors.at("tokens").push(format!(
-            "{what} admits anyone who can reach its port; give it a token, or trusted authorities a sender's certificate \
-             must chain to"
+            "{what} admits anyone who can reach its port; give it a token, trusted authorities a sender's certificate \
+             must chain to, or fingerprints of the certificates it admits"
         ));
     }
     for name in tokens.keys() {
@@ -4540,8 +4540,8 @@ fn check_syslog_receiver(
     let vouches = vouches && transport == Transport::Tcp;
     if allow_from.is_empty() && !vouches {
         errors.at("allowFrom").push(format!(
-            "{what} admits anyone who can reach its port; give it the networks its senders connect from, or \
-             trusted authorities a sender's certificate must chain to"
+            "{what} admits anyone who can reach its port; give it the networks its senders connect from, trusted \
+             authorities a sender's certificate must chain to, or fingerprints of the certificates it admits"
         ));
     }
     for block in allow_from {
@@ -4600,8 +4600,8 @@ fn check_listener(what: &str, listener: &ReceiverSettingsDto, tls: &ServedTlsDto
     let authorities = tls.trusted_authorities.as_deref().is_some_and(|a| !blank(a));
     if !tls.sender_names.is_empty() && !authorities {
         errors.at("senderNames").push(format!(
-            "{what} names its senders' hosts and trusts no authority to vouch for those names; paste the trusted \
-             authorities their certificates chain to"
+            "{what} names its senders' hosts and trusts no authority, so no certificate can match those names; paste \
+             the trusted authorities their certificates chain to"
         ));
     }
     authorities || !tls.sender_fingerprints.is_empty()
