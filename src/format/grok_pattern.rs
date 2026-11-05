@@ -136,7 +136,8 @@ pub const BUILTINS: &[(&str, &str)] = &[
     // device writes a timestamp, with a year or without and with a time zone or without, and a device ID only where it
     // is set to. A relay may put its own date and host ahead of all that, which is left out: the line's own are the
     // device's. The relay's part is lazy, so a line with one date and host takes them as the device's. A time zone is
-    // followed by `:` and a device ID by a space, which is how `UTC:` and `ASA :` tell apart.
+    // followed by `:` and a device ID by a space, which is how `UTC:` and `ASA :` tell apart, and a capitalized device
+    // ID written `CORE:` reads as a zone.
     (
         "CISCOASALINE",
         concat!(
