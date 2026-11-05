@@ -269,6 +269,15 @@ export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
     '<(?P<log.syslog.priority>[0-9]{1,3})>%{POSINT:log.syslog.version} (?:-|%{TIMESTAMP_ISO8601:timestamp}) (?:-|%{NOTSPACE:host.hostname}) (?:-|%{NOTSPACE:log.syslog.appname}) (?:-|%{NOTSPACE:log.syslog.procid}) (?:-|%{NOTSPACE:log.syslog.msgid}) (?:-|(?P<log.syslog.structured_data>(?:\\[(?:[^\\]"\\\\]|\\\\.|"(?:[^"\\\\]|\\\\.)*")*\\])+))(?: %{GREEDYDATA:message})?',
   ),
   builtin(
+    'CISCOASALINE',
+    'A whole Cisco ASA or FTD line, read into `log.syslog.priority`, `timestamp`, `host.hostname`, `log.syslog.severity.code`, `event.code` and `message`.',
+    [
+      '<166>Oct 15 2026 00:31:02 fw-01 : %ASA-6-302013: Built inbound TCP connection 1 for outside:10.0.0.1/443',
+    ],
+    ['%ASA-6-302013 Built'],
+    '(?:<(?P<log.syslog.priority>[0-9]{1,3})>)?(?:(?:%{SYSLOGTIMESTAMP}|%{TIMESTAMP_ISO8601}) \\S+ )??(?:(?P<timestamp>%{MONTH} +%{MONTHDAY}(?: [0-9]{4})? %{TIME}(?: [A-Z]{2,5})?|%{TIMESTAMP_ISO8601}):? )?(?:(?P<host.hostname>[^\\s:]\\S*?):? (?:: )?)?%(?:ASA|FTD)-(?P<log.syslog.severity.code>[0-7])-(?P<event.code>[0-9]{6}): %{GREEDYDATA:message}',
+  ),
+  builtin(
     'COMMONAPACHELOG',
     "A web server's access log line in the common format.",
     ['127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /a.gif HTTP/1.0" 200 2326'],

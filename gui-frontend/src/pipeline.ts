@@ -170,6 +170,7 @@ export const PROPOSED_FORMAT_NAMES: Record<NonNullable<OnboardProposal['format']
   cef: 'CEF',
   syslog: 'classic syslog',
   syslog5424: 'RFC 5424 syslog',
+  ciscoAsa: 'Cisco ASA or FTD',
   commonLog: 'common access log',
   combinedLog: 'combined access log',
 };
