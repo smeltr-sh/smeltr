@@ -9,6 +9,10 @@
 //! Only windows the source was running for throughout count, on either side. A bucket with no point means no worker
 //! reported the source then -- not deployed, or a worker gone -- which says nothing about how much it reads.
 //!
+//! Nor does a past window that overlaps a warning about the source (`warnings::spans`): a stop, or a reading outside
+//! its band. An outage at this time of day would otherwise set the band's low edge there for a week, and a lasting
+//! change of level would become its normal unasked.
+//!
 //! A chart draws the band behind its points, and a point finer than a window swings wider than a window does. So
 //! each [`BUCKET`] also records how far each source's rate swung inside it at each of [`SWING_WIDTHS`]
 //! (`series::Swing`), while the ten-second tier still holds what it read. A chart's band at that width is learned
@@ -28,7 +32,7 @@ use axum::http::StatusCode;
 use super::envelope::{Envelope, Refusal};
 use super::series::{RegistryStore, SubjectPoints, Swing, Tier};
 use super::store::{Actor, Store};
-use super::warnings::label;
+use super::warnings::{self, SubjectKind, label};
 use super::{AppState, ROWS_IN_METRIC, run_store};
 
 /// How much reading is judged at once. Long enough that a quiet minute between bursts is not an outage, short enough
@@ -200,7 +204,7 @@ fn compute(store: &RegistryStore, ended_ms: i64, share: f64) -> Vec<Reading> {
         .into_iter()
         .filter_map(|((group, source), of)| {
             let rows = window_rows(&of, ended_ms)?;
-            let band = band(&of, ended_ms, share)?;
+            let band = band(&of, &Warned::of(store, &group, &source, oldest), ended_ms, share)?;
             Some(Reading {
                 group,
                 source,
@@ -222,10 +226,11 @@ fn window_rows(buckets: &BTreeMap<i64, f64>, ended_ms: i64) -> Option<f64> {
 }
 
 /// The band of the windows at this time of day on past days, or `None` while fewer than [`MIN_DAYS`] days have one.
-fn band(buckets: &BTreeMap<i64, f64>, ended_ms: i64, share: f64) -> Option<Band> {
+fn band(buckets: &BTreeMap<i64, f64>, warned: &Warned, ended_ms: i64, share: f64) -> Option<Band> {
     let width = BUCKET.bucket_ms();
+    let window = WINDOW.as_millis() as i64;
     band_of(
-        |ended| only(window_rows(buckets, ended)),
+        |ended| only(window_rows(buckets, ended)).filter(|_| !warned.during(ended, window)),
         ended_ms,
         width,
         NEIGHBORHOOD.as_millis() as i64 / width,
@@ -264,6 +269,34 @@ fn band_of(held: impl Fn(i64) -> Option<Band>, ended_ms: i64, step_ms: i64, reac
 /// A window's rows as the band it holds.
 fn only(rows: Option<f64>) -> Option<Band> {
     rows.map(|rows| Band { low: rows, high: rows })
+}
+
+/// When warnings about one source held, as (started, ended), with no end for one still holding.
+struct Warned(Vec<(i64, Option<i64>)>);
+
+impl Warned {
+    /// `group`'s `source`'s warnings that held since `since_ms`. None when the store cannot say, which is logged: the
+    /// band is then learned from every window, as it was before warnings were kept.
+    fn of(store: &RegistryStore, group: &str, source: &str, since_ms: i64) -> Warned {
+        match warnings::spans(store, SubjectKind::Source, group, source, since_ms) {
+            Ok(spans) => Warned(spans.into_iter().map(|s| (s.started_millis, s.ended_millis)).collect()),
+            Err(e) => {
+                tracing::warn!(
+                    name: "warned_unreadable", target: "status",
+                    error = %e, group, source,
+                    "could not read when this source warned, so its normal is learned from every window this pass"
+                );
+                Warned(Vec::new())
+            }
+        }
+    }
+
+    /// Whether the `width_ms` ending at `ended_ms` overlaps a warning.
+    fn during(&self, ended_ms: i64, width_ms: i64) -> bool {
+        self.0
+            .iter()
+            .any(|&(started, ended)| ended_ms > started && ended.is_none_or(|ended| ended_ms - width_ms < ended))
+    }
 }
 
 /// Each source's rows by bucket: (group, source) to bucket start to rows.
@@ -358,6 +391,7 @@ pub fn expected_over(
     if fine.is_empty() && hours.is_empty() {
         return Ok(Vec::new());
     }
+    let warned = Warned::of(store, group, source, oldest);
     // An hour still in five-minute buckets counts only if every one of them was read, as the warning's window does:
     // one cut short by a restart would pull the band down at that hour on every day after it. An hour the hourly tier
     // holds no longer says how much of it was read, so it counts only between two hours that were read at all: that
@@ -366,6 +400,9 @@ pub fn expected_over(
     let read_at_all =
         |start: i64| hours.contains_key(&start) || (0..HOUR_MS / five).any(|i| fine.contains_key(&(start + i * five)));
     let rows = |ended: i64| -> Option<f64> {
+        if warned.during(ended, window_ms) {
+            return None;
+        }
         if !hourly {
             return window_rows(&fine, ended);
         }
@@ -411,9 +448,11 @@ fn swung_over(
     let width = BUCKET.bucket_ms();
     let reach = NEIGHBORHOOD.as_millis() as i64 / width;
     let first = BUCKET.align(since_ms);
+    let oldest = first - HISTORY_DAYS * DAY_MS - reach * width;
+    let warned = Warned::of(store, group, source, oldest);
     // By the end of the bucket each swung in, as a window is known by its end.
     let swung: BTreeMap<i64, Band> = store
-        .swings_since(group, source, width_ms, first - HISTORY_DAYS * DAY_MS - reach * width)?
+        .swings_since(group, source, width_ms, oldest)?
         .into_iter()
         .map(|s| {
             (
@@ -428,7 +467,8 @@ fn swung_over(
     let mut out = Vec::new();
     let mut ended_ms = first + width;
     while ended_ms <= BUCKET.align(now_ms) + width {
-        if let Some(band) = band_of(|ended| swung.get(&ended).copied(), ended_ms, width, reach, share) {
+        let held = |ended| swung.get(&ended).copied().filter(|_| !warned.during(ended, width));
+        if let Some(band) = band_of(held, ended_ms, width, reach, share) {
             out.push(ExpectedPoint {
                 from_millis: ended_ms - width,
                 to_millis: ended_ms,
@@ -888,6 +928,50 @@ mod tests {
                 "at {}",
                 p.from_millis
             );
+        }
+    }
+
+    /// `entry` held for the source from `started` to `ended`, as the fact clock keeps a warning.
+    fn warned(store: &RegistryStore, entry: &str, started: i64, ended: i64) {
+        let fact = vec![(entry.to_string(), serde_json::to_string(&("g", "s")).unwrap())];
+        store.sync_fact_clock(&[], &fact, started).unwrap();
+        store.sync_fact_clock(&fact, &[], ended).unwrap();
+    }
+
+    /// Nothing read for two hours around this time of day three days ago, and nothing in the last window.
+    fn outage_and_drop() -> (RegistryStore, i64) {
+        let outage = END - 3 * DAY_MS - HOUR;
+        let dropped = END - WINDOW.as_millis() as i64;
+        let store = store_with(7, |at| {
+            Some(if (outage..outage + 2 * HOUR).contains(&at) || at >= dropped {
+                0.0
+            } else {
+                100.0
+            })
+        });
+        (store, outage)
+    }
+
+    #[test]
+    fn a_window_that_warned_does_not_teach_the_band() {
+        let (store, outage) = outage_and_drop();
+        assert_eq!(
+            reading(&store, 0.99).unwrap().band.low,
+            0.0,
+            "learned, the outage sets the low edge at this time of day"
+        );
+        warned(&store, "source_unreachable", outage, outage + 2 * HOUR);
+        let r = reading(&store, 0.99).unwrap();
+        assert_eq!(r.band.low, 600.0);
+        assert_eq!(r.outside(), Some(Outside::Below));
+    }
+
+    #[test]
+    fn a_chart_band_leaves_out_what_warned() {
+        let (store, outage) = outage_and_drop();
+        warned(&store, "source_rows_below", outage, outage + 2 * HOUR);
+        for p in expected(&store, END - HOUR) {
+            assert_eq!(p.low, 600.0 / 1800.0, "at {}", p.from_millis);
         }
     }
 
