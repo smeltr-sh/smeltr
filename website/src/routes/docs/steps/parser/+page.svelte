@@ -342,9 +342,10 @@
 </GuideLayout>
 
 <style>
-  /* An example's spaces are part of what the pattern matched. */
+  /* An example's spaces are part of what the pattern matched. It wraps rather than widen the table. */
   .example {
-    white-space: pre;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
   .name {
     white-space: nowrap;
