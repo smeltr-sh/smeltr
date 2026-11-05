@@ -218,10 +218,11 @@ fn tls(cert: &Path, key: &Path, client_ca: Option<&Path>) -> Result<rustls::Serv
     let authorities = client_ca
         .map(|path| certificates(path, "SMELTR_WORKER_METRICS_ENDPOINT_CLIENT_CA"))
         .transpose()?;
-    let mut tls = receiver::serving_tls(chain, key, authorities).map_err(|(what, e)| match what {
-        Some(what) => format!("the metrics endpoint's TLS settings, {what}: {e}"),
-        None => format!("the metrics endpoint's TLS: {e}"),
-    })?;
+    let mut tls =
+        receiver::serving_tls(chain, key, authorities, &Default::default()).map_err(|(what, e)| match what {
+            Some(what) => format!("the metrics endpoint's TLS settings, {what}: {e}"),
+            None => format!("the metrics endpoint's TLS: {e}"),
+        })?;
     tls.alpn_protocols = receiver::http_alpn();
     Ok(tls)
 }

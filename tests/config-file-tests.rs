@@ -6554,3 +6554,63 @@ fn an_http_api_source_with_a_muddled_sign_in_is_refused() {
         assert!(refusal(&json).is_empty(), "{sign_in}: {}", refusal(&json));
     }
 }
+
+/// A syslog receiver over TLS with `extra` spliced into its object, admitting senders from nowhere by their
+/// networks.
+fn syslog_tls_config(extra: &str) -> String {
+    format!(
+        r#"{{"version":1,"sources":[{{"id":"a","type":"syslogReceiver","port":6514,"certificate":"served"{extra}}}]}}"#
+    )
+}
+
+/// A receiver admits a sender by its certificate's fingerprint, which then needs nothing else to admit it, and of
+/// the senders its authorities vouch for, only those issued to the hosts it names. What is neither is refused at
+/// save, as are names with no authority to vouch for them.
+#[test]
+fn a_receiver_admits_senders_by_fingerprint_and_by_name() {
+    use smeltr::io::senders::Fingerprint;
+    use smeltr::plan::topology::SourceKind;
+
+    let sha256 = format!("sha-256{}", ":AB".repeat(32));
+    let json = syslog_tls_config(&format!(r#","senderFingerprints":[" {} "]"#, sha256.to_lowercase()));
+    assert!(refusal(&json).is_empty(), "{}", refusal(&json));
+    let system = load_str(&json).expect("must load");
+    let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
+        unreachable!()
+    };
+    let senders = &r.tls.as_ref().expect("serves TLS").senders;
+    assert_eq!(senders.fingerprints, [Fingerprint::parse(&sha256).unwrap()]);
+    assert_eq!(senders.fingerprints[0].to_string(), sha256);
+
+    let authorities = serde_json::to_string(&crate::certs::Authority::new("senders").pem).unwrap();
+    let json = syslog_tls_config(&format!(
+        r#","trustedAuthorities":{authorities},"senderNames":[" *.example.com"]"#
+    ));
+    assert!(refusal(&json).is_empty(), "{}", refusal(&json));
+    let system = load_str(&json).expect("must load");
+    let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
+        unreachable!()
+    };
+    assert_eq!(r.tls.as_ref().expect("serves TLS").senders.names, ["*.example.com"]);
+
+    let e = refusal(&syslog_tls_config(r#","senderFingerprints":["sha-256:AB:CD"]"#));
+    assert!(
+        e.contains("is not a fingerprint: a sha-256 hash is 32 bytes, and it holds 2"),
+        "{e}"
+    );
+    let e = refusal(&syslog_tls_config(r#","senderFingerprints":["md5:AB"]"#));
+    assert!(e.contains(r#""md5" is not sha-1 or sha-256"#), "{e}");
+    let e = refusal(&syslog_tls_config(&format!(
+        r#","trustedAuthorities":{authorities},"senderNames":["a.*.com"]"#
+    )));
+    assert!(
+        e.contains(r#"admits senders named "a.*.com", which is not a host name"#),
+        "{e}"
+    );
+    let e = refusal(&syslog_tls_config(
+        r#","senderNames":["host.example.com"],"allowFrom":["10.0.0.0/8"]"#,
+    ));
+    assert!(e.contains("trusts no authority to vouch for those names"), "{e}");
+    let e = refusal(&syslog_tls_config(""));
+    assert!(e.contains("admits anyone"), "{e}");
+}

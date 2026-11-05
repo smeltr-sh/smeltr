@@ -121,6 +121,7 @@ fn tls(presents: bool, authorities: Option<&str>) -> Tls {
         authorities: authorities.map(str::to_string),
         trust_public: true,
         side: smeltr::io::trust::Side::Client,
+        senders: Default::default(),
     }
 }
 

@@ -633,6 +633,7 @@ fn a_forwarder_is_served_over_tls() {
         authorities: None,
         trust_public: false,
         side: smeltr::io::trust::Side::Server,
+        senders: Default::default(),
     };
     let at = free_port();
     let mut source = receiver(at, None, Some(tls), &mut secrets);

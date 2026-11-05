@@ -257,6 +257,7 @@ mod tests {
             authorities: authorities.map(str::to_string),
             trust_public,
             side: Side::Client,
+            senders: Default::default(),
         }
     }
 

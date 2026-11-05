@@ -197,6 +197,7 @@ pub fn build(
         authorities: (tls == Tls::Vouched).then(|| pki.authority.pem.clone()),
         trust_public: false,
         side: smeltr::io::trust::Side::Server,
+        senders: Default::default(),
     });
     let config = ReceiverConfig {
         receiver,
