@@ -103,7 +103,6 @@ const SERVICES: &[(&str, &str)] = &[
     ("smeltr::io::mysql", "sql"),
     ("smeltr::io::pubsub", "gcsPubSub"),
     ("smeltr::io::storage_queue", "azureBlobQueue"),
-    ("smeltr::io::socket_receiver", "syslogReceiver"),
     ("smeltr::io::s2s_receiver", "s2sReceiver"),
     ("smeltr::io::s2s", "s2sReceiver"),
     ("smeltr::io::hec", "hecReceiver"),
@@ -218,6 +217,7 @@ mod tests {
             "objects",
             "raw",
             "receiver",
+            "socket_receiver",
             "vended",
         ];
         // Each talks to no outside service.

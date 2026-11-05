@@ -426,6 +426,16 @@ pub(crate) const STEPS: &[&str] = &[
          body     TEXT NOT NULL,
          PRIMARY KEY (channel, warning)
      );",
+    // 18 -- the syslog and socket receivers share one module, so its lines name no service, and "syslogReceiver" is
+    // no longer one a log level override can name (`logs::levels`). Breaking: an older build would keep the override,
+    // which this one refuses to save beside any other.
+    "-- An override that names the service syslogReceiver names nothing now: dropped.
+     UPDATE settings SET value = json_set(value, '$.overrides', (
+         SELECT COALESCE(json_group_array(json(o.value)), json('[]'))
+           FROM json_each(settings.value, '$.overrides') AS o
+          WHERE json_extract(o.value, '$.service') IS NOT 'syslogReceiver'
+     ))
+      WHERE key = 'log_levels' AND json_valid(value) AND json_type(value, '$.overrides') = 'array';",
 ];
 
 fn conversation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRecord> {
@@ -5044,6 +5054,33 @@ mod tests {
             })
             .unwrap();
         assert_eq!(roles, r#"["kept","administrator"]"#);
+    }
+
+    /// Step 18 drops an override that names the service syslogReceiver, and keeps every other.
+    #[test]
+    fn the_log_levels_step_drops_an_override_naming_syslog_receiver() {
+        assert!(!super::super::steps::is_additive(STEPS[17]));
+        let mut conn = Connection::open_in_memory().unwrap();
+        super::super::steps::upgrade_sqlite(&mut conn, "leader.db", &STEPS[..17]).unwrap();
+        let levels = r#"{"default":"info","overrides":[{"service":"syslogReceiver","level":"debug"},{"service":"kafka","level":"warn"},{"class":"sources","level":"debug"}]}"#;
+        conn.execute("INSERT INTO settings (key, value) VALUES ('log_levels', ?1)", [levels])
+            .unwrap();
+        super::super::steps::upgrade_sqlite(&mut conn, "leader.db", STEPS).unwrap();
+        let value: String = conn
+            .query_row("SELECT value FROM settings WHERE key = 'log_levels'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let levels: crate::heartbeat::LogLevels = serde_json::from_str(&value).unwrap();
+        let named: Vec<_> = levels.overrides.iter().map(|o| o.names()).collect();
+        assert_eq!(
+            named,
+            [
+                Some(crate::heartbeat::Named::Service("kafka")),
+                Some(crate::heartbeat::Named::Class("sources"))
+            ]
+        );
+        assert_eq!(levels.default.as_deref(), Some("info"));
     }
 
     #[test]
