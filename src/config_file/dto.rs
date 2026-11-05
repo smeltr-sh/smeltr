@@ -783,6 +783,10 @@ pub enum SourceKindDto {
         listener: ReceiverSettingsDto,
         #[serde(flatten)]
         tls: ServedTlsDto,
+        /// Whether a request is answered only once every destination has its records, rather than as soon as it is
+        /// received.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        answer_after_delivery: bool,
         /// The path senders POST to.
         #[serde(default = "root_path", skip_serializing_if = "is_root_path")]
         path: String,
@@ -804,6 +808,10 @@ pub enum SourceKindDto {
         listener: ReceiverSettingsDto,
         #[serde(flatten)]
         tls: ServedTlsDto,
+        /// Whether a request is answered only once every destination has its records, rather than as soon as it is
+        /// received.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        answer_after_delivery: bool,
         /// Token name -> a token a sender may present as `Authorization: Splunk`, and whether its senders use
         /// indexer acknowledgement.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -840,6 +848,10 @@ pub enum SourceKindDto {
         listener: ReceiverSettingsDto,
         #[serde(flatten)]
         tls: ServedTlsDto,
+        /// Whether a request is answered only once every destination has its records, rather than as soon as it is
+        /// received.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        answer_after_delivery: bool,
         /// The signal it takes. Absent is logs.
         #[serde(default, skip_serializing_if = "is_logs")]
         signal: Signal,
@@ -856,19 +868,27 @@ pub enum SourceKindDto {
         listener: ReceiverSettingsDto,
         #[serde(flatten)]
         tls: ServedTlsDto,
+        /// Whether a request is answered only once every destination has its records, rather than as soon as it is
+        /// received.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        answer_after_delivery: bool,
         /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         tokens: BTreeMap<String, SecretRefDto>,
     },
     /// What Elasticsearch clients and shippers send to `port` through the `_bulk` API, at `/_bulk` and
-    /// `/{index}/_bulk`, one record per document. Every worker of the group listens; a request is answered once
-    /// every destination has its records.
+    /// `/{index}/_bulk`, one record per document. Every worker of the group listens; a request is answered as
+    /// `answerAfterDelivery` says.
     #[serde(rename_all = "camelCase")]
     ElasticReceiver {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
         #[serde(flatten)]
         tls: ServedTlsDto,
+        /// Whether a request is answered only once every destination has its records, rather than as soon as it is
+        /// received.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        answer_after_delivery: bool,
         /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`, as
         /// `Authorization: ApiKey` (the key as sent, or the `id:key` it encodes), or as the password of
         /// `Authorization: Basic`, whose user is not read.
@@ -942,10 +962,6 @@ pub struct ReceiverSettingsDto {
     pub port: u16,
     #[serde(default, skip_serializing_if = "MaxRequestBytes::is_default")]
     pub max_request_bytes: MaxRequestBytes,
-    /// Whether a request is answered only once every destination has its records, rather than as soon as it is
-    /// received. Only a receiver that answers each request takes it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub answer_after_delivery: bool,
 }
 
 /// A token a HEC receiver admits.
