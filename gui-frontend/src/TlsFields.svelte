@@ -126,7 +126,8 @@
     {#snippet help()}
       Senders admitted by their own certificate's fingerprint, whoever issued it, as
       <code>sha-256:AB:CD:…</code> or <code>sha-1:…</code>. With any, every sender must present a
-      certificate.
+      certificate. The certificate's dates are not checked, so a sender stays admitted after its
+      certificate expires until its fingerprint is removed.
     {/snippet}
     <TokenListInput
       bind:values={

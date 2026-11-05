@@ -3162,7 +3162,7 @@
                 "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
               ]
             ],
-            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate."
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
           },
           {
             "name": "senderNames",
@@ -3291,7 +3291,7 @@
                 "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
               ]
             ],
-            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate."
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
           },
           {
             "name": "senderNames",
@@ -3410,7 +3410,7 @@
                 "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
               ]
             ],
-            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate."
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
           },
           {
             "name": "senderNames",
@@ -3551,7 +3551,7 @@
                 "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
               ]
             ],
-            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate."
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
           },
           {
             "name": "senderNames",
@@ -3662,7 +3662,7 @@
                 "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
               ]
             ],
-            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. A UDP receiver takes none."
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed. A UDP receiver takes none."
           },
           {
             "name": "senderNames",
@@ -3780,7 +3780,7 @@
                 "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
               ]
             ],
-            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate."
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
           },
           {
             "name": "senderNames",
@@ -3876,7 +3876,7 @@
                 "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
               ]
             ],
-            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate."
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
           },
           {
             "name": "senderNames",

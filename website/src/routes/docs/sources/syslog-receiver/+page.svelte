@@ -189,7 +189,9 @@ log { source(s_src); destination(d_smeltr); };`;
       <strong>Fingerprints:</strong> <code>senderFingerprints</code> admits a sender by its own
       certificate, whoever issued it, such as a self-signed one. Each is the certificate's
       fingerprint as RFC 5425 writes one, <code>sha-256:AB:CD:…</code>, which
-      <a href="/docs/certificates">Admin &rarr; Certificates</a> copies for a certificate it holds.
+      <a href="/docs/certificates">Admin &rarr; Certificates</a> copies for a certificate it holds. The
+      certificate's dates are not checked, so a sender stays admitted after its certificate expires until
+      its fingerprint is removed.
     </li>
     <li>
       <strong>Host names:</strong> with <code>senderNames</code>, of the senders whose certificate
