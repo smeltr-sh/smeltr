@@ -67,6 +67,7 @@ export const SOURCE_KIND: Record<SourceDto['type'], SourceKind> = {
   s2sReceiver: 'push',
   otlpReceiver: 'push',
   syslogReceiver: 'push',
+  socketReceiver: 'push',
   prometheusReceiver: 'push',
   elasticReceiver: 'push',
   metrics: 'local',

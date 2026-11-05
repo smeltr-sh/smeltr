@@ -2210,6 +2210,70 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
 });
 
 // A10, sources and destinations from a form.
+test('A10: a socket receiver is cut by the framing its form chooses, and over UDP by none', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    {
+      id: 'meters',
+      type: 'socketReceiver',
+      port: 9000,
+      allowFrom: ['10.0.0.0/8'],
+      framing: 'lengthPrefix',
+      lengthPrefix: { offset: 2, bytes: 2 },
+    },
+  ]);
+
+  await goto(admin, leader, '#/build/sources');
+  const meters = admin.getByRole('button', { name: /^meters\b/ });
+  await expect(meters).toContainText(':9000');
+  await meters.click();
+  await expect(admin.getByText('Socket receiver', { exact: true })).toBeVisible();
+  const framing = admin.getByRole('combobox', { name: /^framing/ });
+  await expect(framing).toHaveValue('lengthPrefix');
+  await expect(admin.getByRole('combobox', { name: /^length size/ })).toHaveValue('2');
+  await expect(admin.getByRole('spinbutton', { name: /^length offset/ })).toHaveValue('2');
+  await admin.getByRole('combobox', { name: /^byte order/ }).selectOption('little');
+  await admin.getByRole('combobox', { name: /^length counts/ }).selectOption('frame');
+  await admin.screenshot({ path: test.info().outputPath('socket-length-prefix.png') });
+  await admin.getByRole('button', { name: 'About framing' }).click();
+  await expect(admin.getByText('one record per frame, each starting with its own length.')).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('socket-framing-help.png') });
+  await admin.keyboard.press('Escape');
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+  let saved = await api.get(`/api/areas/shared${ON}`);
+  expect(saved.config.sources).toEqual([
+    {
+      id: 'meters',
+      type: 'socketReceiver',
+      port: 9000,
+      allowFrom: ['10.0.0.0/8'],
+      framing: 'lengthPrefix',
+      lengthPrefix: { offset: 2, bytes: 2, order: 'little', counts: 'frame' },
+    },
+  ]);
+
+  // A fixed size drops the length prefix, and UDP drops any framing with the certificate.
+  await framing.selectOption('fixed');
+  await expect(admin.getByRole('combobox', { name: /^length size/ })).toBeHidden();
+  await admin.getByRole('spinbutton', { name: /^record size/ }).fill('16');
+  await admin.screenshot({ path: test.info().outputPath('socket-fixed.png') });
+  await admin.getByRole('combobox', { name: /^transport/ }).selectOption('udp');
+  await expect(framing).toBeHidden();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+  saved = await api.get(`/api/areas/shared${ON}`);
+  expect(saved.config.sources).toEqual([
+    { id: 'meters', type: 'socketReceiver', port: 9000, allowFrom: ['10.0.0.0/8'], transport: 'udp' },
+  ]);
+  await admin.reload();
+  await expect(admin.getByRole('button', { name: /^meters\b/ })).toContainText(':9000/udp');
+});
+
+// A10, sources and destinations from a form.
 test('A10: an HTTP API source is added from its form, reading an array and asking since its last poll', async ({
   admin,
   leader,

@@ -181,6 +181,8 @@ mod s2s_receiver_tests;
 mod split_threads_tests;
 #[path = "splunk-fuzz.rs"]
 mod splunk_fuzz;
+#[path = "socket-receiver-fuzz.rs"]
+mod socket_receiver_fuzz;
 #[path = "splunk-live-tests.rs"]
 mod splunk_live_tests;
 #[path = "splunk-tests.rs"]

@@ -178,26 +178,23 @@ export type SourceDto =
         type: 's3Sqs';
         /** The queue's own URL, which names its region and account. */
         queueUrl: string;
-        /** Absent is `lines`. */
-        framing?: Framing;
-        lineBreaker?: string;
         /** As a Kafka source's. */
         encoding?: string;
         visibilitySecs?: number;
-      } & ReadFormat)
+      } & FramingSettings &
+      ReadFormat)
   | (TlsDto &
       AzureAccess & {
         id: string;
         type: 'azureBlobQueue';
         /** The Storage queue's own URL. */
         queueUrl: string;
-        framing?: Framing;
-        lineBreaker?: string;
         encoding?: string;
         visibilitySecs?: number;
         /** Receives before a message is moved to `<queue>-poison`. */
         maxDeliveries?: number;
-      } & ReadFormat)
+      } & FramingSettings &
+      ReadFormat)
   | (TlsDto &
       GcsAccess & {
         id: string;
@@ -206,12 +203,11 @@ export type SourceDto =
         subscription: string;
         /** Another Pub/Sub address, such as an emulator's. Absent is Google's. */
         pubsubEndpoint?: string;
-        framing?: Framing;
-        lineBreaker?: string;
         encoding?: string;
         /** The ack deadline: at most `LIMITS.ackDeadlineSecs.max`. */
         visibilitySecs?: number;
-      } & ReadFormat)
+      } & FramingSettings &
+      ReadFormat)
   | (TlsDto &
       S3Access &
       ListingSettings & {
@@ -354,6 +350,18 @@ export type SourceDto =
        * still frames a message that starts with its length. */
       lineBreaker?: string;
     })
+  | (ReceiverSettings &
+      FramingSettings & {
+        id: string;
+        type: 'socketReceiver';
+        /** As a syslog receiver's: nothing it receives carries a token. */
+        allowFrom?: string[];
+        /** As a Kafka source's. */
+        encoding?: string;
+        /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a record, served without TLS
+         * and cut by no framing. */
+        transport?: 'tcp' | 'udp';
+      })
   | (SqlConnection & { type: 'postgres' })
   | (SqlConnection & { type: 'mysql' })
   | { id: string; type: 'metrics'; bucketSeconds: number }
@@ -931,12 +939,9 @@ export interface ApiSettings extends TlsDto {
 }
 
 /** What every listing source takes besides where it lists and how it signs in. */
-export interface ListingSettings extends ReadFormat {
+export interface ListingSettings extends ReadFormat, FramingSettings {
   /** Only keys that start with it. Absent is all of them. */
   prefix?: string;
-  /** Absent is `lines`. */
-  framing?: Framing;
-  lineBreaker?: string;
   /** As a Kafka source's. */
   encoding?: string;
   /** Seconds from the start of one listing to the start of the next. Absent is
@@ -950,11 +955,36 @@ export interface ListingSettings extends ReadFormat {
   movePrefix?: string;
 }
 
-/** How an object source cuts an object into records: one per line, the whole object as one, or one per line
- * unescaped as a `bytes` object destination wrote it. `lines` alone takes the source's `lineBreaker`, a regex
- * whose first capture group is where a record ends, the group dropped, as Splunk's `LINE_BREAKER`; absent, a
+/** How a stream's bytes become records, an object source's objects or what a socket receiver's senders send over
+ * TCP: one per line, the whole stream as one, one per line unescaped as a `bytes` object destination wrote it, one
+ * per frame that says its own length, or one per so many bytes. `lines` alone takes the source's `lineBreaker`, a
+ * regex whose first capture group is where a record ends, the group dropped, as Splunk's `LINE_BREAKER`; absent, a
  * record ends at a line end. */
-export type Framing = 'lines' | 'object' | 'escapedLines';
+export type Framing = 'lines' | 'object' | 'escapedLines' | 'lengthPrefix' | 'fixed';
+
+/** Mirrors `config_file::dto::FramingSettingsDto`. */
+export interface FramingSettings {
+  /** Absent is `lines`. */
+  framing?: Framing;
+  lineBreaker?: string;
+  /** `lengthPrefix` only, and required there. */
+  lengthPrefix?: LengthPrefix;
+  /** `fixed` only, and required there: how many bytes every record is. */
+  fixedBytes?: number;
+}
+
+/** Where a frame's length is and what it counts, mirroring `config_file::dto::LengthPrefixDto`. The record is the
+ * whole frame. */
+export interface LengthPrefix {
+  /** How many bytes come before the length. Absent is none. */
+  offset?: number;
+  /** How many bytes the length is, 1 to 8. */
+  bytes: number;
+  /** Absent is `big`. */
+  order?: 'big' | 'little';
+  /** What the length counts: the bytes after it, or the whole frame. Absent is `rest`. */
+  counts?: 'rest' | 'frame';
+}
 
 /** An object store's kind, as a destination names it and as an object source's access is drawn. */
 export type ObjectStore = CloudStore | 'sftp';
