@@ -2171,6 +2171,35 @@ pub struct ReceiverConfig {
     /// A request is answered once every destination has its records, rather than once it is in the inbox. A worker
     /// that stops between the two loses what it answered for (design doc, delivery).
     pub answer_after_delivery: bool,
+    /// How many connections it holds open, for a receiver whose senders stream over a connection held open.
+    pub connections: ConnectionLimits,
+}
+
+/// How many connections a receiver that streams holds at once, and how long one may sit idle. The defaults hold every
+/// honest sender: a quiet one that keeps one connection for days, and every sender behind one balancer's address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnectionLimits {
+    /// The most it holds. At the cap a new connection takes the place of the one idle longest, if that one has been
+    /// idle a while, and is closed otherwise.
+    pub max: usize,
+    /// The most it holds from one address, the same way. `None` holds as many as `max` from one.
+    pub per_sender: Option<usize>,
+    /// A connection that reads nothing this long is closed. `None` holds an idle one for as long as there is room.
+    pub idle: Option<std::time::Duration>,
+}
+
+impl ConnectionLimits {
+    pub const DEFAULT_MAX: usize = 10_000;
+}
+
+impl Default for ConnectionLimits {
+    fn default() -> Self {
+        ConnectionLimits {
+            max: Self::DEFAULT_MAX,
+            per_sender: None,
+            idle: None,
+        }
+    }
 }
 
 /// Which protocol a receiver speaks.
