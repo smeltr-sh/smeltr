@@ -87,14 +87,13 @@
   import LeaderSecretField from './LeaderSecretField.svelte';
   import Toggle from './Toggle.svelte';
   import Advanced from './Advanced.svelte';
+  import CopyButton from './CopyButton.svelte';
 
   const DEFAULT_GROUPS_CLAIM = 'groups';
 
   let settings = $state<OidcSettingsDto | null>(null);
   let loadFailed = $state(false);
   let busy = $state(false);
-  let copied = $state(false);
-
   let enabled = $state(false);
   let issuer = $state('');
   let clientId = $state('');
@@ -109,7 +108,6 @@
     clientId = next.clientId;
     clientSecret = '';
     replacingSecret = false;
-    copied = false;
     groupsClaim = next.groupsClaim;
   }
 
@@ -177,17 +175,6 @@
   function discard() {
     if (settings) adopt(settings);
   }
-
-  async function copyRedirect() {
-    if (!settings) return;
-    try {
-      await navigator.clipboard.writeText(settings.redirectUri);
-      copied = true;
-      setTimeout(() => (copied = false), 2000);
-    } catch {
-      // No clipboard access: the value is still on screen to select by hand.
-    }
-  }
 </script>
 
 {#if loadFailed}
@@ -226,9 +213,7 @@
         <Field label="Redirect URI" group>
           <div class="copy-row">
             <code class="code-value">{settings.redirectUri}</code>
-            <button type="button" onclick={copyRedirect} aria-live="polite"
-              >{copied ? 'Copied' : 'Copy'}</button
-            >
+            <CopyButton text={settings.redirectUri} />
           </div>
         </Field>
         <Field required label="Issuer URL" error={(!partialScheme(issuer) && issuerError) || null}>

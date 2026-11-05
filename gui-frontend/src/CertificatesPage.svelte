@@ -17,7 +17,7 @@
   import Segmented from './Segmented.svelte';
   import { ask } from './Confirm.svelte';
   import SortButton from './SortButton.svelte';
-  import FingerprintCopy from './FingerprintCopy.svelte';
+  import CopyButton from './CopyButton.svelte';
   import { TableSort } from './sort.svelte';
   import {
     listCertificates,
@@ -28,6 +28,7 @@
     deleteSecret,
     OWN_CERTIFICATE,
     currentVersion,
+    shownFingerprint,
     type CertificateDto,
   } from './api';
   import { ago, expiringSoon, expiry } from './time';
@@ -310,7 +311,11 @@
               <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
               <td class="row-actions">
                 {#if leaf(c)}
-                  <FingerprintCopy fingerprint={leaf(c).fingerprint} />
+                  <CopyButton
+                    text={shownFingerprint(leaf(c).fingerprint)}
+                    title={shownFingerprint(leaf(c).fingerprint)}
+                    label="Copy fingerprint"
+                  />
                 {/if}
                 {#if !c.kept}
                   <button type="button" onclick={() => open(c.name)}>Replace</button>

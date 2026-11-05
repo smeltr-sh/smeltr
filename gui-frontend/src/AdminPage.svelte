@@ -61,6 +61,7 @@
   import { WORKERS_TABS, type WorkersSection } from './nav';
   import SecondaryTabs from './SecondaryTabs.svelte';
   import Advanced from './Advanced.svelte';
+  import CopyButton from './CopyButton.svelte';
 
   let {
     page = 'workers',
@@ -376,7 +377,6 @@
 
   let minting = $state(false);
   let minted = $state<MintedEnrollmentCode | null>(null);
-  let copied = $state(false);
   let withdrawingCode = $state('');
 
   let mintGroup = $state('');
@@ -434,7 +434,6 @@
     if (minting || !mintReady) return;
     minting = true;
     minted = null;
-    copied = false;
     try {
       const groupId = mintGroup.trim();
       const request: MintEnrollmentCodeRequest =
@@ -450,16 +449,6 @@
       reported(e);
     } finally {
       minting = false;
-    }
-  }
-
-  async function copyCode() {
-    if (!enrollCommand) return;
-    try {
-      await navigator.clipboard.writeText(enrollCommand);
-      copied = true;
-    } catch {
-      // No clipboard access: the value is still on screen to select by hand.
     }
   }
 
@@ -900,7 +889,7 @@
         </Field>
         <pre class="mono code-value enrollblock">{enrollCommand}</pre>
         <div class="actions">
-          <button type="button" onclick={copyCode}>{copied ? 'Copied' : 'Copy'}</button>
+          <CopyButton text={enrollCommand} />
           <span class="spacer"></span>
           <button type="button" onclick={() => (minted = null)}>Done</button>
         </div>

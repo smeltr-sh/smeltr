@@ -54,7 +54,7 @@
   import LeaderSecretField from './LeaderSecretField.svelte';
   import TokenListInput from './TokenListInput.svelte';
   import CertificatePicker from './CertificatePicker.svelte';
-  import FingerprintCopy from './FingerprintCopy.svelte';
+  import CopyButton from './CopyButton.svelte';
   import {
     countdown,
     expiringSoon,
@@ -465,7 +465,12 @@
     <h3>{cert.subject || cert.names[0] || 'no name'}</h3>
     <p class="mono">
       {short(cert.fingerprint)}
-      <FingerprintCopy fingerprint={cert.fingerprint} label="copy" link />
+      <CopyButton
+        text={shownFingerprint(cert.fingerprint)}
+        title={shownFingerprint(cert.fingerprint)}
+        label="copy"
+        link
+      />
     </p>
     <p class="dim">
       <span class:soon={expiringSoon(cert)}>{expiry(cert.notAfterMillis)}</span>
