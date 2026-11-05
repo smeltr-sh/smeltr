@@ -132,6 +132,18 @@ pub const BUILTINS: &[(&str, &str)] = &[
             r"(?: %{GREEDYDATA:message})?",
         ),
     ),
+    // A Cisco ASA or Firepower Threat Defense line: the header every message ID shares, the body left whole. The
+    // device writes a timestamp, with a year or without, and a device ID only where it is set to, and a relay may put
+    // its own date and host ahead of `%ASA`. A device ID ends before a `:`, which an IPv6 one may also hold.
+    (
+        "CISCOASALINE",
+        concat!(
+            r"(?:<(?P<log.syslog.priority>[0-9]{1,3})>)?",
+            r"(?:(?P<timestamp>%{MONTH} +%{MONTHDAY}(?: [0-9]{4})? %{TIME}|%{TIMESTAMP_ISO8601}):? )?",
+            r"(?:(?P<host.hostname>\S*[^\s:]) ?)?(?:: )?",
+            r"%(?:ASA|FTD)-(?P<log.syslog.severity.code>[0-7])-(?P<event.code>[0-9]{6}): %{GREEDYDATA:message}",
+        ),
+    ),
     // The NCSA common log format, and Apache's combined format, which adds the referrer and the user agent. A `-` is a
     // field the server left out, and a request line that is not `method target HTTP/version` names nothing.
     (
@@ -522,6 +534,56 @@ mod tests {
                     ("log.syslog.structured_data", None),
                     ("message", None),
                 ],
+            ),
+            (
+                "CISCOASALINE",
+                "<166>Oct 15 2026 00:31:02 fw-01 : %ASA-6-302013: Built inbound TCP connection 1 for a:10.0.0.1/80",
+                &[
+                    ("log.syslog.priority", Some("166")),
+                    ("timestamp", Some("Oct 15 2026 00:31:02")),
+                    ("host.hostname", Some("fw-01")),
+                    ("log.syslog.severity.code", Some("6")),
+                    ("event.code", Some("302013")),
+                    ("message", Some("Built inbound TCP connection 1 for a:10.0.0.1/80")),
+                ],
+            ),
+            (
+                "CISCOASALINE",
+                "%FTD-1-430003: Protocol: TCP",
+                &[
+                    ("log.syslog.priority", None),
+                    ("timestamp", None),
+                    ("host.hostname", None),
+                    ("log.syslog.severity.code", Some("1")),
+                    ("event.code", Some("430003")),
+                    ("message", Some("Protocol: TCP")),
+                ],
+            ),
+            (
+                "CISCOASALINE",
+                "<166>Oct 15 2026 00:31:02: %ASA-4-106023: Deny tcp",
+                &[("timestamp", Some("Oct 15 2026 00:31:02")), ("host.hostname", None)],
+            ),
+            (
+                "CISCOASALINE",
+                "Oct  5 00:31:02 10.0.0.1 %ASA-4-106023: Deny tcp",
+                &[
+                    ("timestamp", Some("Oct  5 00:31:02")),
+                    ("host.hostname", Some("10.0.0.1")),
+                ],
+            ),
+            (
+                "CISCOASALINE",
+                "2026-10-15T00:31:02Z 2001:db8::1: %ASA-4-106023: Deny tcp",
+                &[
+                    ("timestamp", Some("2026-10-15T00:31:02Z")),
+                    ("host.hostname", Some("2001:db8::1")),
+                ],
+            ),
+            (
+                "CISCOASALINE",
+                "<166>fw-01 : %ASA-4-106023: Deny tcp",
+                &[("timestamp", None), ("host.hostname", Some("fw-01"))],
             ),
             (
                 "COMMONAPACHELOG",
@@ -1026,6 +1088,26 @@ mod tests {
                 "<34>Oct 11 22:14:15 host su: x",
                 "<34>1 - - - - -",
                 "34>1 - - - - - -",
+            ],
+        ),
+        (
+            "CISCOASALINE",
+            &[
+                "%ASA-6-302013: Built inbound TCP connection",
+                "<166>%ASA-6-302013: Built",
+                "<166>Oct 15 2026 00:31:02: %ASA-6-302013: Built",
+                "Oct 15 2026 00:31:02 fw-01 : %ASA-6-302013: Built",
+                "Oct  5 00:31:02.250 fw-01: %FTD-6-430003: Built",
+                "2026-10-15T00:31:02+02:00 fw-01 %ASA-6-302013: Built",
+            ],
+            &[
+                "",
+                "%ASA-6-302013 Built",
+                "%ASA-8-302013: Built",
+                "%ASA-6-30201: Built",
+                "%PIX-6-302013: Built",
+                "Oct 15 2026 00:31:02 fw 01 : %ASA-6-302013: Built",
+                "<34>Oct 11 22:14:15 mymachine su[230]: 'su root' failed",
             ],
         ),
         (

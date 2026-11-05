@@ -29,14 +29,19 @@ const CSV_DELIMITERS: [u8; 4] = *b",\t;|";
 const STREAM_FIELDS: [&str; 2] = ["sourcetype", "index"];
 
 /// The whole-line Grok patterns a record's text is tried on, each with the name the GUI knows its format by, in the
-/// order a tie between them is settled: an RFC 5424 line before a BSD one, which reads it too, and a combined access
-/// log before a common one.
-const LINES: [(&str, &str); 4] = [
+/// order a tie between them is settled: an RFC 5424 line and a Cisco ASA one before a BSD one, which reads them too,
+/// and a combined access log before a common one.
+const LINES: [(&str, &str); 5] = [
     ("syslog5424", "SYSLOG5424LINE"),
+    ("ciscoAsa", "CISCOASALINE"),
     ("syslog", "SYSLOGLINE"),
     ("combinedLog", "COMBINEDAPACHELOG"),
     ("commonLog", "COMMONAPACHELOG"),
 ];
+
+/// The percentage of a sample's records a format must read to be proposed: a wrong proposal costs the author more
+/// than none.
+const READ_TO_PROPOSE: usize = 99;
 
 /// What a record's text reads as.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,10 +59,10 @@ enum Format {
     },
 }
 
-/// The format most of a sample's records read as.
+/// The format nearly all of a sample's records read as.
 #[derive(Clone, Debug, PartialEq)]
 struct Sniffed {
-    /// `None` where no format reads any record.
+    /// `None` where no format reads [`READ_TO_PROPOSE`] percent of the records.
     pub format: Option<Format>,
     /// Records `format` reads.
     pub read: usize,
@@ -66,8 +71,9 @@ struct Sniffed {
 }
 
 /// The format of `texts`, one record's text each. Every format is tried on every record, and the one that reads the
-/// most wins; a tie goes to the stricter format, in the order JSON, CEF, [`LINES`], CSV, Key/value, since each later
-/// one reads some records an earlier one would also read: CEF reads past a syslog header.
+/// most wins where it reads [`READ_TO_PROPOSE`] percent of them. A tie goes to the stricter format, in the order JSON,
+/// CEF, [`LINES`], CSV, Key/value, since each later one reads some records an earlier one would also read: CEF reads
+/// past a syslog header.
 fn sniff<'a>(texts: impl IntoIterator<Item = &'a str>) -> Sniffed {
     let texts: Vec<&str> = texts.into_iter().filter(|t| !t.trim().is_empty()).collect();
     let of = texts.len();
@@ -93,7 +99,7 @@ fn sniff<'a>(texts: impl IntoIterator<Item = &'a str>) -> Sniffed {
             best = Some((format, read));
         }
     }
-    match best {
+    match best.filter(|(_, read)| *read * 100 >= of * READ_TO_PROPOSE) {
         Some((format, read)) => Sniffed {
             format: Some(format),
             read,
@@ -529,6 +535,16 @@ mod tests {
                 "SYSLOG5424LINE",
             ),
             (
+                "<166>Oct 15 2026 00:31:02: %ASA-6-302013: Built inbound TCP connection 1",
+                "ciscoAsa",
+                "CISCOASALINE",
+            ),
+            (
+                "Oct 15 00:31:02 fw-01 %ASA-6-302013: Built inbound TCP connection 1",
+                "ciscoAsa",
+                "CISCOASALINE",
+            ),
+            (
                 r#"127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] "GET / HTTP/1.1" 200 2326"#,
                 "commonLog",
                 "COMMONAPACHELOG",
@@ -556,6 +572,18 @@ mod tests {
             Some("cef"),
             "CEF reads past a syslog header"
         );
+    }
+
+    #[test]
+    fn a_format_is_proposed_only_where_it_reads_nearly_every_record() {
+        let mut texts = vec![r#"{"a": 1}"#; 99];
+        texts.push("not json");
+        let s = sniff(texts.iter().copied());
+        assert_eq!((s.format, s.read, s.of), (Some(Format::Json), 99, 100));
+        texts[0] = "not json either";
+        let s = sniff(texts.iter().copied());
+        assert_eq!((s.format, s.read, s.of), (None, 0, 100));
+        assert!(propose(&raw(&texts), None).steps.is_empty());
     }
 
     #[test]

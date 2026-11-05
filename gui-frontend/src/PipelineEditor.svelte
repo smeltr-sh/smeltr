@@ -1171,7 +1171,9 @@
         return;
       }
       if (!steps.length) {
-        if (p.of > 0) proposed = 'No format read these records, so they need a parser of your own.';
+        if (p.of > 0)
+          proposed =
+            'No format read nearly all of these records, so they need a parser of your own.';
         return;
       }
       const parser = steps.find((s) => s.type === 'parser');

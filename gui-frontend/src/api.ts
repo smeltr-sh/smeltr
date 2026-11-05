@@ -2213,7 +2213,15 @@ export function formatCode(code: string, kind: 'expr' | 'block'): Promise<Format
 export interface OnboardProposal {
   steps?: unknown[];
   format?:
-    'json' | 'cef' | 'keyValue' | 'csv' | 'syslog' | 'syslog5424' | 'commonLog' | 'combinedLog';
+    | 'json'
+    | 'cef'
+    | 'keyValue'
+    | 'csv'
+    | 'syslog'
+    | 'syslog5424'
+    | 'ciscoAsa'
+    | 'commonLog'
+    | 'combinedLog';
   read: number;
   of: number;
   structured: boolean;

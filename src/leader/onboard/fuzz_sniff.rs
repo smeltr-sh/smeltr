@@ -90,7 +90,7 @@ fn sample(rng: &mut Rng, cov: &mut Coverage) -> (Vec<String>, Format) {
             (records, Format::Cef)
         }
         3 => {
-            let (format, records) = match rng.below(4) {
+            let (format, records) = match rng.below(5) {
                 0 => {
                     cov.reach("syslog");
                     let records = (0..rows)
@@ -135,6 +135,7 @@ fn sample(rng: &mut Rng, cov: &mut Coverage) -> (Vec<String>, Format) {
                         .collect();
                     ("syslog5424", records)
                 }
+                4 => ("ciscoAsa", (0..rows).map(|i| asa_line(rng, cov, i)).collect()),
                 n => {
                     let combined = n == 2;
                     cov.reach(if combined { "combined log" } else { "common log" });
@@ -225,6 +226,63 @@ fn sample(rng: &mut Rng, cov: &mut Coverage) -> (Vec<String>, Format) {
     }
 }
 
+/// A Cisco ASA or FTD line, each part of its header drawn: the PRI, the timestamp's form, the device ID and the `:`
+/// that may end it.
+fn asa_line(rng: &mut Rng, cov: &mut Coverage, i: usize) -> String {
+    let pri = if rng.chance(2) {
+        cov.reach("asa pri");
+        format!("<{}>", rng.below(192))
+    } else {
+        String::new()
+    };
+    let timestamp = match rng.below(4) {
+        0 => {
+            cov.reach("asa no timestamp");
+            None
+        }
+        1 => {
+            cov.reach("asa timestamp with a year");
+            Some(format!("Oct {:>2} 2026 00:31:0{}", 1 + i % 31, i % 10))
+        }
+        2 => {
+            cov.reach("asa timestamp without a year");
+            Some(format!("Oct {:>2} 00:31:0{}", 1 + i % 31, i % 10))
+        }
+        _ => {
+            cov.reach("asa iso timestamp");
+            Some(format!("2026-10-15T00:31:{:02}.{i}Z", i % 60))
+        }
+    };
+    let host = rng.chance(2).then(|| {
+        cov.reach("asa device id");
+        *rng.pick(&["fw-01", "10.0.0.1", "2001:db8::1", "asa.example.com"])
+    });
+    let colon = rng.chance(2);
+    let header = match (timestamp, host) {
+        (None, None) => String::new(),
+        (Some(t), None) => format!("{t}: "),
+        (t, Some(h)) => {
+            if colon {
+                cov.reach("asa device id and colon");
+            }
+            let t = t.map(|t| format!("{t} ")).unwrap_or_default();
+            format!("{t}{h}{} ", if colon { " :" } else { "" })
+        }
+    };
+    let device = if rng.chance(3) {
+        cov.reach("ftd");
+        "FTD"
+    } else {
+        "ASA"
+    };
+    format!(
+        "{pri}{header}%{device}-{}-{}: {}",
+        rng.below(8),
+        rng.pick(&["302013", "106023", "430003", "733100"]),
+        rng.pick(WORDS)
+    )
+}
+
 fn damage(rng: &mut Rng, records: &mut [String], cov: &mut Coverage) {
     for r in records.iter_mut() {
         match rng.below(6) {
@@ -284,6 +342,14 @@ fn fuzz_sniff_names_the_format_it_was_given() {
         "syslog 5424",
         "common log",
         "combined log",
+        "asa pri",
+        "asa no timestamp",
+        "asa timestamp with a year",
+        "asa timestamp without a year",
+        "asa iso timestamp",
+        "asa device id",
+        "asa device id and colon",
+        "ftd",
         "value int",
         "value float",
         "value bool",

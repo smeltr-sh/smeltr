@@ -450,7 +450,7 @@ for (const [what, proposal, note] of [
   [
     'are in no format it reads',
     { read: 0, of: 3, structured: false },
-    'No format read these records, so they need a parser of your own.',
+    'No format read nearly all of these records, so they need a parser of your own.',
   ],
 ] as const) {
   test(`A1: a capture whose records ${what} says so`, async ({ admin, leader, api, fleet }) => {
