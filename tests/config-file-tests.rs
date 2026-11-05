@@ -6092,20 +6092,18 @@ fn syslog_receivers_share_a_port_only_across_transports() {
     );
 }
 
-/// A receiver whose file holds a `maxRequestBytes` below 2048, saved before that was the least a form takes, still
-/// loads, and runs at 2048: RFC 5425 has a syslog receiver take messages of 2048 octets.
+/// A receiver reads no less than 2048 bytes: RFC 5425 has a syslog receiver take messages of 2048 octets.
 #[test]
-fn a_receiver_saved_below_2048_bytes_still_loads_and_runs_at_2048() {
-    use smeltr::plan::topology::SourceKind;
-
-    let json = r#"{"version":1,"sources":[
-        {"id":"a","type":"syslogReceiver","port":514,"allowFrom":["10.0.0.0/8"],"maxRequestBytes":1500}]}"#;
-    assert!(refusal(json).is_empty(), "{}", refusal(json));
-    let system = load_str(json).expect("must load");
-    let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
-        unreachable!()
+fn a_receiver_below_2048_bytes_is_refused() {
+    let json = |bytes: u64| {
+        format!(
+            r#"{{"version":1,"sources":[
+                {{"id":"a","type":"syslogReceiver","port":514,"allowFrom":["10.0.0.0/8"],"maxRequestBytes":{bytes}}}]}}"#
+        )
     };
-    assert_eq!(r.max_request_bytes, 2048);
+    assert!(refusal(&json(2048)).is_empty(), "{}", refusal(&json(2048)));
+    let e = refusal(&json(2047));
+    assert!(e.contains("maxRequestBytes is between 2048 and 67108864"), "{e}");
 }
 
 /// One PostgreSQL source reading `auth.events` by `mode`, its password in the leader's store, with `extra` spliced
@@ -6610,7 +6608,10 @@ fn a_receiver_admits_senders_by_fingerprint_and_by_name() {
     let e = refusal(&syslog_tls_config(
         r#","senderNames":["host.example.com"],"allowFrom":["10.0.0.0/8"]"#,
     ));
-    assert!(e.contains("trusts no authority, so no certificate can match those names"), "{e}");
+    assert!(
+        e.contains("trusts no authority, so no certificate can match those names"),
+        "{e}"
+    );
     let e = refusal(&syslog_tls_config(""));
     assert!(e.contains("admits anyone"), "{e}");
 }

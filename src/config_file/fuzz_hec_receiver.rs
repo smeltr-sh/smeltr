@@ -29,11 +29,11 @@ const HEC: &str = "hec";
 const PORTS: Pool = &[("8088", false), ("1", false), ("65535", false), ("0", true)];
 
 const MAX_REQUEST_BYTES: Pool = &[
-    ("1024", false),
+    ("2048", false),
     ("10485760", false),
     ("67108864", false),
     ("0", true),
-    ("1023", true),
+    ("2047", true),
     ("67108865", true),
 ];
 
@@ -460,8 +460,7 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
     }
     let max = field("maxRequestBytes")
         .and_then(Value::as_u64)
-        .unwrap_or(MaxRequestBytes::DEFAULT)
-        .max(MaxRequestBytes::FLOOR);
+        .unwrap_or(MaxRequestBytes::DEFAULT);
     if r.max_request_bytes as u64 != max {
         return Err(format!("built maxRequestBytes {}, not {max}", r.max_request_bytes));
     }

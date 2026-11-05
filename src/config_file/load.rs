@@ -2155,8 +2155,7 @@ fn receiver_config<'a>(
             senders: to_senders(tls),
             ..served
         }),
-        max_request_bytes: usize::try_from(listener.max_request_bytes.0.max(MaxRequestBytes::FLOOR))
-            .unwrap_or(usize::MAX),
+        max_request_bytes: usize::try_from(listener.max_request_bytes.0).unwrap_or(usize::MAX),
         answer_after_delivery,
     })
 }
@@ -7335,8 +7334,7 @@ mod tests {
             ),
             (
                 "receiverRequestBytes",
-                // A form offers no less than a receiver runs at.
-                Receiver::FLOOR,
+                Receiver::MIN,
                 Some(Receiver::MAX),
                 Receiver::DEFAULT,
             ),
