@@ -25,6 +25,8 @@
   import ValidatedField from './ValidatedField.svelte';
   import Advanced from './Advanced.svelte';
   import StartAt from './StartAt.svelte';
+  import Toggle from './Toggle.svelte';
+  import { isReceiver } from './sources';
   import type { StartPosition } from './kafka';
   import { CaptureSession } from './captureSession.svelte';
   import {
@@ -109,12 +111,16 @@
   let deadlineSecs = $state(30);
   /** Where a stream source's capture starts; absent is the latest. */
   let start: StartPosition | undefined = $state();
+  /** A receiver captured as sent, in place of its records. */
+  let raw = $state(false);
 
   // A lost session closes the capture dialog, and the form says why.
   const capture = new CaptureSession((e) => (error = e));
   /** The target the running session was started at, so a change to the form
    * while the dialog is up cannot rename what it saves. */
   let sessionTarget = $state<{ kind: CaptureAt; id: string } | null>(null);
+  /** Whether the running session captures as sent, which the dialog warns of. */
+  let sessionRaw = $state(false);
 
   onDestroy(() => capture.destroy());
 
@@ -235,6 +241,9 @@
   let at: CaptureAt = $derived(captureDestination ? 'destination' : 'source');
   /** Only a stream has a position to start from. */
   let streams = $derived(captureSource?.type === 'kafka' || captureSource?.type === 'eventHubs');
+  /** Only a receiver has bytes before records. */
+  let receiver = $derived(!!captureSource && isReceiver(captureSource));
+  let asSent = $derived(receiver && raw);
 
   let captureTarget = $derived<CaptureTarget | null>(
     captureDestination
@@ -253,6 +262,7 @@
     sessionTarget = captureDestination
       ? { kind: 'destination', id: captureDestination.id }
       : captureSource && { kind: 'source', id: captureSource.id };
+    sessionRaw = asSent;
     await capture.start(
       captureRequest(captureTarget, {
         group,
@@ -260,6 +270,7 @@
         maxMatches,
         deadlineSecs,
         start: streams ? start : undefined,
+        raw: asSent,
       }),
     );
     busy = false;
@@ -349,7 +360,13 @@
       </Field>
       <Field label="Capture target">
         <!-- A start was chosen for the source it was chosen on. -->
-        <select bind:value={selected} onchange={() => (start = undefined)}>
+        <select
+          bind:value={selected}
+          onchange={() => {
+            start = undefined;
+            raw = false;
+          }}
+        >
           {#if sources.length > 0}
             <optgroup label="Sources">
               {#each sources as s (s.id)}
@@ -366,25 +383,27 @@
           {/if}
         </select>
       </Field>
-      <Field optional label="Keep records where" error={filterError} warning={filterWarning}>
-        {#snippet help()}
-          {#each filterHelp(at) as part, i (i)}{#if part.code}<code>{part.text}</code
-              >{:else}{part.text}{/if}{/each} Leave it empty to keep everything.
-        {/snippet}
-        <ValidatedField
-          bind:value={filter}
-          errors={readsNone ? skipErrors : []}
-          warnings={readsNone ? [] : skipErrors}
-          placeholder={filterPlaceholder(at)}
-          autocomplete="condition"
-          ask={captureSource
-            ? askAt({ source: captureSource.id })
-            : captureDestination
-              ? askAt({ destination: captureDestination.id })
-              : undefined}
-          wrap
-        />
-      </Field>
+      {#if !asSent}
+        <Field optional label="Keep records where" error={filterError} warning={filterWarning}>
+          {#snippet help()}
+            {#each filterHelp(at) as part, i (i)}{#if part.code}<code>{part.text}</code
+                >{:else}{part.text}{/if}{/each} Leave it empty to keep everything.
+          {/snippet}
+          <ValidatedField
+            bind:value={filter}
+            errors={readsNone ? skipErrors : []}
+            warnings={readsNone ? [] : skipErrors}
+            placeholder={filterPlaceholder(at)}
+            autocomplete="condition"
+            ask={captureSource
+              ? askAt({ source: captureSource.id })
+              : captureDestination
+                ? askAt({ destination: captureDestination.id })
+                : undefined}
+            wrap
+          />
+        </Field>
+      {/if}
       <Field label="At most" group>
         <div class="limits">
           <input
@@ -406,14 +425,26 @@
           <span class="dim">seconds</span>
         </div>
       </Field>
-      {#if streams}
-        <Advanced modified={start !== undefined}>
-          <StartAt bind:start label="Start at" fallback="latest">
-            {#snippet help()}
-              Where each partition starts. Every worker in the group reads the source for the
-              capture, whether or not it runs it, and nothing it reads is committed.
-            {/snippet}
-          </StartAt>
+      {#if streams || receiver}
+        <Advanced modified={start !== undefined || asSent}>
+          {#if streams}
+            <StartAt bind:start label="Start at" fallback="latest">
+              {#snippet help()}
+                Where each partition starts. Every worker in the group reads the source for the
+                capture, whether or not it runs it, and nothing it reads is committed.
+              {/snippet}
+            </StartAt>
+          {/if}
+          {#if receiver}
+            <Field label="Capture as sent">
+              {#snippet help()}
+                Use this when the receiver makes no records. Keeps the bytes each sender writes,
+                before any is read as a record. A worker that doesn't run this receiver listens on
+                its port itself, and its senders get no answer.
+              {/snippet}
+              <Toggle bind:checked={raw} ariaLabel="Capture as sent" />
+            </Field>
+          {/if}
         </Advanced>
       {/if}
     {/if}
@@ -435,6 +466,8 @@
 {#if capture.session}
   <CaptureDialog
     status={capture.status}
+    session={capture.session}
+    raw={sessionRaw}
     source={sessionTarget?.kind === 'source' ? sessionTarget.id : undefined}
     destination={sessionTarget?.kind === 'destination' ? sessionTarget.id : undefined}
     {busy}

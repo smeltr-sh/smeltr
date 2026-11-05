@@ -118,7 +118,7 @@ document's systems.
 | Blast radius: an editor's connections (A5, `gui-design.md`, Connections) | built (`config_file::Links`, `leader::connections`) |
 | GUI pipeline editing with sample data (Control plane) | built |
 | Samples and tests as bundle files (Control plane) | built |
-| Capture at a source and at a destination; route preview (Control plane, Runtime stages) | built. A reachability check is not built |
+| Capture at a source and at a destination, and of a receiver as sent; route preview (Control plane, Runtime stages) | built (`io::raw`); a capture's records download as NDJSON. A reachability check is not built |
 | Routing what arrives (`gui-design.md`, Routing what arrives) | built: the map's tags and panel, the Routes page's new route, and the workspace's capture with its parser proposed (`leader::onboard`). A line of a format with no whole-line Grok pattern is not proposed |
 | Warnings (Control plane) | built (`leader::warnings`), with info entries and the warning on a source's volume against its normal (`leader::throughput`); an editor lowers that warning to info or resets the source's history (`leader::marks`). Not built: a weekly normal, which needs more history than the series keeps |
 | A newer release (Control plane, Upgrades) | built (`leader::updates`, through smeltr.sh's `website/worker`), an info entry and Admin -> System -> General |
@@ -199,6 +199,7 @@ catalog's volume entry both wait on it.
 - **A capture of a blocked source shows only the records that blocked first:** a batch stops at the first slice and route that blocks, so records a later one would have blocked are not shown.
 - **A row a destination refused and keeps names no route** in a capture at it: egress knows the row, not the route that sent it.
 - **A captured record shows only its start,** so for syslog the text a filter matched is not visible.
+- **A capture as sent of an OTLP receiver shows what arrives at its port for every signal,** since a read is not yet an export of any one.
 - **Route preview names a route by its position** (`RoutePreviewPage.svelte`). Routes have ids and no order.
 - **History clips its last column at a 1440 px window.**
 - **A worker's id is `hostname-pid-nanos`** (`worker::generate_worker_id`). No setting names a worker.

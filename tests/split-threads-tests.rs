@@ -741,6 +741,7 @@ fn capturing_routes(
 
 fn at_destination(filter: Option<&str>) -> smeltr::heartbeat::CaptureInvitation {
     smeltr::heartbeat::CaptureInvitation {
+        raw: false,
         session: "s1".to_string(),
         group: "g".to_string(),
         source: None,
