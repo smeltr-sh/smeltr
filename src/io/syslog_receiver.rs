@@ -8,6 +8,9 @@
 //!            MSG break          (with a line breaker: MSG ends where its pattern breaks, a blank event skipped)
 //! ```
 //!
+//! A message longer than the receiver's largest keeps its first bytes, up to the largest, and the rest of it is
+//! discarded as it arrives, as RFC 5424 (6.1) has a receiver truncate it: the connection reads on.
+//!
 //! A line breaker serves senders that end a message with something other than a newline, such as a NUL, or with
 //! nothing at all, the next message's start being the only mark. Octet counting still wins wherever a frame starts
 //! with 1-9: a message from a sender that writes one starts with `<`, and its pattern decides the rest.
@@ -23,10 +26,10 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use super::line_breaker::{BREAK_SLACK, LineBreaker, Searched};
-use super::receiver::{Closed, Connection, Counted, Cutter, Held, STREAM_STEP};
+use super::receiver::{Closed, Connection, Counted, Cutter, Held, INBOX_BYTES, STREAM_STEP, admits};
 use crate::plan::topology::SyslogReceiverConfig;
 
 /// How much one read of the socket takes.
@@ -36,6 +39,9 @@ const READ_STEP: usize = 64 * 1024;
 /// it on the connection, and a sender writes a message whole, so only a sender stalled this long mid-message has it cut
 /// in two.
 const QUIET: Duration = Duration::from_secs(30);
+
+/// How long closing a connection waits for the sender to take its `close_notify`.
+const CLOSING: Duration = Duration::from_secs(5);
 
 /// Messages cut from what a connection read, each a record, filed under nothing. Held in one buffer, each message
 /// its bytes and where it ends, so many short messages cost about what was sent.
@@ -92,6 +98,44 @@ struct Framer {
     line_breaker: Option<LineBreaker>,
     /// How far the line breaker searched what follows `cut` in vain.
     searched: Searched,
+    /// What is left of a truncated message, discarded before the next frame.
+    discarding: Discarding,
+    /// The messages it truncated.
+    truncations: Truncations,
+}
+
+/// How many messages were truncated, and how many of them a log has told: logged at the first, again every
+/// `RELOG_EVERY` while more are, and at a connection's end for any since.
+#[derive(Debug, Default)]
+struct Truncations {
+    count: u64,
+    logged: u64,
+    repeat: crate::logs::Repeat,
+}
+
+impl Truncations {
+    /// How many it has truncated, when that is due its log: never while none are new. `ending` makes the new ones due
+    /// at once, as nothing follows to log them.
+    fn due(&mut self, ending: bool) -> Option<u64> {
+        if self.count == self.logged || !ending && !self.repeat.due() {
+            return None;
+        }
+        self.logged = self.count;
+        Some(self.count)
+    }
+}
+
+/// What is left of a truncated message: how it ends decides how much more is discarded.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Discarding {
+    #[default]
+    Nothing,
+    /// The rest of an octet-counted message: this many bytes.
+    Octets(u64),
+    /// The rest of a line, up to and with its newline.
+    Line,
+    /// The rest of a message a line breaker ends, up to where it breaks.
+    Break,
 }
 
 /// Why a frame was refused, and where it starts in the connection's stream.
@@ -105,6 +149,9 @@ struct Malformed {
 enum Frame {
     /// A message, its bounds in `held`, and where the next frame starts.
     Message(usize, usize, usize),
+    /// The first bytes of a message too long to read whole, their bounds in `held`, and what follows them that is
+    /// still the message's.
+    Truncated(usize, usize, Discarding),
     /// A blank non-transparent line, and where the next frame starts.
     Blank(usize),
     /// Not all of it has arrived.
@@ -120,6 +167,8 @@ impl Framer {
             offset: 0,
             line_breaker,
             searched: Searched::default(),
+            discarding: Discarding::Nothing,
+            truncations: Truncations::default(),
         }
     }
 
@@ -136,6 +185,9 @@ impl Framer {
     /// A refused frame leaves the messages before it in `messages`.
     fn cut(&mut self, messages: &mut Messages) -> Result<(), Malformed> {
         loop {
+            if !self.discard() {
+                return Ok(());
+            }
             let frame = self.frame()?;
             if !self.take(frame, messages) {
                 return Ok(());
@@ -150,6 +202,16 @@ impl Framer {
                 messages.push(&self.held[start..end]);
                 next
             }
+            Frame::Truncated(start, end, rest) => {
+                // What it keeps of a message that holds only whitespace so far is blank, and skipped as a blank
+                // message is.
+                if !self.held[start..end].iter().all(u8::is_ascii_whitespace) {
+                    messages.push(&self.held[start..end]);
+                    self.truncations.count += 1;
+                }
+                self.discarding = rest;
+                end
+            }
             Frame::Blank(next) => next,
             Frame::Partial => return false,
         };
@@ -158,9 +220,48 @@ impl Framer {
         true
     }
 
+    /// Moves past what it holds of a truncated message's rest. `false` while all it holds is that rest.
+    fn discard(&mut self) -> bool {
+        let rest = &self.held[self.cut..];
+        let (discarded, done) = match self.discarding {
+            Discarding::Nothing => return true,
+            Discarding::Octets(left) => {
+                let discarded = rest.len().min(usize::try_from(left).unwrap_or(usize::MAX));
+                let left = left - discarded as u64;
+                self.discarding = Discarding::Octets(left);
+                (discarded, left == 0)
+            }
+            Discarding::Line => match rest.iter().position(|&b| b == b'\n') {
+                Some(lf) => (lf + 1, true),
+                None => (rest.len(), false),
+            },
+            Discarding::Break => {
+                let line_breaker = self
+                    .line_breaker
+                    .as_ref()
+                    .expect("only a line breaker's message is discarded to a break");
+                match line_breaker.next_break(rest, false) {
+                    Some((_, next)) => (next, true),
+                    // What the pattern needs to see of the break's start stays held.
+                    None => (rest.len().saturating_sub(BREAK_SLACK), false),
+                }
+            }
+        };
+        self.cut += discarded;
+        if done {
+            self.discarding = Discarding::Nothing;
+            self.searched.found();
+        }
+        done
+    }
+
     /// The connection's end: adds a last non-transparent message, which needs no newline, to `messages`. An
     /// octet-counted frame that never arrived whole is dropped, and `Ok` says how many bytes of it there were.
-    fn finish(mut self, messages: &mut Messages) -> Result<usize, Malformed> {
+    fn finish(&mut self, messages: &mut Messages) -> Result<usize, Malformed> {
+        self.end_discarding();
+        if !self.discard() {
+            return Ok(0);
+        }
         if let Some(line_breaker) = self.line_breaker.take() {
             return self.end_broken(&line_breaker, messages);
         }
@@ -170,9 +271,8 @@ impl Framer {
             Some(b'1'..=b'9') => return Ok(rest.len()),
             Some(_) => {
                 self.held.push(b'\n');
-                if let Frame::Message(start, end, _) = self.non_transparent(self.cut)? {
-                    messages.push(&self.held[start..end]);
-                }
+                let frame = self.non_transparent(self.cut);
+                self.take(frame, messages);
             }
         }
         Ok(0)
@@ -180,12 +280,27 @@ impl Framer {
 
     /// Whether what it holds waits on a line breaker's break, which a quiet sender may never send.
     fn waits(&self) -> bool {
-        self.line_breaker.is_some() && self.held.get(self.cut).is_some_and(|b| !matches!(b, b'1'..=b'9'))
+        let breaking = self.discarding == Discarding::Break
+            || self.discarding == Discarding::Nothing
+                && self.held.get(self.cut).is_some_and(|b| !matches!(b, b'1'..=b'9'));
+        self.line_breaker.is_some() && breaking
+    }
+
+    /// Nothing more is coming of a truncated message's rest that ends at a newline or a break: what it holds of it
+    /// is all of it.
+    fn end_discarding(&mut self) {
+        if matches!(self.discarding, Discarding::Line | Discarding::Break) {
+            self.cut = self.held.len();
+            self.discarding = Discarding::Nothing;
+        }
     }
 
     /// Adds what a line breaker holds to `messages` as though the stream had ended, its sender having gone quiet, and
     /// reads on. An octet-counted frame not yet whole stays held.
     fn flush(&mut self, messages: &mut Messages) -> Result<(), Malformed> {
+        if self.discarding == Discarding::Break {
+            self.end_discarding();
+        }
         if let Some(line_breaker) = self.line_breaker.take() {
             let flushed = self.end_broken(&line_breaker, messages);
             self.line_breaker = Some(line_breaker);
@@ -199,6 +314,9 @@ impl Framer {
     /// it returns.
     fn end_broken(&mut self, line_breaker: &LineBreaker, messages: &mut Messages) -> Result<usize, Malformed> {
         loop {
+            if !self.discard() {
+                return Ok(0);
+            }
             let start = self.cut;
             let rest = &self.held[start..];
             let frame = match rest.first() {
@@ -208,10 +326,10 @@ impl Framer {
                     frame => frame,
                 },
                 Some(_) => match line_breaker.next_break(rest, true) {
-                    Some((end, next)) => self.event(start, start + end, start + next)?,
+                    Some((end, next)) => self.message(start, start + end, start + next),
                     None => {
                         let end = start + LineBreaker::last_event(rest).len();
-                        self.event(start, end, self.held.len())?
+                        self.message(start, end, self.held.len())
                     }
                 },
             };
@@ -232,35 +350,44 @@ impl Framer {
             self.line_breaker = Some(line_breaker);
             return frame;
         }
-        let frame = self.non_transparent(start)?;
+        let frame = self.non_transparent(start);
         // A whole line may hold its message and a CR.
         if matches!(frame, Frame::Partial) && self.held.len() - start > self.max + 1 {
-            return Err(self.malformed(start, format!("a line runs past {} bytes without a newline", self.max)));
+            return Ok(Frame::Truncated(start, start + self.max, Discarding::Line));
         }
         Ok(frame)
     }
 
-    /// `MSG-LEN SP MSG`, starting at `start`, which holds a digit 1-9.
+    /// `MSG-LEN SP MSG`, starting at `start`, which holds a digit 1-9. A message longer than the largest is
+    /// truncated to it once that much has arrived.
     fn octet_counted(&self, start: usize) -> Result<Frame, Malformed> {
-        let mut len = 0usize;
+        let mut len = 0u64;
         for (i, &b) in self.held[start..].iter().enumerate() {
             match b {
                 b'0'..=b'9' => {
-                    len = len * 10 + (b - b'0') as usize;
-                    // Checked as each digit arrives, so a run of digits is refused before it overflows.
-                    if len > self.max {
-                        return Err(self.malformed(start, format!("a frame's length is over {} bytes", self.max)));
+                    // Checked as each digit arrives, so a run of digits is refused before it overflows. A length
+                    // over what any receiver takes is a misframed stream, not a message to truncate.
+                    len = len * 10 + u64::from(b - b'0');
+                    if len > INBOX_BYTES as u64 {
+                        return Err(self.malformed(
+                            start,
+                            "a message's length is over 64 MiB, the most any receiver takes".into(),
+                        ));
                     }
                 }
                 b' ' => {
                     let message = start + i + 1;
-                    return Ok(match self.held.len() - message >= len {
-                        true => Frame::Message(message, message + len, message + len),
-                        false => Frame::Partial,
+                    let arrived = self.held.len() - message;
+                    return Ok(match usize::try_from(len).ok().filter(|&len| len <= self.max) {
+                        Some(len) if arrived >= len => Frame::Message(message, message + len, message + len),
+                        None if arrived >= self.max => {
+                            Frame::Truncated(message, message + self.max, Discarding::Octets(len - self.max as u64))
+                        }
+                        _ => Frame::Partial,
                     });
                 }
                 _ => {
-                    return Err(self.malformed(start, "a frame's length is not followed by a space".into()));
+                    return Err(self.malformed(start, "a message's length is not followed by a space".into()));
                 }
             }
         }
@@ -268,22 +395,16 @@ impl Framer {
     }
 
     /// `MSG LF`, starting at `start`. The message drops the CR a sender may put before the LF.
-    fn non_transparent(&self, start: usize) -> Result<Frame, Malformed> {
+    fn non_transparent(&self, start: usize) -> Frame {
         let Some(lf) = self.held[start..].iter().position(|&b| b == b'\n') else {
-            return Ok(Frame::Partial);
+            return Frame::Partial;
         };
         let next = start + lf + 1;
         let mut end = start + lf;
         if end > start && self.held[end - 1] == b'\r' {
             end -= 1;
         }
-        if end - start > self.max {
-            return Err(self.malformed(start, format!("a line is over {} bytes", self.max)));
-        }
-        Ok(match self.held[start..end].iter().all(u8::is_ascii_whitespace) {
-            true => Frame::Blank(next),
-            false => Frame::Message(start, end, next),
-        })
+        self.message(start, end, next)
     }
 
     /// `MSG break`, starting at `start`: the message ends where `line_breaker` breaks what follows it.
@@ -294,30 +415,29 @@ impl Framer {
             return Ok(Frame::Partial);
         }
         if let Some((end, next)) = line_breaker.next_break(&self.held[start..], false) {
-            return self.event(start, start + end, start + next);
+            return Ok(self.message(start, start + end, start + next));
         }
         self.searched.missed(rest);
-        if over {
-            return Err(self.malformed(
-                start,
-                format!(
-                    "a message runs past {} bytes without its line breaker breaking it",
-                    self.max
-                ),
-            ));
-        }
-        Ok(Frame::Partial)
+        Ok(match over {
+            true => Frame::Truncated(start, start + self.max, Discarding::Break),
+            false => Frame::Partial,
+        })
     }
 
-    /// The message a line breaker broke at `start..end`, the next frame starting at `next`.
-    fn event(&self, start: usize, end: usize, next: usize) -> Result<Frame, Malformed> {
-        if end - start > self.max {
-            return Err(self.malformed(start, format!("a message is over {} bytes", self.max)));
+    /// The message at `start..end`, held whole, the next frame starting at `next`: truncated to the largest, and
+    /// blank when all of it is whitespace.
+    fn message(&self, start: usize, end: usize, next: usize) -> Frame {
+        if self.held[start..end].iter().all(u8::is_ascii_whitespace) {
+            return Frame::Blank(next);
         }
-        Ok(match self.held[start..end].iter().all(u8::is_ascii_whitespace) {
-            true => Frame::Blank(next),
+        match end - start > self.max {
+            true => Frame::Truncated(
+                start,
+                start + self.max,
+                Discarding::Octets((next - start - self.max) as u64),
+            ),
             false => Frame::Message(start, end, next),
-        })
+        }
     }
 
     fn malformed(&self, at: usize, what: String) -> Malformed {
@@ -326,11 +446,6 @@ impl Framer {
             what,
         }
     }
-}
-
-/// Whether a sender at `peer` may connect, or send a datagram. An empty list admits whoever TLS admitted.
-fn admits(allow_from: &[ipnetwork::IpNetwork], peer: IpAddr) -> bool {
-    allow_from.is_empty() || allow_from.iter().any(|network| network.contains(peer))
 }
 
 /// Why a connection ended.
@@ -352,7 +467,7 @@ impl From<Closed> for End {
 
 /// What a connection does that a syslog receiver serves.
 pub(super) struct Handler {
-    /// The networks a sender may connect from. Empty admits whoever TLS admitted.
+    /// The networks a datagram may come from. Empty admits any.
     allow_from: Vec<ipnetwork::IpNetwork>,
     /// The largest message.
     max_message_bytes: usize,
@@ -360,6 +475,8 @@ pub(super) struct Handler {
     line_breaker: Option<LineBreaker>,
     /// How long a sender may go quiet before a line breaker's held bytes are taken as its last messages.
     quiet: Duration,
+    /// The datagrams it truncated.
+    truncations: std::sync::Mutex<Truncations>,
 }
 
 impl Handler {
@@ -369,27 +486,24 @@ impl Handler {
             max_message_bytes,
             line_breaker: config.line_breaker.clone(),
             quiet: QUIET,
+            truncations: std::sync::Mutex::default(),
         }
     }
 
-    /// Serves one sender's connection until it ends, and logs why when it was refused.
+    /// Serves one sender's connection until it ends, logs why when it was refused, and closes it: under TLS with a
+    /// `close_notify`, which answers the sender's own (RFC 5425, 4.4).
     pub(super) async fn serve(self: Arc<Self>, connection: Connection) {
-        let Connection { stream, peer, inlet } = connection;
+        let Connection { mut stream, inlet } = connection;
         let remote = &*inlet.remote;
-        if !admits(&self.allow_from, peer) {
-            tracing::trace!(
-                name: "refused", target: "sources",
-                subject = %remote,
-                "a connection is closed: its address is in none of the receiver's allowFrom networks"
-            );
-            return;
-        }
         let admit = |messages, bytes| {
             let admitted = inlet.admit(Cutter::Messages(messages), bytes);
             // Syslog has no acknowledgement, so delivery is not waited for.
             async move { admitted.await.map(drop) }
         };
-        match self.read(stream, admit, &mut inlet.held()).await {
+        let ended = self.read(&mut stream, remote, admit, &mut inlet.held()).await;
+        // A sender that no longer reads is not waited on.
+        let _ = tokio::time::timeout(CLOSING, stream.shutdown()).await;
+        match ended {
             End::Gone { partial: 0 } | End::Stopping => {}
             End::Gone { partial } => tracing::trace!(
                 name: "partial", target: "sources",
@@ -407,8 +521,9 @@ impl Handler {
         }
     }
 
-    /// The message one datagram holds (RFC 5426), its trailing newline dropped where a sender adds one. `None` for a
-    /// datagram from a sender this receiver does not admit, one larger than its largest message, or an empty one.
+    /// The message one datagram holds (RFC 5426), its trailing newline dropped where a sender adds one, and truncated
+    /// to the largest message (RFC 5424, 6.1). `None` for a datagram from a sender this receiver does not admit, or
+    /// an empty one.
     pub(super) fn datagram(&self, datagram: &[u8], peer: IpAddr) -> Option<Cutter> {
         if !admits(&self.allow_from, peer) {
             tracing::trace!(
@@ -418,17 +533,25 @@ impl Handler {
             );
             return None;
         }
-        if datagram.len() > self.max_message_bytes {
-            tracing::warn!(
-                name: "malformed", target: "sources",
-                subject = %peer,
-                limit = self.max_message_bytes,
-                "a datagram larger than the receiver's maxRequestBytes is dropped"
-            );
-            return None;
-        }
         let message = datagram.strip_suffix(b"\n").unwrap_or(datagram);
-        let message = message.strip_suffix(b"\r").unwrap_or(message);
+        let mut message = message.strip_suffix(b"\r").unwrap_or(message);
+        if message.len() > self.max_message_bytes {
+            message = &message[..self.max_message_bytes];
+            let mut truncations = self
+                .truncations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            truncations.count += 1;
+            if let Some(truncated) = truncations.due(false) {
+                tracing::warn!(
+                    name: "truncated", target: "sources",
+                    subject = %peer,
+                    limit = self.max_message_bytes,
+                    truncated,
+                    "a datagram larger than the receiver's maxRequestBytes keeps its first bytes, up to it"
+                );
+            }
+        }
         if message.is_empty() {
             return None;
         }
@@ -437,9 +560,9 @@ impl Handler {
         Some(Cutter::Messages(messages))
     }
 
-    /// Reads `reader` until the connection ends: the messages each read completes admitted before the next read, and
-    /// what it holds between them charged to `held`.
-    async fn read<R, A, F>(&self, mut reader: R, mut admit: A, held: &mut Held) -> End
+    /// Reads `reader`, the connection from `remote`, until it ends: the messages each read completes admitted before
+    /// the next read, and what it holds between them charged to `held`.
+    async fn read<R, A, F>(&self, mut reader: R, remote: &str, mut admit: A, held: &mut Held) -> End
     where
         R: AsyncRead + Unpin,
         A: FnMut(Messages, Counted) -> F,
@@ -475,6 +598,7 @@ impl Handler {
                     return closed.into();
                 }
             }
+            self.log_truncated(&mut framer, remote, false);
             if let Err(malformed) = cut {
                 return End::Malformed(malformed);
             }
@@ -484,6 +608,7 @@ impl Handler {
             Ok(partial) => End::Gone { partial },
             Err(malformed) => End::Malformed(malformed),
         };
+        self.log_truncated(&mut framer, remote, true);
         if !messages.is_empty() {
             let bytes = held.part(messages.size());
             if let Err(closed) = admit(messages, bytes).await {
@@ -491,6 +616,19 @@ impl Handler {
             }
         }
         ended
+    }
+
+    /// Logs the messages `framer` truncated, when that is due; `ending` when the connection is.
+    fn log_truncated(&self, framer: &mut Framer, remote: &str, ending: bool) {
+        if let Some(truncated) = framer.truncations.due(ending) {
+            tracing::warn!(
+                name: "truncated", target: "sources",
+                subject = %remote,
+                limit = self.max_message_bytes,
+                truncated,
+                "a sender sent messages larger than the receiver's maxRequestBytes; each keeps its first bytes, up to it"
+            );
+        }
     }
 }
 
@@ -537,6 +675,7 @@ mod tests {
         let ended = (handler(&[]))
             .read(
                 receiver,
+                "127.0.0.1",
                 |messages: Messages, bytes: Counted| {
                     admitted.push((strings(messages), bytes.total()));
                     async { Ok(()) }
@@ -560,6 +699,13 @@ mod tests {
     }
 
     #[test]
+    fn an_octet_count_counts_octets_not_characters() {
+        // `é` is two octets and `€` three: counted as characters, each length would end its message short.
+        let cuts = cut_each(&["7 <13>éa".as_bytes(), "8 <13>€a".as_bytes(), b"<13>b\n"]).unwrap();
+        assert_eq!(cuts, [vec!["<13>éa"], vec!["<13>€a"], vec!["<13>b"]]);
+    }
+
+    #[test]
     fn framings_mix_in_one_stream() {
         let cuts = cut_each(&[b"<13>a\n5 <13>b3 xyz<13>c\r\n"]).unwrap();
         assert_eq!(cuts, [vec!["<13>a", "<13>b", "xyz", "<13>c"]]);
@@ -572,20 +718,64 @@ mod tests {
         assert_eq!(cuts, expected);
     }
 
-    #[test]
-    fn an_octet_count_over_the_largest_message_is_refused() {
-        let refused = cut_each(&[b"<13>a\n65 "]).unwrap_err();
-        assert_eq!(refused.at, 6);
-        // Refused as the digits arrive, before the space.
-        assert!(cut_each(&[b"99999999999999999999999"]).is_err());
-        assert_eq!(cut_each(&[b"64 "]).unwrap(), [Vec::<String>::new()]);
+    /// `n` bytes of `b`, as a string.
+    fn run(b: char, n: usize) -> String {
+        b.to_string().repeat(n)
     }
 
     #[test]
-    fn a_line_longer_than_the_largest_message_is_refused() {
-        assert!(cut_each(&[&[b'a'; MAX], b"\r", b"\n"]).is_ok());
-        assert!(cut_each(&[&[b'a'; MAX], b"aa"]).is_err());
-        assert!(cut_each(&[&[b'a'; MAX], b"a\n"]).is_err());
+    fn an_octet_counted_message_over_the_largest_is_truncated_and_the_rest_discarded() {
+        let sent = format!("<13>a\n70 <13>{}{}<13>c\n", run('b', MAX - 4), run('x', 6));
+        let cuts = cut_each(&[sent.as_bytes()]).unwrap();
+        assert_eq!(
+            cuts,
+            [vec![
+                "<13>a".to_string(),
+                format!("<13>{}", run('b', MAX - 4)),
+                "<13>c".into()
+            ]]
+        );
+        // A length too long for any message is refused as its digits arrive, before the space.
+        assert!(cut_each(&[b"99999999999999999999999"]).is_err());
+        assert_eq!(cut_each(&[b"64 "]).unwrap(), [Vec::<String>::new()]);
+        // A length over what any receiver takes is a misframed stream, which would otherwise discard all that follows.
+        assert!(cut_each(&[format!("{} ", INBOX_BYTES + 1).as_bytes()]).is_err());
+        assert_eq!(
+            cut_each(&[format!("{INBOX_BYTES} ").as_bytes()]).unwrap(),
+            [Vec::<String>::new()]
+        );
+    }
+
+    #[test]
+    fn truncations_are_logged_at_the_first_then_only_when_more_are() {
+        let mut truncations = Truncations::default();
+        assert_eq!(truncations.due(true), None);
+        truncations.count = 1;
+        assert_eq!(truncations.due(false), Some(1));
+        // None new: due neither later nor at the end.
+        assert_eq!(truncations.due(false), None);
+        assert_eq!(truncations.due(true), None);
+        // New ones wait out the repeat, but not the end.
+        truncations.count = 3;
+        assert_eq!(truncations.due(false), None);
+        assert_eq!(truncations.due(true), Some(3));
+    }
+
+    #[test]
+    fn a_line_over_the_largest_is_truncated_and_the_rest_discarded() {
+        let line = run('a', MAX);
+        assert_eq!(
+            cut_each(&[line.as_bytes(), b"\r", b"\n"]).unwrap(),
+            [vec![], vec![], vec![line.clone()]]
+        );
+        // Whole, or arriving past the largest before its newline.
+        let cuts = cut_each(&[format!("{line}bb\n<13>c\n").as_bytes()]).unwrap();
+        assert_eq!(cuts, [vec![line.clone(), "<13>c".into()]]);
+        let cuts = cut_each(&[format!("{line}bb").as_bytes(), b"bb\n<13>c\n"]).unwrap();
+        assert_eq!(cuts, [vec![line], vec!["<13>c".to_string()]]);
+        // A blank line is skipped however long it is.
+        let cuts = cut_each(&[format!("{}\n<13>c\n", run(' ', MAX + 2)).as_bytes()]).unwrap();
+        assert_eq!(cuts, [vec!["<13>c".to_string()]]);
     }
 
     fn line_breaker(pattern: &str) -> LineBreaker {
@@ -635,13 +825,81 @@ mod tests {
     }
 
     #[test]
-    fn a_message_a_line_breaker_never_breaks_is_refused_past_the_slack() {
-        let message = [b'a'; MAX + 1];
-        let refused = cut_all(broken(r"(\x00)"), &[&message, b"\x00b"]).unwrap_err();
-        assert_eq!(refused.at, 0);
-        let unbroken = vec![b'a'; MAX + BREAK_SLACK + 1];
-        assert!(cut_all(broken(r"(\x00)"), &[&unbroken[..MAX + BREAK_SLACK]]).is_err());
-        assert!(cut_all(broken(r"(\x00)"), &[&unbroken]).is_err());
+    fn a_message_over_the_largest_a_line_breaker_breaks_is_truncated() {
+        let message = run('a', MAX + 1);
+        let (cuts, last) = cut_all(broken(r"(\x00)"), &[message.as_bytes(), b"\x00b"]).unwrap();
+        // Two new bytes are too few to search again for a break, so the message waits on the stream's end.
+        assert_eq!(
+            (cuts, last),
+            (vec![vec![], vec![]], vec![run('a', MAX), "b".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_message_a_line_breaker_never_breaks_is_truncated_past_the_slack_and_discarded_to_its_break() {
+        let unbroken = run('a', MAX + BREAK_SLACK + 1);
+        // Held to the slack, the break may yet come; past it the message is truncated.
+        let (cuts, last) = cut_all(broken(r"(\x00)"), &[&unbroken.as_bytes()[..MAX + BREAK_SLACK]]).unwrap();
+        assert_eq!((cuts, last), (vec![vec![]], vec![run('a', MAX)]));
+        let rest = format!("{}\x00<13>c\x00", run('z', 3 * BREAK_SLACK));
+        let (cuts, last) = cut_all(broken(r"(\x00)"), &[unbroken.as_bytes(), rest.as_bytes()]).unwrap();
+        assert_eq!(
+            (cuts, last),
+            (vec![vec![run('a', MAX)], vec![]], vec!["<13>c".to_string()])
+        );
+    }
+
+    /// A stream mixing every framing, and what the framer cuts of it.
+    const MIXED: &[u8] = b"<13>a\r\n10 <13>b\nc\r\nd\n\n<13>e\n3 xyz";
+    const MIXED_CUT: [&str; 4] = ["<13>a", "<13>b\nc\r\nd", "<13>e", "xyz"];
+
+    /// What the framer cuts from `sent` in the pieces `at` splits it into, then from the connection's end.
+    fn cut_split(sent: &[u8], at: &[usize]) -> Result<Vec<String>, Malformed> {
+        let mut bounds = vec![0];
+        bounds.extend_from_slice(at);
+        bounds.push(sent.len());
+        let pieces: Vec<&[u8]> = bounds.windows(2).map(|w| &sent[w[0]..w[1]]).collect();
+        let (cuts, last) = cut_all(Framer::new(MAX, None), &pieces)?;
+        Ok(cuts.into_iter().flatten().chain(last).collect())
+    }
+
+    #[test]
+    fn a_stream_fragmented_anywhere_cuts_the_same_messages() {
+        for split in 1..MIXED.len() {
+            assert_eq!(cut_split(MIXED, &[split]).unwrap(), MIXED_CUT, "split at {split}");
+        }
+        let every_byte: Vec<usize> = (1..MIXED.len()).collect();
+        assert_eq!(cut_split(MIXED, &every_byte).unwrap(), MIXED_CUT);
+    }
+
+    #[test]
+    fn an_oversized_frame_is_truncated_however_it_is_fragmented() {
+        let kept = format!("<13>{}", run('b', MAX - 4));
+        let counted = |len: usize| format!("{len} {kept}{}", run('x', len - MAX));
+        for oversized in [counted(MAX + 1), counted(3 * MAX), format!("{kept}xx\r\n")] {
+            let sent = format!("<13>a\n{oversized}<13>c\n");
+            let expected = ["<13>a", &kept, "<13>c"];
+            for split in 1..sent.len() {
+                assert_eq!(
+                    cut_split(sent.as_bytes(), &[split]).unwrap(),
+                    expected,
+                    "split at {split}"
+                );
+            }
+            let every_byte: Vec<usize> = (1..sent.len()).collect();
+            assert_eq!(cut_split(sent.as_bytes(), &every_byte).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn a_frame_of_the_largest_size_is_read_however_it_is_fragmented() {
+        let message = [b"<13>".as_slice(), &[b'a'; MAX - 4]].concat();
+        let sent = [format!("{MAX} ").as_bytes(), &message, &message, b"\n"].concat();
+        let message = String::from_utf8(message).unwrap();
+        let expected = [message.clone(), message];
+        for split in 1..sent.len() {
+            assert_eq!(cut_split(&sent, &[split]).unwrap(), expected, "split at {split}");
+        }
     }
 
     #[test]
@@ -711,10 +969,25 @@ mod tests {
     }
 
     #[test]
-    fn a_datagram_from_elsewhere_or_over_the_largest_message_is_refused() {
+    fn a_datagram_from_elsewhere_is_refused_and_one_over_the_largest_message_truncated() {
         assert_eq!(datagram(&["10.0.0.0/8"], b"<13>a"), None);
-        assert!(datagram(&["127.0.0.1"], &[b'a'; MAX]).is_some());
-        assert_eq!(datagram(&["127.0.0.1"], &[b'a'; MAX + 1]), None);
+        assert_eq!(
+            datagram(&["127.0.0.1"], run('a', MAX).as_bytes()),
+            Some(vec![run('a', MAX)])
+        );
+        // The largest message keeps its line end, which is not counted, and is not truncated.
+        for end in ["\n", "\r\n"] {
+            assert_eq!(
+                datagram(&["127.0.0.1"], format!("{}{end}", run('a', MAX)).as_bytes()),
+                Some(vec![run('a', MAX)])
+            );
+        }
+        // Its newline was cut off with the rest, so what it keeps is all message.
+        let over = format!("{}\n", run('a', MAX - 1));
+        assert_eq!(
+            datagram(&["127.0.0.1"], format!("{over}b").as_bytes()),
+            Some(vec![over])
+        );
     }
 
     #[tokio::test]
@@ -743,7 +1016,7 @@ mod tests {
         let (mut sender, receiver) = tokio::io::duplex(1024);
         sender.write_all(b"<13>a\n").await.unwrap();
         let ended = handler(&[])
-            .read(receiver, |_, _| async { Err(Closed) }, &mut Held::alone())
+            .read(receiver, "127.0.0.1", |_, _| async { Err(Closed) }, &mut Held::alone())
             .await;
         assert_eq!(ended, End::Stopping);
     }
@@ -760,6 +1033,7 @@ mod tests {
         let ended = handler
             .read(
                 receiver,
+                "127.0.0.1",
                 |messages: Messages, _| {
                     let messages = strings(messages);
                     let last = messages.contains(&"<13>b".to_string());

@@ -3186,7 +3186,7 @@
             "type": "integer",
             "default": 10485760,
             "examples": [1048576, 67108864],
-            "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
+            "what": "The largest request body it reads, between 2048 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
           },
           {
             "name": "answerAfterDelivery",
@@ -3280,7 +3280,7 @@
             "type": "integer",
             "default": 10485760,
             "examples": [1048576, 67108864],
-            "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
+            "what": "The largest request body it reads, between 2048 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
           },
           {
             "name": "answerAfterDelivery",
@@ -3387,7 +3387,7 @@
             "type": "integer",
             "default": 10485760,
             "examples": [1048576, 67108864],
-            "what": "The largest frame it reads, and the most one record holds, between 1024 and 67108864."
+            "what": "The largest frame it reads, and the most one record holds, between 2048 and 67108864."
           }
         ],
         "fields": [
@@ -3483,7 +3483,7 @@
             "type": "integer",
             "default": 10485760,
             "examples": [1048576, 67108864],
-            "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
+            "what": "The largest request body it reads, between 2048 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
           },
           {
             "name": "answerAfterDelivery",
@@ -3574,7 +3574,7 @@
             "type": "integer",
             "default": 10485760,
             "examples": [65536, 1048576],
-            "what": "The largest message it reads, between 1024 and 67108864. A larger one closes the connection; a larger datagram is dropped."
+            "what": "The largest message it keeps, between 2048 and 67108864. A larger one is cut to this size."
           },
           {
             "name": "encoding",
@@ -3672,7 +3672,7 @@
             "type": "integer",
             "default": 10485760,
             "examples": [1048576, 67108864],
-            "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`, which a sender may drop."
+            "what": "The largest request body it reads, between 2048 and 67108864. A larger one is refused `413`, which a sender may drop."
           },
           {
             "name": "answerAfterDelivery",
@@ -3748,7 +3748,7 @@
             "type": "integer",
             "default": 10485760,
             "examples": [1048576, 67108864],
-            "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`, so set a sender's bulk size below it."
+            "what": "The largest request body it reads, between 2048 and 67108864. A larger one is refused `413`, so set a sender's bulk size below it."
           },
           {
             "name": "answerAfterDelivery",

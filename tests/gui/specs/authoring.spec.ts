@@ -2190,7 +2190,7 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
   await admin.getByRole('combobox', { name: /^transport/ }).selectOption('udp');
   await expect(certificate).toBeHidden();
   await expect(lineBreaker).toBeHidden();
-  await expect(admin.getByRole('textbox', { name: /^request size/ })).toBeVisible();
+  await expect(admin.getByRole('textbox', { name: /^message size/ })).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 

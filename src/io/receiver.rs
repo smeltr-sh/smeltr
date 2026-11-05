@@ -179,12 +179,13 @@ pub fn open(
                 let tokens = tokens.into_iter().map(|admits| admits.token).collect();
                 let handler = Arc::new(s2s_receiver::Handler::new(s2s, tokens, config.max_request_bytes));
                 let handle = move |connection| handler.clone().serve(connection);
-                runtime.spawn(serve_streams(listener, tls, shared.clone(), handle))
+                runtime.spawn(serve_streams(listener, Vec::new(), tls, shared.clone(), handle))
             }
             Receiver::Syslog(syslog) => {
                 let handler = Arc::new(syslog_receiver::Handler::new(syslog, config.max_request_bytes));
                 let handle = move |connection| handler.clone().serve(connection);
-                runtime.spawn(serve_streams(listener, tls, shared.clone(), handle))
+                let allow_from = syslog.allow_from.clone();
+                runtime.spawn(serve_streams(listener, allow_from, tls, shared.clone(), handle))
             }
             _ => unreachable!("only a receiver that streams is served here"),
         };
@@ -2722,8 +2723,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 /// A sender's connection to a receiver that streams, as its handler gets it.
 pub(super) struct Connection {
     pub(super) stream: Box<dyn Stream>,
-    /// The sender's address.
-    pub(super) peer: std::net::IpAddr,
     /// What admits the requests read from `stream`. Apart from it, so a handler may split the stream to read and
     /// write at once.
     pub(super) inlet: Inlet,
@@ -2842,13 +2841,14 @@ const MAX_DATAGRAM: usize = u16::MAX as usize;
 
 /// Serves `socket` for a receiver that takes datagrams: `cut` makes a datagram from a sender the records it holds, or
 /// `None` for one it refuses. Nothing slows a sender of datagrams, so one that arrives while the inbox has no room, or
-/// the source is blocked, is dropped and counted. A datagram larger than `max` reaches `cut` as `max + 1` bytes.
+/// the source is blocked, is dropped and counted. A datagram larger than `max` and a line end reaches `cut` as
+/// `max + 3` bytes, so `cut` tells it from one of `max` bytes and a CRLF.
 /// Runs until dropped.
 async fn serve_datagrams<C>(socket: tokio::net::UdpSocket, shared: Arc<Shared>, max: usize, cut: C)
 where
     C: Fn(&[u8], std::net::IpAddr) -> Option<Cutter> + Send + 'static,
 {
-    let mut buffer = vec![0; max.min(MAX_DATAGRAM) + 1];
+    let mut buffer = vec![0; max.min(MAX_DATAGRAM) + 3];
     let mut failing = crate::logs::Relog::default();
     loop {
         let (length, peer) = match socket.recv_from(&mut buffer).await {
@@ -2888,11 +2888,13 @@ impl Shared {
     }
 }
 
-/// Serves `listener` for a receiver whose protocol streams over a connection held open: each connection, under `tls`
-/// when given, is a task of its own that `handle` runs. A connection that fails to arrive or to complete its
-/// handshake ends alone. Runs until dropped, which ends every connection it holds.
+/// Serves `listener` for a receiver whose protocol streams over a connection held open: each connection from a
+/// sender `allow_from` admits, under `tls` when given, is a task of its own that `handle` runs. A sender from
+/// elsewhere is closed before its TLS handshake, so it is shown nothing. A connection that fails to arrive or to
+/// complete its handshake ends alone. Runs until dropped, which ends every connection it holds.
 async fn serve_streams<H, F>(
     listener: tokio::net::TcpListener,
+    allow_from: Vec<ipnetwork::IpNetwork>,
     tls: Option<rustls::ServerConfig>,
     shared: Arc<Shared>,
     handle: H,
@@ -2930,6 +2932,16 @@ async fn serve_streams<H, F>(
                 continue;
             }
         };
+        // A dual-stack socket sees an IPv4 sender as `::ffff:a.b.c.d`; it is named as the IPv4 address it is.
+        let peer = peer.ip().to_canonical();
+        if !admits(&allow_from, peer) {
+            tracing::trace!(
+                name: "refused", target: "sources",
+                subject = %peer,
+                "a connection is closed: its address is in none of the receiver's allowFrom networks"
+            );
+            continue;
+        }
         let (tls, shared, handle) = (tls.clone(), shared.clone(), handle.clone());
         connections.spawn(async move {
             let stream: Box<dyn Stream> = match tls {
@@ -2947,17 +2959,19 @@ async fn serve_streams<H, F>(
                     }
                 },
             };
-            // A dual-stack socket sees an IPv4 sender as `::ffff:a.b.c.d`; it is named as the IPv4 address it is.
-            let peer = peer.ip().to_canonical();
             let remote = Arc::from(peer.to_string());
             handle(Connection {
                 stream,
-                peer,
                 inlet: Inlet { remote, shared },
             })
             .await;
         });
     }
+}
+
+/// Whether a sender at `peer` may connect, or send a datagram. An empty list admits any.
+pub(super) fn admits(allow_from: &[ipnetwork::IpNetwork], peer: std::net::IpAddr) -> bool {
+    allow_from.is_empty() || allow_from.iter().any(|network| network.contains(peer))
 }
 
 /// The sockets this process's supervisor handed it, by what each listens on.
@@ -3726,6 +3740,7 @@ mod tests {
         let shared = Arc::new(Shared::default());
         tokio::spawn(serve_streams(
             tokio::net::TcpListener::from_std(listener).unwrap(),
+            Vec::new(),
             tls,
             shared.clone(),
             |mut c: Connection| async move {

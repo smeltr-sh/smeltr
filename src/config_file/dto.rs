@@ -1007,7 +1007,11 @@ pub struct MaxRequestBytes(pub u64);
 
 impl MaxRequestBytes {
     pub const DEFAULT: u64 = 10 * 1024 * 1024;
+    /// The least a file may hold. A receiver runs at no less than `FLOOR`.
     pub const MIN: u64 = 1024;
+    /// The least every receiver runs at, whatever its file holds: RFC 5425 (4.3.1) has a syslog receiver take messages
+    /// of 2048 octets.
+    pub const FLOOR: u64 = 2048;
     /// What one request may hold of a receiver's inbox (`io::receiver::INBOX_BYTES`).
     pub const MAX: u64 = 64 * 1024 * 1024;
 
