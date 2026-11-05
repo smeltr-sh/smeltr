@@ -120,6 +120,10 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   });
   await ranked.scrollIntoViewIfNeeded();
   await shoot(admin, '1-furthest-from-normal');
+  await ranked.getByRole('button', { name: 'About Furthest from normal' }).click();
+  await expect(admin.getByText('learned from the last 7 days')).toBeVisible();
+  await shoot(admin, '1b-furthest-from-normal-help');
+  await admin.keyboard.press('Escape');
 
   await goto(admin, leader, '#/status/issues');
   const row = admin
