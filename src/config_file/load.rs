@@ -1539,7 +1539,7 @@ fn to_framing(dto: &FramingSettingsDto) -> Framing {
                 },
                 counts: match prefix.counts {
                     CountsDto::Rest => Counts::Rest,
-                    CountsDto::Frame => Counts::Frame,
+                    CountsDto::Message => Counts::Message,
                 },
             })
         }
@@ -2509,7 +2509,7 @@ fn check_framing(dto: &FramingSettingsDto, id: &str, max: u64, errors: &mut Item
     }
     match (dto.framing, dto.length_prefix) {
         (FramingDto::LengthPrefix, None) => errors.at("lengthPrefix").push(format!(
-            "{what} frames by a length prefix; say where it is in lengthPrefix"
+            "{what} cuts messages by a length prefix; give its bytes, and its offset if any, in lengthPrefix"
         )),
         (FramingDto::LengthPrefix, Some(prefix)) => {
             if !(1..=8).contains(&prefix.bytes) {
@@ -2519,7 +2519,7 @@ fn check_framing(dto: &FramingSettingsDto, id: &str, max: u64, errors: &mut Item
                 ));
             } else if prefix.offset.saturating_add(prefix.bytes) > max {
                 errors.at("lengthPrefix").push(format!(
-                    "{what} reads a length that ends {} bytes into a frame, past the largest frame of {}",
+                    "{what} reads a length that ends {} bytes into a message, past the largest message of {}",
                     prefix.offset.saturating_add(prefix.bytes),
                     bytes::exact(max as usize)
                 ));
@@ -2532,10 +2532,10 @@ fn check_framing(dto: &FramingSettingsDto, id: &str, max: u64, errors: &mut Item
     }
     match (dto.framing, dto.fixed_bytes) {
         (FramingDto::Fixed, None) => errors.at("fixedBytes").push(format!(
-            "{what} frames by a fixed size; say how many bytes in fixedBytes"
+            "{what} cuts messages by a fixed size; give how many bytes in fixedBytes"
         )),
         (FramingDto::Fixed, Some(size)) if size == 0 || size > max => errors.at("fixedBytes").push(format!(
-            "{what} frames every {size} bytes; it must be 1 to {}, the largest frame",
+            "{what} cuts a message every {size} bytes; it must be 1 to {}, the largest message",
             bytes::exact(max as usize)
         )),
         (FramingDto::Fixed, Some(_)) | (_, None) => {}

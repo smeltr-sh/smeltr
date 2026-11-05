@@ -123,7 +123,7 @@ const OPTIONS: &[&str] = &[
     "framing.fixed",
     "lengthPrefix.offset",
     "lengthPrefix.little",
-    "lengthPrefix.frame",
+    "lengthPrefix.message",
     "format.avro",
     "avro.codec.null",
     "avro.codec.deflate",
@@ -416,8 +416,8 @@ fn draw_framing(rng: &mut Rng, cov: &mut Reached, d: &mut Map<String, Value>) {
                 prefix.insert("order".into(), json!("big"));
             }
             if rng.chance(2) {
-                cov.reach("lengthPrefix.frame");
-                prefix.insert("counts".into(), json!("frame"));
+                cov.reach("lengthPrefix.message");
+                prefix.insert("counts".into(), json!("message"));
             }
             d.insert("lengthPrefix".into(), Value::Object(prefix));
         }
@@ -828,7 +828,7 @@ fn expected_framing(d: &Map<String, Value>) -> Framing {
                     _ => ByteOrder::Big,
                 },
                 counts: match prefix.get("counts").and_then(Value::as_str) {
-                    Some("frame") => Counts::Frame,
+                    Some("message") => Counts::Message,
                     _ => Counts::Rest,
                 },
             })
@@ -1099,7 +1099,7 @@ fn body(rng: &mut Rng, cov: &mut Reached, framing: &Framing) -> (Vec<u8>, Vec<Ve
             };
             let most = match prefix.counts {
                 Counts::Rest => most,
-                Counts::Frame => most - header as u64,
+                Counts::Message => most - header as u64,
             };
             let mut bytes = Vec::new();
             let mut frames = Vec::new();
@@ -1108,7 +1108,7 @@ fn body(rng: &mut Rng, cov: &mut Reached, framing: &Framing) -> (Vec<u8>, Vec<Ve
                 rest.truncate(most as usize);
                 let length = match prefix.counts {
                     Counts::Rest => rest.len(),
-                    Counts::Frame => header + rest.len(),
+                    Counts::Message => header + rest.len(),
                 } as u64;
                 let mut frame: Vec<u8> = (0..prefix.offset).map(|_| rng.below(256) as u8).collect();
                 match prefix.order {

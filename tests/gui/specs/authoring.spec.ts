@@ -2236,10 +2236,10 @@ test('A10: a socket receiver is cut by the framing its form chooses, and over UD
   await expect(admin.getByRole('combobox', { name: /^length size/ })).toHaveValue('2');
   await expect(admin.getByRole('spinbutton', { name: /^length offset/ })).toHaveValue('2');
   await admin.getByRole('combobox', { name: /^byte order/ }).selectOption('little');
-  await admin.getByRole('combobox', { name: /^length counts/ }).selectOption('frame');
+  await admin.getByRole('combobox', { name: /^length counts/ }).selectOption('message');
   await admin.screenshot({ path: test.info().outputPath('socket-length-prefix.png') });
   await admin.getByRole('button', { name: 'About framing' }).click();
-  await expect(admin.getByText('one record per frame, each starting with its own length.')).toBeVisible();
+  await expect(admin.getByText('one record per message, each carrying its own length.')).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('socket-framing-help.png') });
   await admin.keyboard.press('Escape');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
@@ -2252,7 +2252,7 @@ test('A10: a socket receiver is cut by the framing its form chooses, and over UD
       port: 9000,
       allowFrom: ['10.0.0.0/8'],
       framing: 'lengthPrefix',
-      lengthPrefix: { offset: 2, bytes: 2, order: 'little', counts: 'frame' },
+      lengthPrefix: { offset: 2, bytes: 2, order: 'little', counts: 'message' },
     },
   ]);
 

@@ -983,7 +983,7 @@ export interface LengthPrefix {
   /** Absent is `big`. */
   order?: 'big' | 'little';
   /** What the length counts: the bytes after it, or the whole frame. Absent is `rest`. */
-  counts?: 'rest' | 'frame';
+  counts?: 'rest' | 'message';
 }
 
 /** An object store's kind, as a destination names it and as an object source's access is drawn. */

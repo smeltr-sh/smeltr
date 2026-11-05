@@ -286,10 +286,11 @@
   <Field field="framing" label="framing">
     {#snippet help()}
       <code>lines</code>: one record per line, or per event where a line breaker cuts them.
-      <code>object</code>: everything is one record, such as a JSON document a pipeline unrolls.
-      <code>escapedLines</code>: one record per line, unescaped as a <code>bytes</code> object
-      destination wrote it.
-      <code>lengthPrefix</code>: one record per frame, each starting with its own length.
+      <code>object</code>: everything is one record, such as a JSON document a pipeline unrolls;
+      from a sender, all it sends before it hangs up.
+      <code>escapedLines</code>: one record per line, unescaped as a destination with format
+      <code>bytes</code> and newlines <code>escape</code> wrote it.
+      <code>lengthPrefix</code>: one record per message, each carrying its own length.
       <code>fixed</code>: one record per so many bytes.
     {/snippet}
     <select
@@ -325,7 +326,7 @@
       </Field>
       <Field optional field="lengthPrefix" label="length offset">
         {#snippet help()}
-          How many bytes of each frame come before its length.
+          How many bytes of each message come before its length.
         {/snippet}
         <input
           type="number"
@@ -341,6 +342,7 @@
       <Field field="lengthPrefix" label="byte order">
         {#snippet help()}
           <code>big</code>: the most significant byte first, as most network protocols send it.
+          <code>little</code>: the least significant byte first.
         {/snippet}
         <select
           value={prefix.order ?? 'big'}
@@ -355,18 +357,18 @@
       </Field>
       <Field field="lengthPrefix" label="length counts">
         {#snippet help()}
-          <code>rest</code>: the bytes after the length. <code>frame</code>: the whole frame, the
-          length and what comes before it included.
+          <code>rest</code>: the bytes after the length. <code>message</code>: the whole message,
+          the length and what comes before it included.
         {/snippet}
         <select
           value={prefix.counts ?? 'rest'}
           onchange={(e) => {
-            const v = e.currentTarget.value as 'rest' | 'frame';
+            const v = e.currentTarget.value as 'rest' | 'message';
             prefix.counts = v === 'rest' ? undefined : v;
           }}
         >
           <option value="rest">rest</option>
-          <option value="frame">frame</option>
+          <option value="message">message</option>
         </select>
       </Field>
     </Nested>
@@ -1022,10 +1024,10 @@
   {#if source.type === 'syslogReceiver' || source.type === 'socketReceiver'}
     <Field field="transport" label="transport">
       {#snippet help()}
-        What senders send over. Over UDP each datagram is a {source.type === 'syslogReceiver'
+        What senders send over. Over UDP each datagram is one {source.type === 'syslogReceiver'
           ? 'message'
-          : 'record'}, served without TLS. A UDP receiver can't slow a sender, so what arrives while
-        it is full is dropped.
+          : 'record'}, without TLS. A UDP sender can't be slowed, so datagrams that arrive while the
+        receiver is full are dropped.
       {/snippet}
       <select
         value={source.transport ?? 'tcp'}

@@ -249,7 +249,7 @@ make a worker hold anything. A gzip body counts as it inflates, and is held
 to the receiver's request limit. The health path needs no token, and says
 only whether the receiver takes requests; a receiver that names trusted authorities
 admits no connection without a certificate that chains to them,
-the health path's included. Syslog carries no token, so a syslog receiver admits
+the health path's included. Syslog carries no token, nor does what a socket receiver reads, so either admits
 by the networks a sender connects from, or by its certificate. Over UDP it has
 no certificate to check, and a datagram's source address can be forged, so a
 UDP receiver's networks admit whoever can send from inside them or claim to.

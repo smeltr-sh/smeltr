@@ -104,7 +104,7 @@ impl Handler {
                 name: "partial", target: "sources",
                 subject = %remote,
                 bytes = partial,
-                "a sender hung up partway through a message whose length it had sent, which is dropped"
+                "a sender hung up partway through a message, and what arrived of it is dropped"
             ),
             End::Malformed(Malformed { at, what }) => match self.framing {
                 Framing::Syslog(_) => tracing::warn!(

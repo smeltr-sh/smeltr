@@ -6007,7 +6007,7 @@ fn a_socket_receiver_takes_a_framing_over_tcp() {
     };
     assert_eq!(framing(&socket("")), (Framing::Lines, Transport::Tcp));
     let json =
-        socket(r#","framing":"lengthPrefix","lengthPrefix":{"offset":2,"bytes":4,"order":"little","counts":"frame"}"#);
+        socket(r#","framing":"lengthPrefix","lengthPrefix":{"offset":2,"bytes":4,"order":"little","counts":"message"}"#);
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     assert_eq!(
         framing(&json).0,
@@ -6015,7 +6015,7 @@ fn a_socket_receiver_takes_a_framing_over_tcp() {
             offset: 2,
             width: 4,
             order: ByteOrder::Little,
-            counts: Counts::Frame,
+            counts: Counts::Message,
         })
     );
     assert_eq!(
@@ -6039,7 +6039,7 @@ fn a_socket_receiver_takes_a_framing_over_tcp() {
     assert!(refused_at(
         &socket(r#","framing":"lengthPrefix""#),
         "lengthPrefix",
-        "say where it is in lengthPrefix"
+        "give its bytes, and its offset if any, in lengthPrefix"
     ));
     assert!(refused_at(
         &socket(r#","framing":"lengthPrefix","lengthPrefix":{"bytes":9}"#),
@@ -6064,7 +6064,7 @@ fn a_socket_receiver_takes_a_framing_over_tcp() {
     assert!(refused_at(
         &socket(r#","framing":"fixed""#),
         "fixedBytes",
-        "say how many bytes in fixedBytes"
+        "give how many bytes in fixedBytes"
     ));
 }
 

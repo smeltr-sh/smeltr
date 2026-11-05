@@ -69,7 +69,7 @@ fn random_framing(rng: &mut Rng, max: usize, labels: &mut Vec<String>) -> Framin
             };
             let order = *rng.pick(&[ByteOrder::Big, ByteOrder::Little]);
             labels.push(format!("order {order:?}"));
-            let counts = *rng.pick(&[Counts::Rest, Counts::Frame]);
+            let counts = *rng.pick(&[Counts::Rest, Counts::Message]);
             labels.push(format!("counts {counts:?}"));
             Framing::LengthPrefix(LengthPrefix {
                 offset,
@@ -260,12 +260,12 @@ fn connection(rng: &mut Rng, n: usize, framing: &Framing, max: usize, labels: &m
                 let frame_len = header + rest_len;
                 let length = match prefix.counts {
                     Counts::Rest => rest_len as u64,
-                    Counts::Frame => frame_len as u64,
+                    Counts::Message => frame_len as u64,
                 };
                 if length > most {
                     continue;
                 }
-                let misframed = prefix.counts == Counts::Frame && last && rng.chance(4);
+                let misframed = prefix.counts == Counts::Message && last && rng.chance(4);
                 let length = match misframed {
                     true => rng.below(header) as u64,
                     false => length,
@@ -455,7 +455,7 @@ fn options(ipv6: bool) -> impl Iterator<Item = String> {
         .chain(FRAMINGS.iter().map(|f| format!("framing {f}")))
         .chain([1, 2, 3, 4, 8].map(|w| format!("length of {w} bytes")))
         .chain(["Big", "Little"].map(|o| format!("order {o}")))
-        .chain(["Rest", "Frame"].map(|c| format!("counts {c}")))
+        .chain(["Rest", "Message"].map(|c| format!("counts {c}")))
         .chain(DATAGRAMS.iter().map(|d| d.to_string()))
         .chain(
             [

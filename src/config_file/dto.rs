@@ -2274,8 +2274,8 @@ pub enum CountsDto {
     /// The bytes that follow the length.
     #[default]
     Rest,
-    /// The whole frame, its header and length among them.
-    Frame,
+    /// The whole message, its header and length among them.
+    Message,
 }
 
 impl CountsDto {

@@ -68,8 +68,8 @@ pub enum Counts {
     /// The bytes that follow the length.
     #[default]
     Rest,
-    /// The whole frame, its header and length among them.
-    Frame,
+    /// The whole message, its header and length among them.
+    Message,
 }
 
 impl LengthPrefix {
@@ -539,7 +539,7 @@ impl Framer {
         let length = prefix.read(header);
         let len = match prefix.counts {
             Counts::Rest => length.saturating_add(prefix.header() as u64),
-            Counts::Frame if length < prefix.header() as u64 => {
+            Counts::Message if length < prefix.header() as u64 => {
                 return Err(self.malformed(
                     start,
                     format!(
@@ -548,7 +548,7 @@ impl Framer {
                     ),
                 ));
             }
-            Counts::Frame => length,
+            Counts::Message => length,
         };
         self.within_inbox(start, len)?;
         Ok(self.counted(start, len))
@@ -952,7 +952,7 @@ mod tests {
         assert_eq!(frames_however_split(&big, sent).unwrap(), (expected, 0));
 
         // A header before a little-endian length that counts the whole frame.
-        let little = prefix(1, 4, ByteOrder::Little, Counts::Frame);
+        let little = prefix(1, 4, ByteOrder::Little, Counts::Message);
         let sent = b"T\x07\x00\x00\x00abU\x05\x00\x00\x00";
         let expected = vec![b"T\x07\x00\x00\x00ab".to_vec(), b"U\x05\x00\x00\x00".to_vec()];
         assert_eq!(frames_however_split(&little, sent).unwrap(), (expected, 0));
@@ -973,7 +973,7 @@ mod tests {
         assert_eq!(cut, [sent[..MAX].to_vec(), b"\x01z".to_vec()]);
         assert_eq!(partial, 0);
 
-        let framing = prefix(0, 2, ByteOrder::Big, Counts::Frame);
+        let framing = prefix(0, 2, ByteOrder::Big, Counts::Message);
         let refused = frames(&framing, b"\x00\x02\x00\x01", &[]).unwrap_err();
         assert_eq!(refused.at, 2);
 
