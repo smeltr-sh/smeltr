@@ -133,10 +133,27 @@
       (s.maxRequestBytes ?? LIMITS.receiverRequestBytes.default) !==
         LIMITS.receiverRequestBytes.default ||
       s.answerAfterDelivery === true ||
+      (streams(s) &&
+        ((s.maxConnections ?? LIMITS.maxConnections.default) !== LIMITS.maxConnections.default ||
+          s.maxConnectionsPerSender !== undefined ||
+          s.idleTimeoutSecs !== undefined)) ||
       ((s.type === 'syslogReceiver' || s.type === 'socketReceiver') &&
         (s.encoding ?? 'auto') !== 'auto') ||
       (s.type === 'syslogReceiver' && s.lineBreaker !== undefined) ||
       (s.type === 'hecReceiver' && s.sourcetypes !== undefined)
+    );
+  }
+
+  type StreamingReceiver = Extract<
+    SourceDto,
+    { type: 's2sReceiver' | 'syslogReceiver' | 'socketReceiver' }
+  >;
+
+  /** Whether `s`'s senders stream over a connection it holds open, which its connection limits hold to. */
+  function streams(s: ReceiverSource): s is StreamingReceiver {
+    return (
+      s.type === 's2sReceiver' ||
+      ((s.type === 'syslogReceiver' || s.type === 'socketReceiver') && s.transport !== 'udp')
     );
   }
 
@@ -1040,6 +1057,9 @@
           if (v === 'udp') {
             source.certificate = undefined;
             source.trustedAuthorities = undefined;
+            source.maxConnections = undefined;
+            source.maxConnectionsPerSender = undefined;
+            source.idleTimeoutSecs = undefined;
             delete source.lineBreaker;
             if (source.type === 'socketReceiver') setFraming(source, 'lines');
           }
@@ -1228,6 +1248,9 @@
         />
       </Field>
     {/if}
+    {#if streams(source)}
+      {@render connectionLimits(source)}
+    {/if}
     {#if source.type === 'socketReceiver'}
       {@render encodingField(source)}
     {/if}
@@ -1243,6 +1266,65 @@
       {/if}
     {/if}
   </Advanced>
+{/snippet}
+
+<!-- How many connections a receiver whose senders stream holds open, and how long it keeps an idle one. -->
+{#snippet connectionLimits(source: StreamingReceiver)}
+  <Field optional field="maxConnections" label="max connections">
+    {#snippet help()}
+      The most connections it holds open on each worker, at most
+      {LIMITS.maxConnections.max.toLocaleString('en-US')}. When it holds that many, a new connection
+      takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new
+      one is closed.
+    {/snippet}
+    <input
+      type="number"
+      min={LIMITS.maxConnections.min}
+      max={LIMITS.maxConnections.max}
+      value={source.maxConnections ?? LIMITS.maxConnections.default}
+      oninput={(e) => {
+        const n = bounded(e.currentTarget, LIMITS.maxConnections);
+        source.maxConnections = n === LIMITS.maxConnections.default ? undefined : n;
+      }}
+    />
+  </Field>
+  <Field optional field="maxConnectionsPerSender" label="max connections per sender">
+    {#snippet help()}
+      The most it holds from one address, the same way. Empty, one sender may take them all. Set it
+      only against a sender that takes the room others need: behind a balancer or NAT, every sender
+      comes from one address.
+    {/snippet}
+    <input
+      type="number"
+      min="1"
+      max={source.maxConnections ?? LIMITS.maxConnections.default}
+      value={source.maxConnectionsPerSender ?? ''}
+      placeholder="no limit"
+      oninput={(e) =>
+        (source.maxConnectionsPerSender = bounded(e.currentTarget, {
+          min: 1,
+          max: source.maxConnections ?? LIMITS.maxConnections.default,
+        }))}
+    />
+  </Field>
+  <Field optional field="idleTimeoutSecs" label="idle timeout seconds">
+    {#snippet help()}
+      Closes a connection that sends nothing this long while the receiver waits on it. Empty, an
+      idle connection stays open as long as there is room. Some senders lose the first message they
+      write to a connection the receiver closed.
+    {/snippet}
+    <input
+      type="number"
+      min="1"
+      value={source.idleTimeoutSecs ?? ''}
+      placeholder="none"
+      oninput={(e) =>
+        (source.idleTimeoutSecs = bounded(e.currentTarget, {
+          min: 1,
+          max: Number.MAX_SAFE_INTEGER,
+        }))}
+    />
+  </Field>
 {/snippet}
 
 <!-- A source's own fields, below its id: the same in its row and in the add dialog. -->

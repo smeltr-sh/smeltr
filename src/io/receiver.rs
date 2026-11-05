@@ -3220,7 +3220,7 @@ impl Said {
             connections::Closed::Idle => (
                 2,
                 format!(
-                    "the receiver closed a connection that read nothing for its idleTimeoutSecs, {}",
+                    "the receiver closed a connection that sent nothing for its idleTimeoutSecs, {}, while it waited",
                     limits.idle.unwrap_or_default().as_secs()
                 ),
             ),

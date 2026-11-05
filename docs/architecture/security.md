@@ -254,6 +254,18 @@ by the networks a sender connects from, or by its certificate. Over UDP it has
 no certificate to check, and a datagram's source address can be forged, so a
 UDP receiver's networks admit whoever can send from inside them or claim to.
 
+A sender holds a connection open to the S2S, syslog and socket receivers, so
+each holds its connections to a cap, on each worker, that no sender can raise
+by opening more: at the cap a new connection takes the place of the one idle
+longest, if that one has idled long enough, and is closed otherwise. A
+connection is idle only while the receiver waits on it, so a receiver that
+stops reading because it is full closes nothing. The defaults cut no honest
+sender, however quiet: there is no idle timeout and no cap per sender, since
+a balancer or NAT sends every sender through one address. A sender that keeps
+every connection it opens from idling can therefore hold the whole cap, and
+an administrator who faces one sets a cap per sender. A TLS handshake that
+stalls times out. The HTTP receivers have no cap yet.
+
 ## Scrapers
 
 A worker's metrics endpoint is a port the worker opens only when its startup

@@ -6644,7 +6644,7 @@ fn an_http_api_source_with_a_muddled_sign_in_is_refused() {
 }
 
 /// A receiver that streams holds 10,000 connections unless told otherwise, and an admin may tighten that, cap one
-/// sender, and close idle connections. A receiver that holds no connection open refuses the settings.
+/// sender, and close idle connections. Over UDP, which holds no connection, the settings are refused.
 #[test]
 fn a_receiver_that_streams_takes_connection_limits() {
     use smeltr::plan::topology::{ConnectionLimits, SourceKind};
@@ -6702,13 +6702,12 @@ fn a_receiver_that_streams_takes_connection_limits() {
     assert!(refused_at(
         &socket(r#","transport":"udp","idleTimeoutSecs":60"#),
         "idleTimeoutSecs",
-        "only S2S, syslog and socket receivers over TCP read"
+        "only TCP reads"
     ));
-    assert!(refused_at(
-        &http_receiver_config(8088, &format!(r#"{RECEIVER_TOKEN},"maxConnections":5"#)),
-        "maxConnections",
-        "only S2S, syslog and socket receivers over TCP read"
-    ));
+    let http = http_receiver_config(8088, &format!(r#"{RECEIVER_TOKEN},"maxConnections":5"#));
+    let e =
+        serde_json::from_str::<smeltr::config_file::FileConfig>(&http).expect_err("an HTTP receiver takes none yet");
+    assert!(e.to_string().contains("maxConnections"), "{e}");
     assert_eq!(
         refusal(&s2s_receiver_config(&format!(
             r#"{S2S_TOKEN},"maxConnectionsPerSender":4"#

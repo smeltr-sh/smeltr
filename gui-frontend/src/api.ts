@@ -327,30 +327,33 @@ export type SourceDto =
        * as a Basic password. */
       tokens?: Record<string, SecretRef>;
     })
-  | (ReceiverSettings & {
-      id: string;
-      type: 's2sReceiver';
-      /** Token name to the credential holding a token a forwarder presents, its outputs.conf `token`. */
-      tokens?: Record<string, SecretRef>;
-      /** Sourcetype to where its events end. A sourcetype not named here is an event per line. */
-      sourcetypes?: Record<string, Sourcetype>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'syslogReceiver';
-      /** The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token,
-       * so this admits a sender, unless the receiver names authorities a sender's certificate must chain to. */
-      allowFrom?: string[];
-      /** As a Kafka source's. */
-      encoding?: string;
-      /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a message, served without TLS, so it
-       * takes no certificate or authorities and only `allowFrom` admits a sender. */
-      transport?: 'tcp' | 'udp';
-      /** Where a message over TCP ends, as an object source's `lineBreaker`. Absent, at a newline. Octet counting
-       * still frames a message that starts with its length. */
-      lineBreaker?: string;
-    })
   | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 's2sReceiver';
+        /** Token name to the credential holding a token a forwarder presents, its outputs.conf `token`. */
+        tokens?: Record<string, SecretRef>;
+        /** Sourcetype to where its events end. A sourcetype not named here is an event per line. */
+        sourcetypes?: Record<string, Sourcetype>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'syslogReceiver';
+        /** The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token,
+         * so this admits a sender, unless the receiver names authorities a sender's certificate must chain to. */
+        allowFrom?: string[];
+        /** As a Kafka source's. */
+        encoding?: string;
+        /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a message, served without TLS, so it
+         * takes no certificate or authorities and only `allowFrom` admits a sender. */
+        transport?: 'tcp' | 'udp';
+        /** Where a message over TCP ends, as an object source's `lineBreaker`. Absent, at a newline. Octet counting
+         * still frames a message that starts with its length. */
+        lineBreaker?: string;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits &
       FramingSettings & {
         id: string;
         type: 'socketReceiver';
@@ -522,6 +525,8 @@ export const LIMITS = {
   logAnalyticsRequestBytes: { min: 4 * 1024, max: 1024 * 1024, default: 1024 * 1024 },
   /** A receiver's `maxRequestBytes` (`MaxRequestBytes`): at most what one request may hold of its inbox. */
   receiverRequestBytes: { min: 2048, max: 64 * 1024 * 1024, default: 10 * 1024 * 1024 },
+  /** A receiver's `maxConnections` (`MaxConnections`), on each worker. */
+  maxConnections: { min: 1, max: 1_000_000, default: 10_000 },
   maxObjectBytes: { min: 64 * 1024, max: 64 * 1024 * 1024 * 1024, default: 64 * 1024 * 1024 },
   stallAfterSecs: { min: 1, max: 120, default: 30 },
   bufferBytes: { min: 4 * 1024 * 1024, max: 1024 * 1024 * 1024, default: 64 * 1024 * 1024 },
@@ -911,6 +916,17 @@ export interface ReceiverSettings extends Pick<TlsDto, 'certificate' | 'trustedA
   maxRequestBytes?: number;
   /** Absent answers a request once received. Only a receiver that answers each request takes it. */
   answerAfterDelivery?: boolean;
+}
+
+/** How many connections a receiver whose senders stream over TCP holds open, mirroring
+ * `config_file::dto::ConnectionLimitsDto`. */
+export interface ConnectionLimits {
+  /** Absent is `LIMITS.maxConnections.default`. */
+  maxConnections?: number;
+  /** Absent holds as many from one sender as `maxConnections`. */
+  maxConnectionsPerSender?: number;
+  /** Absent keeps an idle connection open while there is room. */
+  idleTimeoutSecs?: number;
 }
 
 /** A token a HEC receiver admits, mirroring `config_file::dto::HecTokenDto`. */

@@ -89,12 +89,12 @@ impl Connections {
     /// its place; or why it is refused.
     pub(super) fn admit(&mut self, peer: IpAddr) -> (Vec<(IpAddr, Closed)>, Result<Place, Refused>) {
         let mut closed = Vec::new();
-        if let Some(cap) = self.limits.per_sender {
-            if self.open.values().filter(|o| o.peer == peer).count() >= cap {
-                match self.close_idlest(Some(peer)) {
-                    Some(gone) => closed.push((gone, Closed::ForNewFromSender)),
-                    None => return (closed, Err(Refused::FullFromSender)),
-                }
+        if let Some(cap) = self.limits.per_sender
+            && self.open.values().filter(|o| o.peer == peer).count() >= cap
+        {
+            match self.close_idlest(Some(peer)) {
+                Some(gone) => closed.push((gone, Closed::ForNewFromSender)),
+                None => return (closed, Err(Refused::FullFromSender)),
             }
         }
         if self.open.len() >= self.limits.max {

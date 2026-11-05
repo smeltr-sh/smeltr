@@ -832,6 +832,8 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
         #[serde(flatten)]
+        connections: ConnectionLimitsDto,
+        #[serde(flatten)]
         tls: ServedTlsDto,
         /// Token name -> the credential holding a token a forwarder may present, its outputs.conf `token`. A
         /// forwarder presenting none, or another, is cut off.
@@ -908,6 +910,8 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
         #[serde(flatten)]
+        connections: ConnectionLimitsDto,
+        #[serde(flatten)]
         tls: ServedTlsDto,
         /// The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token, so
         /// this is what admits a sender, unless the receiver names authorities a sender's certificate
@@ -935,6 +939,8 @@ pub enum SourceKindDto {
     SocketReceiver {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
+        #[serde(flatten)]
+        connections: ConnectionLimitsDto,
         #[serde(flatten)]
         tls: ServedTlsDto,
         /// The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Nothing it receives carries a
@@ -994,13 +1000,21 @@ pub struct ReceiverSettingsDto {
     pub port: u16,
     #[serde(default, skip_serializing_if = "MaxRequestBytes::is_default")]
     pub max_request_bytes: MaxRequestBytes,
-    /// The most connections it holds at once, on each worker, for a receiver whose senders stream over TCP.
+}
+
+/// How many connections a receiver whose senders stream over TCP holds open, and how long it keeps an idle one.
+/// Flattened into the S2S, syslog and socket receivers' fields.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectionLimitsDto {
+    /// The most connections it holds at once, on each worker.
     #[serde(default, skip_serializing_if = "MaxConnections::is_default")]
     pub max_connections: MaxConnections,
     /// The most it holds from one address. Absent, as many as `maxConnections`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_connections_per_sender: Option<u64>,
-    /// How long a connection may read nothing before it is closed. Absent, an idle one is held while there is room.
+    /// How long a connection the receiver waits on may send nothing before it is closed. Absent, an idle one is held
+    /// while there is room.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_timeout_secs: Option<u64>,
 }

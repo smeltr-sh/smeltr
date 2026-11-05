@@ -3626,6 +3626,27 @@
             "default": 10485760,
             "examples": [1048576, 67108864],
             "what": "The largest frame it reads, and the most one record holds, between 2048 and 67108864."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "default": 10000,
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most it holds from one address, the same way, between 1 and `maxConnections`. Absent, one sender may take them all. Set it only against a sender that takes the room others need: behind a balancer or NAT, every sender comes from one address."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed."
           }
         ],
         "fields": [
@@ -3646,7 +3667,14 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
+            "settings": [
+              "certificate",
+              "trustedAuthorities",
+              "maxRequestBytes",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs"
+            ]
           }
         ]
       },
@@ -3815,6 +3843,27 @@
             "what": "The largest message it keeps, between 2048 and 67108864. A larger one is cut to this size."
           },
           {
+            "name": "maxConnections",
+            "type": "integer",
+            "default": 10000,
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed. TCP only."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most it holds from one address, the same way, between 1 and `maxConnections`. Absent, one sender may take them all. Set it only against a sender that takes the room others need: behind a balancer or NAT, every sender comes from one address. TCP only."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed. TCP only."
+          },
+          {
             "name": "encoding",
             "type": "string",
             "default": "auto",
@@ -3854,6 +3903,9 @@
               "certificate",
               "trustedAuthorities",
               "maxRequestBytes",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs",
               "encoding",
               "lineBreaker"
             ]
@@ -3980,6 +4032,27 @@
             "what": "The largest message it keeps, between 2048 and 67108864. A larger one is cut to this size."
           },
           {
+            "name": "maxConnections",
+            "type": "integer",
+            "default": 10000,
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed. TCP only."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most it holds from one address, the same way, between 1 and `maxConnections`. Absent, one sender may take them all. Set it only against a sender that takes the room others need: behind a balancer or NAT, every sender comes from one address. TCP only."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed. TCP only."
+          },
+          {
             "name": "encoding",
             "type": "string",
             "default": "auto",
@@ -4016,7 +4089,15 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes", "encoding"]
+            "settings": [
+              "certificate",
+              "trustedAuthorities",
+              "maxRequestBytes",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs",
+              "encoding"
+            ]
           }
         ]
       },

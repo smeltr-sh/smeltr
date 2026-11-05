@@ -2310,13 +2310,32 @@ test('A10: a socket receiver is cut by the framing its form chooses, and over UD
   await admin.getByRole('combobox', { name: /^length counts/ }).selectOption('message');
   await admin.screenshot({ path: test.info().outputPath('socket-length-prefix.png') });
   await admin.getByRole('button', { name: 'About framing' }).click();
-  await expect(admin.getByText('one record per message, each carrying its own length.')).toBeVisible();
+  await expect(
+    admin.getByText('one record per message, each carrying its own length.'),
+  ).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('socket-framing-help.png') });
   await admin.keyboard.press('Escape');
   await admin.getByRole('button', { name: 'About transport' }).click();
   await expect(admin.getByText(/each datagram is one record, without TLS/)).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('socket-transport-help.png') });
   await admin.keyboard.press('Escape');
+  // Under Advanced, the connections it holds: 10,000 unless tightened, with no cap per sender and no idle timeout.
+  await admin.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
+  const maxConnections = admin.getByRole('spinbutton', { name: /^max connections(?! per)/ });
+  await expect(maxConnections).toHaveValue('10000');
+  await maxConnections.fill('500');
+  await admin.getByRole('spinbutton', { name: /^max connections per sender/ }).fill('20');
+  const idle = admin.getByRole('spinbutton', { name: /^idle timeout seconds/ });
+  await idle.fill('600');
+  await idle.scrollIntoViewIfNeeded();
+  await admin.screenshot({ path: test.info().outputPath('socket-connection-limits.png') });
+  for (const field of ['max connections', 'max connections per sender', 'idle timeout seconds']) {
+    await admin.getByRole('button', { name: `About ${field}`, exact: true }).click();
+    await admin.screenshot({
+      path: test.info().outputPath(`socket-${field.replaceAll(' ', '-')}-help.png`),
+    });
+    await admin.keyboard.press('Escape');
+  }
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   let saved = await api.get(`/api/areas/shared${ON}`);
@@ -2328,10 +2347,13 @@ test('A10: a socket receiver is cut by the framing its form chooses, and over UD
       allowFrom: ['10.0.0.0/8'],
       framing: 'lengthPrefix',
       lengthPrefix: { offset: 2, bytes: 2, order: 'little', counts: 'message' },
+      maxConnections: 500,
+      maxConnectionsPerSender: 20,
+      idleTimeoutSecs: 600,
     },
   ]);
 
-  // A fixed size drops the length prefix, and UDP drops any framing with the certificate.
+  // A fixed size drops the length prefix, and UDP drops any framing with the certificate and the connection limits.
   await framing.selectOption('fixed');
   await expect(admin.getByRole('combobox', { name: /^length size/ })).toBeHidden();
   await admin.getByRole('spinbutton', { name: /^record size/ }).fill('16');
@@ -2342,7 +2364,13 @@ test('A10: a socket receiver is cut by the framing its form chooses, and over UD
   await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
-    { id: 'meters', type: 'socketReceiver', port: 9000, allowFrom: ['10.0.0.0/8'], transport: 'udp' },
+    {
+      id: 'meters',
+      type: 'socketReceiver',
+      port: 9000,
+      allowFrom: ['10.0.0.0/8'],
+      transport: 'udp',
+    },
   ]);
   await admin.reload();
   await expect(admin.getByRole('button', { name: /^meters\b/ })).toContainText(':9000/udp');
