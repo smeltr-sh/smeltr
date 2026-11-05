@@ -195,8 +195,8 @@ impl Framer {
         }
     }
 
-    /// Adds every message held whole to `messages`, as `cut` does, its line breaker searching all it holds however
-    /// little arrived since it last searched: nothing more is coming.
+    /// Like `cut`, but the line breaker searches everything held, however little arrived since it last searched,
+    /// because nothing more is coming.
     fn cut_whole(&mut self, messages: &mut Messages) -> Result<(), Malformed> {
         self.searched.found();
         self.cut(messages)
@@ -583,8 +583,8 @@ impl Handler {
                     framer.push(&buf[..n]);
                     framer.cut(&mut messages)
                 }
-                // The connection broke, as a TLS sender's does that hangs up without a `close_notify`. What is held
-                // whole is the sender's, and what is not is cut short.
+                // The connection broke, as a TLS sender's does when it hangs up without a `close_notify`. Messages
+                // held whole are kept; the unfinished one is dropped.
                 Some(Err(_)) => {
                     broke = true;
                     framer.cut_whole(&mut messages)
@@ -604,6 +604,7 @@ impl Handler {
                 return End::Malformed(malformed);
             }
             if broke {
+                // Only `finish` measures an unfinished octet-counted frame.
                 return End::Gone { partial: 0 };
             }
         }
@@ -1070,7 +1071,7 @@ mod tests {
             )
             .await;
         assert_eq!(ended, End::Gone { partial: 0 });
-        // What follows the last break was cut short.
+        // The unfinished `<13>b`, with no break after it, is dropped.
         assert_eq!(admitted, [long]);
     }
 }
