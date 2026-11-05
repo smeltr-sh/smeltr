@@ -68,8 +68,8 @@ pub struct Live<'a> {
     pub snapshot: &'a [ThreadHealth],
     /// What the fleet was told to beat at, which is what says when a report is too old to count.
     pub heartbeat_interval: Duration,
-    /// The share of past windows a source's expected band holds, in (0, 1) (`throughput::band_percent`).
-    pub band_share: f64,
+    /// What a source's expected band is learned with.
+    pub learning: throughput::Learning,
 }
 
 /// One bucket of a [`Spread`]: when it started and what it measured.
@@ -381,7 +381,7 @@ pub fn build(
                 routes: route_shares(system, source.id, group, &totals(ROUTE_MATCHED_METRIC)),
                 expected: series_store
                     .map(|store| {
-                        throughput::expected_over(store, group, id, since_ms, now_ms, tier.bucket_ms(), live.band_share)
+                        throughput::expected_over(store, group, id, since_ms, now_ms, tier.bucket_ms(), &live.learning)
                     })
                     .transpose()
                     .unwrap_or_else(|e| {
@@ -948,7 +948,7 @@ mod tests {
         Live {
             snapshot: &[],
             heartbeat_interval: BEAT,
-            band_share: 0.99,
+            learning: throughput::Learning::default(),
         }
     }
 
@@ -1054,7 +1054,7 @@ mod tests {
             Live {
                 snapshot,
                 heartbeat_interval: BEAT,
-                band_share: 0.99,
+                learning: throughput::Learning::default(),
             },
         )
         .body

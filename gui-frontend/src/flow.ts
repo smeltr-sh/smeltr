@@ -1,12 +1,12 @@
 // Turning a `FlowResponseDto` (E2, `GET /api/flow`) into what the Status page draws: a
-// dense, gap-aware grid for the chart, and a ranking by how far each subject is from what it
-// usually does at this hour (the Main storyboard's "Furthest from normal").
+// dense, gap-aware grid for the chart, and a ranking by how far each source is from its normal
+// (the Main storyboard's "Furthest from normal").
 //
 // A bucket the leader never wrote is absent from `points` -- a gap, not a zero
 // (`src/leader/series.rs`) -- and every function here keeps that distinction rather than
 // filling it in.
 
-import type { FlowPointDto, FlowSeriesDto } from './api';
+import type { FlowNormalDto, FlowPointDto, FlowSeriesDto } from './api';
 
 /** The window picker (E2: sixty minutes by default, out to thirty days). */
 export const FLOW_WINDOWS: { label: string; minutes: number }[] = [
@@ -23,11 +23,6 @@ export const DEFAULT_WINDOW_MINUTES = 60;
  * tier holds is served from a rollup, and the last few minutes have not aged into it yet --
  * so an empty answer there means "not rolled up", not "nothing ran". */
 export const FINEST_BUCKET_MILLIS = 10_000;
-
-/** A fixed horizon for "what a subject usually does at this hour", independent of the
- * chart's own picker -- a baseline needs history the picker's window may not cover. Thirty
- * days is the leader's own retention ceiling (`series::Tier`), the most history there is. */
-export const BASELINE_WINDOW_MINUTES = 30 * 24 * 60;
 
 /** How many rows the ranked table shows (Main storyboard). */
 export const FURTHEST_FROM_NORMAL_LIMIT = 8;
@@ -128,67 +123,38 @@ export function currentRate(
   return point ? bucketRate(point, bucketMillis) : null;
 }
 
-/** The mean rate this subject has run at `nowMillis`'s local hour of day, across every
- * earlier bucket that shares it -- "what it usually does at this hour" (Main storyboard).
- * `null` with no such history: there is nothing yet to call usual. */
-export function usualAtThisHour(
-  points: FlowPointDto[],
-  bucketMillis: number,
-  nowMillis: number,
-): number | null {
-  const bucketStart = Math.floor(nowMillis / bucketMillis) * bucketMillis;
-  const hour = new Date(nowMillis).getHours();
-  const history = points.filter(
-    (p) => p.bucketMillis !== bucketStart && new Date(p.bucketMillis).getHours() === hour,
-  );
-  if (history.length === 0) return null;
-  const meanValue = history.reduce((sum, p) => sum + p.value, 0) / history.length;
-  return bucketRate({ bucketMillis: bucketStart, value: meanValue }, bucketMillis);
+/** A source's last half hour against its normal, as the Status page ranks it. `awayPercent` is how
+ * far past its normal's nearest edge it is, in percent of that edge: 0 within its normal, and
+ * `null` above a normal of none, which any rate is infinitely past. */
+export type RankedSource = FlowNormalDto & { awayPercent: number | null };
+
+/** How far `n` is past its normal's nearest edge, in percent of that edge (`RankedSource`). */
+export function awayPercent(n: FlowNormalDto): number | null {
+  if (n.now < n.low) return ((n.now - n.low) / n.low) * 100;
+  if (n.now <= n.high) return 0;
+  return n.high > 0 ? ((n.now - n.high) / n.high) * 100 : null;
 }
 
-export type Deviation = { now: number; normal: number; awayPercent: number };
-
-/** How far a subject's current rate is from what it usually does at this hour -- what the
- * Main storyboard ranks by. `null` where there is no baseline yet to be far from (including
- * a subject that is usually silent: a percentage away from zero is not a number). */
-export function deviationFromUsual(
-  points: FlowPointDto[],
-  bucketMillis: number,
-  nowMillis: number,
-): Deviation | null {
-  const now = currentRate(points, bucketMillis, nowMillis);
-  if (now === null) return null;
-  // Both sides read the same bucket: `now` is the one that just closed, so "usual" is the
-  // hour that bucket belongs to, not the hour it is being looked at in.
-  const normal = usualAtThisHour(points, bucketMillis, lastClosedBucket(bucketMillis, nowMillis));
-  if (normal === null || normal === 0) return null;
-  return { now, normal, awayPercent: ((now - normal) / normal) * 100 };
+/** How far from the middle of its normal `n` is: past 1 outside it, by how far past its edge;
+ * within it, the share of the way from the middle to the edge. What the ranking sorts by, so
+ * that within their normals the sources nearest an edge come first. */
+function distance(n: FlowNormalDto): number {
+  const away = awayPercent(n);
+  if (away === null) return Infinity;
+  if (away !== 0) return 1 + Math.abs(away) / 100;
+  const half = (n.high - n.low) / 2;
+  return half > 0 ? Math.abs(n.now - (n.low + half)) / half : 0;
 }
 
-export type SubjectKind = 'source' | 'destination';
-
-export type RankedSubject = {
-  group: string;
-  subjectId: string;
-  kind: SubjectKind;
-} & Deviation;
-
-/** Sources and destinations together, ranked by how far each is from what it usually does at
- * this hour -- not by size, so one dying source is not hidden by a hundred healthy ones
- * (Main storyboard, "Furthest from normal"). */
+/** Sources ranked by how far each is from its normal -- not by size, so one dying source is not
+ * hidden by a hundred healthy ones (Main storyboard, "Furthest from normal"). The warning reads the
+ * same normal, so a source ranked outside it is one the Issues page names. */
 export function furthestFromNormal(
-  rowsIn: FlowSeriesDto[],
-  rowsOut: FlowSeriesDto[],
-  bucketMillis: number,
-  nowMillis: number,
+  normals: FlowNormalDto[],
   limit: number = FURTHEST_FROM_NORMAL_LIMIT,
-): RankedSubject[] {
-  const rank = (series: FlowSeriesDto[], kind: SubjectKind): RankedSubject[] =>
-    series.flatMap((s) => {
-      const d = deviationFromUsual(s.points, bucketMillis, nowMillis);
-      return d === null ? [] : [{ group: s.group, subjectId: s.subjectId, kind, ...d }];
-    });
-  return [...rank(rowsIn, 'source'), ...rank(rowsOut, 'destination')]
-    .sort((a, b) => Math.abs(b.awayPercent) - Math.abs(a.awayPercent))
-    .slice(0, limit);
+): RankedSource[] {
+  return normals
+    .toSorted((a, b) => distance(b) - distance(a))
+    .slice(0, limit)
+    .map((n) => ({ ...n, awayPercent: awayPercent(n) }));
 }

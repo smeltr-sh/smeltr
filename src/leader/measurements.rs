@@ -418,7 +418,7 @@ mod tests {
         Live {
             snapshot,
             heartbeat_interval: BEAT,
-            band_share: 0.99,
+            learning: crate::leader::throughput::Learning::default(),
         }
     }
 

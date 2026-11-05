@@ -3917,6 +3917,18 @@ export type FlowResponseDto = {
    * falls behind, so this is the weight of what landed, not of what `rowsOut`
    * says left. */
   bytesOut: FlowSeriesDto[];
+  /** Every source's last half hour against its normal, whatever the window. */
+  normals: FlowNormalDto[];
+};
+
+/** One source's last half hour against its normal (`throughput::Reading`), in rows per second:
+ * its normal holds `low` to `high`. */
+export type FlowNormalDto = {
+  group: string;
+  subjectId: string;
+  now: number;
+  low: number;
+  high: number;
 };
 
 /** Clamped leader-side to at least one minute and at most thirty days. */
@@ -3963,6 +3975,24 @@ export function getLogs(query: string): Promise<LogsResponseDto> {
 
 export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
   return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
+}
+
+/** Lowers the Rows below or above normal warning that holds for `group`'s `source` to info until it ends. */
+export function lowerSourceRows(
+  group: string,
+  source: string,
+): Promise<{ ok: boolean; errors: ApiError[] }> {
+  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/lower`, group), { method: 'POST' });
+}
+
+/** Resets `group`'s `source`'s history, so its normal is learned again from now. */
+export function resetSourceHistory(
+  group: string,
+  source: string,
+): Promise<{ ok: boolean; errors: ApiError[] }> {
+  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/reset-history`, group), {
+    method: 'POST',
+  });
 }
 
 // -- the topology map (design doc "The map", `src/leader/map.rs`) ---------
