@@ -331,9 +331,8 @@ across a restart. The Status page ranks sources by how far each is from the
 same normal.
 
 An editor in the source's worker group may say either of two things about
-it. Lower turns the warning that holds into info until it ends: it stays on
-the Issues page for everyone, and a channel already told of it is told
-nothing more until it clears. Reset history forgets what the source read
+it. Lower turns the warning that holds into info until it ends, and it stays
+on the Issues page for everyone. Reset history forgets what the source read
 before now, so it has no normal until it has enough history again. The leader
 keeps both, with who said each.
 

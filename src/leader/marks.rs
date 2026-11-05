@@ -2,8 +2,8 @@
 //! info, or reset the source's history, so its normal is learned again from now.
 //!
 //! A lowered warning stays on the Issues page for everyone, marked as info, and the views that judge health leave
-//! it out. Channels already told of it are told nothing more until it clears. It is named by when it began, so it
-//! stays lowered until it ends, and the next one is a warning again. Nothing is learned from the time it held.
+//! it out. It is named by when it began, so it stays lowered until it ends, and the next one is a warning again.
+//! Nothing is learned from the time it held.
 //!
 //! A source whose history was reset learns its normal only from what it read after the reset, so it has none, and does not
 //! warn, until it has [`super::throughput::MIN_DAYS`] days of that.
