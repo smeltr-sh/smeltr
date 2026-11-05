@@ -39,6 +39,7 @@ pub mod lock;
 pub mod log_levels;
 pub mod lookups;
 pub mod map;
+pub mod marks;
 pub mod measurements;
 pub mod model;
 pub mod oidc;
@@ -1141,8 +1142,13 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
         &recovering,
         heartbeat_interval,
     ));
-    let (key, kept, channels) = run_store(state.store.clone(), |s| {
-        Ok((s.key_standing()?, s.kept_certificates()?, alerts::channels(s)))
+    let (key, kept, channels, marks) = run_store(state.store.clone(), |s| {
+        Ok((
+            s.key_standing()?,
+            s.kept_certificates()?,
+            alerts::channels(s),
+            marks::Marks::read(s),
+        ))
     })
     .await?;
     // Only to name a channel's secret: unreadable channels are the alerts loop's to report, not every warning's.
@@ -1152,7 +1158,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let starts = state.registry.starts_of(&active_facts, now_ms);
     let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
     let normal_warnings =
-        warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, heartbeat_interval);
+        warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, &marks, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
     // The other place a rotation's deadline is looked at. The heartbeat carries the evidence a cutover waits on,
     // but a leader whose workers have all gone quiet receives none -- and this is what the page polls while

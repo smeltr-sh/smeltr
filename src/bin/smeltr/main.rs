@@ -200,7 +200,7 @@ async fn get_map_measurements(
         let live = smeltr::leader::stats::Live {
             snapshot: &snapshot,
             heartbeat_interval: smeltr::startup_config::leader_heartbeat_interval(),
-            band_share: smeltr::leader::throughput::DEFAULT_BAND_PERCENT / 100.0,
+            learning: smeltr::leader::throughput::Learning::default(),
         };
         Ok(Measurements {
             commit: Some(commit),
@@ -273,9 +273,7 @@ async fn get_stats(
                     let live = smeltr::leader::stats::Live {
                         snapshot: &snapshot,
                         heartbeat_interval: smeltr::startup_config::leader_heartbeat_interval(),
-                        band_share: smeltr::leader::throughput::band_percent(&*state.store)
-                            .unwrap_or(smeltr::leader::throughput::DEFAULT_BAND_PERCENT)
-                            / 100.0,
+                        learning: smeltr::leader::throughput::Learning::read(&*state.store),
                     };
                     smeltr::leader::stats::build(&group, &system, kind, &id, window, state.registry.series(), live)
                 }
@@ -1176,6 +1174,11 @@ async fn setup_leader(
         // Not on `app` below with the rest of the config routes: saving a connector asks the certificate list whether
         // it holds the certificate named.
         .route("/api/areas/:area/sources", put(config_api::put_sources))
+        .route("/api/areas/:area/sources/:id/lower", post(smeltr::leader::marks::lower))
+        .route(
+            "/api/areas/:area/sources/:id/relearn",
+            post(smeltr::leader::marks::relearn),
+        )
         .route("/api/areas/:area/destinations", put(config_api::put_destinations))
         // Not on `app` below with the rest of the samples routes: the capture a sample is made from is held in
         // `State<AppState>`.

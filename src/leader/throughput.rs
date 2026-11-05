@@ -33,7 +33,7 @@ use super::envelope::{Envelope, Refusal};
 use super::series::{RegistryStore, SubjectPoints, Swing, Tier};
 use super::store::{Actor, Store};
 use super::warnings::{self, SubjectKind, label};
-use super::{AppState, ROWS_IN_METRIC, run_store};
+use super::{AppState, ROWS_IN_METRIC, marks, run_store};
 
 /// How much reading is judged at once. Long enough that a quiet minute between bursts is not an outage, short enough
 /// that a source that stopped is noticed within the hour.
@@ -75,6 +75,47 @@ pub struct Band {
     pub high: f64,
 }
 
+/// What a normal is learned with: the share of past windows its band holds, in (0, 1), and the sources an admin said
+/// to learn again from a time on ([`marks::Relearned`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Learning {
+    pub share: f64,
+    pub relearned: Vec<marks::Relearned>,
+}
+
+impl Default for Learning {
+    fn default() -> Learning {
+        Learning {
+            share: DEFAULT_BAND_PERCENT / 100.0,
+            relearned: Vec::new(),
+        }
+    }
+}
+
+impl Learning {
+    /// The band's setting and the marks as stored. One that cannot be read is logged and left at its default: the
+    /// warnings it shapes are still worth having.
+    pub fn read(store: &dyn Store) -> Learning {
+        let percent = band_percent(store).unwrap_or_else(|e| {
+            tracing::warn!(name: "band_unreadable", target: "status", error = %e, "using the default band");
+            DEFAULT_BAND_PERCENT
+        });
+        Learning {
+            share: percent / 100.0,
+            relearned: marks::Marks::read(store).relearned,
+        }
+    }
+
+    /// When `group`'s `source` was last said to learn again from, if it was.
+    fn relearned_from(&self, group: &str, source: &str) -> Option<i64> {
+        self.relearned
+            .iter()
+            .filter(|r| r.group == group && r.source == source)
+            .map(|r| r.from_millis)
+            .max()
+    }
+}
+
 /// One source's last [`WINDOW`] and its normal.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reading {
@@ -106,19 +147,18 @@ impl Reading {
     }
 }
 
-/// The last answer, and what it was computed for: the window's end and the band's share. A new five-minute bucket or a
-/// new setting is a new question. One caller computes a new answer at a time; the rest read the last meanwhile.
+/// The last answer, and what it was computed for: the window's end and what the normal is learned with. A new
+/// five-minute bucket, a new setting or a new mark is a new question. One caller computes a new answer at a time; the rest read the last meanwhile.
 #[derive(Default)]
 pub struct Readings {
     last: Mutex<Option<Answer>>,
     computing: Mutex<()>,
 }
 
-type Answer = (i64, u64, Arc<Vec<Reading>>);
+type Answer = (i64, Learning, Arc<Vec<Reading>>);
 
 impl Readings {
-    /// Every source with enough history to judge, as of `now_ms`. `share` is the part of past windows the band holds,
-    /// in (0, 1). Waits for every heartbeat sent before `now_ms - heartbeat_interval` to land in the window it judges.
+    /// Every source with enough history to judge, as of `now_ms`. Waits for every heartbeat sent before `now_ms - heartbeat_interval` to land in the window it judges.
     ///
     /// While another caller computes the new answer, this returns the last one rather than wait for it. Only a
     /// caller with no answer at all to fall back on waits.
@@ -127,10 +167,10 @@ impl Readings {
         store: &RegistryStore,
         now_ms: i64,
         heartbeat_interval: Duration,
-        share: f64,
+        learning: &Learning,
     ) -> Arc<Vec<Reading>> {
         let ended_ms = ended(now_ms, heartbeat_interval);
-        if let Some(fresh) = self.fresh(ended_ms, share) {
+        if let Some(fresh) = self.fresh(ended_ms, learning) {
             return fresh;
         }
         let _computing = match self.computing.try_lock() {
@@ -141,19 +181,19 @@ impl Readings {
             },
         };
         // Whoever held the lock before may have just computed this very answer.
-        if let Some(fresh) = self.fresh(ended_ms, share) {
+        if let Some(fresh) = self.fresh(ended_ms, learning) {
             return fresh;
         }
         record_swings(store, ended_ms, heartbeat_interval);
-        let readings = Arc::new(compute(store, ended_ms, share));
-        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((ended_ms, share.to_bits(), readings.clone()));
+        let readings = Arc::new(compute(store, ended_ms, learning));
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((ended_ms, learning.clone(), readings.clone()));
         readings
     }
 
-    /// The answer for the window ending at `ended_ms` and `share`, if that is the one held.
-    fn fresh(&self, ended_ms: i64, share: f64) -> Option<Arc<Vec<Reading>>> {
+    /// The answer for the window ending at `ended_ms` learned with `learning`, if that is the one held.
+    fn fresh(&self, ended_ms: i64, learning: &Learning) -> Option<Arc<Vec<Reading>>> {
         match self.last.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            Some((at, bits, readings)) if *at == ended_ms && *bits == share.to_bits() => Some(readings.clone()),
+            Some((at, held, readings)) if *at == ended_ms && held == learning => Some(readings.clone()),
             _ => None,
         }
     }
@@ -187,7 +227,7 @@ pub fn grouped(rows: f64) -> String {
 }
 
 /// [`Readings::at`] without the cache.
-fn compute(store: &RegistryStore, ended_ms: i64, share: f64) -> Vec<Reading> {
+fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning) -> Vec<Reading> {
     let oldest = ended_ms - HISTORY_DAYS * DAY_MS - NEIGHBORHOOD.as_millis() as i64 - WINDOW.as_millis() as i64;
     let buckets = match history(store, BUCKET.and_finer(), BUCKET, oldest) {
         Ok(buckets) => buckets,
@@ -204,7 +244,8 @@ fn compute(store: &RegistryStore, ended_ms: i64, share: f64) -> Vec<Reading> {
         .into_iter()
         .filter_map(|((group, source), of)| {
             let rows = window_rows(&of, ended_ms)?;
-            let band = band(&of, &Warned::of(store, &group, &source, oldest), ended_ms, share)?;
+            let warned = Warned::of(store, &group, &source, oldest, learning);
+            let band = band(&of, &warned, ended_ms, learning.share)?;
             Some(Reading {
                 group,
                 source,
@@ -271,24 +312,29 @@ fn only(rows: Option<f64>) -> Option<Band> {
     rows.map(|rows| Band { low: rows, high: rows })
 }
 
-/// When warnings about one source held, as (started, ended), with no end for one still holding.
+/// When one source's rows teach its normal nothing, as (started, ended), with no end for a span still open: while
+/// a warning about it held, and all of the time before an admin said to learn it again.
 struct Warned(Vec<(i64, Option<i64>)>);
 
 impl Warned {
-    /// `group`'s `source`'s warnings that held since `since_ms`. None when the store cannot say, which is logged: the
-    /// band is then learned from every window, as it was before warnings were kept.
-    fn of(store: &RegistryStore, group: &str, source: &str, since_ms: i64) -> Warned {
-        match warnings::spans(store, SubjectKind::Source, group, source, since_ms) {
-            Ok(spans) => Warned(spans.into_iter().map(|s| (s.started_millis, s.ended_millis)).collect()),
+    /// `group`'s `source`'s warnings that held since `since_ms`, and the time before it was relearned. Warnings the
+    /// store cannot read are logged and left out: the band is then learned from those windows too.
+    fn of(store: &RegistryStore, group: &str, source: &str, since_ms: i64, learning: &Learning) -> Warned {
+        let mut spans = match warnings::spans(store, SubjectKind::Source, group, source, since_ms) {
+            Ok(spans) => spans.into_iter().map(|s| (s.started_millis, s.ended_millis)).collect(),
             Err(e) => {
                 tracing::warn!(
                     name: "warned_unreadable", target: "status",
                     error = %e, group, source,
                     "could not read when this source warned, so its normal is learned from every window this pass"
                 );
-                Warned(Vec::new())
+                Vec::new()
             }
+        };
+        if let Some(from) = learning.relearned_from(group, source) {
+            spans.push((i64::MIN, Some(from)));
         }
+        Warned(spans)
     }
 
     /// Whether the `width_ms` ending at `ended_ms` overlaps a warning.
@@ -360,11 +406,11 @@ pub fn expected_over(
     since_ms: i64,
     now_ms: i64,
     width_ms: i64,
-    share: f64,
+    learning: &Learning,
 ) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
     let hourly = now_ms - since_ms > DAY_MS;
     if !hourly && width_ms < BUCKET.bucket_ms() {
-        return swung_over(store, group, source, since_ms, now_ms, width_ms, share);
+        return swung_over(store, group, source, since_ms, now_ms, width_ms, learning);
     }
     let (into, window_ms) = if hourly {
         (Tier::OneHour, HOUR_MS)
@@ -391,7 +437,7 @@ pub fn expected_over(
     if fine.is_empty() && hours.is_empty() {
         return Ok(Vec::new());
     }
-    let warned = Warned::of(store, group, source, oldest);
+    let warned = Warned::of(store, group, source, oldest, learning);
     // An hour still in five-minute buckets counts only if every one of them was read, as the warning's window does:
     // one cut short by a restart would pull the band down at that hour on every day after it. An hour the hourly tier
     // holds no longer says how much of it was read, so it counts only between two hours that were read at all: that
@@ -420,7 +466,7 @@ pub fn expected_over(
     let mut ended_ms = into.align(since_ms) + width;
     let last = into.align(now_ms) + width;
     while ended_ms <= last {
-        if let Some(band) = band_of(|ended| only(rows(ended)), ended_ms, width, reach, share) {
+        if let Some(band) = band_of(|ended| only(rows(ended)), ended_ms, width, reach, learning.share) {
             let seconds = window_ms as f64 / 1000.0;
             out.push(ExpectedPoint {
                 from_millis: ended_ms - width,
@@ -443,13 +489,13 @@ fn swung_over(
     since_ms: i64,
     now_ms: i64,
     width_ms: i64,
-    share: f64,
+    learning: &Learning,
 ) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
     let width = BUCKET.bucket_ms();
     let reach = NEIGHBORHOOD.as_millis() as i64 / width;
     let first = BUCKET.align(since_ms);
     let oldest = first - HISTORY_DAYS * DAY_MS - reach * width;
-    let warned = Warned::of(store, group, source, oldest);
+    let warned = Warned::of(store, group, source, oldest, learning);
     // By the end of the bucket each swung in, as a window is known by its end.
     let swung: BTreeMap<i64, Band> = store
         .swings_since(group, source, width_ms, oldest)?
@@ -468,7 +514,7 @@ fn swung_over(
     let mut ended_ms = first + width;
     while ended_ms <= BUCKET.align(now_ms) + width {
         let held = |ended| swung.get(&ended).copied().filter(|_| !warned.during(ended, width));
-        if let Some(band) = band_of(held, ended_ms, width, reach, share) {
+        if let Some(band) = band_of(held, ended_ms, width, reach, learning.share) {
             out.push(ExpectedPoint {
                 from_millis: ended_ms - width,
                 to_millis: ended_ms,
@@ -608,29 +654,22 @@ fn checked(percent: f64) -> Result<f64, String> {
     Ok(percent)
 }
 
-/// Every source's last window against its normal, off the async runtime. A band setting that cannot be read is
-/// logged and the default used: the warnings it shapes are still worth having.
+/// Every source's last window against its normal, off the async runtime ([`Learning::read`]).
 ///
 /// Without `wait`, a caller holding an earlier answer gets that one at once and the new one is computed behind it:
 /// what a heartbeat asks, which must not wait on a week of history being read.
 pub async fn readings(state: &AppState, now_ms: i64, heartbeat_interval: Duration, wait: bool) -> Arc<Vec<Reading>> {
-    let read = run_store(state.store.clone(), |s| Ok(band_percent(s))).await;
-    let percent = match read.unwrap_or_else(|e| Err(e.to_string())) {
-        Ok(percent) => percent,
-        Err(e) => {
-            tracing::warn!(name: "band_unreadable", target: "status", error = %e, "using the default band");
-            DEFAULT_BAND_PERCENT
-        }
-    };
-    let share = percent / 100.0;
+    let learning = run_store(state.store.clone(), |s| Ok(Learning::read(s)))
+        .await
+        .unwrap_or_default();
     let cache = state.throughput.clone();
-    if let Some(fresh) = cache.fresh(ended(now_ms, heartbeat_interval), share) {
+    if let Some(fresh) = cache.fresh(ended(now_ms, heartbeat_interval), &learning) {
         return fresh;
     }
     let registry = state.registry.clone();
     let behind = cache.clone();
     let job = tokio::task::spawn_blocking(move || match registry.series() {
-        Some(store) => behind.at(store, now_ms, heartbeat_interval, share),
+        Some(store) => behind.at(store, now_ms, heartbeat_interval, &learning),
         None => Arc::default(),
     });
     if !wait && let Some(last) = cache.last() {
@@ -738,8 +777,15 @@ mod tests {
         store
     }
 
+    fn learning(share: f64) -> Learning {
+        Learning {
+            share,
+            relearned: Vec::new(),
+        }
+    }
+
     fn reading(store: &RegistryStore, share: f64) -> Option<Reading> {
-        compute(store, END, share).into_iter().next()
+        compute(store, END, &learning(share)).into_iter().next()
     }
 
     #[test]
@@ -858,16 +904,25 @@ mod tests {
     fn a_reading_is_reused_until_the_next_bucket() {
         let store = store_with(7, |_| Some(100.0));
         let readings = Readings::default();
-        let first = readings.at(&store, END + 60_000, Duration::from_secs(1), 0.99);
-        let again = readings.at(&store, END + 2 * 60_000, Duration::from_secs(1), 0.99);
+        let first = readings.at(&store, END + 60_000, Duration::from_secs(1), &learning(0.99));
+        let again = readings.at(&store, END + 2 * 60_000, Duration::from_secs(1), &learning(0.99));
         assert!(Arc::ptr_eq(&first, &again));
-        let other_share = readings.at(&store, END + 2 * 60_000, Duration::from_secs(1), 0.9);
+        let other_share = readings.at(&store, END + 2 * 60_000, Duration::from_secs(1), &learning(0.9));
         assert!(!Arc::ptr_eq(&first, &other_share));
     }
     const HOUR: i64 = 60 * 60 * 1000;
 
     fn expected(store: &RegistryStore, since_ms: i64) -> Vec<ExpectedPoint> {
-        expected_over(store, "g", "s", since_ms, END + 1000, BUCKET.bucket_ms(), 0.99).unwrap()
+        expected_over(
+            store,
+            "g",
+            "s",
+            since_ms,
+            END + 1000,
+            BUCKET.bucket_ms(),
+            &learning(0.99),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -967,6 +1022,22 @@ mod tests {
     }
 
     #[test]
+    fn a_relearned_source_has_no_normal_until_it_has_days_of_what_came_after() {
+        let store = store_with(7, |_| Some(100.0));
+        let relearned = |from_millis| Learning {
+            relearned: vec![marks::Relearned {
+                group: "g".into(),
+                source: "s".into(),
+                from_millis,
+                by: "John".into(),
+            }],
+            ..learning(0.99)
+        };
+        assert_eq!(compute(&store, END, &relearned(END - DAY_MS)), Vec::new());
+        assert!(!compute(&store, END, &relearned(END - 4 * DAY_MS)).is_empty());
+    }
+
+    #[test]
     fn a_chart_band_leaves_out_what_warned() {
         let (store, outage) = outage_and_drop();
         warned(&store, "source_rows_below", outage, outage + 2 * HOUR);
@@ -978,7 +1049,15 @@ mod tests {
     #[test]
     fn a_source_never_read_has_no_band() {
         let store = store_with(7, |_| Some(100.0));
-        let none = expected_over(&store, "g", "other", END - HOUR, END + 1000, BUCKET.bucket_ms(), 0.99);
+        let none = expected_over(
+            &store,
+            "g",
+            "other",
+            END - HOUR,
+            END + 1000,
+            BUCKET.bucket_ms(),
+            &learning(0.99),
+        );
         assert_eq!(none.unwrap(), Vec::new());
     }
 
@@ -1059,7 +1138,7 @@ mod tests {
         }
         store.record_swings(&swings).unwrap();
         for (width, band) in [(10_000, (4.0, 16.0)), (60_000, (8.0, 12.0))] {
-            let points = expected_over(&store, "g", "s", END - HOUR, END + 1000, width, 0.99).unwrap();
+            let points = expected_over(&store, "g", "s", END - HOUR, END + 1000, width, &learning(0.99)).unwrap();
             assert_eq!(points.len(), 13);
             assert!(points.iter().all(|p| (p.low, p.high) == band), "at {width}: {points:?}");
         }

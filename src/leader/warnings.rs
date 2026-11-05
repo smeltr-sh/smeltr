@@ -20,6 +20,7 @@ use crate::heartbeat::{MetricValueDto, ThreadKind};
 use crate::leader::access::{Access, Level};
 use crate::leader::alerts::{self, Channel};
 use crate::leader::deploy_checks::{FailingTest, Findings};
+use crate::leader::marks::Marks;
 use crate::leader::registry::{FactKey, ThreadHealth};
 use crate::leader::series::{DRIFT_WINDOW, DeclaredField, LoggedType, RegistryStore, Tier};
 use crate::leader::store::{KeyStanding, Unopenable, WorkerCredentialRecord};
@@ -2202,12 +2203,13 @@ pub fn outside_normal_facts(
 }
 
 /// A source reading fewer rows than it normally does at this time of day, or more. A warning either way: it is
-/// reading, and how much is off.
+/// reading, and how much is off. A notice instead where an admin lowered it (`marks`).
 pub fn outside_normal_warnings(
     readings: &[throughput::Reading],
     snapshot: &[ThreadHealth],
     recovering: &HashSet<(String, String)>,
     starts: &HashMap<FactKey, i64>,
+    marks: &Marks,
     heartbeat_interval: Duration,
 ) -> Vec<Warning> {
     outside_normal(readings, snapshot, recovering, heartbeat_interval)
@@ -2217,6 +2219,8 @@ pub fn outside_normal_warnings(
                 throughput::Outside::Below => Condition::SourceRowsBelow,
                 throughput::Outside::Above => Condition::SourceRowsAbove,
             };
+            let since_millis = starts.get(&outside_key(r, side)).copied();
+            let lowered_by = marks.lowered_by(&r.group, &r.source, since_millis);
             Warning {
                 area: None,
                 condition,
@@ -2225,10 +2229,14 @@ pub fn outside_normal_warnings(
                 r#type: None,
                 subject_id: r.source.clone(),
                 group: Some(r.group.clone()),
-                severity: Severity::Warning,
-                since_millis: starts.get(&outside_key(r, side)).copied(),
+                severity: if lowered_by.is_some() {
+                    Severity::Info
+                } else {
+                    Severity::Warning
+                },
+                since_millis,
                 message: format!(
-                    "source {}: {}normal, {} rows in {} minutes against {} at this time of day",
+                    "source {}: {}normal, {} rows in {} minutes against {} at this time of day{}",
                     r.source,
                     off_by(r, side),
                     throughput::grouped(r.rows),
@@ -2243,6 +2251,9 @@ pub fn outside_normal_warnings(
                             throughput::grouped(r.band.high)
                         )
                     },
+                    lowered_by
+                        .map(|by| format!("; lowered to a notice by {by}"))
+                        .unwrap_or_default(),
                 ),
             }
         })
@@ -4432,10 +4443,17 @@ mod tests {
     }
 
     fn outside(readings: &[throughput::Reading], snapshot: &[ThreadHealth]) -> Vec<(Condition, String)> {
-        outside_normal_warnings(readings, snapshot, &HashSet::new(), &HashMap::new(), INTERVAL)
-            .into_iter()
-            .map(|w| (w.condition, w.message))
-            .collect()
+        outside_normal_warnings(
+            readings,
+            snapshot,
+            &HashSet::new(),
+            &HashMap::new(),
+            &Marks::default(),
+            INTERVAL,
+        )
+        .into_iter()
+        .map(|w| (w.condition, w.message))
+        .collect()
     }
 
     #[test]
@@ -4485,7 +4503,14 @@ mod tests {
                 ),
             ]
         );
-        let w = &outside_normal_warnings(&readings, &snapshot, &HashSet::new(), &HashMap::new(), INTERVAL)[0];
+        let w = &outside_normal_warnings(
+            &readings,
+            &snapshot,
+            &HashSet::new(),
+            &HashMap::new(),
+            &Marks::default(),
+            INTERVAL,
+        )[0];
         assert_eq!(
             (w.severity, w.subject_kind, w.group.as_deref()),
             (Severity::Warning, SubjectKind::Source, Some("g"))
@@ -4529,7 +4554,17 @@ mod tests {
         assert_eq!(recovering, HashSet::from([("g".to_string(), "s".to_string())]));
         let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("s")])];
         let readings = [reading_of("s", 0.0)];
-        assert!(outside_normal_warnings(&readings, &snapshot, &recovering, &HashMap::new(), INTERVAL).is_empty());
+        assert!(
+            outside_normal_warnings(
+                &readings,
+                &snapshot,
+                &recovering,
+                &HashMap::new(),
+                &Marks::default(),
+                INTERVAL
+            )
+            .is_empty()
+        );
 
         let window = throughput::WINDOW.as_millis() as i64;
         assert!(
@@ -4589,8 +4624,47 @@ mod tests {
         let readings = [reading_of("s", 0.0)];
         let facts = outside_normal_facts(&readings, &snapshot, &HashSet::new(), INTERVAL);
         let starts: HashMap<FactKey, i64> = facts.into_iter().map(|k| (k, NOW - 60_000)).collect();
-        let w = &outside_normal_warnings(&readings, &snapshot, &HashSet::new(), &starts, INTERVAL)[0];
+        let w = &outside_normal_warnings(
+            &readings,
+            &snapshot,
+            &HashSet::new(),
+            &starts,
+            &Marks::default(),
+            INTERVAL,
+        )[0];
         assert_eq!(w.since_millis, Some(NOW - 60_000));
+    }
+
+    #[test]
+    fn a_lowered_rows_warning_is_a_notice_until_it_ends() {
+        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("s")])];
+        let readings = [reading_of("s", 0.0)];
+        let facts = outside_normal_facts(&readings, &snapshot, &HashSet::new(), INTERVAL);
+        let marks = Marks {
+            lowered: vec![crate::leader::marks::Lowered {
+                group: "g".into(),
+                source: "s".into(),
+                since_millis: NOW - 60_000,
+                by: "John".into(),
+            }],
+            relearned: Vec::new(),
+        };
+        let at = |since: i64| -> Warning {
+            let starts: HashMap<FactKey, i64> = facts.iter().map(|k| (k.clone(), since)).collect();
+            outside_normal_warnings(&readings, &snapshot, &HashSet::new(), &starts, &marks, INTERVAL).remove(0)
+        };
+        let lowered = at(NOW - 60_000);
+        assert_eq!(lowered.severity, Severity::Info);
+        assert!(
+            lowered.message.ends_with("lowered to a notice by John"),
+            "{}",
+            lowered.message
+        );
+        assert_eq!(
+            at(NOW - 30_000).severity,
+            Severity::Warning,
+            "a warning that began since is a new one"
+        );
     }
 
     // -- running_deployments ---------------------------------------------------
