@@ -142,8 +142,9 @@ EOF`;
   <h2 id="senders">Who it admits</h2>
   <p>
     Anyone a receiver admits can put records into the worker group's pipelines. What it receives
-    carries no token, so a receiver needs <code>allowFrom</code>, a <code>certificate</code> and
-    <code>trustedAuthorities</code>, or both. The leader refuses a receiver with neither.
+    carries no token, so a receiver needs <code>allowFrom</code>, or a
+    <code>certificate</code> with <code>trustedAuthorities</code>, or both of those. The leader
+    refuses a receiver with neither.
   </p>
   <ul>
     <li>
@@ -193,8 +194,7 @@ EOF`;
 
   <h2 id="delivery">Delivery</h2>
   <p>
-    The receiver never tells a sender a message arrived, so a sender counts a message delivered once
-    it has written it to the connection.
+    The receiver never tells a sender a message arrived, so a sender cannot know that one was lost.
   </p>
   <ul>
     <li>
@@ -236,8 +236,10 @@ EOF`;
       <pre><code>{send}</code></pre>
     </li>
     <li>
-      Find two records at the destination, their <code>__source.bytes</code> <code>hello</code> and
-      <code>smeltr</code>.
+      <a href="/docs/capture-sample">Capture</a> the source's records. You find two, their
+      <code>__source.bytes</code> holding <code>hello</code> and <code>smeltr</code>, shown as
+      base64:
+      <code>aGVsbG8=</code> and <code>c21lbHRy</code>.
     </li>
   </ol>
 
