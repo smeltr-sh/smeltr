@@ -156,7 +156,14 @@ pub fn open(
         .map_err(|e| IoError::transient(format!("receiver could not serve {}: {e}", named(config.listens()))))?;
         let handler = syslog_receiver::Handler::new(syslog, config.max_request_bytes);
         let cut = move |datagram: &[u8], peer| handler.datagram(datagram, peer);
-        let task = runtime.spawn(serve_datagrams(socket, shared.clone(), config.max_request_bytes, cut));
+        let allow_from = syslog.allow_from.clone();
+        let task = runtime.spawn(serve_datagrams(
+            socket,
+            allow_from,
+            shared.clone(),
+            config.max_request_bytes,
+            cut,
+        ));
         return Ok(Box::new(ReceiverSource {
             shared,
             serving: Some(Serving::Task(task)),
@@ -304,12 +311,26 @@ pub fn open_raw(config: &ReceiverConfig, secrets: &HeldSecrets) -> Result<Box<dy
     let runtime = receiver_runtime()?;
     // `from_std` registers the socket with the runtime it is called in.
     let _entered = runtime.enter();
+    let allow_from = match &config.receiver {
+        Receiver::Syslog(syslog) => syslog.allow_from.clone(),
+        Receiver::Http(_)
+        | Receiver::Hec(_)
+        | Receiver::Otlp(_)
+        | Receiver::Prometheus
+        | Receiver::S2s(_)
+        | Receiver::Elastic => Vec::new(),
+    };
     let task = match listen.transport {
         Transport::Udp => {
             let socket = tokio::net::UdpSocket::from_std(socket.into()).map_err(unserved)?;
-            runtime.spawn(serve_datagrams(socket, shared.clone(), MAX_DATAGRAM, |_: &[u8], _| {
-                None
-            }))
+            let nothing = |_: &[u8], _| None;
+            runtime.spawn(serve_datagrams(
+                socket,
+                allow_from,
+                shared.clone(),
+                MAX_DATAGRAM,
+                nothing,
+            ))
         }
         Transport::Tcp => {
             let tls = match &config.tls {
@@ -317,15 +338,6 @@ pub fn open_raw(config: &ReceiverConfig, secrets: &HeldSecrets) -> Result<Box<dy
                 None => None,
             };
             let listener = tokio::net::TcpListener::from_std(socket.into()).map_err(unserved)?;
-            let allow_from = match &config.receiver {
-                Receiver::Syslog(syslog) => syslog.allow_from.clone(),
-                Receiver::Http(_)
-                | Receiver::Hec(_)
-                | Receiver::Otlp(_)
-                | Receiver::Prometheus
-                | Receiver::S2s(_)
-                | Receiver::Elastic => Vec::new(),
-            };
             runtime.spawn(serve_streams(listener, allow_from, tls, shared.clone(), read_to_end))
         }
     };
@@ -2952,13 +2964,18 @@ impl Drop for Held {
 /// The largest datagram UDP carries.
 const MAX_DATAGRAM: usize = u16::MAX as usize;
 
-/// Serves `socket` for a receiver that takes datagrams: `cut` makes a datagram from a sender the records it holds, or
-/// `None` for one it refuses. Nothing slows a sender of datagrams, so one that arrives while the inbox has no room, or
+/// Serves `socket` for a receiver that takes datagrams from the senders `allow_from` admits: `cut` makes a datagram
+/// the records it holds, or `None` for one it refuses. Nothing slows a sender of datagrams, so one that arrives while the inbox has no room, or
 /// the source is blocked, is dropped and counted. A datagram larger than `max` and a line end reaches `cut` as
 /// `max + 3` bytes, so `cut` tells it from one of `max` bytes and a CRLF.
 /// Runs until dropped.
-async fn serve_datagrams<C>(socket: tokio::net::UdpSocket, shared: Arc<Shared>, max: usize, cut: C)
-where
+async fn serve_datagrams<C>(
+    socket: tokio::net::UdpSocket,
+    allow_from: Vec<ipnetwork::IpNetwork>,
+    shared: Arc<Shared>,
+    max: usize,
+    cut: C,
+) where
     C: Fn(&[u8], std::net::IpAddr) -> Option<Cutter> + Send + 'static,
 {
     let mut buffer = vec![0; max.min(MAX_DATAGRAM) + 3];
@@ -2978,14 +2995,26 @@ where
             }
         };
         let peer = peer.ip().to_canonical();
+        let admitted = admits(&allow_from, peer);
+        if !admitted {
+            tracing::trace!(
+                name: "refused", target: "sources",
+                subject = %peer,
+                "a datagram is dropped: its address is in none of the receiver's allowFrom networks"
+            );
+        }
         if shared.watching() {
+            let why = (!admitted).then(|| refused(peer));
             shared.offer(RawRead {
                 remote: &peer.to_string(),
                 transport: Transport::Udp,
                 tls: false,
-                bytes: &buffer[..length],
-                closed: None,
+                bytes: if admitted { &buffer[..length] } else { &[] },
+                closed: why.as_deref(),
             });
+        }
+        if !admitted {
+            continue;
         }
         let Some(records) = cut(&buffer[..length], peer) else {
             continue;
@@ -3063,8 +3092,7 @@ async fn serve_streams<H, F>(
                 subject = %peer,
                 "a connection is closed: its address is in none of the receiver's allowFrom networks"
             );
-            let why = "closed: the address is in none of the receiver's allowFrom networks";
-            offer_closed(&*shared, &remote, tls.is_some(), why);
+            offer_closed(&*shared, &remote, tls.is_some(), &refused(peer));
             continue;
         }
         let (tls, shared, handle) = (tls.clone(), shared.clone(), handle.clone());
@@ -3101,6 +3129,11 @@ async fn serve_streams<H, F>(
 }
 
 /// Whether a sender at `peer` may connect, or send a datagram. An empty list admits any.
+/// Why a sender from `peer` was refused unread, naming it so an administrator can add it to allowFrom.
+fn refused(peer: std::net::IpAddr) -> String {
+    format!("refused: {peer} is in none of the receiver's allowFrom networks")
+}
+
 pub(super) fn admits(allow_from: &[ipnetwork::IpNetwork], peer: std::net::IpAddr) -> bool {
     allow_from.is_empty() || allow_from.iter().any(|network| network.contains(peer))
 }

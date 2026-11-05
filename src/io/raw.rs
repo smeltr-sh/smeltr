@@ -30,9 +30,9 @@ pub struct RawRead<'a> {
     pub transport: Transport,
     /// Whether the connection came over TLS. A datagram never does.
     pub tls: bool,
-    /// What was read, as decrypted. Empty on a connection the receiver closed unread.
+    /// What was read, as decrypted. Empty on what the receiver refused unread.
     pub bytes: &'a [u8],
-    /// Why the receiver closed the connection unread: a failed TLS handshake, or a sender its `allowFrom` refuses.
+    /// Why the receiver refused what arrived unread: a failed TLS handshake, or a sender its `allowFrom` refuses.
     pub closed: Option<&'a str>,
 }
 

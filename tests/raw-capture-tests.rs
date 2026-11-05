@@ -171,7 +171,7 @@ fn a_datagram_is_offered_whole() {
     assert_eq!(offered[0].transport, Transport::Udp);
 }
 
-/// A sender its allowFrom refuses is closed unread, and offered as closed with why.
+/// A sender its allowFrom refuses is closed unread, and offered as refused, naming it.
 #[test]
 fn a_refused_sender_is_offered_as_closed() {
     let at = free_port();
@@ -183,7 +183,27 @@ fn a_refused_sender_is_offered_as_closed() {
     let offered = kept.until(|o| !o.is_empty());
     assert!(offered[0].bytes.is_empty());
     let why = offered[0].closed.as_deref().unwrap_or_default();
-    assert!(why.contains("allowFrom"), "{why}");
+    assert!(why.contains("127.0.0.1") && why.contains("allowFrom"), "{why}");
+}
+
+/// A datagram from a sender its allowFrom refuses is offered without its bytes, as refused and from whom.
+#[test]
+fn a_refused_datagram_is_offered_without_its_bytes() {
+    let at = free_port();
+    let (_source, kept) = tapped(
+        syslog(at, Transport::Udp, &["10.0.0.0/8"], None),
+        &HeldSecrets::default(),
+    );
+    let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+    sender.send_to(b"<34>refused", at).unwrap();
+    let offered = kept.until(|o| !o.is_empty());
+    assert!(offered[0].bytes.is_empty());
+    assert_eq!(
+        (offered[0].remote.as_str(), offered[0].transport),
+        ("127.0.0.1", Transport::Udp)
+    );
+    let why = offered[0].closed.as_deref().unwrap_or_default();
+    assert!(why.contains("127.0.0.1") && why.contains("allowFrom"), "{why}");
 }
 
 /// A sender that does not speak TLS to a receiver that does fails its handshake, and that is offered with why.
