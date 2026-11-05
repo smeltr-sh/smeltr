@@ -96,7 +96,7 @@
   let warningCount = $derived(warnings.filter((w) => w.severity === 'warning').length);
   let infoCount = $derived(warnings.filter((w) => w.severity === 'info').length);
 
-  /** Failed, then warning, then info: a notice never sits above trouble. */
+  /** Failed, then warning, then info: info never sits above trouble. */
   const RANK: Record<WarningSeverity, number> = { failed: 0, warning: 1, info: 2 };
   const worst = (rows: WarningDto[]) => Math.min(...rows.map((r) => RANK[r.severity]));
   let filtered = $derived(

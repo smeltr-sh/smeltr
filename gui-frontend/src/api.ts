@@ -2720,7 +2720,7 @@ export function conditionLabel(condition: WarningCondition): string {
 }
 
 /** The catalog the caller sees. Info entries come only with `info`: every view that judges health reads without
- * it, so a notice can never make anything look unhealthy. */
+ * it, so info can never make anything look unhealthy. */
 export async function listWarnings(opts: { info?: boolean } = {}): Promise<WarningDto[]> {
   const url = opts.info ? '/api/warnings?info=true' : '/api/warnings';
   return (await readJson<{ warnings: WarningDto[] }>(url)).warnings;

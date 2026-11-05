@@ -306,11 +306,11 @@ drops one. A channel muted until a time is told nothing meanwhile; what still
 holds when the mute ends is told then. A channel that does not take a send is
 itself a warning about the leader.
 
-An entry is a failure, a warning or a notice. A notice is a fact worth knowing
-that asks nothing of anyone, such as a worker on another release of the
-leader's major. The Issues page, a scraper and the alert channels that take it
-are given a notice, marked as one. The views that judge health leave notices
-out, so none of them counts one as trouble.
+An entry is a failure, a warning or info. Info is a fact worth knowing that
+asks nothing of anyone, such as a worker on another release of the leader's
+major. The Issues page, a scraper and the alert channels that take it are given
+info, marked as such. The views that judge health leave info out, so none of
+them counts it as trouble.
 
 A blocked source warns by what holds it, because each releases differently:
 rows only a new config lets through, rows a destination refused, or a
@@ -396,7 +396,7 @@ flowchart TD
 - **A leader says when a newer release is out.** A release leader reads the
   releases published on GitHub, through smeltr.sh, when it starts and once a
   day after, unless an administrator turns that off. The highest release that is
-  no pre-release, when it is newer than the leader's, is announced in a notice
+  no pre-release, when it is newer than the leader's, is announced as info
   that links that release's page on smeltr.sh. The request
   names the leader's release, operating system and CPU architecture and nothing
   else about the install. smeltr.sh counts leaders by those, and by the country
