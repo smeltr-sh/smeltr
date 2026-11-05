@@ -20,9 +20,6 @@ use crate::ops::byteops::{NumType, Order};
 /// The function's name.
 pub const UNPACK: &str = "unpack";
 
-/// The options the options literal may name.
-pub const OPTIONS: [&str; 1] = ["order"];
-
 /// What a call is, for an error that names its shape.
 const SHAPE: &str = "`unpack` is called as `unpack(bytes, {field: type, ...}, {order})`, the options optional";
 
