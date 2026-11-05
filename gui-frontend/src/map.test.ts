@@ -347,6 +347,46 @@ describe('layout', () => {
     );
     expect(rowsOf(l, 'pipeline')).toEqual(['z1', 'a2', 'm3']);
   });
+
+  it('swaps two cards side by side when fewer lines then cross', () => {
+    const named = (kind: MapNode['kind'], ids: string) =>
+      ids.split(' ').map((id) => node(id, kind));
+    const s = named('source', 's0 s1 s2 s3 s4 s5');
+    const p = named('pipeline', 'p0 p1 p2 p3 p4 p5');
+    const d = named('destination', 'd0 d1 d2 d3 d4');
+    const l = layout(
+      [...s, ...p, ...d],
+      [
+        line('deliver', p[0], d[4]),
+        line('deliver', p[1], d[4]),
+        line('route', s[1], p[3]),
+        line('route', s[1], p[4]),
+        line('deliver', p[4], d[0]),
+        line('deliver', p[5], d[4]),
+      ],
+    );
+    // By the means alone, p4 sits above p5 and its line to d0 crosses p5's to d4.
+    expect(rowsOf(l, 'pipeline')).toEqual(['p3', 'p0', 'p1', 'p5', 'p4', 'p2']);
+  });
+
+  it('does not place a card by a fallback line', () => {
+    const [p1, p2] = [node('p1', 'pipeline'), node('p2', 'pipeline')];
+    const [dlq, d1, d2] = [
+      node('a-dlq', 'destination'),
+      node('d1', 'destination'),
+      node('d2', 'destination'),
+    ];
+    const l = layout(
+      [p1, p2, dlq, d1, d2],
+      [
+        line('deliver', p1, d1),
+        line('deliver', p2, d2),
+        line('exception', p1, dlq),
+        line('exception', p2, dlq),
+      ],
+    );
+    expect(rowsOf(l, 'destination')).toEqual(['a-dlq', 'd1', 'd2']);
+  });
 });
 
 describe('edgePaths', () => {

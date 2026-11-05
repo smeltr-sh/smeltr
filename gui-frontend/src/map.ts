@@ -216,13 +216,14 @@ export function cardWidth(room: number): number {
 
 /** Each kind in its own column. Sources are ordered by name; a pipeline then sits at the mean
  * row of the cards it connects to, and a destination at the mean row of its pipelines, so lines
- * run level rather than cross. Ties keep name order, so the same nodes and lines always draw the
- * same picture. Only lines between two of `nodes` count. Rows pack from the top of each column,
- * so handing this a smaller node list -- `survivors` below, filtered by a search -- draws a
- * smaller graph, not the same graph with gaps in it (design doc: "the rest closes up"). */
+ * run level rather than cross. Every step starts from name order and breaks ties by the order
+ * before it, so the same nodes and lines always draw the same picture. Only routes and
+ * deliveries between two of `nodes` count. Rows pack from the top of each column, so handing
+ * this a smaller node list -- `survivors` below, filtered by a search -- draws a smaller graph,
+ * not the same graph with gaps in it (design doc: "the rest closes up"). */
 export function layout(
   nodes: MapCard[],
-  edges: Pick<MapEdge, 'from' | 'to'>[],
+  edges: Pick<MapEdge, 'kind' | 'from' | 'to'>[],
   nodeW = NODE_W,
 ): Layout {
   const byKind: Record<MapNodeKind, MapCard[]> = { source: [], pipeline: [], destination: [] };
@@ -264,10 +265,11 @@ const ORDER_PASSES = 4;
 /** Reorders the pipeline and destination columns in place: a pipeline to the mean row of the
  * sources and destinations it connects to, a destination to the mean row of its pipelines. A
  * card with no such line keeps its row. The first pass places pipelines by their sources alone,
- * since destinations are still in name order then. */
+ * since destinations are still in name order then. Last, two cards side by side in a column
+ * trade rows while that leaves fewer lines crossing. */
 function orderByLines(
   byKind: Record<MapNodeKind, MapCard[]>,
-  edges: Pick<MapEdge, 'from' | 'to'>[],
+  edges: Pick<MapEdge, 'kind' | 'from' | 'to'>[],
 ): void {
   const row = new Map<string, number>();
   const kindOf = new Map<string, MapNodeKind>();
@@ -276,18 +278,24 @@ function orderByLines(
       row.set(cardKey(c), i);
       kindOf.set(cardKey(c), k);
     });
+  // A fallback line is drawn only on a selected path, so it does not place a card.
   const near = new Map<string, string[]>();
   for (const e of edges) {
-    if (!row.has(e.from) || !row.has(e.to)) continue;
-    near.set(e.from, [...(near.get(e.from) ?? []), e.to]);
-    near.set(e.to, [...(near.get(e.to) ?? []), e.from]);
+    if (isFallback(e.kind) || !row.has(e.from) || !row.has(e.to)) continue;
+    for (const [a, b] of [
+      [e.from, e.to],
+      [e.to, e.from],
+    ]) {
+      if (!near.has(a)) near.set(a, []);
+      near.get(a)!.push(b);
+    }
   }
+  const linked = (c: MapCard, by: MapNodeKind[]) =>
+    (near.get(cardKey(c)) ?? []).filter((k) => by.includes(kindOf.get(k)!));
   const place = (kind: MapNodeKind, by: MapNodeKind[]) => {
     const at = new Map<MapCard, number>();
     for (const c of byKind[kind]) {
-      const rows = (near.get(cardKey(c)) ?? [])
-        .filter((k) => by.includes(kindOf.get(k)!))
-        .map((k) => row.get(k)!);
+      const rows = linked(c, by).map((k) => row.get(k)!);
       at.set(c, rows.length ? rows.reduce((a, b) => a + b, 0) / rows.length : row.get(cardKey(c))!);
     }
     byKind[kind].sort(
@@ -299,6 +307,30 @@ function orderByLines(
     place('pipeline', pass === 0 ? ['source'] : ['source', 'destination']);
     place('destination', ['pipeline']);
   }
+
+  // Averages leave crossings a swap of two neighbours removes. Each swap removes at least one
+  // crossing, so the swapping ends.
+  const crossings = (upper: MapCard, lower: MapCard, by: MapNodeKind[]) => {
+    let n = 0;
+    for (const a of linked(upper, by))
+      for (const b of linked(lower, by))
+        if (kindOf.get(a) === kindOf.get(b) && row.get(a)! > row.get(b)!) n++;
+    return n;
+  };
+  const swap = (kind: MapNodeKind, by: MapNodeKind[]) => {
+    const column = byKind[kind];
+    let swapped = false;
+    for (let i = 0; i + 1 < column.length; i++) {
+      const [upper, lower] = [column[i], column[i + 1]];
+      if (crossings(lower, upper, by) >= crossings(upper, lower, by)) continue;
+      [column[i], column[i + 1]] = [lower, upper];
+      row.set(cardKey(lower), i);
+      row.set(cardKey(upper), i + 1);
+      swapped = true;
+    }
+    return swapped;
+  };
+  while (swap('pipeline', ['source', 'destination']) || swap('destination', ['pipeline']));
 }
 
 /** Lines run square: out of a card, along a lane in a gap, into the next card. A side gives each
