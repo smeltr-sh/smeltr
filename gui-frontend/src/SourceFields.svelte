@@ -285,12 +285,12 @@
 {#snippet framingField(source: FramingSettings)}
   <Field field="framing" label="framing">
     {#snippet help()}
-      <code>lines</code>: one record per line, or per event where a line breaker cuts them.
+      <code>lines</code>: one record per line, or per event where a line breaker cuts them.<br />
       <code>object</code>: everything is one record, such as a JSON document a pipeline unrolls;
-      from a sender, all it sends before it hangs up.
+      from a sender, all it sends before it hangs up.<br />
       <code>escapedLines</code>: one record per line, unescaped as a destination with format
-      <code>bytes</code> and newlines <code>escape</code> wrote it.
-      <code>lengthPrefix</code>: one record per message, each carrying its own length.
+      <code>bytes</code> and newlines <code>escape</code> wrote it.<br />
+      <code>lengthPrefix</code>: one record per message, each carrying its own length.<br />
       <code>fixed</code>: one record per so many bytes.
     {/snippet}
     <select
@@ -341,7 +341,8 @@
       </Field>
       <Field field="lengthPrefix" label="byte order">
         {#snippet help()}
-          <code>big</code>: the most significant byte first, as most network protocols send it.
+          <code>big</code>: the most significant byte first, as most network protocols send it.<br
+          />
           <code>little</code>: the least significant byte first.
         {/snippet}
         <select
@@ -357,8 +358,8 @@
       </Field>
       <Field field="lengthPrefix" label="length counts">
         {#snippet help()}
-          <code>rest</code>: the bytes after the length. <code>message</code>: the whole message,
-          the length and what comes before it included.
+          <code>rest</code>: the bytes after the length.<br />
+          <code>message</code>: the whole message, the length and what comes before it included.
         {/snippet}
         <select
           value={prefix.counts ?? 'rest'}
