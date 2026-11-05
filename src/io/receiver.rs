@@ -3131,7 +3131,7 @@ async fn serve_streams<H, F>(
 /// Whether a sender at `peer` may connect, or send a datagram. An empty list admits any.
 /// Why a sender from `peer` was refused unread, naming it so an administrator can add it to allowFrom.
 fn refused(peer: std::net::IpAddr) -> String {
-    format!("refused: {peer} is in none of the receiver's allowFrom networks")
+    format!("refused: {peer} is not in any of the receiver's allowFrom networks")
 }
 
 pub(super) fn admits(allow_from: &[ipnetwork::IpNetwork], peer: std::net::IpAddr) -> bool {
