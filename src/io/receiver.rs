@@ -2841,13 +2841,14 @@ const MAX_DATAGRAM: usize = u16::MAX as usize;
 
 /// Serves `socket` for a receiver that takes datagrams: `cut` makes a datagram from a sender the records it holds, or
 /// `None` for one it refuses. Nothing slows a sender of datagrams, so one that arrives while the inbox has no room, or
-/// the source is blocked, is dropped and counted. A datagram larger than `max` reaches `cut` as `max + 1` bytes.
+/// the source is blocked, is dropped and counted. A datagram larger than `max` and a line end reaches `cut` as
+/// `max + 3` bytes, so `cut` tells it from one of `max` bytes and a CRLF.
 /// Runs until dropped.
 async fn serve_datagrams<C>(socket: tokio::net::UdpSocket, shared: Arc<Shared>, max: usize, cut: C)
 where
     C: Fn(&[u8], std::net::IpAddr) -> Option<Cutter> + Send + 'static,
 {
-    let mut buffer = vec![0; max.min(MAX_DATAGRAM) + 1];
+    let mut buffer = vec![0; max.min(MAX_DATAGRAM) + 3];
     let mut failing = crate::logs::Relog::default();
     loop {
         let (length, peer) = match socket.recv_from(&mut buffer).await {
