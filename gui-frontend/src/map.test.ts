@@ -42,6 +42,7 @@ import {
   usedNodes,
   visibleEdges,
   visibleNodes,
+  type Layout,
   type MapEdge,
   type KnownIds,
 } from './map';
@@ -254,41 +255,47 @@ describe('sharedCopies', () => {
 
 describe('layout', () => {
   it('puts each kind in its own column, left to right', () => {
-    const { positions } = layout([
-      node('es-prod', 'destination'),
-      node('orders-west', 'source'),
-      node('orders-normalize', 'pipeline'),
-    ]);
+    const { positions } = layout(
+      [
+        node('es-prod', 'destination'),
+        node('orders-west', 'source'),
+        node('orders-normalize', 'pipeline'),
+      ],
+      [],
+    );
     const xOf = (id: string) => positions.find((p) => p.node.authorId === id)?.x;
     expect(xOf('orders-west')).toBeLessThan(xOf('orders-normalize')!);
     expect(xOf('orders-normalize')).toBeLessThan(xOf('es-prod')!);
   });
 
   it('orders a column by name, ties broken by id', () => {
-    const { positions } = layout([
-      node('b', 'source', false, 'Zebra'),
-      node('a', 'source', false, 'Apple'),
-    ]);
+    const { positions } = layout(
+      [node('b', 'source', false, 'Zebra'), node('a', 'source', false, 'Apple')],
+      [],
+    );
     expect(positions.map((p) => p.node.authorId)).toEqual(['a', 'b']);
   });
 
   it('a smaller node list is a smaller layout, not the same one with gaps', () => {
-    const full = layout([node('a', 'source'), node('b', 'source'), node('c', 'source')]);
-    const filtered = layout([node('a', 'source'), node('c', 'source')]);
+    const full = layout([node('a', 'source'), node('b', 'source'), node('c', 'source')], []);
+    const filtered = layout([node('a', 'source'), node('c', 'source')], []);
     expect(filtered.positions.map((p) => p.y)).toEqual([full.positions[0].y, full.positions[1].y]);
     expect(filtered.height).toBeLessThan(full.height);
   });
 
   it('names all three columns, whether or not each holds anything', () => {
-    const { columns } = layout([node('a', 'source')]);
+    const { columns } = layout([node('a', 'source')], []);
     expect(columns.map((c) => c.kind)).toEqual(['source', 'pipeline', 'destination']);
   });
 
   it('a tie in name and id is finally broken by group, so two groups never collide in row order', () => {
-    const { positions } = layout([
-      node('orders-bad', 'source', false, 'orders-bad', 'g2'),
-      node('orders-bad', 'source', false, 'orders-bad', 'g1'),
-    ]);
+    const { positions } = layout(
+      [
+        node('orders-bad', 'source', false, 'orders-bad', 'g2'),
+        node('orders-bad', 'source', false, 'orders-bad', 'g1'),
+      ],
+      [],
+    );
     expect(positions.map((p) => p.node.group)).toEqual(['g1', 'g2']);
   });
 
@@ -299,10 +306,86 @@ describe('layout', () => {
     const w = cardWidth(room);
     expect(w).toBeGreaterThan(MIN_NODE_W);
     expect(w).toBeLessThan(NODE_W);
-    const fitted = layout([node('a', 'source'), node('b', 'destination')], w);
+    const fitted = layout([node('a', 'source'), node('b', 'destination')], [], w);
     expect(fitted.width).toBeLessThanOrEqual(room);
     expect(fitted.positions[1].x).toBe(fitted.columns[2].x);
     expect(fitted.columns[1].x - fitted.columns[0].x).toBe(w + COL_GAP);
+  });
+
+  const line = (kind: MapEdge['kind'], from: MapNode, to: MapNode) => ({
+    kind,
+    from: nodeKey(from.group, from.kind, from.authorId),
+    to: nodeKey(to.group, to.kind, to.authorId),
+  });
+  const rowsOf = (l: Layout, kind: MapNode['kind']) =>
+    l.positions.filter((p) => p.node.kind === kind).map((p) => p.node.authorId);
+
+  it('puts a pipeline level with its source, whatever their names', () => {
+    const [apache, zeek] = [node('apache', 'source'), node('zeek', 'source')];
+    const [web, dns] = [node('web-normalize', 'pipeline'), node('dns-enrich', 'pipeline')];
+    const [lake, siem] = [node('lake', 'destination'), node('siem', 'destination')];
+    const l = layout(
+      [apache, zeek, web, dns, lake, siem],
+      [
+        line('route', apache, web),
+        line('route', zeek, dns),
+        line('deliver', web, siem),
+        line('deliver', dns, lake),
+      ],
+    );
+    expect(rowsOf(l, 'source')).toEqual(['apache', 'zeek']);
+    expect(rowsOf(l, 'pipeline')).toEqual(['web-normalize', 'dns-enrich']);
+    expect(rowsOf(l, 'destination')).toEqual(['siem', 'lake']);
+  });
+
+  it('puts a pipeline fed by two sources between them', () => {
+    const [a, b, c] = [node('a', 'source'), node('b', 'source'), node('c', 'source')];
+    const [pa, pac, pc] = [node('z1', 'pipeline'), node('a2', 'pipeline'), node('m3', 'pipeline')];
+    const l = layout(
+      [a, b, c, pa, pac, pc],
+      [line('route', a, pa), line('route', a, pac), line('route', c, pac), line('route', c, pc)],
+    );
+    expect(rowsOf(l, 'pipeline')).toEqual(['z1', 'a2', 'm3']);
+  });
+
+  it('swaps two cards side by side when fewer lines then cross', () => {
+    const named = (kind: MapNode['kind'], ids: string) =>
+      ids.split(' ').map((id) => node(id, kind));
+    const s = named('source', 's0 s1 s2 s3 s4 s5');
+    const p = named('pipeline', 'p0 p1 p2 p3 p4 p5');
+    const d = named('destination', 'd0 d1 d2 d3 d4');
+    const l = layout(
+      [...s, ...p, ...d],
+      [
+        line('deliver', p[0], d[4]),
+        line('deliver', p[1], d[4]),
+        line('route', s[1], p[3]),
+        line('route', s[1], p[4]),
+        line('deliver', p[4], d[0]),
+        line('deliver', p[5], d[4]),
+      ],
+    );
+    // By the means alone, p4 sits above p5 and its line to d0 crosses p5's to d4.
+    expect(rowsOf(l, 'pipeline')).toEqual(['p3', 'p0', 'p1', 'p5', 'p4', 'p2']);
+  });
+
+  it('does not place a card by a fallback line', () => {
+    const [p1, p2] = [node('p1', 'pipeline'), node('p2', 'pipeline')];
+    const [dlq, d1, d2] = [
+      node('a-dlq', 'destination'),
+      node('d1', 'destination'),
+      node('d2', 'destination'),
+    ];
+    const l = layout(
+      [p1, p2, dlq, d1, d2],
+      [
+        line('deliver', p1, d1),
+        line('deliver', p2, d2),
+        line('exception', p1, dlq),
+        line('exception', p2, dlq),
+      ],
+    );
+    expect(rowsOf(l, 'destination')).toEqual(['a-dlq', 'd1', 'd2']);
   });
 });
 
