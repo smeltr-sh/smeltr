@@ -370,8 +370,8 @@ service:
     </dd>
     <dt><strong>The same events arrive twice</strong></dt>
     <dd>
-      A sender that hears no answer may send the request again. With <code>answerAfterDelivery</code> on, give the
-      sender a timeout longer than its destinations take to deliver.
+      A sender that hears no answer may send the request again. With <code>answerAfterDelivery</code
+      > on, give the sender a timeout longer than its destinations take to deliver.
     </dd>
   </dl>
 
