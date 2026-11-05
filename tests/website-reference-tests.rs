@@ -11,6 +11,7 @@ use smeltr::core::buffer::BufferPool;
 use smeltr::core::ctx::Ctx;
 use smeltr::core::error::ErrorSink;
 use smeltr::expr::inline::PRELUDE_FUNCTIONS;
+use smeltr::expr::unpack::UNPACK;
 use smeltr::ops::objectops::ObjectOp;
 use smeltr::ops::stdfuncs;
 use smeltr::ops::{BinOp, UnOp};
@@ -355,12 +356,13 @@ fn the_reference_documents_every_function_exactly_once() {
     documented.dedup();
     assert_eq!(before, documented.len(), "a function is documented twice");
 
-    // map/filter are expression syntax lowered to array instructions, and the object functions are object
-    // instructions, not StdFunc variants.
+    // map/filter are expression syntax lowered to array instructions, `unpack` expands to calls of the functions it
+    // reads with, and the object functions are object instructions, not StdFunc variants.
     let mut defined: Vec<&str> = stdfuncs::ROWS
         .iter()
         .map(|row| row.name)
         .chain(PRELUDE_FUNCTIONS)
+        .chain([UNPACK])
         .chain(ObjectOp::NAMED.iter().filter_map(|op| op.name()))
         .collect();
     defined.sort_unstable();

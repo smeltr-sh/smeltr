@@ -40,7 +40,7 @@ use smeltr::plan::topology::SourceMeta;
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::harness::{code, pipeline, raw_batch};
 
-const SEEDS: u64 = 300;
+const SEEDS: u64 = 400;
 
 /// The record's declarations and its parse, step 0 of every program.
 const HEAD: &str = "a: i64; b: i64; f: f64; s: str; u: str; bo: bool; by: bytes; t: datetime; d: duration; \
@@ -198,6 +198,9 @@ fn hint(f: StdFunc, i: usize) -> &'static [&'static str] {
         (ToString | ParseBytes, 1) => &["\"base64\"", "\"hex\"", "\"binary\""],
         (Decode | Encode, 1) => &["\"utf-8\"", "\"latin1\"", "\"utf-16le\"", "\"nope\""],
         (ParseInt, 1) => &["2", "10", "16", "36"],
+        (ReadInt | ReadFloat, 2) => &["\"u8\"", "\"i16\"", "\"u32\"", "\"i64\"", "\"f32\"", "\"f64\"", "\"x\""],
+        (ReadInt | ReadFloat, 3) => &["\"big\"", "\"little\"", "\"x\""],
+        (ReadInt | ReadFloat | ReadBytes, 1) | (ReadBytes, 2) => &["0", "1", "2", "-1"],
         (ParseTime, 1) => &["\"%Y-%m-%d\"", "\"%d/%m/%Y %H:%M\"", "\"%s\""],
         (Duration | CountIn, 1) => &["\"s\"", "\"ms\"", "\"h\"", "\"us\"", "\"d\"", "\"w\"", "\"seconds\""],
         (Repeat | PadStart | PadEnd | Resize, 1) => &["0", "1", "3", "-1"],

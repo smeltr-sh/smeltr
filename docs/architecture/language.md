@@ -88,6 +88,25 @@ text's bytes in a charset. A form or an encoding the call cannot use, text
 that is not the form, or a character the charset cannot spell is null with a
 `CoercionRefused` error.
 
+A binary message is read out of `bytes` at byte positions counted from 0.
+`readInt(b, at, type, order)` reads an integer, `"u8"` to `"u64"` or `"i8"` to
+`"i64"`, `readFloat` an `"f32"` or `"f64"`, and `readBytes(b, at, count)`
+bytes. A byte order is `"big"` or `"little"`, big unless named. A read past
+the end of the bytes is null with an `IndexOutOfRange` error, so no message
+makes a read reach outside it; a `u64` past `i64` is an `Overflow`, and a NaN
+or an infinity a `NaN`. `unpack(b, layout, {order})` reads a whole message
+into an object: the layout names each field and its type in the order the
+bytes come, each field starting where the one before ends, and a `bytes` or
+`str` field takes a count, an earlier integer field or a length prefix as its
+length, or runs to the end. The compiler reads the layout as a literal and
+expands the call to those reads, so a layout it cannot read is a compile
+error. A field the message is too short for is null with its error, and every
+field after it is null.
+
+```ts
+msg = unpack(__source.bytes, {version: "u8", len: "u16", host: {type: "str", length: "len"}, body: "bytes"})
+```
+
 ## Null
 
 `null`, `undefined` and missing are one nothing-value. Reading an absent field

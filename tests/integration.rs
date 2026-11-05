@@ -199,6 +199,10 @@ mod streams_tests;
 mod syslog_receiver_fuzz;
 #[path = "syslog-receiver-tests.rs"]
 mod syslog_receiver_tests;
+#[path = "unpack-fuzz.rs"]
+mod unpack_fuzz;
+#[path = "unpack-tests.rs"]
+mod unpack_tests;
 #[path = "website-reference-tests.rs"]
 mod website_reference_tests;
 #[path = "worker-tests.rs"]

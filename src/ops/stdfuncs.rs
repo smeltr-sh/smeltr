@@ -20,7 +20,8 @@ use crate::core::column::{Column, DataType, StrBuilder, VarType};
 use crate::core::ctx::{CompiledPattern, Ctx};
 use crate::ops::helpers::{Operand, side};
 use crate::ops::{
-    OpKernel, arith, arrayops, convert, datetime, hashops, logic, netops, rebuildops, strops, useragent, webops,
+    OpKernel, arith, arrayops, byteops, convert, datetime, hashops, logic, netops, rebuildops, strops, useragent,
+    webops,
 };
 
 /// What a parameter accepts. `null` fits every pattern; `Variant` fits none. An `I64` fits where an `F64` does, and
@@ -405,6 +406,9 @@ stdfuncs! {
     Decode      "decode"      = some(|c, i| convert::convert_or_refuse(c, i, convert::decode));      [Bytes, Str] => (Str);
     Encode      "encode"      = some(|c, i| convert::convert_or_refuse(c, i, convert::encode));      [Str, Str] => (Bytes);
     ParseBytes  "parseBytes"  = some(|c, i| convert::convert_or_refuse(c, i, convert::parse_bytes)); [Str] => (Bytes), [Str, Str] => (Bytes);
+    ReadInt     "readInt"     = some(byteops::read_int);       [Bytes, I64, Str] => (I64), [Bytes, I64, Str, Str] => (I64);
+    ReadFloat   "readFloat"   = some(byteops::read_float);     [Bytes, I64, Str] => (F64), [Bytes, I64, Str, Str] => (F64);
+    ReadBytes   "readBytes"   = some(byteops::read_bytes);     [Bytes, I64, I64] => (Bytes);
     ParseInt    "parseInt"    = some(|c, i| convert::read_or_refuse(c, i, convert::parse_int));      [Str] => (I64), [Str, I64] => (I64);
     ParseHex    "parseHex"    = some(|c, i| convert::read_or_refuse(c, i, convert::parse_hex));      [Str] => (I64);
     ParseFloat  "parseFloat"  = some(|c, i| convert::read_or_refuse(c, i, convert::parse_float));    [Str] => (F64);
@@ -514,7 +518,8 @@ impl StdFunc {
     pub fn takes_constant_at(self, i: usize) -> bool {
         use StdFunc::*;
         match self {
-            Min | Max | Clamp | Idiv | IsNull | CommunityId | Decode | Encode | FormatTime => true,
+            Min | Max | Clamp | Idiv | IsNull | CommunityId | Decode | Encode | FormatTime | ReadInt | ReadFloat
+            | ReadBytes => true,
             StartsWith | EndsWith | Includes | IndexOf | LastIndexOf | Split | Join | Repeat | At | Insert | Remove
             | Resize | Duration | CountIn | ParseInt | CidrNetwork | ToString | ParseBytes => i == 1,
             Slice | PadStart | PadEnd | ParseTime => i == 1 || i == 2,

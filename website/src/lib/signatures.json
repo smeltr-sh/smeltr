@@ -387,6 +387,32 @@
       "result": "the array's type"
     }
   ],
+  "readBytes": [
+    {
+      "params": "(bytes, i64, i64)",
+      "result": "bytes"
+    }
+  ],
+  "readFloat": [
+    {
+      "params": "(bytes, i64, str)",
+      "result": "f64"
+    },
+    {
+      "params": "(bytes, i64, str, str)",
+      "result": "f64"
+    }
+  ],
+  "readInt": [
+    {
+      "params": "(bytes, i64, str)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, i64, str, str)",
+      "result": "i64"
+    }
+  ],
   "registeredDomain": [
     {
       "params": "(str)",

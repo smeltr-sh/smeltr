@@ -4,6 +4,7 @@
 
 pub mod arith;
 pub mod arrayops;
+pub mod byteops;
 pub mod civil;
 pub mod cmp;
 pub mod convert;
