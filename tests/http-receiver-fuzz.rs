@@ -528,8 +528,8 @@ fn random_request(rng: &mut Rng, settings: &Settings) -> Sent {
         ]),
     };
     // Under Served no sender is asked for a certificate, so what it presents tries nothing.
-    if settings.tls == Tls::Vouched {
-        labels.at(Stage::Sent, format!("presents {presents:?} under Vouched"));
+    if settings.tls.checks_sender() {
+        labels.at(Stage::Sent, format!("presents {presents:?} under {:?}", settings.tls));
     }
     // Most requests present a token the receiver holds, so most reach what follows the token.
     let well_sent = !rng.chance(4);
@@ -634,7 +634,7 @@ fn random_request(rng: &mut Rng, settings: &Settings) -> Sent {
         headers.extend(b"\r\n");
     }
 
-    let (expected, reached) = if settings.tls == Tls::Vouched && presents != Presents::Trusted {
+    let (expected, reached) = if settings.tls.checks_sender() && presents != Presents::Trusted {
         (Expected::Nothing, Stage::Sent)
     } else {
         let (expected, reached) = match serves {
@@ -732,14 +732,18 @@ fn every_setting_answers_random_requests_and_cuts_their_records() {
     let mut cov = Coverage::new(
         receiver::listen_names(ipv6)
             .map(|ip| format!("listen {ip}"))
-            .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
+            .chain(Tls::ALL.map(|tls| format!("tls {tls:?}")))
             .chain((0..=3).map(|n| format!("tokens {n}")))
             .chain(RECEIVER_LIMITS.iter().map(|(_, name)| name.to_string()))
             .chain(PATHS.iter().map(|(_, sent)| format!("path {sent}")))
             .chain(["records Body", "records Lines"].map(String::from))
             .chain(POINTERS.iter().map(|p| format!("records at {p:?}")))
             .chain(ROUTES.iter().map(|(method, route)| format!("{method} {route}")))
-            .chain(["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under Vouched")))
+            .chain(
+                (Tls::ALL.into_iter().filter(|tls| tls.checks_sender())).flat_map(|tls| {
+                    ["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under {tls:?}"))
+                }),
+            )
             .chain(AUTHORIZATIONS.iter().map(|s| s.to_string()))
             .chain(ENCODINGS.iter().map(|(e, _)| format!("Content-Encoding {e:?}")))
             .chain(
@@ -763,7 +767,8 @@ fn every_setting_answers_random_requests_and_cuts_their_records() {
     );
     fuzz::run(1..201, |seed| {
         let mut rng = Rng::seeded(seed);
-        let settings = random_settings(&mut rng, ipv6);
+        let mut settings = random_settings(&mut rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         cov.reach(format!("listen {}", settings.listen.ip()));
         cov.reach(format!("tls {:?}", settings.tls));
         cov.reach(format!("tokens {}", settings.tokens.len()));
@@ -878,7 +883,7 @@ fn fluent_bit_config(at: SocketAddr, path: &str, token: Option<&str>, tls: Tls, 
     if tls != Tls::None {
         output.push_str("    TLS On\n    TLS.Verify On\n    TLS.CA_File /smeltr/ca.pem\n    TLS.Vhost localhost\n");
     }
-    if tls == Tls::Vouched {
+    if tls.checks_sender() {
         output.push_str("    TLS.Crt_File /smeltr/sender.pem\n    TLS.Key_File /smeltr/sender-key.pem\n");
     }
     format!(

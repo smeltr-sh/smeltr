@@ -1067,7 +1067,7 @@ fn random_request(rng: &mut Rng, settings: &Settings, cov: &mut Coverage) -> Sen
         records: 0,
         written: None,
     };
-    let expected = if settings.tls == Tls::Vouched && presents != Presents::Trusted {
+    let expected = if settings.tls.checks_sender() && presents != Presents::Trusted {
         refused(0)
     } else if path == "/health" {
         refused(if method == "POST" { 405 } else { 200 })
@@ -1160,13 +1160,13 @@ fn every_setting_answers_random_requests_within_the_documented_set() {
     let mut cov = Coverage::new(
         receiver::listen_names(ipv6)
             .map(|ip| format!("listen {ip}"))
-            .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
+            .chain(Tls::ALL.map(|tls| format!("tls {tls:?}")))
             .chain((0..=3).map(|n| format!("tokens {n}")))
             .chain(RECEIVER_LIMITS.iter().map(|(_, name)| name.to_string()))
             .chain(ROUTES.iter().map(|(method, path)| format!("{method} {path}")))
             .chain(["presents Nothing under None".to_string()])
-            .chain(["Served", "Vouched"].iter().flat_map(|tls| {
-                ["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under {tls}"))
+            .chain(Tls::ALL[1..].iter().flat_map(|tls| {
+                ["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under {tls:?}"))
             }))
             .chain(BODIES.iter().chain(AUTHORIZATIONS).map(|s| s.to_string()))
             .chain([
@@ -1179,7 +1179,8 @@ fn every_setting_answers_random_requests_within_the_documented_set() {
     );
     fuzz::run(1..61, |seed| {
         let mut rng = Rng::seeded(seed);
-        let settings = random_settings(&mut rng, ipv6);
+        let mut settings = random_settings(&mut rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         cov.reach(format!("listen {}", settings.listen.ip()));
         cov.reach(format!("tls {:?}", settings.tls));
         cov.reach(format!("tokens {}", settings.tokens.len()));

@@ -1379,7 +1379,7 @@ fn random_connection(rng: &mut Rng, settings: &Settings, n: usize) -> Plan {
         labels: vec![(Stage::Tls, format!("presents {presents:?} under {:?}", settings.tls))],
     };
     let label = |plan: &mut Plan, label: &str| plan.labels.push((plan.reached, label.to_string()));
-    if settings.tls == Tls::Vouched && presents != Presents::Trusted {
+    if settings.tls.checks_sender() && presents != Presents::Trusted {
         return plan;
     }
 
@@ -1934,13 +1934,13 @@ impl<'a> Matching<'a> {
 /// Every label a seed may reach, as the generators name them.
 fn every_label(ipv6: bool) -> Vec<String> {
     let mut labels: Vec<String> = receiver::listen_names(ipv6).map(|ip| format!("listen {ip}")).collect();
-    labels.extend(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")));
+    labels.extend(Tls::ALL.map(|tls| format!("tls {tls:?}")));
     labels.extend((0..=3).map(|n| format!("tokens {n}")));
     labels.extend(RECEIVER_LIMITS.iter().map(|(_, name)| name.to_string()));
     labels.extend(["Xml", "Dated"].map(|b| format!("sourcetype {b} configured")));
     labels.push("presents Nothing under None".into());
-    for tls in ["Served", "Vouched"] {
-        labels.extend(["Nothing", "Trusted", "Stranger"].map(|p| format!("presents {p} under {tls}")));
+    for tls in &Tls::ALL[1..] {
+        labels.extend(["Nothing", "Trusted", "Stranger"].map(|p| format!("presents {p} under {tls:?}")));
     }
     for finish in ["Clean", "Abrupt", "Spoiled"] {
         labels.extend([true, false].map(|ack| format!("{finish} ending with acks {ack}")));
@@ -2033,7 +2033,8 @@ fn every_setting_reads_random_forwarders_as_an_indexer_breaks_them() {
     let mut cov = Coverage::new(every_label(ipv6));
     fuzz::run(1..201, |seed| {
         let mut rng = Rng::seeded(seed);
-        let settings = random_settings(&mut rng, ipv6);
+        let mut settings = random_settings(&mut rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         cov.reach(format!("listen {}", settings.listen.ip()));
         cov.reach(format!("tls {:?}", settings.tls));
         cov.reach(format!("tokens {}", settings.tokens.len()));
@@ -2150,6 +2151,7 @@ fn hec_receivers_read_random_httpout_requests_as_an_indexer_breaks_them() {
     fuzz::run(1..101, |seed| {
         let mut rng = Rng::seeded(seed);
         let mut settings = random_settings(&mut rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         // A HEC receiver holds a token, whatever vouches for its senders.
         if settings.tokens.is_empty() {
             settings.tokens.push(format!("tok-{:x}", rng.next_u64()));

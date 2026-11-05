@@ -22,6 +22,22 @@ pub enum Tls {
     Served,
     /// Under a certificate with authorities: a sender's certificate must chain to them.
     Vouched,
+    /// Under a certificate naming its senders by fingerprint, with no authorities: a sender's certificate must be one
+    /// of them, whoever issued it.
+    Pinned,
+    /// As `Vouched`, and a sender's certificate must also be issued to a host it names.
+    Named,
+}
+
+impl Tls {
+    /// Every one, in the order coverage names them.
+    pub const ALL: [Tls; 5] = [Tls::None, Tls::Served, Tls::Vouched, Tls::Pinned, Tls::Named];
+
+    /// Whether a sender must present a certificate, and it must be the trusted sender's: every other is refused in
+    /// the handshake.
+    pub fn checks_sender(self) -> bool {
+        matches!(self, Tls::Vouched | Tls::Pinned | Tls::Named)
+    }
 }
 
 /// The certificate a sender over TLS presents.
@@ -65,6 +81,29 @@ impl Pki {
             sender,
             stranger,
             clients,
+        }
+    }
+
+    /// What a receiver under `tls` names its senders by. Pinned, the trusted sender by SHA-1 and the receiver's own
+    /// certificate, which no sender presents, by SHA-256; named, a host in a domain no sender is issued to and the
+    /// trusted sender's host.
+    pub fn senders(&self, tls: Tls) -> smeltr::plan::topology::Senders {
+        use smeltr::io::senders::{Fingerprint, Hash};
+
+        let der = |issued: &Issued| certs::certificates(&issued.certificate).remove(0);
+        match tls {
+            Tls::Pinned => smeltr::plan::topology::Senders {
+                fingerprints: vec![
+                    Fingerprint::of(Hash::Sha1, &der(&self.sender)),
+                    Fingerprint::of(Hash::Sha256, &der(&self.server)),
+                ],
+                names: Vec::new(),
+            },
+            Tls::Named => smeltr::plan::topology::Senders {
+                fingerprints: Vec::new(),
+                names: vec!["*.example.com".into(), "sender".into()],
+            },
+            Tls::None | Tls::Served | Tls::Vouched => Default::default(),
         }
     }
 
@@ -151,9 +190,17 @@ pub fn random_tls(rng: &mut Rng) -> Tls {
     *rng.pick(&[Tls::None, Tls::None, Tls::Served, Tls::Vouched])
 }
 
-/// Up to three of what `token` draws, and at least one unless authorities admit a sender alone.
+/// `tls`, or where it vouches for senders, any way of checking them, for seed `seed`. The offline fuzzers take it
+/// after their settings, and it draws from its own stream, so their other draws, and the live fuzzers', are as they
+/// were.
+pub fn random_check(seed: u64, tls: Tls) -> Tls {
+    let check = *Rng::seeded(seed ^ 0x5e4d_e7c4).pick(&[Tls::Vouched, Tls::Pinned, Tls::Named]);
+    if tls == Tls::Vouched { check } else { tls }
+}
+
+/// Up to three of what `token` draws, and at least one unless a sender's certificate admits it alone.
 pub fn random_tokens<T>(rng: &mut Rng, tls: Tls, mut token: impl FnMut(&mut Rng, usize) -> T) -> Vec<T> {
-    (0..rng.below(3) + usize::from(tls != Tls::Vouched))
+    (0..rng.below(3) + usize::from(!tls.checks_sender()))
         .map(|i| token(rng, i))
         .collect()
 }
@@ -194,10 +241,10 @@ pub fn build(
     let tls = (tls != Tls::None).then(|| smeltr::plan::topology::Tls {
         of: "source \"receiver\"".into(),
         certificate: Some("receiver".into()),
-        authorities: (tls == Tls::Vouched).then(|| pki.authority.pem.clone()),
+        authorities: matches!(tls, Tls::Vouched | Tls::Named).then(|| pki.authority.pem.clone()),
         trust_public: false,
         side: smeltr::io::trust::Side::Server,
-        senders: Default::default(),
+        senders: pki.senders(tls),
     });
     let config = ReceiverConfig {
         receiver,

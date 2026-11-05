@@ -2471,7 +2471,7 @@ fn random_request(g: &mut Gen, settings: &Settings) -> Sent {
     };
     order.reach(format!("presents {presents:?} under {:?}", settings.tls));
     order.decide(
-        settings.tls == Tls::Vouched && presents != Presents::Trusted,
+        settings.tls.checks_sender() && presents != Presents::Trusted,
         Expected::Nothing,
     );
     let mut sent = Sent {
@@ -2897,14 +2897,14 @@ fn every_setting_answers_random_otlp_exports_as_otlp_does() {
     let mut cov = Coverage::new(
         receiver::listen_names(ipv6)
             .map(|ip| format!("listen {ip}"))
-            .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
+            .chain(Tls::ALL.map(|tls| format!("tls {tls:?}")))
             .chain((1..=3).map(|n| format!("{n} receivers on a port")))
             .chain(signals.iter().map(|s| format!("a receiver of {s}")))
             .chain((0..=3).map(|n| format!("a receiver of {n} tokens")))
             .chain(RECEIVER_LIMITS.iter().map(|(_, name)| name.to_string()))
             .chain(["presents Nothing under None".to_string()])
-            .chain(["Served", "Vouched"].iter().flat_map(|tls| {
-                ["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under {tls}"))
+            .chain(Tls::ALL[1..].iter().flat_map(|tls| {
+                ["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under {tls:?}"))
             }))
             .chain(["GET /health", "GET on an export's path", "a path nothing serves"].map(String::from))
             .chain(["over HTTP/1", "over HTTP/2"].map(String::from))
@@ -3004,7 +3004,8 @@ fn every_setting_answers_random_otlp_exports_as_otlp_does() {
             collected: false,
             exact: false,
         };
-        let settings = random_settings(&mut g.rng, ipv6);
+        let mut settings = random_settings(&mut g.rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         cov.reach(format!("listen {}", settings.listen.ip()));
         cov.reach(format!("tls {:?}", settings.tls));
         cov.reach(format!("{} receivers on a port", settings.receivers.len()));
@@ -3126,7 +3127,7 @@ fn collector_config(listening: SocketAddr, at: SocketAddr, tls: Tls, exporters: 
     let tls = match tls {
         Tls::None => "{insecure: true}",
         Tls::Served => "{ca_file: /smeltr/ca.pem, server_name_override: localhost}",
-        Tls::Vouched => {
+        Tls::Vouched | Tls::Pinned | Tls::Named => {
             "{ca_file: /smeltr/ca.pem, server_name_override: localhost, cert_file: /smeltr/exporter.pem, key_file: \
              /smeltr/exporter-key.pem}"
         }

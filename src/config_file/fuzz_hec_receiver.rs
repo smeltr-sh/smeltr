@@ -64,6 +64,40 @@ const LINE_BREAKERS: Pool = &[
     (r#""(a*)""#, true),
 ];
 
+/// A sender a receiver admits by its certificate's fingerprint.
+const FINGERPRINTS: Pool = &[
+    (
+        r#""sha-256:00:07:0E:15:1C:23:2A:31:38:3F:46:4D:54:5B:62:69:70:77:7E:85:8C:93:9A:A1:A8:AF:B6:BD:C4:CB:D2:D9""#,
+        false,
+    ),
+    // Lowercase, as some tools print one.
+    (
+        r#""sha-1:00:0b:16:21:2c:37:42:4d:58:63:6e:79:84:8f:9a:a5:b0:bb:c6:d1""#,
+        false,
+    ),
+    (r#""00:0b:16:21:2c:37:42:4d:58:63:6e:79:84:8f:9a:a5:b0:bb:c6:d1""#, true),
+    (r#""md5:00:0b:16:21:2c:37:42:4d:58:63:6e:79:84:8f:9a:a5""#, true),
+    (
+        r#""sha-256:00:0b:16:21:2c:37:42:4d:58:63:6e:79:84:8f:9a:a5:b0:bb:c6:d1""#,
+        true,
+    ),
+    (
+        r#""sha-1:+0:0b:16:21:2c:37:42:4d:58:63:6e:79:84:8f:9a:a5:b0:bb:c6:d1""#,
+        true,
+    ),
+    (r#""""#, true),
+];
+
+/// A host a receiver admits senders issued to.
+const SENDER_NAMES: Pool = &[
+    (r#""host.example.com""#, false),
+    (r#""*.example.com""#, false),
+    (r#"" syslog-1 ""#, false),
+    (r#""*.""#, true),
+    (r#""a b""#, true),
+    (r#""""#, true),
+];
+
 /// The TLS settings a generated receiver may set, and so what serving TLS under them comes to.
 struct Serving {
     /// It names a certificate to present.
@@ -206,7 +240,32 @@ fn known(rng: &mut Rng) -> Case {
         None => false,
     };
 
-    // A clean case admits someone: a token, or a sender its authorities vouch for.
+    // Senders named only where the receiver serves TLS, as naming them is what makes it serve TLS.
+    let mut pinned = false;
+    if matches!(serving, Some(Ok(_))) {
+        for (key, pool) in [("senderFingerprints", FINGERPRINTS), ("senderNames", SENDER_NAMES)] {
+            if !rng.chance(3) {
+                continue;
+            }
+            let listed: Vec<_> = (0..1 + rng.below(2)).map(|_| take(rng, pool)).collect();
+            if listed.iter().any(|(_, bad)| *bad) {
+                refused.insert(key);
+            }
+            fields.insert(key.into(), Value::Array(listed.into_iter().map(|(v, _)| v).collect()));
+            pinned |= key == "senderFingerprints";
+        }
+        // Names narrow what authorities vouch for, so without them none is admitted.
+        if fields.contains_key("senderNames") && !vouches {
+            if clean {
+                fields.remove("senderNames");
+            } else {
+                refused.insert("senderNames");
+            }
+        }
+    }
+    let vouches = vouches || pinned;
+
+    // A clean case admits someone: a token, or a sender its authorities vouch for or it names by fingerprint.
     let least = usize::from(clean && !vouches);
     let mut tokens = serde_json::Map::new();
     for _ in 0..least + rng.below(3) {
@@ -312,6 +371,19 @@ fn garbage(rng: &mut Rng) -> Case {
             let value = match rng.chance(density) {
                 true => random_value(rng, PIECES),
                 false => sound.into(),
+            };
+            fields.insert(key.into(), value);
+        }
+    }
+    for (key, pool) in [("senderFingerprints", FINGERPRINTS), ("senderNames", SENDER_NAMES)] {
+        if rng.chance(3) {
+            let value = match rng.chance(density) {
+                true => random_value(rng, PIECES),
+                false => Value::Array(
+                    (0..rng.below(3))
+                        .map(|_| garbage_value(rng, PIECES, pool, density))
+                        .collect(),
+                ),
             };
             fields.insert(key.into(), value);
         }
@@ -458,6 +530,19 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
     if r.tls.as_ref().and_then(|t| t.certificate.as_deref()) != named {
         return Err(format!("named the certificate {named:?}, built {:?}", r.tls));
     }
+    let listed = |key: &str| -> Vec<String> {
+        (field(key).and_then(Value::as_array).into_iter().flatten())
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    };
+    let senders = r.tls.as_ref().map(|t| t.senders.clone()).unwrap_or_default();
+    let fingerprints: Vec<_> = (listed("senderFingerprints").iter())
+        .map(|f| crate::io::senders::Fingerprint::parse(f).unwrap())
+        .collect();
+    let names: Vec<_> = listed("senderNames").iter().map(|n| n.trim().to_string()).collect();
+    if senders.fingerprints != fingerprints || senders.names != names {
+        return Err(format!("built senders {senders:?}, not {fingerprints:?} and {names:?}"));
+    }
     let max = field("maxRequestBytes")
         .and_then(Value::as_u64)
         .unwrap_or(MaxRequestBytes::DEFAULT);
@@ -508,10 +593,12 @@ fn held_label((what, refuses): (&str, bool)) -> String {
 }
 
 /// Every option of a HEC receiver, by its name in the file.
-const OPTIONS: [&str; 8] = [
+const OPTIONS: [&str; 10] = [
     "port",
     "certificate",
     "trustedAuthorities",
+    "senderFingerprints",
+    "senderNames",
     "maxRequestBytes",
     "tokens",
     "acknowledgement",
@@ -525,7 +612,7 @@ fn options(case: &Case) -> Vec<&'static str> {
     let inner = |key: &str, of: &str| {
         (case.source.get(key).and_then(Value::as_object).into_iter().flatten()).any(|(_, v)| v.get(of).is_some())
     };
-    let mut set: Vec<_> = OPTIONS[..5].iter().copied().filter(|o| set(o)).collect();
+    let mut set: Vec<_> = OPTIONS[..7].iter().copied().filter(|o| set(o)).collect();
     if inner("tokens", "acknowledgement") {
         set.push("acknowledgement");
     }
@@ -540,9 +627,12 @@ fn options(case: &Case) -> Vec<&'static str> {
 
 /// How a sender reaches the accepted or refused receiver: plain, or over TLS, and how it is admitted.
 fn admits(case: &Case) -> &'static str {
-    let tls = case.source.get("certificate").is_some() || case.source.get("trustedAuthorities").is_some();
+    let set = |key: &str| case.source.get(key).is_some();
+    let tls = ["certificate", "trustedAuthorities", "senderFingerprints", "senderNames"]
+        .into_iter()
+        .any(set);
     let tokens = (case.source.get("tokens").and_then(Value::as_object)).is_some_and(|t| !t.is_empty());
-    let vouches = case.source.get("trustedAuthorities").is_some();
+    let vouches = set("trustedAuthorities") || set("senderFingerprints");
     match (tls, tokens, vouches) {
         (false, true, _) => "a token in the clear",
         (true, true, _) => "a token over TLS",
@@ -580,7 +670,7 @@ fn run(seeds: std::ops::Range<u64>, generate: fn(&mut Rng) -> Case, expected: Ve
 #[test]
 fn known_hec_receiver_configs_get_the_verdict_the_rules_give() {
     // Every field the rules refuse at: a token's and a sourcetype's own are refused at the map holding them.
-    let refusals = OPTIONS[..5]
+    let refusals = OPTIONS[..7]
         .iter()
         .chain(&["sourcetypes"])
         .map(|o| format!("refused at {o}"));
