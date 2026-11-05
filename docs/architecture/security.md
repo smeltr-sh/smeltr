@@ -254,17 +254,26 @@ by the networks a sender connects from, or by its certificate. Over UDP it has
 no certificate to check, and a datagram's source address can be forged, so a
 UDP receiver's networks admit whoever can send from inside them or claim to.
 
-A sender holds a connection open to the S2S, syslog and socket receivers, so
-each holds its connections to a cap, on each worker, that no sender can raise
-by opening more: at the cap a new connection takes the place of the one idle
-longest, if that one has idled long enough, and is closed otherwise. A
-connection is idle only while the receiver waits on it, so a receiver that
-stops reading because it is full closes nothing. The defaults cut no honest
-sender, however quiet: there is no idle timeout and no cap per sender, since
-a balancer or NAT sends every sender through one address. A sender that keeps
-every connection it opens from idling can therefore hold the whole cap, and
-an administrator who faces one sets a cap per sender. A TLS handshake that
-stalls times out. The HTTP receivers have no cap yet.
+A receiver that holds connections open bounds them so that connections
+cannot exhaust a worker: a cap on each worker, an optional cap per address,
+and an optional idle timeout.
+
+```mermaid
+flowchart TD
+  A[new connection] --> B{receiver holds its maximum?}
+  B -- no --> C[accepted]
+  B -- yes --> D{some connection idle long enough?}
+  D -- yes --> E[the one idle longest is closed, the new one takes its place]
+  D -- no --> F[new connection is closed]
+```
+
+The per-address cap applies the same rule to one address's connections. A
+connection is idle only while the receiver waits to read from it, so a
+receiver that has stopped reading because it cannot take more closes none for
+idleness. By default there is no per-address cap, because behind a balancer or
+NAT every sender comes from one address, and no idle timeout, so a sender that
+writes on every connection often enough can hold every place; an administrator
+who faces one sets the per-address cap.
 
 ## Scrapers
 
