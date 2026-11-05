@@ -137,6 +137,30 @@ pub(crate) mod helpers {
         (if i < 0 { i + n } else { i }).clamp(0, n) as usize
     }
 
+    /// What a row's label names, read once per run of the same label: a charset, a number's type, a byte order. A
+    /// label that is a constant is read once. `None` for a label `read` does not know, or that is not UTF-8.
+    pub struct Labels<'a, T> {
+        read: fn(&str) -> Option<T>,
+        last: Option<(&'a [u8], Option<T>)>,
+    }
+
+    impl<'a, T: Copy> Labels<'a, T> {
+        pub fn new(read: fn(&str) -> Option<T>) -> Self {
+            Labels { read, last: None }
+        }
+
+        pub fn get(&mut self, label: &'a [u8]) -> Option<T> {
+            match self.last {
+                Some((l, t)) if l == label => t,
+                _ => {
+                    let t = std::str::from_utf8(label).ok().and_then(self.read);
+                    self.last = Some((label, t));
+                    t
+                }
+            }
+        }
+    }
+
     use crate::core::bits;
     use crate::core::column::{Column, DataType, Fixed, Scalar, Validity, VarLen};
     use crate::core::ctx::Ctx;

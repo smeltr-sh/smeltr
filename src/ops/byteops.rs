@@ -8,7 +8,7 @@
 use crate::core::column::{Column, DataType, FixedMut, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
-use crate::ops::helpers::{Operand, short_circuit_empty, side};
+use crate::ops::helpers::{Labels, Operand, short_circuit_empty, side};
 
 /// A number's type in a layout: its width in bytes, and how its bytes are read.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -153,6 +153,8 @@ fn read_num<T: Copy + Default>(
         },
     };
     let refused = ExceptionKind::CoercionRefused { to: to.clone() };
+    let mut types = Labels::new(NumType::of);
+    let mut orders = Labels::new(Order::of);
     let mut out = Column::alloc(ctx.pool, &to, len);
     let mut raised = Vec::new();
     {
@@ -161,10 +163,10 @@ fn read_num<T: Copy + Default>(
             let given =
                 b.is_valid(i) && at.is_valid(i) && ty.is_valid(i) && order.as_ref().is_none_or(|o| o.is_valid(i));
             let value = given.then(|| {
-                let ty = std::str::from_utf8(ty.at(i)).ok().and_then(NumType::of);
+                let ty = types.get(ty.at(i));
                 let order = match &order {
                     None => Some(Order::Big),
-                    Some(o) => std::str::from_utf8(o.at(i)).ok().and_then(Order::of),
+                    Some(o) => orders.get(o.at(i)),
                 };
                 let (Some(ty), Some(order)) = (ty, order) else {
                     return Err(refused.clone());
