@@ -22,8 +22,8 @@ use tokio::task::AbortHandle;
 
 use crate::plan::topology::ConnectionLimits;
 
-/// How long a connection must have read nothing before a new one at the cap may take its place. Long enough that a
-/// sender between two messages keeps its connection.
+/// How long a connection must have been idle before a new one at the cap may take its place. Long enough that a
+/// sender between two messages keeps its connection. The GUI's help and the refusals the receiver logs say "a minute".
 pub(super) const EVICTABLE_AFTER: Duration = Duration::from_secs(60);
 
 /// Why a connection was closed to keep the limits.
@@ -153,8 +153,9 @@ impl Connections {
             return Vec::new();
         };
         let now = self.now();
+        let idle = u64::try_from(idle.as_millis()).unwrap_or(u64::MAX);
         let idle: Vec<u64> = (self.open.iter())
-            .filter(|(_, o)| now.saturating_sub(o.read.load(Ordering::Relaxed)) >= idle.as_millis() as u64)
+            .filter(|(_, o)| now.saturating_sub(o.read.load(Ordering::Relaxed)) >= idle)
             .map(|(&id, _)| id)
             .collect();
         idle.into_iter().filter_map(|id| self.close(id)).collect()

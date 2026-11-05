@@ -3135,7 +3135,9 @@ async fn serve_streams<H, F>(
             Ok(place) => place,
             Err(why) => {
                 said.refused(peer, why, &limits);
-                offer_closed(&*shared, &remote, tls.is_some(), &Said::refusal(why, &limits));
+                if shared.watching() {
+                    offer_closed(&*shared, &remote, tls.is_some(), &Said::refusal(why, &limits));
+                }
                 continue;
             }
         };
@@ -3201,33 +3203,30 @@ struct Said {
 
 impl Said {
     fn closed(&mut self, peer: std::net::IpAddr, why: connections::Closed, limits: &ConnectionLimits) {
-        let (at, message) = match why {
-            connections::Closed::ForNew => (
-                0,
-                format!(
-                    "the receiver holds its maxConnections, {}, and closed the connection idle longest for a new one",
-                    limits.max
-                ),
+        let at = match why {
+            connections::Closed::ForNew => 0,
+            connections::Closed::ForNewFromSender => 1,
+            connections::Closed::Idle => 2,
+        };
+        if !self.closed[at].due() {
+            return;
+        }
+        let message = match why {
+            connections::Closed::ForNew => format!(
+                "the receiver holds its maxConnections, {}, and closed the connection idle longest for a new one",
+                limits.max
             ),
-            connections::Closed::ForNewFromSender => (
-                1,
-                format!(
-                    "the receiver holds its maxConnectionsPerSender, {}, from this sender, and closed the sender's \
-                     connection idle longest for a new one",
-                    limits.per_sender.unwrap_or_default()
-                ),
+            connections::Closed::ForNewFromSender => format!(
+                "the receiver holds its maxConnectionsPerSender, {}, from this sender, and closed the sender's \
+                 connection idle longest for a new one",
+                limits.per_sender.unwrap_or_default()
             ),
-            connections::Closed::Idle => (
-                2,
-                format!(
-                    "the receiver closed a connection that sent nothing for its idleTimeoutSecs, {}, while it waited",
-                    limits.idle.unwrap_or_default().as_secs()
-                ),
+            connections::Closed::Idle => format!(
+                "the receiver closed a connection that sent nothing for its idleTimeoutSecs, {}, while it waited",
+                limits.idle.unwrap_or_default().as_secs()
             ),
         };
-        if self.closed[at].due() {
-            tracing::warn!(name: "receiver_connection_closed", target: "sources", subject = %peer, "{message}");
-        }
+        tracing::warn!(name: "receiver_connection_closed", target: "sources", subject = %peer, "{message}");
     }
 
     fn refused(&mut self, peer: std::net::IpAddr, why: connections::Refused, limits: &ConnectionLimits) {
