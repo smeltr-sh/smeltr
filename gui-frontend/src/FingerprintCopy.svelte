@@ -23,6 +23,7 @@
     try {
       await navigator.clipboard.writeText(shownFingerprint(fingerprint));
       copied = true;
+      setTimeout(() => (copied = false), 2000);
     } catch {
       // No clipboard access: the fingerprint is the title, to read by hand.
     }
