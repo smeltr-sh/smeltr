@@ -3069,21 +3069,10 @@ async fn serve_streams<H, F>(
         }
         let (tls, shared, handle) = (tls.clone(), shared.clone(), handle.clone());
         connections.spawn(async move {
-            let tap: Option<Arc<dyn RawTap>> = Some(shared.clone());
-            let stream: Box<dyn Stream> = match tls {
-                None => Box::new(Tapped {
-                    inner: tcp,
-                    tap,
-                    remote: remote.clone(),
-                    tls: false,
-                }),
+            let (inner, tls): (Box<dyn Stream>, bool) = match tls {
+                None => (Box::new(tcp), false),
                 Some(tls) => match tls.accept(tcp, ()).await {
-                    Ok((inner, ())) => Box::new(Tapped {
-                        inner,
-                        tap,
-                        remote: remote.clone(),
-                        tls: true,
-                    }),
+                    Ok((stream, ())) => (Box::new(stream), true),
                     Err(e) => {
                         tracing::trace!(
                             name: "receiver_handshake_failed", target: "sources",
@@ -3096,6 +3085,12 @@ async fn serve_streams<H, F>(
                     }
                 },
             };
+            let stream = Box::new(Tapped {
+                inner,
+                tap: Some(shared.clone() as Arc<dyn RawTap>),
+                remote: remote.clone(),
+                tls,
+            });
             handle(Connection {
                 stream,
                 inlet: Inlet { remote, shared },

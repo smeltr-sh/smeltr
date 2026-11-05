@@ -645,8 +645,6 @@ fn discard(captures: &Captures, access: &Access, session: &str) -> bool {
     followed(captures, access, session) && captures.close(session).is_some()
 }
 
-/// Whether whatever `request` captures has a position to start from, where it names a start. Anywhere else a start
-/// would be read by nothing.
 /// Why `request` cannot be captured as sent, where it asks to be.
 fn not_as_sent(request: &CaptureRequest) -> Option<&'static str> {
     if !request.raw {
@@ -663,6 +661,8 @@ fn not_as_sent(request: &CaptureRequest) -> Option<&'static str> {
     request.filter.is_some().then_some("a capture as sent takes no filter")
 }
 
+/// Whether whatever `request` captures has a position to start from, where it names a start. Anywhere else a start
+/// would be read by nothing.
 fn takes_its_start(request: &CaptureRequest) -> bool {
     request.start.is_none()
         || request.source.as_ref().is_some_and(|s| {
