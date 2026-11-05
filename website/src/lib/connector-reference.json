@@ -3639,7 +3639,7 @@
             "type": "integer",
             "absent": "as many as `maxConnections`",
             "examples": [10],
-            "what": "The most it holds from one address, the same way, between 1 and `maxConnections`. Absent, one sender may take them all. Set it only against a sender that takes the room others need: behind a balancer or NAT, every sender comes from one address."
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need."
           },
           {
             "name": "idleTimeoutSecs",
@@ -3854,7 +3854,7 @@
             "type": "integer",
             "absent": "as many as `maxConnections`",
             "examples": [10],
-            "what": "The most it holds from one address, the same way, between 1 and `maxConnections`. Absent, one sender may take them all. Set it only against a sender that takes the room others need: behind a balancer or NAT, every sender comes from one address. TCP only."
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need. TCP only."
           },
           {
             "name": "idleTimeoutSecs",
@@ -4043,7 +4043,7 @@
             "type": "integer",
             "absent": "as many as `maxConnections`",
             "examples": [10],
-            "what": "The most it holds from one address, the same way, between 1 and `maxConnections`. Absent, one sender may take them all. Set it only against a sender that takes the room others need: behind a balancer or NAT, every sender comes from one address. TCP only."
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need. TCP only."
           },
           {
             "name": "idleTimeoutSecs",

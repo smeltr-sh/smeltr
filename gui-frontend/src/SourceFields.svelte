@@ -1290,9 +1290,11 @@
   </Field>
   <Field optional field="maxConnectionsPerSender" label="max connections per sender">
     {#snippet help()}
-      The most it holds from one address, the same way. Empty, one sender may take them all. Set it
-      only against a sender that takes the room others need: behind a balancer or NAT, every sender
-      comes from one address.
+      The most connections it holds from one address. Past it, a new connection takes the place of
+      that address's connection idle longest, if that one has been idle a minute; otherwise the new
+      one is closed. Empty, one sender may take them all. Behind a balancer or NAT every sender
+      comes from one address, so this limits them all together: set it only against a sender that
+      takes the room others need.
     {/snippet}
     <input
       type="number"
