@@ -22,8 +22,7 @@ use object_store::{GetOptions, GetRange, ObjectStore};
 
 use crate::io::avro::AvroReader;
 use crate::io::avro::container::Container;
-use crate::io::line_breaker::{BREAK_SLACK, LineBreaker};
-use crate::io::lines::unescape_line;
+use crate::io::framing::{Framer, Messages};
 use crate::io::{CommitMap, IoError, PartitionLag, Progress, Source, SourceRecord, TopicPartition};
 use crate::logs::Relog;
 use crate::plan::topology::{AfterCommit, Framing, HeldSecrets, ListPlace, ObjectQueue, ObjectSourceConfig};
@@ -31,7 +30,7 @@ use crate::plan::topology::{AfterCommit, Framing, HeldSecrets, ListPlace, Object
 /// How much of an object one GET fetches: what the source holds of an object at most, before decompression.
 const CHUNK: u64 = 8 * 1024 * 1024;
 
-/// The fewest bytes read before a line breaker's search runs again.
+/// The most of an object's bytes one push hands its framer.
 const READ_AHEAD: usize = 64 * 1024;
 
 /// How long one GET may take before the object counts as unreadable.
@@ -294,24 +293,18 @@ struct Current {
     lines: Box<dyn BufRead + Send>,
     /// A record read but not handed out: it did not fit the last batch.
     held_back: Option<Vec<u8>>,
-    /// What is read and not yet cut into events, under `Framing::LineBreaker`.
-    unbroken: Unbroken,
+    /// Cuts what is read into records.
+    framer: Framer,
+    /// Records cut and not yet handed out.
+    frames: Messages,
+    /// Why the object is unreadable, once `frames` are handed out.
+    failed: Option<String>,
+    /// The object has no more bytes to come, and `framer` has cut its last.
+    framed: bool,
     /// Its header, once read, where it is an Avro container file.
     container: Option<Container>,
     /// The values of its block read last and not yet handed out, each framed with the object's own schema id.
     values: VecDeque<Vec<u8>>,
-}
-
-/// Bytes of an object read and not yet cut into events by a line breaker.
-#[derive(Default)]
-struct Unbroken {
-    bytes: Vec<u8>,
-    /// Where in `bytes` the next event starts: the bytes before it are taken.
-    start: usize,
-    /// How many bytes from `start` the last search found no break in.
-    searched: usize,
-    /// The object has no more bytes to come.
-    ended: bool,
 }
 
 /// A receive under way, the time it started and where its answer arrives.
@@ -561,7 +554,10 @@ impl ObjectSource {
                         partition,
                         lines,
                         held_back: None,
-                        unbroken: Unbroken::default(),
+                        framer: Framer::refusing(self.framing.clone(), self.max_record as usize),
+                        frames: Messages::default(),
+                        failed: None,
+                        framed: false,
                         container: None,
                         values: VecDeque::new(),
                     });
@@ -641,39 +637,7 @@ impl ObjectSource {
         if let Some(avro) = &mut self.avro {
             return next_value(current, avro, self.max_record);
         }
-        let mut record = Vec::new();
-        // The longest and a `\r\n`, so a line of the longest fits with its line end, and a record over it shows as such
-        // without more of it ever held.
-        let mut lines = (&mut current.lines).take(self.max_record + 2);
-        match self.framing {
-            Framing::Object => {
-                let ended = self.reads[&current.partition].records > 0;
-                if ended {
-                    return Ok(None);
-                }
-                lines.read_to_end(&mut record).map_err(|e| e.to_string())?;
-                if record.is_empty() {
-                    return Ok(None);
-                }
-            }
-            Framing::Lines | Framing::EscapedLines => {
-                if lines.read_until(b'\n', &mut record).map_err(|e| e.to_string())? == 0 {
-                    return Ok(None);
-                }
-                trim_line_end(&mut record);
-                if self.framing == Framing::EscapedLines {
-                    record = unescape_line(&record);
-                }
-            }
-            Framing::LineBreaker(ref line_breaker) => match next_event(current, line_breaker, self.max_record)? {
-                Some(event) => record = event,
-                None => return Ok(None),
-            },
-        }
-        if record.len() as u64 > self.max_record {
-            return Err(format!("a record is longer than {} bytes", self.max_record));
-        }
-        Ok(Some(record))
+        next_frame(current)
     }
 
     /// Ends `current`: read to the end, so done once committed up to its last record.
@@ -810,51 +774,38 @@ fn lock(held: &Mutex<HashMap<u64, Held>>) -> MutexGuard<'_, HashMap<u64, Held>> 
     held.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The next event of `current` that `line_breaker` cuts, its break dropped, or `None` at the end of the object. An
-/// event of nothing but whitespace is passed over. No more than `max_record` and [`BREAK_SLACK`] bytes are held
-/// waiting for a break.
-fn next_event(current: &mut Current, line_breaker: &LineBreaker, max_record: u64) -> Result<Option<Vec<u8>>, String> {
-    let most = max_record as usize + BREAK_SLACK;
-    let u = &mut current.unbroken;
+/// The next record of `current` its framer cuts, or `None` at the end of the object. A frame the framer refuses, a
+/// record over the longest among them, makes the object unreadable once the records before it are handed out.
+fn next_frame(current: &mut Current) -> Result<Option<Vec<u8>>, String> {
     loop {
-        let rest = u.bytes.len() - u.start;
-        if rest > u.searched || u.ended {
-            let bytes = &u.bytes[u.start..];
-            let mut events = line_breaker.events(bytes, u.ended);
-            let event = events.next().map(|event| bytes[event].to_vec());
-            u.start += events.rest();
-            match event {
-                Some(event) => {
-                    u.searched = 0;
-                    return Ok(Some(event));
-                }
-                None if u.ended => {
-                    u.bytes.clear();
-                    u.start = 0;
-                    return Ok(None);
-                }
-                None => u.searched = u.bytes.len() - u.start,
+        if let Some(record) = current.frames.next() {
+            return Ok(Some(record));
+        }
+        if let Some(why) = current.failed.take() {
+            return Err(why);
+        }
+        if current.framed {
+            return Ok(None);
+        }
+        let ready = current.lines.fill_buf().map_err(|e| e.to_string())?;
+        let mut frames = Messages::default();
+        let cut = match ready.len().min(READ_AHEAD) {
+            0 => {
+                current.framed = true;
+                current.framer.finish(&mut frames)
             }
-        }
-        // Less than before, by the blank events passed over.
-        let rest = u.bytes.len() - u.start;
-        if rest > most {
-            return Err(format!("a record is longer than {max_record} bytes"));
-        }
-        u.bytes.drain(..u.start);
-        u.start = 0;
-        // At least as many again as were searched in vain, so a long event is searched a bounded number of times over.
-        let want = (rest + u.searched.max(READ_AHEAD)).min(most + 1);
-        while u.bytes.len() < want {
-            let ready = current.lines.fill_buf().map_err(|e| e.to_string())?;
-            if ready.is_empty() {
-                u.ended = true;
-                break;
+            n => {
+                current.framer.push(&ready[..n]);
+                current.lines.consume(n);
+                current.framer.cut(&mut frames).map(|()| 0)
             }
-            let n = ready.len().min(want - u.bytes.len());
-            u.bytes.extend_from_slice(&ready[..n]);
-            current.lines.consume(n);
-        }
+        };
+        current.failed = match cut {
+            Err(malformed) => Some(format!("{}, at byte {}", malformed.what, malformed.at)),
+            Ok(partial) if partial > 0 => Some(format!("it ends partway through a record, {partial} bytes of it")),
+            Ok(_) => None,
+        };
+        current.frames = frames;
     }
 }
 
@@ -878,16 +829,6 @@ fn next_value(current: &mut Current, avro: &mut AvroReader, max_record: u64) -> 
         match container.block(&mut *current.lines, max_record)? {
             Some(values) => current.values.extend(values),
             None => return Ok(None),
-        }
-    }
-}
-
-/// Takes a line's `\n` off, and a `\r` before it.
-fn trim_line_end(line: &mut Vec<u8>) {
-    if line.last() == Some(&b'\n') {
-        line.pop();
-        if line.last() == Some(&b'\r') {
-            line.pop();
         }
     }
 }
@@ -985,12 +926,12 @@ impl Source for ObjectSource {
         self.receive_error.clone()
     }
 
-    /// What the object being read holds outside its reader: the record held back and what awaits the line breaker.
+    /// What the object being read holds outside its reader: the record held back, and what its framer read and has not
+    /// yet handed out.
     fn held_bytes(&self) -> Option<u64> {
-        let held = self
-            .current
-            .as_ref()
-            .map_or(0, |c| c.held_back.as_ref().map_or(0, Vec::len) + c.unbroken.bytes.len());
+        let held = self.current.as_ref().map_or(0, |c| {
+            c.held_back.as_ref().map_or(0, Vec::len) + c.framer.uncut() + c.frames.untaken()
+        });
         Some(held as u64)
     }
 

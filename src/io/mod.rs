@@ -27,6 +27,7 @@ pub mod elastic_nodes;
 mod elastic_receiver;
 pub mod entra;
 pub mod files;
+pub mod framing;
 pub mod hec;
 pub mod http;
 pub mod http_api;

@@ -77,7 +77,7 @@ pub const SOCKETS_ENV: &str = "SMELTR_RECEIVER_SOCKETS";
 pub fn reserve(config: &ReceiverConfig) -> usize {
     match config.receiver {
         Receiver::Otlp(_) | Receiver::Prometheus | Receiver::Elastic => INBOX_BYTES,
-        Receiver::S2s(_) | Receiver::Syslog(_) => config.max_request_bytes + STREAM_STEP,
+        Receiver::S2s(_) | Receiver::Syslog(_) | Receiver::Socket(_) => config.max_request_bytes + STREAM_STEP,
         Receiver::Http(_) | Receiver::Hec(_) => config.max_request_bytes,
     }
 }
@@ -106,6 +106,7 @@ pub fn open(
         | Receiver::Prometheus
         | Receiver::S2s(_)
         | Receiver::Syslog(_)
+        | Receiver::Socket(_)
         | Receiver::Elastic => false,
     };
     let tokens = config
@@ -143,8 +144,8 @@ pub fn open(
     }
     let shared = shared();
     let runtime = receiver_runtime()?;
-    if let Receiver::Syslog(syslog) = &config.receiver
-        && syslog.transport == Transport::Udp
+    if let Receiver::Syslog(datagrams) | Receiver::Socket(datagrams) = &config.receiver
+        && datagrams.transport == Transport::Udp
     {
         let socket = std::net::UdpSocket::from(bound(config.listens())?);
         // `from_std` registers the socket with the runtime it is called in.
@@ -153,7 +154,7 @@ pub fn open(
             tokio::net::UdpSocket::from_std(socket)
         }
         .map_err(|e| IoError::transient(format!("receiver could not serve {}: {e}", named(config.listens()))))?;
-        let handler = syslog_receiver::Handler::new(syslog, config.max_request_bytes);
+        let handler = syslog_receiver::Handler::new(datagrams, config.max_request_bytes);
         let cut = move |datagram: &[u8], peer| handler.datagram(datagram, peer);
         let task = runtime.spawn(serve_datagrams(socket, shared.clone(), config.max_request_bytes, cut));
         return Ok(Box::new(ReceiverSource {
@@ -163,7 +164,7 @@ pub fn open(
         }));
     }
     let listener = TcpListener::from(bound(config.listens())?);
-    if let Receiver::S2s(_) | Receiver::Syslog(_) = &config.receiver {
+    if let Receiver::S2s(_) | Receiver::Syslog(_) | Receiver::Socket(_) = &config.receiver {
         let tls = match &config.tls {
             Some(tls) => Some(server_tls(tls, secrets)?),
             None => None,
@@ -181,10 +182,10 @@ pub fn open(
                 let handle = move |connection| handler.clone().serve(connection);
                 runtime.spawn(serve_streams(listener, Vec::new(), tls, shared.clone(), handle))
             }
-            Receiver::Syslog(syslog) => {
-                let handler = Arc::new(syslog_receiver::Handler::new(syslog, config.max_request_bytes));
+            Receiver::Syslog(socket) | Receiver::Socket(socket) => {
+                let handler = Arc::new(syslog_receiver::Handler::new(socket, config.max_request_bytes));
                 let handle = move |connection| handler.clone().serve(connection);
-                let allow_from = syslog.allow_from.clone();
+                let allow_from = socket.allow_from.clone();
                 runtime.spawn(serve_streams(listener, allow_from, tls, shared.clone(), handle))
             }
             _ => unreachable!("only a receiver that streams is served here"),
@@ -198,7 +199,9 @@ pub fn open(
     let speaks = match &config.receiver {
         Receiver::Http(http) => Speaks::Http(http.records.clone()),
         Receiver::Hec(hec) => Speaks::Hec(hec.sourcetypes.clone()),
-        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Syslog(_) => unreachable!("served above"),
+        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Syslog(_) | Receiver::Socket(_) => {
+            unreachable!("served above")
+        }
         Receiver::Prometheus => Speaks::Prometheus,
         Receiver::Elastic => Speaks::Elastic,
     };
@@ -245,7 +248,9 @@ pub fn open(
             .route("/services/collector/ack/1.0", post(hec_ack))
             .route(hec::HEALTH_PATH, get(health))
             .route("/services/collector/health/1.0", get(health)),
-        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Syslog(_) => unreachable!("served above"),
+        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Syslog(_) | Receiver::Socket(_) => {
+            unreachable!("served above")
+        }
         Receiver::Prometheus => axum::Router::new()
             .route(prometheus::WRITE_PATH, post(prometheus_write))
             .route(HEALTH_PATH, get(health)),
@@ -784,7 +789,7 @@ pub(super) enum Cutter {
     /// Records cut already, each filed under its own.
     Each(s2s_receiver::Cuts),
     /// Records cut already, filed under nothing.
-    Messages(syslog_receiver::Messages),
+    Messages(super::framing::Messages),
     Otlp(otlp::Export),
     Samples(prometheus::Samples),
     Documents(elastic_receiver::Documents),
