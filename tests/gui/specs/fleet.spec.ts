@@ -662,11 +662,11 @@ test('sources of one system into the same pipeline are one stack, whose panel li
 
   await goto(admin, leader, '#/map');
   const east = band(admin, 'east');
-  await expect(east.getByRole('link', { name: /^3 sources/ })).toBeVisible();
+  await expect(east.getByRole('link', { name: /^metrics-\* · 3 sources/ })).toBeVisible();
   await expect(east.getByRole('link', { name: /metrics-a/ })).toHaveCount(0);
 
-  await east.getByRole('link', { name: /^3 sources/ }).click();
-  const stack = focus(admin, '3 sources');
+  await east.getByRole('link', { name: /^metrics-\* · 3 sources/ }).click();
+  const stack = focus(admin, 'metrics-* · 3 sources');
   for (const id of ids)
     await expect(stack.getByRole('link', { name: new RegExp(id) })).toBeVisible();
 
@@ -675,7 +675,7 @@ test('sources of one system into the same pipeline are one stack, whose panel li
   await expect(focus(admin, 'metrics-b')).toBeVisible();
   await expect(east.getByRole('link', { name: /metrics-b/ })).toBeVisible();
   await admin.goBack();
-  await expect(focus(admin, '3 sources')).toBeVisible();
+  await expect(focus(admin, 'metrics-* · 3 sources')).toBeVisible();
 });
 
 test('logic shared by several groups is written once and a change to it reaches each', async ({

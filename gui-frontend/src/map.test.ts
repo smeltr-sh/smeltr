@@ -32,6 +32,7 @@ import {
   routeKey,
   selectedPath,
   sharedCopies,
+  namePrefix,
   stackNodes,
   stackReading,
   cardKey,
@@ -1122,12 +1123,15 @@ describe('linkForError', () => {
 });
 
 describe('stackNodes', () => {
-  const title = (count: number, kind: string) => `${count} ${kind}`;
-  const kafka = (id: string, group = 'g1'): MapNode => ({
-    ...node(id, 'source', false, id, group),
+  const title = (count: number, kind: string, prefix: string) => `${prefix} ${count} ${kind}`;
+  const kafka = (id: string, group = 'g1', name = `fw-${id}`): MapNode => ({
+    ...node(id, 'source', false, name, group),
     system: 'kafka',
   });
-  const s3 = (id: string): MapNode => ({ ...node(id, 'destination'), system: 's3' });
+  const s3 = (id: string): MapNode => ({
+    ...node(id, 'destination', false, `bucket-${id}`),
+    system: 's3',
+  });
   const none = () => false;
 
   it('stacks sources of one system into the pipelines they share, one line for the stack', () => {
@@ -1136,7 +1140,7 @@ describe('stackNodes', () => {
     const { cards, edges: drawn } = stackNodes(nodes, lines, none, title);
     const stack = cards.find((c) => c.members)!;
     expect(stack.members!.map((m) => m.authorId)).toEqual(['a', 'b', 'c']);
-    expect(stack.name).toBe('3 source');
+    expect(stack.name).toBe('fw- 3 source');
     expect(cards.map((c) => c.authorId)).toEqual(['p', stack.authorId]);
     expect(drawn).toHaveLength(1);
     expect(drawn[0].from).toBe(cardKey(stack));
@@ -1249,6 +1253,59 @@ describe('stackNodes', () => {
     const stack = { ...kafka('a'), members: [kafka('a')] };
     expect(cardKey(stack)).not.toBe(nodeKey('g1', 'source', 'a'));
     expect(cardKey(kafka('a'))).toBe(nodeKey('g1', 'source', 'a'));
+  });
+
+  it('stacks a run in name order on the longest start all its names share', () => {
+    const p = node('p', 'pipeline');
+    const nodes = [
+      kafka('1', 'g1', 'fortigate-east-1'),
+      kafka('2', 'g1', 'fortigate-east-2'),
+      kafka('3', 'g1', 'fortigate-west-1'),
+      kafka('4', 'g1', 'fw-1'),
+      kafka('5', 'g1', 'fw-2'),
+      kafka('6', 'g1', 'fw-3'),
+      p,
+    ];
+    const lines = edges(['1', '2', '3', '4', '5', '6'].map((id) => route(id, 'p')));
+    const stacks = stackNodes(nodes, lines, none, title).cards.filter((c) => c.members);
+    expect(stacks.map((c) => c.name)).toEqual(['f 6 source']);
+  });
+
+  it('ends a run at an object between that stacks on something else', () => {
+    const nodes = [
+      kafka('a'),
+      kafka('b'),
+      kafka('m'),
+      kafka('x'),
+      kafka('y'),
+      node('p', 'pipeline'),
+      node('p2', 'pipeline'),
+    ];
+    const lines = edges([
+      route('a', 'p'),
+      route('b', 'p'),
+      route('m', 'p2'),
+      route('x', 'p'),
+      route('y', 'p'),
+    ]);
+    expect(stackNodes(nodes, lines, none, title).cards.some((c) => c.members)).toBe(false);
+  });
+
+  it('keeps a run whole when `apart` takes a member from its middle', () => {
+    const nodes = [kafka('a'), kafka('b'), kafka('c'), kafka('d'), node('p', 'pipeline')];
+    const lines = edges([route('a', 'p'), route('b', 'p'), route('c', 'p'), route('d', 'p')]);
+    const { cards } = stackNodes(nodes, lines, (k) => k === nodeKey('g1', 'source', 'b'), title);
+    expect(cards.find((c) => c.members)!.members!.map((m) => m.authorId)).toEqual(['a', 'c', 'd']);
+  });
+});
+
+describe('namePrefix', () => {
+  it('is the longest start both share', () => {
+    expect(namePrefix('fw-0001', 'fw-0300')).toBe('fw-0');
+    expect(namePrefix('fortigate-a', 'fw-1')).toBe('f');
+    expect(namePrefix('sales', 'web')).toBe('');
+    expect(namePrefix('FW-1', 'fw-2')).toBe('FW-');
+    expect(namePrefix('a😀b', 'a😁b')).toBe('a');
   });
 });
 
