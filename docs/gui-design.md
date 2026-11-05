@@ -52,8 +52,10 @@ search cannot reach past the cut.
 ## The map
 
 The map is the running topology, one band per group, laid out left to right
-as rows travel: sources, then pipelines, then destinations. Lines show what
-connects to what and nothing else. Every reading -- rate, buffer fill, lag
+as rows travel: sources, then pipelines, then destinations. Sources run in
+name order; a pipeline or destination sits level with what it connects to,
+so lines cross as little as they can. Lines show what connects to what and
+nothing else. Every reading -- rate, buffer fill, lag
 -- is on a node's card and in the panel docked beside the map, which holds
 the selected object's details. Selecting an object draws its directed path
 in front of everything else and dims the rest.
