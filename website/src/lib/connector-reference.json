@@ -3571,7 +3571,7 @@
             "type": "integer",
             "default": 10485760,
             "examples": [65536, 1048576],
-            "what": "The largest message it reads, between 1024 and 67108864. A larger one closes the connection; a larger datagram is dropped."
+            "what": "The largest message it keeps, between 1024 and 67108864. A larger one is cut to this size."
           },
           {
             "name": "encoding",

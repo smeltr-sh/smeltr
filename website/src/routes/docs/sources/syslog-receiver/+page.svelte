@@ -250,8 +250,8 @@ log { source(s_src); destination(d_smeltr); };`;
       that ends the datagram is dropped. An empty datagram gives no record.
     </li>
     <li>
-      A message larger than <code>maxRequestBytes</code> closes the connection. The sender connects again
-      and goes on from where its own rules take it. A datagram larger than it is dropped.
+      A message or datagram larger than <code>maxRequestBytes</code> is cut to that size. The messages
+      after it arrive as usual.
     </li>
   </ul>
   <p>An RFC 5424 message, as it arrives in <code>_raw</code>:</p>
@@ -367,7 +367,7 @@ log { source(s_src); destination(d_smeltr); };`;
       <code>TCP_Framing="octet-counted"</code> in rsyslog, or syslog-ng's
       <code>syslog()</code> driver.
     </dd>
-    <dt><strong>The connection closes on a long message</strong></dt>
+    <dt><strong>A long message arrives cut short</strong></dt>
     <dd>
       The message is larger than <code>maxRequestBytes</code>. Raise it, or have the sender cut its
       messages shorter.
@@ -387,9 +387,8 @@ log { source(s_src); destination(d_smeltr); };`;
     </dd>
     <dt><strong>Datagrams are missing, and nothing is counted</strong></dt>
     <dd>
-      The receiver drops a datagram from an address outside <code>allowFrom</code>, and one larger
-      than
-      <code>maxRequestBytes</code>, before counting anything. A datagram can also be lost on the
+      The receiver drops a datagram from an address outside <code>allowFrom</code> before counting
+      anything. A datagram can also be lost on the
       network, or in the host's receive buffer when it fills.
     </dd>
     <dt><strong>Messages are missing after a worker stopped</strong></dt>

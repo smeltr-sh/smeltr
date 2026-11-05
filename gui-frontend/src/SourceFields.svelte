@@ -1071,15 +1071,18 @@
         {/snippet}
       </ReceiverSourcetypes>
     {/if}
-    <Field optional field="maxRequestBytes" label="request size">
+    <Field
+      optional
+      field="maxRequestBytes"
+      label={source.type === 'syslogReceiver' ? 'message size' : 'request size'}
+    >
       {#snippet help()}
         {#if source.type === 's2sReceiver'}
           The largest frame it reads, and the most one record holds, at most
           {exactBytes(LIMITS.receiverRequestBytes.max)}.
         {:else if source.type === 'syslogReceiver'}
-          The largest message it reads, at most {exactBytes(LIMITS.receiverRequestBytes.max)}.
-          {#if source.transport === 'udp'}A larger datagram is dropped.{:else}A larger one closes
-            the connection.{/if}
+          The largest message it keeps, at most {exactBytes(LIMITS.receiverRequestBytes.max)}. A
+          larger one is cut to this size.
         {:else}
           The largest request body it reads, at most {exactBytes(LIMITS.receiverRequestBytes.max)}.
           A larger one is refused, and a body sent as gzip is held to it as it inflates.
