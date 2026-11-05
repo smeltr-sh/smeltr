@@ -553,7 +553,7 @@ impl SourceMeta {
         encoding: Encoding::Auto,
     };
 
-    /// What a socket receiver carries: a frame's bytes, and its sender's address.
+    /// What a socket receiver carries: a message's bytes, and its sender's address.
     pub const SOCKET_RECEIVER: SourceMeta = SourceMeta {
         kind: "socketReceiver",
         record: PAYLOAD_RECORD,
@@ -2190,7 +2190,7 @@ pub enum Receiver {
     /// Syslog: over TCP a message per record, framed by octet count or ended by a newline; over UDP a datagram per
     /// record. Its framing is `Framing::Syslog`.
     Syslog(SocketReceiverConfig),
-    /// Bytes of no protocol of its own: over TCP a frame per record, cut by its framing; over UDP a datagram per
+    /// Bytes of no protocol of its own: over TCP a message per record, cut by its framing; over UDP a datagram per
     /// record.
     Socket(SocketReceiverConfig),
     /// Elasticsearch's `_bulk` API, as Beats, Fluent Bit and other Elasticsearch clients send it: a document per

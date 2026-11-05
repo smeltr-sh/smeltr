@@ -191,6 +191,15 @@ export const sources: Connection[] = [
     href: '/docs/sources/syslog-receiver',
   },
   {
+    id: 'socketReceiver',
+    type: 'socketReceiver',
+    name: 'Socket receiver',
+    summary:
+      'Take what senders send in a protocol of their own over TCP, TLS or UDP to a port every worker listens on.',
+    category: 'Push, all workers',
+    href: '/docs/sources/socket-receiver',
+  },
+  {
     id: 'prometheusReceiver',
     type: 'prometheusReceiver',
     name: 'Prometheus receiver',

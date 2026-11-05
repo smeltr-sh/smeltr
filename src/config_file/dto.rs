@@ -2228,19 +2228,19 @@ pub struct FramingSettingsDto {
     /// `LINE_BREAKER`. Without one, an event ends at a line end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_breaker: Option<String>,
-    /// `"lengthPrefix"` only, and required there: where a frame's length is and what it counts.
+    /// `"lengthPrefix"` only, and required there: where a message's length is and what it counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub length_prefix: Option<LengthPrefixDto>,
-    /// `"fixed"` only, and required there: how many bytes every frame is.
+    /// `"fixed"` only, and required there: how many bytes every message is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_bytes: Option<u64>,
 }
 
-/// Where a frame's length is and what it counts. The record is the whole frame, its header and length among it.
+/// Where a message's length is and what it counts. The record is the whole message, its header and length among it.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct LengthPrefixDto {
-    /// How many bytes of the frame come before its length. Absent is none.
+    /// How many bytes of the message come before its length. Absent is none.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub offset: u64,
     /// How many bytes the length is, 1 to 8.
@@ -2267,7 +2267,7 @@ impl ByteOrderDto {
     }
 }
 
-/// What a frame's length counts.
+/// What a message's length counts.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum CountsDto {
@@ -2305,7 +2305,7 @@ pub enum FramingDto {
     Object,
     /// One record per line, unescaped as a `bytes` object destination wrote it.
     EscapedLines,
-    /// One record per frame, each saying how long it is where `lengthPrefix` says.
+    /// One record per message, each saying how long it is where `lengthPrefix` says.
     LengthPrefix,
     /// One record per `fixedBytes` bytes.
     Fixed,
