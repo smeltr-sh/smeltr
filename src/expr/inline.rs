@@ -511,8 +511,8 @@ fn check_body(body: &[Stmt], what: &str) -> Result<(), InlineError> {
     Ok(())
 }
 
-/// The arguments of a call of `unpack`, the bytes first, where `name` is one: `unpack(b, layout)` or
-/// `b.unpack(layout)`.
+/// The arguments of a call named `name` when it calls `unpack`, the bytes first, so `unpack(b, layout)` and
+/// `b.unpack(layout)` give the same. `None` for any other call.
 fn unpack_args(name: &str, args: &[Expr], span: Span) -> Option<Vec<Expr>> {
     if name == unpack::UNPACK {
         return (!args.is_empty()).then(|| args.to_vec());

@@ -1,6 +1,5 @@
-//! `unpack(bytes, layout, options)`: a binary layout read in one call, written as a function of `readInt`,
-//! `readFloat`, `readBytes` and `decode` that `expr::inline` expands where it is called, as it expands a pipeline's
-//! own.
+//! `unpack(bytes, layout, options)`: a binary layout read in one call. `expr::inline` expands the call to a function
+//! of `readInt`, `readFloat`, `readBytes` and `decode`, as it expands a pipeline's own functions.
 //!
 //! The layout is an object literal of fields in the order their bytes come. A field is a number type, `"u8"` to
 //! `"i64"`, `"f32"` or `"f64"`; `"bytes"` or `"str"`, which run to the end of the message; or an object naming its
@@ -36,7 +35,7 @@ enum Read {
 /// Where a `bytes` or `str` field ends.
 enum Length {
     Count(i64),
-    /// The value of the field at this position.
+    /// The value of an earlier integer field, by its index in the layout.
     Field(usize),
     Prefix(NumType, Order),
     Rest,
@@ -199,7 +198,7 @@ fn byte_order(e: &Expr) -> Result<Order, String> {
 
 /// The function's text: each field a local `f<i>`, read at `at`, which then moves past it. A field the message is
 /// too short for leaves `at` null, so every field after it is null without an exception of its own. A number that
-/// reads as no value, a NaN or a `u64` past `i64`, leaves `at` where the next field starts.
+/// reads as no value, a NaN or a `u64` above `i64::MAX`, leaves `at` where the next field starts.
 fn source(names: &[&str], reads: &[Read]) -> String {
     let order = |o: &Order| match o {
         Order::Big => "big",
@@ -267,7 +266,7 @@ fn literal(s: &str) -> String {
     out
 }
 
-/// `stmt` with every span `span`: the call's, which an error in what it expands to points at.
+/// Sets every span in `stmt` to `span`, the call's, so an error in the expansion points at the call.
 fn at_span(stmt: &mut Stmt, span: Span) {
     fn expr(e: &mut Expr, span: Span) {
         e.span = span;

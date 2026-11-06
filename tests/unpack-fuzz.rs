@@ -261,7 +261,7 @@ fn decode(layout: &Layout, b: &[u8]) -> (Value, Vec<&'static str>) {
     let mut raised = Vec::new();
     let mut ints: Vec<Option<i64>> = Vec::new();
     let mut at = Some(0usize);
-    // The integer of `ty` at `at`; `Err` an exception, `Ok(None)` a value past `i64`.
+    // The integer of `ty` at `at`, with the `Overflow` of a `u64` above `i64::MAX`; `Err` where the bytes end first.
     let int = |at: usize, ty: &str, o: Order| -> Result<(i64, Option<&'static str>), ()> {
         let w = width(ty);
         let bytes = b.get(at..at + w).ok_or(())?;
@@ -305,7 +305,8 @@ fn decode(layout: &Layout, b: &[u8]) -> (Value, Vec<&'static str>) {
                         (_, Order::Little) => f64::from_le_bytes(bytes.try_into().unwrap()),
                     };
                     if f.is_finite() {
-                        // Through the parser the rows go through, which does not round every float the way Rust does.
+                        // Read back through serde_json, as the rows are: it can parse a float's shortest text to the
+                        // neighbouring f64, where Rust's own parse gives the float that text was written from.
                         out.insert(name, serde_json::from_str(&format!("{f:?}")).expect("a float's text"));
                     } else {
                         raised.push("NaN");

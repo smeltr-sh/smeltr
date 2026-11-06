@@ -10,59 +10,62 @@ use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
 use crate::ops::helpers::{Labels, Operand, short_circuit_empty, side};
 
-/// A number's type in a layout: its width in bytes, and how its bytes are read.
+/// A number's type in a layout.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum NumType {
-    Unsigned(usize),
-    Signed(usize),
-    Float(usize),
+    U8,
+    U16,
+    U32,
+    U64,
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
 }
+
+/// Each type with its name and its width in bytes: what `NumType::of`, `name` and `width` read.
+const NUM_TYPES: [(NumType, &str, usize); 10] = [
+    (NumType::U8, "u8", 1),
+    (NumType::U16, "u16", 2),
+    (NumType::U32, "u32", 4),
+    (NumType::U64, "u64", 8),
+    (NumType::I8, "i8", 1),
+    (NumType::I16, "i16", 2),
+    (NumType::I32, "i32", 4),
+    (NumType::I64, "i64", 8),
+    (NumType::F32, "f32", 4),
+    (NumType::F64, "f64", 8),
+];
 
 impl NumType {
     /// The type `name` spells, or `None`.
     pub fn of(name: &str) -> Option<NumType> {
-        Some(match name {
-            "u8" => NumType::Unsigned(1),
-            "u16" => NumType::Unsigned(2),
-            "u32" => NumType::Unsigned(4),
-            "u64" => NumType::Unsigned(8),
-            "i8" => NumType::Signed(1),
-            "i16" => NumType::Signed(2),
-            "i32" => NumType::Signed(4),
-            "i64" => NumType::Signed(8),
-            "f32" => NumType::Float(4),
-            "f64" => NumType::Float(8),
-            _ => return None,
-        })
+        NUM_TYPES.iter().find(|(_, n, _)| *n == name).map(|(t, _, _)| *t)
+    }
+
+    fn row(self) -> &'static (NumType, &'static str, usize) {
+        NUM_TYPES
+            .iter()
+            .find(|(t, _, _)| *t == self)
+            .expect("every type has a row")
     }
 
     /// How a call spells it: what `of` reads.
     pub fn name(self) -> &'static str {
-        match self {
-            NumType::Unsigned(1) => "u8",
-            NumType::Unsigned(2) => "u16",
-            NumType::Unsigned(4) => "u32",
-            NumType::Unsigned(_) => "u64",
-            NumType::Signed(1) => "i8",
-            NumType::Signed(2) => "i16",
-            NumType::Signed(4) => "i32",
-            NumType::Signed(_) => "i64",
-            NumType::Float(4) => "f32",
-            NumType::Float(_) => "f64",
-        }
+        self.row().1
     }
 
     pub fn width(self) -> usize {
-        match self {
-            NumType::Unsigned(w) | NumType::Signed(w) | NumType::Float(w) => w,
-        }
+        self.row().2
     }
 
     pub fn is_float(self) -> bool {
-        matches!(self, NumType::Float(_))
+        matches!(self, NumType::F32 | NumType::F64)
     }
 
-    /// The integer `bytes` hold, `bytes.len()` being this type's width. A `u64` past `i64::MAX` is an `Overflow`.
+    /// The integer `bytes` hold, `bytes.len()` being this type's width. A `u64` above `i64::MAX` is an `Overflow`.
     fn int(self, bytes: &[u8], order: Order) -> Result<i64, ExceptionKind> {
         let mut wide = [0u8; 8];
         let w = bytes.len();
@@ -77,7 +80,7 @@ impl NumType {
         }
         let raw = u64::from_be_bytes(wide);
         match self {
-            NumType::Signed(w) => {
+            NumType::I8 | NumType::I16 | NumType::I32 | NumType::I64 => {
                 let shift = 64 - 8 * w as u32;
                 Ok(((raw << shift) as i64) >> shift)
             }
@@ -85,13 +88,16 @@ impl NumType {
         }
     }
 
+    /// The float `bytes` hold, `bytes.len()` being this type's width.
     fn float(self, bytes: &[u8], order: Order) -> f64 {
-        match (bytes.try_into(), bytes.try_into(), order) {
-            (Ok(b), _, Order::Big) => f32::from_be_bytes(b) as f64,
-            (Ok(b), _, Order::Little) => f32::from_le_bytes(b) as f64,
-            (_, Ok(b), Order::Big) => f64::from_be_bytes(b),
-            (_, Ok(b), Order::Little) => f64::from_le_bytes(b),
-            _ => unreachable!("a float is 4 or 8 bytes"),
+        let mut wide = [0u8; 8];
+        wide[..bytes.len()].copy_from_slice(bytes);
+        let [a, b, c, d, ..] = wide;
+        match (self, order) {
+            (NumType::F32, Order::Big) => f32::from_be_bytes([a, b, c, d]) as f64,
+            (NumType::F32, Order::Little) => f32::from_le_bytes([a, b, c, d]) as f64,
+            (_, Order::Big) => f64::from_be_bytes(wide),
+            (_, Order::Little) => f64::from_le_bytes(wide),
         }
     }
 }
@@ -129,8 +135,8 @@ fn window(b: &[u8], at: i64, n: i64) -> Result<&[u8], ExceptionKind> {
 type NumRead<T> = fn(NumType, &[u8], Order) -> Option<Result<T, ExceptionKind>>;
 
 /// The number at `ins[1]` in `ins[0]`, typed `ins[2]`, in the order `ins[3]` or big, read by `read` into a column
-/// `slots` opens. A type or an order the call does not name is a `CoercionRefused`, and so is a float type to `readInt`
-/// or an integer one to `readFloat`.
+/// `slots` opens. A type or an order that is not one of the names above is a `CoercionRefused`, and so is a float type to
+/// `readInt` or an integer one to `readFloat`.
 fn read_num<T: Copy + Default>(
     ctx: &mut Ctx,
     ins: &[&Column],
@@ -205,7 +211,7 @@ pub fn read_int(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 }
 
 /// `readFloat(b, at, type[, order])` -> `F64`: the float of `type`, `"f32"` or `"f64"`, at byte `at`. A NaN or an
-/// infinity, which no `f64` value holds, is a `NaN`.
+/// infinity, which the language's `f64` does not hold, is null with a `NaN` error.
 pub fn read_float(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     read_num(
         ctx,
@@ -258,29 +264,26 @@ mod tests {
     #[test]
     fn an_integer_reads_in_either_order_and_sign_extends() {
         let b = [0xff, 0xfe];
-        assert_eq!(NumType::Unsigned(2).int(&b, Order::Big), Ok(0xfffe));
-        assert_eq!(NumType::Unsigned(2).int(&b, Order::Little), Ok(0xfeff));
-        assert_eq!(NumType::Signed(2).int(&b, Order::Big), Ok(-2));
-        assert_eq!(NumType::Signed(1).int(&[0x80], Order::Big), Ok(-128));
-        assert_eq!(NumType::Signed(8).int(&[0xff; 8], Order::Little), Ok(-1));
+        assert_eq!(NumType::U16.int(&b, Order::Big), Ok(0xfffe));
+        assert_eq!(NumType::U16.int(&b, Order::Little), Ok(0xfeff));
+        assert_eq!(NumType::I16.int(&b, Order::Big), Ok(-2));
+        assert_eq!(NumType::I8.int(&[0x80], Order::Big), Ok(-128));
+        assert_eq!(NumType::I64.int(&[0xff; 8], Order::Little), Ok(-1));
     }
 
     #[test]
     fn a_u64_past_i64_overflows() {
+        assert_eq!(NumType::U64.int(&[0xff; 8], Order::Big), Err(ExceptionKind::Overflow));
         assert_eq!(
-            NumType::Unsigned(8).int(&[0xff; 8], Order::Big),
-            Err(ExceptionKind::Overflow)
-        );
-        assert_eq!(
-            NumType::Unsigned(8).int(&[0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], Order::Big),
+            NumType::U64.int(&[0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], Order::Big),
             Ok(i64::MAX)
         );
     }
 
     #[test]
     fn a_float_reads_in_either_order() {
-        assert_eq!(NumType::Float(4).float(&1.5f32.to_be_bytes(), Order::Big), 1.5);
-        assert_eq!(NumType::Float(8).float(&(-2.25f64).to_le_bytes(), Order::Little), -2.25);
+        assert_eq!(NumType::F32.float(&1.5f32.to_be_bytes(), Order::Big), 1.5);
+        assert_eq!(NumType::F64.float(&(-2.25f64).to_le_bytes(), Order::Little), -2.25);
     }
 
     #[test]
