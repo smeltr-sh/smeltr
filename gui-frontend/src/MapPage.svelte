@@ -349,8 +349,8 @@
   }
 
   /** A stack's card title. */
-  function stackTitle(count: number, kind: MapNode['kind']): string {
-    return `${count} ${kind === 'source' ? 'sources' : 'destinations'}`;
+  function stackTitle(count: number, kind: MapNode['kind'], prefix: string): string {
+    return `${prefix}* · ${count} ${kind === 'source' ? 'sources' : 'destinations'}`;
   }
 
   /** Whether the warning catalog names a node now: its polled warnings once there are any
@@ -640,18 +640,13 @@
         });
         continue;
       }
+      const edges = stacked.edges.filter((e) => groupOfKey(e.from) === group);
       const diagram = layout(
         drawnCards.filter((n) => n.group === group),
+        edges,
         nodeW,
       );
-      out.push({
-        group,
-        diagram,
-        edges: bandEdges(
-          diagram,
-          stacked.edges.filter((e) => groupOfKey(e.from) === group),
-        ),
-      });
+      out.push({ group, diagram, edges: bandEdges(diagram, edges) });
     }
     return out;
   });
@@ -689,7 +684,10 @@
   /** What the panel lists as connected: the path, in drawing order, without the selection. */
   let connected = $derived(
     path && selected
-      ? layout(stacked.cards.filter((c) => path.nodes.has(cardKey(c))))
+      ? layout(
+          stacked.cards.filter((c) => path.nodes.has(cardKey(c))),
+          stacked.edges,
+        )
           .positions.map((p) => p.node)
           .filter((c) => cardKey(c) !== selectedKey)
           .map((c) => ({ node: c, hash: cardHash(c) }))

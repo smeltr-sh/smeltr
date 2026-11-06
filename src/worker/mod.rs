@@ -1207,7 +1207,7 @@ fn spawn_reader(
     depth: Depth,
     secrets: &crate::plan::topology::HeldSecrets,
 ) -> Result<(ReaderHandle, Arc<Lane>), String> {
-    let source: Box<dyn crate::io::Source> = match kind.single_worker() {
+    let mut source: Box<dyn crate::io::Source> = match kind.single_worker() {
         Some(place) => {
             let key = heartbeat::SourceKey {
                 source: source_name.to_string(),
@@ -1239,6 +1239,7 @@ fn spawn_reader(
             .map_err(|e| e.to_string())?,
         },
     };
+    source.tap_raw(shared.captures.raw_tap(source_name));
     let destinations: Vec<crate::core::id::DestId> =
         topology.destinations_reachable_from(source_id).into_iter().collect();
 
@@ -6607,6 +6608,7 @@ mod tests {
     fn a_session_stays_admitted_until_its_report_is_actually_sent() {
         let supervisor = supervisor_for(temp_dir("capture-stays-admitted"));
         let invitation = crate::heartbeat::CaptureInvitation {
+            raw: false,
             session: "s1".to_string(),
             group: "g".to_string(),
             destination: None,
@@ -6827,6 +6829,7 @@ mod tests {
 
     fn capture_invitation(session: &str) -> crate::heartbeat::CaptureInvitation {
         crate::heartbeat::CaptureInvitation {
+            raw: false,
             session: session.to_string(),
             group: "g".to_string(),
             destination: None,

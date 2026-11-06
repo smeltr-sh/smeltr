@@ -24,10 +24,13 @@
     shownRecords,
     workerChips,
   } from './capture';
-  import { captureEndText, type CaptureStatus } from './api';
+  import { captureDownloadUrl, captureEndText, type CaptureStatus } from './api';
+  import { NOT_IN_DEMO } from './access';
 
   let {
     status,
+    session,
+    raw = false,
     source,
     destination,
     lost = false,
@@ -40,6 +43,10 @@
   }: {
     /** `null` until the leader has answered the first poll. */
     status: CaptureStatus | null;
+    /** The capture's id, which its download names. */
+    session?: string;
+    /** It holds what senders wrote as sent, which the dialog warns of before it is kept. */
+    raw?: boolean;
     /** The source's id, for the header and the default name. */
     source?: string;
     /** The destination's id, in place of `source`. */
@@ -203,6 +210,12 @@
         </p>
       {/if}
 
+      {#if done && raw && held > 0}
+        <p class="critical">
+          These are the exact bytes senders wrote, so they may hold passwords or tokens. Check them
+          before you save or share them.
+        </p>
+      {/if}
       {#if done && !use}
         <div class="name" class:off={held === 0}>
           <label for="capture-name">Save as</label>
@@ -217,6 +230,13 @@
   {#snippet actions()}
     {#if done}
       <Button type="button" onclick={ondiscard} disabled={busy ? BUSY : ''}>Discard</Button>
+      {#if session && held > 0}
+        {#if NOT_IN_DEMO}<Button type="button" disabled={NOT_IN_DEMO}>Download</Button>{:else}<a
+            class="btn"
+            href={captureDownloadUrl(session)}
+            download>Download</a
+          >{/if}
+      {/if}
       {#if use}
         <Button
           type="submit"

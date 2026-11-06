@@ -2915,6 +2915,8 @@ export function startCapture(
           filter?: string;
           /** Where a Kafka or Event Hubs source's capture starts. Absent, it reads from the latest. */
           start?: StartPosition;
+          /** A receiver captured as sent: what arrives before it frames any of it. Takes no filter. */
+          raw?: boolean;
         }
       | {
           group: string;
@@ -2963,6 +2965,12 @@ export function saveCapture(
     // A capture says what went wrong in its own flow, from start to save.
     { base, weight: 'quiet' },
   );
+}
+
+/** A finished capture's records as NDJSON. A plain link rather than a fetch: the browser names the file and puts it
+ * where downloads go. */
+export function captureDownloadUrl(session: string): string {
+  return `/api/captures/${encodeURIComponent(session)}/download`;
 }
 
 export function discardCapture(session: string): Promise<{ ok: boolean }> {

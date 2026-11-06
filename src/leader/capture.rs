@@ -51,6 +51,10 @@ pub struct CaptureRequest {
     /// Where a Kafka or Event Hubs source's capture starts. Absent, it reads from the latest.
     #[serde(default)]
     pub start: Option<crate::config_file::StartPositionDto>,
+    /// Capture a receiver as sent: what arrives at it before it frames any of it, in place of its records
+    /// (`CaptureInvitation::raw`).
+    #[serde(default)]
+    pub raw: bool,
     /// How many records the capture wants in all, at most what a sample holds. Each worker is handed the same
     /// number as its own bound, so any one of them can fill the capture alone, and the leader stops at that many
     /// whoever sent them.
@@ -361,6 +365,7 @@ impl Captures {
             start: request
                 .start
                 .filter(|s| *s != crate::config_file::StartPositionDto::Latest),
+            raw: request.raw,
             // A capture ends as a sample, so it asks for no more than one holds.
             max_matches: request
                 .max_matches
@@ -606,6 +611,7 @@ mod tests {
 
     fn request(deadline_secs: Option<u64>) -> CaptureRequest {
         CaptureRequest {
+            raw: false,
             group: "prod-west".to_string(),
             source: Some(SourceDto {
                 id: "orders".to_string(),

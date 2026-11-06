@@ -214,21 +214,31 @@ export function cardWidth(room: number): number {
   return Math.max(MIN_NODE_W, Math.min(NODE_W, fit));
 }
 
-/** Each kind in its own column, ordered by name so the same nodes always draw the same
- * picture. Rows pack from the top of each column, so handing this a smaller node list --
- * `survivors` below, filtered by a search -- draws a smaller graph, not the same graph with
- * gaps in it (design doc: "the rest closes up"). */
-export function layout(nodes: MapCard[], nodeW = NODE_W): Layout {
+/** Name order, as a column draws it: by name, then id, then group, so no two objects tie. */
+function byName(a: MapNode, b: MapNode): number {
+  return (
+    a.name.localeCompare(b.name) ||
+    a.authorId.localeCompare(b.authorId) ||
+    a.group.localeCompare(b.group)
+  );
+}
+
+/** Each kind in its own column. Sources are ordered by name; a pipeline then sits at the mean
+ * row of the cards it connects to, and a destination at the mean row of its pipelines, so lines
+ * run level rather than cross. Every step starts from name order and breaks ties by the order
+ * before it, so the same nodes and lines always draw the same picture. Only routes and
+ * deliveries between two of `nodes` count. Rows pack from the top of each column, so handing
+ * this a smaller node list -- `survivors` below, filtered by a search -- draws a smaller graph,
+ * not the same graph with gaps in it (design doc: "the rest closes up"). */
+export function layout(
+  nodes: MapCard[],
+  edges: Pick<MapEdge, 'kind' | 'from' | 'to'>[],
+  nodeW = NODE_W,
+): Layout {
   const byKind: Record<MapNodeKind, MapCard[]> = { source: [], pipeline: [], destination: [] };
   for (const n of nodes) byKind[n.kind].push(n);
-  for (const k of COLUMNS) {
-    byKind[k].sort(
-      (a, b) =>
-        a.name.localeCompare(b.name) ||
-        a.authorId.localeCompare(b.authorId) ||
-        a.group.localeCompare(b.group),
-    );
-  }
+  for (const k of COLUMNS) byKind[k].sort(byName);
+  orderByLines(byKind, edges);
 
   const positions: Positioned[] = [];
   const columns: Column[] = [];
@@ -248,6 +258,76 @@ export function layout(nodes: MapCard[], nodeW = NODE_W): Layout {
     width: PAD * 2 + COLUMNS.length * nodeW + (COLUMNS.length - 1) * COL_GAP + LOOP_W,
     height: PAD * 2 + HEAD_H + HEAD_GAP + (rows - 1) * ROW_H + NODE_H,
   };
+}
+
+/** How many times the pipeline and destination columns are reordered by their lines. Each pass
+ * starts from the rows the last one left. */
+const ORDER_PASSES = 4;
+
+/** Reorders the pipeline and destination columns in place: a pipeline to the mean row of the
+ * sources and destinations it connects to, a destination to the mean row of its pipelines. A
+ * card with no such line keeps its row. The first pass places pipelines by their sources alone,
+ * since destinations are still in name order then. Last, two cards side by side in a column
+ * trade rows while that leaves fewer lines crossing. */
+function orderByLines(
+  byKind: Record<MapNodeKind, MapCard[]>,
+  edges: Pick<MapEdge, 'kind' | 'from' | 'to'>[],
+): void {
+  const row = new Map<string, number>();
+  for (const k of COLUMNS) byKind[k].forEach((c, i) => row.set(cardKey(c), i));
+  // A fallback line is drawn only on a selected path, so it does not place a card.
+  const near = new Map<string, string[]>();
+  for (const e of edges) {
+    if (isFallback(e.kind) || !row.has(e.from) || !row.has(e.to)) continue;
+    for (const [a, b] of [
+      [e.from, e.to],
+      [e.to, e.from],
+    ]) {
+      if (!near.has(a)) near.set(a, []);
+      near.get(a)!.push(b);
+    }
+  }
+  const linked = (c: MapCard, by: MapNodeKind[]) =>
+    (near.get(cardKey(c)) ?? []).filter((k) => by.includes(kindOfKey(k)));
+  const place = (kind: MapNodeKind, by: MapNodeKind[]) => {
+    const at = new Map<MapCard, number>();
+    for (const c of byKind[kind]) {
+      const rows = linked(c, by).map((k) => row.get(k)!);
+      at.set(c, rows.length ? rows.reduce((a, b) => a + b, 0) / rows.length : row.get(cardKey(c))!);
+    }
+    byKind[kind].sort(
+      (a, b) => at.get(a)! - at.get(b)! || row.get(cardKey(a))! - row.get(cardKey(b))!,
+    );
+    byKind[kind].forEach((c, i) => row.set(cardKey(c), i));
+  };
+  for (let pass = 0; pass < ORDER_PASSES; pass++) {
+    place('pipeline', pass === 0 ? ['source'] : ['source', 'destination']);
+    place('destination', ['pipeline']);
+  }
+
+  // Averages leave crossings a swap of two neighbours removes. Each swap removes at least one
+  // crossing, so the swapping ends.
+  const crossings = (upper: MapCard, lower: MapCard, by: MapNodeKind[]) => {
+    let n = 0;
+    for (const a of linked(upper, by))
+      for (const b of linked(lower, by))
+        if (kindOfKey(a) === kindOfKey(b) && row.get(a)! > row.get(b)!) n++;
+    return n;
+  };
+  const swap = (kind: MapNodeKind, by: MapNodeKind[]) => {
+    const column = byKind[kind];
+    let swapped = false;
+    for (let i = 0; i + 1 < column.length; i++) {
+      const [upper, lower] = [column[i], column[i + 1]];
+      if (crossings(lower, upper, by) >= crossings(upper, lower, by)) continue;
+      [column[i], column[i + 1]] = [lower, upper];
+      row.set(cardKey(lower), i);
+      row.set(cardKey(upper), i + 1);
+      swapped = true;
+    }
+    return swapped;
+  };
+  while (swap('pipeline', ['source', 'destination']) || swap('destination', ['pipeline']));
 }
 
 /** Lines run square: out of a card, along a lane in a gap, into the next card. A side gives each
@@ -621,8 +701,9 @@ function destinationKey(key: string): boolean {
 
 // -- stacks (design doc "The map": Stacks) ----------------------------------
 //
-// Sources or destinations of one system that connect to the same pipelines are one card, so a
-// fleet of hundreds draws a card per kind of thing rather than per thing. A member the reader
+// Sources or destinations of one system that connect to the same pipelines and sit together in
+// name order under one name prefix are one card, so a fleet of hundreds draws a card per kind of
+// thing rather than per thing. A member the reader
 // needs to see -- warned, selected, matched -- stands outside its stack, under the same rules that
 // open a folded group.
 
@@ -630,7 +711,8 @@ function destinationKey(key: string): boolean {
 export const STACK_MIN = 3;
 
 /** One card on the map: an object, or a stack of them (`members`). A stack's `authorId` names
- * its system and the pipelines its members connect to, and its `name` is its card's title. */
+ * its name prefix, its system and the pipelines its members connect to, and its `name` is its
+ * card's title. */
 export type MapCard = MapNode & { members?: MapNode[] };
 
 /** A card's key: an object's `nodeKey`, or a stack's own, which no object's can equal. Both keep
@@ -652,15 +734,17 @@ export type Stacked = {
   edges: MapEdge[];
 };
 
-/** Stacks `nodes`: a source or destination joins the others of its group, kind and system that
- * connect to exactly the same pipelines, unless `apart` takes its `nodeKey`. A pipeline, a shared
- * object, and an object on no route or delivery stay cards of their own. `title` names a stack of
- * `count` members of `kind`. */
+/** Stacks `nodes`. In name order, a run of sources or destinations of one group, kind and system
+ * that connect to exactly the same pipelines, and whose names share a `namePrefix`, is one stack
+ * once it is `STACK_MIN` long. Anything else between two of them ends the run. A pipeline, a
+ * shared object, and an object on no route or delivery stay cards of their own; an object
+ * `apart` takes stands outside its stack without ending the run. `title` names a stack of
+ * `count` members of `kind` whose names start with `prefix`. */
 export function stackNodes(
   nodes: MapNode[],
   edges: MapEdge[],
   apart: (key: string) => boolean,
-  title: (count: number, kind: MapNodeKind) => string,
+  title: (count: number, kind: MapNodeKind, prefix: string) => string,
 ): Stacked {
   const pipelines = new Map<string, Set<string>>();
   for (const e of edges) {
@@ -669,34 +753,52 @@ export function stackNodes(
     if (!pipelines.has(end)) pipelines.set(end, new Set());
     pipelines.get(end)!.add((JSON.parse(pipeline) as string[])[2]);
   }
-  const buckets = new Map<string, { id: string; members: MapNode[] }>();
+  // Each column in name order, every object with what it would stack on, or null if nothing.
+  const columns = new Map<string, { node: MapNode; on: string | null }[]>();
   for (const n of nodes) {
     const key = nodeKey(n.group, n.kind, n.authorId);
+    if (n.kind === 'pipeline' || apart(key)) continue;
     const through = pipelines.get(key);
-    if (n.kind === 'pipeline' || n.shared || !through || apart(key)) continue;
-    const id = JSON.stringify([n.system ?? '', ...[...through].sort()]);
-    const bucket = JSON.stringify([n.group, n.kind, id]);
-    if (!buckets.has(bucket)) buckets.set(bucket, { id, members: [] });
-    buckets.get(bucket)!.members.push(n);
+    const on =
+      n.shared || !through ? null : JSON.stringify([n.system ?? '', ...[...through].sort()]);
+    const column = JSON.stringify([n.group, n.kind]);
+    if (!columns.has(column)) columns.set(column, []);
+    columns.get(column)!.push({ node: n, on });
   }
   const into = new Map<string, string>();
   const stacks: MapCard[] = [];
-  for (const { id, members } of buckets.values()) {
-    if (members.length < STACK_MIN) continue;
-    members.sort((a, b) => a.name.localeCompare(b.name) || a.authorId.localeCompare(b.authorId));
+  const stack = (members: MapNode[], on: string, prefix: string) => {
+    if (members.length < STACK_MIN) return;
     const { group, kind, system } = members[0];
     const card: MapCard = {
       group,
       kind,
       system,
-      authorId: id,
-      name: title(members.length, kind),
+      authorId: JSON.stringify([prefix, on]),
+      name: title(members.length, kind, prefix),
       shared: false,
       warning: false,
       members,
     };
     for (const m of members) into.set(nodeKey(m.group, m.kind, m.authorId), cardKey(card));
     stacks.push(card);
+  };
+  for (const column of columns.values()) {
+    column.sort((a, b) => byName(a.node, b.node));
+    let run: MapNode[] = [];
+    let on: string | null = null;
+    let prefix = '';
+    for (const { node, on: its } of column) {
+      const shared = its !== null && its === on ? namePrefix(prefix, node.name) : '';
+      if (shared) {
+        run.push(node);
+        prefix = shared;
+        continue;
+      }
+      if (on !== null) stack(run, on, prefix);
+      [run, on, prefix] = [[node], its, node.name];
+    }
+    if (on !== null) stack(run, on, prefix);
   }
   const cards: MapCard[] = nodes.filter((n) => !into.has(nodeKey(n.group, n.kind, n.authorId)));
   const lines = new Map<string, MapEdge>();
@@ -707,6 +809,15 @@ export function stackNodes(
     else lines.set(edgeKey(moved), moved);
   }
   return { cards: cards.concat(stacks), edges: [...lines.values()] };
+}
+
+/** The longest start `a` and `b` share, ignoring case as the name sort does, spelled as `a`
+ * spells it; empty if they start differently. */
+export function namePrefix(a: string, b: string): string {
+  const [x, y] = [[...a], [...b]];
+  let i = 0;
+  while (i < x.length && i < y.length && x[i].toLowerCase() === y[i].toLowerCase()) i++;
+  return x.slice(0, i).join('');
 }
 
 /** What a stack reads: its members' rates summed, and the worst of everything else -- the most

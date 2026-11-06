@@ -159,6 +159,7 @@ impl MetricsEndpoint {
             router,
             self.address,
             "the metrics endpoint",
+            None,
         )
         .map_err(|e| e.to_string())?;
         Ok(bound)

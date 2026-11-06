@@ -302,7 +302,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/captures",
         what: "Open a capture of one source or at one destination in a group; returns the session id and clamped bounds. No query.",
-        body: "{ group, source?: SourceDto, destination?: id, filter?, start?: StartPosition, maxMatches?, maxBytes?, deadlineSecs? }",
+        body: "{ group, source?: SourceDto, destination?: id, filter?, start?: StartPosition, raw?: boolean (a receiver as sent, before framing; no filter), maxMatches?, maxBytes?, deadlineSecs? }",
     },
     Route {
         method: "GET",
@@ -314,6 +314,12 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/captures/:session/stop",
         what: "End a running capture and keep what it holds. No query.",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/captures/:session/download",
+        what: "A finished capture's records as NDJSON, as a sample would hold them; the capture stays. No query.",
         body: "",
     },
     Route {
