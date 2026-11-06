@@ -158,10 +158,11 @@ whose rows share one format pays for that search once, not once a row. A
 field declared as an object is its leaves, each declared:
 `source: {ip: str, port: i64};` declares two. A first write binds its
 target to the value's type, so `y = 1` declares `y` as `i64`. `null` and
-`[]` have none: a name first written either takes the type every write after
-it in the block blends to, as a construct's first write does, so `let out =
-[]; for (let x of xs) { out = push(out, x * 2); }` makes `out` an
-`array<i64>`. With no write after it to give one, the first write names the
+`[]` have none: a name first written either takes the type the writes after
+it in the block blend to, so `let out = []; for (let x of xs) { out =
+push(out, x * 2); }` makes `out` an `array<i64>`. A write whose type cannot blend
+with the writes before it is a compile error: `[]` is an array, so `let l =
+[]; l = "s";` is refused. With no write after it to give one, the first write names the
 type: `x: i64 = null`, `xs: array<str> = []`. A
 declaration after it is a compile error, as is one of a path under it or of a
 key an open object may hold: after `x = $.v`, `x: i64;`, `x.a: str;` and,
