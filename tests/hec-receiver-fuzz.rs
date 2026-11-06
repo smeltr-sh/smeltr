@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use smeltr::io::line_breaker::LineBreaker;
 use smeltr::io::{Source, SourceRecord};
-use smeltr::plan::topology::{HecReceiverConfig, Receiver, SourceMeta};
+use smeltr::plan::topology::{ConnectionLimits, HecReceiverConfig, Receiver, SourceMeta};
 
 use crate::harness::docker::{Container, Hook, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
@@ -89,7 +89,7 @@ fn random_settings(rng: &mut Rng, ipv6: bool) -> Settings {
     }
 }
 
-fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
+fn open(settings: &Settings, pki: &Pki, limits: ConnectionLimits) -> Box<dyn Source> {
     let sourcetypes = (settings.sourcetypes.iter())
         .map(|b| {
             let (name, pattern) = b.sourcetype();
@@ -107,15 +107,19 @@ fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
         sourcetypes,
     });
     let tokens: Vec<String> = settings.tokens.iter().map(|(token, _)| token.clone()).collect();
-    receiver::build(
-        hec,
-        settings.listen,
-        settings.tls,
-        &tokens,
-        "sender",
-        settings.max_request_bytes,
-        pki,
-    )
+    {
+        let (mut config, secrets) = receiver::configured(
+            hec,
+            settings.listen,
+            settings.tls,
+            &tokens,
+            "sender",
+            settings.max_request_bytes,
+            pki,
+        );
+        config.connections = limits;
+        receiver::opened(config, &secrets)
+    }
 }
 
 /// A record a receiver gives: its bytes, and what it is filed under.
@@ -1078,7 +1082,8 @@ fn every_setting_answers_random_hec_requests_as_hec_does() {
                 ]
                 .map(String::from),
             )
-            .chain(statuses.iter().map(|status| format!("answered {status}"))),
+            .chain(statuses.iter().map(|status| format!("answered {status}")))
+            .chain(receiver::CONNECTION_LIMITS.iter().map(|s| s.to_string())),
     );
     fuzz::run(1..201, |seed| {
         let mut rng = Rng::seeded(seed);
@@ -1098,7 +1103,9 @@ fn every_setting_answers_random_hec_requests_as_hec_does() {
             .find(|(below, _)| settings.max_request_bytes < *below)
             .unwrap();
         cov.reach(limit.1);
-        let mut source = open(&settings, &pki);
+        let (limits, limited) = receiver::random_connection_limits(&mut rng);
+        cov.reach(limited);
+        let mut source = open(&settings, &pki, limits);
         let sent: Vec<Sent> = (0..12).map(|_| random_request(&mut rng, &settings, &mut cov)).collect();
         let sending = Arc::new(sent);
         let (connect, tls) = (settings.connect, settings.tls);
@@ -1202,6 +1209,7 @@ fn every_setting_answers_random_hec_requests_as_hec_does() {
                 }
             }
         }
+        receiver::holds_to_limits(settings.connect, &limits)?;
         Ok(())
     });
     cov.assert_complete();
@@ -1414,7 +1422,7 @@ fn live_senders_deliver_every_line_once_under_random_configurations() {
             "{sender:?} under {:?}, listening on {}, told {told:?}",
             settings.tls, settings.listen
         );
-        let mut source = open(&settings, &pki);
+        let mut source = open(&settings, &pki, ConnectionLimits::default());
 
         let scratch = Scratch(std::env::temp_dir().join(format!("smeltr-hec-fuzz-{}-{seed}", std::process::id())));
         let dir = &scratch.0;

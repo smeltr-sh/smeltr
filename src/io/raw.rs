@@ -153,7 +153,11 @@ where
                 )),
                 Err(e) => {
                     if let Some(tap) = &tap {
-                        offer_closed(&**tap, &remote, tls, &format!("TLS handshake failed: {e}"));
+                        let why = match e.get_ref().and_then(|e| e.downcast_ref::<super::receiver::Refusal>()) {
+                            Some(refusal) => refusal.to_string(),
+                            None => format!("TLS handshake failed: {e}"),
+                        };
+                        offer_closed(&**tap, &remote, tls, &why);
                     }
                     Err(e)
                 }

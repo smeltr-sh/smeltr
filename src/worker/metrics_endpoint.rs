@@ -139,7 +139,6 @@ impl Settings {
 impl MetricsEndpoint {
     /// Serves `scrape`'s answer at [`PATH`] for the life of the process.
     pub fn serve(self, scrape: impl Fn() -> String + Send + Sync + 'static) -> Result<SocketAddr, String> {
-        let runtime = receiver::receiver_runtime().map_err(|e| e.to_string())?;
         let tls = self
             .tls
             .map(|tls| axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls)));
@@ -153,13 +152,13 @@ impl MetricsEndpoint {
         let bound = self.listener.local_addr().map_err(|e| e.to_string())?;
         // The handle is dropped and the server kept: it serves until the process ends.
         receiver::serve_router(
-            runtime,
             self.listener,
             tls,
             router,
             self.address,
             "the metrics endpoint",
             None,
+            crate::plan::topology::ConnectionLimits::default(),
         )
         .map_err(|e| e.to_string())?;
         Ok(bound)

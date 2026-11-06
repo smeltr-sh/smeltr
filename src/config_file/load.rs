@@ -1174,6 +1174,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
         }
         SourceKindDto::HttpReceiver {
             listener,
+            connections,
             tls,
             path,
             tokens,
@@ -1193,11 +1194,12 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             listener,
             tls,
             tokens.iter(),
-            Default::default(),
+            to_connection_limits(connections),
             &of,
         ),
         SourceKindDto::OtlpReceiver {
             listener,
+            connections,
             tls,
             signal,
             tokens,
@@ -1208,11 +1210,12 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             listener,
             tls,
             tokens.iter(),
-            Default::default(),
+            to_connection_limits(connections),
             &of,
         ),
         SourceKindDto::PrometheusReceiver {
             listener,
+            connections,
             tls,
             tokens,
             answer_after_delivery,
@@ -1222,11 +1225,12 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             listener,
             tls,
             tokens.iter(),
-            Default::default(),
+            to_connection_limits(connections),
             &of,
         ),
         SourceKindDto::ElasticReceiver {
             listener,
+            connections,
             tls,
             tokens,
             answer_after_delivery,
@@ -1236,11 +1240,12 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             listener,
             tls,
             tokens.iter(),
-            Default::default(),
+            to_connection_limits(connections),
             &of,
         ),
         SourceKindDto::HecReceiver {
             listener,
+            connections,
             tls,
             tokens,
             sourcetypes,
@@ -1258,7 +1263,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             listener,
             tls,
             tokens.iter().map(|(name, t)| (name, &t.token)),
-            Default::default(),
+            to_connection_limits(connections),
             &of,
         ),
         SourceKindDto::S2sReceiver {
@@ -3263,6 +3268,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             }
             SourceKindDto::HttpReceiver {
                 listener,
+                connections,
                 tls,
                 path,
                 tokens,
@@ -3272,6 +3278,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             } => {
                 let what = format!("source {:?}", s.id);
                 check_receiver(&what, listener, tls, tokens, errors);
+                check_connection_limits(&what, connections, true, errors);
                 check_records_at(&what, *records, records_at, errors);
                 if !path.starts_with('/')
                     || path.contains(['?', '#', ':', '*'])
@@ -3289,6 +3296,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             }
             SourceKindDto::HecReceiver {
                 listener,
+                connections,
                 tls,
                 tokens,
                 sourcetypes,
@@ -3296,6 +3304,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             } => {
                 let what = format!("source {:?}", s.id);
                 check_receiver(&what, listener, tls, tokens, errors);
+                check_connection_limits(&what, connections, true, errors);
                 check_sourcetypes(&s.id, sourcetypes, errors);
             }
             SourceKindDto::S2sReceiver {
@@ -3311,14 +3320,30 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 check_sourcetypes(&s.id, sourcetypes, errors);
             }
             SourceKindDto::OtlpReceiver {
-                listener, tls, tokens, ..
+                listener,
+                connections,
+                tls,
+                tokens,
+                ..
             }
             | SourceKindDto::PrometheusReceiver {
-                listener, tls, tokens, ..
+                listener,
+                connections,
+                tls,
+                tokens,
+                ..
             }
             | SourceKindDto::ElasticReceiver {
-                listener, tls, tokens, ..
-            } => check_receiver(&format!("source {:?}", s.id), listener, tls, tokens, errors),
+                listener,
+                connections,
+                tls,
+                tokens,
+                ..
+            } => {
+                let what = format!("source {:?}", s.id);
+                check_receiver(&what, listener, tls, tokens, errors);
+                check_connection_limits(&what, connections, true, errors);
+            }
             SourceKindDto::SyslogReceiver {
                 listener,
                 connections,
@@ -4755,11 +4780,21 @@ fn check_receiver_ports(file: &FileConfig, attributed: &mut Vec<ValidationError>
             (
                 Some(
                     first @ SourceDto {
-                        kind: SourceKindDto::OtlpReceiver { tls: theirs, .. },
+                        kind:
+                            SourceKindDto::OtlpReceiver {
+                                tls: theirs,
+                                connections: their_limits,
+                                ..
+                            },
                         ..
                     },
                 ),
-                SourceKindDto::OtlpReceiver { tls, signal, .. },
+                SourceKindDto::OtlpReceiver {
+                    tls,
+                    signal,
+                    connections,
+                    ..
+                },
             ) => {
                 let same = |o: &SourceDto| matches!(&o.kind, SourceKindDto::OtlpReceiver { signal: other, .. } if other == signal);
                 if let Some(taken) = on_port.iter().find(|o| same(o)) {
@@ -4774,6 +4809,12 @@ fn check_receiver_ports(file: &FileConfig, attributed: &mut Vec<ValidationError>
                     Some(format!(
                         "source {:?} shares port {port} with source {:?}, which serves it; give both the same \
                          certificate and trusted authorities, or this one another port",
+                        s.id, first.id
+                    ))
+                } else if to_connection_limits(connections) != to_connection_limits(their_limits) {
+                    Some(format!(
+                        "source {:?} shares port {port} with source {:?}, which serves it; give both the same \
+                         maxConnections, maxConnectionsPerSender and idleTimeoutSecs, or this one another port",
                         s.id, first.id
                     ))
                 } else {

@@ -786,6 +786,8 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
         #[serde(flatten)]
+        connections: ConnectionLimitsDto,
+        #[serde(flatten)]
         tls: ServedTlsDto,
         /// Whether a request is answered only once every destination has its records, rather than as soon as it is
         /// received.
@@ -810,6 +812,8 @@ pub enum SourceKindDto {
     HecReceiver {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
+        #[serde(flatten)]
+        connections: ConnectionLimitsDto,
         #[serde(flatten)]
         tls: ServedTlsDto,
         /// Whether a request is answered only once every destination has its records, rather than as soon as it is
@@ -853,6 +857,8 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
         #[serde(flatten)]
+        connections: ConnectionLimitsDto,
+        #[serde(flatten)]
         tls: ServedTlsDto,
         /// Whether a request is answered only once every destination has its records, rather than as soon as it is
         /// received.
@@ -873,6 +879,8 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
         #[serde(flatten)]
+        connections: ConnectionLimitsDto,
+        #[serde(flatten)]
         tls: ServedTlsDto,
         /// Whether a request is answered only once every destination has its records, rather than as soon as it is
         /// received.
@@ -889,6 +897,8 @@ pub enum SourceKindDto {
     ElasticReceiver {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
+        #[serde(flatten)]
+        connections: ConnectionLimitsDto,
         #[serde(flatten)]
         tls: ServedTlsDto,
         /// Whether a request is answered only once every destination has its records, rather than as soon as it is
@@ -1003,8 +1013,8 @@ pub struct ReceiverSettingsDto {
     pub max_request_bytes: MaxRequestBytes,
 }
 
-/// How many connections a receiver whose senders stream over TCP holds open, and how long it keeps an idle one.
-/// Flattened into the S2S, syslog and socket receivers' fields.
+/// How many connections a receiver holds open over TCP, and how long it keeps an idle one. Flattened into every
+/// receiver's fields.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ConnectionLimitsDto {
@@ -1020,7 +1030,7 @@ pub struct ConnectionLimitsDto {
     pub idle_timeout_secs: Option<u64>,
 }
 
-/// The most connections a receiver that streams holds at once.
+/// The most connections a receiver holds at once.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct MaxConnections(pub u64);

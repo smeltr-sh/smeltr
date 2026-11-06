@@ -255,9 +255,9 @@ or by its certificate. Over UDP there is no certificate to check, and a
 datagram's source address can be forged, so a UDP receiver's networks admit
 whoever can send from inside them or claim to.
 
-A receiver that holds connections open bounds them so that connections
-cannot exhaust a worker: a cap on each worker, an optional cap per sender,
-and an optional idle timeout.
+Every receiver bounds the connections it holds open over TCP, so that
+connections cannot exhaust a worker: a cap on each worker, an optional cap per
+sender, and an optional idle timeout.
 
 ```mermaid
 flowchart TD
@@ -271,9 +271,13 @@ flowchart TD
 The per-sender cap, which counts by address, applies the same rule to one
 address's connections. A connection is idle only while the receiver waits to
 read from it, so a receiver that has stopped reading because it cannot take
-more closes none for idleness. By default there is no per-sender cap, because
-behind a balancer or NAT every sender comes from one address, and no idle
-timeout, so a sender that writes on every connection often enough can hold
+more closes none for idleness, and an HTTP receiver closes none while it
+answers one of its requests. An HTTP receiver also closes a connection that has
+not sent a request's headers in a fixed time (`leader::listen::HEADER_READ`),
+from connecting or from its last answer, as the leader does, so an idle HTTP/1
+connection is held no longer than that. By default there is no per-sender cap,
+because behind a balancer or NAT every sender comes from one address, and no
+idle timeout, so a sender that writes on every connection often enough can hold
 every place; an administrator who faces one sets the per-sender cap.
 
 ## Scrapers
@@ -289,7 +293,7 @@ it, which leaves the network in front of it to decide who that is. A password
 over a port without TLS crosses the network in the clear. The certificate and
 key are read when the worker starts, so a new one takes a restart. The password
 stays with the supervisor, which serves the endpoint; its runtime is started
-without it.
+without it. The endpoint holds its connections to a receiver's default limits.
 
 The leader's scrape is an API route like any other: a scraper comes in as a
 key account, with its key, and reads the warnings its account's roles let it see.

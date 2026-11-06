@@ -285,48 +285,53 @@ export type SourceDto =
       /** Which of the app's keys `privateKey` is, for an app with several. */
       keyId?: string;
     })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'httpReceiver';
-      /** The path senders POST to. Absent is `/`. */
-      path?: string;
-      /** Token name to the credential holding a token a sender presents as `Authorization: Bearer`. */
-      tokens?: Record<string, SecretRef>;
-      /** Absent is `body`. */
-      records?: ApiRecords;
-      /** The JSON pointer to the array `array` reads. Absent is a body that is the array. */
-      recordsAt?: string;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'hecReceiver';
-      /** Token name to a token a sender presents as `Authorization: Splunk`. */
-      tokens?: Record<string, HecToken>;
-      /** Sourcetype to where a raw request's events end, by the request's `sourcetype`. A sourcetype not named
-       * here is an event per line. */
-      sourcetypes?: Record<string, Sourcetype>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'otlpReceiver';
-      /** The signal it takes. Absent is `logs`. The receivers of other signals may share its port. */
-      signal?: OtlpSignal;
-      /** Token name to the credential holding a token an exporter presents as `Authorization: Bearer`. */
-      tokens?: Record<string, SecretRef>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'prometheusReceiver';
-      /** Token name to the credential holding a token a sender presents as `Authorization: Bearer`. */
-      tokens?: Record<string, SecretRef>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'elasticReceiver';
-      /** Token name to the credential holding a token a sender presents as `Authorization: Bearer` or `ApiKey`, or
-       * as a Basic password. */
-      tokens?: Record<string, SecretRef>;
-    })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'httpReceiver';
+        /** The path senders POST to. Absent is `/`. */
+        path?: string;
+        /** Token name to the credential holding a token a sender presents as `Authorization: Bearer`. */
+        tokens?: Record<string, SecretRef>;
+        /** Absent is `body`. */
+        records?: ApiRecords;
+        /** The JSON pointer to the array `array` reads. Absent is a body that is the array. */
+        recordsAt?: string;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'hecReceiver';
+        /** Token name to a token a sender presents as `Authorization: Splunk`. */
+        tokens?: Record<string, HecToken>;
+        /** Sourcetype to where a raw request's events end, by the request's `sourcetype`. A sourcetype not named
+         * here is an event per line. */
+        sourcetypes?: Record<string, Sourcetype>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'otlpReceiver';
+        /** The signal it takes. Absent is `logs`. The receivers of other signals may share its port. */
+        signal?: OtlpSignal;
+        /** Token name to the credential holding a token an exporter presents as `Authorization: Bearer`. */
+        tokens?: Record<string, SecretRef>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'prometheusReceiver';
+        /** Token name to the credential holding a token a sender presents as `Authorization: Bearer`. */
+        tokens?: Record<string, SecretRef>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'elasticReceiver';
+        /** Token name to the credential holding a token a sender presents as `Authorization: Bearer` or `ApiKey`, or
+         * as a Basic password. */
+        tokens?: Record<string, SecretRef>;
+      })
   | (ReceiverSettings &
       ConnectionLimits & {
         id: string;
@@ -918,8 +923,7 @@ export interface ReceiverSettings extends Pick<TlsDto, 'certificate' | 'trustedA
   answerAfterDelivery?: boolean;
 }
 
-/** How many connections a receiver whose senders stream over TCP holds open, mirroring
- * `config_file::dto::ConnectionLimitsDto`. */
+/** How many connections a receiver holds open over TCP, mirroring `config_file::dto::ConnectionLimitsDto`. */
 export interface ConnectionLimits {
   /** Absent is `LIMITS.maxConnections.default`. */
   maxConnections?: number;

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use smeltr::io::{Source, SourceRecord};
-use smeltr::plan::topology::{ApiRecords, HttpReceiverConfig, Receiver, SourceMeta};
+use smeltr::plan::topology::{ApiRecords, ConnectionLimits, HttpReceiverConfig, Receiver, SourceMeta};
 
 use crate::harness::docker::{Container, Hook, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
@@ -79,7 +79,7 @@ fn random_settings(rng: &mut Rng, ipv6: bool) -> Settings {
     }
 }
 
-fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
+fn open(settings: &Settings, pki: &Pki, limits: ConnectionLimits) -> Box<dyn Source> {
     let http = Receiver::Http(HttpReceiverConfig {
         path: settings.path.0.to_string(),
         records: settings.records.clone(),
@@ -91,7 +91,12 @@ fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
         max_request_bytes,
         ..
     } = settings;
-    receiver::build(http, *listen, *tls, tokens, "sender", *max_request_bytes, pki)
+    {
+        let (mut config, secrets) =
+            receiver::configured(http, *listen, *tls, tokens, "sender", *max_request_bytes, pki);
+        config.connections = limits;
+        receiver::opened(config, &secrets)
+    }
 }
 
 /// Where a request is sent, beside the path the receiver takes requests at.
@@ -759,7 +764,8 @@ fn every_setting_answers_random_requests_and_cuts_their_records() {
                 .into_iter()
                 .chain(GZIPS.iter().map(|s| s.to_string())),
             )
-            .chain(statuses.iter().map(|status| format!("answered {status}"))),
+            .chain(statuses.iter().map(|status| format!("answered {status}")))
+            .chain(receiver::CONNECTION_LIMITS.iter().map(|s| s.to_string())),
     );
     fuzz::run(1..201, |seed| {
         let mut rng = Rng::seeded(seed);
@@ -777,7 +783,9 @@ fn every_setting_answers_random_requests_and_cuts_their_records() {
             .find(|(below, _)| settings.max_request_bytes < *below)
             .unwrap();
         cov.reach(limit.1);
-        let mut source = open(&settings, &pki);
+        let (limits, limited) = receiver::random_connection_limits(&mut rng);
+        cov.reach(limited);
+        let mut source = open(&settings, &pki, limits);
         let sent: Vec<Sent> = (0..12).map(|_| random_request(&mut rng, &settings)).collect();
         let sending = Arc::new(sent);
         let (connect, tls) = (settings.connect, settings.tls);
@@ -847,6 +855,7 @@ fn every_setting_answers_random_requests_and_cuts_their_records() {
                 show(&expected_records)
             ));
         }
+        receiver::holds_to_limits(settings.connect, &limits)?;
         Ok(())
     });
     cov.assert_complete();
@@ -982,7 +991,7 @@ fn live_fluent_bit_delivers_every_line_once_under_random_configurations() {
             "Fluent Bit under {:?}, listening on {} at {:?} cutting {:?}, told {told:?}",
             settings.tls, settings.listen, settings.path.0, settings.records
         );
-        let mut source = open(&settings, &pki);
+        let mut source = open(&settings, &pki, ConnectionLimits::default());
 
         let scratch = Scratch(std::env::temp_dir().join(format!("smeltr-http-fuzz-{}-{seed}", std::process::id())));
         let dir = &scratch.0;

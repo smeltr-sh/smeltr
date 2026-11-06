@@ -133,7 +133,7 @@
       (s.maxRequestBytes ?? LIMITS.receiverRequestBytes.default) !==
         LIMITS.receiverRequestBytes.default ||
       s.answerAfterDelivery === true ||
-      (streams(s) &&
+      (overTcp(s) &&
         ((s.maxConnections ?? LIMITS.maxConnections.default) !== LIMITS.maxConnections.default ||
           s.maxConnectionsPerSender !== undefined ||
           s.idleTimeoutSecs !== undefined)) ||
@@ -144,17 +144,9 @@
     );
   }
 
-  type StreamingReceiver = Extract<
-    SourceDto,
-    { type: 's2sReceiver' | 'syslogReceiver' | 'socketReceiver' }
-  >;
-
-  /** Whether `s`'s senders stream over a connection it holds open, which its connection limits hold to. */
-  function streams(s: ReceiverSource): s is StreamingReceiver {
-    return (
-      s.type === 's2sReceiver' ||
-      ((s.type === 'syslogReceiver' || s.type === 'socketReceiver') && s.transport !== 'udp')
-    );
+  /** Whether `s`'s senders connect over TCP, so it holds their connections to its connection limits. */
+  function overTcp(s: ReceiverSource): boolean {
+    return !((s.type === 'syslogReceiver' || s.type === 'socketReceiver') && s.transport === 'udp');
   }
 
   type SyslogReceiver = Extract<SourceDto, { type: 'syslogReceiver' }>;
@@ -1248,7 +1240,7 @@
         />
       </Field>
     {/if}
-    {#if streams(source)}
+    {#if overTcp(source)}
       {@render connectionLimits(source)}
     {/if}
     {#if source.type === 'socketReceiver'}
@@ -1268,8 +1260,8 @@
   </Advanced>
 {/snippet}
 
-<!-- How many connections a receiver whose senders stream holds open, and how long it keeps an idle one. -->
-{#snippet connectionLimits(source: StreamingReceiver)}
+<!-- How many connections a receiver holds open over TCP, and how long it keeps an idle one. -->
+{#snippet connectionLimits(source: ReceiverSource)}
   <Field optional field="maxConnections" label="max connections">
     {#snippet help()}
       The most connections it holds open on each worker, at most

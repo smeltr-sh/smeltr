@@ -285,13 +285,13 @@ pub fn open(
     }
     .with_state(server);
     let server = serve_router(
-        runtime,
         listener,
         http_tls(config, secrets)?,
         router,
         config.listen,
         "receiver",
         Some(shared.clone()),
+        config.connections,
     )?;
     Ok(Box::new(ReceiverSource {
         shared,
@@ -402,21 +402,27 @@ pub(crate) fn http_alpn() -> Vec<Vec<u8>> {
     vec![b"h2".to_vec(), b"http/1.1".to_vec()]
 }
 
-/// Serves `router` on `listener` on `runtime`, under TLS when there is some, until the returned handle shuts it down.
-/// `serving` names what serves it, for an operator reading the failure.
+/// Serves `router` on `listener` on the receiver runtime, under TLS when there is some, until the returned handle shuts
+/// it down.
+/// `serving` names what serves it, for an operator reading the failure. Its connections are held to `limits`, as a
+/// receiver that streams holds its own ([`connections`]).
 ///
-/// `tap`, where given, is offered every read of every connection, after TLS, and every failed handshake.
+/// `tap`, where given, is offered every read of every connection, after TLS, and every connection closed unread.
 pub(crate) fn serve_router(
-    runtime: &tokio::runtime::Runtime,
     listener: TcpListener,
     tls: Option<axum_server::tls_rustls::RustlsConfig>,
     router: axum::Router,
     address: SocketAddr,
     serving: &str,
     tap: Option<Arc<dyn RawTap>>,
+    limits: ConnectionLimits,
 ) -> Result<axum_server::Handle<SocketAddr>, IoError> {
+    let runtime = receiver_runtime()?;
     // `from_tcp` registers the socket with the runtime it is called in.
     let _entered = runtime.enter();
+    let open = Connections::new(limits);
+    let said = Arc::new(Mutex::new(Said::default()));
+    close_idle_http(&open, &said, limits);
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
     let handle = axum_server::Handle::new();
     // A server that stops on its own leaves a receiver that reads nothing: said where it happens, since nothing
@@ -429,26 +435,157 @@ pub(crate) fn serve_router(
     let served = match tls {
         Some(tls) => axum_server::from_tcp(listener).map(|server| {
             let acceptor = Tapping {
-                inner: axum_server::tls_rustls::RustlsAcceptor::new(tls),
+                inner: Admitting {
+                    inner: axum_server::tls_rustls::RustlsAcceptor::new(tls),
+                    open,
+                    said,
+                    limits,
+                },
                 tap,
                 tls: true,
             };
-            let server = server.acceptor(acceptor).handle(handle.clone());
+            let mut server = server.acceptor(acceptor).handle(handle.clone());
+            bound_header_read(server.http_builder());
             runtime.spawn(async move { stopped(server.serve(service).await) })
         }),
         None => axum_server::from_tcp(listener).map(|server| {
             let acceptor = Tapping {
-                inner: axum_server::accept::DefaultAcceptor,
+                inner: Admitting {
+                    inner: axum_server::accept::DefaultAcceptor,
+                    open,
+                    said,
+                    limits,
+                },
                 tap,
                 tls: false,
             };
-            let server = server.acceptor(acceptor).handle(handle.clone());
+            let mut server = server.acceptor(acceptor).handle(handle.clone());
+            bound_header_read(server.http_builder());
             runtime.spawn(async move { stopped(server.serve(service).await) })
         }),
     };
     served
         .map(|_| handle)
         .map_err(|e| IoError::transient(format!("{serving} could not serve {address}: {e}")))
+}
+
+/// Bounds how long an HTTP/1 connection waits on its client for a request's headers, from connecting and between
+/// requests, as the leader's are (`leader::listen`). HTTP/2 is not pinged: a ping's answer is a read, so a connection
+/// that answers pings would never idle, and eviction and the idle timeout close an idle one.
+fn bound_header_read(builder: &mut hyper_util::server::conn::auto::Builder<hyper_util::rt::TokioExecutor>) {
+    builder
+        .http1()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(crate::leader::listen::HEADER_READ);
+}
+
+/// Closes the connections of `open` that have idled for its idle timeout, if it has one, until the server holding
+/// `open` and every connection it admitted are gone.
+fn close_idle_http(open: &Arc<Mutex<Connections>>, said: &Arc<Mutex<Said>>, limits: ConnectionLimits) {
+    let Some(every) = open.lock().unwrap_or_else(|e| e.into_inner()).idle_check() else {
+        return;
+    };
+    let (open, said) = (Arc::downgrade(open), said.clone());
+    tokio::spawn(async move {
+        let mut check = tokio::time::interval(every);
+        loop {
+            check.tick().await;
+            let Some(open) = open.upgrade() else {
+                return;
+            };
+            let closed = open.lock().unwrap_or_else(|e| e.into_inner()).close_idle();
+            let mut said = said.lock().unwrap_or_else(|e| e.into_inner());
+            for peer in closed {
+                said.closed(peer, connections::Closed::Idle, &limits);
+            }
+        }
+    });
+}
+
+/// Why `Admitting` closed a connection before its handshake. It is the error the connection fails with, and the one a
+/// capture shows when one is watching.
+#[derive(Debug)]
+pub(super) struct Refusal {
+    why: connections::Refused,
+    limits: ConnectionLimits,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&Said::refusal(self.why, &self.limits))
+    }
+}
+
+impl std::error::Error for Refusal {}
+
+/// An HTTP server's acceptor, `inner`, that holds its connections to `limits` as `serve_streams` does: it admits each
+/// before its handshake, closing the one the limits say to make room, and closes it unread when there is none.
+#[derive(Clone)]
+struct Admitting<A> {
+    inner: A,
+    open: Arc<Mutex<Connections>>,
+    said: Arc<Mutex<Said>>,
+    limits: ConnectionLimits,
+}
+
+impl<A, S> axum_server::accept::Accept<tokio::net::TcpStream, S> for Admitting<A>
+where
+    A: axum_server::accept::Accept<Marked<tokio::net::TcpStream>, S>,
+{
+    type Stream = A::Stream;
+    type Service = connections::Counting<A::Service>;
+    type Future = futures_util::future::Either<
+        std::future::Ready<std::io::Result<(A::Stream, Self::Service)>>,
+        Counts<A::Future>,
+    >;
+
+    fn accept(&self, stream: tokio::net::TcpStream, service: S) -> Self::Future {
+        let peer = match stream.peer_addr() {
+            Ok(peer) => peer.ip().to_canonical(),
+            Err(e) => return futures_util::future::Either::Left(std::future::ready(Err(e))),
+        };
+        let (closed, place) = self.open.lock().unwrap_or_else(|e| e.into_inner()).admit(peer);
+        let mut said = self.said.lock().unwrap_or_else(|e| e.into_inner());
+        for (gone, why) in closed {
+            said.closed(gone, why, &self.limits);
+        }
+        let place = match place {
+            Ok(place) => place,
+            Err(why) => {
+                said.refused(peer, why, &self.limits);
+                let refusal = Refusal {
+                    why,
+                    limits: self.limits,
+                };
+                return futures_util::future::Either::Left(std::future::ready(Err(std::io::Error::other(refusal))));
+            }
+        };
+        drop(said);
+        futures_util::future::Either::Right(Counts {
+            accepting: Box::pin(self.inner.accept(Marked::new(stream, &place, &self.open), service)),
+            in_flight: place.in_flight,
+        })
+    }
+}
+
+/// An accepted connection whose service counts its requests in flight.
+struct Counts<F> {
+    accepting: std::pin::Pin<Box<F>>,
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl<F, T, S> Future for Counts<F>
+where
+    F: Future<Output = std::io::Result<(T, S)>>,
+{
+    type Output = std::io::Result<(T, connections::Counting<S>)>;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        self.accepting.as_mut().poll(cx).map_ok(|(stream, inner)| {
+            let in_flight = self.in_flight.clone();
+            (stream, connections::Counting { inner, in_flight })
+        })
+    }
 }
 
 /// The runtime every receiver of this process serves on, sized by cores, so a worker's receiver threads stay the same
@@ -535,7 +672,7 @@ fn otlp_ports() -> &'static Mutex<HashMap<SocketAddr, Weak<OtlpPort>>> {
 impl OtlpPort {
     /// `server`, a receiver of `signal`, on `config`'s address: on the port another signal's receiver serves there,
     /// or on one it starts. A port is served as the receiver that started it says, since the config plane holds the
-    /// receivers of one port to one address and certificate.
+    /// receivers of one port to one address, certificate and connection limits.
     fn join(
         config: &ReceiverConfig,
         signal: Signal,
@@ -569,7 +706,6 @@ impl OtlpPort {
 
         let listener = TcpListener::from(bound(config.listens())?);
         let tls = http_tls(config, secrets)?;
-        let runtime = receiver_runtime()?;
         let receivers = Arc::new(OtlpReceivers::default());
         let mut router = axum::Router::new().route(HEALTH_PATH, get(otlp_health));
         for signal in [Signal::Logs, Signal::Metrics, Signal::Traces] {
@@ -588,13 +724,13 @@ impl OtlpPort {
                 );
         }
         let server = serve_router(
-            runtime,
             listener,
             tls,
             router.with_state(receivers.clone()),
             config.listen,
             "receiver",
             Some(receivers.clone()),
+            config.connections,
         )?;
         Ok(OtlpPort {
             receivers,
@@ -3142,13 +3278,8 @@ async fn serve_streams<H, F>(
             }
         };
         let (tls, shared, handle) = (tls.clone(), shared.clone(), handle.clone());
-        let leaves = Leaves {
-            open: open.clone(),
-            id: place.id,
-        };
-        let tcp = Marked::new(tcp, &place);
+        let tcp = Marked::new(tcp, &place, &open);
         let abort = tasks.spawn(async move {
-            let _leaves = leaves;
             let (inner, tls): (Box<dyn Stream>, bool) = match tls {
                 None => (Box::new(tcp), false),
                 Some(tls) => match tls.accept(tcp, ()).await {
@@ -3178,18 +3309,6 @@ async fn serve_streams<H, F>(
             .await;
         });
         registry.started(place.id, abort);
-    }
-}
-
-/// Removes the connection from the receiver's held connections when its task ends, however it ends.
-struct Leaves {
-    open: Arc<Mutex<Connections>>,
-    id: u64,
-}
-
-impl Drop for Leaves {
-    fn drop(&mut self) {
-        self.open.lock().unwrap_or_else(|e| e.into_inner()).ended(self.id);
     }
 }
 
@@ -4133,6 +4252,55 @@ mod tests {
         assert_eq!(
             taken.iter().map(|q| q.bytes().to_vec()).collect::<Vec<_>>(),
             [b"b".to_vec()]
+        );
+    }
+
+    /// An HTTP server holds its connections to its limits as a receiver that streams does. Its idle timeout closes a
+    /// keep-alive connection that hyper waits on for its next request, and never one whose request it is answering.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_http_server_holds_its_connections_to_its_limits() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let limits = ConnectionLimits {
+            max: 1,
+            per_sender: None,
+            idle: Some(Duration::from_secs(1)),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let at = listener.local_addr().unwrap();
+        let router = axum::Router::new()
+            .route("/", axum::routing::get(|| async { "ok" }))
+            .route(
+                "/slow",
+                axum::routing::get(|| async {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    "ok"
+                }),
+            );
+        let _handle = serve_router(listener, None, router, at, "a test", None, limits).unwrap();
+        let asks = async |sender: &mut tokio::net::TcpStream, path: &str| {
+            let request = format!("GET {path} HTTP/1.1\r\nhost: test\r\n\r\n");
+            sender.write_all(request.as_bytes()).await.unwrap();
+            let mut answer = [0; 512];
+            let n = sender.read(&mut answer).await.unwrap();
+            String::from_utf8_lossy(&answer[..n]).into_owned()
+        };
+        let mut held = tokio::net::TcpStream::connect(at).await.unwrap();
+        assert!(asks(&mut held, "/").await.starts_with("HTTP/1.1 200"));
+        let mut refused = tokio::net::TcpStream::connect(at).await.unwrap();
+        // Well within the idle timeout, so only the cap could close it.
+        assert!(
+            closed(&mut refused, Duration::from_millis(300)).await,
+            "a connection past the cap is closed"
+        );
+        assert!(
+            closed(&mut held, Duration::from_secs(5)).await,
+            "a keep-alive connection idle 1 second is closed"
+        );
+        let mut next = tokio::net::TcpStream::connect(at).await.unwrap();
+        assert!(
+            asks(&mut next, "/slow").await.starts_with("HTTP/1.1 200"),
+            "a connection whose request is answered after its idle timeout is kept"
         );
     }
 
