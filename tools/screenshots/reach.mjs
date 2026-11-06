@@ -11,6 +11,10 @@ const OPENED = [{ face: 'button[aria-label="Chart range"]', choice: '[popover] b
 /** How long a page must say nothing is loading before it counts as drawn. */
 const QUIET_MS = 1500;
 
+/** How long a page may take to load. A month's chart range reads every node's month of history at once, which a staged
+ * fleet's leader can take longer than Playwright's default 30 s to answer. */
+const LOAD_MS = 120_000;
+
 /** Pages visited at once. */
 const AT_ONCE = 4;
 
@@ -24,7 +28,7 @@ export async function reachable(open, base) {
   const visit = async (hash) => {
     const page = await open(hash);
     try {
-      await page.goto(`${base}${hash}`, { waitUntil: 'networkidle' });
+      await page.goto(`${base}${hash}`, { waitUntil: 'networkidle', timeout: LOAD_MS });
       await settle(page);
       const links = await page.$$eval('a[href^="#/"]', (as) =>
         as.map((a) => a.getAttribute('href')),
