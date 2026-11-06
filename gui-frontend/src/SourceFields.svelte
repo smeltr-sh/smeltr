@@ -294,7 +294,7 @@
   <AvroRead value={source} stream={false} {secrets} />
   <!-- An Avro file is its own records: the load refuses a framing beside it. -->
   {#if source.format !== 'avro'}
-    {@render objectFramingField(source)}
+    {@render framingField(source)}
   {/if}
 {/snippet}
 
@@ -455,7 +455,7 @@
     <ConnectorAccess {store} value={source} show="credential" {secrets} />
   {/if}
   <ListingFields value={source} noun={listed.noun} within={listed.within} show="main" />
-  {@render framingField(source)}
+  {@render objectFramingField(source)}
   {#if source.type !== 'sftp'}
     <TlsFields value={source} farEnd="source" />
   {/if}
