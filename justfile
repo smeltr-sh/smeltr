@@ -243,6 +243,7 @@ fmt-check: need-rust
 # alone picks none, and passes.
 [private]
 [env("SMELTR_NO_GUI", "1")]
+[env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
 check-tests filter: need-nextest stable fips-dll
     cargo nextest run --workspace -j {{test_threads}} --no-tests=pass -E "not test(/fuzz/) & ({{filter}})"
 
@@ -319,6 +320,7 @@ clippy: stable
 # the GUI, and `check-frontend` builds it, so the binary embeds none.
 [private]
 [env("SMELTR_NO_GUI", "1")]
+[env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
 check-rust: need-nextest stable fips-dll
     cargo fmt --all --check
     cargo nextest run --workspace -j {{test_threads}} -E "not test(/fuzz/)"
@@ -328,6 +330,7 @@ check-rust: need-nextest stable fips-dll
 # seeds each and take a minute or more, so `check` leaves them here.
 [doc("Every offline fuzzer.")]
 [env("SMELTR_NO_GUI", "1")]
+[env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
 check-fuzz: need-nextest fips-dll && fuzz-gui fuzz-journey fuzz-pipeline fuzz-demo
     cargo nextest run --workspace -j {{test_threads}} -E "test(/fuzz/)"
 

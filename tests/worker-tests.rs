@@ -1099,9 +1099,10 @@ impl Standalone {
         if let Some(host) = reach.worker {
             command.env("SMELTR_LEADER_URL", format!("https://{host}:{port}"));
         }
-        if let Some(address) = reach.receivers {
-            command.env("SMELTR_WORKER_LISTEN_ADDRESS", address);
-        }
+        match reach.receivers {
+            Some(address) => command.env("SMELTR_WORKER_LISTEN_ADDRESS", address),
+            None => command.env_remove("SMELTR_WORKER_LISTEN_ADDRESS"),
+        };
         let mut process = command
             .env("SMELTR_LEADER_ENABLED", "1")
             .env("SMELTR_WORKER_ENABLED", "1")
