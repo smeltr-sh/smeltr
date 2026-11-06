@@ -6,7 +6,8 @@
       {
         "title": "Sources",
         "items": [
-          "An HTTP, HEC, OTLP, Prometheus or Elasticsearch receiver answers a request as soon as it has received it, so its sender is not held while a destination writes its file. Receivers already deployed change too when the worker is upgraded. A worker that crashes loses the records its receivers answered but had not yet delivered. To answer only after every destination has the records, as before, turn on `answerAfterDelivery`."
+          "An HTTP, HEC, OTLP, Prometheus or Elasticsearch receiver answers a request as soon as it has received it, so its sender is not held while a destination writes its file. Receivers already deployed change too when the worker is upgraded. A worker that crashes loses the records its receivers answered but had not yet delivered. To answer only after every destination has the records, as before, turn on `answerAfterDelivery`.",
+          "Every receiver holds at most 10,000 connections over TCP on each worker by default. When it is full, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed. Set `maxConnections` to change the cap. `maxConnectionsPerSender` caps one address's connections, and `idleTimeoutSecs` closes idle ones. An HTTP, HEC, OTLP, Prometheus or Elasticsearch receiver also closes an HTTP/1 connection that sends no request for 30 seconds, so a sender that keeps its connection open between requests opens a new one."
         ]
       },
       {

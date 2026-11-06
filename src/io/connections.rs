@@ -316,6 +316,8 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Marked<S> {
 
 /// A connection's HTTP service, `inner`, which counts the requests it is answering in `in_flight`, so the connection
 /// is not idle while it answers one.
+/// A response's body is written after the answer is given and is not counted, so the connection may look idle while
+/// it is written; a receiver's answers are small, so this does not matter.
 #[derive(Clone)]
 pub(super) struct Counting<S> {
     pub(super) inner: S,
