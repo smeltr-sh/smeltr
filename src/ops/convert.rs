@@ -5,7 +5,7 @@
 use std::io::Write as _;
 
 use super::datetime;
-use super::helpers::{Operand, alloc_with_merged_validity, short_circuit_empty, side};
+use super::helpers::{Labels, Operand, alloc_with_merged_validity, short_circuit_empty, side};
 use super::timeparse;
 use crate::core::bits;
 use crate::core::column::{Column, DataType, Scalar, StrBuilder, VarLen, VarType};
@@ -777,29 +777,6 @@ fn build_scalars(ctx: &mut Ctx, to: &DataType, values: &[Option<Scalar>]) -> Col
     }
 }
 
-/// The charset a row's label names, looked up once per run of the same label. `None` for a label
-/// `format::encoding` does not know.
-struct Charsets<'a> {
-    last: Option<(&'a [u8], Option<Encoding>)>,
-}
-
-impl<'a> Charsets<'a> {
-    fn new() -> Self {
-        Charsets { last: None }
-    }
-
-    fn get(&mut self, label: &'a [u8]) -> Option<Encoding> {
-        match self.last {
-            Some((l, e)) if l == label => e,
-            _ => {
-                let e = std::str::from_utf8(label).ok().and_then(Encoding::for_label);
-                self.last = Some((label, e));
-                e
-            }
-        }
-    }
-}
-
 /// `decode(bytes, label)`: the bytes read as text in the encoding the label names, `"auto"` included, as a source's
 /// `encoding` reads its records. Bytes that do not decode become U+FFFD. Null where the label names no encoding, or
 /// names `"none"`.
@@ -811,7 +788,7 @@ pub fn decode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let (Some(v), Some(labels)) = (side::var(ins[0]), side::var(ins[1])) else {
         return Column::empty(DataType::Str, len);
     };
-    let mut charsets = Charsets::new();
+    let mut charsets = Labels::new(Encoding::for_label);
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
     for i in 0..len {
         let encoding = (v.is_valid(i) && labels.is_valid(i))
@@ -835,7 +812,7 @@ pub fn encode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let (Some(v), Some(labels)) = (side::var(ins[0]), side::var(ins[1])) else {
         return Column::empty(DataType::Bytes, len);
     };
-    let mut charsets = Charsets::new();
+    let mut charsets = Labels::new(Encoding::for_label);
     let mut b = StrBuilder::new(ctx.pool, VarType::Bytes, len);
     let mut out = Vec::new();
     for i in 0..len {

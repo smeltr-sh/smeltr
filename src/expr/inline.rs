@@ -17,7 +17,7 @@ use std::rc::Rc;
 
 use crate::core::column::DataType;
 use crate::expr::ast::{Expr, ExprKind, Function, Region, Site, Span, Stmt, Value};
-use crate::expr::parse;
+use crate::expr::{parse, unpack};
 use crate::ops::{BinOp, UnOp};
 use crate::plan::{resolve, tree};
 
@@ -511,6 +511,19 @@ fn check_body(body: &[Stmt], what: &str) -> Result<(), InlineError> {
     Ok(())
 }
 
+/// The arguments of a call named `name` when it calls `unpack`, the bytes first, so `unpack(b, layout)` and
+/// `b.unpack(layout)` give the same. `None` for any other call.
+fn unpack_args(name: &str, args: &[Expr], span: Span) -> Option<Vec<Expr>> {
+    if name == unpack::UNPACK {
+        return (!args.is_empty()).then(|| args.to_vec());
+    }
+    let (recv, method) = name.rsplit_once('.')?;
+    (method == unpack::UNPACK && recv != "Object").then(|| {
+        let recv = Expr::new(span, ExprKind::Field(recv.to_string()));
+        std::iter::once(recv).chain(args.iter().cloned()).collect()
+    })
+}
+
 /// `e`, leaving a null in its place.
 fn take(e: &mut Expr) -> Expr {
     let null = Expr::new(e.span, ExprKind::Literal(Value::Null));
@@ -681,6 +694,10 @@ impl Inliner {
         let span = e.span;
         match &e.kind {
             ExprKind::Call { name, args } => {
+                if let Some(args) = unpack_args(name, args, span) {
+                    *e = self.unpack_value(&args, span, out)?;
+                    return Ok(());
+                }
                 if let Some((name, args)) = self.callee(name, args, span) {
                     *e = self.call_value(&name, &args, span, out)?;
                     return Ok(());
@@ -841,6 +858,21 @@ impl Inliner {
         let (body, caller) = self.enter(name, &bound, args, span, out)?;
         let value = self.body_value(name, &body, bound.function.ret.as_ref(), span, out);
         self.leave(caller);
+        value
+    }
+
+    /// The value of a call of `unpack`: the function its layout is, called on its bytes.
+    fn unpack_value(&mut self, args: &[Expr], span: Span, out: &mut Vec<Stmt>) -> Result<Expr, InlineError> {
+        let function = unpack::function(args, span).map_err(|message| InlineError { span, message })?;
+        let id = self.tmp(unpack::UNPACK);
+        let bound = Bound {
+            function: Rc::new(function),
+            id: id.clone(),
+            scopes: None,
+        };
+        self.scopes.push(Scope::from([(id.clone(), bound)]));
+        let value = self.call_value(&id, &args[..1], span, out);
+        self.scopes.pop();
         value
     }
 

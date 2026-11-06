@@ -545,6 +545,103 @@
       ]
     },
     {
+      "id": "binary",
+      "title": "Binary messages",
+      "blurb": "Reading a binary message out of `bytes`: a number, bytes or text at a byte position, counted from 0. A read that runs past the end of the bytes is null and throws an `IndexOutOfRange` exception. A number's type is `\"u8\"`, `\"u16\"`, `\"u32\"` or `\"u64\"` unsigned, `\"i8\"`, `\"i16\"`, `\"i32\"` or `\"i64\"` signed, or `\"f32\"` or `\"f64\"`. Its byte order is `\"big\"` or `\"little\"`, and big when the call names none. `unpack` reads a whole layout of fields at once.",
+      "functions": [
+        {
+          "name": "readInt",
+          "signature": "bytes.readInt(at, type, order)",
+          "summary": "The integer of the given `type`, `\"u8\"` to `\"i64\"`, starting at byte `at`. A `\"u64\"` above the largest `i64` is null and throws an `Overflow` exception. A type or an order it does not know is null and throws a `CoercionRefused` exception.",
+          "examples": [
+            {
+              "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
+              "expr": "msg.readInt(1, \"u16\")",
+              "result": "3"
+            },
+            {
+              "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
+              "expr": "msg.readInt(6, \"u16\", \"little\")",
+              "result": "80"
+            },
+            {
+              "expr": "parseBytes(\"ff\", \"hex\").readInt(0, \"i8\")",
+              "result": "-1"
+            },
+            {
+              "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
+              "expr": "msg.readInt(15, \"u32\")",
+              "result": "null",
+              "throws": ["IndexOutOfRange"],
+              "note": "only two bytes are left"
+            },
+            {
+              "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
+              "expr": "readInt(msg, 0, \"u8\")",
+              "note": "the same call, written as a function",
+              "result": "1"
+            }
+          ]
+        },
+        {
+          "name": "readFloat",
+          "signature": "bytes.readFloat(at, type, order)",
+          "summary": "The number of the given `type`, `\"f32\"` or `\"f64\"`, starting at byte `at`. A type or an order it does not know is null and throws a `CoercionRefused` exception.",
+          "examples": [
+            {
+              "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
+              "expr": "msg.readFloat(11, \"f32\")",
+              "result": "1.5"
+            },
+            {
+              "expr": "parseBytes(\"0000c03f\", \"hex\").readFloat(0, \"f32\", \"little\")",
+              "result": "1.5"
+            }
+          ]
+        },
+        {
+          "name": "readBytes",
+          "signature": "bytes.readBytes(at, count)",
+          "summary": "The `count` bytes starting at byte `at`. [decode](#decode) reads them as text.",
+          "examples": [
+            {
+              "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
+              "expr": "msg.readBytes(3, 3).decode(\"utf-8\")",
+              "result": "\"abc\""
+            },
+            {
+              "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
+              "expr": "msg.readBytes(15, 3)",
+              "result": "null",
+              "throws": ["IndexOutOfRange"]
+            }
+          ]
+        },
+        {
+          "name": "unpack",
+          "signature": "bytes.unpack({field: type, ...}, {order})",
+          "summary": "A binary message read into an object, one field after another in the order the layout names them, each starting where the one before it ends. A field is a number type; `\"bytes\"` or `\"str\"`, which run to the end of the message unless given a `length`; or an object naming its `type` and what that type takes. A number takes an `order`. A `\"bytes\"` or `\"str\"` field takes a `length`, which is a count or the name of an integer field before it, or else a `prefix`, the integer type of a length written just before it, with its own `order`. A `\"str\"` field takes a `charset`, `\"utf-8\"` when it names none. The options' `order` is the byte order of every number that names none. A field the message is too short for is null and throws an `IndexOutOfRange` exception, and every field after it is null, so the object leaves them out.",
+          "examples": [
+            {
+              "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
+              "expr": "msg.unpack({version: \"u8\", len: \"u16\", host: {type: \"str\", length: \"len\"}, port: {type: \"u16\", order: \"little\"}, tag: {type: \"str\", prefix: \"u8\"}, temp: \"f32\", rest: \"bytes\"})",
+              "result": "{\"version\": 1, \"len\": 3, \"host\": \"abc\", \"port\": 80, \"tag\": \"hi\", \"temp\": 1.5, \"rest\": \"eno=\"}"
+            },
+            {
+              "expr": "parseBytes(\"0100ffff\", \"hex\").unpack({a: \"u16\", b: \"i16\"}, {order: \"little\"})",
+              "result": "{\"a\": 1, \"b\": -1}"
+            },
+            {
+              "expr": "parseBytes(\"01056162\", \"hex\").unpack({a: \"u8\", s: {type: \"str\", prefix: \"u8\"}, c: \"u8\"})",
+              "result": "{\"a\": 1}",
+              "throws": ["IndexOutOfRange"],
+              "note": "`s` says 5 bytes, and only 2 are left"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "numbers",
       "title": "Numbers",
       "blurb": "`i64` and `f64`. An `i64` beside an `f64` widens to `f64`. An arithmetic `i64` result never wraps. The bitwise operators take `i64` only and work over all 64 bits.",
