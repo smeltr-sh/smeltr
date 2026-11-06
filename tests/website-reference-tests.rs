@@ -1885,6 +1885,12 @@ fn every_startup_example_is_read() {
     let table: Table =
         serde_json::from_str(&std::fs::read_to_string(root.join("website/src/lib/startup-settings.json")).unwrap())
             .unwrap();
+    // Clear every documented variable, so the defaults are read with nothing set. `just check` sets the worker's
+    // listen address.
+    for s in &table.settings {
+        // SAFETY: nextest runs each test in its own process, and no other thread here reads the environment.
+        unsafe { std::env::remove_var(&s.env) };
+    }
     use smeltr::startup_config as c;
     // A refused value ends the process, naming the variable and the value.
     let readers: std::collections::BTreeMap<&str, fn() -> String> = [
@@ -2022,6 +2028,12 @@ fn the_startup_settings_match_the_engine() {
     let table: Table =
         serde_json::from_str(&std::fs::read_to_string(root.join("website/src/lib/startup-settings.json")).unwrap())
             .unwrap();
+    // Clear every documented variable, so the defaults are read with nothing set. `just check` sets the worker's
+    // listen address.
+    for s in &table.settings {
+        // SAFETY: nextest runs each test in its own process, and no other thread here reads the environment.
+        unsafe { std::env::remove_var(&s.env) };
+    }
     let main = std::fs::read_to_string(root.join("src/bin/smeltr/main.rs")).unwrap();
     let backfill = regex::Regex::new(r#"backfill_env\(\s*"(\w+)",\s*(?:Some\()?file\.([\w.]+)"#).unwrap();
     let engine: std::collections::BTreeSet<(String, String)> = backfill
