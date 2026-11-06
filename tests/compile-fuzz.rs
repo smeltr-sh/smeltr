@@ -40,7 +40,7 @@ use smeltr::plan::topology::SourceMeta;
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::harness::{code, pipeline, raw_batch};
 
-const SEEDS: u64 = 300;
+const SEEDS: u64 = 400;
 
 /// The record's declarations and its parse, step 0 of every program.
 const HEAD: &str = "a: i64; b: i64; f: f64; s: str; u: str; bo: bool; by: bytes; t: datetime; d: duration; \
