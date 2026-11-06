@@ -54,6 +54,13 @@ body {
   flex-grow: 1;
 }
 
+/* A glyph before a label, centred on the label's line. */
+.glyphed {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
 /* A button that reads as part of the text it sits in, underlined dotted: it opens or jumps rather than
    acts. */
 .link-button {

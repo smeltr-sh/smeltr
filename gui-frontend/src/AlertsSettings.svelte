@@ -716,13 +716,6 @@
     gap: 0.5rem;
   }
 
-  /* A glyph before a name, centred on its line as the name's own Field draws it. */
-  .glyphed {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-  }
-
   .label,
   legend {
     font-size: var(--text-label);
