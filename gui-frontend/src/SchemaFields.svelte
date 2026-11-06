@@ -273,12 +273,19 @@
      so that a `ch` is one of the fields' characters. */
   .fields {
     display: block;
-    width: 100%;
+    /* Adds nothing to the width of the schemas table it sits in, so a narrow screen scrolls this table and not the
+       page. */
+    width: 0;
+    min-width: 100%;
+    overflow-x: auto;
   }
 
   .fields thead,
   .fields tbody {
     display: block;
+    /* As wide as the columns, since a row (`content-visibility: auto`) clips what overflows it. */
+    width: max-content;
+    min-width: 100%;
   }
 
   .fields tr {
