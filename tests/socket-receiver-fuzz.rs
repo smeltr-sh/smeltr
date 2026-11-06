@@ -833,11 +833,11 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
             let holders = 1 + rng.below(3);
             match rng.below(3) {
                 0 => {
-                    connections.max = holders;
+                    connections.max = Some(holders);
                     full = Some((holders, Admitted::Full));
                 }
                 1 => {
-                    connections.max = holders + 1 + rng.below(4);
+                    connections.max = Some(holders + 1 + rng.below(4));
                     connections.per_sender = Some(holders);
                     full = Some((holders, Admitted::FullFromSender));
                 }

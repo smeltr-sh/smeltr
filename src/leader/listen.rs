@@ -11,10 +11,6 @@ use std::time::Duration;
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 
-/// How long a client has to send a request's headers: from connecting, and from the end of its previous
-/// request on the same connection, so it bounds an idle keep-alive too.
-pub const HEADER_READ: Duration = Duration::from_secs(30);
-
 /// How often an HTTP/2 connection with nothing in flight is pinged.
 const H2_PING: Duration = Duration::from_secs(30);
 

@@ -3450,6 +3450,27 @@
             "default": false,
             "examples": [true],
             "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed."
           }
         ],
         "fields": ["__source.name", "__source.type", "__source.remote", "__source.bytes"],
@@ -3465,7 +3486,10 @@
               "senderFingerprints",
               "senderNames",
               "maxRequestBytes",
-              "answerAfterDelivery"
+              "answerAfterDelivery",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs"
             ]
           }
         ]
@@ -3564,6 +3588,27 @@
             "default": false,
             "examples": [true],
             "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed."
           }
         ],
         "fields": [
@@ -3591,7 +3636,10 @@
               "senderNames",
               "sourcetypes",
               "maxRequestBytes",
-              "answerAfterDelivery"
+              "answerAfterDelivery",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs"
             ]
           }
         ]
@@ -3688,7 +3736,7 @@
           {
             "name": "maxConnections",
             "type": "integer",
-            "default": 10000,
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
             "examples": [1000, 100000],
             "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
           },
@@ -3835,6 +3883,27 @@
             "default": false,
             "examples": [true],
             "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed."
           }
         ],
         "fields": [
@@ -3858,7 +3927,10 @@
               "senderFingerprints",
               "senderNames",
               "maxRequestBytes",
-              "answerAfterDelivery"
+              "answerAfterDelivery",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs"
             ]
           }
         ]
@@ -3943,7 +4015,7 @@
           {
             "name": "maxConnections",
             "type": "integer",
-            "default": 10000,
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
             "examples": [1000, 100000],
             "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed. TCP only."
           },
@@ -4152,7 +4224,7 @@
           {
             "name": "maxConnections",
             "type": "integer",
-            "default": 10000,
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
             "examples": [1000, 100000],
             "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed. TCP only."
           },
@@ -4297,6 +4369,27 @@
             "default": false,
             "examples": [true],
             "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed."
           }
         ],
         "fields": ["__source.name", "__source.type", "__source.remote"],
@@ -4312,7 +4405,10 @@
               "senderFingerprints",
               "senderNames",
               "maxRequestBytes",
-              "answerAfterDelivery"
+              "answerAfterDelivery",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs"
             ]
           }
         ]
@@ -4393,6 +4489,27 @@
             "default": false,
             "examples": [true],
             "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed."
           }
         ],
         "fields": [
@@ -4416,7 +4533,10 @@
               "senderFingerprints",
               "senderNames",
               "maxRequestBytes",
-              "answerAfterDelivery"
+              "answerAfterDelivery",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs"
             ]
           }
         ]

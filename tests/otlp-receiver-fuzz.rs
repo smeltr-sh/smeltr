@@ -20,7 +20,7 @@ use smeltr::core::column::{Column, DataType};
 use smeltr::core::variant;
 use smeltr::io::otlp::Encoding;
 use smeltr::io::{Source, SourceRecord};
-use smeltr::plan::topology::{Receiver, Signal, SourceMeta};
+use smeltr::plan::topology::{ConnectionLimits, Receiver, Signal, SourceMeta};
 
 use crate::harness::docker::{Container, Hook, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
@@ -84,19 +84,23 @@ fn random_settings(rng: &mut Rng, ipv6: bool) -> Settings {
 }
 
 /// The receivers `settings` names, each opened on the port in turn.
-fn open(settings: &Settings, pki: &Pki) -> Vec<(Signal, Box<dyn Source>)> {
+fn open(settings: &Settings, pki: &Pki, limits: ConnectionLimits) -> Vec<(Signal, Box<dyn Source>)> {
     (settings.receivers.iter())
         .map(|taking| {
             let otlp = Receiver::Otlp(taking.signal);
-            let source = receiver::build(
-                otlp,
-                settings.listen,
-                settings.tls,
-                &taking.tokens,
-                "exporter",
-                taking.max_request_bytes,
-                pki,
-            );
+            let source = {
+                let (mut config, secrets) = receiver::configured(
+                    otlp,
+                    settings.listen,
+                    settings.tls,
+                    &taking.tokens,
+                    "exporter",
+                    taking.max_request_bytes,
+                    pki,
+                );
+                config.connections = limits;
+                receiver::opened(config, &secrets)
+            };
             (taking.signal, source)
         })
         .collect()
@@ -2992,7 +2996,8 @@ fn every_setting_answers_random_otlp_exports_as_otlp_does() {
                 .map(String::from),
             )
             .chain([0, 200, 400, 401, 404, 405, 413, 415].map(|status| format!("answered {status}")))
-            .chain([0, 3, 12, 16].map(|code| format!("grpc-status {code}"))),
+            .chain([0, 3, 12, 16].map(|code| format!("grpc-status {code}")))
+            .chain(receiver::CONNECTION_LIMITS.iter().map(|s| s.to_string())),
     );
     fuzz::run(1..151, |seed| {
         let mut g = Gen {
@@ -3014,8 +3019,11 @@ fn every_setting_answers_random_otlp_exports_as_otlp_does() {
                 .unwrap();
             cov.reach(limit.1);
         }
-        let mut sources = open(&settings, &pki);
+        let (limits, limited) = receiver::random_connection_limits(&mut g.rng);
+        cov.reach(limited);
+        let mut sources = open(&settings, &pki, limits);
         let sent: Vec<Sent> = (0..10).map(|_| random_request(&mut g, &settings)).collect();
+        let connect = settings.connect;
         let sending = Arc::new((settings, sent));
         let (senders_pki, requests) = (pki.clone(), sending.clone());
         // One at a time, so the records of each signal arrive in the order they were sent.
@@ -3099,6 +3107,7 @@ fn every_setting_answers_random_otlp_exports_as_otlp_does() {
                 ));
             }
         }
+        receiver::holds_to_limits(connect, &limits)?;
         Ok(())
     });
     cov.assert_complete();
@@ -3236,7 +3245,7 @@ fn live_collectors_deliver_random_exports_under_random_configurations() {
             "under {:?}, listening on {}, exporting {exporters:?}",
             settings.tls, settings.listen
         );
-        let mut sources = open(&settings, &pki);
+        let mut sources = open(&settings, &pki, ConnectionLimits::default());
 
         let scratch = Scratch(std::env::temp_dir().join(format!("smeltr-otlp-fuzz-{}-{seed}", std::process::id())));
         let dir = &scratch.0;

@@ -289,6 +289,7 @@ test('System and Cluster show the build each machine runs', async ({
   const detail = await workerDetail(admin, 'w-build');
   await expect(described(detail, 'Version')).toContainText(shown);
   await expect(described(detail, 'Disk')).toContainText('free of');
+  await expect(described(detail, 'Connections')).toContainText(/^up to [\d,]+$/);
 });
 
 test('a secret is set once, checked without being shown, and never read back', async ({

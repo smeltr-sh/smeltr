@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
-use smeltr::plan::topology::{HeldSecrets, Receiver, ReceiverConfig, SecretRef, SourceKind};
+use smeltr::plan::topology::{ConnectionLimits, HeldSecrets, Receiver, ReceiverConfig, SecretRef, SourceKind};
 
 use crate::certs::{self, Authority, Issued};
 use crate::harness::fuzz::Rng;
@@ -249,6 +249,88 @@ pub fn build(
 ) -> Box<dyn Source> {
     let (config, secrets) = configured(receiver, listen, tls, tokens, sender, max_request_bytes, pki);
     opened(config, &secrets)
+}
+
+// -- the connection limits ----------------------------------------------------------------------------------------
+
+/// What [`random_connection_limits`] gives, each the coverage label of a limit it tries.
+pub const CONNECTION_LIMITS: &[&str] = &[
+    "the default connection limits",
+    "a small maxConnections",
+    "a small maxConnectionsPerSender",
+    "an idleTimeoutSecs",
+];
+
+/// The idle timeout [`random_connection_limits`] gives.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Connection limits for a fuzzer's receiver, and which of [`CONNECTION_LIMITS`] they try: mostly the default, else a
+/// cap small enough to fill, or a short idle timeout. Each leaves room for a sender that connects once at a time.
+pub fn random_connection_limits(rng: &mut Rng) -> (ConnectionLimits, &'static str) {
+    let small = 3 + rng.below(4);
+    let limits = match rng.below(8) {
+        0 => ConnectionLimits {
+            max: Some(small),
+            ..ConnectionLimits::default()
+        },
+        1 => ConnectionLimits {
+            per_sender: Some(small),
+            ..ConnectionLimits::default()
+        },
+        2 => ConnectionLimits {
+            idle: Some(IDLE_TIMEOUT),
+            ..ConnectionLimits::default()
+        },
+        _ => return (ConnectionLimits::default(), CONNECTION_LIMITS[0]),
+    };
+    let label = match (limits.max, limits.per_sender, limits.idle) {
+        (Some(_), _, _) => CONNECTION_LIMITS[1],
+        (_, Some(_), _) => CONNECTION_LIMITS[2],
+        _ => CONNECTION_LIMITS[3],
+    };
+    (limits, label)
+}
+
+/// Whether the receiver at `connect` holds its connections to `limits`, as [`random_connection_limits`] gives them:
+/// under a small cap, of one more connection than the cap, all sending nothing, it closes some and keeps some; under
+/// an idle timeout, it closes a connection that sends nothing once it has idled that long, and not before.
+pub fn holds_to_limits(connect: SocketAddr, limits: &ConnectionLimits) -> Result<(), String> {
+    let closed = |stream: &mut TcpStream, within: Duration| {
+        stream.set_read_timeout(Some(within)).unwrap();
+        !matches!(stream.read(&mut [0; 1]), Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut))
+    };
+    if let Some(cap) = limits.per_sender.or(limits.max) {
+        // The sender may hold a connection of its own: one the fuzzer opened for a request and the receiver has not
+        // yet seen end. So with one more than the cap, at least one is closed and at least one kept, whichever the
+        // receiver admitted first.
+        let mut opened: Vec<TcpStream> = (0..=cap).map(|_| TcpStream::connect(connect).unwrap()).collect();
+        // Well within any idle timeout, so only the cap could close one.
+        std::thread::sleep(Duration::from_millis(300));
+        let closed_now = opened
+            .iter_mut()
+            .map(|c| closed(c, Duration::from_millis(1)))
+            .filter(|&c| c)
+            .count();
+        if closed_now == 0 {
+            return Err(format!(
+                "all {} connections were kept, one more than a cap of {cap}",
+                cap + 1
+            ));
+        }
+        if closed_now == cap + 1 {
+            return Err(format!("all {} connections were closed, under a cap of {cap}", cap + 1));
+        }
+    }
+    if let Some(idle) = limits.idle {
+        let mut quiet = TcpStream::connect(connect).unwrap();
+        if closed(&mut quiet, idle / 2) {
+            return Err(format!("a connection was closed before it idled {idle:?}"));
+        }
+        if !closed(&mut quiet, idle * 3) {
+            return Err(format!("a connection idle past {idle:?} was kept"));
+        }
+    }
+    Ok(())
 }
 
 /// What [`build`] opens, for a caller that changes it first, and the secrets it is opened with.

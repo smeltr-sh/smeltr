@@ -18,7 +18,7 @@ pub mod api;
 pub mod app_sign_in;
 pub mod avro;
 pub mod client_credentials;
-mod connections;
+pub mod connections;
 pub mod csv;
 pub mod delta;
 pub mod discovery;
