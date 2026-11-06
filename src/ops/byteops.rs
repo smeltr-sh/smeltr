@@ -5,10 +5,11 @@
 //! A number's type is named as `unpack`'s layout names it, `"u8"` to `"u64"`, `"i8"` to `"i64"`, `"f32"` and
 //! `"f64"`, and its byte order `"big"` or `"little"`, big when the call names none: network order.
 
+use crate::core::bits;
 use crate::core::column::{Column, DataType, FixedMut, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
-use crate::ops::helpers::{Labels, Operand, short_circuit_empty, side};
+use crate::ops::helpers::{Labels, Operand, clamped, short_circuit_empty, side};
 
 /// A number's type in a layout.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -257,6 +258,113 @@ pub fn read_bytes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     out.finish()
 }
 
+/// Where `needle` starts in `b`: the first start at or after `from`, or, with `from_end`, the last start at or before
+/// it; `None` if there is none. `from` is read as JavaScript reads it on a byte array: a negative one counts from the
+/// end.
+fn find(b: &[u8], needle: &[u8], from_end: bool, from: Option<i64>) -> Option<usize> {
+    let n = b.len();
+    let starts = |at: &usize| b[*at..].starts_with(needle);
+    if from_end {
+        let last = match from {
+            None => n,
+            Some(p) if p >= 0 => usize::try_from(p).map_or(n, |p| p.min(n)),
+            Some(p) => usize::try_from(n as i64 + p).ok()?,
+        };
+        (0..=last).rev().find(starts)
+    } else {
+        let first = from.map_or(0, |p| clamped(p, n));
+        (first..=n).find(starts)
+    }
+}
+
+/// The search behind `indexOf`, `lastIndexOf` and `includes` on bytes: the position from [`find`], or `-1`;
+/// `includes` reads it as `>= 0`. What is searched for is a byte's number or `bytes`; a number outside 0 to 255 is no
+/// byte, so it is never found. A null value, search or `from` is a null answer.
+fn search(ctx: &mut Ctx, ins: &[&Column], from_end: bool, to: DataType) -> Column {
+    let len = ins[0].len();
+    if let Some(e) = short_circuit_empty(ins, &to, len) {
+        return e;
+    }
+    // The searched value must be a column, not a constant, as for `indexOf` on text and arrays.
+    let Ok(b) = ins[0].var() else {
+        return Column::empty(to, len);
+    };
+    let (byte, run) = match ins[1].data_type() {
+        DataType::I64 => (side::i64(ins[1]), None),
+        _ => (None, side::var(ins[1])),
+    };
+    if byte.is_none() && run.is_none() {
+        return Column::empty(to, len);
+    }
+    let from = ins.get(2).map(|c| side::i64(c));
+    if matches!(from, Some(None)) {
+        return Column::empty(to, len);
+    }
+    let from = from.flatten();
+    let found = |i: usize| -> Option<Option<usize>> {
+        let from = match &from {
+            None => None,
+            Some(f) if f.is_valid(i) => Some(f.at(i)),
+            Some(_) => return None,
+        };
+        if !b.validity.is_valid(i) {
+            return None;
+        }
+        let one;
+        let needle: &[u8] = match (&byte, &run) {
+            (Some(n), _) if !n.is_valid(i) => return None,
+            (Some(n), _) => match u8::try_from(n.at(i)) {
+                Ok(v) => {
+                    one = [v];
+                    &one
+                }
+                Err(_) => return Some(None),
+            },
+            (_, Some(r)) if !r.is_valid(i) => return None,
+            (_, Some(r)) => r.at(i),
+            (None, None) => unreachable!("one is set, checked above"),
+        };
+        Some(find(b.get(i), needle, from_end, from))
+    };
+    let mut out = Column::alloc(ctx.pool, &to, len);
+    match to {
+        DataType::Bool => {
+            let o = out.bool_mut().expect("a bool column");
+            for i in 0..len {
+                let pos = found(i);
+                bits::set_row(o.values, i, pos.flatten().is_some());
+                o.validity.set_valid(i, pos.is_some());
+            }
+            o.validity.recount();
+        }
+        _ => {
+            let o = out.i64_mut().expect("an i64 column");
+            for i in 0..len {
+                let pos = found(i);
+                o.values[i] = pos.flatten().map_or(-1, |p| p as i64);
+                o.validity.set_valid(i, pos.is_some());
+            }
+            o.validity.recount();
+        }
+    }
+    out
+}
+
+/// `indexOf(b, search[, from])` -> `I64`: where `search`, a byte's number or `bytes`, first comes at or after `from`.
+pub fn index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+    search(ctx, ins, false, DataType::I64)
+}
+
+/// `lastIndexOf(b, search[, from])` -> `I64`: where `search` last comes at or before `from`.
+pub fn last_index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+    search(ctx, ins, true, DataType::I64)
+}
+
+/// `includes(b, search[, from])` -> `Bool`: whether `search` occurs at or after `from`.
+pub fn includes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+    search(ctx, ins, false, DataType::Bool)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +392,21 @@ mod tests {
     fn a_float_reads_in_either_order() {
         assert_eq!(NumType::F32.float(&1.5f32.to_be_bytes(), Order::Big), 1.5);
         assert_eq!(NumType::F64.float(&(-2.25f64).to_le_bytes(), Order::Little), -2.25);
+    }
+
+    #[test]
+    fn a_run_is_found_from_a_position_in_either_direction() {
+        let b = b"a\0b\0\0c";
+        assert_eq!(find(b, b"\0", false, None), Some(1));
+        assert_eq!(find(b, b"\0", false, Some(2)), Some(3));
+        assert_eq!(find(b, b"\0\0", false, None), Some(3));
+        assert_eq!(find(b, b"\0", true, None), Some(4));
+        assert_eq!(find(b, b"\0", true, Some(3)), Some(3));
+        assert_eq!(find(b, b"\0", true, Some(-4)), Some(1));
+        assert_eq!(find(b, b"\0", false, Some(-2)), Some(4));
+        assert_eq!(find(b, b"\0", true, Some(-9)), None);
+        assert_eq!(find(b, b"z", false, None), None);
+        assert_eq!(find(b, b"", false, Some(9)), Some(6));
     }
 
     #[test]

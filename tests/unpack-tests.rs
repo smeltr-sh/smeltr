@@ -201,3 +201,26 @@ fn a_field_may_have_any_name() {
     assert_eq!(rows, [json!({"\u{8}\u{c}\u{1}": 7})]);
     assert!(kinds.is_empty(), "{kinds:?}");
 }
+
+/// `indexOf`, `lastIndexOf` and `includes` search bytes for a byte's number or a run of bytes, by byte position.
+#[test]
+fn a_byte_or_a_run_is_found_by_its_byte_position() {
+    let (rows, kinds) = run(
+        r#"[b.indexOf(0), b.indexOf(0, 2), b.indexOf(parseBytes("0d0a", "hex")), b.lastIndexOf(0), b.lastIndexOf(0, -3),
+            b.indexOf(256), b.indexOf(0x7a, -1), b.includes(0x61, 1) ? 1 : 0, b.includes(parseBytes("0a", "hex")) ? 1 : 0]"#,
+        // "a" 00 "b" 00 0d 0a "z"
+        &["610062000d0a7a"],
+    );
+    assert_eq!(rows, [json!([1, 3, 4, 3, 3, -1, 6, 0, 1])]);
+    assert!(kinds.is_empty(), "{kinds:?}");
+}
+
+/// A zero-terminated string, read with `indexOf` and `readBytes`.
+#[test]
+fn a_zero_terminated_string_reads_up_to_its_zero() {
+    let (rows, _) = run(
+        r#"{name: decode(readBytes(b, 1, b.indexOf(0, 1) - 1), "utf-8"), next: readInt(b, b.indexOf(0, 1) + 1, "u8")}"#,
+        &["0568690007"],
+    );
+    assert_eq!(rows, [json!({"name": "hi", "next": 7})]);
+}
