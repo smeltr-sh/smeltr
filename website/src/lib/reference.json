@@ -1132,13 +1132,19 @@
         },
         {
           "name": "indexOf",
-          "signature": "value.indexOf(search)",
-          "summary": "Where `search` first occurs in a string, or which element of an array equals it. `-1` when it does not. Other languages call this `find`.",
+          "signature": "value.indexOf(search[, from])",
+          "summary": "Where `search` first occurs in a string, or which element of an array equals it, at or after `from`. `-1` when it does not. A negative `from` counts from the end of an array, and is 0 on a string. Other languages call this `find`.",
           "examples": [
             {
               "expr": "line.indexOf(\",\")",
               "result": "1",
               "given": ["line = \"a,b,c\""]
+            },
+            {
+              "expr": "line.indexOf(\",\", 2)",
+              "result": "3",
+              "given": ["line = \"a,b,c\""],
+              "note": "searches from position 2"
             },
             {
               "expr": "\"GET /health\".indexOf(\"POST\")",
@@ -1160,8 +1166,8 @@
         },
         {
           "name": "includes",
-          "signature": "value.includes(search)",
-          "summary": "Whether a string contains `search`, or an array contains an element equal to it.",
+          "signature": "value.includes(search[, from])",
+          "summary": "Whether a string contains `search`, or an array contains an element equal to it, at or after `from`. A negative `from` counts from the end of an array, and is 0 on a string.",
           "examples": [
             {
               "expr": "msg.includes(\"reset\")",
@@ -1172,6 +1178,11 @@
               "expr": "\"GET,HEAD\".split(\",\").includes(\"HEAD\")",
               "result": "true",
               "note": "arrays too"
+            },
+            {
+              "expr": "\"a-b\".includes(\"a\", 1)",
+              "result": "false",
+              "note": "searches from position 1"
             },
             {
               "expr": "includes(msg, \"reset\")",
@@ -1211,8 +1222,8 @@
       "functions": [
         {
           "name": "lastIndexOf",
-          "signature": "value.lastIndexOf(search)",
-          "summary": "Where `search` last occurs, or `-1`. Useful for splitting on the final separator.",
+          "signature": "value.lastIndexOf(search[, from])",
+          "summary": "Where `search` last occurs in a string, or the position of the last element of an array equal to it, at or before `from`. `-1` when it does not. A negative `from` counts from the end of an array, and is 0 on a string. Useful for splitting on the final separator.",
           "examples": [
             {
               "expr": "\"/api/v2/things\".lastIndexOf(\"/\")",
@@ -1221,6 +1232,16 @@
             {
               "expr": "\"a.b.c\".lastIndexOf(\".\")",
               "result": "3"
+            },
+            {
+              "expr": "\"a.b.c\".lastIndexOf(\".\", 2)",
+              "result": "1",
+              "note": "searches back from position 2"
+            },
+            {
+              "expr": "[1, 2, 1].lastIndexOf(1)",
+              "result": "2",
+              "note": "arrays too"
             },
             {
               "expr": "lastIndexOf(\"/api/v2/things\", \"/\")",

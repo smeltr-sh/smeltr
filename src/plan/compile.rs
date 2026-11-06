@@ -483,7 +483,7 @@ struct Folding {
 }
 
 /// What `settle` knows of the names a step first writes `null` or `[]`, which have no type of their own: each takes
-/// the one the writes after it blend to, a variant where they do not meet, as a construct's writes do.
+/// the type the writes after it blend to. A write whose type cannot blend with the writes before it is refused.
 #[derive(Clone, Default)]
 struct Untyped {
     /// What each first write's later writes blended to in the rounds before, by its place among the round's first
@@ -2150,7 +2150,11 @@ impl Compiler<'_> {
                 .map(|n| node_type(&self.syms, n))
                 .unwrap_or(DataType::Null);
             let found = &mut self.untyped.as_mut().expect("checked above").found[i].3;
-            *found = found.unify(&now).unwrap_or(DataType::Variant);
+            // A write whose type cannot blend with the writes before it leaves the type as they made it, and is
+            // refused when the step compiles again with that type.
+            if let Some(t) = found.unify(&now) {
+                *found = t;
+            }
             return;
         }
         let writes = match (typed, self.syms.node(target)) {
