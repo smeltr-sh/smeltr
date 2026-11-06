@@ -156,8 +156,7 @@ pub fn raise_open_file_limit() -> std::io::Result<OpenFiles> {
                 rlim_cur: now.rlim_max,
                 rlim_max: now.rlim_max,
             };
-            // SAFETY: `raised` is a valid `rlimit`. A system that refuses it, as macOS does past its own most, leaves
-            // the limit as it was.
+            // SAFETY: `raised` is a valid `rlimit`. A system that refuses it leaves the limit as it was.
             if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } != 0 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -194,7 +193,8 @@ impl Budget {
         })
     }
 
-    /// This process's budget, from its open-file limit when it is first asked for.
+    /// This process's budget, taken from its open-file limit when it is first asked for and the same after that. main
+    /// raises the limit before any receiver starts, so this reads the raised one.
     fn process() -> &'static Arc<Budget> {
         static BUDGET: OnceLock<Arc<Budget>> = OnceLock::new();
         BUDGET.get_or_init(|| Budget::new(open_files().budget))
