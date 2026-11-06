@@ -1045,8 +1045,67 @@ fn runtime_child_of(pid: u32) -> Option<u32> {
     })
 }
 
-/// An all-in-one process -- a leader and the worker inside it -- and what a test needs to watch it.
+/// The runtime process under `pid`: its one child that runs `smeltr.exe`. The unix lookup uses a marker in the
+/// child's environment; this lookup does not read it.
+#[cfg(windows)]
+fn runtime_child_of(pid: u32) -> Option<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    // SAFETY: a process snapshot takes no process id, and an invalid handle is checked.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut found = None;
+    // SAFETY: a live snapshot handle, and an entry whose `dwSize` names its own size.
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while more {
+        let name = &entry.szExeFile[..entry
+            .szExeFile
+            .iter()
+            .position(|c| *c == 0)
+            .unwrap_or(entry.szExeFile.len())];
+        if entry.th32ParentProcessID == pid && String::from_utf16_lossy(name).eq_ignore_ascii_case("smeltr.exe") {
+            found = Some(entry.th32ProcessID);
+            break;
+        }
+        // SAFETY: as above.
+        more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    // SAFETY: opened above and closed once.
+    unsafe { CloseHandle(snapshot) };
+    found
+}
+
+/// Ends `pid` with no chance to drain: nothing it can catch, nothing its supervisor can ask for.
 #[cfg(unix)]
+fn kill_outright(pid: u32) {
+    // SAFETY: `kill` takes a process id and a signal, and touches no memory of ours.
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+}
+
+/// Ends `pid` with no chance to drain: nothing it can catch, nothing its supervisor can ask for.
+#[cfg(windows)]
+fn kill_outright(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    // SAFETY: a handle opened here, checked for null, and closed once.
+    unsafe {
+        let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if !process.is_null() {
+            TerminateProcess(process, 1);
+            CloseHandle(process);
+        }
+    }
+}
+
+/// An all-in-one process -- a leader and the worker inside it -- and what a test needs to watch it.
 struct Standalone {
     process: std::process::Child,
     data_dir: std::path::PathBuf,
@@ -1057,7 +1116,6 @@ struct Standalone {
 }
 
 /// Where a standalone's leader listens, and the host each side reaches it by.
-#[cfg(unix)]
 struct Reach {
     /// `SMELTR_GUI_BIND`.
     bind: &'static str,
@@ -1069,7 +1127,6 @@ struct Reach {
     receivers: Option<&'static str>,
 }
 
-#[cfg(unix)]
 impl Reach {
     const LOOPBACK: Reach = Reach {
         bind: "127.0.0.1",
@@ -1079,7 +1136,6 @@ impl Reach {
     };
 }
 
-#[cfg(unix)]
 impl Standalone {
     /// Starts one on loopback, and signs in to it as its administrator.
     fn start(name: &str) -> Standalone {
@@ -1240,7 +1296,6 @@ impl Standalone {
 /// supervisor notices a process that is gone, starts another, and says so on its next beat. The leader is in this
 /// same process, so it answering afterward is the other half of what is being asserted.
 #[test]
-#[cfg(unix)]
 fn a_runtime_that_dies_is_replaced_without_restarting_the_worker_or_the_leader() {
     let standalone = Standalone::start("runtime-recovers");
     let outcome = (|| {
@@ -1249,7 +1304,7 @@ fn a_runtime_that_dies_is_replaced_without_restarting_the_worker_or_the_leader()
             .ok_or("the worker never reported a running runtime")?;
 
         // Killed outright: no drain, no acknowledgment, nothing the supervisor can ask for.
-        unsafe { libc::kill(doomed as libc::pid_t, libc::SIGKILL) };
+        kill_outright(doomed);
 
         let deadline = Instant::now() + Duration::from_secs(60);
         while Instant::now() < deadline {
@@ -1269,7 +1324,6 @@ fn a_runtime_that_dies_is_replaced_without_restarting_the_worker_or_the_leader()
 /// A commit that loads but will not start costs nothing that was running: the worker starts again what it ran
 /// before, reports why the new commit did not start, and stays there rather than stopping it to try again.
 #[test]
-#[cfg(unix)]
 fn a_commit_that_will_not_start_leaves_the_worker_on_what_it_ran_before() {
     let standalone = Standalone::start("restores-last-good");
     let outcome = (|| {
@@ -1421,7 +1475,6 @@ fn a_signaled_runtime_drains_and_is_replaced() {
 }
 
 /// A service on `ip` that takes every POST, keeps its body, and answers 200, on as many connections as it is sent.
-#[cfg(unix)]
 fn collector(ip: &str) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
     use std::io::{BufRead, BufReader, Read, Write};
     let listener = std::net::TcpListener::bind((ip.parse::<std::net::IpAddr>().unwrap(), 0)).unwrap();
@@ -1468,7 +1521,6 @@ fn collector(ip: &str) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
 }
 
 /// One POST to a receiver, its status code. `None` when the connection was refused or cut off.
-#[cfg(unix)]
 fn post(at: std::net::SocketAddr, token: &str, body: &str) -> Option<u16> {
     use std::io::{Read, Write};
     let mut stream = std::net::TcpStream::connect(at).ok()?;
@@ -1487,7 +1539,6 @@ fn post(at: std::net::SocketAddr, token: &str, body: &str) -> Option<u16> {
 /// A receiver's port outlives the runtime serving it: a sender that connects while no runtime runs waits in the
 /// queue of the socket the supervisor holds, and the runtime that replaces the lost one answers it.
 #[test]
-#[cfg(unix)]
 fn a_receiver_answers_a_request_sent_while_its_runtime_was_being_replaced() {
     // The worker's address, so the socket the supervisor holds is the one its setting names.
     let reach = Reach {
@@ -1537,7 +1588,7 @@ fn a_receiver_answers_a_request_sent_while_its_runtime_was_being_replaced() {
         let (first, runtime) = standalone
             .running_runtime(Duration::from_secs(10))
             .ok_or("the worker reported no runtime")?;
-        unsafe { libc::kill(runtime as libc::pid_t, libc::SIGKILL) };
+        kill_outright(runtime);
         while runtime_child_of(standalone.process.id()) == Some(runtime) {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -1684,7 +1735,6 @@ fn a_certificate_version_the_receiver_could_not_serve_is_refused_and_it_keeps_ru
 }
 
 /// A service on `ip` that answers every request with `body`.
-#[cfg(unix)]
 fn steady(ip: &str, body: &'static str) -> std::net::SocketAddr {
     use std::io::{BufRead, BufReader, Write};
     let listener = std::net::TcpListener::bind((ip.parse::<std::net::IpAddr>().unwrap(), 0)).unwrap();
@@ -1707,7 +1757,6 @@ fn steady(ip: &str, body: &'static str) -> std::net::SocketAddr {
 }
 
 /// Whether this host can listen on IPv6 loopback. A test that needs it says it was skipped when not.
-#[cfg(unix)]
 fn has_ipv6(test: &str) -> bool {
     let has = std::net::TcpListener::bind("[::1]:0").is_ok();
     if !has {
@@ -1718,7 +1767,6 @@ fn has_ipv6(test: &str) -> bool {
 
 /// A worker reaches its leader as `reach` says, pulls from a service on `pull`, takes a push from each of `push`
 /// on its receiver's default address, and delivers what it read to a service on `sink`.
-#[cfg(unix)]
 fn a_worker_pulls_and_is_pushed_to(name: &str, reach: &Reach, pull: &str, sink: &str, push: &[&str]) {
     let standalone = Standalone::start_reaching(name, reach);
     let outcome = (|| {
@@ -1777,14 +1825,12 @@ fn a_worker_pulls_and_is_pushed_to(name: &str, reach: &Reach, pull: &str, sink: 
 }
 
 #[test]
-#[cfg(unix)]
 fn a_worker_pulls_and_is_pushed_to_over_ipv4() {
     a_worker_pulls_and_is_pushed_to("ipv4", &Reach::LOOPBACK, "127.0.0.1", "127.0.0.1", &["127.0.0.1"]);
 }
 
 /// The leader listens on `[::]`: the test reaches it over IPv4 and its worker over IPv6, and the receiver takes both.
 #[test]
-#[cfg(unix)]
 fn a_worker_pulls_and_is_pushed_to_dual_stack() {
     if !has_ipv6("dual_stack") {
         return;
@@ -1800,7 +1846,6 @@ fn a_worker_pulls_and_is_pushed_to_dual_stack() {
 
 /// Every address is IPv6: the leader, what the worker pulls from and delivers to, and its receiver's sender.
 #[test]
-#[cfg(unix)]
 fn a_worker_pulls_and_is_pushed_to_over_ipv6() {
     if !has_ipv6("over_ipv6") {
         return;
@@ -1816,7 +1861,6 @@ fn a_worker_pulls_and_is_pushed_to_over_ipv6() {
 
 /// A leader that does not listen on `127.0.0.1` is still where its own worker, told nothing, calls it.
 #[test]
-#[cfg(unix)]
 fn a_worker_told_nothing_reaches_a_leader_off_127_0_0_1() {
     // Linux answers on all of 127.0.0.0/8; a host that does not has nothing to test here.
     if std::net::TcpListener::bind("127.0.0.2:0").is_err() {
