@@ -91,10 +91,13 @@
     onpointerdown={drag}
   ></div>
   <div class="bar">
-    <select aria-label="Conversation" bind:value={open}>
-      <option value="">New conversation</option>
-      {#each conversations as c (c.id)}<option value={c.id}>{firstLineText(c.title)}</option>{/each}
-    </select>
+    {#if conversations.length}
+      <select aria-label="Conversation" bind:value={open}>
+        <option value="">New conversation</option>
+        {#each conversations as c (c.id)}<option value={c.id}>{firstLineText(c.title)}</option
+          >{/each}
+      </select>
+    {/if}
     <span class="spacer"></span>
     <a href={open ? `#/me/agent/${open}` : '#/me/agent'} onclick={onclose}>Open on the Agent page</a
     >
