@@ -579,12 +579,13 @@ impl Handler {
             let mut broke = false;
             let cut = match read {
                 Some(Ok(0)) => break,
+                // A TLS sender that hangs up without a `close_notify` has hung up cleanly, as far as its messages go.
+                Some(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
                 Some(Ok(n)) => {
                     framer.push(&buf[..n]);
                     framer.cut(&mut messages)
                 }
-                // The connection broke, as a TLS sender's does when it hangs up without a `close_notify`. Messages
-                // held whole are kept; the unfinished one is dropped.
+                // The connection broke. Messages held whole are kept; the unfinished one is dropped.
                 Some(Err(_)) => {
                     broke = true;
                     framer.cut_whole(&mut messages)
@@ -1033,8 +1034,8 @@ mod tests {
         drop(sender);
     }
 
-    /// Reads its chunks, one a read, then fails, as a connection that breaks.
-    struct Breaks(std::collections::VecDeque<Vec<u8>>);
+    /// Reads its chunks, one a read, then fails with the error it was given.
+    struct Breaks(std::collections::VecDeque<Vec<u8>>, std::io::ErrorKind);
 
     impl AsyncRead for Breaks {
         fn poll_read(
@@ -1047,7 +1048,7 @@ mod tests {
                     buf.put_slice(&chunk);
                     Ok(())
                 }
-                None => Err(std::io::ErrorKind::UnexpectedEof.into()),
+                None => Err(self.1.into()),
             })
         }
     }
@@ -1061,7 +1062,11 @@ mod tests {
         let mut admitted = Vec::new();
         let ended = handler
             .read(
-                Breaks([long.clone().into_bytes(), b"\x00<13>b".to_vec()].into()),
+                Breaks(
+                    [long.clone().into_bytes(), b"\x00<13>b".to_vec()].into(),
+                    // A reset breaks a connection, where a hang-up would end it.
+                    std::io::ErrorKind::ConnectionReset,
+                ),
                 "127.0.0.1",
                 |messages: Messages, _| {
                     admitted.extend(strings(messages));
@@ -1073,5 +1078,23 @@ mod tests {
         assert_eq!(ended, End::Gone { partial: 0 });
         // The unfinished `<13>b`, with no break after it, is dropped.
         assert_eq!(admitted, [long]);
+    }
+
+    #[tokio::test]
+    async fn a_tls_sender_hanging_up_without_close_notify_has_its_last_message_taken() {
+        let mut admitted = Vec::new();
+        let ended = handler()
+            .read(
+                Breaks([b"<13>a\n<13>b".to_vec()].into(), std::io::ErrorKind::UnexpectedEof),
+                "127.0.0.1",
+                |messages: Messages, _| {
+                    admitted.extend(strings(messages));
+                    async { Ok(()) }
+                },
+                &mut Held::alone(),
+            )
+            .await;
+        assert_eq!(ended, End::Gone { partial: 0 });
+        assert_eq!(admitted, ["<13>a", "<13>b"]);
     }
 }
