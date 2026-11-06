@@ -297,7 +297,7 @@ struct Current {
     framer: Framer,
     /// Records cut and not yet handed out.
     frames: Messages,
-    /// Why the object is unreadable, once `frames` are handed out.
+    /// Why the object is unreadable, once the records before it are handed out.
     failed: Option<String>,
     /// The object has no more bytes to come, and `framer` has cut its last.
     framed: bool,
@@ -774,8 +774,8 @@ fn lock(held: &Mutex<HashMap<u64, Held>>) -> MutexGuard<'_, HashMap<u64, Held>> 
     held.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The next record of `current` its framer cuts, or `None` at the end of the object. A frame the framer refuses, a
-/// record over the longest among them, makes the object unreadable once the records before it are handed out.
+/// The next record of `current` its framer cuts, or `None` at the end of the object. A record the framer refuses, one
+/// over the longest, makes the object unreadable once the records before it are handed out.
 fn next_frame(current: &mut Current) -> Result<Option<Vec<u8>>, String> {
     loop {
         if let Some(record) = current.frames.next() {

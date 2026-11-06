@@ -85,8 +85,8 @@ impl Connections {
         self.epoch.elapsed().as_millis() as u64
     }
 
-    /// Makes room for a connection from `peer`, closing the idlest where the limits say. The connections it closed, and
-    /// its place; or why it is refused.
+    /// Makes room for a connection from `peer`, closing the connection idle longest where the limits say. Returns the
+    /// connections it closed and the new one's place, or why it is refused.
     pub(super) fn admit(&mut self, peer: IpAddr) -> (Vec<(IpAddr, Closed)>, Result<Place, Refused>) {
         let mut closed = Vec::new();
         if let Some(cap) = self.limits.per_sender
@@ -135,7 +135,7 @@ impl Connections {
     }
 
     /// Closes the connection, of `peer`'s where given, that has been idle longest, if it has been idle for
-    /// [`EVICTABLE_AFTER`]. Its sender.
+    /// [`EVICTABLE_AFTER`]. Returns the sender of the connection it closed.
     fn close_idlest(&mut self, peer: Option<IpAddr>) -> Option<IpAddr> {
         let now = self.now();
         let (&id, open) = (self.open.iter())
@@ -147,7 +147,8 @@ impl Connections {
         self.close(id)
     }
 
-    /// Closes every connection that has been idle for the idle timeout. Their senders.
+    /// Closes every connection that has been idle for the idle timeout. Returns the senders of the connections it
+    /// closed.
     pub(super) fn close_idle(&mut self) -> Vec<IpAddr> {
         let Some(idle) = self.limits.idle else {
             return Vec::new();

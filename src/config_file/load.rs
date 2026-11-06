@@ -2518,8 +2518,8 @@ fn check_encoding(encoding: &EncodingLabel, id: &str, errors: &mut ItemErrors<'_
 }
 
 /// Refuses a line breaker on any framing but lines, and one `check_line_breaker` refuses; a length prefix and a fixed
-/// size on any framing but their own, absent from their own, or that no frame of `max` bytes could hold. `unit` names a
-/// frame to the reader: a receiver's "message", an object's "record".
+/// size on any framing but their own, absent from their own, or that no message or record of `max` bytes could hold.
+/// `unit` is the reader's word for it: a receiver's "message", an object's "record".
 fn check_framing(dto: &FramingSettingsDto, id: &str, max: u64, unit: &str, errors: &mut ItemErrors<'_>) {
     let what = format!("source {id:?}");
     if let Some(line_breaker) = &dto.line_breaker {
@@ -3359,7 +3359,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                         "{what} sets a framing, which only TCP reads: over UDP a datagram is a record"
                     )),
                     Transport::Udp => {}
-                    // A frame is a record, which a receiver keeps to its largest request.
+                    // A receiver keeps a message to its largest request.
                     Transport::Tcp => {
                         let max = listener.max_request_bytes.0.max(MaxRequestBytes::FLOOR);
                         check_framing(framing, &s.id, max, "message", errors);
@@ -4634,7 +4634,7 @@ fn check_receiver<T>(
     }
 }
 
-/// A receiver's connection limits, which only one whose senders stream over TCP reads: `tcp`.
+/// A receiver's connection limits. Only a receiver whose transport is `tcp` reads them.
 fn check_connection_limits(what: &str, connections: &ConnectionLimitsDto, tcp: bool, errors: &mut ItemErrors<'_>) {
     let ConnectionLimitsDto {
         max_connections,

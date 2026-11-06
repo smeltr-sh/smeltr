@@ -427,8 +427,9 @@ pub(crate) const STEPS: &[&str] = &[
          PRIMARY KEY (channel, warning)
      );",
     // 18 -- the syslog and socket receivers share one module, so its lines name no service, and "syslogReceiver" is
-    // no longer one a log level override can name (`logs::levels`). Breaking: an older build would keep the override,
-    // which this one refuses to save beside any other.
+    // no longer one a log level override can name (`logs::levels`). Breaking, so no older build opens the store
+    // after it: an older build would keep syslogReceiver as a service, and this build refuses to save log levels whose
+    // overrides still name it.
     "-- An override that names the service syslogReceiver names nothing now: dropped.
      UPDATE settings SET value = json_set(value, '$.overrides', (
          SELECT COALESCE(json_group_array(json(o.value)), json('[]'))

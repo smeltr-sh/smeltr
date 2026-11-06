@@ -6,7 +6,7 @@ import { SYSTEM_GLYPHS, SYSTEM_LABELS } from './systemGlyphs';
 import { suggestId } from './ids';
 
 /** Absent is `lines`, so choosing it writes nothing. Each framing takes only its own settings, so choosing one drops
- * the others' and starts its own: a length of 4 bytes, or frames of 64. */
+ * the others' and starts its own: a length of 4 bytes, or records of 64 bytes. */
 export function setFraming(d: FramingSettings, framing: Framing) {
   if (framing === 'lines') delete d.framing;
   else d.framing = framing;

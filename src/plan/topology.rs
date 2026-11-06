@@ -2180,7 +2180,7 @@ pub struct ReceiverConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConnectionLimits {
     /// The most it holds. At the cap a new connection takes the place of the one idle longest, if that one has been
-    /// idle a while, and is closed otherwise.
+    /// idle for `io::connections::EVICTABLE_AFTER`, and is closed otherwise.
     pub max: usize,
     /// The most it holds from one address, the same way. `None` holds as many as `max` from one.
     pub per_sender: Option<usize>,

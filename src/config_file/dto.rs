@@ -904,7 +904,7 @@ pub enum SourceKindDto {
     /// What syslog senders send to `port`, as RFC 5424 or RFC 3164 messages: over TCP framed by octet count or ended
     /// by a newline (RFC 6587), under TLS (RFC 5425) when it names a certificate; over UDP one to a datagram (RFC 5426).
     /// Every worker of the group listens, and each message is one record. Syslog has no acknowledgement, so delivery
-    /// is best-effort. A full receiver stops reading TCP, so the sender's window fills, and drops UDP.
+    /// is best-effort. A full receiver stops reading TCP, so the sender's window fills, and drops UDP datagrams.
     #[serde(rename_all = "camelCase")]
     SyslogReceiver {
         #[serde(flatten)]
@@ -927,14 +927,15 @@ pub enum SourceKindDto {
         transport: Transport,
         /// A pattern whose first capture group is where a message over TCP ends, the group dropped, as Splunk's
         /// `LINE_BREAKER`, for senders that end a message with something other than a newline, or with nothing.
-        /// Absent, a message ends at a newline. Octet counting still frames a message that starts with its length.
+        /// Absent, a message ends at a newline. A message that starts with a digit 1 to 9 is framed by octet counting,
+        /// whatever this says.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         line_breaker: Option<String>,
     },
     /// What senders send to `port` in a protocol smeltr has no receiver for: over TCP cut into records by its
     /// framing, under TLS when it names a certificate; over UDP a datagram to a record. Every worker of the group
     /// listens. Nothing is acknowledged, so delivery is best-effort. A full receiver stops reading TCP, so the
-    /// sender's window fills, and drops UDP.
+    /// sender's window fills, and drops UDP datagrams.
     #[serde(rename_all = "camelCase")]
     SocketReceiver {
         #[serde(flatten)]
@@ -2279,7 +2280,8 @@ pub struct FramingSettingsDto {
     pub fixed_bytes: Option<u64>,
 }
 
-/// Where a message's length is and what it counts. The record is the whole message, its header and length among it.
+/// Where a message's length is and what it counts. It counts the whole message or record, its header and length
+/// included, or only the bytes after the length.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct LengthPrefixDto {

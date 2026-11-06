@@ -3059,9 +3059,9 @@ impl Shared {
 
 /// Serves `listener` for a receiver whose protocol streams over a connection held open: each connection from a
 /// sender `allow_from` admits, under `tls` when given, is a task of its own that `handle` runs. A sender from
-/// elsewhere is closed before its TLS handshake, so it is shown nothing. So is a connection `limits` leaves no room
-/// for, and a connection is closed where they say ([`connections`]). A connection that fails to arrive or to complete
-/// its handshake ends alone. Runs until dropped, which ends every connection it holds.
+/// elsewhere is closed before its TLS handshake, so it is shown nothing; so is a connection `limits` leave no room
+/// for. `limits` also say which held connection to close ([`connections`]). A connection that fails to arrive or to
+/// complete its handshake ends alone. Runs until dropped, which ends every connection it holds.
 async fn serve_streams<H, F>(
     listener: tokio::net::TcpListener,
     allow_from: Vec<ipnetwork::IpNetwork>,
@@ -3181,7 +3181,7 @@ async fn serve_streams<H, F>(
     }
 }
 
-/// Takes a connection off the receiver's when its task ends, however it ends.
+/// Removes the connection from the receiver's held connections when its task ends, however it ends.
 struct Leaves {
     open: Arc<Mutex<Connections>>,
     id: u64,
@@ -4087,7 +4087,8 @@ mod tests {
         (at, shared)
     }
 
-    /// Whether the receiver closes `sender`'s connection within `within`, reading past whatever it answers.
+    /// Whether the receiver closes `sender`'s connection within `within`. It reads and discards any answer the receiver
+    /// sends first.
     async fn closed(sender: &mut tokio::net::TcpStream, within: Duration) -> bool {
         use tokio::io::AsyncReadExt;
         let mut read = [0; 16];
@@ -4096,8 +4097,9 @@ mod tests {
     }
 
     /// At its cap, with no connection idle long enough to give way, a receiver closes the new one and serves the
-    /// ones it holds. Its idle timeout closes a connection it waits on that sends nothing, which makes room, and
-    /// never one whose records it holds undelivered, whose sender is not the one keeping it waiting.
+    /// ones it holds. Its idle timeout closes a connection that sends nothing while the receiver waits on it, which
+    /// makes room. It never closes a connection whose records wait on delivery: the receiver is not reading from it, so
+    /// the sender is not idle.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_receiver_holds_its_connections_to_its_limits() {
         use tokio::io::AsyncWriteExt;

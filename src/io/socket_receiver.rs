@@ -1,9 +1,10 @@
 //! What a syslog or socket receiver makes of a sender's TCP connection, or of its datagrams: messages cut by the
-//! receiver's framing (`io::framing`), each a record. A socket receiver's framing is the one it names; a syslog
-//! receiver's is syslog's own, framed by octet count or ended by a newline (RFC 6587):
+//! receiver's framing (`io::framing`), each a record. A socket receiver's framing is the one it names. A syslog
+//! receiver's is syslog's own (RFC 6587): a message ends at a newline, or is an octet-counted frame, its length then a
+//! space then the message. "Frame" here means only that:
 //!
 //! ```text
-//!   sender ── allowFrom ──► bytes ──► Framer: each frame by its first byte ──► Messages ──► admitted, then read on
+//!   sender ── allowFrom ──► bytes ──► Framer: each message by its first byte ──► Messages ──► admitted, then read on
 //!     1-9:   MSG-LEN SP MSG     (octet counting: exactly MSG-LEN bytes, newlines and all)
 //!     other: MSG LF             (non-transparent: one trailing CR dropped, a blank line skipped)
 //!            MSG break          (with a line breaker: MSG ends where its pattern breaks, a blank event skipped)
@@ -13,8 +14,8 @@
 //! discarded as it arrives, as RFC 5424 (6.1) has a receiver truncate it: the connection reads on.
 //!
 //! A line breaker serves senders that end a message with something other than a newline, such as a NUL, or with
-//! nothing at all, the next message's start being the only mark. Octet counting still wins wherever a frame starts
-//! with 1-9: a message from a sender that writes one starts with `<`, and its pattern decides the rest.
+//! nothing at all, the next message's start being the only mark. Octet counting applies wherever a message starts
+//! with a digit 1 to 9. A syslog message starts with `<`, so a line breaker still decides where it ends.
 //!
 //! Syslog has no acknowledgement: a message is the sender's to forget once written, so a connection waits for the
 //! inbox to take what it read, which is its backpressure, and never for delivery.
@@ -47,11 +48,11 @@ const CLOSING: Duration = Duration::from_secs(5);
 /// Why a connection ended.
 #[derive(Debug, PartialEq)]
 enum End {
-    /// The sender hung up or the connection broke, with the bytes of an octet-counted frame it never finished.
+    /// The sender hung up or the connection broke, with the bytes of a message it never finished.
     Gone { partial: usize },
     /// The receiver is stopping.
     Stopping,
-    /// A frame this receiver does not read.
+    /// A message whose framing this receiver cannot read.
     Malformed(Malformed),
 }
 
@@ -61,7 +62,7 @@ impl From<Closed> for End {
     }
 }
 
-/// What a connection does that a syslog receiver serves.
+/// How a syslog or socket receiver treats a connection.
 pub(super) struct Handler {
     /// The largest message.
     max_message_bytes: usize,
@@ -170,7 +171,8 @@ impl Handler {
         let mut framer = Framer::new(self.framing.clone(), self.max_message_bytes);
         let mut buf = vec![0; READ_STEP];
         loop {
-            // Room for what it holds, its buffer as much again as it may grow to, and the read it takes next.
+            // Reserves room for the read buffer, the framer's buffer twice over, since it may double as it grows, and the
+            // next read.
             if let Err(closed) = held.hold(buf.len() + 2 * framer.capacity() + STREAM_STEP).await {
                 return closed.into();
             }
@@ -190,7 +192,7 @@ impl Handler {
                 // The sender went quiet: nothing more is coming for what is held.
                 None => framer.flush(&mut messages),
             };
-            // What came before a refused frame is the sender's as much as any, so it is admitted first.
+            // The messages before one the framer refused are whole, so they are admitted before the connection ends.
             if !messages.is_empty() {
                 let bytes = held.part(messages.size());
                 if let Err(closed) = admit(messages, bytes).await {
@@ -295,7 +297,7 @@ mod tests {
         assert_eq!(datagram(b"<13>a"), Some(vec!["<13>a".into()]));
         assert_eq!(datagram(b"<13>a\n"), Some(vec!["<13>a".into()]));
         assert_eq!(datagram(b"<13>a\r\n"), Some(vec!["<13>a".into()]));
-        // Only the one a sender ends its message with: what comes before it is the message's own.
+        // Only the last newline is dropped; one before it is part of the message.
         assert_eq!(datagram(b"<13>a\n\n"), Some(vec!["<13>a\n".into()]));
         assert_eq!(datagram(b"<13>a\nb\r"), Some(vec!["<13>a\nb".into()]));
     }
@@ -310,7 +312,7 @@ mod tests {
     #[test]
     fn a_datagram_over_the_largest_message_is_truncated() {
         assert_eq!(datagram(run('a', MAX).as_bytes()), Some(vec![run('a', MAX)]));
-        // The largest message keeps its line end, which is not counted, and is not truncated.
+        // A message of the largest size followed by a line end is not truncated: the line end is dropped, not counted.
         for end in ["\n", "\r\n"] {
             assert_eq!(
                 datagram(format!("{}{end}", run('a', MAX)).as_bytes()),

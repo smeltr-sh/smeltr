@@ -348,8 +348,8 @@ export type SourceDto =
         /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a message, served without TLS, so it
          * takes no certificate or authorities and only `allowFrom` admits a sender. */
         transport?: 'tcp' | 'udp';
-        /** Where a message over TCP ends, as an object source's `lineBreaker`. Absent, at a newline. Octet counting
-         * still frames a message that starts with its length. */
+        /** Where a message over TCP ends, as an object source's `lineBreaker`. Absent, at a newline. A message that
+         * starts with a digit 1 to 9 is framed by octet counting, whatever this says. */
         lineBreaker?: string;
       })
   | (ReceiverSettings &
@@ -923,7 +923,7 @@ export interface ReceiverSettings extends Pick<TlsDto, 'certificate' | 'trustedA
 export interface ConnectionLimits {
   /** Absent is `LIMITS.maxConnections.default`. */
   maxConnections?: number;
-  /** Absent holds as many from one sender as `maxConnections`. */
+  /** Absent, as many as `maxConnections`. */
   maxConnectionsPerSender?: number;
   /** Absent keeps an idle connection open while there is room. */
   idleTimeoutSecs?: number;
@@ -973,9 +973,9 @@ export interface ListingSettings extends ReadFormat, FramingSettings {
 
 /** How a stream's bytes become records, an object source's objects or what a socket receiver's senders send over
  * TCP: one per line, the whole stream as one, one per line unescaped as a `bytes` object destination wrote it, one
- * per frame that says its own length, or one per so many bytes. `lines` alone takes the source's `lineBreaker`, a
- * regex whose first capture group is where a record ends, the group dropped, as Splunk's `LINE_BREAKER`; absent, a
- * record ends at a line end. */
+ * per message or record that says its own length, or one per so many bytes. `lines` alone takes the source's
+ * `lineBreaker`, a regex whose first capture group is where a record ends, the group dropped, as Splunk's
+ * `LINE_BREAKER`; absent, a record ends at a line end. */
 export type Framing = 'lines' | 'object' | 'escapedLines' | 'lengthPrefix' | 'fixed';
 
 /** Mirrors `config_file::dto::FramingSettingsDto`. */
@@ -989,8 +989,7 @@ export interface FramingSettings {
   fixedBytes?: number;
 }
 
-/** Where a frame's length is and what it counts, mirroring `config_file::dto::LengthPrefixDto`. The record is the
- * whole frame. */
+/** Where a message's or record's length is and what it counts, mirroring `config_file::dto::LengthPrefixDto`. */
 export interface LengthPrefix {
   /** How many bytes come before the length. Absent is none. */
   offset?: number;
@@ -998,7 +997,8 @@ export interface LengthPrefix {
   bytes: number;
   /** Absent is `big`. */
   order?: 'big' | 'little';
-  /** What the length counts: the bytes after it, or the whole frame. Absent is `rest`. */
+  /** What the length counts: the bytes after it, or the whole message or record, its header and length included.
+   * Absent is `rest`. */
   counts?: 'rest' | 'message';
 }
 
