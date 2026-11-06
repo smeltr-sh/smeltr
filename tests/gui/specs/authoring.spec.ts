@@ -2319,7 +2319,8 @@ test('A10: a socket receiver is cut by the framing its form chooses, and over UD
   await expect(admin.getByText(/each datagram is one record, without TLS/)).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('socket-transport-help.png') });
   await admin.keyboard.press('Escape');
-  // Under Advanced, the connections it holds: 10,000 unless tightened, with no cap per sender and no idle timeout.
+  // Under Advanced, the connections it holds: the default maximum unless tightened, with no cap per sender and no
+  // idle timeout.
   await admin.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   const maxConnections = admin.getByRole('spinbutton', { name: /^max connections(?! per)/ });
   await expect(maxConnections).toHaveValue('10000');

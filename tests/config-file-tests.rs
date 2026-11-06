@@ -6643,8 +6643,9 @@ fn an_http_api_source_with_a_muddled_sign_in_is_refused() {
     }
 }
 
-/// A receiver that streams holds 10,000 connections unless told otherwise, and an admin may tighten that, cap one
-/// sender, and close idle connections. Over UDP, which holds no connection, the settings are refused.
+/// A receiver that streams holds the default maximum of connections unless told otherwise, and an admin may
+/// tighten that, cap one sender, and close idle connections. Over UDP, which holds no connection, the settings are
+/// refused.
 #[test]
 fn a_receiver_that_streams_takes_connection_limits() {
     use smeltr::plan::topology::{ConnectionLimits, SourceKind};

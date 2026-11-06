@@ -1,7 +1,7 @@
 //! Random senders against socket receivers of random settings and framings. Nothing is acknowledged: a sender forgets
-//! a frame once written. So every frame a receiver admits must arrive once, as sent, and none it refuses: a misframed
-//! stream closes the connection, keeping what came before it, a frame over the limit arrives truncated to it, the
-//! connection reading on, and a frame the connection ended partway through is dropped.
+//! a message once written. So every message a receiver admits must arrive once, as sent, and none it refuses: a
+//! misframed stream closes the connection, keeping what came before it, a message over the limit arrives truncated to
+//! it, the connection reading on, and a message the connection ended partway through is dropped.
 //!
 //! Each seed opens a receiver under settings an operator could save, over TCP or UDP, with a framing drawn from all
 //! there are, and sends it connections or datagrams from senders it admits and senders it does not, written in random
@@ -199,8 +199,9 @@ fn escaped(record: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A record over `max`, of text that is not whitespace, and what the receiver keeps of it. Short of what a line breaker
-/// holds past the limit for its break, so the receiver waits for the break as for any event.
+/// A message over `max`, of text that is not whitespace, and what the receiver keeps of it. It stays within the bytes a
+/// line breaker holds past the limit while it looks for a break (`BREAK_SLACK`), so under a line breaker the receiver
+/// still waits for the message's break, as for any other.
 fn oversized(rng: &mut Rng, max: usize, labels: &mut Vec<String>) -> (Vec<u8>, Vec<u8>) {
     labels.push("a frame over the limit".into());
     let record = vec![b'o'; max + 1 + rng.below((3 * max).min(BREAK_SLACK / 2))];
@@ -208,8 +209,8 @@ fn oversized(rng: &mut Rng, max: usize, labels: &mut Vec<String>) -> (Vec<u8>, V
     (record, kept)
 }
 
-/// A random connection, the `n`th, to a receiver of `framing` reading frames of at most `max` bytes, and the labels it
-/// reaches where the receiver reads it.
+/// A random connection, the `n`th, to a receiver of `framing` reading messages of at most `max` bytes, and the
+/// labels it reaches where the receiver reads it.
 fn connection(rng: &mut Rng, n: usize, framing: &Framing, max: usize, labels: &mut Vec<String>) -> Connection {
     let (mut bytes, mut taken) = (Vec::new(), Vec::new());
     let mut ended_by_hanging_up = false;
@@ -240,7 +241,8 @@ fn connection(rng: &mut Rng, n: usize, framing: &Framing, max: usize, labels: &m
                     bytes.extend_from_slice(rng.pick(&[&b"\n"[..], b"\r\n"]));
                 } else {
                     bytes.push(0);
-                    // A break that reaches the end of what came may yet go on, so the last event waits on the hang-up.
+                    // A break at the very end of what the receiver has read could still grow as more bytes come, so
+                    // the receiver holds the last message until the sender hangs up.
                     ended_by_hanging_up |= last;
                 }
                 taken.push(kept);
@@ -395,7 +397,8 @@ fn datagram(rng: &mut Rng, n: usize, max: usize, label: &mut String) -> (Vec<u8>
     (datagram, record)
 }
 
-/// The records' bytes, or why one is not filed as from `remote`, by a socket receiver.
+/// The bytes of the records a socket receiver recorded as sent from `remote`, or an error naming the first record
+/// recorded otherwise.
 fn read_back(records: &[SourceRecord], remote: &str) -> Result<Vec<Vec<u8>>, String> {
     let objects = SourceMeta::SOCKET_RECEIVER.objects(records, Some("raw"));
     (records.iter().zip(objects))
@@ -418,7 +421,7 @@ fn send(at: SocketAddr, tls: Tls, pki: &Pki, connection: &Connection) -> Result<
     };
     tcp.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    // Each piece its own segment, so the receiver more often reads a frame in parts.
+    // Each piece its own segment, so the receiver more often reads a message in parts.
     tcp.set_nodelay(true).unwrap();
     // Closing a socket with unread data resets the connection, and a reset can drop what the receiver has not yet
     // read. So the sender reads until the receiver is done.
@@ -499,7 +502,7 @@ fn options(ipv6: bool) -> impl Iterator<Item = String> {
     )
 }
 
-/// A receiver under any settings an operator can save takes every frame an admitted sender writes whole, once and as
+/// A receiver under any settings an operator can save takes every message an admitted sender writes whole, once and as
 /// written, however it is framed and written, and nothing from a sender it does not admit or after a misframed one.
 #[test]
 fn every_framing_takes_each_frame_once_however_it_is_written() {
@@ -538,7 +541,8 @@ fn every_framing_takes_each_frame_once_however_it_is_written() {
                     }
                     if settings.tls != Tls::None && rng.chance(4) {
                         connection.abrupt = true;
-                        // Hanging up unsaid reads as cut short, so what waited on the hang-up is not taken.
+                        // Hanging up without a close_notify reads as cut short, so what waited on the hang-up is not
+                        // taken.
                         if connection.ended_by_hanging_up {
                             connection.taken.pop();
                             reached.retain(|label| label != "an unterminated last frame");
@@ -641,7 +645,7 @@ fn every_framing_takes_each_frame_once_however_it_is_written() {
 enum End {
     /// A hang-up; under TLS, one said first with close_notify.
     HangUp,
-    /// Under TLS, a hang-up unsaid.
+    /// Under TLS, a hang-up without a close_notify.
     Unsaid,
     /// A reset.
     Reset,
@@ -659,7 +663,7 @@ enum Admitted {
     Certificate,
     /// Plain TCP to a TLS receiver.
     Plain,
-    /// At its maxConnections, every connection it holds too lately busy to give way.
+    /// At its maxConnections, none of the connections it holds has been idle long enough to close.
     Full,
     /// At its maxConnectionsPerSender from the sender, the same way.
     FullFromSender,
@@ -905,8 +909,8 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
                 }
                 for n in 0..count {
                     let mut reached = Vec::new();
-                    // Left full, the receiver reads nothing from a connection it is not waiting on, which an idle
-                    // timeout does not close; the sender of the bulk waits on it, so it is left out there anyway.
+                    // A receiver left full stops reading the bulk's connection, and it would stay full past an idle
+                    // timeout, so a seed with an idle timeout sends no bulk.
                     let fill = connections.idle.is_none() && n == 0 && framing != Framing::Object;
                     let mut c = match fill && rng.chance(3) {
                         true => {
@@ -960,9 +964,9 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
                         (_, 1) => End::Unsaid,
                         _ => End::HangUp,
                     };
-                    // A plain sender's hang-up and a TLS sender's close_notify end the stream; an unsaid one or a reset
-                    // cuts it short, so what waits on the end of the stream is not taken, and a reset may lose what
-                    // the receiver had not read yet.
+                    // A plain sender's hang-up and a TLS sender's close_notify end the stream; a hang-up without a
+                    // close_notify or a reset cuts it short, so what waits on the end of the stream is not taken, and
+                    // a reset may lose what the receiver had not read yet.
                     let mut pauses = vec![0u64; c.pieces.len()];
                     if c.pieces.len() > 1 && rng.chance(4) {
                         let at = rng.below(c.pieces.len() - 1);
@@ -1027,7 +1031,8 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
                 }
                 if full.is_none() && rng.chance(3) {
                     holders.push(serde_json::json!({"kind": "idle", "from": "127.0.0.1"}));
-                    // Without TLS, whose handshake would time it out, a receiver with no idle timeout keeps it.
+                    // Under TLS a stalled handshake times out; without TLS a receiver with no idle timeout keeps the
+                    // connection.
                     closes.push((tls == Tls::None && connections.idle.is_none()).then_some(false));
                     labels.push("an idle connection held".into());
                 }
@@ -1156,8 +1161,8 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
         };
         let show = |r: &[u8]| String::from_utf8_lossy(&r[..r.len().min(80)]).to_string();
 
-        // Every record a whole message some connection sent, each taken at most as often as sent; a flood's
-        // datagrams named and whole.
+        // Every record is a whole message some connection sent, taken at most as often as it was sent. Each
+        // datagram of a flood carries its own number and arrives whole, or truncated to the limit.
         let mut left: Vec<Vec<u8>> = records.clone();
         for e in &expects {
             for m in &e.must {

@@ -1092,7 +1092,7 @@ fn body(rng: &mut Rng, cov: &mut Reached, framing: &Framing) -> (Vec<u8>, Vec<Ve
         }
         Framing::LengthPrefix(prefix) => {
             let header = prefix.offset + prefix.width;
-            // What a length of this width can count, less the header where it counts the whole frame.
+            // What a length of this width can count, less the header where it counts the whole record.
             let most = match prefix.width {
                 8 => u64::MAX,
                 width => (1u64 << (8 * width)) - 1,

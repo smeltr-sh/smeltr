@@ -97,7 +97,7 @@ def connection(plan, c, out):
                 stream = stream.unwrap()
             except (OSError, ssl.SSLError):
                 pass
-        # Under TLS, shutting down the SSL socket skips close_notify: a hang-up unsaid.
+        # Under TLS, shutting down the SSL socket skips the close_notify.
         stream.shutdown(socket.SHUT_WR)
         if end == "half_close":
             # Writes no more, but holds the connection open a while before reading the receiver's hang-up.
