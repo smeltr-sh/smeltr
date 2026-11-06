@@ -614,13 +614,15 @@ pub fn length_any(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     }
 }
 
+/// Dispatches on the first argument's type: an array to `$array`, bytes to `$bytes` where one is named, and anything
+/// else to `$text`.
 macro_rules! text_or_array {
-    ($name:ident, $text:path, $array:path) => {
+    ($name:ident, $text:path, $array:path $(, bytes: $bytes:path)?) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
-            if matches!(ins[0].data_type(), DataType::Array(_)) {
-                $array(ctx, ins)
-            } else {
-                $text(ctx, ins)
+            match ins[0].data_type() {
+                DataType::Array(_) => $array(ctx, ins),
+                $(DataType::Bytes => $bytes(ctx, ins),)?
+                _ => $text(ctx, ins),
             }
         }
     };
@@ -628,37 +630,13 @@ macro_rules! text_or_array {
 
 text_or_array!(slice_any, strops::str_slice, arrayops::array_slice);
 text_or_array!(at_any, strops::str_at, arrayops::array_at);
-
-/// `text_or_array`, with bytes searched by byte position rather than read as text.
-macro_rules! text_bytes_or_array {
-    ($name:ident, $text:path, $bytes:path, $array:path) => {
-        pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
-            match ins[0].data_type() {
-                DataType::Array(_) => $array(ctx, ins),
-                DataType::Bytes => $bytes(ctx, ins),
-                _ => $text(ctx, ins),
-            }
-        }
-    };
-}
-
-text_bytes_or_array!(
-    includes_any,
-    strops::str_includes,
-    byteops::includes,
-    arrayops::array_includes
-);
-text_bytes_or_array!(
-    index_of_any,
-    strops::str_index_of,
-    byteops::index_of,
-    arrayops::array_index_of
-);
-text_bytes_or_array!(
+text_or_array!(includes_any, strops::str_includes, arrayops::array_includes, bytes: byteops::includes);
+text_or_array!(index_of_any, strops::str_index_of, arrayops::array_index_of, bytes: byteops::index_of);
+text_or_array!(
     last_index_of_any,
     strops::str_last_index_of,
-    byteops::last_index_of,
-    arrayops::array_last_index_of
+    arrayops::array_last_index_of,
+    bytes: byteops::last_index_of
 );
 
 /// `test(value, /pattern/)` -> `Bool`. Null propagates.

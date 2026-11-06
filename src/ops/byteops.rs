@@ -6,10 +6,10 @@
 //! `"f64"`, and its byte order `"big"` or `"little"`, big when the call names none: network order.
 
 use crate::core::bits;
-use crate::core::column::{Column, DataType, FixedMut, StrBuilder, VarType};
+use crate::core::column::{Column, DataType, FixedMut, StrBuilder, VarLen, VarType};
 use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
-use crate::ops::helpers::{Labels, Operand, clamped, short_circuit_empty, side};
+use crate::ops::helpers::{Labels, Operand, Side, clamped, short_circuit_empty, side};
 use memchr::memmem;
 
 /// A number's type in a layout.
@@ -277,6 +277,14 @@ fn find(b: &[u8], needle: &[u8], from_end: bool, from: Option<i64>) -> Option<us
     }
 }
 
+/// What `indexOf`, `lastIndexOf` and `includes` search bytes for.
+enum Needle<'a> {
+    /// A byte's number.
+    Byte(Side<'a, &'a [i64], i64>),
+    /// A run of bytes.
+    Run(Side<'a, VarLen<'a>, &'a [u8]>),
+}
+
 /// The search behind `indexOf`, `lastIndexOf` and `includes` on bytes: the position from [`find`], or `-1`;
 /// `includes` reads it as `>= 0`. What is searched for is a byte's number or `bytes`; a number outside 0 to 255 is no
 /// byte, so it is never found. A null value, search or `from` is a null answer.
@@ -289,13 +297,13 @@ fn search(ctx: &mut Ctx, ins: &[&Column], from_end: bool, to: DataType) -> Colum
     let Ok(b) = ins[0].var() else {
         return Column::empty(to, len);
     };
-    let (byte, run) = match ins[1].data_type() {
-        DataType::I64 => (side::i64(ins[1]), None),
-        _ => (None, side::var(ins[1])),
+    let needle = match ins[1].data_type() {
+        DataType::I64 => side::i64(ins[1]).map(Needle::Byte),
+        _ => side::var(ins[1]).map(Needle::Run),
     };
-    if byte.is_none() && run.is_none() {
+    let Some(needle) = needle else {
         return Column::empty(to, len);
-    }
+    };
     let from = ins.get(2).map(|c| side::i64(c));
     if matches!(from, Some(None)) {
         return Column::empty(to, len);
@@ -311,18 +319,17 @@ fn search(ctx: &mut Ctx, ins: &[&Column], from_end: bool, to: DataType) -> Colum
             return None;
         }
         let one;
-        let needle: &[u8] = match (&byte, &run) {
-            (Some(n), _) if !n.is_valid(i) => return None,
-            (Some(n), _) => match u8::try_from(n.at(i)) {
+        let needle: &[u8] = match &needle {
+            Needle::Byte(n) if !n.is_valid(i) => return None,
+            Needle::Byte(n) => match u8::try_from(n.at(i)) {
                 Ok(v) => {
                     one = [v];
                     &one
                 }
                 Err(_) => return Some(None),
             },
-            (_, Some(r)) if !r.is_valid(i) => return None,
-            (_, Some(r)) => r.at(i),
-            (None, None) => unreachable!("one is set, checked above"),
+            Needle::Run(r) if !r.is_valid(i) => return None,
+            Needle::Run(r) => r.at(i),
         };
         Some(find(b.get(i), needle, from_end, from))
     };
