@@ -32,8 +32,8 @@ use crate::plan::parse_call::split_dots_default;
 use crate::plan::topology::Signal;
 use crate::plan::topology::{
     AccessKey, Acknowledgement, AfterCommit, ApiRecords, AssumedRole, AzureAccess, AzureCredential, AzureStore,
-    CatalogSignIn, Cloud, DeliverRule, DeltaDestinationConfig, DestinationConfig, DestinationKind, DocIdPolicy,
-    Endpoint, EntraSignIn, Framing, GcsAccess, GcsStore, HttpDestinationConfig, IcebergDestinationConfig,
+    CatalogSignIn, Cloud, ConnectionLimits, DeliverRule, DeltaDestinationConfig, DestinationConfig, DestinationKind,
+    DocIdPolicy, Endpoint, EntraSignIn, Framing, GcsAccess, GcsStore, HttpDestinationConfig, IcebergDestinationConfig,
     KafkaDestinationConfig, KafkaProps, KafkaService, KafkaSourceConfig, ListPlace, ListStart,
     LogAnalyticsDestinationConfig, NamedCertificate, NamedSecret, Newlines, ObjectFormat, ObjectQueue,
     ObjectSourceConfig, ObjectsDestinationConfig, OktaSignIn, OtlpDestinationConfig, PrometheusDestinationConfig,
@@ -2235,7 +2235,7 @@ fn to_senders(tls: &ServedTlsDto) -> crate::plan::topology::Senders {
 fn to_connection_limits(dto: &ConnectionLimitsDto) -> crate::plan::topology::ConnectionLimits {
     let size = |n: u64| usize::try_from(n).unwrap_or(usize::MAX);
     crate::plan::topology::ConnectionLimits {
-        max: size(dto.max_connections.0),
+        max: dto.max_connections.map(size),
         per_sender: dto.max_connections_per_sender.map(size),
         idle: dto.idle_timeout_secs.map(std::time::Duration::from_secs),
     }
@@ -4682,7 +4682,7 @@ fn check_connection_limits(what: &str, connections: &ConnectionLimitsDto, tcp: b
         idle_timeout_secs,
     } = connections;
     let set = [
-        ("maxConnections", !max_connections.is_default()),
+        ("maxConnections", max_connections.is_some()),
         ("maxConnectionsPerSender", max_connections_per_sender.is_some()),
         ("idleTimeoutSecs", idle_timeout_secs.is_some()),
     ];
@@ -4693,21 +4693,26 @@ fn check_connection_limits(what: &str, connections: &ConnectionLimitsDto, tcp: b
             ));
         }
     }
-    if !(1..=MaxConnections::MAX).contains(&max_connections.0) {
+    let most = ConnectionLimits::MOST as u64;
+    if let Some(n) = max_connections
+        && !(1..=most).contains(n)
+    {
         errors.at("maxConnections").push(format!(
-            "{what} holds up to {} connections; maxConnections is between 1 and {}",
-            max_connections.0,
-            MaxConnections::MAX
+            "{what} holds up to {n} connections; maxConnections is between 1 and {most}"
         ));
     }
     if let Some(n) = max_connections_per_sender
-        && !(1..=max_connections.0).contains(n)
+        && !(1..=max_connections.unwrap_or(most)).contains(n)
     {
-        errors.at("maxConnectionsPerSender").push(format!(
-            "{what} holds up to {n} connections from one sender; maxConnectionsPerSender is between 1 and its \
-             maxConnections, {}",
-            max_connections.0
-        ));
+        errors.at("maxConnectionsPerSender").push(match max_connections {
+            Some(max) => format!(
+                "{what} holds up to {n} connections from one sender; maxConnectionsPerSender is between 1 and its \
+                 maxConnections, {max}"
+            ),
+            None => format!(
+                "{what} holds up to {n} connections from one sender; maxConnectionsPerSender is between 1 and {most}"
+            ),
+        });
     }
     if *idle_timeout_secs == Some(0) {
         errors.at("idleTimeoutSecs").push(format!(
@@ -7518,8 +7523,8 @@ mod tests {
         };
         use crate::plan::topology::MAX_SENDERS;
         type Request = RequestBytes;
-        // Name, min, max (none where the loader sets none), default.
-        let want: Vec<(&str, u64, Option<u64>, u64)> = vec![
+        // Name, min, max (none where the loader sets none), default (none where absent is not a number).
+        let want: Vec<(&str, u64, Option<u64>, Option<u64>)> = [
             ("inFlight", 1, Some(MAX_SENDERS as u64), InFlight::DEFAULT as u64),
             (
                 "maxBulkBytes",
@@ -7551,7 +7556,6 @@ mod tests {
                 Some(Receiver::MAX),
                 Receiver::DEFAULT,
             ),
-            ("maxConnections", 1, Some(MaxConnections::MAX), MaxConnections::DEFAULT),
             (
                 "maxObjectBytes",
                 Object::MIN as u64,
@@ -7598,7 +7602,19 @@ mod tests {
             ),
             // The loader refuses only 0.
             ("pollIntervalSecs", 1, None, PollIntervalSecs::DEFAULT),
-        ];
+        ]
+        .into_iter()
+        .map(|(name, min, max, default)| (name, min, max, Some(default)))
+        .flat_map(|entry| {
+            let after = (entry.0 == "receiverRequestBytes").then_some((
+                "maxConnections",
+                1,
+                Some(ConnectionLimits::MOST as u64),
+                None,
+            ));
+            std::iter::once(entry).chain(after)
+        })
+        .collect();
 
         let source = include_str!("../../gui-frontend/src/api.ts");
         let table = &source[source.find("export const LIMITS = {").expect("LIMITS")..];
@@ -7612,7 +7628,7 @@ mod tests {
                     .product()
             })
         };
-        let offered: Vec<(&str, u64, Option<u64>, u64)> = table
+        let offered: Vec<(&str, u64, Option<u64>, Option<u64>)> = table
             .split("},")
             .filter(|entry| entry.contains("min:"))
             .map(|entry| {
@@ -7626,7 +7642,7 @@ mod tests {
                     name,
                     field("min").expect("a min"),
                     field("max"),
-                    field("default").expect("a default"),
+                    entry.contains("default:").then(|| field("default").expect("a default")),
                 )
             })
             .collect();

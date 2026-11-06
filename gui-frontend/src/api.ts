@@ -535,8 +535,8 @@ export const LIMITS = {
   logAnalyticsRequestBytes: { min: 4 * 1024, max: 1024 * 1024, default: 1024 * 1024 },
   /** A receiver's `maxRequestBytes` (`MaxRequestBytes`): at most what one request may hold of its inbox. */
   receiverRequestBytes: { min: 2048, max: 64 * 1024 * 1024, default: 10 * 1024 * 1024 },
-  /** A receiver's `maxConnections` (`MaxConnections`), on each worker. */
-  maxConnections: { min: 1, max: 1_000_000, default: 10_000 },
+  /** A receiver's `maxConnections` (`ConnectionLimits::MOST`), on each worker. Absent, the worker's budget. */
+  maxConnections: { min: 1, max: 1_000_000 },
   maxObjectBytes: { min: 64 * 1024, max: 64 * 1024 * 1024 * 1024, default: 64 * 1024 * 1024 },
   stallAfterSecs: { min: 1, max: 120, default: 30 },
   bufferBytes: { min: 4 * 1024 * 1024, max: 1024 * 1024 * 1024, default: 64 * 1024 * 1024 },
@@ -933,7 +933,7 @@ export interface ReceiverSettings extends Pick<
 
 /** How many connections a receiver holds open over TCP, mirroring `config_file::dto::ConnectionLimitsDto`. */
 export interface ConnectionLimits {
-  /** Absent is `LIMITS.maxConnections.default`. */
+  /** Absent, as many as the worker's budget for every receiver's connections. */
   maxConnections?: number;
   /** Absent, as many as `maxConnections`. */
   maxConnectionsPerSender?: number;
@@ -3126,6 +3126,11 @@ export type ResourceReport = {
    * would not answer. */
   diskFreeBytes?: number;
   diskTotalBytes?: number;
+  /** How many files the worker may hold open. Absent from a worker older than this field, and where the
+   * platform sets no such limit. */
+  openFileLimit?: number;
+  /** How many connections the worker's receivers may hold together. Absent from a worker older than this field. */
+  connectionBudget?: number;
 };
 
 /** One worker thread as last heartbeated. `lastSeenMillisAgo` is the only

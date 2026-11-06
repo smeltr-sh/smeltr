@@ -3454,7 +3454,7 @@
           {
             "name": "maxConnections",
             "type": "integer",
-            "default": 10000,
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
             "examples": [1000, 100000],
             "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
           },
@@ -3592,7 +3592,7 @@
           {
             "name": "maxConnections",
             "type": "integer",
-            "default": 10000,
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
             "examples": [1000, 100000],
             "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
           },
@@ -3736,7 +3736,7 @@
           {
             "name": "maxConnections",
             "type": "integer",
-            "default": 10000,
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
             "examples": [1000, 100000],
             "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
           },
@@ -3887,7 +3887,7 @@
           {
             "name": "maxConnections",
             "type": "integer",
-            "default": 10000,
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
             "examples": [1000, 100000],
             "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
           },
@@ -4015,7 +4015,7 @@
           {
             "name": "maxConnections",
             "type": "integer",
-            "default": 10000,
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
             "examples": [1000, 100000],
             "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed. TCP only."
           },
@@ -4224,7 +4224,7 @@
           {
             "name": "maxConnections",
             "type": "integer",
-            "default": 10000,
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
             "examples": [1000, 100000],
             "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed. TCP only."
           },
@@ -4373,7 +4373,7 @@
           {
             "name": "maxConnections",
             "type": "integer",
-            "default": 10000,
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
             "examples": [1000, 100000],
             "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
           },
@@ -4493,7 +4493,7 @@
           {
             "name": "maxConnections",
             "type": "integer",
-            "default": 10000,
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
             "examples": [1000, 100000],
             "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
           },

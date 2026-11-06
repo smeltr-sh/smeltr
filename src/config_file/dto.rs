@@ -1028,9 +1028,10 @@ pub struct ReceiverSettingsDto {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ConnectionLimitsDto {
-    /// The most connections it holds at once, on each worker.
-    #[serde(default, skip_serializing_if = "MaxConnections::is_default")]
-    pub max_connections: MaxConnections,
+    /// The most connections it holds at once, on each worker. Absent, as many as the worker's budget for every
+    /// receiver's connections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<u64>,
     /// The most it holds from one address. Absent, as many as `maxConnections`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_connections_per_sender: Option<u64>,
@@ -1038,26 +1039,6 @@ pub struct ConnectionLimitsDto {
     /// while there is room.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_timeout_secs: Option<u64>,
-}
-
-/// The most connections a receiver holds at once.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct MaxConnections(pub u64);
-
-impl MaxConnections {
-    pub const DEFAULT: u64 = crate::plan::topology::ConnectionLimits::DEFAULT_MAX as u64;
-    pub const MAX: u64 = 1_000_000;
-
-    pub fn is_default(&self) -> bool {
-        self.0 == Self::DEFAULT
-    }
-}
-
-impl Default for MaxConnections {
-    fn default() -> Self {
-        MaxConnections(Self::DEFAULT)
-    }
 }
 
 /// A token a HEC receiver admits.

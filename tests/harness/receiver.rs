@@ -270,7 +270,7 @@ pub fn random_connection_limits(rng: &mut Rng) -> (ConnectionLimits, &'static st
     let small = 3 + rng.below(4);
     let limits = match rng.below(8) {
         0 => ConnectionLimits {
-            max: small,
+            max: Some(small),
             ..ConnectionLimits::default()
         },
         1 => ConnectionLimits {
@@ -283,12 +283,8 @@ pub fn random_connection_limits(rng: &mut Rng) -> (ConnectionLimits, &'static st
         },
         _ => return (ConnectionLimits::default(), CONNECTION_LIMITS[0]),
     };
-    let label = match (
-        limits.max < ConnectionLimits::DEFAULT_MAX,
-        limits.per_sender,
-        limits.idle,
-    ) {
-        (true, _, _) => CONNECTION_LIMITS[1],
+    let label = match (limits.max, limits.per_sender, limits.idle) {
+        (Some(_), _, _) => CONNECTION_LIMITS[1],
         (_, Some(_), _) => CONNECTION_LIMITS[2],
         _ => CONNECTION_LIMITS[3],
     };
@@ -303,8 +299,7 @@ pub fn holds_to_limits(connect: SocketAddr, limits: &ConnectionLimits) -> Result
         stream.set_read_timeout(Some(within)).unwrap();
         !matches!(stream.read(&mut [0; 1]), Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut))
     };
-    let cap = limits.per_sender.unwrap_or(limits.max);
-    if cap < ConnectionLimits::DEFAULT_MAX {
+    if let Some(cap) = limits.per_sender.or(limits.max) {
         // The sender may hold a connection of its own: one the fuzzer opened for a request and the receiver has not
         // yet seen end. So with one more than the cap, at least one is closed and at least one kept, whichever the
         // receiver admitted first.

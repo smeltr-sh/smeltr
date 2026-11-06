@@ -259,17 +259,30 @@ datagram's source address can be forged, so a UDP receiver's networks admit
 whoever can send from inside them or claim to.
 
 Every receiver bounds the connections it holds open over TCP, so that
-connections cannot exhaust a worker: a cap on each worker, an optional cap per
-sender, and an optional idle timeout.
+connections cannot exhaust a worker: a budget the receivers of a worker share,
+an optional cap on each receiver, an optional cap per sender, and an optional
+idle timeout.
 
 ```mermaid
 flowchart TD
   A[new connection] --> B{receiver holds its maximum?}
-  B -- no --> C[accepted]
-  B -- yes --> D{some connection idle long enough?}
+  B -- no --> G{worker's budget spent?}
+  B -- yes --> D{some connection of the receiver idle long enough?}
   D -- yes --> E[the one idle longest is closed, the new one takes its place]
   D -- no --> F[new connection is closed]
+  E --> G
+  G -- no --> C[accepted]
+  G -- yes --> H{some connection of any receiver idle long enough?}
+  H -- yes --> I[the one idle longest is closed, the new one takes its place]
+  H -- no --> F
 ```
+
+The budget is the worker's open-file limit, less what the worker keeps for
+everything else it holds open: its destinations, its files and its link to the
+leader (`io::connections::Budget`). A container runtime may give a process a soft
+open-file limit below its hard one, so a worker raises its soft limit to its
+hard one when it starts. A receiver's own cap, `maxConnections`, is unset
+by default, so one receiver may take the whole budget.
 
 The per-sender cap, which counts by address, applies the same rule to one
 address's connections. A connection is idle only while the receiver waits to

@@ -2188,11 +2188,12 @@ pub struct ReceiverConfig {
 
 /// How many connections a receiver that streams holds at once, and how long one may sit idle. The defaults hold every
 /// honest sender: a quiet one that keeps one connection for days, and every sender behind one balancer's address.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConnectionLimits {
     /// The most it holds. At the cap a new connection takes the place of the one idle longest, if that one has been
-    /// idle for `io::connections::EVICTABLE_AFTER`, and is closed otherwise.
-    pub max: usize,
+    /// idle for `io::connections::EVICTABLE_AFTER`, and is closed otherwise. `None` holds as many as the worker's
+    /// budget allows (`io::connections::Budget`).
+    pub max: Option<usize>,
     /// The most it holds from one address, the same way. `None` holds as many as `max` from one.
     pub per_sender: Option<usize>,
     /// A connection that reads nothing this long is closed. `None` holds an idle one for as long as there is room.
@@ -2200,17 +2201,8 @@ pub struct ConnectionLimits {
 }
 
 impl ConnectionLimits {
-    pub const DEFAULT_MAX: usize = 10_000;
-}
-
-impl Default for ConnectionLimits {
-    fn default() -> Self {
-        ConnectionLimits {
-            max: Self::DEFAULT_MAX,
-            per_sender: None,
-            idle: None,
-        }
-    }
+    /// The most a receiver, or a worker's receivers together, may hold.
+    pub const MOST: usize = 1_000_000;
 }
 
 /// Which protocol a receiver speaks.

@@ -8,12 +8,16 @@
 //! A sender that sends a little before each connection has idled [`EVICTABLE_AFTER`] keeps every place it takes. Only
 //! `maxConnectionsPerSender` stops it, and it is unset by default, since a balancer or NAT in front of the workers
 //! sends every sender through one address.
+//!
+//! Every receiver of a process also draws on one [`Budget`]: its open-file limit, less what the process keeps for
+//! everything else it holds open. When the budget is spent, a new connection takes the place of the connection idle
+//! longest on any receiver, by the same rule.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
@@ -31,6 +35,8 @@ pub(super) const EVICTABLE_AFTER: Duration = Duration::from_secs(60);
 pub(super) enum Closed {
     /// A new connection at `maxConnections` took its place.
     ForNew,
+    /// A new connection, with the worker's [`Budget`] spent, took its place.
+    ForNewOnWorker,
     /// A new connection from the same sender at `maxConnectionsPerSender` took its place.
     ForNewFromSender,
     /// It read nothing for `idleTimeoutSecs`.
@@ -44,6 +50,8 @@ pub(super) enum Refused {
     Full,
     /// It holds `maxConnectionsPerSender` from this sender, none idle long enough to close.
     FullFromSender,
+    /// The worker's [`Budget`] is spent, none of its connections idle long enough to close.
+    WorkerFull,
 }
 
 /// A connection's mark while the receiver is not waiting on it: never idle.
@@ -90,9 +98,130 @@ impl Shut {
 /// The connections a receiver holds, by an id of their own.
 pub(super) struct Connections {
     limits: ConnectionLimits,
+    budget: Arc<Budget>,
     epoch: Instant,
     next: u64,
     open: HashMap<u64, Open>,
+}
+
+/// The connections the receivers of a process hold together, and the most they may.
+pub(super) struct Budget {
+    most: usize,
+    held: AtomicUsize,
+    receivers: Mutex<Vec<Weak<Mutex<Connections>>>>,
+}
+
+/// The open-file limit of this process, and the connections its receivers may hold together within it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpenFiles {
+    /// `None` where the platform has no such limit, or it is unlimited.
+    pub limit: Option<u64>,
+    pub budget: usize,
+}
+
+/// The descriptors a process keeps from its receivers' connections, for its destinations, its files, its pipes and
+/// its link to the leader: a quarter of its limit, up to this many.
+const RESERVE_MOST: u64 = 8_192;
+
+impl OpenFiles {
+    fn within(limit: Option<u64>) -> OpenFiles {
+        let budget = match limit {
+            Some(limit) => usize::try_from(limit - (limit / 4).min(RESERVE_MOST)).unwrap_or(usize::MAX),
+            None => usize::MAX,
+        };
+        OpenFiles {
+            limit,
+            budget: budget.min(ConnectionLimits::MOST),
+        }
+    }
+}
+
+/// Raises this process's soft open-file limit to its hard one, as far as the system lets it, and returns the limit
+/// it has then. Docker 29 gives a container a soft limit of 1,024, and the soft one is what
+/// bounds the connections a worker can hold. Called once, at startup, before any receiver opens: a child
+/// process inherits the raised limit.
+pub fn raise_open_file_limit() -> std::io::Result<OpenFiles> {
+    #[cfg(unix)]
+    {
+        let mut now = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `now` is a valid `rlimit` for the call to fill.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut now) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if now.rlim_cur < now.rlim_max {
+            let raised = libc::rlimit {
+                rlim_cur: now.rlim_max,
+                rlim_max: now.rlim_max,
+            };
+            // SAFETY: `raised` is a valid `rlimit`. A system that refuses it, as macOS does past its own most, leaves
+            // the limit as it was.
+            if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+    }
+    Ok(open_files())
+}
+
+/// This process's open-file limit, as it is now, and the budget it gives.
+pub fn open_files() -> OpenFiles {
+    #[cfg(unix)]
+    {
+        let mut now = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `now` is a valid `rlimit` for the call to fill.
+        let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut now) } == 0;
+        let limit = (read && now.rlim_cur != libc::RLIM_INFINITY).then_some(now.rlim_cur);
+        OpenFiles::within(limit)
+    }
+    #[cfg(not(unix))]
+    {
+        OpenFiles::within(None)
+    }
+}
+
+impl Budget {
+    pub(super) fn new(most: usize) -> Arc<Budget> {
+        Arc::new(Budget {
+            most,
+            held: AtomicUsize::new(0),
+            receivers: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// This process's budget, from its open-file limit when it is first asked for.
+    fn process() -> &'static Arc<Budget> {
+        static BUDGET: OnceLock<Arc<Budget>> = OnceLock::new();
+        BUDGET.get_or_init(|| Budget::new(open_files().budget))
+    }
+
+    /// Closes the connection idle longest on any receiver, if it has been idle for [`EVICTABLE_AFTER`]. Returns its
+    /// sender. Each receiver is locked in turn, never two at once, so it may be called by any receiver not holding
+    /// its own lock.
+    fn close_idlest(&self) -> Option<IpAddr> {
+        let receivers: Vec<Arc<Mutex<Connections>>> = {
+            let mut receivers = self.receivers.lock().unwrap_or_else(|e| e.into_inner());
+            receivers.retain(|r| r.strong_count() > 0);
+            receivers.iter().filter_map(Weak::upgrade).collect()
+        };
+        let (receiver, id, _) = (receivers.iter())
+            .filter_map(|r| {
+                let (id, idle) = r.lock().unwrap_or_else(|e| e.into_inner()).idlest(None)?;
+                Some((r, id, idle))
+            })
+            .max_by_key(|(_, _, idle)| *idle)?;
+        let mut receiver = receiver.lock().unwrap_or_else(|e| e.into_inner());
+        // It may have read since it was found, so it is checked again before it is closed.
+        match receiver.idle_for(id)? >= EVICTABLE_AFTER {
+            true => receiver.close(id),
+            false => None,
+        }
+    }
 }
 
 /// A connection's place among the receiver's: its id, and the clock its stream marks its waits on.
@@ -105,22 +234,79 @@ pub(super) struct Place {
 }
 
 impl Connections {
+    /// A receiver's connections, held to `limits` and to this process's [`Budget`].
     pub(super) fn new(limits: ConnectionLimits) -> Arc<Mutex<Connections>> {
-        Arc::new(Mutex::new(Connections {
+        Connections::within(limits, Budget::process())
+    }
+
+    /// A receiver's connections, held to `limits` and to `budget`.
+    pub(super) fn within(limits: ConnectionLimits, budget: &Arc<Budget>) -> Arc<Mutex<Connections>> {
+        let open = Arc::new(Mutex::new(Connections {
             limits,
+            budget: budget.clone(),
             epoch: Instant::now(),
             next: 0,
             open: HashMap::new(),
-        }))
+        }));
+        let mut receivers = budget.receivers.lock().unwrap_or_else(|e| e.into_inner());
+        receivers.retain(|r| r.strong_count() > 0);
+        receivers.push(Arc::downgrade(&open));
+        open
     }
 
     fn now(&self) -> u64 {
         self.epoch.elapsed().as_millis() as u64
     }
 
-    /// Makes room for a connection from `peer`, closing the connection idle longest where the limits say. Returns the
-    /// connections it closed and the new one's place, or why it is refused.
-    pub(super) fn admit(&mut self, peer: IpAddr) -> (Vec<(IpAddr, Closed)>, Result<Place, Refused>) {
+    /// The most connections the worker's receivers hold together.
+    pub(super) fn budget(&self) -> usize {
+        self.budget.most
+    }
+
+    /// Makes room in `open` for a connection from `peer`, closing the connection idle longest where the limits say:
+    /// the receiver's own, and then, with the worker's budget spent, any receiver's. Returns the connections it
+    /// closed and the new one's place, or why it is refused.
+    pub(super) fn admit(
+        open: &Arc<Mutex<Connections>>,
+        peer: IpAddr,
+    ) -> (Vec<(IpAddr, Closed)>, Result<Place, Refused>) {
+        let (mut closed, id, budget) = {
+            let mut c = open.lock().unwrap_or_else(|e| e.into_inner());
+            let (closed, id) = c.make_room(peer);
+            let id = match id {
+                Ok(id) => id,
+                Err(why) => return (closed, Err(why)),
+            };
+            (closed, id, c.budget.clone())
+        };
+        // Its own lock is let go first: making room on the worker locks each receiver in turn, this one too.
+        if budget.held.load(Ordering::Relaxed) > budget.most {
+            match budget.close_idlest() {
+                Some(gone) => closed.push((gone, Closed::ForNewOnWorker)),
+                None => {
+                    open.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+                    return (closed, Err(Refused::WorkerFull));
+                }
+            }
+        }
+        let c = open.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(admitted) = c.open.get(&id) else {
+            return (closed, Err(Refused::WorkerFull));
+        };
+        admitted.read.store(c.now(), Ordering::Relaxed);
+        let place = Place {
+            id,
+            read: admitted.read.clone(),
+            in_flight: admitted.in_flight.clone(),
+            shut: admitted.shut.clone(),
+            epoch: c.epoch,
+        };
+        (closed, Ok(place))
+    }
+
+    /// Makes room for a connection from `peer` within this receiver's own limits, and holds its place, busy so
+    /// nothing closes it before it is admitted on the worker too.
+    fn make_room(&mut self, peer: IpAddr) -> (Vec<(IpAddr, Closed)>, Result<u64, Refused>) {
         let mut closed = Vec::new();
         if let Some(cap) = self.limits.per_sender
             && self.open.values().filter(|o| o.peer == peer).count() >= cap
@@ -130,7 +316,9 @@ impl Connections {
                 None => return (closed, Err(Refused::FullFromSender)),
             }
         }
-        if self.open.len() >= self.limits.max {
+        if let Some(max) = self.limits.max
+            && self.open.len() >= max
+        {
             match self.close_idlest(None) {
                 Some(gone) => closed.push((gone, Closed::ForNew)),
                 None => return (closed, Err(Refused::Full)),
@@ -138,27 +326,25 @@ impl Connections {
         }
         let id = self.next;
         self.next += 1;
-        let read = Arc::new(AtomicU64::new(self.now()));
-        let shut = Arc::new(Shut::default());
-        let in_flight = Arc::new(AtomicUsize::new(0));
         self.open.insert(
             id,
             Open {
                 peer,
-                read: read.clone(),
-                in_flight: in_flight.clone(),
-                shut: shut.clone(),
+                read: Arc::new(AtomicU64::new(BUSY)),
+                in_flight: Arc::new(AtomicUsize::new(0)),
+                shut: Arc::new(Shut::default()),
                 abort: None,
             },
         );
-        let place = Place {
-            id,
-            read,
-            in_flight,
-            shut,
-            epoch: self.epoch,
-        };
-        (closed, Ok(place))
+        self.budget.held.fetch_add(1, Ordering::Relaxed);
+        (closed, Ok(id))
+    }
+
+    /// Gives up connection `id`'s place, here and in the worker's budget.
+    fn remove(&mut self, id: u64) -> Option<Open> {
+        let open = self.open.remove(&id)?;
+        self.budget.held.fetch_sub(1, Ordering::Relaxed);
+        Some(open)
     }
 
     /// Gives connection `id` the handle that ends its task, once it runs, so it is closed even while its task is not
@@ -171,20 +357,30 @@ impl Connections {
 
     /// Connection `id` has ended.
     pub(super) fn ended(&mut self, id: u64) {
-        self.open.remove(&id);
+        self.remove(id);
+    }
+
+    /// The connection, of `peer`'s where given, that has been idle longest, and how long.
+    fn idlest(&self, peer: Option<IpAddr>) -> Option<(u64, Duration)> {
+        let (&id, _) = (self.open.iter())
+            .filter(|(_, o)| peer.is_none_or(|p| o.peer == p))
+            .min_by_key(|(_, o)| o.idle_since())?;
+        Some((id, self.idle_for(id)?))
+    }
+
+    /// How long connection `id` has been idle.
+    fn idle_for(&self, id: u64) -> Option<Duration> {
+        let since = self.open.get(&id)?.idle_since();
+        Some(Duration::from_millis(self.now().saturating_sub(since)))
     }
 
     /// Closes the connection, of `peer`'s where given, that has been idle longest, if it has been idle for
     /// [`EVICTABLE_AFTER`]. Returns the sender of the connection it closed.
     fn close_idlest(&mut self, peer: Option<IpAddr>) -> Option<IpAddr> {
-        let now = self.now();
-        let (&id, open) = (self.open.iter())
-            .filter(|(_, o)| peer.is_none_or(|p| o.peer == p))
-            .min_by_key(|(_, o)| o.idle_since())?;
-        if now.saturating_sub(open.idle_since()) < EVICTABLE_AFTER.as_millis() as u64 {
-            return None;
+        match self.idlest(peer)? {
+            (id, idle) if idle >= EVICTABLE_AFTER => self.close(id),
+            _ => None,
         }
-        self.close(id)
     }
 
     /// Closes every connection that has been idle for the idle timeout. Returns the senders of the connections it
@@ -203,7 +399,7 @@ impl Connections {
     }
 
     fn close(&mut self, id: u64) -> Option<IpAddr> {
-        let open = self.open.remove(&id)?;
+        let open = self.remove(id)?;
         open.shut.close();
         if let Some(abort) = open.abort {
             abort.abort();
@@ -368,7 +564,7 @@ mod tests {
 
     fn limits(max: usize, per_sender: Option<usize>) -> ConnectionLimits {
         ConnectionLimits {
-            max,
+            max: Some(max),
             per_sender,
             idle: None,
         }
@@ -378,8 +574,18 @@ mod tests {
         IpAddr::from([10, 0, 0, last])
     }
 
+    /// A receiver's connections with a budget of their own, so no other test's draw on this process's.
+    fn alone(limits: ConnectionLimits) -> Arc<Mutex<Connections>> {
+        Connections::within(limits, &Budget::new(1_000))
+    }
+
+    fn admit(c: &Arc<Mutex<Connections>>, peer: IpAddr) -> (Vec<(IpAddr, Closed)>, Result<Place, Refused>) {
+        Connections::admit(c, peer)
+    }
+
     /// Ages connection `id` by `by`, as though it read nothing that long.
-    fn age(c: &mut Connections, id: u64, by: Duration) {
+    fn age(c: &Arc<Mutex<Connections>>, id: u64, by: Duration) {
+        let mut c = c.lock().unwrap();
         // The clock runs `by` ahead, and every other connection reads at its new now.
         c.epoch -= by;
         for (other, o) in &c.open {
@@ -391,10 +597,9 @@ mod tests {
 
     #[test]
     fn under_the_cap_every_connection_is_admitted() {
-        let c = Connections::new(limits(3, None));
-        let mut c = c.lock().unwrap();
+        let c = alone(limits(3, None));
         for i in 0..3 {
-            let (closed, place) = c.admit(ip(i));
+            let (closed, place) = admit(&c, ip(i));
             assert!(closed.is_empty());
             assert!(place.is_ok());
         }
@@ -402,55 +607,52 @@ mod tests {
 
     #[test]
     fn at_the_cap_a_new_connection_is_refused_while_none_has_idled_long_enough() {
-        let c = Connections::new(limits(2, None));
-        let mut c = c.lock().unwrap();
-        c.admit(ip(1)).1.unwrap();
-        c.admit(ip(2)).1.unwrap();
-        let (closed, place) = c.admit(ip(3));
+        let c = alone(limits(2, None));
+        admit(&c, ip(1)).1.unwrap();
+        admit(&c, ip(2)).1.unwrap();
+        let (closed, place) = admit(&c, ip(3));
         assert!(closed.is_empty());
         assert_eq!(place.err(), Some(Refused::Full));
     }
 
     #[test]
     fn at_the_cap_a_new_connection_takes_the_place_of_the_one_idle_longest() {
-        let c = Connections::new(limits(2, None));
-        let mut c = c.lock().unwrap();
-        let first = c.admit(ip(1)).1.unwrap();
-        c.admit(ip(2)).1.unwrap();
-        age(&mut c, first.id, EVICTABLE_AFTER);
-        let (closed, place) = c.admit(ip(3));
+        let c = alone(limits(2, None));
+        let first = admit(&c, ip(1)).1.unwrap();
+        admit(&c, ip(2)).1.unwrap();
+        age(&c, first.id, EVICTABLE_AFTER);
+        let (closed, place) = admit(&c, ip(3));
         assert_eq!(closed, vec![(ip(1), Closed::ForNew)]);
         assert!(place.is_ok());
-        assert_eq!(c.open.len(), 2);
+        assert_eq!(c.lock().unwrap().open.len(), 2);
     }
 
     #[test]
     fn a_sender_at_its_own_cap_gives_up_its_own_idlest_and_no_one_elses() {
-        let c = Connections::new(limits(10, Some(2)));
-        let mut c = c.lock().unwrap();
-        let other = c.admit(ip(9)).1.unwrap();
-        let first = c.admit(ip(1)).1.unwrap();
-        c.admit(ip(1)).1.unwrap();
-        age(&mut c, other.id, EVICTABLE_AFTER * 2);
-        assert_eq!(c.admit(ip(1)).1.err(), Some(Refused::FullFromSender));
-        age(&mut c, first.id, EVICTABLE_AFTER);
-        let (closed, place) = c.admit(ip(1));
+        let c = alone(limits(10, Some(2)));
+        let other = admit(&c, ip(9)).1.unwrap();
+        let first = admit(&c, ip(1)).1.unwrap();
+        admit(&c, ip(1)).1.unwrap();
+        age(&c, other.id, EVICTABLE_AFTER * 2);
+        assert_eq!(admit(&c, ip(1)).1.err(), Some(Refused::FullFromSender));
+        age(&c, first.id, EVICTABLE_AFTER);
+        let (closed, place) = admit(&c, ip(1));
         assert_eq!(closed, vec![(ip(1), Closed::ForNewFromSender)]);
         assert!(place.is_ok());
-        assert!(c.open.contains_key(&other.id));
+        assert!(c.lock().unwrap().open.contains_key(&other.id));
     }
 
     #[test]
     fn the_idle_timeout_closes_only_what_has_idled_that_long() {
-        let c = Connections::new(ConnectionLimits {
-            max: 10,
+        let c = alone(ConnectionLimits {
+            max: Some(10),
             per_sender: None,
             idle: Some(Duration::from_secs(30)),
         });
+        let quiet = admit(&c, ip(1)).1.unwrap();
+        admit(&c, ip(2)).1.unwrap();
+        age(&c, quiet.id, Duration::from_secs(30));
         let mut c = c.lock().unwrap();
-        let quiet = c.admit(ip(1)).1.unwrap();
-        c.admit(ip(2)).1.unwrap();
-        age(&mut c, quiet.id, Duration::from_secs(30));
         assert_eq!(c.close_idle(), vec![ip(1)]);
         assert_eq!(c.open.len(), 1);
     }
@@ -458,26 +660,81 @@ mod tests {
     /// A receiver that stops reading a connection, as it does while it is full, does not make it idle.
     #[test]
     fn a_connection_the_receiver_is_not_waiting_on_never_idles() {
-        let c = Connections::new(ConnectionLimits {
-            max: 1,
+        let c = alone(ConnectionLimits {
+            max: Some(1),
             per_sender: None,
             idle: Some(Duration::from_secs(30)),
         });
-        let mut c = c.lock().unwrap();
-        let busy = c.admit(ip(1)).1.unwrap();
+        let busy = admit(&c, ip(1)).1.unwrap();
         busy.read.store(BUSY, Ordering::Relaxed);
-        c.epoch -= EVICTABLE_AFTER * 2;
-        assert!(c.close_idle().is_empty());
-        assert_eq!(c.admit(ip(2)).1.err(), Some(Refused::Full));
+        c.lock().unwrap().epoch -= EVICTABLE_AFTER * 2;
+        assert!(c.lock().unwrap().close_idle().is_empty());
+        assert_eq!(admit(&c, ip(2)).1.err(), Some(Refused::Full));
     }
 
     #[test]
     fn without_an_idle_timeout_nothing_idles_out() {
-        let c = Connections::new(limits(10, None));
+        let c = alone(limits(10, None));
+        let quiet = admit(&c, ip(1)).1.unwrap();
+        age(&c, quiet.id, Duration::from_secs(86_400));
         let mut c = c.lock().unwrap();
-        let quiet = c.admit(ip(1)).1.unwrap();
-        age(&mut c, quiet.id, Duration::from_secs(86_400));
         assert!(c.close_idle().is_empty());
         assert!(c.idle_check().is_none());
+    }
+
+    /// With the worker's budget spent, a new connection on one receiver takes the place of the connection idle
+    /// longest on any, and is refused while none has idled long enough.
+    #[test]
+    fn the_receivers_of_a_worker_share_its_budget() {
+        let budget = Budget::new(3);
+        let (a, b) = (
+            Connections::within(ConnectionLimits::default(), &budget),
+            Connections::within(ConnectionLimits::default(), &budget),
+        );
+        let quiet = admit(&a, ip(1)).1.unwrap();
+        admit(&a, ip(2)).1.unwrap();
+        admit(&b, ip(3)).1.unwrap();
+        assert_eq!(admit(&b, ip(4)).1.err(), Some(Refused::WorkerFull));
+        assert_eq!(budget.held.load(Ordering::Relaxed), 3);
+        age(&a, quiet.id, EVICTABLE_AFTER);
+        let (closed, place) = admit(&b, ip(4));
+        assert_eq!(closed, vec![(ip(1), Closed::ForNewOnWorker)]);
+        assert!(place.is_ok());
+        assert_eq!(a.lock().unwrap().open.len(), 1);
+        assert_eq!(b.lock().unwrap().open.len(), 2);
+        assert_eq!(budget.held.load(Ordering::Relaxed), 3);
+    }
+
+    /// A receiver that ends gives up its connections' places in the budget.
+    #[test]
+    fn a_connection_that_ends_gives_its_place_back() {
+        let budget = Budget::new(1);
+        let a = Connections::within(ConnectionLimits::default(), &budget);
+        let place = admit(&a, ip(1)).1.unwrap();
+        assert_eq!(admit(&a, ip(2)).1.err(), Some(Refused::WorkerFull));
+        a.lock().unwrap().ended(place.id);
+        assert!(admit(&a, ip(2)).1.is_ok());
+    }
+
+    #[test]
+    fn the_budget_keeps_a_quarter_of_the_limit_up_to_its_reserve() {
+        assert_eq!(OpenFiles::within(Some(1_024)).budget, 768);
+        assert_eq!(OpenFiles::within(Some(524_288)).budget, 524_288 - 8_192);
+        assert_eq!(OpenFiles::within(Some(u64::MAX)).budget, ConnectionLimits::MOST);
+        assert_eq!(OpenFiles::within(None).budget, ConnectionLimits::MOST);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raising_the_limit_takes_the_soft_one_to_the_hard_one() {
+        let raised = raise_open_file_limit().unwrap();
+        let mut now = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `now` is a valid `rlimit` for the call to fill.
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut now) }, 0);
+        assert_eq!(now.rlim_cur, now.rlim_max);
+        assert_eq!(raised, open_files());
     }
 }

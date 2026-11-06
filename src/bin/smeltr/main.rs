@@ -1844,6 +1844,25 @@ fn start() {
     // Before either role starts, so nothing this process has to say about itself predates somewhere to say it.
     smeltr::logs::start();
 
+    // Before any receiver opens: the soft limit is what bounds the connections they hold. The worker's runtime
+    // process inherits the raised limit from its supervisor.
+    if !runtime_child {
+        match smeltr::io::connections::raise_open_file_limit() {
+            Ok(files) => tracing::info!(
+                name: "open_files", target: "processes",
+                limit = ?files.limit,
+                connections = files.budget,
+                "the worker may hold this many files open, and its receivers this many connections"
+            ),
+            Err(e) => tracing::warn!(
+                name: "open_files_not_raised", target: "processes",
+                error = %e,
+                connections = smeltr::io::connections::open_files().budget,
+                "the worker could not raise its open-file limit to its hard limit, so its receivers hold fewer connections"
+            ),
+        }
+    }
+
     if runtime_child {
         smeltr::worker::child::run_runtime_child();
     }

@@ -6734,13 +6734,13 @@ fn a_receiver_takes_connection_limits() {
         r.connections
     };
     assert_eq!(limits(&socket("")), ConnectionLimits::default());
-    assert_eq!(ConnectionLimits::default().max, 10_000);
+    assert_eq!(ConnectionLimits::default().max, None);
     let json = socket(r#","maxConnections":500,"maxConnectionsPerSender":20,"idleTimeoutSecs":600"#);
     assert_eq!(refusal(&json), "");
     assert_eq!(
         limits(&json),
         ConnectionLimits {
-            max: 500,
+            max: Some(500),
             per_sender: Some(20),
             idle: Some(std::time::Duration::from_secs(600)),
         }
@@ -6766,6 +6766,11 @@ fn a_receiver_takes_connection_limits() {
         "between 1 and its maxConnections, 10"
     ));
     assert!(refused_at(
+        &socket(r#","maxConnectionsPerSender":1000001"#),
+        "maxConnectionsPerSender",
+        "between 1 and 1000000"
+    ));
+    assert!(refused_at(
         &socket(r#","idleTimeoutSecs":0"#),
         "idleTimeoutSecs",
         "at least 1"
@@ -6777,7 +6782,7 @@ fn a_receiver_takes_connection_limits() {
     ));
     let http = http_receiver_config(8088, &format!(r#"{RECEIVER_TOKEN},"maxConnections":5"#));
     assert_eq!(refusal(&http), "");
-    assert_eq!(limits(&http).max, 5);
+    assert_eq!(limits(&http).max, Some(5));
     assert_eq!(
         refusal(&s2s_receiver_config(&format!(
             r#"{S2S_TOKEN},"maxConnectionsPerSender":4"#
