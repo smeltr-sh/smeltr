@@ -95,7 +95,7 @@
     } finally {
       testsLoading = false;
     }
-    runAllTests();
+    if (!readOnly) runAllTests();
   }
   loadTests();
 

@@ -159,8 +159,10 @@ than on every object it makes.
 The gate names the area and level each route needs
 ([api.md](api.md), Who may call what), and a route it does not
 name is for administrators alone, so a route added without a decision is
-closed rather than open. Editor covers capture, preview and samples as well
-as saving, since they show production records. Approving or deploying a
+closed rather than open. Viewer covers reading samples, which hold production
+records, and running a preview over them, since neither changes anything.
+Editor covers capture as well as saving, since a capture asks a group's workers
+for live records. Approving or deploying a
 change takes deployer in every area its paths touch; a change to `shared` is
 judged as `shared`, so a `shared` deployer changes what every group runs.
 Running a change's own tests judges it the same way. Changing a change, its

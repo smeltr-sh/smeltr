@@ -21,9 +21,9 @@ pub const SHARED: &str = "shared";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
-    /// Reads the area's configuration.
+    /// Reads the area's configuration and its samples, and previews over them.
     Viewer,
-    /// Saves to it on a branch, and captures, previews and reads its samples, which hold production records.
+    /// Saves to it on a branch, and captures.
     Editor,
     /// Approves and deploys a change to it.
     Deployer,

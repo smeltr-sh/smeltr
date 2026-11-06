@@ -87,16 +87,15 @@ pub fn need(method: &Method, path: &str) -> Need {
     }
 
     match (method.clone(), segments.as_slice()) {
-        // A schema read from or written as JSON Schema: what the schema it is given holds, never config.
-        (Method::POST, ["preview", "schema-read" | "schema-export"])
-        // The standards' releases smeltr carries.
-        | (Method::GET | Method::HEAD, ["preview", "schema-standards"]) => Need::Somewhere(Level::Viewer),
-        // Production records a preview or a capture shows, in no one area.
+        // A preview computes from what it is given and reads no area. The standards' releases are carried in smeltr.
+        (Method::POST, ["preview", _]) | (Method::GET | Method::HEAD, ["preview", "schema-standards"]) => {
+            Need::Somewhere(Level::Viewer)
+        }
+        // Production records a capture reads from a group's workers, in no one area.
         (Method::POST, ["captures"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["captures", _])
         | (Method::POST, ["captures", _, "stop"])
         | (Method::GET | Method::HEAD, ["captures", _, "download"])
-        | (Method::POST, ["preview", _])
         // Names, versions and where each is used, never a value: what a secret picker offers whoever saves a form.
         | (Method::GET | Method::HEAD, ["secrets"])
         | (Method::GET | Method::HEAD, ["certificates"]) => Need::Somewhere(Level::Editor),
@@ -175,10 +174,11 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
         // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
         (Method::POST, ["sources", _, "lower" | "reset-history"]) => Level::Editor,
 
-        // Production records: samples, and what a preview of them shows.
-        (Method::GET | Method::HEAD | Method::POST, ["samples"])
-        | (Method::GET | Method::HEAD | Method::PUT | Method::DELETE, ["samples", _])
-        | (Method::POST, ["preview", "pipeline" | "routes" | "schema-import"]) => Level::Editor,
+        // Samples, and what a preview of them shows.
+        (Method::GET | Method::HEAD, ["samples"])
+        | (Method::POST, ["preview", "pipeline" | "routes" | "schema-import"]) => Level::Viewer,
+        (Method::GET | Method::HEAD | Method::PUT | Method::DELETE, ["samples", _]) => read,
+        (Method::POST, ["samples"]) => Level::Editor,
         _ => return None,
     })
 }
@@ -331,32 +331,44 @@ mod tests {
     }
 
     #[test]
-    fn records_need_editor_in_their_area() {
+    fn samples_and_previews_need_viewer_and_changing_samples_editor() {
         for (method, path) in [
             (Method::GET, "/api/areas/payments/samples"),
-            (Method::POST, "/api/areas/payments/samples"),
             (Method::GET, "/api/areas/payments/samples/s1"),
-            (Method::PUT, "/api/areas/payments/samples/s1"),
-            (Method::DELETE, "/api/areas/payments/samples/s1"),
-            (Method::POST, "/api/areas/payments/test-runs"),
             (Method::POST, "/api/areas/payments/preview/pipeline"),
             (Method::POST, "/api/areas/payments/preview/routes"),
             (Method::POST, "/api/areas/payments/preview/schema-import"),
         ] {
+            assert_eq!(need(&method, path), area("payments", Level::Viewer), "{method} {path}");
+        }
+        for (method, path) in [
+            (Method::POST, "/api/areas/payments/samples"),
+            (Method::PUT, "/api/areas/payments/samples/s1"),
+            (Method::DELETE, "/api/areas/payments/samples/s1"),
+            (Method::POST, "/api/areas/payments/test-runs"),
+        ] {
             assert_eq!(need(&method, path), area("payments", Level::Editor), "{method} {path}");
         }
+        for path in [
+            "/api/preview/grok",
+            "/api/preview/onboard",
+            "/api/preview/line-breaker",
+            "/api/preview/format",
+            "/api/preview/certificate",
+            "/api/preview/sql",
+        ] {
+            assert_eq!(need(&Method::POST, path), Need::Somewhere(Level::Viewer), "{path}");
+        }
+    }
+
+    #[test]
+    fn captures_and_what_a_form_offers_need_editor_somewhere() {
         for (method, path) in [
             (Method::POST, "/api/captures"),
             (Method::GET, "/api/captures/c1"),
             (Method::POST, "/api/captures/c1/stop"),
             (Method::GET, "/api/captures/c1/download"),
             (Method::DELETE, "/api/captures/c1"),
-            (Method::POST, "/api/preview/grok"),
-            (Method::POST, "/api/preview/onboard"),
-            (Method::POST, "/api/preview/line-breaker"),
-            (Method::POST, "/api/preview/format"),
-            (Method::POST, "/api/preview/certificate"),
-            (Method::POST, "/api/preview/sql"),
             (Method::GET, "/api/secrets"),
             (Method::GET, "/api/certificates"),
         ] {

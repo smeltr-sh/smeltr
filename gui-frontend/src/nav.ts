@@ -8,7 +8,7 @@
 // itself.
 
 import { untrack } from 'svelte';
-import { canEdit, isAdministrator } from './access';
+import { isAdministrator } from './access';
 import { session } from './session';
 import { SHARED_SCOPE, type MapNodeKind } from './api';
 
@@ -235,7 +235,6 @@ export function sentFrom(route: Route): string | null {
   if ((route.tab === 'admin' || route.page === 'logs') && !isAdministrator()) {
     return TAB_HOME.status;
   }
-  if (route.page === 'samples' && !canEdit()) return TAB_HOME.build;
   // The agent's screens wait for AI agents to be turned on (Admin -> System -> AI agents).
   if (!session().agents) {
     if (route.page === 'agent-permissions' || route.page === 'agent') return TAB_HOME.status;
@@ -282,11 +281,6 @@ export const RESOURCES_TABS: SectionItem[] = [
   { label: 'Grok patterns', hash: '#/build/grok' },
   { label: 'Schemas', hash: '#/build/schemas' },
 ];
-
-/** The Resources tabs the person signed in may open: samples are an editor's. */
-export function resourcesTabs(): SectionItem[] {
-  return canEdit() ? RESOURCES_TABS : RESOURCES_TABS.filter((t) => t.label !== 'Samples');
-}
 
 /** The Routes page's tabs: the routes, and a sample run through them as they stand, unsaved edits included. */
 export const ROUTES_TABS: SectionItem[] = [
@@ -361,11 +355,9 @@ const SECTION_OF: Record<Route['page'], string | null> = {
 };
 
 /** The section nav a page shows to the person signed in, or null where the tab has one page.
- * Logs are administrators' alone, and Resources opens on its first page they may read. */
+ * Logs are administrators' alone. */
 export function section(route: Route): { items: SectionItem[]; here: string } | null {
-  const items = SECTIONS[route.tab]
-    ?.filter((i) => i.label !== 'Logs' || isAdministrator())
-    .map((i) => (i.label === 'Resources' && !canEdit() ? { ...i, hash: '#/build/lookups' } : i));
+  const items = SECTIONS[route.tab]?.filter((i) => i.label !== 'Logs' || isAdministrator());
   const here = SECTION_OF[route.page];
   return items && here ? { items, here } : null;
 }

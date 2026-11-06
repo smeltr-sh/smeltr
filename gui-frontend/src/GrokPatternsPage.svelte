@@ -27,7 +27,7 @@
   import Field from './Field.svelte';
   import ValidatedField from './ValidatedField.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
-  import { resourcesTabs } from './nav';
+  import { RESOURCES_TABS } from './nav';
   import { sharedConfig, putGrokPatterns, type GrokPatternDto } from './api';
   import CrossButton from './CrossButton.svelte';
   import { count } from './time';
@@ -128,7 +128,7 @@
         A named pattern any grok step in this group can use as <code>%{'{'}NAME{'}'}</code>.
       {/snippet}
     </PageHeader>
-    <SecondaryTabs tabs={resourcesTabs()} active="#/build/grok" ariaLabel="Resources" />
+    <SecondaryTabs tabs={RESOURCES_TABS} active="#/build/grok" ariaLabel="Resources" />
 
     <div>
       <UnreadableFiles problems={editor.bundleProblems} onchanged={() => editor.load()} />

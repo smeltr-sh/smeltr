@@ -688,13 +688,13 @@ describe('what the person signed in is offered', () => {
     expect(sentFrom(parseRoute('#/me/agent'))).toBe('#/status');
   });
 
-  it('lands a viewer on a Build page they may read, never on samples', async () => {
+  it('lets a viewer read samples', async () => {
     await signInAs({ administrator: false, areas: { shared: 'viewer' } });
     expect(tabHome('build')).toBe('#/build/routes');
-    expect(sentFrom(parseRoute('#/build'))).toBe('#/build/routes');
+    expect(sentFrom(parseRoute('#/build'))).toBeNull();
     expect(
       section(parseRoute('#/build/sources'))?.items.find((i) => i.label === 'Resources')?.hash,
-    ).toBe('#/build/lookups');
+    ).toBe('#/build');
   });
 
   it('lands an editor on Routes, first in the rail', async () => {
