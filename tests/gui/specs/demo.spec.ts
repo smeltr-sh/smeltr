@@ -114,3 +114,56 @@ test('the Schemas page reads a schema through the service', async ({ page }) => 
   await page.getByRole('searchbox', { name: 'Search schemas' }).fill('src_endpoint.port');
   await expect(page.getByRole('cell', { name: 'src_endpoint.port', exact: true })).toBeVisible();
 });
+
+/** Counts the sounds the page plays, in place of playing them. */
+async function listen(page: Page) {
+  await page.addInitScript(() => {
+    (window as unknown as { chimes: number }).chimes = 0;
+    HTMLMediaElement.prototype.play = function () {
+      (window as unknown as { chimes: number }).chimes++;
+      return Promise.resolve();
+    };
+  });
+  return () => page.evaluate(() => (window as unknown as { chimes: number }).chimes);
+}
+
+test('the guide chimes as a task ticks', async ({ page }) => {
+  const chimes = await listen(page);
+  await open(page, '#/map');
+  const guide = page.getByRole('button', { name: /^Guide · / });
+  await expect(guide).toHaveText('Guide · 0/7');
+  // Opening Status ticks its task.
+  await page.evaluate(() => (location.hash = '#/status'));
+  await expect(guide).toHaveText('Guide · 1/7');
+  await expect.poll(chimes).toBe(1);
+  // A reload finds the task done already, and stays quiet.
+  await page.reload();
+  await expect(guide).toHaveText('Guide · 1/7');
+  expect(await chimes()).toBe(0);
+});
+
+test('the guide folds on a click, and a muted one stays quiet', async ({ page }) => {
+  const chimes = await listen(page);
+  await open(page, '#/map');
+  const guide = page.getByRole('button', { name: /^Guide · / });
+  await expect(guide).toHaveText('Guide · 0/7');
+
+  // A click on the guide's text folds it, and the switch stays.
+  await page.locator('#demo-guide p').click();
+  await expect(page.locator('#demo-guide')).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Mute', exact: true })).toBeVisible();
+  await guide.click();
+  await expect(page.locator('#demo-guide')).toBeVisible();
+  // Its links follow, and leave it open.
+  await page.locator('#demo-guide').getByRole('link', { name: 'Show me' }).first().click();
+  await expect(page).toHaveURL(/#\/changes/);
+  await expect(page.locator('#demo-guide')).toBeVisible();
+
+  // Muted, a tick stays quiet, and the switch stays muted after a reload.
+  await page.getByRole('button', { name: 'Mute', exact: true }).click();
+  await page.evaluate(() => (location.hash = '#/status'));
+  await expect(guide).toHaveText('Guide · 1/7');
+  expect(await chimes()).toBe(0);
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Unmute', exact: true })).toBeVisible();
+});
