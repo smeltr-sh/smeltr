@@ -2820,7 +2820,7 @@ fn server_tls(tls: &crate::plan::topology::Tls, secrets: &HeldSecrets) -> Result
         None => None,
         Some(pem) => Some(super::trust::certificates(tls, pem, "what it trusts")?),
     };
-    serving_tls(chain, key, authorities).map_err(|refused| {
+    serving_tls(chain, key, authorities, &tls.senders).map_err(|refused| {
         IoError::transient(match refused {
             (Some(what), e) => named(&format!("{what}: {e}")),
             (None, e) => format!("receiver: {e}"),
@@ -2828,30 +2828,34 @@ fn server_tls(tls: &crate::plan::topology::Tls, secrets: &HeldSecrets) -> Result
     })
 }
 
-/// TLS that presents `chain` signed by `key` and, given `authorities`, requires a client certificate chaining to one
-/// of them. A refusal names the setting that was wrong, `what it trusts` or `its certificate and key`, beside why, and
-/// names none when the TLS library itself refused.
+/// TLS that presents `chain` signed by `key` and, given `authorities` or `senders`, requires a client certificate
+/// they admit (`io::senders`). A refusal names the setting that was wrong, `what it trusts` or `its certificate and
+/// key`, beside why, and names none when the TLS library itself refused.
 pub(crate) fn serving_tls(
     chain: Vec<rustls::pki_types::CertificateDer<'static>>,
     key: rustls::pki_types::PrivateKeyDer<'static>,
     authorities: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
+    senders: &crate::plan::topology::Senders,
 ) -> Result<rustls::ServerConfig, (Option<&'static str>, String)> {
     let provider = crate::crypto::in_use();
     let builder = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
         .map_err(|e| (None, e.to_string()))?;
-    let builder = match authorities {
-        None => builder.with_no_client_auth(),
-        Some(authorities) => {
+    let roots = authorities
+        .map(|authorities| {
             let mut roots = rustls::RootCertStore::empty();
             for root in authorities {
                 roots.add(root).map_err(|e| (Some("what it trusts"), e.to_string()))?;
             }
-            let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider)
-                .build()
-                .map_err(|e| (Some("what it trusts"), e.to_string()))?;
-            builder.with_client_cert_verifier(verifier)
-        }
+            Ok(roots)
+        })
+        .transpose()?;
+    // Names alone admit no one, as no authority can vouch for them; the verifier refuses every sender then.
+    let builder = match roots.is_none() && senders.fingerprints.is_empty() && senders.names.is_empty() {
+        true => builder.with_no_client_auth(),
+        false => builder.with_client_cert_verifier(
+            super::senders::verifier(roots, senders, provider).map_err(|e| (Some("what it trusts"), e))?,
+        ),
     };
     builder
         .with_single_cert(chain, key)
@@ -4249,6 +4253,7 @@ mod tests {
             authorities: None,
             trust_public: true,
             side: crate::io::trust::Side::Server,
+            senders: Default::default(),
         };
         let tls = server_tls(&serving, &secrets).unwrap();
         assert!(tls.alpn_protocols.is_empty(), "a stream offers no application protocol");

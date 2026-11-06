@@ -635,8 +635,11 @@ fn every_setting_takes_each_message_once_however_it_is_framed() {
             .chain(ipv6.then_some(&"::1")))
         .map(|ip| format!("listen {ip}"))
         .chain(["Tcp", "Udp"].map(|t| format!("transport {t}")))
-        .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
-        .chain(["Nothing", "Trusted", "Stranger"].map(|p| format!("presents {p} under Vouched")))
+        .chain(Tls::ALL.map(|tls| format!("tls {tls:?}")))
+        .chain(
+            (Tls::ALL.into_iter().filter(|tls| tls.checks_sender()))
+                .flat_map(|tls| ["Nothing", "Trusted", "Stranger"].map(|p| format!("presents {p} under {tls:?}"))),
+        )
         .chain(
             [
                 "no networks",
@@ -659,7 +662,8 @@ fn every_setting_takes_each_message_once_however_it_is_framed() {
     );
     fuzz::run(1..201, |seed| {
         let mut rng = Rng::seeded(seed);
-        let settings = random_settings(&mut rng, ipv6);
+        let mut settings = random_settings(&mut rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         let max = settings.max_request_bytes;
         let allowed = admits(&settings);
         // What the receiver is set to is tried only by a sender it allows.
@@ -707,10 +711,10 @@ fn every_setting_takes_each_message_once_however_it_is_framed() {
                     }
                     // A TLS sender may hang up without a `close_notify`, which the receiver takes as a clean hang-up.
                     connection.abrupt = settings.tls != Tls::None && rng.chance(4);
-                    if settings.tls == Tls::Vouched && allowed {
-                        cov.reach(format!("presents {:?} under Vouched", connection.presents));
+                    if settings.tls.checks_sender() && allowed {
+                        cov.reach(format!("presents {:?} under {:?}", connection.presents, settings.tls));
                     }
-                    let tls_admits = settings.tls != Tls::Vouched || connection.presents == Presents::Trusted;
+                    let tls_admits = settings.tls.admits(connection.presents);
                     what.push(format!(
                         "connection {n}, presenting {:?}: {:?}",
                         connection.presents,
@@ -873,7 +877,7 @@ impl Sender {
                         "    tls On\n    tls.verify On\n    tls.ca_file /smeltr/ca.pem\n    tls.vhost localhost\n",
                     );
                 }
-                if tls == Tls::Vouched {
+                if tls.checks_sender() {
                     output.push_str("    tls.crt_file /smeltr/sender.pem\n    tls.key_file /smeltr/sender-key.pem\n");
                 }
                 Some((
@@ -888,9 +892,11 @@ impl Sender {
                 let tls = match tls {
                     Tls::None => "{insecure: true}".to_string(),
                     Tls::Served => "{ca_file: /smeltr/ca.pem, server_name_override: localhost}".to_string(),
-                    Tls::Vouched => "{ca_file: /smeltr/ca.pem, server_name_override: localhost, cert_file: \
+                    Tls::Vouched | Tls::Pinned | Tls::Named | Tls::Misnamed => {
+                        "{ca_file: /smeltr/ca.pem, server_name_override: localhost, cert_file: \
                                      /smeltr/sender.pem, key_file: /smeltr/sender-key.pem}"
-                        .to_string(),
+                            .to_string()
+                    }
                 };
                 // The exporter sends a log's `message` attribute, so the line read moves there.
                 Some((
@@ -1030,7 +1036,7 @@ fn live_senders_deliver_every_line_once_under_random_configurations() {
         settings.transport = transport;
         settings.tls = tls;
         settings.allow_from = match tls {
-            Tls::Vouched if rng.chance(2) => Vec::new(),
+            tls if tls.checks_sender() && rng.chance(2) => Vec::new(),
             _ => vec![*rng.pick(&["127.0.0.0/8", "127.0.0.1/32", "0.0.0.0/0"])],
         };
         settings.max_request_bytes = 1 << 16;

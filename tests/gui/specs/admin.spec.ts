@@ -248,8 +248,10 @@ test('the leader certificate is the certificate leader in the list', async ({ ad
   await expect(admin.getByRole('heading', { name: /Current authority/ })).toBeVisible();
   await expect(admin.getByRole('link', { name: 'Download ca.pem' })).toBeVisible();
   const served = admin.getByRole('region', { name: /^Leader certificate/ });
-  // The page shortens a fingerprint to its two ends, which is what a person compares.
-  await expect(served.getByText(/^[0-9a-f]{16}…[0-9a-f]{8}$/)).toBeVisible();
+  // The page shortens a fingerprint to its two ends, which is what a person compares, as RFC 5425 writes one.
+  await expect(
+    served.getByText(/^sha-256:[0-9A-F]{2}(:[0-9A-F]{2}){3}…[0-9A-F]{2}(:[0-9A-F]{2}){2}\b/),
+  ).toBeVisible();
 
   await served.getByRole('button', { name: 'About Leader certificate' }).click();
   await expect(served).toContainText(

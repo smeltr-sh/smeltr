@@ -3392,6 +3392,24 @@
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`."
+          },
+          {
             "name": "records",
             "type": "string",
             "default": "body",
@@ -3444,6 +3462,8 @@
             "settings": [
               "certificate",
               "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
               "maxRequestBytes",
               "answerAfterDelivery"
             ]
@@ -3501,6 +3521,24 @@
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`."
+          },
+          {
             "name": "sourcetypes",
             "type": "map",
             "absent": "a record per line for every sourcetype",
@@ -3549,6 +3587,8 @@
             "settings": [
               "certificate",
               "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
               "sourcetypes",
               "maxRequestBytes",
               "answerAfterDelivery"
@@ -3598,6 +3638,24 @@
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
             "what": "Trusted authorities a forwarder's certificate must chain to, as PEM. With any, every forwarder must present a certificate."
+          },
+          {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`."
           },
           {
             "name": "sourcetypes",
@@ -3670,6 +3728,8 @@
             "settings": [
               "certificate",
               "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
               "maxRequestBytes",
               "maxConnections",
               "maxConnectionsPerSender",
@@ -3745,6 +3805,24 @@
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`."
+          },
+          {
             "name": "maxRequestBytes",
             "type": "integer",
             "default": 10485760,
@@ -3777,6 +3855,8 @@
             "settings": [
               "certificate",
               "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
               "maxRequestBytes",
               "answerAfterDelivery"
             ]
@@ -3786,7 +3866,7 @@
       {
         "type": "syslogReceiver",
         "name": "Syslog receiver",
-        "summary": "Takes what syslog senders send to its port, over TCP or UDP: rsyslog, syslog-ng, network devices and appliances. Messages are RFC 5424 or RFC 3164. Over TCP each is framed by its octet count or ended by a newline (RFC 6587). With `lineBreaker` set, it ends where the pattern breaks instead of at a newline. With a `certificate`, TCP is served over TLS (RFC 5425). Over UDP each datagram is one message (RFC 5426), served without TLS. Every worker of the group listens, and a sender, or a balancer in front of the workers, picks one. Syslog carries no token, so a receiver admits senders by the networks in `allowFrom`, by a certificate that chains to its `trustedAuthorities`, or both; over UDP by `allowFrom` alone. Syslog has no acknowledgement: delivery is best-effort. What a connection carries when it is cut, and what a worker holds when it stops, is lost. A full or blocked receiver stops reading TCP, so the sender's TCP window fills and the sender buffers or drops by its own rules. It drops a datagram that arrives while it is full or blocked, and counts it in `smeltr_source_dropped_total`. Each message is a record whose `_raw` is the message as sent, its PRI header included; a pipeline parses the header.",
+        "summary": "Takes what syslog senders send to its port, over TCP or UDP: rsyslog, syslog-ng, network devices and appliances. Messages are RFC 5424 or RFC 3164. Over TCP each is framed by its octet count or ended by a newline (RFC 6587). With `lineBreaker` set, it ends where the pattern breaks instead of at a newline. With a `certificate`, TCP is served over TLS (RFC 5425). Over UDP each datagram is one message (RFC 5426), served without TLS. Every worker of the group listens, and a sender, or a balancer in front of the workers, picks one. Syslog carries no token, so a receiver admits senders by the networks in `allowFrom`, by a certificate that chains to its `trustedAuthorities` or is named in `senderFingerprints`, or both; over UDP by `allowFrom` alone. Syslog has no acknowledgement: delivery is best-effort. What a connection carries when it is cut, and what a worker holds when it stops, is lost. A full or blocked receiver stops reading TCP, so the sender's TCP window fills and the sender buffers or drops by its own rules. It drops a datagram that arrives while it is full or blocked, and counts it in `smeltr_source_dropped_total`. Each message is a record whose `_raw` is the message as sent, its PRI header included; a pipeline parses the header.",
         "settings": [
           {
             "name": "port",
@@ -3834,6 +3914,24 @@
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate. A UDP receiver takes none."
+          },
+          {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed. A UDP receiver takes none."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`. A UDP receiver takes none."
           },
           {
             "name": "maxRequestBytes",
@@ -3902,6 +4000,8 @@
             "settings": [
               "certificate",
               "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
               "maxRequestBytes",
               "maxConnections",
               "maxConnectionsPerSender",
@@ -4025,6 +4125,24 @@
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate. A UDP receiver takes none."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed. A UDP receiver takes none."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "collector-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`. A UDP receiver takes none."
+          },
+          {
             "name": "maxRequestBytes",
             "type": "integer",
             "default": 10485760,
@@ -4092,6 +4210,8 @@
             "settings": [
               "certificate",
               "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
               "maxRequestBytes",
               "maxConnections",
               "maxConnectionsPerSender",
@@ -4147,6 +4267,24 @@
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`."
+          },
+          {
             "name": "maxRequestBytes",
             "type": "integer",
             "default": 10485760,
@@ -4171,6 +4309,8 @@
             "settings": [
               "certificate",
               "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
               "maxRequestBytes",
               "answerAfterDelivery"
             ]
@@ -4223,6 +4363,24 @@
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`."
+          },
+          {
             "name": "maxRequestBytes",
             "type": "integer",
             "default": 10485760,
@@ -4255,6 +4413,8 @@
             "settings": [
               "certificate",
               "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
               "maxRequestBytes",
               "answerAfterDelivery"
             ]

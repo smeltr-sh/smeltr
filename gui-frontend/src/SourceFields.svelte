@@ -1057,6 +1057,8 @@
           if (v === 'udp') {
             source.certificate = undefined;
             source.trustedAuthorities = undefined;
+            delete source.senderFingerprints;
+            delete source.senderNames;
             source.maxConnections = undefined;
             source.maxConnectionsPerSender = undefined;
             source.idleTimeoutSecs = undefined;
@@ -1100,9 +1102,9 @@
           The networks a sender may connect from, each a CIDR block. {source.type ===
           'syslogReceiver'
             ? 'Syslog carries'
-            : 'What it receives carries'} no token, so the receiver needs these networks, trusted authorities
-          a sender's certificate must chain to, or both. With both, a sender must connect from a listed
-          network and present a certificate.
+            : 'What it receives carries'} no token, so the receiver needs these networks, trusted authorities,
+          sender fingerprints, or a combination. With networks and trusted authorities or sender fingerprints,
+          a sender must connect from a listed network and present a certificate.
         {/if}
       {/snippet}
       <TokenListInput
@@ -1135,7 +1137,8 @@
           Each token a sender may present as <code>Authorization: Bearer &lt;token&gt;</code>, by
           name.
         {/if}
-        With no token, the receiver needs trusted authorities a sender's certificate must chain to.
+        With no token, the receiver needs trusted authorities a sender's certificate must chain to, or
+        sender fingerprints.
       {/snippet}
     </ReceiverTokens>
   {/if}

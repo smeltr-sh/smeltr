@@ -1378,6 +1378,17 @@ pub struct Tls {
     /// Which side presents `certificate`, which is what its leaf has to permit: a receiver to its senders, every
     /// other connector connecting out.
     pub side: crate::io::trust::Side,
+    /// A receiver's: whom it admits by a sender's certificate besides `authorities`. A client's is empty.
+    pub senders: Senders,
+}
+
+/// Whom a receiver admits by a sender's certificate (`io::senders`, RFC 5425 5): any whose certificate is one of
+/// `fingerprints`, and, of those chaining to its authorities, only one issued to a host of `names` when it names any.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Senders {
+    pub fingerprints: Vec<crate::io::senders::Fingerprint>,
+    /// Host names, each maybe `*.` and a domain, which stands for any one label before it.
+    pub names: Vec<String>,
 }
 
 /// A Confluent Schema Registry: where it is, and who signs in to it. Reached under its connector's TLS.
@@ -4477,6 +4488,7 @@ mod tests {
             authorities: None,
             trust_public: true,
             side,
+            senders: Default::default(),
         }
     }
 

@@ -8,8 +8,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smeltr::io::framing::Framing;
+use smeltr::io::senders::{Fingerprint, Hash};
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
-use smeltr::plan::topology::{HeldSecrets, Receiver, ReceiverConfig, SocketReceiverConfig, SourceKind, Tls, Transport};
+use smeltr::plan::topology::{
+    HeldSecrets, Receiver, ReceiverConfig, Senders, SocketReceiverConfig, SourceKind, Tls, Transport,
+};
 
 use crate::certs::{Authority, Issued};
 use crate::live;
@@ -277,6 +280,19 @@ fn tls_receiver(
     trusted: Option<&Authority>,
     max: usize,
 ) -> Box<dyn Source> {
+    admitting(at, authority, key, trusted, Senders::default(), allow_from, max)
+}
+
+/// [`tls_receiver`], admitting `senders` by their certificates besides those `trusted` vouches for.
+fn admitting(
+    at: SocketAddr,
+    authority: &Authority,
+    key: rcgen::KeyPair,
+    trusted: Option<&Authority>,
+    senders: Senders,
+    allow_from: &[&str],
+    max: usize,
+) -> Box<dyn Source> {
     crate::certs::install_provider();
     let served = authority.issue_under("receiver", vec!["localhost".to_string()], key);
     let mut secrets = HeldSecrets::default();
@@ -292,6 +308,7 @@ fn tls_receiver(
         authorities: trusted.map(|trusted| trusted.pem.clone()),
         trust_public: false,
         side: smeltr::io::trust::Side::Server,
+        senders,
     };
     receiver(at, allow_from, Some(tls), max, &secrets)
 }
@@ -512,6 +529,108 @@ fn a_receiver_with_trusted_authorities_admits_only_their_senders() {
     sender.write_all(counted(message).as_bytes()).unwrap();
     sender.flush().unwrap();
     assert_eq!(text(&poll_until(&mut source, 1)), [message]);
+}
+
+/// A certificate signed by its own key, as a sender with no authority of its own presents.
+fn self_signed(common_name: &str) -> Issued {
+    let certified = rcgen::generate_simple_self_signed(vec![common_name.to_string()]).unwrap();
+    Issued {
+        certificate: certified.cert.pem(),
+        key: certified.signing_key.serialize_pem(),
+    }
+}
+
+/// `issued`'s fingerprint, taken with `hash`.
+fn fingerprint(hash: Hash, issued: &Issued) -> Fingerprint {
+    Fingerprint::of(hash, &crate::certs::certificates(&issued.certificate)[0])
+}
+
+/// Whether a sender presenting `certificate` is refused with an alert: under TLS 1.3 its handshake ends before the
+/// receiver refuses its certificate, and the alert comes after it.
+fn refused(at: SocketAddr, authority: &Authority, certificate: Option<&Issued>) -> bool {
+    let sending = Sending {
+        certificate,
+        ..Default::default()
+    };
+    let message = counted("<34>1 2026-10-11T22:14:15Z web-1 su - ID47 - refused");
+    alerted(&tls_sender(at, authority, sending).and_then(|mut sender| {
+        sender.write_all(message.as_bytes())?;
+        sender.flush()?;
+        sender.read(&mut [0; 1])
+    }))
+}
+
+/// Whether a sender presenting `certificate` is read.
+fn read(at: SocketAddr, authority: &Authority, certificate: &Issued, source: &mut Box<dyn Source>) -> bool {
+    let sending = Sending {
+        certificate: Some(certificate),
+        ..Default::default()
+    };
+    let message = "<34>1 2026-10-11T22:14:15Z web-1 su - ID47 - admitted";
+    let Ok(mut sender) = tls_sender(at, authority, sending) else {
+        return false;
+    };
+    sender.write_all(counted(message).as_bytes()).unwrap();
+    sender.flush().unwrap();
+    text(&poll_until(source, 1)) == [message]
+}
+
+/// A receiver admits a sender named by its certificate's fingerprint, whoever issued it, by either hash RFC 5425
+/// (4.2.1, 5.1) has it take, and refuses one it does not name in the handshake.
+#[test]
+fn a_receiver_admits_a_sender_by_its_certificates_fingerprint() {
+    let authority = Authority::new("syslog tests");
+    let own = self_signed("sender");
+    let issued = Authority::new("syslog senders").issue("sender", vec!["sender".to_string()]);
+    let stranger = self_signed("stranger");
+    let at = free_port();
+    let senders = Senders {
+        fingerprints: vec![fingerprint(Hash::Sha256, &own), fingerprint(Hash::Sha1, &issued)],
+        names: Vec::new(),
+    };
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut source = admitting(at, &authority, key, None, senders, &["127.0.0.1"], 1 << 16);
+
+    for certificate in [None, Some(&stranger)] {
+        assert!(refused(at, &authority, certificate), "{}", certificate.is_some());
+    }
+    nothing_arrives(&mut source);
+    assert!(read(at, &authority, &own, &mut source));
+    assert!(read(at, &authority, &issued, &mut source));
+}
+
+/// A receiver that names hosts admits, of the senders its authorities vouch for, only one issued to a host it names:
+/// by the certificate's dNSName, or its common name where it has none, a `*` standing for one left-most label (RFC
+/// 5425, 5.2).
+#[test]
+fn a_receiver_naming_hosts_admits_only_senders_issued_to_one() {
+    let authority = Authority::new("syslog tests");
+    let vouching = Authority::new("syslog senders");
+    let at = free_port();
+    let senders = Senders {
+        fingerprints: Vec::new(),
+        names: vec!["*.example.com".into(), "Exact.Example.org".into()],
+    };
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut source = admitting(at, &authority, key, Some(&vouching), senders, &["127.0.0.1"], 1 << 16);
+
+    let unnamed = [
+        vouching.issue("a.example.com", vec!["example.com".into(), "a.b.example.com".into()]),
+        vouching.issue("x", vec!["a.example.org".into()]),
+        // Named, but not by an authority it trusts.
+        Authority::new("syslog strangers").issue("x", vec!["a.example.com".into()]),
+    ];
+    for certificate in &unnamed {
+        assert!(refused(at, &authority, Some(certificate)));
+    }
+    nothing_arrives(&mut source);
+    for named in [
+        vouching.issue("x", vec!["other.org".into(), "a.example.com".into()]),
+        vouching.issue("x", vec!["exact.example.org".into()]),
+        vouching.issue("b.example.com", Vec::new()),
+    ] {
+        assert!(read(at, &authority, &named, &mut source));
+    }
 }
 
 /// Syslog has no answer, so a receiver sends a sender nothing; and it answers a sender's `close_notify` with its own
