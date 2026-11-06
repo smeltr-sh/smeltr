@@ -211,9 +211,8 @@ pub fn random_tls(rng: &mut Rng) -> Tls {
     *rng.pick(&[Tls::None, Tls::None, Tls::Served, Tls::Vouched])
 }
 
-/// `tls`, or where it vouches for senders, any way of checking them, for seed `seed`. The offline fuzzers take it
-/// after their settings, and it draws from its own stream, so their other draws, and the live fuzzers', are as they
-/// were.
+/// `tls`, except where it is `Vouched`: then one of the ways of checking senders, drawn for `seed`. The offline
+/// fuzzers take it after their settings. It draws from its own stream, so it changes no other draw.
 pub fn random_check(seed: u64, tls: Tls) -> Tls {
     let check = *Rng::seeded(seed ^ 0x5e4d_e7c6).pick(&[Tls::Vouched, Tls::Pinned, Tls::Named, Tls::Misnamed]);
     if tls == Tls::Vouched { check } else { tls }

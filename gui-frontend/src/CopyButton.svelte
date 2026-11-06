@@ -12,7 +12,7 @@
     text: string;
     label?: string;
     title?: string;
-    /** Set in text, as a link button, rather than among buttons. */
+    /** Styled as a link, for use inside text rather than among buttons. */
     link?: boolean;
   } = $props();
 

@@ -1480,6 +1480,49 @@ const addReceiver: Move = {
   },
 };
 
+/** The journey's receiver serves TLS under the leader's certificate, and admits a sender by its certificate's
+ * fingerprint. */
+const admitSenders: Move = {
+  name: 'admit-senders',
+  weight: (w) => (w.password && w.editing.sources.some((s) => s.startsWith('in-')) ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const id = world.editing.sources.find((s) => s.startsWith('in-'))!;
+    const bytes = Array.from({ length: 32 }, () => rng.below(256).toString(16).padStart(2, '0'));
+    const fingerprint = `sha-256:${bytes.join(':').toUpperCase()}`;
+    await goto(page, leader, '#/build/sources');
+    // After add-receiver the receiver's fields are already showing, and a click on its row would close them.
+    if (
+      !(await page
+        .getByRole('spinbutton', { name: /^port\b/ })
+        .last()
+        .isVisible())
+    )
+      await page.getByText(id, { exact: true }).first().click();
+    const advanced = page.getByRole('button', { name: /^Advanced/ }).last();
+    if ((await advanced.getAttribute('aria-expanded')) === 'false') await advanced.click();
+    await page
+      .getByRole('combobox', { name: /^server certificate\b/ })
+      .last()
+      .selectOption('leader');
+    await page
+      .getByRole('textbox', { name: /^sender fingerprints\b/ })
+      .last()
+      .fill(fingerprint);
+    await page.keyboard.press('Enter');
+    await save(j, unsaved(page));
+    await editingIsSaved(j);
+    const on = encodeURIComponent(world.branch!);
+    const sources: { id: string; certificate?: string; senderFingerprints?: string[] }[] = (
+      await (await j.truth()).get(`/api/areas/shared?branch=${on}`)
+    ).config.sources;
+    const saved = sources.find((s) => s.id === id)!;
+    expect(saved.certificate, `${id} serves the leader's certificate`).toBe('leader');
+    expect(saved.senderFingerprints, `${id} admits ${fingerprint}`).toContain(fingerprint);
+    return `${id} admits a sender by its fingerprint`;
+  },
+};
+
 const addOtherDestination: Move = {
   name: 'add-other-destination',
   weight: (w) =>
@@ -3219,6 +3262,7 @@ export const MOVES: readonly Move[] = [
   declareFromProduction,
   writeInto,
   addReceiver,
+  admitSenders,
   addOtherDestination,
   addLookup,
   addGrokPattern,

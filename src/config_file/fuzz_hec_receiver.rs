@@ -70,7 +70,7 @@ const FINGERPRINTS: Pool = &[
         r#""sha-256:00:07:0E:15:1C:23:2A:31:38:3F:46:4D:54:5B:62:69:70:77:7E:85:8C:93:9A:A1:A8:AF:B6:BD:C4:CB:D2:D9""#,
         false,
     ),
-    // Lowercase, as some tools print one.
+    // Lowercase, as some tools print a fingerprint.
     (
         r#""sha-1:00:0b:16:21:2c:37:42:4d:58:63:6e:79:84:8f:9a:a5:b0:bb:c6:d1""#,
         false,
@@ -88,7 +88,7 @@ const FINGERPRINTS: Pool = &[
     (r#""""#, true),
 ];
 
-/// A host a receiver admits senders issued to.
+/// A host whose certificates a receiver admits.
 const SENDER_NAMES: Pool = &[
     (r#""host.example.com""#, false),
     (r#""*.example.com""#, false),
@@ -240,7 +240,7 @@ fn known(rng: &mut Rng) -> Case {
         None => false,
     };
 
-    // Senders named only where the receiver serves TLS, as naming them is what makes it serve TLS.
+    // Naming senders makes the receiver serve TLS, so a draw names them only where it draws TLS settings.
     let mut pinned = false;
     if matches!(serving, Some(Ok(_))) {
         for (key, pool) in [("senderFingerprints", FINGERPRINTS), ("senderNames", SENDER_NAMES)] {
@@ -254,7 +254,8 @@ fn known(rng: &mut Rng) -> Case {
             fields.insert(key.into(), Value::Array(listed.into_iter().map(|(v, _)| v).collect()));
             pinned |= key == "senderFingerprints";
         }
-        // Names narrow what authorities vouch for, so without them none is admitted.
+        // Hosts narrow what trusted authorities vouch for, so with no authorities the loader refuses them, and a
+        // clean case leaves them out.
         if fields.contains_key("senderNames") && !vouches {
             if clean {
                 fields.remove("senderNames");
