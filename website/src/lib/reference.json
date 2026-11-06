@@ -50,8 +50,24 @@
       "id": "objects",
       "title": "Objects",
       "blurb": "The record is an object: `$` is the whole record, and each field is one of its keys. An object is written `{\"a\": 1, \"b\": 2}`. `o[k]` reads the key that `k` holds on each row.",
-      "rows": [],
-      "notes": [],
+      "rows": [
+        {
+          "symbol": "[]",
+          "gloss": "the child of an object under that name",
+          "examples": [
+            {
+              "expr": "geo[\"city\"]",
+              "result": "\"Oslo\"",
+              "given": ["geo = {\"city\": \"Oslo\", \"lat\": 59}"],
+              "note": "a name, not a position"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        "On a named field, a fixed string key is part of the [field name](#names): `geo[\"city\"]` reads `geo.city`.",
+        "An object value passed to `at` needs a declared field set and a literal key. An unknown key does not compile. For a declared array of objects, `tags[0][\"name\"]` reads a field of one element."
+      ],
       "rejected": [],
       "functions": [
         {
@@ -351,8 +367,8 @@
       "functions": [
         {
           "name": "toString",
-          "signature": "value.toString(form = \"base64\")",
-          "summary": "Renders a number, bool, datetime or duration as text, exactly as the JSON output would. Bytes render in the form named: `\"base64\"`, `\"hex\"` (two lowercase digits a byte) or `\"binary\"` (eight `0`s and `1`s a byte, high bit first). A form it does not know is null and throws a `CoercionRefused` exception.",
+          "signature": "value.toString()",
+          "summary": "Renders a number, bool, datetime or duration as text, exactly as the JSON output would. Bytes render as base64; [toString on bytes](#toString-bytes) takes other forms.",
           "examples": [
             {
               "expr": "404.toString()",
@@ -366,15 +382,6 @@
               "expr": "duration(1, \"s\").toString()",
               "result": "\"1000000\"",
               "note": "a span writes as its microsecond count"
-            },
-            {
-              "expr": "\"café\".encode(\"utf-8\").toString()",
-              "result": "\"Y2Fmw6k=\"",
-              "note": "bytes write as base64 where no form is named, as the JSON output writes them"
-            },
-            {
-              "expr": "\"café\".encode(\"utf-8\").toString(\"hex\")",
-              "result": "\"636166c3a9\""
             },
             {
               "expr": "toString(404)",
@@ -466,7 +473,14 @@
               "note": "the same call, written as a function"
             }
           ]
-        },
+        }
+      ]
+    },
+    {
+      "id": "binary",
+      "title": "Bytes",
+      "blurb": "A `bytes` value: made from text and read back as text, read at a byte position, and searched. A byte position counts from 0. A read that runs past the end of the bytes is null and throws an `IndexOutOfRange` exception. A number's type is `\"u8\"`, `\"u16\"`, `\"u32\"` or `\"u64\"` unsigned, `\"i8\"`, `\"i16\"`, `\"i32\"` or `\"i64\"` signed, or `\"f32\"` or `\"f64\"`. Its byte order is `\"big\"` or `\"little\"`, and big when the call names none. `unpack` reads a whole layout of fields at once.",
+      "functions": [
         {
           "name": "parseBytes",
           "signature": "value.parseBytes(form = \"base64\")",
@@ -490,32 +504,31 @@
               "note": "the same call, written as a function",
               "result": "\"636166c3a9\""
             }
-          ]
+          ],
+          "group": "Bytes and text"
         },
         {
-          "name": "decode",
-          "signature": "bytes.decode(encoding)",
-          "summary": "Reads bytes as text in the encoding named: a WHATWG label such as `\"utf-8\"`, `\"utf-16le\"` or `\"latin1\"`, or `\"auto\"`, which detects as a source's `encoding` does. Bytes that do not decode become U+FFFD. An encoding it does not know is null and throws a `CoercionRefused` exception.",
+          "name": "toString",
+          "on": "bytes",
+          "signature": "bytes.toString(form = \"base64\")",
+          "summary": "Bytes as text in the form named: `\"base64\"`, `\"hex\"` (two lowercase digits a byte) or `\"binary\"` (eight `0`s and `1`s a byte, high bit first). `parseBytes` reads each back. A form it does not know is null and throws a `CoercionRefused` exception.",
           "examples": [
             {
-              "expr": "\"6361 66e9\".replaceAll(/ /, \"\").parseBytes(\"hex\").decode(\"latin1\")",
-              "result": "\"café\""
+              "expr": "\"café\".encode(\"utf-8\").toString()",
+              "result": "\"Y2Fmw6k=\"",
+              "note": "bytes write as base64 where no form is named, as the JSON output writes them"
             },
             {
-              "expr": "\"Y2Fmw6k=\".parseBytes().decode(\"auto\")",
-              "result": "\"café\""
+              "expr": "\"café\".encode(\"utf-8\").toString(\"hex\")",
+              "result": "\"636166c3a9\""
             },
             {
-              "expr": "\"Y2Fmw6k=\".parseBytes().decode(\"klingon\")",
-              "result": "null",
-              "throws": ["CoercionRefused"]
-            },
-            {
-              "expr": "decode(parseBytes(\"Y2Fmw6k=\"), \"utf-8\")",
+              "expr": "toString(parseBytes(\"Y2Fmw6k=\"), \"hex\")",
               "note": "the same call, written as a function",
-              "result": "\"café\""
+              "result": "\"636166c3a9\""
             }
-          ]
+          ],
+          "group": "Bytes and text"
         },
         {
           "name": "encode",
@@ -540,15 +553,60 @@
               "note": "the same call, written as a function",
               "result": "\"636166c3a9\""
             }
+          ],
+          "group": "Bytes and text"
+        },
+        {
+          "name": "decode",
+          "signature": "bytes.decode(encoding)",
+          "summary": "Reads bytes as text in the encoding named: a WHATWG label such as `\"utf-8\"`, `\"utf-16le\"` or `\"latin1\"`, or `\"auto\"`, which detects as a source's `encoding` does. Bytes that do not decode become U+FFFD. An encoding it does not know is null and throws a `CoercionRefused` exception.",
+          "examples": [
+            {
+              "expr": "\"6361 66e9\".replaceAll(/ /, \"\").parseBytes(\"hex\").decode(\"latin1\")",
+              "result": "\"café\""
+            },
+            {
+              "expr": "\"Y2Fmw6k=\".parseBytes().decode(\"auto\")",
+              "result": "\"café\""
+            },
+            {
+              "expr": "\"Y2Fmw6k=\".parseBytes().decode(\"klingon\")",
+              "result": "null",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "decode(parseBytes(\"Y2Fmw6k=\"), \"utf-8\")",
+              "note": "the same call, written as a function",
+              "result": "\"café\""
+            }
+          ],
+          "group": "Bytes and text"
+        },
+        {
+          "name": "length",
+          "on": "bytes",
+          "signature": "bytes.length()",
+          "summary": "The number of bytes in a `bytes` value.",
+          "group": "Reading at a position",
+          "examples": [
+            {
+              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
+              "expr": "msg.length()",
+              "result": "6"
+            },
+            {
+              "expr": "\"é\".encode(\"utf-8\").length()",
+              "result": "2",
+              "note": "bytes, not characters"
+            },
+            {
+              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
+              "expr": "length(msg)",
+              "note": "the same call, written as a function",
+              "result": "6"
+            }
           ]
-        }
-      ]
-    },
-    {
-      "id": "binary",
-      "title": "Binary messages",
-      "blurb": "Reading a binary message out of `bytes`: a number, bytes or text at a byte position, counted from 0. A read that runs past the end of the bytes is null and throws an `IndexOutOfRange` exception. A number's type is `\"u8\"`, `\"u16\"`, `\"u32\"` or `\"u64\"` unsigned, `\"i8\"`, `\"i16\"`, `\"i32\"` or `\"i64\"` signed, or `\"f32\"` or `\"f64\"`. Its byte order is `\"big\"` or `\"little\"`, and big when the call names none. `unpack` reads a whole layout of fields at once.",
-      "functions": [
+        },
         {
           "name": "readInt",
           "signature": "bytes.readInt(at, type, order)",
@@ -581,7 +639,8 @@
               "note": "the same call, written as a function",
               "result": "1"
             }
-          ]
+          ],
+          "group": "Reading at a position"
         },
         {
           "name": "readFloat",
@@ -597,7 +656,8 @@
               "expr": "parseBytes(\"0000c03f\", \"hex\").readFloat(0, \"f32\", \"little\")",
               "result": "1.5"
             }
-          ]
+          ],
+          "group": "Reading at a position"
         },
         {
           "name": "readBytes",
@@ -621,7 +681,8 @@
               "result": "null",
               "throws": ["IndexOutOfRange"]
             }
-          ]
+          ],
+          "group": "Reading at a position"
         },
         {
           "name": "unpack",
@@ -643,7 +704,92 @@
               "throws": ["IndexOutOfRange"],
               "note": "`s` says 5 bytes, and only 2 are left"
             }
-          ]
+          ],
+          "group": "Reading at a position"
+        },
+        {
+          "name": "indexOf",
+          "on": "bytes",
+          "signature": "bytes.indexOf(search[, from])",
+          "summary": "The byte position where `search` first occurs at or after `from`, or `-1`. `search` is a byte's number, 0 to 255, or `bytes`; a number outside 0 to 255 is never found. A negative `from` counts from the end.",
+          "examples": [
+            {
+              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
+              "expr": "msg.indexOf(0)",
+              "result": "2"
+            },
+            {
+              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
+              "expr": "msg.indexOf(0, 3)",
+              "result": "5",
+              "note": "a zero-terminated string ends here"
+            },
+            {
+              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
+              "expr": "msg.indexOf(parseBytes(\"6f6b\", \"hex\"))",
+              "result": "3",
+              "note": "a run of bytes"
+            },
+            {
+              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
+              "expr": "indexOf(msg, 0)",
+              "note": "the same call, written as a function",
+              "result": "2"
+            }
+          ],
+          "group": "Searching"
+        },
+        {
+          "name": "lastIndexOf",
+          "on": "bytes",
+          "signature": "bytes.lastIndexOf(search[, from])",
+          "summary": "The byte position where `search` last occurs at or before `from`, or `-1`. `search` is what [indexOf](#indexOf-bytes) takes.",
+          "examples": [
+            {
+              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
+              "expr": "msg.lastIndexOf(0)",
+              "result": "5"
+            },
+            {
+              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
+              "expr": "msg.lastIndexOf(0, 4)",
+              "result": "2",
+              "note": "searches back from position 4"
+            },
+            {
+              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
+              "expr": "lastIndexOf(msg, 0)",
+              "note": "the same call, written as a function",
+              "result": "5"
+            }
+          ],
+          "group": "Searching"
+        },
+        {
+          "name": "includes",
+          "on": "bytes",
+          "signature": "bytes.includes(search[, from])",
+          "summary": "Whether `search` occurs at or after `from`. `search` is what [indexOf](#indexOf-bytes) takes.",
+          "examples": [
+            {
+              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
+              "expr": "msg.includes(0)",
+              "result": "true"
+            },
+            {
+              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
+              "expr": "msg.includes(parseBytes(\"6869\", \"hex\"), 1)",
+              "result": "false",
+              "note": "searches from position 1"
+            },
+            {
+              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
+              "expr": "includes(msg, 0)",
+              "note": "the same call, written as a function",
+              "result": "true"
+            }
+          ],
+          "group": "Searching"
         }
       ]
     },
@@ -1061,31 +1207,17 @@
       ]
     },
     {
-      "id": "sequences",
-      "title": "Sequences",
-      "blurb": "A string and an array both have a length and positions, and the same functions reach into either. Positions count from zero and a negative one counts from the end; positions and lengths count Unicode characters, so a slice can never land mid-character.",
+      "id": "strings",
+      "title": "Strings",
+      "blurb": "A `str` is text, always valid UTF-8. `+` joins two. Positions and lengths count Unicode characters from 0, so a slice never lands mid-character. A [template string](#values) puts values in text.",
       "rows": [
         {
-          "symbol": "[]",
-          "gloss": "the element of an array at that position; negative counts from the end",
+          "symbol": "+",
+          "gloss": "join text",
           "examples": [
             {
-              "expr": "fields[2]",
-              "result": "\"c\"",
-              "given": ["fields = \"a,b,c\".split(\",\")"]
-            },
-            {
-              "expr": "fields[-1]",
-              "result": "\"c\"",
-              "given": ["fields = \"a,b,c\".split(\",\")"],
-              "note": "the last element"
-            },
-            {
-              "expr": "fields[5]",
-              "result": "null",
-              "given": ["fields = \"a,b,c\".split(\",\")"],
-              "note": "past the end of an array is null",
-              "throws": ["IndexOutOfRange"]
+              "expr": "\"GET\" + \" /health\"",
+              "result": "\"GET /health\""
             }
           ]
         },
@@ -1106,30 +1238,22 @@
               "note": "past the end of a string is null"
             }
           ]
-        },
+        }
+      ],
+      "rejected": [
         {
-          "symbol": "[]",
-          "gloss": "the child of an object under that name",
-          "examples": [
-            {
-              "expr": "geo[\"city\"]",
-              "result": "\"Oslo\"",
-              "given": ["geo = {\"city\": \"Oslo\", \"lat\": 59}"],
-              "note": "a name, not a position"
-            }
-          ]
+          "expr": "\"a\" + 1",
+          "why": "No implicit stringification. Write `\"a\" + (1).toString()`."
         }
       ],
       "notes": [
-        "For arrays and strings, `x[i]` is `at(x, i)`, including negative positions and out-of-range results.",
-        "A position past either end reads null and throws an `IndexOutOfRange` exception on the record.",
-        "On a named field, a fixed string key is part of the [field name](#names): `geo[\"city\"]` reads `geo.city`."
+        "There is no implicit stringification: a number has to go through `toString()` before it can be joined to text."
       ],
       "functions": [
         {
           "name": "length",
-          "signature": "value.length()",
-          "summary": "Characters in a string, bytes in a `bytes` value, or elements in an array.",
+          "signature": "text.length()",
+          "summary": "The number of characters in a string.",
           "examples": [
             {
               "expr": "line.length()",
@@ -1142,12 +1266,6 @@
               "note": "characters, not bytes and not UTF-16 units: an emoji counts once"
             },
             {
-              "expr": "line.split(\",\").length()",
-              "result": "3",
-              "given": ["line = \"a,b,c\""],
-              "note": "elements, for an array"
-            },
-            {
               "expr": "length(line)",
               "note": "the same call, written as a function",
               "result": "9",
@@ -1157,8 +1275,8 @@
         },
         {
           "name": "slice",
-          "signature": "value.slice(start[, end])",
-          "summary": "A substring, or part of an array, from `start` up to but not including `end`. A string is indexed by characters. A negative index counts from the end; `end` defaults to the length.",
+          "signature": "text.slice(start[, end])",
+          "summary": "The substring from character `start` up to but not including `end`. A negative index counts from the end; `end` defaults to the length.",
           "examples": [
             {
               "expr": "line.slice(7)",
@@ -1177,11 +1295,6 @@
               "note": "a negative start counts from the end"
             },
             {
-              "expr": "\"a,b,c,d\".split(\",\").slice(1, 3)",
-              "result": "[\"b\",\"c\"]",
-              "note": "arrays slice the same way"
-            },
-            {
               "expr": "slice(line, 7)",
               "note": "the same call, written as a function",
               "result": "\"disk full\"",
@@ -1191,8 +1304,8 @@
         },
         {
           "name": "at",
-          "signature": "value.at(index)",
-          "summary": "One element of an array, one character of a string, or one field of a declared object.",
+          "signature": "text.at(index)",
+          "summary": "One character of a string. A negative index counts from the end; past either end is null and throws an `IndexOutOfRange` exception.",
           "examples": [
             {
               "expr": "\"smeltr\".at(0)",
@@ -1210,33 +1323,17 @@
               "note": "past either end of a string is null"
             },
             {
-              "expr": "line.split(\",\")[-1]",
-              "result": "\"c\"",
-              "given": ["line = \"a,b,c\""],
-              "note": "`[...]` is `at`, negative index included"
-            },
-            {
               "expr": "at(\"smeltr\", 0)",
               "note": "the same call, written as a function",
               "result": "\"s\""
-            },
-            {
-              "given": ["payload.status = 200"],
-              "expr": "payload[\"status\"]",
-              "result": "200",
-              "note": "a fixed string key on a named field"
             }
           ],
-          "notes": [
-            "For arrays and strings, `value[index]` is the same as `value.at(index)`.",
-            "On a named field, `payload[\"status\"]` resolves as `payload.status`. A declared field a record lacks reads as null. This named-path form differs from calling `at` on an object value.",
-            "An object value passed to `at` needs a declared field set and a literal key. An unknown key does not compile. For a declared array of objects, `tags[0][\"name\"]` reads a field of one element."
-          ]
+          "notes": ["`s[i]` is the same as `s.at(i)`."]
         },
         {
           "name": "indexOf",
-          "signature": "value.indexOf(search[, from])",
-          "summary": "Where `search` first occurs in a string, or which element of an array equals it, at or after `from`. `-1` when it does not. A negative `from` counts from the end of an array, and is 0 on a string. Other languages call this `find`. On bytes, `search` is a byte's number, 0 to 255, or `bytes`, and the answer is a byte position.",
+          "signature": "text.indexOf(search[, from])",
+          "summary": "Where `search` first occurs in a string at or after `from`, or `-1`. A negative `from` is 0. Other languages call this `find`.",
           "examples": [
             {
               "expr": "line.indexOf(\",\")",
@@ -1250,20 +1347,9 @@
               "note": "searches from position 2"
             },
             {
-              "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
-              "expr": "msg.indexOf(0, 3)",
-              "result": "5",
-              "note": "a zero-terminated string ends here"
-            },
-            {
               "expr": "\"GET /health\".indexOf(\"POST\")",
               "result": "-1",
               "note": "`-1`, not null"
-            },
-            {
-              "expr": "line.split(\",\").indexOf(\"c\")",
-              "result": "2",
-              "given": ["line = \"a,b,c\""]
             },
             {
               "expr": "indexOf(line, \",\")",
@@ -1274,65 +1360,9 @@
           ]
         },
         {
-          "name": "includes",
-          "signature": "value.includes(search[, from])",
-          "summary": "Whether a string contains `search`, or an array contains an element equal to it, at or after `from`. A negative `from` counts from the end of an array, and is 0 on a string. On bytes, `search` is what `indexOf` takes on bytes.",
-          "examples": [
-            {
-              "expr": "msg.includes(\"reset\")",
-              "result": "true",
-              "given": ["msg = \"connection reset by peer\""]
-            },
-            {
-              "expr": "\"GET,HEAD\".split(\",\").includes(\"HEAD\")",
-              "result": "true",
-              "note": "arrays too"
-            },
-            {
-              "expr": "\"a-b\".includes(\"a\", 1)",
-              "result": "false",
-              "note": "searches from position 1"
-            },
-            {
-              "expr": "includes(msg, \"reset\")",
-              "note": "the same call, written as a function",
-              "result": "true",
-              "given": ["msg = \"connection reset by peer\""]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "strings",
-      "title": "Strings",
-      "blurb": "A `str` is text, always valid UTF-8. `+` joins two. [length](#length), [slice](#slice), [at](#at), [indexOf](#indexOf) and [includes](#includes) take a string or an array. A [template string](#values) puts values in text.",
-      "rows": [
-        {
-          "symbol": "+",
-          "gloss": "join text",
-          "examples": [
-            {
-              "expr": "\"GET\" + \" /health\"",
-              "result": "\"GET /health\""
-            }
-          ]
-        }
-      ],
-      "rejected": [
-        {
-          "expr": "\"a\" + 1",
-          "why": "No implicit stringification. Write `\"a\" + (1).toString()`."
-        }
-      ],
-      "notes": [
-        "There is no implicit stringification: a number has to go through `toString()` before it can be joined to text."
-      ],
-      "functions": [
-        {
           "name": "lastIndexOf",
-          "signature": "value.lastIndexOf(search[, from])",
-          "summary": "Where `search` last occurs in a string, or the position of the last element of an array equal to it, at or before `from`. `-1` when it does not. A negative `from` counts from the end of an array, and is 0 on a string. Useful for splitting on the final separator. On bytes, `search` is what `indexOf` takes on bytes.",
+          "signature": "text.lastIndexOf(search[, from])",
+          "summary": "Where `search` last occurs in a string at or before `from`, or `-1`. A negative `from` is 0. Useful for splitting on the final separator.",
           "examples": [
             {
               "expr": "\"/api/v2/things\".lastIndexOf(\"/\")",
@@ -1348,14 +1378,32 @@
               "note": "searches back from position 2"
             },
             {
-              "expr": "[1, 2, 1].lastIndexOf(1)",
-              "result": "2",
-              "note": "arrays too"
-            },
-            {
               "expr": "lastIndexOf(\"/api/v2/things\", \"/\")",
               "note": "the same call, written as a function",
               "result": "7"
+            }
+          ]
+        },
+        {
+          "name": "includes",
+          "signature": "text.includes(search[, from])",
+          "summary": "Whether a string contains `search` at or after `from`. A negative `from` is 0.",
+          "examples": [
+            {
+              "expr": "msg.includes(\"reset\")",
+              "result": "true",
+              "given": ["msg = \"connection reset by peer\""]
+            },
+            {
+              "expr": "\"a-b\".includes(\"a\", 1)",
+              "result": "false",
+              "note": "searches from position 1"
+            },
+            {
+              "expr": "includes(msg, \"reset\")",
+              "note": "the same call, written as a function",
+              "result": "true",
+              "given": ["msg = \"connection reset by peer\""]
             }
           ]
         },
@@ -1726,7 +1774,7 @@
     {
       "id": "arrays",
       "title": "Arrays",
-      "blurb": "An `array<T>` holds elements of the one type `T`. `filter` keeps the elements whose condition is true and `map` computes a value for each element. [length](#length), [slice](#slice), [at](#at), [indexOf](#indexOf) and [includes](#includes) take an array or a string.",
+      "blurb": "An `array<T>` holds elements of the one type `T`, at positions counted from 0. `filter` keeps the elements whose condition is true and `map` computes a value for each element.",
       "rows": [
         {
           "symbol": "+",
@@ -1736,6 +1784,30 @@
               "expr": "line.split(\",\") + more.split(\",\")",
               "result": "[\"a\",\"b\",\"c\",\"d\"]",
               "given": ["line = \"a,b\"", "more = \"c,d\""]
+            }
+          ]
+        },
+        {
+          "symbol": "[]",
+          "gloss": "the element of an array at that position; negative counts from the end",
+          "examples": [
+            {
+              "expr": "fields[2]",
+              "result": "\"c\"",
+              "given": ["fields = \"a,b,c\".split(\",\")"]
+            },
+            {
+              "expr": "fields[-1]",
+              "result": "\"c\"",
+              "given": ["fields = \"a,b,c\".split(\",\")"],
+              "note": "the last element"
+            },
+            {
+              "expr": "fields[5]",
+              "result": "null",
+              "given": ["fields = \"a,b,c\".split(\",\")"],
+              "note": "past the end of an array is null",
+              "throws": ["IndexOutOfRange"]
             }
           ]
         }
@@ -2022,6 +2094,134 @@
               "expr": "[2, null, 1].sort()",
               "result": "[1,2,null]",
               "note": "nulls last"
+            }
+          ]
+        },
+        {
+          "name": "length",
+          "on": "array",
+          "signature": "array.length()",
+          "summary": "The number of elements in an array.",
+          "examples": [
+            {
+              "expr": "line.split(\",\").length()",
+              "result": "3",
+              "given": ["line = \"a,b,c\""]
+            },
+            {
+              "expr": "length([1, 2])",
+              "note": "the same call, written as a function",
+              "result": "2"
+            }
+          ]
+        },
+        {
+          "name": "slice",
+          "on": "array",
+          "signature": "array.slice(start[, end])",
+          "summary": "The elements from `start` up to but not including `end`. A negative index counts from the end; `end` defaults to the length.",
+          "examples": [
+            {
+              "expr": "\"a,b,c,d\".split(\",\").slice(1, 3)",
+              "result": "[\"b\",\"c\"]"
+            },
+            {
+              "expr": "slice([1, 2, 3], -2)",
+              "note": "the same call, written as a function",
+              "result": "[2,3]"
+            }
+          ]
+        },
+        {
+          "name": "at",
+          "on": "array",
+          "signature": "array.at(index)",
+          "summary": "One element of an array. A negative index counts from the end; past either end is null and throws an `IndexOutOfRange` exception.",
+          "examples": [
+            {
+              "given": ["line = \"a,b,c\""],
+              "expr": "line.split(\",\").at(-1)",
+              "result": "\"c\"",
+              "note": "a negative index counts from the end"
+            },
+            {
+              "given": ["line = \"a,b,c\""],
+              "expr": "line.split(\",\")[-1]",
+              "result": "\"c\"",
+              "note": "`[-1]` is `at(-1)`"
+            },
+            {
+              "expr": "at([1, 2, 3], 0)",
+              "note": "the same call, written as a function",
+              "result": "1"
+            }
+          ],
+          "notes": ["`xs[i]` is the same as `xs.at(i)`."]
+        },
+        {
+          "name": "indexOf",
+          "on": "array",
+          "signature": "array.indexOf(search[, from])",
+          "summary": "The position of the first element equal to `search` at or after `from`, or `-1`. A negative `from` counts from the end.",
+          "examples": [
+            {
+              "expr": "line.split(\",\").indexOf(\"c\")",
+              "result": "2",
+              "given": ["line = \"a,b,c\""]
+            },
+            {
+              "expr": "[\"a\", \"b\", \"a\"].indexOf(\"a\", -1)",
+              "result": "2",
+              "note": "a negative `from` counts from the end"
+            },
+            {
+              "expr": "indexOf([\"a\", \"b\"], \"b\")",
+              "note": "the same call, written as a function",
+              "result": "1"
+            }
+          ]
+        },
+        {
+          "name": "lastIndexOf",
+          "on": "array",
+          "signature": "array.lastIndexOf(search[, from])",
+          "summary": "The position of the last element equal to `search` at or before `from`, or `-1`. A negative `from` counts from the end.",
+          "examples": [
+            {
+              "expr": "[1, 2, 1].lastIndexOf(1)",
+              "result": "2"
+            },
+            {
+              "expr": "[1, 2, 1].lastIndexOf(1, -2)",
+              "result": "0",
+              "note": "searches back from the second-to-last element"
+            },
+            {
+              "expr": "lastIndexOf([1, 2, 1], 1)",
+              "note": "the same call, written as a function",
+              "result": "2"
+            }
+          ]
+        },
+        {
+          "name": "includes",
+          "on": "array",
+          "signature": "array.includes(search[, from])",
+          "summary": "Whether an element equals `search` at or after `from`. A negative `from` counts from the end.",
+          "examples": [
+            {
+              "expr": "\"GET,HEAD\".split(\",\").includes(\"HEAD\")",
+              "result": "true"
+            },
+            {
+              "expr": "[\"GET\", \"HEAD\"].includes(\"GET\", 1)",
+              "result": "false",
+              "note": "searches from position 1"
+            },
+            {
+              "expr": "includes([\"GET\", \"HEAD\"], \"HEAD\")",
+              "note": "the same call, written as a function",
+              "result": "true"
             }
           ]
         }
