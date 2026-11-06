@@ -275,7 +275,7 @@ impl Framer {
         let rest = &self.held[self.cut..];
         match rest.first() {
             None => {}
-            Some(b'1'..=b'9') => return Ok(rest.len()),
+            Some(b'1'..=b'9') => return Ok(self.unfinished()),
             Some(_) => {
                 self.held.push(b'\n');
                 let frame = self.non_transparent(self.cut);
@@ -338,7 +338,7 @@ impl Framer {
             let frame = match rest.first() {
                 None => return Ok(0),
                 Some(b'1'..=b'9') => match self.octet_counted(start)? {
-                    Frame::Partial => return Ok(rest.len()),
+                    Frame::Partial => return Ok(self.unfinished()),
                     frame => frame,
                 },
                 Some(_) => match line_breaker.next_break(rest, true) {
