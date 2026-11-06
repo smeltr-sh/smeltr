@@ -232,6 +232,7 @@ mod tests {
             "parquet_variant",
             "pipelined",
             "reads",
+            "senders",
             "stored",
             "table",
             "trust",
