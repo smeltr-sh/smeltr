@@ -11,7 +11,7 @@ use smeltr::format::encoding::Encoding;
 use smeltr::io::kafka::{KafkaDestination, KafkaSource};
 use smeltr::io::{Destination, OutgoingRecord, OwnedRecord, Source};
 use smeltr::leader::registry::Registry;
-use smeltr::leader::sqlite_store::SqliteStore;
+use smeltr::leader::store::Store;
 use smeltr::leader::{AppState, router};
 use smeltr::plan::topology::{KafkaDestinationConfig, KafkaSourceConfig, StartPosition};
 use std::borrow::Cow;
@@ -186,7 +186,7 @@ fn start_leader_tls() -> (
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let store = SqliteStore::open(
+            let store = Store::open(
                 std::path::Path::new(":memory:"),
                 &temp_dir("leader-key").join("sealing.key"),
             )

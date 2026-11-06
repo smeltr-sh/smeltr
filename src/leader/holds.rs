@@ -129,7 +129,7 @@ impl Holds {
     ///
     /// Serialised across workers, so two beats never both take one free source. Blocking: it reads and writes the
     /// store under the lock every other call here takes.
-    pub fn beat(&self, store: &dyn Store, mut beat: Beat<'_>, clock: Clock) -> Result<Vec<Hold>, StoreError> {
+    pub fn beat(&self, store: &Store, mut beat: Beat<'_>, clock: Clock) -> Result<Vec<Hold>, StoreError> {
         let mut workers = self.lock();
         if !clock.young() {
             workers.gone.clear();
@@ -219,7 +219,7 @@ impl Holds {
     /// Blocking.
     pub fn forget_unread(
         &self,
-        store: &dyn Store,
+        store: &Store,
         read: &HashSet<(String, SourceKey)>,
         clock: Clock,
     ) -> Result<Vec<HeldSource>, StoreError> {
@@ -252,7 +252,7 @@ impl Holds {
 }
 
 /// [`Holds::beat`]'s work against the store. Takes the beat's progress; leaves the rest.
-fn settle(workers: &Workers, store: &dyn Store, beat: &mut Beat<'_>, clock: Clock) -> Result<Vec<Hold>, StoreError> {
+fn settle(workers: &Workers, store: &Store, beat: &mut Beat<'_>, clock: Clock) -> Result<Vec<Hold>, StoreError> {
     let (worker, group) = (beat.worker, beat.group);
     // Before anything is settled, and whether or not this beat lists the source: a worker between two runtimes
     // lists nothing and still carries what the last one delivered, which it counts as recorded once answered.
@@ -347,12 +347,12 @@ fn admitted(worker: &str, key: &SourceKey, mut progress: Progress) -> Progress {
 
 /// A store on disk whose holds table is gone, so every read or write of a hold fails.
 #[cfg(test)]
-pub(crate) fn store_without_holds(label: &str) -> super::sqlite_store::SqliteStore {
+pub(crate) fn store_without_holds(label: &str) -> super::store::Store {
     let dir = std::env::temp_dir().join(format!("smeltr-holds-{label}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let db = dir.join("leader.db");
     let _ = std::fs::remove_file(&db);
-    let store = super::sqlite_store::SqliteStore::open(&db, &dir.join("sealing.key")).unwrap();
+    let store = super::store::Store::open(&db, &dir.join("sealing.key")).unwrap();
     rusqlite::Connection::open(&db)
         .unwrap()
         .execute_batch("DROP TABLE source_holds")
@@ -366,13 +366,13 @@ mod tests {
 
     use super::*;
     use crate::heartbeat::LedgerEntry;
-    use crate::leader::sqlite_store::SqliteStore;
+    use crate::leader::store::Store;
 
     const BEAT: Duration = Duration::from_secs(5);
 
-    fn store(label: &str) -> SqliteStore {
+    fn store(label: &str) -> Store {
         let key = std::env::temp_dir().join(format!("smeltr-holds-{}-{label}", std::process::id()));
-        SqliteStore::open(Path::new(":memory:"), &key.join("sealing.key")).unwrap()
+        Store::open(Path::new(":memory:"), &key.join("sealing.key")).unwrap()
     }
 
     fn key(source: &str) -> SourceKey {
@@ -393,7 +393,7 @@ mod tests {
 
     fn beat(
         holds: &Holds,
-        s: &SqliteStore,
+        s: &Store,
         worker: &str,
         group: &str,
         runs: Vec<SourceKey>,

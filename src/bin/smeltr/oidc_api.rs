@@ -80,7 +80,7 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn read(store: &dyn Store) -> Result<Settings, StoreError> {
+    pub fn read(store: &Store) -> Result<Settings, StoreError> {
         Ok(Settings {
             enabled: store.setting(ENABLED_KEY)?.as_deref() == Some("true"),
             issuer: store.setting(ISSUER_KEY)?.unwrap_or_default(),

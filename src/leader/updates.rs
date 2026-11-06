@@ -125,7 +125,7 @@ impl Updates {
 }
 
 /// Whether this leader looks.
-fn checking(store: &dyn super::store::Store) -> Result<bool, super::store::StoreError> {
+fn checking(store: &super::store::Store) -> Result<bool, super::store::StoreError> {
     Ok(store.setting(CHECK_KEY)?.as_deref() != Some("false"))
 }
 

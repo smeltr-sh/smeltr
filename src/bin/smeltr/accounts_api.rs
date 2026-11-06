@@ -52,7 +52,7 @@ pub struct AccountDto {
 
 impl AccountDto {
     /// `user` as the roster shows it, given every role there is.
-    pub fn of(store: &dyn Store, user: UserRecord, roles: &[Role]) -> Result<AccountDto, StoreError> {
+    pub fn of(store: &Store, user: UserRecord, roles: &[Role]) -> Result<AccountDto, StoreError> {
         let username = store.username_of(&user.id)?;
         let identity = match user.auth_source {
             AuthSource::Oidc => store.oidc_identity_of(&user.id)?,
@@ -86,7 +86,7 @@ impl AccountDto {
 }
 
 /// What the provider last called `user`, if an OpenID provider signs it in.
-pub fn provider_login_of(store: &dyn Store, user: &UserRecord) -> Result<Option<String>, StoreError> {
+pub fn provider_login_of(store: &Store, user: &UserRecord) -> Result<Option<String>, StoreError> {
     if user.auth_source != AuthSource::Oidc {
         return Ok(None);
     }
@@ -539,7 +539,7 @@ mod tests {
         use smeltr::leader::access::Level;
         use smeltr::leader::store::OidcSignIn;
         let key = std::env::temp_dir().join(format!("smeltr-users-api-roles-{}.key", std::process::id()));
-        let store = smeltr::leader::sqlite_store::SqliteStore::open(std::path::Path::new(":memory:"), &key).unwrap();
+        let store = smeltr::leader::store::Store::open(std::path::Path::new(":memory:"), &key).unwrap();
         let groups = vec!["smeltr-payments".to_string(), "everyone".to_string()];
         let created = accounts::event_for(&Actor::system(), "account-create", "u_oidc", "ok");
         let user = store

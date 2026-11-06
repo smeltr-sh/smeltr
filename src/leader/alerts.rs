@@ -81,7 +81,7 @@ pub enum Encryption {
 }
 
 /// The mail server as stored, when one is and it is on.
-pub fn mail(store: &dyn Store) -> Result<Option<Mail>, StoreError> {
+pub fn mail(store: &Store) -> Result<Option<Mail>, StoreError> {
     let Some(text) = store.setting(MAIL_KEY)? else {
         return Ok(None);
     };
@@ -212,7 +212,7 @@ impl Alerts {
 }
 
 /// The channels as stored. None stored is none at all.
-pub fn channels(store: &dyn Store) -> Result<Vec<Channel>, StoreError> {
+pub fn channels(store: &Store) -> Result<Vec<Channel>, StoreError> {
     match store.setting(CHANNELS_KEY)? {
         None => Ok(Vec::new()),
         Some(text) => serde_json::from_str(&text).map_err(|e| StoreError::failed(format!("{CHANNELS_KEY}: {e}"))),
@@ -774,7 +774,7 @@ fn sections() -> Vec<SectionDto> {
 }
 
 /// What `GET /api/settings/alerts` answers, read from the store and the failures held.
-fn read_settings(store: &dyn Store, alerts: &Alerts) -> Result<AlertSettingsDto, StoreError> {
+fn read_settings(store: &Store, alerts: &Alerts) -> Result<AlertSettingsDto, StoreError> {
     let mail = match store.setting(MAIL_KEY)? {
         None => None,
         Some(text) => Some(MailDto {

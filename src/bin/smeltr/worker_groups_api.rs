@@ -116,7 +116,7 @@ fn resolve_branch_commit(repo: &Path, branch: &str) -> Result<String, String> {
 fn list_groups_in(
     data_dir: &Path,
     branch: &str,
-    store: &dyn smeltr::leader::store::Store,
+    store: &smeltr::leader::store::Store,
 ) -> Result<Vec<WorkerGroupOut>, String> {
     let repo = repo_at(data_dir)?;
     let deployed = git::deployed(&repo).ok_or("nothing has been deployed")?;
@@ -132,7 +132,7 @@ fn list_branch_groups_at(
     repo: &Path,
     deployed_commit: &str,
     branch_commit: &str,
-    store: &dyn smeltr::leader::store::Store,
+    store: &smeltr::leader::store::Store,
 ) -> Result<Vec<WorkerGroupOut>, String> {
     let hues = store.group_hues().map_err(|e| e.to_string())?;
 
@@ -223,7 +223,7 @@ pub async fn worker_groups_snapshot(state: &AppState) -> Result<Vec<WorkerGroupO
 fn list_groups_at(
     repo: &Path,
     commit: &str,
-    store: &dyn smeltr::leader::store::Store,
+    store: &smeltr::leader::store::Store,
 ) -> Result<Vec<WorkerGroupOut>, String> {
     let hues = store.group_hues().map_err(|e| e.to_string())?;
     tree::groups_at(repo, commit).map_err(|e| e.to_string()).map(|ids| {
@@ -297,7 +297,7 @@ fn group_held(writing: &Writing, id: &str) -> Result<bool, String> {
 pub fn seed_default_group(
     data_dir: &Path,
     group_id: &str,
-    store: &dyn smeltr::leader::store::Store,
+    store: &smeltr::leader::store::Store,
 ) -> Result<bool, String> {
     let subtree = git::group_subtree(group_id).map_err(|e| e.to_string())?;
     let edit = git::FileEdit {
@@ -324,7 +324,7 @@ pub fn seed_default_group(
 /// bare (`ScopePicker.svelte`). `shared` is not a group and holds no manifest, so seeding it does not wait
 /// on `main`'s first commit the way a group's does -- it only needs the store, and runs every start,
 /// stopping the moment a hue is already there. Answers whether this call was the one that set it.
-pub fn seed_shared_hue(store: &dyn smeltr::leader::store::Store) -> Result<bool, String> {
+pub fn seed_shared_hue(store: &smeltr::leader::store::Store) -> Result<bool, String> {
     let hues = store.group_hues().map_err(|e| e.to_string())?;
     if hues.contains_key(config_file::SHARED_DIR) {
         return Ok(false);
@@ -344,7 +344,7 @@ fn create_group_in(
     branch: &str,
     base: Option<&str>,
     req: CreateWorkerGroupRequest,
-    store: &dyn smeltr::leader::store::Store,
+    store: &smeltr::leader::store::Store,
     author: &Actor,
 ) -> Envelope<Save> {
     // Read before the write: a hue is picked against the groups that already exist, so a new one is distinct from
@@ -543,7 +543,6 @@ pub async fn create_worker_group(
 
 #[cfg(test)]
 mod tests {
-    use smeltr::leader::sqlite_store::SqliteStore;
     use smeltr::leader::store::Store;
 
     use super::*;
@@ -577,7 +576,7 @@ mod tests {
     }
 
     /// A store of its own per test, exactly as `sqlite_store`'s own tests build one.
-    fn test_store(label: &str) -> SqliteStore {
+    fn test_store(label: &str) -> Store {
         let key = std::env::temp_dir().join(format!(
             "smeltr-worker-groups-api-{label}-{}-{}.key",
             std::process::id(),
@@ -586,7 +585,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        SqliteStore::open(Path::new(":memory:"), &key).unwrap()
+        Store::open(Path::new(":memory:"), &key).unwrap()
     }
 
     #[test]
@@ -657,7 +656,7 @@ mod tests {
     }
 
     /// The hue on `id` as the listing reports it on `branch`.
-    fn hue_of(data: &Path, branch: &str, id: &str, store: &dyn Store) -> Option<u16> {
+    fn hue_of(data: &Path, branch: &str, id: &str, store: &Store) -> Option<u16> {
         list_groups_in(data, branch, store)
             .unwrap()
             .into_iter()

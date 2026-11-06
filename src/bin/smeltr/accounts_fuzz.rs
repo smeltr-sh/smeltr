@@ -19,8 +19,8 @@ use axum::Router;
 use axum::routing::{delete, get, patch, post, put};
 use serde_json::{Value, json};
 use smeltr::leader::access::{ADMINISTRATOR, AgentPermissions, ByAgent, Level, Role};
-use smeltr::leader::sqlite_store::SqliteStore;
-use smeltr::leader::store::{Actor, NewApiKey, NewLocalUser, OidcSignIn, Store};
+use smeltr::leader::store::Store;
+use smeltr::leader::store::{Actor, NewApiKey, NewLocalUser, OidcSignIn};
 use smeltr::leader::{accounts, auth as tokens};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -294,7 +294,7 @@ enum Credential {
 /// on, behind the gate; once as the caller, and once with every request marked as an agent's.
 struct Leader {
     auth: Auth,
-    store: Arc<dyn Store>,
+    store: Arc<Store>,
     at: std::net::SocketAddr,
     by_agent: std::net::SocketAddr,
 }
@@ -341,7 +341,7 @@ impl Leader {
             std::process::id(),
             tokens::generate_secret()
         ));
-        let store: Arc<dyn Store> = Arc::new(SqliteStore::open(Path::new(":memory:"), &key).unwrap());
+        let store: Arc<Store> = Arc::new(Store::open(Path::new(":memory:"), &key).unwrap());
         let _ = std::fs::remove_file(&key);
         let origin = Origin {
             value: ORIGIN.into(),

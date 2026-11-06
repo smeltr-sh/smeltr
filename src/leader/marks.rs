@@ -54,7 +54,7 @@ pub struct Reset {
 impl Marks {
     /// The marks as stored. None when they cannot be read, which is logged: every warning is then a warning, and
     /// every normal learned from all it can be.
-    pub fn read(store: &dyn Store) -> Marks {
+    pub fn read(store: &Store) -> Marks {
         let text = match store.setting(MARKS_KEY) {
             Ok(text) => text,
             Err(e) => {
@@ -119,7 +119,7 @@ impl Marking {
         let written = super::blocking(move || -> Result<(), Refusal> {
             let _changing = CHANGING.lock().unwrap_or_else(|e| e.into_inner());
             let now_ms = warnings::now_millis();
-            let mut marks = Marks::read(&*state.store);
+            let mut marks = Marks::read(&state.store);
             let since = holding_since(&state, &self.group, &self.source, now_ms)?;
             change(&mut marks, &self, since, &actor, now_ms)?;
             let mut kept = Vec::new();
@@ -230,8 +230,7 @@ mod tests {
     #[test]
     fn marks_read_back_as_written_and_unreadable_ones_as_none() {
         let dir = std::env::temp_dir().join(format!("smeltr-marks-{}", std::process::id()));
-        let store =
-            crate::leader::sqlite_store::SqliteStore::open(std::path::Path::new(":memory:"), &dir.join("k")).unwrap();
+        let store = crate::leader::store::Store::open(std::path::Path::new(":memory:"), &dir.join("k")).unwrap();
         assert_eq!(Marks::read(&store), Marks::default());
         let marks = Marks {
             lowered: Vec::new(),

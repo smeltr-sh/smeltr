@@ -8,7 +8,7 @@ use std::sync::{Arc, Once, mpsc};
 use std::time::{Duration, Instant};
 
 use smeltr::leader::registry::Registry;
-use smeltr::leader::sqlite_store::SqliteStore;
+use smeltr::leader::store::Store;
 use smeltr::leader::{AppState, router};
 
 /// These tests run one at a time.
@@ -131,11 +131,10 @@ fn serve_again(dir: &std::path::Path, names: &[String]) {
 }
 
 /// The certificate lists of these leaders, by their TLS directory.
-static LISTS: std::sync::Mutex<Vec<(std::path::PathBuf, Arc<SqliteStore>)>> = std::sync::Mutex::new(Vec::new());
+static LISTS: std::sync::Mutex<Vec<(std::path::PathBuf, Arc<Store>)>> = std::sync::Mutex::new(Vec::new());
 
 /// `chain` and `key` as the newest version of the entry `theirs` in the list of the leader serving from `dir`.
 fn listed(dir: &std::path::Path, chain: &[u8], key: &[u8], ca: &[u8]) -> smeltr::leader::tls::Entry {
-    use smeltr::leader::store::Store;
     let list = LISTS
         .lock()
         .unwrap()

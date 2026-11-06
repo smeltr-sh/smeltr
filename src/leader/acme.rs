@@ -128,7 +128,7 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn read(store: &dyn Store) -> Result<Settings, StoreError> {
+    pub fn read(store: &Store) -> Result<Settings, StoreError> {
         Ok(Settings {
             enabled: store.setting(ENABLED_KEY)?.as_deref() == Some("true"),
             directory: store.setting(DIRECTORY_KEY)?.unwrap_or_default(),
@@ -370,7 +370,7 @@ fn root_of(chain: &[u8], authority: &str) -> Result<(Vec<u8>, String), String> {
 
 /// Stores `issued` as the newest version of [`ENTRY`], which the first order creates, and answers that version.
 /// Refuses an entry of that name the leader does not order.
-pub fn list(store: &dyn Store, issued: &Issued) -> Result<tls::Entry, String> {
+pub fn list(store: &Store, issued: &Issued) -> Result<tls::Entry, String> {
     let chain = format!(
         "{}\n{}",
         String::from_utf8_lossy(&issued.chain).trim_end(),
