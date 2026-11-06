@@ -52,7 +52,7 @@ pub const CONCURRENT_HASHES: usize = 2;
 /// Everything the gate and the auth routes share.
 #[derive(Clone)]
 pub struct Auth {
-    pub store: Arc<dyn Store>,
+    pub store: Arc<Store>,
     pub sessions: Arc<Sessions>,
     pub throttle: Arc<LoginThrottle>,
     pub hashes: Arc<tokio::sync::Semaphore>,
@@ -68,7 +68,7 @@ pub struct Auth {
 }
 
 impl Auth {
-    pub fn new(store: Arc<dyn Store>, origin: Origin, lifetimes: smeltr::leader::sessions::Lifetimes) -> Auth {
+    pub fn new(store: Arc<Store>, origin: Origin, lifetimes: smeltr::leader::sessions::Lifetimes) -> Auth {
         let sessions = Sessions::default();
         sessions.set_lifetimes(lifetimes);
         Auth {
@@ -524,7 +524,7 @@ pub fn admitted(user: &UserRecord) -> bool {
 
 /// What `user` holds now: what the roles it holds give, against the roles as they are. An OIDC account holds the
 /// roles its groups gave as of its last sign-in; a local or key account the roles an administrator gave it.
-pub fn access_of(store: &dyn Store, user: &UserRecord) -> Result<Access, StoreError> {
+pub fn access_of(store: &Store, user: &UserRecord) -> Result<Access, StoreError> {
     let roles = store.list_roles()?;
     let named = match user.auth_source {
         AuthSource::Oidc => {
@@ -846,13 +846,13 @@ mod tests {
         use axum::routing::{get, put};
         use smeltr::leader::access::{ADMINISTRATOR, AgentPermissions, Role};
         use smeltr::leader::accounts;
-        use smeltr::leader::sqlite_store::SqliteStore;
+        use smeltr::leader::store::Store;
         use smeltr::leader::store::{NewApiKey, NewKeyAccount, OidcSignIn};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         const ORIGIN: &str = "http://127.0.0.1:4000";
 
-        fn store() -> Arc<dyn Store> {
+        fn store() -> Arc<Store> {
             let key = std::env::temp_dir().join(format!(
                 "smeltr-gate-access-{}-{}.key",
                 std::process::id(),
@@ -861,11 +861,11 @@ mod tests {
                     .unwrap()
                     .as_nanos()
             ));
-            Arc::new(SqliteStore::open(Path::new(":memory:"), &key).unwrap())
+            Arc::new(Store::open(Path::new(":memory:"), &key).unwrap())
         }
 
         /// An OIDC account whose provider last said it holds `groups`.
-        fn sign_in(store: &dyn Store, subject: &str, groups: &[&str]) -> UserRecord {
+        fn sign_in(store: &Store, subject: &str, groups: &[&str]) -> UserRecord {
             let groups: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
             let new_id = accounts::generate_user_id();
             let created = accounts::event_for(&Actor::system(), "account-create", &new_id, "ok");
@@ -963,7 +963,7 @@ mod tests {
             answer.split(' ').nth(1).unwrap().parse().unwrap()
         }
 
-        fn auth(store: Arc<dyn Store>) -> Auth {
+        fn auth(store: Arc<Store>) -> Auth {
             let origin = Origin {
                 value: ORIGIN.into(),
                 aliases: Vec::new(),
@@ -1174,7 +1174,7 @@ mod tests {
         }
 
         /// A new key for the key account `id`, expiring at `expires_at`, and the key itself.
-        fn key_of(store: &dyn Store, id: &str, key_id: &str, expires_at: Option<i64>) -> String {
+        fn key_of(store: &Store, id: &str, key_id: &str, expires_at: Option<i64>) -> String {
             let key = smeltr::leader::auth::generate_secret();
             let made = accounts::event_for(&Actor::system(), "key-create", key_id, "ok");
             let hash = hash_secret(&key);

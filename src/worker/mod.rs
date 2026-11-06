@@ -5305,7 +5305,7 @@ mod tests {
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                let store = crate::leader::sqlite_store::SqliteStore::open(
+                let store = crate::leader::store::Store::open(
                     std::path::Path::new(":memory:"),
                     &sealing_dir.join("sealing.key"),
                 )
@@ -5495,7 +5495,7 @@ mod tests {
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                let store = crate::leader::sqlite_store::SqliteStore::open(
+                let store = crate::leader::store::Store::open(
                     std::path::Path::new(":memory:"),
                     &sealing_dir.join("sealing.key"),
                 )

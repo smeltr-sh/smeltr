@@ -1,5 +1,5 @@
 //! The registry's own database (`RegistryStore`): one file, one connection, separate from `leader.db`
-//! (`sqlite_store::SqliteStore`) because a per-heartbeat write must never queue behind an operator's config save.
+//! (`store::Store`) because a per-heartbeat write must never queue behind an operator's config save.
 //! Two tables with opposite write patterns share this file without sharing a table (design brief for this work):
 //! `latest_state`, one row per (worker, thread) upserted every beat and bounded by fleet size; and `series_points`,
 //! append-only counters and gauges aggregated on arrival into fixed buckets, keyed by subject rather than by the
@@ -583,10 +583,10 @@ pub struct LatestState {
 }
 
 /// The registry's durable half: `latest_state`, `fact_clock`, and `series_points`, behind one connection guarded
-/// by one `Mutex` -- the same shape `sqlite_store::SqliteStore` uses for `leader.db`, in a file of its own.
+/// by one `Mutex` -- the same shape `store::Store` uses for `leader.db`, in a file of its own.
 pub struct RegistryStore {
     /// Taken with `unwrap_or_else(|e| e.into_inner())`, so poisoning is recovered from rather than propagated --
-    /// the one place this store differs from `sqlite_store::SqliteStore`, which holds the configuration and is
+    /// the one place this store differs from `store::Store`, which holds the configuration and is
     /// right to fail loudly.
     ///
     /// Every method here answers a `Result`, and this lock is the only way any of them could panic instead; a

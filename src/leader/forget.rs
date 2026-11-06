@@ -48,7 +48,7 @@ const LOOK_EVERY: Duration = Duration::from_secs(10);
 ///
 /// A stored value that is no longer allowed -- written by hand, or by an older build with other bounds -- is
 /// reported rather than replaced.
-pub fn forget_after(store: &dyn Store) -> Result<Duration, String> {
+pub fn forget_after(store: &Store) -> Result<Duration, String> {
     match store.setting(FORGET_AFTER_KEY).map_err(|e| e.to_string())? {
         None => Ok(DEFAULT_FORGET_AFTER),
         Some(text) => {

@@ -220,8 +220,8 @@ fn record_release() {
     let data = dir.join("data");
     std::fs::create_dir_all(&data).unwrap();
 
-    let store = crate::leader::sqlite_store::SqliteStore::open(&data.join("leader.db"), &data.join("sealing.key"))
-        .expect("leader.db opens");
+    let store =
+        crate::leader::store::Store::open(&data.join("leader.db"), &data.join("sealing.key")).expect("leader.db opens");
     drop(store);
 
     let heartbeat = sample_heartbeat();
@@ -437,7 +437,7 @@ fn every_release_still_starts_and_is_still_understood() {
         let _ = std::fs::remove_dir_all(&data);
         copy(&fixture.join("data"), &data);
 
-        crate::leader::sqlite_store::SqliteStore::open(&data.join("leader.db"), &data.join("sealing.key"))
+        crate::leader::store::Store::open(&data.join("leader.db"), &data.join("sealing.key"))
             .unwrap_or_else(|e| panic!("{}", named(&e.to_string())));
         let registry = crate::leader::registry::Registry::open(&data.join("registry.db"))
             .unwrap_or_else(|e| panic!("{}", named(&e.to_string())));

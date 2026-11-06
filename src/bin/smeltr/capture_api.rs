@@ -145,7 +145,7 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Envelope<Star
     // every heartbeat that hands the invitation on, and recorded, because this is the one way a value reaches a
     // worker without a commit on `main` naming it -- the trail the deploy path leaves for free.
     let store = state.store.clone();
-    let granted = match blocking(move || lent(&*store, &one_source)).await {
+    let granted = match blocking(move || lent(&store, &one_source)).await {
         Ok(v) => v,
         Err(e) => return Envelope::refused(Refusal::internal(e)),
     };
@@ -205,7 +205,7 @@ fn start_destination_capture(
 /// What a capture of `one_source` lends its workers: the secrets it names, and the certificates it names at the
 /// list's newest version, as a deployment runs them. Nothing about it need be deployed.
 fn lent(
-    store: &dyn smeltr::leader::store::Store,
+    store: &smeltr::leader::store::Store,
     one_source: &config_file::FileConfig,
 ) -> Result<Vec<smeltr::heartbeat::SecretDelivery>, String> {
     let (wanted, certificates) = leader_stored_refs(one_source);
@@ -806,11 +806,10 @@ mod tests {
     /// chain beside key. A name the list does not hold is left out, for the worker to refuse.
     #[test]
     fn a_capture_lends_its_certificate_at_the_newest_version() {
-        use smeltr::leader::sqlite_store::SqliteStore;
         use smeltr::leader::store::Store;
         let key = std::env::temp_dir().join(format!("smeltr-capture-lent-{}.key", std::process::id()));
         let _ = std::fs::remove_file(&key);
-        let store = SqliteStore::open(std::path::Path::new(":memory:"), &key).unwrap();
+        let store = Store::open(std::path::Path::new(":memory:"), &key).unwrap();
         store.create_certificate("cli", "", "chain-1", "key-1", None).unwrap();
         store.add_certificate_version("cli", "chain-2", "key-2", None).unwrap();
         let source = |certificate: &str| config_file::FileConfig {

@@ -95,7 +95,7 @@ impl Default for Learning {
 impl Learning {
     /// The band's setting and the marks as stored. One that cannot be read is logged and left at its default: the
     /// warnings it shapes are still worth having.
-    pub fn read(store: &dyn Store) -> Learning {
+    pub fn read(store: &Store) -> Learning {
         let percent = band_percent(store).unwrap_or_else(|e| {
             tracing::warn!(name: "band_unreadable", target: "status", error = %e, "using the default band");
             DEFAULT_BAND_PERCENT
@@ -637,7 +637,7 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
 
 /// The band, in percent of past windows: what the operator set, or the default. A stored value that is no longer
 /// allowed is reported rather than replaced.
-pub fn band_percent(store: &dyn Store) -> Result<f64, String> {
+pub fn band_percent(store: &Store) -> Result<f64, String> {
     match store.setting(BAND_KEY).map_err(|e| e.to_string())? {
         None => Ok(DEFAULT_BAND_PERCENT),
         Some(text) => checked(
@@ -733,7 +733,7 @@ pub async fn get_settings(State(state): State<AppState>) -> Envelope<WarningSett
 }
 
 /// The band as stored, if it is a number at all.
-fn stored_percent(store: &dyn Store) -> Option<f64> {
+fn stored_percent(store: &Store) -> Option<f64> {
     store.setting(BAND_KEY).ok().flatten()?.parse().ok()
 }
 
@@ -878,8 +878,7 @@ mod tests {
     #[test]
     fn a_stored_band_out_of_bounds_is_shown_with_its_error() {
         let dir = std::env::temp_dir().join(format!("smeltr-band-{}", std::process::id()));
-        let store =
-            crate::leader::sqlite_store::SqliteStore::open(std::path::Path::new(":memory:"), &dir.join("k")).unwrap();
+        let store = crate::leader::store::Store::open(std::path::Path::new(":memory:"), &dir.join("k")).unwrap();
         store.put_settings(&[(BAND_KEY, "40".to_string())], None).unwrap();
         assert!(band_percent(&store).is_err());
         assert_eq!(stored_percent(&store), Some(40.0));

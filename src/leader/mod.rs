@@ -82,7 +82,7 @@ use store::{Issued, Kept, Spend, Store, StoreError};
 
 #[derive(Clone)]
 pub struct AppState {
-    pub store: Arc<dyn Store>,
+    pub store: Arc<Store>,
     pub registry: Arc<Registry>,
     /// Capture sessions in flight. Empty whenever nobody is debugging.
     pub captures: Arc<capture::Captures>,
@@ -132,7 +132,7 @@ pub struct Quoted {
 }
 
 /// The newest version of every certificate in the list, by name.
-pub fn certificate_versions(store: &dyn Store) -> Result<std::collections::HashMap<String, i64>, String> {
+pub fn certificate_versions(store: &Store) -> Result<std::collections::HashMap<String, i64>, String> {
     Ok((store.list_secrets().map_err(|e| e.to_string())?.into_iter())
         .filter(|r| r.certificate)
         .filter_map(|r| r.current().map(|v| v.version).map(|v| (r.name, v)))
@@ -260,7 +260,7 @@ fn secrets_at(repo: &std::path::Path, rev: &str, group_id: &str) -> Result<Quote
 /// The purposes the newest version of the certificate `name` has that `chain` lacks. A connector naming `name` may
 /// present it from any side it is usable from, and a worker refuses a restart onto a version it cannot present and
 /// keeps running the old one, so a new version keeps every purpose the newest has.
-fn purposes_lost(store: &dyn Store, name: &str, chain: &str) -> Result<Vec<&'static str>, StoreError> {
+fn purposes_lost(store: &Store, name: &str, chain: &str) -> Result<Vec<&'static str>, StoreError> {
     use crate::io::trust::{Side, refuse_unless_usable};
     let Some((_, newest)) = newest_chain(store, name)? else {
         return Ok(Vec::new());
@@ -455,7 +455,7 @@ async fn heartbeat(
             at_newest(
                 &entitled(&data_dir, &entitlements, &for_group),
                 // Unreadable, a beat entitles no certificate and the next one tries again.
-                &certificate_versions(&*store).unwrap_or_else(|e| {
+                &certificate_versions(&store).unwrap_or_else(|e| {
                     if let Some(error) = relog(&CERTIFICATES_UNREADABLE, e) {
                         tracing::warn!(name: "unreadable", target: "certificates", subject = %for_group, error, "the certificate versions could not be read, so this heartbeat is answered with none");
                     }
@@ -631,8 +631,8 @@ impl From<Panicked> for Refusal {
 
 /// A `Store` call on the pool.
 async fn run_store<T: Send + 'static>(
-    store: Arc<dyn Store>,
-    f: impl FnOnce(&dyn Store) -> Result<T, StoreError> + Send + 'static,
+    store: Arc<Store>,
+    f: impl FnOnce(&Store) -> Result<T, StoreError> + Send + 'static,
 ) -> Result<T, StoreError> {
     blocking(move || f(store.as_ref())).await
 }
@@ -1182,7 +1182,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let store = state.store.clone();
     let running = warnings::running_deployments(&snapshot, &credentials, heartbeat_interval);
     let certificates = tokio::task::spawn_blocking(move || {
-        let chain = |name: &str| newest_chain(&*store, name).ok().flatten().map(|(_, chain)| chain);
+        let chain = |name: &str| newest_chain(&store, name).ok().flatten().map(|(_, chain)| chain);
         deployed_certificates(&data_dir, &expiries, running, &chain)
     })
     .await
@@ -2515,7 +2515,7 @@ async fn list_secrets(State(state): State<AppState>) -> Result<Envelope<SecretLi
     // What the catalog shows; a bundle it cannot read leaves the Running column empty rather than the page.
     let store = state.store.clone();
     let mut deployed = tokio::task::spawn_blocking(move || {
-        deployed_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?)
+        deployed_versions(&data_dir, &entitlements, &running, &certificate_versions(&store)?)
     })
     .await
     .ok()
@@ -2723,7 +2723,7 @@ async fn store_value(
     let pinned = tokio::task::spawn_blocking(move || {
         // What the leader serves is kept as what the fleet runs is.
         let served = served_entries(&tls::dir_of(&data_dir))?;
-        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&store)?).map(|mut deployed| {
             (deployed.remove(&wanted).unwrap_or_default().into_iter())
                 .map(|(_, version)| version)
                 .chain(
@@ -2812,7 +2812,7 @@ impl CertificateRequest {
 }
 
 /// The newest version of the certificate `name` and its chain, `None` where it is no certificate.
-fn newest_chain(store: &dyn Store, name: &str) -> Result<Option<(i64, String)>, StoreError> {
+fn newest_chain(store: &Store, name: &str) -> Result<Option<(i64, String)>, StoreError> {
     let newest = (store.list_secrets()?.into_iter())
         .find(|r| r.name == name && r.certificate)
         .and_then(|r| r.current().map(|v| v.version));
@@ -2824,7 +2824,7 @@ fn newest_chain(store: &dyn Store, name: &str) -> Result<Option<(i64, String)>, 
 
 /// The newest version of the certificate `name`, with its chain and private key, `None` where it has none this leader
 /// can open.
-pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(i64, String, String)>, StoreError> {
+pub fn newest_certificate(store: &Store, name: &str) -> Result<Option<(i64, String, String)>, StoreError> {
     let Some((version, chain)) = newest_chain(store, name)? else {
         return Ok(None);
     };
@@ -3011,10 +3011,7 @@ async fn sign_under_authority(state: &AppState, issued: &Issued) -> Result<(Stri
 
 /// The signing root and each certificate this leader issued, with its newest chain described: empty where that
 /// cannot be read. `None` where the leader signs nothing, or its authority cannot be read: its own warnings say that.
-fn issued_chains(
-    s: &dyn Store,
-    dir: &std::path::Path,
-) -> Result<Option<(String, Vec<warnings::IssuedChain>)>, StoreError> {
+fn issued_chains(s: &Store, dir: &std::path::Path) -> Result<Option<(String, Vec<warnings::IssuedChain>)>, StoreError> {
     let Some(signing) = dir.exists().then(|| tls::signing_root_fingerprint(dir).ok()).flatten() else {
         return Ok(None);
     };
@@ -3169,7 +3166,7 @@ async fn delete_secret(
     let running = running_deployments(&state).await;
     let store = state.store.clone();
     let users = tokio::task::spawn_blocking(move || {
-        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&store)?).map(|mut deployed| {
             let mut groups: Vec<String> = deployed
                 .remove(&wanted)
                 .unwrap_or_default()
@@ -3555,7 +3552,7 @@ async fn forget_secret_version(
     let running = running_deployments(&state).await;
     let store = state.store.clone();
     let users = tokio::task::spawn_blocking(move || {
-        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&store)?).map(|mut deployed| {
             deployed
                 .remove(&wanted)
                 .unwrap_or_default()
@@ -4410,7 +4407,7 @@ mod secrets_delivery_tests {
 
     use crate::heartbeat::{HeartbeatRequest, ThreadHeartbeat, ThreadKind};
     use crate::leader::store::Custody;
-    use sqlite_store::SqliteStore;
+    use store::Store;
 
     use super::*;
 
@@ -4488,7 +4485,7 @@ mod secrets_delivery_tests {
         .unwrap();
         git::deploy_commit(&data_dir, &git::main_head(&repo).unwrap(), &store::Actor::system()).unwrap();
 
-        let store = SqliteStore::open(std::path::Path::new(":memory:"), &data_dir.with_extension("key")).unwrap();
+        let store = Store::open(std::path::Path::new(":memory:"), &data_dir.with_extension("key")).unwrap();
         store
             .create_secret("es-auth", Custody::LeaderStored, "", Some("ApiKey abc"), None)
             .unwrap();
@@ -4944,7 +4941,7 @@ mod warnings_endpoint_tests {
     use std::sync::Arc;
 
     use crate::heartbeat::{MetricSampleDto, MetricValueDto, ThreadHeartbeat, ThreadKind};
-    use sqlite_store::SqliteStore;
+    use store::Store;
 
     use super::*;
 
@@ -4989,7 +4986,7 @@ mod warnings_endpoint_tests {
         let data_dir = temp_dir(label);
         deploy_group(&data_dir, "g");
         AppState {
-            store: Arc::new(SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key(label)).unwrap()),
+            store: Arc::new(Store::open(std::path::Path::new(":memory:"), &test_secret_key(label)).unwrap()),
             registry: Arc::new(Registry::default()),
             captures: Arc::new(capture::Captures::default()),
             entitlements: Arc::new(Entitlements::default()),
@@ -5013,7 +5010,7 @@ mod warnings_endpoint_tests {
     async fn an_unreadable_roster_is_an_error_not_an_empty_fleet() {
         let dir = temp_dir("roster-unreadable");
         let db = dir.join("leader.db");
-        let store = SqliteStore::open(&db, &dir.join("sealing.key")).unwrap();
+        let store = Store::open(&db, &dir.join("sealing.key")).unwrap();
         rusqlite::Connection::open(&db)
             .unwrap()
             .execute_batch("DROP TABLE worker_credentials")
@@ -5217,13 +5214,13 @@ mod warnings_endpoint_tests {
 mod logs_endpoint_tests {
     use std::sync::Arc;
 
-    use sqlite_store::SqliteStore;
+    use store::Store;
 
     use super::*;
 
     fn state() -> AppState {
         AppState {
-            store: Arc::new(SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("logs")).unwrap()),
+            store: Arc::new(Store::open(std::path::Path::new(":memory:"), &test_secret_key("logs")).unwrap()),
             registry: Arc::new(Registry::open(std::path::Path::new(":memory:")).unwrap()),
             captures: Arc::new(capture::Captures::default()),
             entitlements: Arc::new(Entitlements::default()),
@@ -5462,7 +5459,7 @@ mod logs_endpoint_tests {
 mod flow_endpoint_tests {
     use std::sync::Arc;
 
-    use sqlite_store::SqliteStore;
+    use store::Store;
 
     use super::*;
 
@@ -5470,7 +5467,7 @@ mod flow_endpoint_tests {
     /// has nothing to serve without one.
     fn state() -> AppState {
         AppState {
-            store: Arc::new(SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("flow")).unwrap()),
+            store: Arc::new(Store::open(std::path::Path::new(":memory:"), &test_secret_key("flow")).unwrap()),
             registry: Arc::new(Registry::open(std::path::Path::new(":memory:")).unwrap()),
             captures: Arc::new(capture::Captures::default()),
             entitlements: Arc::new(Entitlements::default()),
@@ -5498,9 +5495,7 @@ mod flow_endpoint_tests {
     #[test]
     fn a_registry_with_no_durable_store_answers_empty_rather_than_failing() {
         let state = AppState {
-            store: Arc::new(
-                SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("flow-no-store")).unwrap(),
-            ),
+            store: Arc::new(Store::open(std::path::Path::new(":memory:"), &test_secret_key("flow-no-store")).unwrap()),
             registry: Arc::new(Registry::default()),
             captures: Arc::new(capture::Captures::default()),
             entitlements: Arc::new(Entitlements::default()),
@@ -5865,8 +5860,7 @@ mod authority_delivery_tests {
             .expect("a rotation past its deadline");
         let state = AppState {
             store: Arc::new(
-                sqlite_store::SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("cut-over"))
-                    .unwrap(),
+                store::Store::open(std::path::Path::new(":memory:"), &test_secret_key("cut-over")).unwrap(),
             ),
             registry: Arc::new(Registry::default()),
             captures: Arc::new(capture::Captures::default()),

@@ -143,7 +143,7 @@ impl std::fmt::Debug for Settings {
 impl Settings {
     /// A provider this build does not know reads as Anthropic, turned off: what a newer build stored is not
     /// guessed at.
-    pub fn read(store: &dyn Store) -> Result<Settings, StoreError> {
+    pub fn read(store: &Store) -> Result<Settings, StoreError> {
         let provider = store.setting(PROVIDER_KEY)?;
         let known = provider.as_deref().is_none_or(|p| Provider::parse(p).is_some());
         Ok(Settings {
@@ -179,7 +179,7 @@ impl Settings {
 }
 
 /// Whether AI agents are turned on and their endpoint set: what the agent's screens and APIs wait on.
-pub fn on(store: &dyn Store) -> Result<bool, StoreError> {
+pub fn on(store: &Store) -> Result<bool, StoreError> {
     Ok(Settings::read(store)?.endpoint().is_some())
 }
 

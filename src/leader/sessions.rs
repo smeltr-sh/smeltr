@@ -103,7 +103,7 @@ impl Lifetimes {
     /// A stored pair that no longer validates -- written by an older build, or edited by hand -- is reported
     /// rather than silently replaced: a leader running deadlines nobody configured is worse than one that says
     /// what it found.
-    pub fn read(store: &dyn super::store::Store) -> Result<Lifetimes, String> {
+    pub fn read(store: &super::store::Store) -> Result<Lifetimes, String> {
         let seconds = |key: &str| -> Result<Option<Duration>, String> {
             match store.setting(key).map_err(|e| e.to_string())? {
                 None => Ok(None),
@@ -123,7 +123,7 @@ impl Lifetimes {
     /// Both deadlines and the row saying who set them, as one transaction.
     pub fn write(
         &self,
-        store: &dyn super::store::Store,
+        store: &super::store::Store,
         event: Option<&super::store::SecurityEvent>,
     ) -> Result<(), String> {
         store

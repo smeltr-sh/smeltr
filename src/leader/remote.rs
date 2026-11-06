@@ -67,7 +67,7 @@ impl Remote {
 }
 
 /// The remote this leader follows, or `None` when there is none.
-pub fn configured(store: &dyn Store) -> Result<Option<Remote>, StoreError> {
+pub fn configured(store: &Store) -> Result<Option<Remote>, StoreError> {
     let Some(url) = store.setting(URL_KEY)?.filter(|url| !url.is_empty()) else {
         return Ok(None);
     };
@@ -2173,9 +2173,7 @@ mod tests {
         let repo = git::repo_path(&data_dir);
         git::init_bare_repo(&repo).unwrap();
         git::ensure_main_commit(&repo).unwrap();
-        let store =
-            crate::leader::sqlite_store::SqliteStore::open(Path::new(":memory:"), &data_dir.join("sealing.key"))
-                .unwrap();
+        let store = crate::leader::store::Store::open(Path::new(":memory:"), &data_dir.join("sealing.key")).unwrap();
         AppState {
             store: Arc::new(store),
             registry: Default::default(),

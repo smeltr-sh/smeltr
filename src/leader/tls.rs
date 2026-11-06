@@ -215,7 +215,7 @@ pub fn unserved(dir: &Path) -> Option<String> {
 
 /// Reads the certificate list for `dir`, which a served [`Entry`] is a version of. Registered by whatever opened
 /// the list, before [`ensure`].
-pub fn read_list(dir: &Path, list: std::sync::Arc<dyn Store>) {
+pub fn read_list(dir: &Path, list: std::sync::Arc<Store>) {
     LISTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -225,10 +225,10 @@ pub fn read_list(dir: &Path, list: std::sync::Arc<dyn Store>) {
 
 /// Per directory, the certificate list its entries come from. A process holding several leaders, as a test binary
 /// does, holds one each.
-static LISTS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, std::sync::Arc<dyn Store>>>> =
+static LISTS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, std::sync::Arc<Store>>>> =
     std::sync::Mutex::new(None);
 
-fn list_of(dir: &Path) -> Result<std::sync::Arc<dyn Store>, String> {
+fn list_of(dir: &Path) -> Result<std::sync::Arc<Store>, String> {
     LISTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -2200,12 +2200,12 @@ pub(crate) mod tests {
     pub(crate) fn listing(dir: &Path) {
         let key = dir.with_extension("key");
         let _ = std::fs::remove_file(&key);
-        let list = crate::leader::sqlite_store::SqliteStore::open(Path::new(":memory:"), &key).expect("a list");
+        let list = crate::leader::store::Store::open(Path::new(":memory:"), &key).expect("a list");
         read_list(dir, std::sync::Arc::new(list));
     }
 
     /// The certificate list [`listing`] gave `dir`.
-    pub(crate) fn list_in(dir: &Path) -> std::sync::Arc<dyn Store> {
+    pub(crate) fn list_in(dir: &Path) -> std::sync::Arc<Store> {
         list_of(dir).expect("a list")
     }
 

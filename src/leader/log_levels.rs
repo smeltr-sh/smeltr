@@ -14,7 +14,7 @@ const KEY: &str = "log_levels";
 
 /// What is stored, or nothing when nothing is: every line then at each process's startup level. A stored value this
 /// build cannot read is nothing too.
-pub fn stored(store: &dyn Store) -> Result<LogLevels, StoreError> {
+pub fn stored(store: &Store) -> Result<LogLevels, StoreError> {
     Ok(store
         .setting(KEY)?
         .and_then(|text| serde_json::from_str(&text).ok())
@@ -39,7 +39,7 @@ impl Held {
 
 /// Hold what is stored, and keep the leader's own lines at it. Called as the leader starts.
 pub async fn keep_stored(state: &AppState) {
-    match run_store(state.store.clone(), |s| stored(s)).await {
+    match run_store(state.store.clone(), stored).await {
         Ok(levels) => state.log_levels.keep(levels),
         Err(e) => {
             tracing::warn!(name: "levels_unreadable", target: "logs", error = %e, "the saved log levels could not be read, so the leader keeps the levels it has")
@@ -138,7 +138,7 @@ fn refused(levels: &LogLevels) -> Option<String> {
 
 /// `GET /api/settings/log-levels`.
 pub async fn get_settings(State(state): State<AppState>) -> Envelope<LogLevelsAnswer> {
-    answer(run_store(state.store, |s| stored(s)).await.map_err(Refusal::from))
+    answer(run_store(state.store, stored).await.map_err(Refusal::from))
 }
 
 /// `PUT /api/settings/log-levels`: whole and replacing. Recorded with who set it, in the transaction that sets it,

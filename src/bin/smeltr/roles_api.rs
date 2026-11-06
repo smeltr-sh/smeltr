@@ -252,7 +252,7 @@ mod tests {
 
         const ORIGIN: &str = "http://127.0.0.1:4000";
 
-        fn store() -> Arc<dyn Store> {
+        fn store() -> Arc<Store> {
             let key = std::env::temp_dir().join(format!(
                 "smeltr-roles-api-{}-{}.key",
                 std::process::id(),
@@ -261,11 +261,11 @@ mod tests {
                     .unwrap()
                     .as_nanos()
             ));
-            Arc::new(smeltr::leader::sqlite_store::SqliteStore::open(FsPath::new(":memory:"), &key).unwrap())
+            Arc::new(smeltr::leader::store::Store::open(FsPath::new(":memory:"), &key).unwrap())
         }
 
         /// An OIDC account given the administrator role by its group.
-        fn administrator(store: &dyn Store) -> UserRecord {
+        fn administrator(store: &Store) -> UserRecord {
             let admins = Role {
                 name: ADMINISTRATOR.into(),
                 groups: vec!["smeltr-admins".into()],
@@ -335,7 +335,7 @@ mod tests {
             (status, body)
         }
 
-        fn auth(store: Arc<dyn Store>) -> Auth {
+        fn auth(store: Arc<Store>) -> Auth {
             let origin = Origin {
                 value: ORIGIN.into(),
                 aliases: Vec::new(),

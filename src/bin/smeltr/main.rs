@@ -273,7 +273,7 @@ async fn get_stats(
                     let live = smeltr::leader::stats::Live {
                         snapshot: &snapshot,
                         heartbeat_interval: smeltr::startup_config::leader_heartbeat_interval(),
-                        learning: smeltr::leader::throughput::Learning::read(&*state.store),
+                        learning: smeltr::leader::throughput::Learning::read(&state.store),
                     };
                     smeltr::leader::stats::build(&group, &system, kind, &id, window, state.registry.series(), live)
                 }
@@ -877,7 +877,7 @@ fn read_leader_ca() -> Option<Vec<u8>> {
 /// Runs this leader's own worker on its own thread, talking to a leader over the same API an external worker uses.
 /// Only the enrollment code is minted directly.
 fn spawn_embedded_worker(
-    store: std::sync::Arc<dyn smeltr::leader::store::Store>,
+    store: std::sync::Arc<smeltr::leader::store::Store>,
     data_dir: &std::path::Path,
     leader_url: String,
     leader_ca_pem: Option<Vec<u8>>,
@@ -919,7 +919,7 @@ fn spawn_embedded_worker(
 /// enrollment code still brings a worker in, and an enrollment code naming nothing is one it would have to make an
 /// exception for.
 fn mint_embedded_enrollment_code(
-    store: &std::sync::Arc<dyn smeltr::leader::store::Store>,
+    store: &std::sync::Arc<smeltr::leader::store::Store>,
     group_id: &str,
     tls_dir: &std::path::Path,
 ) -> String {
@@ -1051,7 +1051,7 @@ const PEOPLE_BODY_LIMIT: usize = 1 << 30;
 async fn setup_leader(
     port: u16,
     auth: gate::Auth,
-    store: std::sync::Arc<dyn smeltr::leader::store::Store>,
+    store: std::sync::Arc<smeltr::leader::store::Store>,
     registry: smeltr::leader::registry::Registry,
 ) -> LeaderSetup {
     use std::sync::Arc;
@@ -1376,7 +1376,7 @@ fn resolve_listen_addr(bind: &str, port: u16) -> Result<std::net::SocketAddr, St
 /// The session deadlines this leader starts with: whatever the store holds, or the built-in defaults for a
 /// leader that has never had them set. Admin -> System -> Sessions (or `PUT /api/settings/sessions`) is the only
 /// way to change them.
-fn resolve_lifetimes(store: &dyn smeltr::leader::store::Store) -> sessions::Lifetimes {
+fn resolve_lifetimes(store: &smeltr::leader::store::Store) -> sessions::Lifetimes {
     match sessions::Lifetimes::read(store) {
         Ok(lifetimes) => lifetimes,
         Err(e) => {
@@ -1905,7 +1905,7 @@ fn start() {
 fn refuse_damaged_repo(
     repo: &std::path::Path,
     damage: &smeltr::leader::git::GitError,
-    store: &dyn smeltr::leader::store::Store,
+    store: &smeltr::leader::store::Store,
 ) -> ! {
     let repair = match smeltr::leader::remote::configured(store) {
         Ok(Some(remote)) => format!(
@@ -1930,7 +1930,7 @@ fn refuse_damaged_repo(
 /// Writes the secrets encryption key on a leader that has sealed nothing yet, so the first secret stored is sealed
 /// under a key that has already been announced. A leader holding values its key cannot open says so as loudly as it
 /// can, and goes on: everything but the secrets still works, and the fix is on the Secrets page.
-fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path::Path) {
+fn check_secrets_key(store: &smeltr::leader::store::Store, path: &std::path::Path) {
     use smeltr::leader::store::KeyState;
     let standing = match store.key_standing() {
         Ok(standing) => standing,
@@ -1960,7 +1960,7 @@ fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path:
 /// process, and a deployed logs source reads it (`logs`), so on a standalone install an event raised here would
 /// travel to whatever destination the fleet's pipelines deliver to and stay in an index. The console is where a
 /// one-time password belongs, and it is the only place it goes.
-fn admit_an_administrator(store: &dyn smeltr::leader::store::Store) {
+fn admit_an_administrator(store: &smeltr::leader::store::Store) {
     use smeltr::leader::accounts;
 
     let announce = |what: &str, password: accounts::OneTimePassword| {
@@ -2090,8 +2090,8 @@ async fn run_leader() {
         eprintln!("smeltr: refusing to start -- {e}");
         std::process::exit(1);
     }
-    let store: std::sync::Arc<dyn smeltr::leader::store::Store> = std::sync::Arc::new(
-        smeltr::leader::sqlite_store::SqliteStore::open(&data_dir.join("leader.db"), &secret_key).unwrap_or_else(|e| {
+    let store: std::sync::Arc<smeltr::leader::store::Store> = std::sync::Arc::new(
+        smeltr::leader::store::Store::open(&data_dir.join("leader.db"), &secret_key).unwrap_or_else(|e| {
             eprintln!("smeltr: refusing to start -- {e}");
             std::process::exit(1);
         }),

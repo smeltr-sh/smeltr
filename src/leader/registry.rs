@@ -199,7 +199,7 @@ impl Default for Registry {
 impl Registry {
     /// Opens (or creates) the registry's own database at `path` and rebuilds in-memory state from what is durable
     /// there: every thread's last report, and every fact's true start time -- so a restart no longer resets either.
-    /// `path` is the caller's to choose, the way `sqlite_store::SqliteStore::open` already leaves `leader.db`'s
+    /// `path` is the caller's to choose, the way `store::Store::open` already leaves `leader.db`'s
     /// path to its caller; a sibling of that file (`registry.db`) rather than a table inside it is the point (see
     /// `series` module docs).
     pub fn open(path: &std::path::Path) -> Result<Registry, StoreError> {
