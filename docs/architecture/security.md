@@ -273,7 +273,7 @@ address's connections. A connection is idle only while the receiver waits to
 read from it, so a receiver that has stopped reading because it cannot take
 more closes none for idleness, and an HTTP receiver closes none while it
 answers one of its requests. An HTTP receiver also closes a connection that has
-not sent a request's headers in a fixed time (`leader::listen::HEADER_READ`),
+not sent a request's headers in a fixed time (`io::receiver::HEADER_READ`),
 from connecting or from its last answer, as the leader does, so an idle HTTP/1
 connection is held no longer than that. By default there is no per-sender cap,
 because behind a balancer or NAT every sender comes from one address, and no

@@ -2387,7 +2387,7 @@ async fn run_leader() {
             );
             let mut server =
                 axum_server::tls_rustls::from_tcp_rustls(listener, config).expect("wrap smeltr listener with TLS");
-            smeltr::leader::listen::bound(server.http_builder(), smeltr::leader::listen::HEADER_READ);
+            smeltr::leader::listen::bound(server.http_builder(), smeltr::io::receiver::HEADER_READ);
             server
                 .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
                 .await
@@ -2396,7 +2396,7 @@ async fn run_leader() {
         None => {
             tracing::info!(name: "listening", target: "api", %addr, tls = false, "smeltr is listening, with TLS disabled by SMELTR_LEADER_TLS");
             let mut server = axum_server::from_tcp(listener).expect("hand smeltr listener to the server");
-            smeltr::leader::listen::bound(server.http_builder(), smeltr::leader::listen::HEADER_READ);
+            smeltr::leader::listen::bound(server.http_builder(), smeltr::io::receiver::HEADER_READ);
             // `into_make_service_with_connect_info` rather than the plain one: the login throttle keys on the
             // socket's own peer, and nothing else may stand in for it.
             server

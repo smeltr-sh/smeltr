@@ -469,6 +469,10 @@ pub(crate) fn serve_router(
         .map_err(|e| IoError::transient(format!("{serving} could not serve {address}: {e}")))
 }
 
+/// How long a client has to send a request's headers: from connecting, and from the end of its previous
+/// request on the same connection, so it bounds an idle keep-alive too.
+pub const HEADER_READ: Duration = Duration::from_secs(30);
+
 /// Bounds how long an HTTP/1 connection waits on its client for a request's headers, from connecting and between
 /// requests, as the leader's are (`leader::listen`). HTTP/2 is not pinged: a ping's answer is a read, so a connection
 /// that answers pings would never idle, and eviction and the idle timeout close an idle one.
@@ -476,7 +480,7 @@ fn bound_header_read(builder: &mut hyper_util::server::conn::auto::Builder<hyper
     builder
         .http1()
         .timer(hyper_util::rt::TokioTimer::new())
-        .header_read_timeout(crate::leader::listen::HEADER_READ);
+        .header_read_timeout(HEADER_READ);
 }
 
 /// Closes the connections of `open` that have idled for its idle timeout, if it has one, until the server holding
