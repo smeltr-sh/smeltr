@@ -2758,10 +2758,8 @@ fn program(seed: u64) -> Program {
         .steps();
         compile(&with_table(source), &SourceMeta::KAFKA).is_ok()
     };
-    // Take the first draw as it is when it holds the construct, without compiling it here: `check` compiles it, and
-    // most draws compile, so no further draws are needed.
     let first = Gen::new(seed).program();
-    if covers(&first).contains(want) {
+    if covers(&first).contains(want) && compiles(&first) {
         return first;
     }
     (1..DRAWS)
