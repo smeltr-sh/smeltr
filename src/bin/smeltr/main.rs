@@ -2424,22 +2424,12 @@ async fn run_leader() {
 /// leader that failed to start for its own reasons. It stays in every branch below, including the ones this
 /// function's own callers never trigger in that test.
 fn bind_listener(addr: std::net::SocketAddr) -> std::net::TcpListener {
-    let domain = if addr.is_ipv6() {
-        socket2::Domain::IPV6
-    } else {
-        socket2::Domain::IPV4
-    };
     let bound = (|| -> std::io::Result<std::net::TcpListener> {
-        let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
-        #[cfg(unix)]
-        socket.set_reuse_address(true)?;
-        // Windows makes `[::]` IPv6 alone where Linux takes IPv4 on it too; the leader's address means every address,
-        // so it asks for both.
-        if addr.ip() == std::net::Ipv6Addr::UNSPECIFIED {
-            socket.set_only_v6(false)?;
-        }
-        socket.bind(&addr.into())?;
-        socket.listen(1024)?;
+        let listen = smeltr::plan::topology::Listen {
+            transport: smeltr::plan::topology::Transport::Tcp,
+            address: addr,
+        };
+        let socket = smeltr::io::receiver::bind(listen)?;
         socket.set_nonblocking(true)?;
         Ok(socket.into())
     })();
