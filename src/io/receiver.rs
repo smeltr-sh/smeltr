@@ -3000,11 +3000,14 @@ async fn serve_datagrams<C>(
 ) where
     C: Fn(&[u8], std::net::IpAddr) -> Option<Cutter> + Send + 'static,
 {
-    let mut buffer = vec![0; max.min(MAX_DATAGRAM) + 3];
+    // Windows refuses a datagram larger than the buffer (WSAEMSGSIZE) where Linux cuts it, so the buffer holds any
+    // datagram and it is cut here.
+    let mut buffer = vec![0; MAX_DATAGRAM];
+    let keep = max.min(MAX_DATAGRAM) + 3;
     let mut failing = crate::logs::Relog::default();
     loop {
         let (length, peer) = match socket.recv_from(&mut buffer).await {
-            Ok(received) => received,
+            Ok((length, peer)) => (length.min(keep), peer),
             Err(e) => {
                 if let Some(error) = failing.fail_due(e.to_string()) {
                     tracing::warn!(
