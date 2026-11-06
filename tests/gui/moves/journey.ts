@@ -2743,9 +2743,9 @@ const askAgentInPanel: Move = {
     const panel = page.getByRole('complementary', { name: 'Agent' });
     const going = world.conversations.length > 0 && rng.chance(2);
     const title = going ? rng.pick(world.conversations) : `Question ${world.made++}`;
-    await panel
-      .getByRole('combobox', { name: 'Conversation' })
-      .selectOption({ label: going ? title : 'New conversation' });
+    const pick = panel.getByRole('combobox', { name: 'Conversation' });
+    if (!world.conversations.length) await expect(pick).toBeDisabled();
+    else await pick.selectOption({ label: going ? title : 'New conversation' });
     const answer = `Answer ${world.made++}`;
     model.answer([say(answer)]);
     const box = panel.getByRole('textbox', { name: 'Message' });
