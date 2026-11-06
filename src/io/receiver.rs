@@ -422,7 +422,7 @@ pub(crate) fn serve_router(
     let _entered = runtime.enter();
     let open = Connections::new(limits);
     let said = Arc::new(Mutex::new(Said::of(&open)));
-    close_idle_http(&open, &said, limits);
+    close_idle_http(&open, &said);
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
     let handle = axum_server::Handle::new();
     // A server that stops on its own leaves a receiver that reads nothing: said where it happens, since nothing
@@ -439,7 +439,6 @@ pub(crate) fn serve_router(
                     inner: axum_server::tls_rustls::RustlsAcceptor::new(tls),
                     open,
                     said,
-                    limits,
                 },
                 tap,
                 tls: true,
@@ -454,7 +453,6 @@ pub(crate) fn serve_router(
                     inner: axum_server::accept::DefaultAcceptor,
                     open,
                     said,
-                    limits,
                 },
                 tap,
                 tls: false,
@@ -485,7 +483,7 @@ fn bound_header_read(builder: &mut hyper_util::server::conn::auto::Builder<hyper
 
 /// Closes the connections of `open` that have idled for its idle timeout, if it has one, until the server holding
 /// `open` and every connection it admitted are gone.
-fn close_idle_http(open: &Arc<Mutex<Connections>>, said: &Arc<Mutex<Said>>, limits: ConnectionLimits) {
+fn close_idle_http(open: &Arc<Mutex<Connections>>, said: &Arc<Mutex<Said>>) {
     let Some(every) = open.lock().unwrap_or_else(|e| e.into_inner()).idle_check() else {
         return;
     };
@@ -497,11 +495,7 @@ fn close_idle_http(open: &Arc<Mutex<Connections>>, said: &Arc<Mutex<Said>>, limi
             let Some(open) = open.upgrade() else {
                 return;
             };
-            let closed = open.lock().unwrap_or_else(|e| e.into_inner()).close_idle();
-            let mut said = said.lock().unwrap_or_else(|e| e.into_inner());
-            for peer in closed {
-                said.closed(peer, connections::Closed::Idle, &limits);
-            }
+            said.lock().unwrap_or_else(|e| e.into_inner()).close_idle(&open);
         }
     });
 }
@@ -509,15 +503,11 @@ fn close_idle_http(open: &Arc<Mutex<Connections>>, said: &Arc<Mutex<Said>>, limi
 /// Why `Admitting` closed a connection before its handshake. It is the error the connection fails with, and the one a
 /// capture shows when one is watching.
 #[derive(Debug)]
-pub(super) struct Refusal {
-    why: connections::Refused,
-    limits: ConnectionLimits,
-    budget: usize,
-}
+pub(super) struct Refusal(String);
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&Said::refusal(self.why, &self.limits, self.budget))
+        f.write_str(&self.0)
     }
 }
 
@@ -530,7 +520,6 @@ struct Admitting<A> {
     inner: A,
     open: Arc<Mutex<Connections>>,
     said: Arc<Mutex<Said>>,
-    limits: ConnectionLimits,
 }
 
 impl<A, S> axum_server::accept::Accept<tokio::net::TcpStream, S> for Admitting<A>
@@ -549,24 +538,18 @@ where
             Ok(peer) => peer.ip().to_canonical(),
             Err(e) => return futures_util::future::Either::Left(std::future::ready(Err(e))),
         };
-        let (closed, place) = Connections::admit(&self.open, peer);
-        let mut said = self.said.lock().unwrap_or_else(|e| e.into_inner());
-        for (gone, why) in closed {
-            said.closed(gone, why, &self.limits);
-        }
-        let place = match place {
+        let admitted = self
+            .said
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .admit(&self.open, peer);
+        let place = match admitted {
             Ok(place) => place,
-            Err(why) => {
-                said.refused(peer, why, &self.limits);
-                let refusal = Refusal {
-                    why,
-                    limits: self.limits,
-                    budget: said.budget,
-                };
-                return futures_util::future::Either::Left(std::future::ready(Err(std::io::Error::other(refusal))));
+            Err(refusal) => {
+                let refused = std::io::Error::other(Refusal(refusal));
+                return futures_util::future::Either::Left(std::future::ready(Err(refused)));
             }
         };
-        drop(said);
         futures_util::future::Either::Right(Counts {
             accepting: Box::pin(self.inner.accept(Marked::new(stream, &place, &self.open), service)),
             in_flight: place.in_flight,
@@ -3238,10 +3221,7 @@ async fn serve_streams<H, F>(
             accepted = listener.accept() => accepted,
             Some(_) = tasks.join_next() => continue,
             _ = async { idle.as_mut()?.tick().await; Some(()) }, if idle.is_some() => {
-                let closed = open.lock().unwrap_or_else(|e| e.into_inner()).close_idle();
-                for peer in closed {
-                    said.closed(peer, connections::Closed::Idle, &limits);
-                }
+                said.close_idle(&open);
                 continue;
             }
         };
@@ -3272,21 +3252,11 @@ async fn serve_streams<H, F>(
             offer_closed(&*shared, &remote, tls.is_some(), &refused(peer));
             continue;
         }
-        let (closed, place) = Connections::admit(&open, peer);
-        for (gone, why) in closed {
-            said.closed(gone, why, &limits);
-        }
-        let place = match place {
+        let place = match said.admit(&open, peer) {
             Ok(place) => place,
-            Err(why) => {
-                said.refused(peer, why, &limits);
+            Err(refusal) => {
                 if shared.watching() {
-                    offer_closed(
-                        &*shared,
-                        &remote,
-                        tls.is_some(),
-                        &Said::refusal(why, &limits, said.budget),
-                    );
+                    offer_closed(&*shared, &remote, tls.is_some(), &refusal);
                 }
                 continue;
             }
@@ -3328,8 +3298,8 @@ async fn serve_streams<H, F>(
 
 /// What a receiver says of the connections its limits close or refuse: each kind once, then again every
 /// [`crate::logs::RELOG_EVERY`] while it goes on, so a sender that opens connections by the thousand fills no log.
-#[derive(Default)]
 struct Said {
+    limits: ConnectionLimits,
     /// The worker's budget for every receiver's connections.
     budget: usize,
     closed: [crate::logs::Repeat; 4],
@@ -3338,14 +3308,35 @@ struct Said {
 
 impl Said {
     fn of(open: &Arc<Mutex<Connections>>) -> Said {
+        let open = open.lock().unwrap_or_else(|e| e.into_inner());
         Said {
-            budget: open.lock().unwrap_or_else(|e| e.into_inner()).budget(),
+            limits: open.limits(),
+            budget: open.budget(),
             closed: Default::default(),
             refused: Default::default(),
         }
     }
 
-    fn closed(&mut self, peer: std::net::IpAddr, why: connections::Closed, limits: &ConnectionLimits) {
+    /// Admits a connection from `peer` to `open`, logging what it closed to make room. Returns the connection's place, or
+    /// why it is refused.
+    fn admit(&mut self, open: &Arc<Mutex<Connections>>, peer: std::net::IpAddr) -> Result<connections::Place, String> {
+        let (closed, place) = Connections::admit(open, peer);
+        for (gone, why) in closed {
+            self.closed(gone, why);
+        }
+        place.map_err(|why| self.refused(peer, why))
+    }
+
+    /// Closes the connections of `open` that have idled for its idle timeout, and logs it.
+    fn close_idle(&mut self, open: &Arc<Mutex<Connections>>) {
+        let closed = open.lock().unwrap_or_else(|e| e.into_inner()).close_idle();
+        for peer in closed {
+            self.closed(peer, connections::Closed::Idle);
+        }
+    }
+
+    fn closed(&mut self, peer: std::net::IpAddr, why: connections::Closed) {
+        let limits = self.limits;
         let at = match why {
             connections::Closed::ForNew => 0,
             connections::Closed::ForNewFromSender => 1,
@@ -3378,20 +3369,15 @@ impl Said {
         tracing::warn!(name: "receiver_connection_closed", target: "sources", subject = %peer, "{message}");
     }
 
-    fn refused(&mut self, peer: std::net::IpAddr, why: connections::Refused, limits: &ConnectionLimits) {
+    /// Logs that a connection from `peer` was refused, and returns why.
+    fn refused(&mut self, peer: std::net::IpAddr, why: connections::Refused) -> String {
         let at = match why {
             connections::Refused::Full => 0,
             connections::Refused::FullFromSender => 1,
             connections::Refused::WorkerFull => 2,
         };
-        if self.refused[at].due() {
-            let message = Said::refusal(why, limits, self.budget);
-            tracing::warn!(name: "receiver_connection_refused", target: "sources", subject = %peer, "{message}");
-        }
-    }
-
-    fn refusal(why: connections::Refused, limits: &ConnectionLimits, budget: usize) -> String {
-        match why {
+        let (limits, budget) = (&self.limits, self.budget);
+        let message = match why {
             connections::Refused::Full => format!(
                 "refused: the receiver holds its maxConnections, {}, and none has been idle a minute to close for it",
                 limits.max.unwrap_or(budget)
@@ -3405,7 +3391,11 @@ impl Said {
                 "refused: the worker's receivers hold the {budget} connections its open-file limit leaves room for, \
                  and none has been idle a minute to close for it"
             ),
+        };
+        if self.refused[at].due() {
+            tracing::warn!(name: "receiver_connection_refused", target: "sources", subject = %peer, "{message}");
         }
+        message
     }
 }
 

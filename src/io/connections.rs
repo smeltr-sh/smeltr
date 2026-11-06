@@ -143,14 +143,7 @@ impl OpenFiles {
 pub fn raise_open_file_limit() -> std::io::Result<OpenFiles> {
     #[cfg(unix)]
     {
-        let mut now = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        // SAFETY: `now` is a valid `rlimit` for the call to fill.
-        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut now) } != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
+        let now = open_file_limit()?;
         if now.rlim_cur < now.rlim_max {
             let raised = libc::rlimit {
                 rlim_cur: now.rlim_max,
@@ -165,18 +158,26 @@ pub fn raise_open_file_limit() -> std::io::Result<OpenFiles> {
     Ok(open_files())
 }
 
+/// This process's soft and hard open-file limits.
+#[cfg(unix)]
+fn open_file_limit() -> std::io::Result<libc::rlimit> {
+    let mut now = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `now` is a valid `rlimit` for the call to fill.
+    match unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut now) } {
+        0 => Ok(now),
+        _ => Err(std::io::Error::last_os_error()),
+    }
+}
+
 /// This process's open-file limit, as it is now, and the budget it gives.
 pub fn open_files() -> OpenFiles {
     #[cfg(unix)]
     {
-        let mut now = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        // SAFETY: `now` is a valid `rlimit` for the call to fill.
-        let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut now) } == 0;
-        let limit = (read && now.rlim_cur != libc::RLIM_INFINITY).then_some(now.rlim_cur);
-        OpenFiles::within(limit)
+        let soft = open_file_limit().ok().map(|now| now.rlim_cur);
+        OpenFiles::within(soft.filter(|&soft| soft != libc::RLIM_INFINITY))
     }
     #[cfg(not(unix))]
     {
@@ -256,6 +257,10 @@ impl Connections {
 
     fn now(&self) -> u64 {
         self.epoch.elapsed().as_millis() as u64
+    }
+
+    pub(super) fn limits(&self) -> ConnectionLimits {
+        self.limits
     }
 
     /// The most connections the worker's receivers hold together.
@@ -728,12 +733,7 @@ mod tests {
     #[test]
     fn raising_the_limit_takes_the_soft_one_to_the_hard_one() {
         let raised = raise_open_file_limit().unwrap();
-        let mut now = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        // SAFETY: `now` is a valid `rlimit` for the call to fill.
-        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut now) }, 0);
+        let now = open_file_limit().unwrap();
         assert_eq!(now.rlim_cur, now.rlim_max);
         assert_eq!(raised, open_files());
     }
