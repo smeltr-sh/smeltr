@@ -3,16 +3,18 @@
 //! The demo runs the real GUI in a visitor's browser over a leader the page itself plays: it holds the visitor's
 //! bundle, samples and fleet. What only the engine can answer comes here -- a preview, a route preview, a save's
 //! validation, a grok pattern's captures, a line breaker's verdict, which records a capture filter keeps, a scope's
-//! tests and what they make of it, a branch's map, what a captured sample reads as, the schema catalog and what
-//! breaks a schema in a group. Each request carries the bundle and the sample it is about, so nothing is stored and
-//! one visitor never sees another. Every answer comes from the functions the leader's own routes call
-//! (`smeltr::leader::preview`, `smeltr::leader::map`, `smeltr::leader::onboard`, `smeltr::leader::schema_catalog`).
+//! tests and what they make of it, a branch's map, what a captured sample reads as, the schema catalog, what breaks
+//! a schema in a group and what a branch changed. Each request carries the bundle and the sample it is about, so
+//! nothing is stored and one visitor never sees another. Every answer comes from the functions the leader's own
+//! routes call (`smeltr::leader::preview`, `smeltr::leader::map`, `smeltr::leader::onboard`,
+//! `smeltr::leader::schema_catalog`, `smeltr::leader::git`).
 //!
 //! It is public and unauthenticated, so it reads nothing a request names but the lookup tables under
 //! `SMELTR_DEMO_BUNDLE`'s `lookups/`, takes a bounded body, bounded samples and bounded routes, and runs as many
 //! requests at once as there are cores. Rate limits, cross-origin headers and the network it may not reach are the
 //! container's.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +24,7 @@ use axum::extract::{DefaultBodyLimit, Json, State};
 use axum::routing::{get, post};
 use smeltr::config_file::{self, BundleAt, DeclaredAt, FileConfig, RawBundle, SampleDto, TestDto, TestSummary};
 use smeltr::leader::envelope::{ApiError, Empty, Envelope, Refusal};
+use smeltr::leader::git;
 use smeltr::leader::preview::{
     AfterDotRequest, CaptureFilterRequest, FormatRequest, Formatted, GrokCaptures, GrokCapturesRequest,
     LineBreakerRequest, Preview, PreviewRequest, RoutePreview, TestResult, captures_of, format_code,
@@ -597,6 +600,80 @@ async fn schema_findings(State(service): State<Service>, Json(body): Json<Findin
         .await
 }
 
+/// One scope of a revision, as the demo's leader holds it: `shared` or a group's bundle, with the samples and the
+/// tests beside it.
+#[derive(serde::Deserialize)]
+struct ScopeFiles {
+    config: FileConfig,
+    #[serde(default)]
+    samples: Vec<SampleDto>,
+    #[serde(default)]
+    tests: Vec<TestDto>,
+}
+
+impl ScopeFiles {
+    /// Every file this scope is stored as, under `scope`'s directory, by the writers the leader's saves use.
+    fn files(&self, scope: &str, into: &mut BTreeMap<String, Vec<u8>>) -> Result<(), String> {
+        let dir = match scope {
+            config_file::SHARED_DIR => config_file::SHARED_DIR.to_string(),
+            group => config_file::group_subtree(group)?,
+        };
+        let mut put = |path: String, bytes: Vec<u8>| into.insert(format!("{dir}/{path}"), bytes);
+        for (path, bytes) in config_file::bundle_files(&self.config).map_err(|e| e.to_string())? {
+            put(path, bytes);
+        }
+        for sample in &self.samples {
+            put(
+                config_file::sample_path(&sample.id).map_err(|e| e.to_string())?,
+                config_file::sample_bytes(sample),
+            );
+        }
+        for test in &self.tests {
+            put(
+                config_file::test_path(&test.id).map_err(|e| e.to_string())?,
+                config_file::test_bytes(test),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct DiffBody {
+    /// By scope: where the branch left `main`, and the branch.
+    base: BTreeMap<String, ScopeFiles>,
+    branch: BTreeMap<String, ScopeFiles>,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// What a branch changed since it left `main`, as the leader's `/api/branches/:name/diff` answers it.
+async fn diff(State(service): State<Service>, Json(body): Json<DiffBody>) -> Envelope<git::Diff> {
+    let configs = body.base.values().chain(body.branch.values()).map(|s| &s.config);
+    let samples = body.base.values().chain(body.branch.values()).flat_map(|s| &s.samples);
+    if let Err(e) = refuse_oversized(configs, samples) {
+        return Envelope::refused(e);
+    }
+    service
+        .run(unavailable, move || {
+            let files = |scopes: &BTreeMap<String, ScopeFiles>| {
+                let mut files = BTreeMap::new();
+                for (scope, held) in scopes {
+                    held.files(scope, &mut files)?;
+                }
+                Ok::<_, String>(files)
+            };
+            let (before, after) = match (files(&body.base), files(&body.branch)) {
+                (Ok(before), Ok(after)) => (before, after),
+                (Err(e), _) | (_, Err(e)) => return Envelope::refused(Refusal::invalid(e)),
+            };
+            git::diff_of_files(&before, &after, body.path.as_deref())
+                .map_err(|e| Refusal::internal(e.to_string()))
+                .into()
+        })
+        .await
+}
+
 fn app(service: Service) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -615,6 +692,7 @@ fn app(service: Service) -> Router {
         .route("/schemas/export", post(schemas_export))
         .route("/schemas/standards", post(schemas_standards))
         .route("/schema-findings", post(schema_findings))
+        .route("/diff", post(diff))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
         .with_state(service)
 }
@@ -701,6 +779,34 @@ mod tests {
             assert_eq!(answer["ok"], false, "{path}: {answer}");
             assert!(!answer.to_string().contains("leaked"), "{path}: {answer}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_diff_is_what_the_branch_s_files_changed_from_main_s() {
+        let scope = |sources: serde_json::Value| serde_json::json!({"config": {"version": 1, "sources": sources}, "samples": [], "tests": []});
+        let source = serde_json::json!({"id": "fw", "type": "syslogReceiver", "port": 5514});
+        let body = |path: Option<&str>| {
+            serde_json::from_value(serde_json::json!({
+                "base": {"shared": scope(serde_json::json!([])), "network": scope(serde_json::json!([]))},
+                "branch": {"shared": scope(serde_json::json!([])), "network": scope(serde_json::json!([source]))},
+                "path": path,
+            }))
+            .unwrap()
+        };
+        let answer = diff(State(service("diff")), Json(body(None))).await.to_json();
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(answer["files"].as_array().unwrap().len(), 1, "{answer}");
+        assert_eq!(answer["files"][0]["path"], "groups/network/sources.json", "{answer}");
+        assert_eq!(answer["files"][0]["status"], "M", "{answer}");
+        assert!(
+            answer["diff"].as_str().unwrap().contains("+    \"id\": \"fw\""),
+            "{answer}"
+        );
+
+        let elsewhere = diff(State(service("diff-path")), Json(body(Some("shared/sources.json"))))
+            .await
+            .to_json();
+        assert_eq!(elsewhere["files"], serde_json::json!([]), "{elsewhere}");
     }
 
     #[tokio::test]

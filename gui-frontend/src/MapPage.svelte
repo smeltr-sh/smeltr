@@ -930,9 +930,7 @@
           </button>
         {/if}
         {#if selectedTarget && mayCapture(selectedTarget)}
-          <button type="button" data-guide="capture" onclick={() => (capturing = selectedTarget)}
-            >Capture</button
-          >
+          <button type="button" onclick={() => (capturing = selectedTarget)}>Capture</button>
         {/if}
       </span>
     {/snippet}

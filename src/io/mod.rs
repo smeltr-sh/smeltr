@@ -58,6 +58,7 @@ pub mod receiver;
 pub mod remote_write;
 pub mod s2s;
 mod s2s_receiver;
+pub mod senders;
 pub mod sftp;
 mod socket_receiver;
 pub mod splunk;

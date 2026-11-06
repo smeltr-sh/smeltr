@@ -143,8 +143,8 @@ EOF`;
   <p>
     Anyone a receiver admits can put records into the worker group's pipelines. What it receives
     carries no token, so a receiver needs <code>allowFrom</code>, or a
-    <code>certificate</code> with <code>trustedAuthorities</code>, or both of those. The leader
-    refuses a receiver with neither.
+    <code>certificate</code> with <code>trustedAuthorities</code> or
+    <code>senderFingerprints</code>, or both of those. The leader refuses a receiver with neither.
   </p>
   <ul>
     <li>
@@ -155,8 +155,21 @@ EOF`;
     <li>
       <strong>Client certificates:</strong> with a
       <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS with it. With
-      <code>trustedAuthorities</code>, every sender must present a certificate that chains to one of
-      them.
+      <code>trustedAuthorities</code> or <code>senderFingerprints</code>, every sender must present
+      a certificate that chains to one of the authorities or is named by its fingerprint.
+    </li>
+    <li>
+      <strong>Fingerprints:</strong> <code>senderFingerprints</code> admits a sender by its own
+      certificate, whoever issued it, such as a self-signed one. Each is the certificate's
+      fingerprint as RFC 5425 writes one, <code>sha-256:AB:CD:…</code>, which
+      <a href="/docs/certificates">Admin &rarr; Certificates</a> copies for a certificate it holds. The
+      certificate's dates are not checked, so a sender stays admitted after its certificate expires until
+      its fingerprint is removed.
+    </li>
+    <li>
+      <strong>Host names:</strong> with <code>senderNames</code>, of the senders whose certificate
+      chains to <code>trustedAuthorities</code>, only those issued to one of the names are admitted.
+      <code>*.example.com</code> stands for any one host in example.com.
     </li>
   </ul>
   <p>With both, a sender must connect from a listed network and present a certificate.</p>

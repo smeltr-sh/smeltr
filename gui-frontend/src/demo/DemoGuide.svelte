@@ -4,7 +4,8 @@
   or the one whose Show me was followed, is done with, wherever the visitor is.
 -->
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onMount } from 'svelte';
+  import CopyButton from '../CopyButton.svelte';
   import { currentBranch, setScope } from '../api';
   import {
     CHANGED_EVENT,
@@ -42,14 +43,12 @@
   let ringed: Element | null = null;
   // Raw: a proxy of the step's hint would never be the step's own, and the ring compares them.
   let hint = $state.raw<Step['hint']>();
-  let copied = $state(false);
 
   /** Moves the ring to the next task's control on screen, and brings a newly ringed one into view. */
   function ring() {
     const task = open && world ? TASKS[ringing] : undefined;
     const found = task ? stepOnScreen(task, location.hash) : null;
     const el = found?.el ?? null;
-    if (found?.step.hint !== untrack(() => hint)) copied = false;
     hint = found?.step.hint;
     if (el === ringed) return;
     ringed?.removeAttribute(RING);
@@ -59,15 +58,6 @@
   }
 
   $effect(ring);
-
-  async function copy(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = true;
-    } catch {
-      // No clipboard here; the text stays on screen to select.
-    }
-  }
 
   function toggle() {
     open = !open;
@@ -143,16 +133,15 @@
           <li class="hint">
             <span class="text">{hint.text}</span>
             <code>{hint.copy}</code>
-            <button type="button" onclick={() => copy(hint!.copy)}
-              >{copied ? 'Copied' : 'Copy'}</button
-            >
+            <CopyButton text={hint.copy} />
           </li>
         {/if}
       {/each}
       <li class="last" class:next={next === -1}>
         <span class="mark" aria-hidden="true">→</span>
         <span class="text">
-          Ready to ship it? On a real fleet you'd deploy now, and Status would clear.
+          Ready to ship it? On a real fleet a reviewer would approve and deploy it now, and Status
+          would clear.
           <a href="https://smeltr.sh/get/" target="_blank" rel="noopener">Get smeltr</a>
         </span>
       </li>
@@ -219,7 +208,7 @@
     overflow-wrap: anywhere;
   }
 
-  li.hint button {
+  li.hint :global(button) {
     font: inherit;
     font-size: var(--text-micro);
     background: none;

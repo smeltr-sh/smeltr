@@ -69,9 +69,10 @@ impl TlsDto {
     }
 }
 
-/// The TLS a receiver serves: the certificate it serves to every sender, and the authorities a sender's certificate
-/// must chain to. It serves TLS when it names a certificate, and admits only senders whose certificate chains to its
-/// authorities when it names any. A receiver trusts no public root, so it has no say over them.
+/// The TLS a receiver serves: the certificate it serves to every sender, and whom it admits by theirs. It serves TLS
+/// when it names a certificate. Naming authorities or sender fingerprints, it admits only a sender whose certificate
+/// is one of the fingerprints', or chains to one of the authorities and, when it names sender names, is issued to one
+/// of them (`io::senders`). A receiver trusts no public root, so it has no say over them.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ServedTlsDto {
@@ -80,12 +81,21 @@ pub struct ServedTlsDto {
     /// PEM, one or more certificates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trusted_authorities: Option<String>,
+    /// As RFC 5425 (4.2.1) writes a fingerprint: `sha-256:AB:CD:…`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sender_fingerprints: Vec<String>,
+    /// Host names a certificate chaining to the authorities must be issued to, `*.` standing for any one label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sender_names: Vec<String>,
 }
 
 impl ServedTlsDto {
     /// Whether the receiver says anything about its TLS.
     pub fn is_set(&self) -> bool {
-        self.certificate.is_some() || self.trusted_authorities.is_some()
+        self.certificate.is_some()
+            || self.trusted_authorities.is_some()
+            || !self.sender_fingerprints.is_empty()
+            || !self.sender_names.is_empty()
     }
 
     /// The same settings as any connector's.
@@ -1093,11 +1103,8 @@ pub struct MaxRequestBytes(pub u64);
 
 impl MaxRequestBytes {
     pub const DEFAULT: u64 = 10 * 1024 * 1024;
-    /// The least a file may hold. A receiver runs at no less than `FLOOR`.
-    pub const MIN: u64 = 1024;
-    /// The least every receiver runs at, whatever its file holds: RFC 5425 (4.3.1) has a syslog receiver take messages
-    /// of 2048 octets.
-    pub const FLOOR: u64 = 2048;
+    /// RFC 5425 (4.3.1) has a syslog receiver take messages of 2048 octets.
+    pub const MIN: u64 = 2048;
     /// What one request may hold of a receiver's inbox (`io::receiver::INBOX_BYTES`).
     pub const MAX: u64 = 64 * 1024 * 1024;
 

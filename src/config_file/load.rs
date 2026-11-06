@@ -791,6 +791,7 @@ fn to_tls(dto: &TlsDto, of: &str, side: Side) -> Option<Tls> {
         authorities: dto.trusted_authorities.clone(),
         trust_public: side == Side::Client && dto.trust_public != Some(false),
         side,
+        senders: Default::default(),
     })
 }
 
@@ -2208,12 +2209,26 @@ fn receiver_config<'a>(
         receiver,
         listen: std::net::SocketAddr::new(std::net::Ipv6Addr::UNSPECIFIED.into(), listener.port),
         tokens: tokens.map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
-        tls: to_tls(&tls.tls(), of, Side::Server),
-        max_request_bytes: usize::try_from(listener.max_request_bytes.0.max(MaxRequestBytes::FLOOR))
-            .unwrap_or(usize::MAX),
+        tls: to_tls(&tls.tls(), of, Side::Server).map(|served| Tls {
+            senders: to_senders(tls),
+            ..served
+        }),
+        max_request_bytes: usize::try_from(listener.max_request_bytes.0).unwrap_or(usize::MAX),
         answer_after_delivery,
         connections,
     })
+}
+
+/// Whom a receiver admits by a sender's certificate besides its authorities. What does not read was refused at save.
+fn to_senders(tls: &ServedTlsDto) -> crate::plan::topology::Senders {
+    crate::plan::topology::Senders {
+        fingerprints: tls
+            .sender_fingerprints
+            .iter()
+            .filter_map(|f| crate::io::senders::Fingerprint::parse(f).ok())
+            .collect(),
+        names: tls.sender_names.iter().map(|n| n.trim().to_string()).collect(),
+    }
 }
 
 /// What `dto` says of a receiver's connections.
@@ -3386,7 +3401,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                     Transport::Udp => {}
                     // A receiver keeps a message to its largest request.
                     Transport::Tcp => {
-                        let max = listener.max_request_bytes.0.max(MaxRequestBytes::FLOOR);
+                        let max = listener.max_request_bytes.0;
                         check_framing(framing, &s.id, max, "message", errors);
                     }
                 }
@@ -4634,8 +4649,8 @@ fn check_records_at(what: &str, records: ApiRecordsDto, records_at: &Option<Stri
 }
 
 /// What a receiver must be before it can listen: a port, an address that is one, a certificate to serve, and someone
-/// it admits. With neither a token nor authorities that vouch for a sender, anyone who can reach the port could
-/// send.
+/// it admits. With no token, authorities or sender fingerprints to admit a sender by, anyone who can reach the port
+/// could send.
 fn check_receiver<T>(
     what: &str,
     listener: &ReceiverSettingsDto,
@@ -4646,8 +4661,8 @@ fn check_receiver<T>(
     let vouches = check_listener(what, listener, tls, errors);
     if tokens.is_empty() && !vouches {
         errors.at("tokens").push(format!(
-            "{what} admits anyone who can reach its port; give it a token, or trusted authorities a sender's certificate \
-             must chain to"
+            "{what} admits anyone who can reach its port; give it a token, trusted authorities a sender's certificate \
+             must chain to, or fingerprints of the certificates it admits"
         ));
     }
     for name in tokens.keys() {
@@ -4721,8 +4736,8 @@ fn check_syslog_receiver(
     let vouches = vouches && transport == Transport::Tcp;
     if allow_from.is_empty() && !vouches {
         errors.at("allowFrom").push(format!(
-            "{what} admits anyone who can reach its port; give it the networks its senders connect from, or \
-             trusted authorities a sender's certificate must chain to"
+            "{what} admits anyone who can reach its port; give it the networks its senders connect from, trusted \
+             authorities a sender's certificate must chain to, or fingerprints of the certificates it admits"
         ));
     }
     for block in allow_from {
@@ -4736,7 +4751,7 @@ fn check_syslog_receiver(
 }
 
 /// What every receiver's listener must be: a port, and a certificate to serve where it serves TLS. Whether its
-/// authorities vouch for a sender, which then needs nothing else to be admitted.
+/// authorities or sender fingerprints vouch for a sender, which then needs nothing else to be admitted.
 fn check_listener(what: &str, listener: &ReceiverSettingsDto, tls: &ServedTlsDto, errors: &mut ItemErrors<'_>) -> bool {
     let ReceiverSettingsDto {
         port,
@@ -4762,7 +4777,30 @@ fn check_listener(what: &str, listener: &ReceiverSettingsDto, tls: &ServedTlsDto
             MaxRequestBytes::MAX
         ));
     }
-    tls.trusted_authorities.as_deref().is_some_and(|a| !blank(a))
+    for fingerprint in &tls.sender_fingerprints {
+        if let Err(why) = crate::io::senders::Fingerprint::parse(fingerprint) {
+            errors.at("senderFingerprints").push(format!(
+                "{what} admits a sender by {fingerprint:?}, which is not a fingerprint: {why}. Write one as \
+                 sha-256:AB:CD:…"
+            ));
+        }
+    }
+    for name in &tls.sender_names {
+        if !crate::io::senders::is_host(name.trim()) {
+            errors.at("senderNames").push(format!(
+                "{what} admits senders named {name:?}, which is not a host name; give one as host.example.com, or \
+                 *.example.com for any host in it"
+            ));
+        }
+    }
+    let authorities = tls.trusted_authorities.as_deref().is_some_and(|a| !blank(a));
+    if !tls.sender_names.is_empty() && !authorities {
+        errors.at("senderNames").push(format!(
+            "{what} names its senders' hosts and trusts no authority, so no certificate can match those names; paste \
+             the trusted authorities their certificates chain to"
+        ));
+    }
+    authorities || !tls.sender_fingerprints.is_empty()
 }
 
 /// Refuses two receivers on one port: every worker of the group binds each, and the second bind would fail on every
@@ -7509,8 +7547,7 @@ mod tests {
             ),
             (
                 "receiverRequestBytes",
-                // A form offers no less than a receiver runs at.
-                Receiver::FLOOR,
+                Receiver::MIN,
                 Some(Receiver::MAX),
                 Receiver::DEFAULT,
             ),

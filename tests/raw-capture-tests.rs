@@ -137,6 +137,7 @@ fn served_by(authority: &Authority) -> (Tls, HeldSecrets) {
         authorities: None,
         trust_public: false,
         side: smeltr::io::trust::Side::Server,
+        senders: Default::default(),
     };
     (tls, secrets)
 }

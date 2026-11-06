@@ -812,7 +812,7 @@ fn random_request(rng: &mut Rng, settings: &Settings, cov: &mut Coverage) -> Sen
     }
 
     let refusal = |status, code| Expected::Answer(status, code, None);
-    let (expected, reached) = if settings.tls == Tls::Vouched && presents != Presents::Trusted {
+    let (expected, reached) = if !settings.tls.admits(presents) {
         (Expected::Nothing, None)
     } else {
         let (expected, reached) = match serves {
@@ -1051,14 +1051,14 @@ fn every_setting_answers_random_hec_requests_as_hec_does() {
     let mut cov = Coverage::new(
         receiver::listen_names(ipv6)
             .map(|ip| format!("listen {ip}"))
-            .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
+            .chain(Tls::ALL.map(|tls| format!("tls {tls:?}")))
             .chain((0..=3).map(|n| format!("tokens {n}")))
             .chain(["an acknowledging token", "a token that does not acknowledge"].map(String::from))
             .chain(RECEIVER_LIMITS.iter().map(|(_, name)| name.to_string()))
             .chain(ROUTES.iter().map(|(method, path)| format!("{method} {path}")))
             .chain(["presents Nothing under None".to_string()])
-            .chain(["Served", "Vouched"].iter().flat_map(|tls| {
-                ["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under {tls}"))
+            .chain(Tls::ALL[1..].iter().flat_map(|tls| {
+                ["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under {tls:?}"))
             }))
             .chain(AUTHORIZATIONS.iter().map(|s| s.to_string()))
             .chain(EVENT_BODIES.iter().map(|s| format!("event {s}")))
@@ -1087,7 +1087,8 @@ fn every_setting_answers_random_hec_requests_as_hec_does() {
     );
     fuzz::run(1..201, |seed| {
         let mut rng = Rng::seeded(seed);
-        let settings = random_settings(&mut rng, ipv6);
+        let mut settings = random_settings(&mut rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         cov.reach(format!("listen {}", settings.listen.ip()));
         cov.reach(format!("tls {:?}", settings.tls));
         cov.reach(format!("tokens {}", settings.tokens.len()));
@@ -1273,7 +1274,7 @@ fn collector_config(at: SocketAddr, token: &str, tls: Tls, told: &Told) -> Strin
     match tls {
         Tls::None => {}
         Tls::Served => exporter.push_str("    tls: {ca_file: /smeltr/ca.pem}\n"),
-        Tls::Vouched => exporter.push_str(
+        Tls::Vouched | Tls::Pinned | Tls::Named | Tls::Misnamed => exporter.push_str(
             "    tls: {ca_file: /smeltr/ca.pem, cert_file: /smeltr/sender.pem, key_file: /smeltr/sender-key.pem}\n",
         ),
     }
@@ -1316,7 +1317,7 @@ fn fluent_bit_config(at: SocketAddr, token: &str, tls: Tls, told: &Told) -> Stri
     if tls != Tls::None {
         output.push_str("    TLS On\n    TLS.Verify On\n    TLS.CA_File /smeltr/ca.pem\n    TLS.Vhost localhost\n");
     }
-    if tls == Tls::Vouched {
+    if tls.checks_sender() {
         output.push_str("    TLS.Crt_File /smeltr/sender.pem\n    TLS.Key_File /smeltr/sender-key.pem\n");
     }
     format!(

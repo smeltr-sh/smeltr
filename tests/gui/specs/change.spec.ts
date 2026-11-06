@@ -105,7 +105,8 @@ test('the branch bar opens a change from a form filled from what changed', async
   await expect(title).not.toHaveValue('');
   await expect(admin.getByText('no tests reach this change')).toBeVisible();
   await expect(admin.getByText(/^1 file ·/)).toBeVisible();
-  await expect(admin.getByText('no other administrator')).toBeVisible();
+  // The author could approve it, as the one administrator there is.
+  await expect(admin.locator('.reviewers')).toHaveText('Administrator (you)');
 
   await title.fill('Add the colors table');
   await admin.getByLabel('Description').fill('Colors for the enrichment step.');
@@ -115,8 +116,8 @@ test('the branch bar opens a change from a form filled from what changed', async
   await expect(admin.getByRole('heading', { name: 'Add the colors table' })).toBeVisible();
   await expect(admin.getByText('Colors for the enrichment step.')).toBeVisible();
   await expect(admin.getByText(/open for review — 1 file/)).toBeVisible();
-  // The author is the only administrator, so there is nobody else's verdict to give here.
-  await expect(admin.getByRole('radiogroup', { name: 'Review' })).toHaveCount(0);
+  // A lone administrator reviews their own change.
+  await expect(admin.getByRole('radiogroup', { name: 'Review' })).toBeVisible();
 
   await admin.getByRole('button', { name: 'Rename this change' }).click();
   await admin.getByLabel('change title').fill('Add colors for enrichment');

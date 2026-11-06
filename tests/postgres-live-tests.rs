@@ -65,6 +65,7 @@ fn driver_with(host: &str, port: u16, user: &str, encrypted: Encrypted, authorit
             authorities: Some(authorities),
             trust_public: false,
             side: Side::Client,
+            senders: Default::default(),
         }),
     };
     PostgresDriver::new(connection, &secrets).expect("a driver")

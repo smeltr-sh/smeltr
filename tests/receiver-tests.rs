@@ -342,6 +342,7 @@ fn a_receiver_with_authorities_admits_only_a_sender_they_vouch_for() {
                 authorities: Some(pki.ca.clone()),
                 trust_public: false,
                 side: smeltr::io::trust::Side::Server,
+                senders: Default::default(),
             }),
             max_request_bytes: 1024,
             answer_after_delivery: true,

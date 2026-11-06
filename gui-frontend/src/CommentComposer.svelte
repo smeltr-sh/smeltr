@@ -65,7 +65,7 @@
     <Button type="button" class="compact" disabled={busy ? BUSY : ''} onclick={oncancel}
       >Cancel</Button
     >
-    <Locked refusedInDemo>
+    <Locked>
       <Button
         type="submit"
         class="compact primary"
