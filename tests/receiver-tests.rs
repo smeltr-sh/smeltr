@@ -54,6 +54,7 @@ fn receiver_answering(listen: SocketAddr, records: ApiRecords, answer_after_deli
             tls: None,
             max_request_bytes: 1024,
             answer_after_delivery,
+            connections: Default::default(),
         },
         &secrets,
     )
@@ -344,6 +345,7 @@ fn a_receiver_with_authorities_admits_only_a_sender_they_vouch_for() {
             }),
             max_request_bytes: 1024,
             answer_after_delivery: true,
+            connections: Default::default(),
         },
         &secrets,
     );
@@ -384,6 +386,7 @@ fn hec_receiver(listen: SocketAddr) -> Box<dyn Source> {
             tls: None,
             max_request_bytes: 4096,
             answer_after_delivery: true,
+            connections: Default::default(),
         },
         &secrets,
     )
@@ -621,6 +624,7 @@ fn otlp_receiver_of(listen: SocketAddr, signal: Signal, max_request_bytes: usize
             tls: None,
             max_request_bytes,
             answer_after_delivery: true,
+            connections: Default::default(),
         },
         &secrets,
     )
@@ -1300,6 +1304,7 @@ fn prometheus_receiver_reading(listen: SocketAddr, max_request_bytes: usize) -> 
             tls: None,
             max_request_bytes,
             answer_after_delivery: true,
+            connections: Default::default(),
         },
         &secrets,
     )
@@ -2326,6 +2331,7 @@ fn elastic_receiver_reading(listen: SocketAddr, max_request_bytes: usize) -> Box
             tls: None,
             max_request_bytes,
             answer_after_delivery: true,
+            connections: Default::default(),
         },
         &secrets,
     )

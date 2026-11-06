@@ -36,6 +36,7 @@
     type OtlpSignal,
     type ListStart,
     type Framing,
+    type FramingSettings,
   } from './api';
   import { brokersWarning, SECTION_PROPS } from './kafka';
   import { fromLocalInput, toLocalInput } from './time';
@@ -132,11 +133,32 @@
       (s.maxRequestBytes ?? LIMITS.receiverRequestBytes.default) !==
         LIMITS.receiverRequestBytes.default ||
       s.answerAfterDelivery === true ||
-      (s.type === 'syslogReceiver' && (s.encoding ?? 'auto') !== 'auto') ||
+      (streams(s) &&
+        ((s.maxConnections ?? LIMITS.maxConnections.default) !== LIMITS.maxConnections.default ||
+          s.maxConnectionsPerSender !== undefined ||
+          s.idleTimeoutSecs !== undefined)) ||
+      ((s.type === 'syslogReceiver' || s.type === 'socketReceiver') &&
+        (s.encoding ?? 'auto') !== 'auto') ||
       (s.type === 'syslogReceiver' && s.lineBreaker !== undefined) ||
       (s.type === 'hecReceiver' && s.sourcetypes !== undefined)
     );
   }
+
+  type StreamingReceiver = Extract<
+    SourceDto,
+    { type: 's2sReceiver' | 'syslogReceiver' | 'socketReceiver' }
+  >;
+
+  /** Whether `s`'s senders stream over a connection it holds open, which its connection limits hold to. */
+  function streams(s: ReceiverSource): s is StreamingReceiver {
+    return (
+      s.type === 's2sReceiver' ||
+      ((s.type === 'syslogReceiver' || s.type === 'socketReceiver') && s.transport !== 'udp')
+    );
+  }
+
+  type SyslogReceiver = Extract<SourceDto, { type: 'syslogReceiver' }>;
+  type SocketReceiver = Extract<SourceDto, { type: 'socketReceiver' }>;
 
   /** How an Okta source signs in: as a service app or with an API token. */
   type OktaSignIn = 'serviceApp' | 'token';
@@ -245,10 +267,9 @@
   }
 </script>
 
-<!-- A stream, object or syslog source's encoding: each names a label the same way. -->
+<!-- A stream, object, syslog or socket source's encoding: each names a label the same way. -->
 {#snippet encodingField(
-  source:
-    StreamSource | ObjectSource | ListingSource | Extract<SourceDto, { type: 'syslogReceiver' }>,
+  source: StreamSource | ObjectSource | ListingSource | SocketReceiver | SyslogReceiver,
 )}
   <!-- Avro's strings are UTF-8: the load refuses an encoding beside it. -->
   {#if !('format' in source && source.format === 'avro')}
@@ -269,31 +290,123 @@
 {/snippet}
 
 <!-- How an object or listing source reads what it reads, and cuts text into records: each names it the same way. -->
-{#snippet framingField(source: ObjectSource | ListingSource)}
+{#snippet objectFramingField(source: ObjectSource | ListingSource)}
   <AvroRead value={source} stream={false} {secrets} />
   <!-- An Avro file is its own records: the load refuses a framing beside it. -->
   {#if source.format !== 'avro'}
-    <Field field="framing" label="framing">
-      {#snippet help()}
-        <code>lines</code>: one record per line, or per event where a line breaker cuts them.
-        <code>object</code>: the whole object is one record, for a JSON document a pipeline unrolls.
-        <code>escapedLines</code>: one record per line, unescaped as a <code>bytes</code> object destination
-        wrote it.
-      {/snippet}
-      <select
-        value={source.framing ?? 'lines'}
-        onchange={(e) => setFraming(source, e.currentTarget.value as Framing)}
-      >
-        <option value="lines">lines</option>
-        <option value="object">object</option>
-        <option value="escapedLines">escapedLines</option>
-      </select>
-    </Field>
-    {#if (source.framing ?? 'lines') === 'lines'}
-      <Nested>
-        <LineBreakerField value={source.lineBreaker} onchange={(v) => (source.lineBreaker = v)} />
-      </Nested>
-    {/if}
+    {@render objectFramingField(source)}
+  {/if}
+{/snippet}
+
+<!-- Where one record ends and the next starts in an object, or in what a socket receiver's sender sends. -->
+{#snippet framingField(source: FramingSettings)}
+  <Field field="framing" label="framing">
+    {#snippet help()}
+      <code>lines</code>: one record per line, or per event where a line breaker cuts them.<br />
+      <code>object</code>: everything is one record, such as a JSON document a pipeline unrolls;
+      from a sender, all it sends before it hangs up.<br />
+      <code>escapedLines</code>: one record per line, unescaped as a destination with format
+      <code>bytes</code> and newlines <code>escape</code> wrote it.<br />
+      <code>lengthPrefix</code>: one record per message, each carrying its own length.<br />
+      <code>fixed</code>: one record per so many bytes.
+    {/snippet}
+    <select
+      value={source.framing ?? 'lines'}
+      onchange={(e) => setFraming(source, e.currentTarget.value as Framing)}
+    >
+      <option value="lines">lines</option>
+      <option value="object">object</option>
+      <option value="escapedLines">escapedLines</option>
+      <option value="lengthPrefix">lengthPrefix</option>
+      <option value="fixed">fixed</option>
+    </select>
+  </Field>
+  {#if (source.framing ?? 'lines') === 'lines'}
+    <Nested>
+      <LineBreakerField value={source.lineBreaker} onchange={(v) => (source.lineBreaker = v)} />
+    </Nested>
+  {:else if source.framing === 'lengthPrefix' && source.lengthPrefix}
+    {@const prefix = source.lengthPrefix}
+    <Nested>
+      <Field field="lengthPrefix" label="length size">
+        {#snippet help()}
+          How many bytes the length takes.
+        {/snippet}
+        <select
+          value={prefix.bytes}
+          onchange={(e) => (prefix.bytes = Number(e.currentTarget.value))}
+        >
+          {#each [1, 2, 3, 4, 5, 6, 7, 8] as n (n)}
+            <option value={n}>{n} {n === 1 ? 'byte' : 'bytes'}</option>
+          {/each}
+        </select>
+      </Field>
+      <Field optional field="lengthPrefix" label="length offset">
+        {#snippet help()}
+          How many bytes of each message come before its length.
+        {/snippet}
+        <input
+          type="number"
+          min="0"
+          placeholder="0"
+          value={prefix.offset ?? ''}
+          oninput={(e) => {
+            const n = numberOrUnset(e.currentTarget);
+            prefix.offset = n === undefined || n <= 0 ? undefined : Math.round(n);
+          }}
+        />
+      </Field>
+      <Field field="lengthPrefix" label="byte order">
+        {#snippet help()}
+          <code>big</code>: the most significant byte first, as most network protocols send it.<br
+          />
+          <code>little</code>: the least significant byte first.
+        {/snippet}
+        <select
+          value={prefix.order ?? 'big'}
+          onchange={(e) => {
+            const v = e.currentTarget.value as 'big' | 'little';
+            prefix.order = v === 'big' ? undefined : v;
+          }}
+        >
+          <option value="big">big</option>
+          <option value="little">little</option>
+        </select>
+      </Field>
+      <Field field="lengthPrefix" label="length counts">
+        {#snippet help()}
+          <code>rest</code>: the bytes after the length.<br />
+          <code>message</code>: the whole message, the length and what comes before it included.
+        {/snippet}
+        <select
+          value={prefix.counts ?? 'rest'}
+          onchange={(e) => {
+            const v = e.currentTarget.value as 'rest' | 'message';
+            prefix.counts = v === 'rest' ? undefined : v;
+          }}
+        >
+          <option value="rest">rest</option>
+          <option value="message">message</option>
+        </select>
+      </Field>
+    </Nested>
+  {:else if source.framing === 'fixed'}
+    <Nested>
+      <Field field="fixedBytes" label="record size">
+        {#snippet help()}
+          How many bytes every record is.
+        {/snippet}
+        <input
+          type="number"
+          min="1"
+          value={source.fixedBytes ?? ''}
+          oninput={(e) => {
+            const n = numberOrUnset(e.currentTarget);
+            source.fixedBytes = n !== undefined && n >= 1 ? Math.round(n) : undefined;
+          }}
+        />
+      </Field>
+    </Nested>
   {/if}
 {/snippet}
 
@@ -926,23 +1039,29 @@
       </select>
     </Field>
   {/if}
-  {#if source.type === 'syslogReceiver'}
+  {#if source.type === 'syslogReceiver' || source.type === 'socketReceiver'}
     <Field field="transport" label="transport">
       {#snippet help()}
-        What senders send over. Over UDP each datagram is a message, served without TLS. A UDP
-        receiver can't slow a sender, so what arrives while it is full is dropped.
+        What senders send over. Over UDP each datagram is one {source.type === 'syslogReceiver'
+          ? 'message'
+          : 'record'}, without TLS. A UDP sender can't be slowed, so datagrams that arrive while the
+        receiver can't take them are dropped.
       {/snippet}
       <select
         value={source.transport ?? 'tcp'}
         onchange={(e) => {
-          if (source.type !== 'syslogReceiver') return;
+          if (source.type !== 'syslogReceiver' && source.type !== 'socketReceiver') return;
           const v = e.currentTarget.value as 'tcp' | 'udp';
           source.transport = v === 'tcp' ? undefined : v;
-          // The load refuses TLS settings and a line breaker under UDP, which serves no TLS and frames nothing.
+          // The load refuses TLS settings and a framing under UDP, which serves no TLS and frames nothing.
           if (v === 'udp') {
             source.certificate = undefined;
             source.trustedAuthorities = undefined;
+            source.maxConnections = undefined;
+            source.maxConnectionsPerSender = undefined;
+            source.idleTimeoutSecs = undefined;
             delete source.lineBreaker;
+            if (source.type === 'socketReceiver') setFraming(source, 'lines');
           }
         }}
       >
@@ -950,6 +1069,9 @@
         <option value="udp">udp</option>
       </select>
     </Field>
+    {#if source.type === 'socketReceiver' && source.transport !== 'udp'}
+      {@render framingField(source)}
+    {/if}
   {/if}
   {#if source.type === 'httpReceiver'}
     <Field optional field="path" label="path">
@@ -968,23 +1090,29 @@
       />
     </Field>
   {/if}
-  {#if source.type === 'syslogReceiver'}
+  {#if source.type === 'syslogReceiver' || source.type === 'socketReceiver'}
     <Field optional field="allowFrom" label="allow from">
       {#snippet help()}
         {#if source.transport === 'udp'}
           The networks a sender may send from, each a CIDR block. Over UDP only these networks admit
           a sender, and a UDP sender's address can be spoofed.
         {:else}
-          The networks a sender may connect from, each a CIDR block. Syslog carries no token, so the
-          receiver needs these networks, trusted authorities a sender's certificate must chain to,
-          or both. With both, a sender must connect from a listed network and present a certificate.
+          The networks a sender may connect from, each a CIDR block. {source.type ===
+          'syslogReceiver'
+            ? 'Syslog carries'
+            : 'What it receives carries'} no token, so the receiver needs these networks, trusted authorities
+          a sender's certificate must chain to, or both. With both, a sender must connect from a listed
+          network and present a certificate.
         {/if}
       {/snippet}
       <TokenListInput
         bind:values={
-          () => (source.type === 'syslogReceiver' && source.allowFrom) || [],
+          () =>
+            ((source.type === 'syslogReceiver' || source.type === 'socketReceiver') &&
+              source.allowFrom) ||
+            [],
           (cidrs) => {
-            if (source.type !== 'syslogReceiver') return;
+            if (source.type !== 'syslogReceiver' && source.type !== 'socketReceiver') return;
             if (cidrs.length > 0) source.allowFrom = cidrs;
             else delete source.allowFrom;
           }
@@ -1060,7 +1188,7 @@
     {/if}
   {/if}
   <Advanced label="Advanced" modified={receiverModified(source)}>
-    {#if !(source.type === 'syslogReceiver' && source.transport === 'udp')}
+    {#if !((source.type === 'syslogReceiver' || source.type === 'socketReceiver') && source.transport === 'udp')}
       <TlsFields value={source} farEnd="sender" />
     {/if}
     {#if source.type === 'hecReceiver'}
@@ -1074,13 +1202,15 @@
     <Field
       optional
       field="maxRequestBytes"
-      label={source.type === 'syslogReceiver' ? 'message size' : 'request size'}
+      label={source.type === 'syslogReceiver' || source.type === 'socketReceiver'
+        ? 'message size'
+        : 'request size'}
     >
       {#snippet help()}
         {#if source.type === 's2sReceiver'}
           The largest frame it reads, and the most one record holds, at most
           {exactBytes(LIMITS.receiverRequestBytes.max)}.
-        {:else if source.type === 'syslogReceiver'}
+        {:else if source.type === 'syslogReceiver' || source.type === 'socketReceiver'}
           The largest message it keeps, at most {exactBytes(LIMITS.receiverRequestBytes.max)}. A
           larger one is cut to this size.
         {:else}
@@ -1094,7 +1224,7 @@
         onchange={(n) => (source.maxRequestBytes = n)}
       />
     </Field>
-    {#if source.type !== 's2sReceiver' && source.type !== 'syslogReceiver'}
+    {#if source.type !== 's2sReceiver' && source.type !== 'syslogReceiver' && source.type !== 'socketReceiver'}
       <Field field="answerAfterDelivery" label="answer after delivery">
         {#snippet help()}
           <p>
@@ -1118,6 +1248,12 @@
         />
       </Field>
     {/if}
+    {#if streams(source)}
+      {@render connectionLimits(source)}
+    {/if}
+    {#if source.type === 'socketReceiver'}
+      {@render encodingField(source)}
+    {/if}
     {#if source.type === 'syslogReceiver'}
       {@render encodingField(source)}
       {#if source.transport !== 'udp'}
@@ -1130,6 +1266,67 @@
       {/if}
     {/if}
   </Advanced>
+{/snippet}
+
+<!-- How many connections a receiver whose senders stream holds open, and how long it keeps an idle one. -->
+{#snippet connectionLimits(source: StreamingReceiver)}
+  <Field optional field="maxConnections" label="max connections">
+    {#snippet help()}
+      The most connections it holds open on each worker, at most
+      {LIMITS.maxConnections.max.toLocaleString('en-US')}. When it holds that many, a new connection
+      takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new
+      one is closed.
+    {/snippet}
+    <input
+      type="number"
+      min={LIMITS.maxConnections.min}
+      max={LIMITS.maxConnections.max}
+      value={source.maxConnections ?? LIMITS.maxConnections.default}
+      oninput={(e) => {
+        const n = bounded(e.currentTarget, LIMITS.maxConnections);
+        source.maxConnections = n === LIMITS.maxConnections.default ? undefined : n;
+      }}
+    />
+  </Field>
+  <Field optional field="maxConnectionsPerSender" label="max connections per sender">
+    {#snippet help()}
+      The most connections it holds from one address. Past it, a new connection takes the place of
+      that address's connection idle longest, if that one has been idle a minute; otherwise the new
+      one is closed. Empty, one sender may take them all. Behind a balancer or NAT every sender
+      comes from one address, so this limits them all together: set it only against a sender that
+      takes the room others need.
+    {/snippet}
+    <input
+      type="number"
+      min="1"
+      max={source.maxConnections ?? LIMITS.maxConnections.default}
+      value={source.maxConnectionsPerSender ?? ''}
+      placeholder="no limit"
+      oninput={(e) =>
+        (source.maxConnectionsPerSender = bounded(e.currentTarget, {
+          min: 1,
+          max: source.maxConnections ?? LIMITS.maxConnections.default,
+        }))}
+    />
+  </Field>
+  <Field optional field="idleTimeoutSecs" label="idle timeout seconds">
+    {#snippet help()}
+      Closes a connection that sends nothing this long while the receiver waits on it. Empty, an
+      idle connection stays open as long as there is room. Some senders lose the first message they
+      write to a connection the receiver closed.
+    {/snippet}
+    <input
+      type="number"
+      min="1"
+      value={source.idleTimeoutSecs ?? ''}
+      placeholder="none"
+      oninput={(e) =>
+        (source.idleTimeoutSecs = bounded(e.currentTarget, {
+          min: 1,
+          max: Number.MAX_SAFE_INTEGER,
+        }))}
+    />
+  </Field>
 {/snippet}
 
 <!-- A source's own fields, below its id: the same in its row and in the add dialog. -->
@@ -1222,7 +1419,7 @@
       </Field>
     {/if}
     <ConnectorAccess {store} value={source} show="credential" {secrets} />
-    {@render framingField(source)}
+    {@render objectFramingField(source)}
     <TlsFields value={source} farEnd="source" />
     <Advanced label="Advanced" modified={objectsModified(source)}>
       {#if source.type === 'gcsPubSub'}

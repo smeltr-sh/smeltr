@@ -7,8 +7,9 @@ use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use smeltr::io::framing::Framing;
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
-use smeltr::plan::topology::{HeldSecrets, Receiver, ReceiverConfig, SourceKind, SyslogReceiverConfig, Tls, Transport};
+use smeltr::plan::topology::{HeldSecrets, Receiver, ReceiverConfig, SocketReceiverConfig, SourceKind, Tls, Transport};
 
 use crate::certs::{Authority, Issued};
 use crate::live;
@@ -45,9 +46,10 @@ fn open(
     secrets: &HeldSecrets,
 ) -> Box<dyn Source> {
     let config = ReceiverConfig {
-        receiver: Receiver::Syslog(SyslogReceiverConfig {
+        receiver: Receiver::Syslog(SocketReceiverConfig {
             allow_from: allow_from.iter().map(|n| n.parse().unwrap()).collect(),
             transport,
+            framing: Framing::Syslog(None),
             ..Default::default()
         }),
         listen,
@@ -55,6 +57,7 @@ fn open(
         tls,
         max_request_bytes: max,
         answer_after_delivery: false,
+        connections: Default::default(),
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());

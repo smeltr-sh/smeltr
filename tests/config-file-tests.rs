@@ -5961,10 +5961,10 @@ fn a_syslog_receiver_takes_a_line_breaker_over_tcp() {
     let Receiver::Syslog(syslog_config) = &r.receiver else {
         panic!("a syslog receiver")
     };
-    assert_eq!(
-        syslog_config.line_breaker.as_ref().map(|b| b.0.as_str()),
-        Some(r"(\x00)")
-    );
+    let smeltr::io::framing::Framing::Syslog(line_breaker) = &syslog_config.framing else {
+        panic!("syslog framing")
+    };
+    assert_eq!(line_breaker.as_ref().map(|b| b.0.as_str()), Some(r"(\x00)"));
     let file: smeltr::config_file::FileConfig = serde_json::from_str(&json).unwrap();
     let written = &serde_json::to_value(&file).unwrap()["sources"][0];
     assert_eq!(written["lineBreaker"], r"(\x00)", "it writes back as it was given");
@@ -5978,6 +5978,94 @@ fn a_syslog_receiver_takes_a_line_breaker_over_tcp() {
         &syslog(r#","lineBreaker":"\\x00""#),
         "lineBreaker",
         "which has no capture group to mark the break"
+    ));
+}
+
+/// A socket receiver cuts what it receives over TCP by its framing, writes it back as given, and refuses a framing
+/// over UDP, a length prefix that is absent or out of range, and a fixed size over its largest request.
+#[test]
+fn a_socket_receiver_takes_a_framing_over_tcp() {
+    use smeltr::io::framing::{ByteOrder, Counts, Framing, LengthPrefix};
+    use smeltr::plan::topology::{Receiver, SourceKind, Transport};
+
+    let socket = |extra: &str| {
+        format!(
+            r#"{{"version":1,"sources":[{{"id":"raw","type":"socketReceiver","port":9000,
+            "allowFrom":["10.0.0.0/8"]{extra}}}]}}"#
+        )
+    };
+    let framing = |json: &str| {
+        let system = load_str(json).expect("must load");
+        system.compile_topology().expect("must compile");
+        let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
+            panic!("a receiver")
+        };
+        let Receiver::Socket(socket) = &r.receiver else {
+            panic!("a socket receiver")
+        };
+        (socket.framing.clone(), socket.transport)
+    };
+    assert_eq!(framing(&socket("")), (Framing::Lines, Transport::Tcp));
+    let json = socket(
+        r#","framing":"lengthPrefix","lengthPrefix":{"offset":2,"bytes":4,"order":"little","counts":"message"}"#,
+    );
+    assert!(refusal(&json).is_empty(), "{}", refusal(&json));
+    assert_eq!(
+        framing(&json).0,
+        Framing::LengthPrefix(LengthPrefix {
+            offset: 2,
+            width: 4,
+            order: ByteOrder::Little,
+            counts: Counts::Message,
+        })
+    );
+    assert_eq!(
+        framing(&socket(r#","framing":"fixed","fixedBytes":16"#)).0,
+        Framing::Fixed(16)
+    );
+    assert_eq!(
+        framing(&socket(r#","transport":"udp""#)),
+        (Framing::Lines, Transport::Udp)
+    );
+    let file: smeltr::config_file::FileConfig = serde_json::from_str(&json).unwrap();
+    let written = serde_json::to_value(&file).unwrap()["sources"][0].clone();
+    let given: serde_json::Value = serde_json::from_str::<serde_json::Value>(&json).unwrap()["sources"][0].clone();
+    assert_eq!(written, given, "it writes back as it was given");
+
+    assert!(refused_at(
+        &socket(r#","transport":"udp","framing":"fixed","fixedBytes":16"#),
+        "framing",
+        r#"source "raw" sets a framing, which only TCP reads"#
+    ));
+    assert!(refused_at(
+        &socket(r#","framing":"lengthPrefix""#),
+        "lengthPrefix",
+        "give the length's size in bytes, and its offset if any, in lengthPrefix"
+    ));
+    assert!(refused_at(
+        &socket(r#","framing":"lengthPrefix","lengthPrefix":{"bytes":9}"#),
+        "lengthPrefix",
+        "it must be 1 to 8"
+    ));
+    assert!(refused_at(
+        &socket(r#","lengthPrefix":{"bytes":2}"#),
+        "lengthPrefix",
+        "which only lengthPrefix framing reads"
+    ));
+    assert!(refused_at(
+        &socket(r#","framing":"fixed","fixedBytes":0"#),
+        "fixedBytes",
+        "it must be 1 to"
+    ));
+    assert!(refused_at(
+        &socket(r#","maxRequestBytes":4096,"framing":"fixed","fixedBytes":4097"#),
+        "fixedBytes",
+        "it must be 1 to 4 KiB"
+    ));
+    assert!(refused_at(
+        &socket(r#","framing":"fixed""#),
+        "fixedBytes",
+        "give how many bytes in fixedBytes"
     ));
 }
 
@@ -6553,4 +6641,78 @@ fn an_http_api_source_with_a_muddled_sign_in_is_refused() {
         let json = http_api_config(at, &sign_in);
         assert!(refusal(&json).is_empty(), "{sign_in}: {}", refusal(&json));
     }
+}
+
+/// A receiver that streams holds the default maximum of connections unless told otherwise, and an admin may
+/// tighten that, cap one sender, and close idle connections. Over UDP, which holds no connection, the settings are
+/// refused.
+#[test]
+fn a_receiver_that_streams_takes_connection_limits() {
+    use smeltr::plan::topology::{ConnectionLimits, SourceKind};
+
+    let socket = |extra: &str| {
+        format!(
+            r#"{{"version":1,"sources":[{{"id":"raw","type":"socketReceiver","port":9000,
+            "allowFrom":["10.0.0.0/8"]{extra}}}]}}"#
+        )
+    };
+    let limits = |json: &str| {
+        let system = load_str(json).expect("must load");
+        let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
+            panic!("a receiver")
+        };
+        r.connections
+    };
+    assert_eq!(limits(&socket("")), ConnectionLimits::default());
+    assert_eq!(ConnectionLimits::default().max, 10_000);
+    let json = socket(r#","maxConnections":500,"maxConnectionsPerSender":20,"idleTimeoutSecs":600"#);
+    assert_eq!(refusal(&json), "");
+    assert_eq!(
+        limits(&json),
+        ConnectionLimits {
+            max: 500,
+            per_sender: Some(20),
+            idle: Some(std::time::Duration::from_secs(600)),
+        }
+    );
+    let file: smeltr::config_file::FileConfig = serde_json::from_str(&json).unwrap();
+    let written = &serde_json::to_value(&file).unwrap()["sources"][0];
+    assert_eq!(written["maxConnections"], 500);
+    let file: smeltr::config_file::FileConfig = serde_json::from_str(&socket("")).unwrap();
+    assert!(
+        serde_json::to_value(&file).unwrap()["sources"][0]
+            .get("maxConnections")
+            .is_none()
+    );
+
+    assert!(refused_at(
+        &socket(r#","maxConnections":0"#),
+        "maxConnections",
+        "maxConnections is between 1 and"
+    ));
+    assert!(refused_at(
+        &socket(r#","maxConnections":10,"maxConnectionsPerSender":11"#),
+        "maxConnectionsPerSender",
+        "between 1 and its maxConnections, 10"
+    ));
+    assert!(refused_at(
+        &socket(r#","idleTimeoutSecs":0"#),
+        "idleTimeoutSecs",
+        "at least 1"
+    ));
+    assert!(refused_at(
+        &socket(r#","transport":"udp","idleTimeoutSecs":60"#),
+        "idleTimeoutSecs",
+        "only TCP reads"
+    ));
+    let http = http_receiver_config(8088, &format!(r#"{RECEIVER_TOKEN},"maxConnections":5"#));
+    let e =
+        serde_json::from_str::<smeltr::config_file::FileConfig>(&http).expect_err("an HTTP receiver takes none yet");
+    assert!(e.to_string().contains("maxConnections"), "{e}");
+    assert_eq!(
+        refusal(&s2s_receiver_config(&format!(
+            r#"{S2S_TOKEN},"maxConnectionsPerSender":4"#
+        ))),
+        ""
+    );
 }

@@ -178,26 +178,23 @@ export type SourceDto =
         type: 's3Sqs';
         /** The queue's own URL, which names its region and account. */
         queueUrl: string;
-        /** Absent is `lines`. */
-        framing?: Framing;
-        lineBreaker?: string;
         /** As a Kafka source's. */
         encoding?: string;
         visibilitySecs?: number;
-      } & ReadFormat)
+      } & FramingSettings &
+      ReadFormat)
   | (TlsDto &
       AzureAccess & {
         id: string;
         type: 'azureBlobQueue';
         /** The Storage queue's own URL. */
         queueUrl: string;
-        framing?: Framing;
-        lineBreaker?: string;
         encoding?: string;
         visibilitySecs?: number;
         /** Receives before a message is moved to `<queue>-poison`. */
         maxDeliveries?: number;
-      } & ReadFormat)
+      } & FramingSettings &
+      ReadFormat)
   | (TlsDto &
       GcsAccess & {
         id: string;
@@ -206,12 +203,11 @@ export type SourceDto =
         subscription: string;
         /** Another Pub/Sub address, such as an emulator's. Absent is Google's. */
         pubsubEndpoint?: string;
-        framing?: Framing;
-        lineBreaker?: string;
         encoding?: string;
         /** The ack deadline: at most `LIMITS.ackDeadlineSecs.max`. */
         visibilitySecs?: number;
-      } & ReadFormat)
+      } & FramingSettings &
+      ReadFormat)
   | (TlsDto &
       S3Access &
       ListingSettings & {
@@ -331,29 +327,44 @@ export type SourceDto =
        * as a Basic password. */
       tokens?: Record<string, SecretRef>;
     })
-  | (ReceiverSettings & {
-      id: string;
-      type: 's2sReceiver';
-      /** Token name to the credential holding a token a forwarder presents, its outputs.conf `token`. */
-      tokens?: Record<string, SecretRef>;
-      /** Sourcetype to where its events end. A sourcetype not named here is an event per line. */
-      sourcetypes?: Record<string, Sourcetype>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'syslogReceiver';
-      /** The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token,
-       * so this admits a sender, unless the receiver names authorities a sender's certificate must chain to. */
-      allowFrom?: string[];
-      /** As a Kafka source's. */
-      encoding?: string;
-      /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a message, served without TLS, so it
-       * takes no certificate or authorities and only `allowFrom` admits a sender. */
-      transport?: 'tcp' | 'udp';
-      /** Where a message over TCP ends, as an object source's `lineBreaker`. Absent, at a newline. Octet counting
-       * still frames a message that starts with its length. */
-      lineBreaker?: string;
-    })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 's2sReceiver';
+        /** Token name to the credential holding a token a forwarder presents, its outputs.conf `token`. */
+        tokens?: Record<string, SecretRef>;
+        /** Sourcetype to where its events end. A sourcetype not named here is an event per line. */
+        sourcetypes?: Record<string, Sourcetype>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'syslogReceiver';
+        /** The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token,
+         * so this admits a sender, unless the receiver names authorities a sender's certificate must chain to. */
+        allowFrom?: string[];
+        /** As a Kafka source's. */
+        encoding?: string;
+        /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a message, served without TLS, so it
+         * takes no certificate or authorities and only `allowFrom` admits a sender. */
+        transport?: 'tcp' | 'udp';
+        /** Where a message over TCP ends, as an object source's `lineBreaker`. Absent, at a newline. A message that
+         * starts with a digit 1 to 9 is framed by octet counting, whatever this says. */
+        lineBreaker?: string;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits &
+      FramingSettings & {
+        id: string;
+        type: 'socketReceiver';
+        /** As a syslog receiver's: nothing it receives carries a token. */
+        allowFrom?: string[];
+        /** As a Kafka source's. */
+        encoding?: string;
+        /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a record, served without TLS
+         * and cut by no framing. */
+        transport?: 'tcp' | 'udp';
+      })
   | (SqlConnection & { type: 'postgres' })
   | (SqlConnection & { type: 'mysql' })
   | { id: string; type: 'metrics'; bucketSeconds: number }
@@ -514,6 +525,8 @@ export const LIMITS = {
   logAnalyticsRequestBytes: { min: 4 * 1024, max: 1024 * 1024, default: 1024 * 1024 },
   /** A receiver's `maxRequestBytes` (`MaxRequestBytes`): at most what one request may hold of its inbox. */
   receiverRequestBytes: { min: 2048, max: 64 * 1024 * 1024, default: 10 * 1024 * 1024 },
+  /** A receiver's `maxConnections` (`MaxConnections`), on each worker. */
+  maxConnections: { min: 1, max: 1_000_000, default: 10_000 },
   maxObjectBytes: { min: 64 * 1024, max: 64 * 1024 * 1024 * 1024, default: 64 * 1024 * 1024 },
   stallAfterSecs: { min: 1, max: 120, default: 30 },
   bufferBytes: { min: 4 * 1024 * 1024, max: 1024 * 1024 * 1024, default: 64 * 1024 * 1024 },
@@ -905,6 +918,17 @@ export interface ReceiverSettings extends Pick<TlsDto, 'certificate' | 'trustedA
   answerAfterDelivery?: boolean;
 }
 
+/** How many connections a receiver whose senders stream over TCP holds open, mirroring
+ * `config_file::dto::ConnectionLimitsDto`. */
+export interface ConnectionLimits {
+  /** Absent is `LIMITS.maxConnections.default`. */
+  maxConnections?: number;
+  /** Absent, as many as `maxConnections`. */
+  maxConnectionsPerSender?: number;
+  /** Absent keeps an idle connection open while there is room. */
+  idleTimeoutSecs?: number;
+}
+
 /** A token a HEC receiver admits, mirroring `config_file::dto::HecTokenDto`. */
 export type HecToken = {
   token: SecretRef;
@@ -931,12 +955,9 @@ export interface ApiSettings extends TlsDto {
 }
 
 /** What every listing source takes besides where it lists and how it signs in. */
-export interface ListingSettings extends ReadFormat {
+export interface ListingSettings extends ReadFormat, FramingSettings {
   /** Only keys that start with it. Absent is all of them. */
   prefix?: string;
-  /** Absent is `lines`. */
-  framing?: Framing;
-  lineBreaker?: string;
   /** As a Kafka source's. */
   encoding?: string;
   /** Seconds from the start of one listing to the start of the next. Absent is
@@ -950,11 +971,36 @@ export interface ListingSettings extends ReadFormat {
   movePrefix?: string;
 }
 
-/** How an object source cuts an object into records: one per line, the whole object as one, or one per line
- * unescaped as a `bytes` object destination wrote it. `lines` alone takes the source's `lineBreaker`, a regex
- * whose first capture group is where a record ends, the group dropped, as Splunk's `LINE_BREAKER`; absent, a
- * record ends at a line end. */
-export type Framing = 'lines' | 'object' | 'escapedLines';
+/** How a stream's bytes become records, an object source's objects or what a socket receiver's senders send over
+ * TCP: one per line, the whole stream as one, one per line unescaped as a `bytes` object destination wrote it, one
+ * per message or record that says its own length, or one per so many bytes. `lines` alone takes the source's
+ * `lineBreaker`, a regex whose first capture group is where a record ends, the group dropped, as Splunk's
+ * `LINE_BREAKER`; absent, a record ends at a line end. */
+export type Framing = 'lines' | 'object' | 'escapedLines' | 'lengthPrefix' | 'fixed';
+
+/** Mirrors `config_file::dto::FramingSettingsDto`. */
+export interface FramingSettings {
+  /** Absent is `lines`. */
+  framing?: Framing;
+  lineBreaker?: string;
+  /** `lengthPrefix` only, and required there. */
+  lengthPrefix?: LengthPrefix;
+  /** `fixed` only, and required there: how many bytes every record is. */
+  fixedBytes?: number;
+}
+
+/** Where a message's or record's length is and what it counts, mirroring `config_file::dto::LengthPrefixDto`. */
+export interface LengthPrefix {
+  /** How many bytes come before the length. Absent is none. */
+  offset?: number;
+  /** How many bytes the length is, 1 to 8. */
+  bytes: number;
+  /** Absent is `big`. */
+  order?: 'big' | 'little';
+  /** What the length counts: the bytes after it, or the whole message or record, its header and length included.
+   * Absent is `rest`. */
+  counts?: 'rest' | 'message';
+}
 
 /** An object store's kind, as a destination names it and as an object source's access is drawn. */
 export type ObjectStore = CloudStore | 'sftp';

@@ -41,6 +41,7 @@
         "otlpReceiver",
         "s2sReceiver",
         "syslogReceiver",
+        "socketReceiver",
         "prometheusReceiver",
         "elasticReceiver"
       ],

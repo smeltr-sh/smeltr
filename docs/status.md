@@ -63,6 +63,7 @@ document's systems.
 | OTLP receiver (`otlpReceiver`): logs, metrics, traces over HTTP and gRPC (Runtime stages, Config plane, Security) | built |
 | Prometheus receiver (`prometheusReceiver`), remote_write 1.0 and 2.0 (Runtime stages, Config plane, Security) | built |
 | Syslog receiver (`syslogReceiver`), TCP, TLS and UDP (Runtime stages, Config plane, Security) | built; delivery is best-effort, as syslog has no acknowledgement |
+| Socket receiver (`socketReceiver`), TCP, TLS and UDP, framed by lines, a length prefix or a fixed size (Runtime stages, Config plane, Security) | built, on the framer the syslog receiver and the object sources share (`io::framing`); delivery is best-effort. Its live fuzzer drives our own misbehaving sender (`tests/live/socket-sender`). The socket, syslog and S2S receivers cap their connections, closing the one idle longest, if it has idled long enough, when a new one arrives over the cap, with an optional cap per sender and an optional idle timeout (`io::connections`), and time out a stalled TLS handshake. Not built: the same for the HTTP receivers |
 | Elasticsearch receiver (`elasticReceiver`), the Bulk API (Runtime stages, Config plane, Security) | built. Not built: `update` and `delete`, the single-document paths such as `/{index}/_doc`, `filter_path` |
 | Single-worker sources: holds and progress (Control plane, Runtime stages) | built (`worker::held`, `leader::holds`) |
 | Text encoding at ingest, `auto` detection (Runtime stages) | built |
