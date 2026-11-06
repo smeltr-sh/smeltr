@@ -16,8 +16,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use smeltr::io::framing::Framing;
 use smeltr::io::{Source, SourceRecord};
-use smeltr::plan::topology::{Receiver, SourceMeta, SyslogReceiverConfig, Transport};
+use smeltr::plan::topology::{Receiver, SocketReceiverConfig, SourceMeta, Transport};
 
 use crate::harness::docker::{Container, Hook, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
@@ -120,12 +121,14 @@ fn admits(settings: &Settings) -> bool {
 }
 
 fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
-    let syslog = Receiver::Syslog(SyslogReceiverConfig {
+    let syslog = Receiver::Syslog(SocketReceiverConfig {
         allow_from: settings.allow_from.iter().map(|n| n.parse().unwrap()).collect(),
         transport: settings.transport,
-        line_breaker: settings
-            .line_breaker
-            .map(|b| smeltr::io::line_breaker::LineBreaker(regex::bytes::Regex::new(b.pattern()).unwrap())),
+        framing: Framing::Syslog(
+            settings
+                .line_breaker
+                .map(|b| smeltr::io::line_breaker::LineBreaker(regex::bytes::Regex::new(b.pattern()).unwrap())),
+        ),
         ..Default::default()
     });
     receiver::build(

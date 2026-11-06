@@ -145,6 +145,15 @@
     "allowFrom": ["10.20.0.0/16", "192.168.1.20"],
     "certificate": "syslog-tls"
   },
+  "socketReceiverSource": {
+    "id": "meters",
+    "type": "socketReceiver",
+    "port": 9000,
+    "allowFrom": ["10.30.0.0/16"],
+    "framing": "lengthPrefix",
+    "lengthPrefix": { "bytes": 2 },
+    "encoding": "none"
+  },
   "prometheusReceiverSource": {
     "id": "prometheus",
     "type": "prometheusReceiver",

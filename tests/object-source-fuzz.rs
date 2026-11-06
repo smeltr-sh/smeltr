@@ -24,6 +24,7 @@ use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 use serde_json::{Map, Value, json};
 use smeltr::config_file::load_str;
 use smeltr::format::encoding::Encoding;
+use smeltr::io::framing::{ByteOrder, Counts, LengthPrefix};
 use smeltr::io::line_breaker::LineBreaker;
 use smeltr::io::object_source::{MAX_RECORD_BYTES, Message, ObjectRef, ObjectSource, Queue};
 use smeltr::io::{CommitMap, IoError, Source, SourceRecord, TopicPartition};
@@ -118,6 +119,11 @@ const OPTIONS: &[&str] = &[
     "framing.object",
     "framing.escapedLines",
     "framing.lineBreaker",
+    "framing.lengthPrefix",
+    "framing.fixed",
+    "lengthPrefix.offset",
+    "lengthPrefix.little",
+    "lengthPrefix.message",
     "format.avro",
     "avro.codec.null",
     "avro.codec.deflate",
@@ -180,6 +186,8 @@ const OPTIONS: &[&str] = &[
     "broken.start",
     "broken.movePrefix",
     "broken.lineBreaker",
+    "broken.lengthPrefix",
+    "broken.fixedBytes",
     "broken.encoding",
     "broken.avroFields",
     "broken.avroFraming",
@@ -383,9 +391,40 @@ fn draw_framing(rng: &mut Rng, cov: &mut Reached, d: &mut Map<String, Value>) {
         d.insert("fields".into(), fields);
         return;
     }
-    let framing = *rng.pick(&["lines", "object", "escapedLines", "lineBreaker"]);
+    let framing = *rng.pick(&[
+        "lines",
+        "object",
+        "escapedLines",
+        "lineBreaker",
+        "lengthPrefix",
+        "fixed",
+    ]);
     cov.reach(format!("framing.{framing}"));
     match framing {
+        "lengthPrefix" => {
+            d.insert("framing".into(), json!(framing));
+            let mut prefix = Map::new();
+            if rng.chance(2) {
+                cov.reach("lengthPrefix.offset");
+                prefix.insert("offset".into(), json!(1 + rng.below(4)));
+            }
+            prefix.insert("bytes".into(), json!(rng.pick(&[1, 2, 3, 4, 8])));
+            if rng.chance(2) {
+                cov.reach("lengthPrefix.little");
+                prefix.insert("order".into(), json!("little"));
+            } else if rng.chance(2) {
+                prefix.insert("order".into(), json!("big"));
+            }
+            if rng.chance(2) {
+                cov.reach("lengthPrefix.message");
+                prefix.insert("counts".into(), json!("message"));
+            }
+            d.insert("lengthPrefix".into(), Value::Object(prefix));
+        }
+        "fixed" => {
+            d.insert("framing".into(), json!(framing));
+            d.insert("fixedBytes".into(), json!(1 + rng.below(64)));
+        }
         "lineBreaker" => {
             d.insert("lineBreaker".into(), json!(rng.pick(LINE_BREAKERS)));
             if rng.chance(2) {
@@ -405,7 +444,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
     let avro = draw.source.get("format").is_some_and(|f| f == "avro");
     let mut breaks: Vec<&'static str> = match avro {
         true => vec!["avroFields", "avroFraming", "avroEncoding"],
-        false => vec!["lineBreaker", "encoding"],
+        false => vec!["lineBreaker", "lengthPrefix", "fixedBytes", "encoding"],
     };
     if kind != Kind::Sftp {
         breaks.extend(["certificate", "tlsPlain"]);
@@ -451,7 +490,47 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
                 d.remove("framing");
                 d.insert("lineBreaker".into(), json!(rng.pick(&[" ", "(", r"\n", "(x*)"])));
             }
+            d.remove("lengthPrefix");
+            d.remove("fixedBytes");
             Some("lineBreaker")
+        }
+        "lengthPrefix" => {
+            match rng.below(3) {
+                0 => {
+                    set("framing", json!("lengthPrefix"));
+                    d.remove("lengthPrefix");
+                }
+                1 => {
+                    set("framing", json!("lengthPrefix"));
+                    set("lengthPrefix", json!({"bytes": rng.pick(&[0, 9, 16])}));
+                }
+                _ => {
+                    set("framing", json!(rng.pick(&["lines", "object"])));
+                    set("lengthPrefix", json!({"bytes": 2}));
+                }
+            }
+            d.remove("lineBreaker");
+            d.remove("fixedBytes");
+            Some("lengthPrefix")
+        }
+        "fixedBytes" => {
+            match rng.below(3) {
+                0 => {
+                    set("framing", json!("fixed"));
+                    d.remove("fixedBytes");
+                }
+                1 => {
+                    set("framing", json!("fixed"));
+                    set("fixedBytes", json!(rng.pick(&[0u64, 64 * 1024 * 1024 + 1])));
+                }
+                _ => {
+                    set("framing", json!(rng.pick(&["lines", "escapedLines"])));
+                    set("fixedBytes", json!(8));
+                }
+            }
+            d.remove("lineBreaker");
+            d.remove("lengthPrefix");
+            Some("fixedBytes")
         }
         "encoding" => {
             set("encoding", json!(rng.pick(&["klingon", "", "utf-9"])));
@@ -739,6 +818,22 @@ fn expected_framing(d: &Map<String, Value>) -> Framing {
     match (text(d, "framing").as_deref(), text(d, "lineBreaker")) {
         (Some("object"), _) => Framing::Object,
         (Some("escapedLines"), _) => Framing::EscapedLines,
+        (Some("lengthPrefix"), _) => {
+            let prefix = d["lengthPrefix"].as_object().expect("a drawn lengthPrefix");
+            Framing::LengthPrefix(LengthPrefix {
+                offset: prefix.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize,
+                width: prefix["bytes"].as_u64().expect("a drawn width") as usize,
+                order: match prefix.get("order").and_then(Value::as_str) {
+                    Some("little") => ByteOrder::Little,
+                    _ => ByteOrder::Big,
+                },
+                counts: match prefix.get("counts").and_then(Value::as_str) {
+                    Some("message") => Counts::Message,
+                    _ => Counts::Rest,
+                },
+            })
+        }
+        (Some("fixed"), _) => Framing::Fixed(d["fixedBytes"].as_u64().expect("a drawn size") as usize),
         (_, Some(pattern)) => Framing::LineBreaker(LineBreaker(regex::bytes::Regex::new(&pattern).unwrap())),
         _ => Framing::Lines,
     }
@@ -995,6 +1090,44 @@ fn body(rng: &mut Rng, cov: &mut Reached, framing: &Framing) -> (Vec<u8>, Vec<Ve
             }
             (bytes, events)
         }
+        Framing::LengthPrefix(prefix) => {
+            let header = prefix.offset + prefix.width;
+            // What a length of this width can count, less the header where it counts the whole record.
+            let most = match prefix.width {
+                8 => u64::MAX,
+                width => (1u64 << (8 * width)) - 1,
+            };
+            let most = match prefix.counts {
+                Counts::Rest => most,
+                Counts::Message => most - header as u64,
+            };
+            let mut bytes = Vec::new();
+            let mut frames = Vec::new();
+            for _ in 0..n {
+                let mut rest = raw_bytes(rng);
+                rest.truncate(most as usize);
+                let length = match prefix.counts {
+                    Counts::Rest => rest.len(),
+                    Counts::Message => header + rest.len(),
+                } as u64;
+                let mut frame: Vec<u8> = (0..prefix.offset).map(|_| rng.below(256) as u8).collect();
+                match prefix.order {
+                    ByteOrder::Big => frame.extend_from_slice(&length.to_be_bytes()[8 - prefix.width..]),
+                    ByteOrder::Little => frame.extend_from_slice(&length.to_le_bytes()[..prefix.width]),
+                }
+                frame.extend(rest);
+                bytes.extend(&frame);
+                frames.push(frame);
+            }
+            (bytes, frames)
+        }
+        Framing::Fixed(size) => {
+            let frames: Vec<Vec<u8>> = (0..n)
+                .map(|_| (0..*size).map(|_| rng.below(256) as u8).collect())
+                .collect();
+            (frames.concat(), frames)
+        }
+        Framing::Syslog(_) => unreachable!("an object source draws no syslog framing"),
     }
 }
 
@@ -1960,6 +2093,8 @@ fn live_options(kind: Kind) -> Vec<String> {
         "framing.object",
         "framing.escapedLines",
         "framing.lineBreaker",
+        "framing.lengthPrefix",
+        "framing.fixed",
         "compression.none",
         "compression.gzip",
         "compression.zstd",

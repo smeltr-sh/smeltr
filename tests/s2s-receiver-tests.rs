@@ -47,6 +47,7 @@ fn receiver(listen: SocketAddr, token: Option<&str>, tls: Option<Tls>, secrets: 
         tls,
         max_request_bytes: 1 << 20,
         answer_after_delivery: false,
+        connections: Default::default(),
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());
@@ -709,6 +710,7 @@ fn hec_receiver(listen: SocketAddr, max: usize) -> Box<dyn Source> {
         tls: None,
         max_request_bytes: max,
         answer_after_delivery: false,
+        connections: Default::default(),
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());

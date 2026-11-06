@@ -629,7 +629,7 @@ const refusedSource: Move = {
     await page.getByRole('button', { name: 'smeltr metrics', exact: true }).click();
     const form = page.getByRole('dialog', { name: /new smeltr metrics source/ });
     await form.getByRole('textbox', { name: /^id/ }).fill(id);
-    await expect(form.getByText(why)).toBeVisible();
+    await expect(form.getByText(why).filter({ visible: true })).toBeVisible();
     await expect(form.getByRole('button', { name: 'Add', exact: true })).toBeDisabled();
     await page.keyboard.press('Escape');
     await expect(form).toBeHidden();

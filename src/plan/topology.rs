@@ -553,6 +553,14 @@ impl SourceMeta {
         encoding: Encoding::Auto,
     };
 
+    /// What a socket receiver carries: a message's bytes, and its sender's address.
+    pub const SOCKET_RECEIVER: SourceMeta = SourceMeta {
+        kind: "socketReceiver",
+        record: PAYLOAD_RECORD,
+        source: RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
+    };
+
     /// What an OTLP receiver of logs carries: a log record, its sender's address, and its resource and scope.
     pub const OTLP_LOGS: SourceMeta = SourceMeta {
         kind: "otlpReceiver",
@@ -620,6 +628,7 @@ impl SourceMeta {
             SourceMeta::OTLP_LOGS,
             SourceMeta::prometheus_receiver(),
             SourceMeta::SYSLOG_RECEIVER,
+            SourceMeta::SOCKET_RECEIVER,
             SourceMeta::ELASTIC_RECEIVER,
         ]
         .into_iter()
@@ -1252,6 +1261,7 @@ impl SourceKind {
                 Receiver::Otlp(signal) => SourceMeta::otlp(signal),
                 Receiver::Prometheus => SourceMeta::prometheus_receiver(),
                 Receiver::Syslog(_) => SourceMeta::SYSLOG_RECEIVER,
+                Receiver::Socket(_) => SourceMeta::SOCKET_RECEIVER,
                 Receiver::Elastic => SourceMeta::ELASTIC_RECEIVER,
             },
         }
@@ -1264,7 +1274,7 @@ impl SourceKind {
             SourceKind::Kafka(k) => k.encoding,
             SourceKind::Objects(o) => o.encoding,
             SourceKind::Receiver(ReceiverConfig {
-                receiver: Receiver::Syslog(s),
+                receiver: Receiver::Syslog(s) | Receiver::Socket(s),
                 ..
             }) => s.encoding,
             // An API answers in JSON, which is UTF-8, and so does what is sent to any other receiver.
@@ -2172,6 +2182,35 @@ pub struct ReceiverConfig {
     /// A request is answered once every destination has its records, rather than once it is in the inbox. A worker
     /// that stops between the two loses what it answered for (design doc, delivery).
     pub answer_after_delivery: bool,
+    /// How many connections it holds open, for a receiver whose senders stream over a connection held open.
+    pub connections: ConnectionLimits,
+}
+
+/// How many connections a receiver that streams holds at once, and how long one may sit idle. The defaults hold every
+/// honest sender: a quiet one that keeps one connection for days, and every sender behind one balancer's address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnectionLimits {
+    /// The most it holds. At the cap a new connection takes the place of the one idle longest, if that one has been
+    /// idle for `io::connections::EVICTABLE_AFTER`, and is closed otherwise.
+    pub max: usize,
+    /// The most it holds from one address, the same way. `None` holds as many as `max` from one.
+    pub per_sender: Option<usize>,
+    /// A connection that reads nothing this long is closed. `None` holds an idle one for as long as there is room.
+    pub idle: Option<std::time::Duration>,
+}
+
+impl ConnectionLimits {
+    pub const DEFAULT_MAX: usize = 10_000;
+}
+
+impl Default for ConnectionLimits {
+    fn default() -> Self {
+        ConnectionLimits {
+            max: Self::DEFAULT_MAX,
+            per_sender: None,
+            idle: None,
+        }
+    }
 }
 
 /// Which protocol a receiver speaks.
@@ -2189,8 +2228,11 @@ pub enum Receiver {
     /// Splunk-to-Splunk, as a Splunk forwarder sends to an indexer over TCP.
     S2s(S2sReceiverConfig),
     /// Syslog: over TCP a message per record, framed by octet count or ended by a newline; over UDP a datagram per
+    /// record. Its framing is `Framing::Syslog`.
+    Syslog(SocketReceiverConfig),
+    /// Bytes of no protocol of its own: over TCP a message per record, cut by its framing; over UDP a datagram per
     /// record.
-    Syslog(SyslogReceiverConfig),
+    Socket(SocketReceiverConfig),
     /// Elasticsearch's `_bulk` API, as Beats, Fluent Bit and other Elasticsearch clients send it: a document per
     /// `index` or `create` action.
     Elastic,
@@ -2200,7 +2242,7 @@ impl ReceiverConfig {
     /// What it listens on. Every receiver but a syslog receiver given UDP takes connections over TCP.
     pub fn listens(&self) -> Listen {
         let transport = match &self.receiver {
-            Receiver::Syslog(syslog) => syslog.transport,
+            Receiver::Syslog(socket) | Receiver::Socket(socket) => socket.transport,
             Receiver::Http(_)
             | Receiver::Hec(_)
             | Receiver::Otlp(_)
@@ -2238,16 +2280,15 @@ impl Transport {
     }
 }
 
-/// Who a syslog receiver admits.
+/// Who a syslog or socket receiver admits, and how it reads what they send.
 #[derive(Clone, Debug, Default)]
-pub struct SyslogReceiverConfig {
+pub struct SocketReceiverConfig {
     /// The networks a sender may connect from. Empty admits whoever TLS admitted.
     pub allow_from: Vec<ipnetwork::IpNetwork>,
     pub encoding: Encoding,
     pub transport: Transport,
-    /// Where a message over TCP ends, when not at a newline. Octet counting still frames a message that starts with
-    /// its length.
-    pub line_breaker: Option<crate::io::line_breaker::LineBreaker>,
+    /// Where a record over TCP ends. Over UDP a datagram is one.
+    pub framing: Framing,
 }
 
 /// Which of OpenTelemetry's signals an OTLP receiver takes. Each is records of its own fields.
@@ -2570,19 +2611,7 @@ pub enum AfterCommit {
     Move { prefix: String },
 }
 
-/// How an object's bytes become records.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum Framing {
-    /// One record per line; a line ends at `\n`, and a `\r` before it is dropped.
-    #[default]
-    Lines,
-    /// The whole object is one record.
-    Object,
-    /// One record per line, as `Lines`, each unescaped as a `bytes` object with `Newlines::Escape` wrote it.
-    EscapedLines,
-    /// One record per event, cut where the line breaker breaks the object's bytes.
-    LineBreaker(crate::io::line_breaker::LineBreaker),
-}
+pub use crate::io::framing::Framing;
 
 /// A Google Cloud Storage bucket. Objects take the bucket's default encryption.
 #[derive(Clone, Debug)]
