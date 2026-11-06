@@ -138,9 +138,9 @@ there is somewhere to resolve one.
 
 Approval merges to `main` as one commit and deletes the branch. There is
 no separate deploy step: `main` moving is what workers pick up. An
-author may deploy their own change, and the history records when author
-and deployer are the same person, as it records a deploy over a failing
-test. Closing a change keeps the branch, so no work is lost.
+author may review and deploy their own change, and the history records
+when author and deployer are the same person, as it records a deploy over
+a failing test. Closing a change keeps the branch, so no work is lost.
 
 A deploy squashes the branch away, so the commit it leaves carries both:
 the author in git's own author field, the deployer in a trailer. `main`'s

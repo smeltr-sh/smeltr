@@ -79,7 +79,12 @@
     <span class="says" role="group" aria-label="this branch">
       {count(here.commits, 'save')}, not open for review yet
     </span>
-    <button type="button" class="act primary" onclick={() => here && onopen(here)}>
+    <button
+      type="button"
+      class="act primary"
+      data-guide="review-open"
+      onclick={() => here && onopen(here)}
+    >
       Open for review
     </button>
   {/if}

@@ -15,6 +15,7 @@ use axum::response::{IntoResponse, Response};
 
 use smeltr::config_file;
 use smeltr::leader::access::{Access, Level};
+use smeltr::leader::git::Diff;
 use smeltr::leader::store::Actor;
 use smeltr::leader::{accounts, blocking, git, tree};
 use smeltr::startup_config::leader_data_dir;
@@ -332,23 +333,6 @@ pub struct RangeQuery {
     path: Option<String>,
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileChangeOut {
-    path: String,
-    /// `A`, `M` or `D`.
-    status: String,
-    added: u32,
-    removed: u32,
-}
-
-#[derive(Default, serde::Serialize)]
-pub struct Diff {
-    files: Vec<FileChangeOut>,
-    /// Unified diff, for the whole change or for `path` alone.
-    diff: String,
-}
-
 pub async fn branch_diff(
     Extension(access): Extension<Access>,
     AxPath(name): AxPath<String>,
@@ -360,12 +344,6 @@ pub async fn branch_diff(
         let files = git::changed_files(&repo, &name)?
             .into_iter()
             .filter(|c| q.path.as_deref().is_none_or(|p| p == c.path))
-            .map(|c| FileChangeOut {
-                path: c.path,
-                status: c.status,
-                added: c.added,
-                removed: c.removed,
-            })
             .collect();
         let diff = git::diff_unified(&repo, &name, q.path.as_deref())?;
         Ok::<_, Refusal>(Diff { files, diff })
@@ -1203,18 +1181,7 @@ pub async fn commit_diff(Extension(access): Extension<Access>, Query(q): Query<R
             return Err(forbidden("this range touches an area you cannot see"));
         }
         let diff = git::diff_between(&repo, &q.from, &q.to, q.path.as_deref())?;
-        Ok(Diff {
-            files: files
-                .into_iter()
-                .map(|c| FileChangeOut {
-                    path: c.path,
-                    status: c.status,
-                    added: c.added,
-                    removed: c.removed,
-                })
-                .collect(),
-            diff,
-        })
+        Ok(Diff { files, diff })
     })
     .await;
     answered.into()

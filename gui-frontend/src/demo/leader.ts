@@ -105,6 +105,57 @@ interface Branch {
   samples: Record<string, Record<string, SampleDto>>;
   /** By scope, then id: each locked test as the leader stores it (`config_file::TestDto`). */
   tests: Record<string, Record<string, TestDto>>;
+  /** Its change, once opened for review, as the leader lists it (`branch_api::ChangeOut`). */
+  change?: Change;
+  /** Oldest first, one for each save: the commit it left and what the scope it changed held there, so a review can
+   * show one save at a time. Only that scope, as git keeps only what a commit changed: a whole copy each save would
+   * outgrow the tab's storage. */
+  past?: Earlier[];
+  /** What happened to it, oldest first, as its change's timeline shows it: every save, and once opened, what
+   * reviewers did. */
+  events?: TimelineEvent[];
+}
+
+/** What a branch holds at one commit. */
+type Files = Pick<Branch, 'bundles' | 'samples' | 'tests'>;
+
+/** The one scope a save changed, as it was at `commit`, the save's parent. No `bundle`: the scope was not there. */
+interface Earlier {
+  commit: string;
+  scope: string;
+  bundle?: Bundle;
+  samples?: Record<string, SampleDto>;
+  tests?: Record<string, TestDto>;
+}
+
+/** A change, as `branch_api::ChangeOut` lists it. */
+interface Change {
+  state: 'open' | 'closed';
+  title: string;
+  description: string;
+  /** Unix seconds. */
+  opened: number;
+  updated: number;
+  reason: string;
+  author: string;
+  authorId?: string;
+}
+
+/** One thing that happened to a change, as `branch_api::TimelineEventOut` writes it. */
+interface TimelineEvent {
+  kind: string;
+  id?: string;
+  time: number;
+  author: string;
+  authorId?: string;
+  title?: string;
+  description?: string;
+  text?: string;
+  commit?: string;
+  parent?: string;
+  anchor?: unknown;
+  at?: string;
+  replyTo?: string;
 }
 
 /** What a scope holds beside its bundle. */
@@ -253,6 +304,38 @@ export function putBack(
   return { objects, same, name: typeof named === 'string' ? named : id };
 }
 
+/** `id` as `config_file::slugify` makes it a file's name. Not `slugify.ts`, which folds accents the leader drops. */
+function slugged(id: string): string {
+  const slug = id
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'pipeline';
+}
+
+/** The sample or test `id` names among `held`, found by the file it is stored in, as the leader's
+ * `read_sample` and `read_test` find it: two ids that slug alike are one file. */
+function stored<T extends { id: string }>(
+  held: Record<string, T> | undefined,
+  id: string,
+): T | undefined {
+  return held?.[id] ?? Object.values(held ?? {}).find((o) => slugged(o.id) === slugged(id));
+}
+
+/** Every scope of `branch` as the service writes it out: its bundle, with the samples and tests beside it. */
+function scopesOf(branch: Files) {
+  return Object.fromEntries(
+    Object.entries(branch.bundles).map(([scope, config]) => [
+      scope,
+      {
+        config,
+        samples: Object.values(branch.samples[scope] ?? {}),
+        tests: Object.values(branch.tests[scope] ?? {}),
+      },
+    ]),
+  );
+}
+
 /** Why `name` is not one a branch may take, as the leader's `git::check_branch_name` refuses it, or `''`. */
 function badBranchName(name: string): string {
   const fits =
@@ -380,6 +463,7 @@ export class DemoLeader {
             commits: number;
             lastSave: number;
             touches: string[];
+            change?: Change;
           }[];
         }
       )?.branches ?? [];
@@ -404,6 +488,27 @@ export class DemoLeader {
         samples: clone(samples[name] ?? samples.main ?? {}),
         tests: clone(tests[name] ?? tests.main ?? {}),
       };
+      // A change the fleet was recorded with, with what the recording read of its history.
+      if (entry?.change) {
+        const change = this.moved(entry.change) as Change;
+        const timeline = this.recording.answers[
+          `/api/branches/${encodeURIComponent(name)}/timeline`
+        ]?.body as { events?: TimelineEvent[] } | undefined;
+        branches[name].change = change;
+        branches[name].events = timeline?.events
+          ? (this.moved(timeline.events) as TimelineEvent[])
+          : [
+              {
+                kind: 'opened',
+                id: newCommit(),
+                time: change.opened,
+                author: change.author,
+                authorId: change.authorId,
+                title: change.title,
+                description: change.description,
+              },
+            ];
+      }
     }
     return { branches, captures: {} };
   }
@@ -478,11 +583,13 @@ export class DemoLeader {
       : { shared: branch.bundles[SHARED], group: bundle, groupId: scope };
   }
 
-  /** Commit `edit` to `scope` of `name` once the service says a save would take what it leaves. */
+  /** Commit `edit` to `scope` of `name` once the service says a save would take what it leaves, with the subject the
+   * leader's save of the same kind writes. */
   private async write(
     name: string,
     scope: string,
     path: string,
+    subject: string,
     edit: (bundle: Bundle, held: Held) => void,
   ): Promise<Answer> {
     const branch = this.branch(name, true)!;
@@ -498,12 +605,28 @@ export class DemoLeader {
       const broken = await this.brokenGroup(branch, bundle);
       if (broken) return broken;
     }
+    const was: Earlier = {
+      commit: branch.commit,
+      scope,
+      bundle: branch.bundles[scope],
+      samples: branch.samples[scope],
+      tests: branch.tests[scope],
+    };
     branch.bundles[scope] = bundle;
     branch.samples[scope] = held.samples;
     branch.tests[scope] = held.tests;
+    const parent = branch.commit;
+    (branch.past ??= []).push(was);
     branch.commit = newCommit();
     branch.commits += 1;
     branch.lastSave = Math.floor(this.now() / 1000);
+    (branch.events ??= []).push({
+      ...this.by(branch.lastSave),
+      kind: 'saved',
+      text: subject,
+      commit: branch.commit,
+      parent,
+    });
     const file = `${scope === SHARED ? SHARED : `groups/${scope}`}/${path}`;
     if (!branch.touches.includes(file)) branch.touches.push(file);
     this.save();
@@ -574,11 +697,22 @@ export class DemoLeader {
 
     // A branch read at its own commit, or at main's (the editor's "changed on this branch"), is what this tab holds;
     // the recording read neither for a branch the visitor started.
-    if (method === 'GET' && at && within === '') {
+    // The demo stores what a leader would read back, so nothing in it is unreadable.
+    if (method === 'GET' && within === '/unreadable' && this.branch(name)) {
+      return ok({ files: [], commit: q.get('at') ?? this.branch(name)!.commit });
+    }
+    if (method === 'GET' && at) {
       const commit = q.get('at');
-      const held = [this.branch(name), this.branch('main')].find((b) => b?.commit === commit);
+      const held = this.at(commit);
       const own = held?.bundles[scope] ?? (scope === SHARED ? undefined : { version: 1 });
-      if (held && own) return ok({ config: own, commit });
+      if (within === '' && held && own) return ok({ config: own, commit });
+      // A change's review reads each sample and test it changed at both of its ends.
+      const file = within?.match(/^\/(samples|tests)\/([^/]+)$/);
+      const id = file && decodeURIComponent(file[2]);
+      const sample = file?.[1] === 'samples' ? stored(held?.samples[scope], id!) : undefined;
+      if (sample) return ok({ sample, commit });
+      const test = file?.[1] === 'tests' ? stored(held?.tests[scope], id!) : undefined;
+      if (test) return ok({ test, commit });
     }
 
     if (method === 'GET' && !at) {
@@ -617,7 +751,7 @@ export class DemoLeader {
       }
       const sample = within?.match(/^\/samples\/([^/]+)$/);
       if (sample && branch) {
-        const found = branch.samples[scope]?.[decodeURIComponent(sample[1])];
+        const found = stored(branch.samples[scope], decodeURIComponent(sample[1]));
         if (found) return ok({ sample: found, commit: branch.commit });
         const missing = refused(404, [bareError('there is no sample by that name on this branch')]);
         return {
@@ -634,7 +768,7 @@ export class DemoLeader {
       }
       const test = within?.match(/^\/tests\/([^/]+)$/);
       if (test && branch) {
-        const found = branch.tests[scope]?.[decodeURIComponent(test[1])];
+        const found = stored(branch.tests[scope], decodeURIComponent(test[1]));
         if (found) return ok({ test: found });
         return refused(404, [bareError('there is no test by that name on this branch')]);
       }
@@ -655,6 +789,13 @@ export class DemoLeader {
       }
       const findings = path.match(/^\/api\/branches\/([^/]+)\/schema-findings$/);
       if (findings) return this.schemaFindings(decodeURIComponent(findings[1]));
+      if (path === '/api/main/diff') {
+        const between = await this.between(q.get('from'), q.get('to'), q.get('path'));
+        if (between) return between;
+      }
+      const read = path.match(/^\/api\/branches\/([^/]+)\/(timeline|diff)$/);
+      if (read?.[2] === 'timeline') return this.timeline(decodeURIComponent(read[1]));
+      if (read?.[2] === 'diff') return this.diff(decodeURIComponent(read[1]), q.get('path'));
       const capture = path.match(/^\/api\/captures\/([^/]+)$/);
       if (capture) return this.captureStatus(decodeURIComponent(capture[1]));
       const live = this.live(url, branch);
@@ -665,7 +806,7 @@ export class DemoLeader {
     if (method === 'PUT' && within !== undefined && SECTIONS[within]) {
       const [section, file] = SECTIONS[within];
       const items = json();
-      return this.write(name, scope, file, (b) => {
+      return this.write(name, scope, file, `edit ${section}`, (b) => {
         b[section] = items;
       });
     }
@@ -673,7 +814,9 @@ export class DemoLeader {
     if (pipeline && (method === 'PUT' || method === 'DELETE')) {
       const id = decodeURIComponent(pipeline[1]);
       const next = method === 'PUT' ? json() : null;
-      return this.write(name, scope, `pipelines/${id}.json`, (b) => {
+      const named = next?.name ?? id;
+      const subject = next ? `edit pipeline ${named}` : `delete pipeline ${id}`;
+      return this.write(name, scope, `pipelines/${id}.json`, subject, (b) => {
         const pipelines = (b.pipelines ?? []).filter((p) => p.id !== id);
         const was = (b.pipelines ?? []).findIndex((p) => p.id === id);
         if (next) pipelines.splice(was < 0 ? pipelines.length : was, 0, next);
@@ -684,13 +827,19 @@ export class DemoLeader {
     if (test && method === 'PUT') {
       const id = decodeURIComponent(test[1]);
       const locked = { ...(json() as TestDto), id };
-      return this.write(name, scope, `tests/${id}.json`, (_, { tests }) => {
-        tests[id] = locked;
-      });
+      return this.write(
+        name,
+        scope,
+        `tests/${id}.json`,
+        `lock test ${locked.name}`,
+        (_, { tests }) => {
+          tests[id] = locked;
+        },
+      );
     }
     if (test && method === 'DELETE') {
       const id = decodeURIComponent(test[1]);
-      return this.write(name, scope, `tests/${id}.json`, (_, { tests }) => {
+      return this.write(name, scope, `tests/${id}.json`, `delete test ${id}`, (_, { tests }) => {
         delete tests[id];
       });
     }
@@ -705,15 +854,27 @@ export class DemoLeader {
     if (sample && method === 'PUT') {
       const id = decodeURIComponent(sample[1]);
       const saved = { ...(json() as SampleDto), id };
-      return this.write(name, scope, `samples/${id}.json`, (_, { samples }) => {
-        samples[id] = saved;
-      });
+      return this.write(
+        name,
+        scope,
+        `samples/${id}.json`,
+        `save sample ${saved.name}`,
+        (_, { samples }) => {
+          samples[id] = saved;
+        },
+      );
     }
     if (sample && method === 'DELETE') {
       const id = decodeURIComponent(sample[1]);
-      return this.write(name, scope, `samples/${id}.json`, (_, { samples }) => {
-        delete samples[id];
-      });
+      return this.write(
+        name,
+        scope,
+        `samples/${id}.json`,
+        `delete sample ${id}`,
+        (_, { samples }) => {
+          delete samples[id];
+        },
+      );
     }
 
     if (path === '/api/branches' && method === 'POST') {
@@ -721,6 +882,21 @@ export class DemoLeader {
     }
     const named = path.match(/^\/api\/branches\/([^/]+)$/);
     if (named && method === 'DELETE') return this.deleteBranch(decodeURIComponent(named[1]));
+    if (named && method === 'PATCH') return this.retitle(decodeURIComponent(named[1]), json());
+    const review = path.match(/^\/api\/branches\/([^/]+)\/(open|close|comments|reviews)$/);
+    if (review) {
+      const of = decodeURIComponent(review[1]);
+      const call = `${method} ${review[2]}`;
+      if (call === 'POST open') return this.open(of, json());
+      if (call === 'POST close') return this.close(of, json());
+      if (call === 'POST comments') return this.comment(of, json());
+      if (call === 'POST reviews') return this.review(of, json());
+    }
+    const thread = path.match(/^\/api\/branches\/([^/]+)\/threads\/([^/]+)$/);
+    if (thread && method === 'POST') {
+      const resolved = (json() as { resolved?: unknown }).resolved === true;
+      return this.resolve(decodeURIComponent(thread[1]), decodeURIComponent(thread[2]), resolved);
+    }
     const capture = path.match(/^\/api\/captures\/([^/]+)$/);
     if (capture && method === 'DELETE') return this.discardCapture(decodeURIComponent(capture[1]));
     if (within === '/undo' && method === 'POST') return this.undo(name, scope, json());
@@ -829,6 +1005,255 @@ export class DemoLeader {
     return ok();
   }
 
+  /** Who the visitor is: the account the recording was made signed in as. */
+  private by(time: number): { time: number; author: string; authorId?: string } {
+    const session = this.recording.answers['/api/auth/session']?.body as
+      { displayName?: string; userId?: string } | undefined;
+    return { time, author: session?.displayName ?? '', authorId: session?.userId };
+  }
+
+  /** `name` and its change, or why the leader would refuse a review call on it: a branch it does not have, or, with
+   * `open`, a change that is not open (`git::review_change` and its siblings). */
+  private reviewed(
+    name: string,
+    open: boolean,
+  ): { branch: Branch; change: Change } | { refusal: Answer } {
+    const branch = name === 'main' ? undefined : this.state.branches[name];
+    const q = JSON.stringify(name);
+    if (!branch) return { refusal: refused(404, [bareError(`there is no branch ${q}`)]) };
+    if (!branch.change) {
+      return { refusal: refused(409, [bareError(`${q} was never opened for review`)]) };
+    }
+    if (open && branch.change.state !== 'open') {
+      return { refusal: refused(409, [bareError(`${q} is not open for review`)]) };
+    }
+    return { branch, change: branch.change };
+  }
+
+  private marked(
+    branch: Branch,
+    event: Omit<TimelineEvent, 'time' | 'author' | 'authorId' | 'id'>,
+  ) {
+    (branch.events ??= []).push({
+      ...this.by(Math.floor(this.now() / 1000)),
+      id: newCommit(),
+      ...event,
+    });
+    this.save();
+    return ok();
+  }
+
+  /** `name` opened for review, or opened again after a close, as `branch_api::open_change` opens it. */
+  private open(name: string, req: { title?: string; description?: string }): Answer {
+    const branch = name === 'main' ? undefined : this.state.branches[name];
+    const q = JSON.stringify(name);
+    if (!branch) return refused(404, [bareError(`there is no branch ${q}`)]);
+    if (branch.commits === 0) {
+      return refused(409, [bareError(`${q} changes nothing yet -- save something on it first`)]);
+    }
+    const title = (req.title ?? '').trim();
+    const description = (req.description ?? '').trim();
+    if (!title) return refused(422, [bareError(NO_TITLE)]);
+    if (branch.change?.state === 'open') {
+      return refused(409, [bareError(`${q} is already open for review`)]);
+    }
+    const kind = branch.change ? 'reopened' : 'opened';
+    const { time, author, authorId } = this.by(Math.floor(this.now() / 1000));
+    branch.change = {
+      state: 'open',
+      title,
+      description,
+      opened: time,
+      updated: time,
+      reason: '',
+      author,
+      authorId,
+    };
+    return this.marked(branch, { kind, title, description });
+  }
+
+  /** `name`'s change closed, keeping the branch, as `git::close_change` closes it. */
+  private close(name: string, req: { reason?: string }): Answer {
+    const found = this.reviewed(name, true);
+    if ('refusal' in found) return found.refusal;
+    const reason = (req.reason ?? '').trim() || NO_REASON;
+    Object.assign(found.change, {
+      state: 'closed',
+      reason,
+      updated: Math.floor(this.now() / 1000),
+    });
+    return this.marked(found.branch, { kind: 'closed', text: reason });
+  }
+
+  /** `name`'s change renamed, as `git::retitle_change` renames it: whoever opened it still did. */
+  private retitle(name: string, req: { title?: string; description?: string }): Answer {
+    const title = (req.title ?? '').trim();
+    const description = (req.description ?? '').trim();
+    if (!title) return refused(422, [bareError(NO_TITLE)]);
+    const found = this.reviewed(name, true);
+    if ('refusal' in found) return found.refusal;
+    Object.assign(found.change, { title, description, updated: Math.floor(this.now() / 1000) });
+    return this.marked(found.branch, { kind: 'renamed', title, description });
+  }
+
+  /** The comment `id` on `branch`'s change, when it started a thread, or why the leader's `thread_root` refuses it. */
+  private threadRoot(branch: Branch, name: string, id: string): TimelineEvent | Answer {
+    const found = (branch.events ?? []).find((e) => e.id === id.toLowerCase());
+    if (found?.kind === 'comment' && !found.replyTo) return found;
+    if (found?.kind === 'comment') {
+      return refused(422, [
+        bareError(`${id} is a reply: a thread is answered at the comment that started it`),
+      ]);
+    }
+    if (found) return refused(422, [bareError(`${id} is not a comment`)]);
+    return refused(404, [
+      bareError(`there is no comment ${id} on ${JSON.stringify(name)}'s change`),
+    ]);
+  }
+
+  /** A comment on `name`'s change, open or closed, as `git::comment_on_change` writes it. */
+  private comment(
+    name: string,
+    req: { body?: string; anchor?: TimelineEvent['anchor']; replyTo?: string },
+  ): Answer {
+    const body = (req.body ?? '').trim();
+    if (!body) return refused(422, [bareError('a comment needs something said in it')]);
+    const found = this.reviewed(name, false);
+    if ('refusal' in found) return found.refusal;
+    if (req.anchor && req.replyTo) {
+      return refused(422, [
+        bareError('a reply is about what its thread is about, so it takes no anchor'),
+      ]);
+    }
+    let replyTo: string | undefined;
+    if (req.replyTo) {
+      const root = this.threadRoot(found.branch, name, req.replyTo);
+      if ('status' in root) return root;
+      replyTo = root.id;
+    }
+    const at = req.anchor || replyTo ? found.branch.commit : undefined;
+    return this.marked(found.branch, {
+      kind: 'comment',
+      text: body,
+      ...(req.anchor ? { anchor: req.anchor } : {}),
+      ...(at ? { at } : {}),
+      ...(replyTo ? { replyTo } : {}),
+    });
+  }
+
+  /** The thread comment `id` started on `name`'s change resolved, or opened again, as `git::resolve_thread` does. */
+  private resolve(name: string, id: string, resolved: boolean): Answer {
+    const found = this.reviewed(name, false);
+    if ('refusal' in found) return found.refusal;
+    const root = this.threadRoot(found.branch, name, id);
+    if ('status' in root) return root;
+    const latest = (found.branch.events ?? [])
+      .filter((e) => (e.kind === 'resolved' || e.kind === 'unresolved') && e.replyTo === root.id)
+      .at(-1);
+    if ((latest?.kind === 'resolved') === resolved) {
+      return refused(409, [
+        bareError(resolved ? 'this thread is already resolved' : 'this thread is not resolved'),
+      ]);
+    }
+    return this.marked(found.branch, {
+      kind: resolved ? 'resolved' : 'unresolved',
+      replyTo: root.id,
+    });
+  }
+
+  /** A verdict on `name`'s change, as `git::review_change` records it. */
+  private review(name: string, req: { verdict?: string; body?: string }): Answer {
+    const body = (req.body ?? '').trim();
+    if (req.verdict !== 'approve' && req.verdict !== 'request-changes') {
+      return refused(422, [bareError(`unknown verdict ${JSON.stringify(req.verdict)}`)]);
+    }
+    if (req.verdict === 'request-changes' && !body) {
+      return refused(422, [bareError('asking for changes needs to say what to change')]);
+    }
+    const found = this.reviewed(name, true);
+    if ('refusal' in found) return found.refusal;
+    const kind = req.verdict === 'approve' ? 'approved' : 'changes-requested';
+    return this.marked(found.branch, { kind, text: body });
+  }
+
+  /** What happened to `name`'s change, oldest first, as `git::change_timeline` tells it: a reply sits on its thread's
+   * anchor. The demo keeps no file's history, so no comment is shown outdated. */
+  private timeline(name: string): Answer {
+    const found = this.reviewed(name, false);
+    if ('refusal' in found) return found.refusal;
+    const events = found.branch.events ?? [];
+    const anchorOf = new Map(
+      events.filter((e) => e.kind === 'comment').map((e) => [e.id, e.anchor]),
+    );
+    return ok({
+      events: events.map((e) => {
+        if (e.kind !== 'comment') return e;
+        const anchor = anchorOf.get(e.replyTo ?? e.id);
+        return { ...e, ...(anchor ? { anchor } : {}), outdated: false };
+      }),
+    });
+  }
+
+  /** What some branch held at `commit`, at its latest save or an earlier one, or `undefined` for a commit the tab
+   * never held. */
+  private at(commit: string | null): Files | undefined {
+    for (const b of Object.values(this.state.branches)) {
+      if (b.commit === commit) return b;
+      const from = b.past?.findIndex((e) => e.commit === commit) ?? -1;
+      if (from < 0) continue;
+      // Each save undone, newest first, back to the one that left `commit`.
+      const files: Files = {
+        bundles: { ...b.bundles },
+        samples: { ...b.samples },
+        tests: { ...b.tests },
+      };
+      for (const e of b.past!.slice(from).reverse()) {
+        for (const [key, value] of [
+          ['bundles', e.bundle],
+          ['samples', e.samples],
+          ['tests', e.tests],
+        ] as const) {
+          if (value === undefined) delete files[key][e.scope];
+          else (files[key] as Record<string, unknown>)[e.scope] = value;
+        }
+      }
+      return files;
+    }
+    return undefined;
+  }
+
+  /** What landed between two commits the tab holds, as `branch_api::commit_diff` answers it: every file, and the
+   * text of `path`'s alone when it names one. `undefined` for a commit the tab no longer holds. */
+  private async between(
+    from: string | null,
+    to: string | null,
+    path: string | null,
+  ): Promise<Answer | undefined> {
+    const [before, after] = [this.at(from), this.at(to)];
+    if (!before || !after) return undefined;
+    const [all, one] = await Promise.all([
+      this.ask('/diff', { base: scopesOf(before), branch: scopesOf(after) }),
+      path ? this.ask('/diff', { base: scopesOf(before), branch: scopesOf(after), path }) : null,
+    ]);
+    if (!one || !(all.body as { ok?: boolean }).ok) return all;
+    return {
+      ...one,
+      body: { ...(one.body as object), files: (all.body as { files: unknown }).files },
+    };
+  }
+
+  /** What `name` changed since it left `main`, file by file, as the leader's diff tells it; with `path`, that file's
+   * alone. The service writes both sides as the leader stores them. */
+  private diff(name: string, path: string | null): Promise<Answer> | Answer {
+    const branch = name === 'main' ? undefined : this.state.branches[name];
+    if (!branch) return refused(404, [bareError(`there is no branch ${JSON.stringify(name)}`)]);
+    return this.ask('/diff', {
+      base: scopesOf(this.state.branches.main),
+      branch: scopesOf(branch),
+      ...(path ? { path } : {}),
+    });
+  }
+
   /** One object of `scope` on `name` put back the way `main` holds it, as one save, as the leader's undo does. The
    * demo's `main` never moves, so it is where every branch left it. */
   private async undo(
@@ -868,7 +1293,7 @@ export class DemoLeader {
       section === 'pipelines'
         ? `pipelines/${id}.json`
         : Object.values(SECTIONS).find(([key]) => key === section)![1];
-    return this.write(name, scope, file, (b) => {
+    return this.write(name, scope, file, `undo changes to ${noun} ${back.name}`, (b) => {
       b[section] = back.objects;
     });
   }
@@ -892,6 +1317,7 @@ export class DemoLeader {
         commits: b.commits,
         behind: b.base === main.commit ? 0 : 1,
         touches: b.touches,
+        ...(b.change ? { change: b.change } : {}),
       }));
     return ok({ branches });
   }
@@ -1165,9 +1591,15 @@ export class DemoLeader {
       ],
       records,
     };
-    const saved = await this.write(name, scope, `samples/${sample.id}.json`, (_, { samples }) => {
-      samples[sample.id] = sample;
-    });
+    const saved = await this.write(
+      name,
+      scope,
+      `samples/${sample.id}.json`,
+      `save capture as sample ${sample.name}`,
+      (_, { samples }) => {
+        samples[sample.id] = sample;
+      },
+    );
     if ((saved.body as { ok: boolean }).ok) {
       delete this.state.captures[session];
       this.save();
@@ -1178,6 +1610,11 @@ export class DemoLeader {
 }
 
 const NOT_RECORDED: Answer = refused(404, [bareError('not found')]);
+
+/** The leader's own words for a change opened or renamed without a title (`git::open_change`). */
+const NO_TITLE = 'a change needs a title: it is what the deploy commit is called';
+/** The reason the leader gives a change closed without one (`git::NO_REASON`). */
+const NO_REASON = 'Closed without a reason';
 
 /** What the demo says to a write it does not play. */
 export const DEMO_REFUSAL =

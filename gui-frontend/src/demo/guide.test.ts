@@ -14,6 +14,7 @@ const fresh = (over: Partial<World> = {}): World => ({
   tests: ['a'],
   mainTests: ['a'],
   mainPipelines: (network('main')?.pipelines ?? []).map((p) => p.id),
+  change: null,
   ...over,
 });
 
@@ -28,17 +29,13 @@ describe('the guide', () => {
     expect(done(fresh({ branch: 'fix' }))).toEqual(['branch']);
   });
 
-  it('ticks pipeline for a pipeline main lacks, and capture and route as each is there', () => {
+  it('ticks pipeline for a pipeline main lacks built on a capture of cisco-asa, and route once it is there', () => {
     const branch = 'fix';
     const main = network('main')!;
     const piped = { ...main, pipelines: [...(main.pipelines ?? []), { id: 'cisco-asa' }] };
-    expect(done(fresh({ branch, config: piped }))).toEqual(['branch', 'pipeline']);
+    expect(done(fresh({ branch, config: piped }))).toEqual(['branch']);
     const samples = [{ source: 'cisco-asa' }];
-    expect(done(fresh({ branch, config: piped, samples }))).toEqual([
-      'branch',
-      'capture',
-      'pipeline',
-    ]);
+    expect(done(fresh({ branch, config: piped, samples }))).toEqual(['branch', 'pipeline']);
     const unpiped = { ...piped, routes: [...(piped.routes ?? []), { source: 'cisco-asa' }] };
     expect(done(fresh({ branch, config: unpiped, samples }))).not.toContain('route');
     const routed = {
@@ -66,6 +63,12 @@ describe('the guide', () => {
 
   it('ticks the test for a test main lacks', () => {
     expect(done(fresh({ branch: 'fix', tests: ['a', 'b'] }))).toContain('test');
+  });
+
+  it("ticks the review while the branch's change is open, and not once it is closed", () => {
+    expect(done(fresh({ branch: 'fix', change: 'open' }))).toContain('review');
+    expect(done(fresh({ branch: 'fix', change: 'closed' }))).not.toContain('review');
+    expect(done(fresh({ branch: 'fix' }))).not.toContain('review');
   });
 });
 

@@ -157,10 +157,10 @@ would otherwise be silently editing content they only hold deploy over.
 **W5 — Approve and deploy.** Approval merges to main as one commit and
 deletes the branch; main's movement is what reaches workers. There is no
 separate deploy step, and nothing smeltr deploys is unapproved. An author
-may deploy their own change — a single administrator has to be able to
-work alone — and the history records when author and deployer are the
-same person. Deploying over a failing test is likewise recorded, not
-forbidden.
+may review and deploy their own change — a single administrator has to
+be able to work alone — and the history records when author and deployer
+are the same person. Deploying over a failing test is likewise recorded,
+not forbidden.
 
 **W6 — Reject.** Closing a change keeps the branch, so no work is lost.
 A reason is offered and encouraged, so the author has something to act on,
