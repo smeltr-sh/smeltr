@@ -2736,10 +2736,44 @@ fn timed_out(records: &[Value]) -> bool {
     records.iter().any(|r| r.to_string().contains("LoopBudgetExceeded"))
 }
 
+/// How many programs `program` draws for a seed, at most, to find the one its seed wants.
+const DRAWS: u64 = 200;
+
+/// `seed`'s program: the first of its draws that holds the construct, step or parse the seed wants and compiles, else
+/// its first draw. Seed `s` wants the one at `s` in the list of them, so each is in a compiled program once per pass
+/// through the list, whatever a new row does to the generator's random stream.
+fn program(seed: u64) -> Program {
+    let wanted: Vec<String> = expected()
+        .into_iter()
+        .filter(|n| !["row ", "op ", "unary "].iter().any(|p| n.starts_with(p)))
+        .collect();
+    let want = &wanted[(seed % wanted.len() as u64) as usize];
+    let compiles = |p: &Program| {
+        let source = Writer {
+            p,
+            style: Style::default(),
+            temps: 0,
+            trying: false,
+        }
+        .steps();
+        compile(&with_table(source), &SourceMeta::KAFKA).is_ok()
+    };
+    // Take the first draw as it is when it holds the construct, without compiling it here: `check` compiles it, and
+    // most draws compile, so no further draws are needed.
+    let first = Gen::new(seed).program();
+    if covers(&first).contains(want) {
+        return first;
+    }
+    (1..DRAWS)
+        .map(|k| Gen::new(seed.wrapping_add(k << 32)).program())
+        .find(|p| covers(p).contains(want) && compiles(p))
+        .unwrap_or(first)
+}
+
 /// What `seed`'s program covers where it compiles, `None` where it is refused or a run is not repeatable, or why its
 /// runs disagree.
 fn check(seed: u64) -> Result<Option<BTreeSet<String>>, String> {
-    let program = Gen::new(seed).program();
+    let program = program(seed);
     let write = |style: Style| {
         Writer {
             p: &program,
@@ -2877,7 +2911,7 @@ fn generated_pipelines_compile_or_refuse_and_mean_the_same_however_written() {
             "it panics\n  {}",
             show(
                 &Writer {
-                    p: &Gen::new(seed).program(),
+                    p: &program(seed),
                     style: Style::default(),
                     temps: 0,
                     trying: false,
