@@ -2898,7 +2898,7 @@ const refusedSignIn: Move = {
     await openAdmin(page, 'Accounts');
     await page.getByRole('link', { name: 'Roles', exact: true }).click();
     await page.getByRole('button', { name: 'Refused sign-ins' }).click();
-    const row = page.getByRole('row').filter({ hasText: 'leader.sign_in_refused' }).first();
+    const row = page.getByRole('row').filter({ hasText: 'sign_in_refused' }).first();
     // The leader's own logs reach the page on its next pass, so the page is read again until they do.
     await expect(async () => {
       await page.reload();
