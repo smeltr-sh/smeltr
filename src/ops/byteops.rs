@@ -10,6 +10,7 @@ use crate::core::column::{Column, DataType, FixedMut, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
 use crate::ops::helpers::{Labels, Operand, clamped, short_circuit_empty, side};
+use memchr::memmem;
 
 /// A number's type in a layout.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -263,17 +264,16 @@ pub fn read_bytes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// end.
 fn find(b: &[u8], needle: &[u8], from_end: bool, from: Option<i64>) -> Option<usize> {
     let n = b.len();
-    let starts = |at: &usize| b[*at..].starts_with(needle);
     if from_end {
         let last = match from {
             None => n,
             Some(p) if p >= 0 => usize::try_from(p).map_or(n, |p| p.min(n)),
             Some(p) => usize::try_from(n as i64 + p).ok()?,
         };
-        (0..=last).rev().find(starts)
+        memmem::rfind(&b[..n.min(last.saturating_add(needle.len()))], needle)
     } else {
         let first = from.map_or(0, |p| clamped(p, n));
-        (first..=n).find(starts)
+        memmem::find(&b[first..], needle).map(|at| first + at)
     }
 }
 

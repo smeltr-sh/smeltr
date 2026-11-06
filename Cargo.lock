@@ -5511,6 +5511,7 @@ dependencies = [
  "lz4_flex",
  "maxminddb",
  "md-5",
+ "memchr",
  "memmap2",
  "mimalloc",
  "mysql_async",

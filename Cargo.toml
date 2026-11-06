@@ -36,6 +36,8 @@ itoa = "1"
 zmij = "1"
 # A bytes value's one text spelling, wherever one is written as text.
 base64 = "0.23"
+# `indexOf`, `lastIndexOf` and `includes` on bytes. Already in the build under regex.
+memchr = "2"
 
 # ECS's `ecs_flat.yml`, read as a schema (`schema::ecs`). yaml-rust2 because it is pure Rust and maintained;
 # serde_yaml is archived.
