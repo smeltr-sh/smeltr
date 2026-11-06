@@ -46,6 +46,8 @@
     border-radius: 999px;
     padding: 0.1rem 0.25rem 0.1rem 0.55rem;
     white-space: nowrap;
+    /* A value longer than its field, such as a fingerprint, stays inside it. */
+    max-width: 100%;
   }
 
   .chip.accent {

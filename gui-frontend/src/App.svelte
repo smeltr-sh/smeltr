@@ -726,7 +726,8 @@
     {:else if route.page === 'review'}
       {#if pages.review}
         {@const ChangeDetailPage = pages.review}
-        <ChangeDetailPage branch={route.branch} />
+        <!-- It reads its change once, so another change's review is another page. -->
+        {#key route.branch}<ChangeDetailPage branch={route.branch} />{/key}
       {/if}
     {:else if route.page === 'history'}
       {#if pages.history}

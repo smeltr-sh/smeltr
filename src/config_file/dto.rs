@@ -69,9 +69,10 @@ impl TlsDto {
     }
 }
 
-/// The TLS a receiver serves: the certificate it serves to every sender, and the authorities a sender's certificate
-/// must chain to. It serves TLS when it names a certificate, and admits only senders whose certificate chains to its
-/// authorities when it names any. A receiver trusts no public root, so it has no say over them.
+/// The TLS a receiver serves: the certificate it serves to every sender, and whom it admits by theirs. It serves TLS
+/// when it names a certificate. Naming authorities or sender fingerprints, it admits only a sender whose certificate
+/// is one of the fingerprints', or chains to one of the authorities and, when it names sender names, is issued to one
+/// of them (`io::senders`). A receiver trusts no public root, so it has no say over them.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ServedTlsDto {
@@ -80,12 +81,21 @@ pub struct ServedTlsDto {
     /// PEM, one or more certificates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trusted_authorities: Option<String>,
+    /// As RFC 5425 (4.2.1) writes a fingerprint: `sha-256:AB:CD:…`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sender_fingerprints: Vec<String>,
+    /// Host names a certificate chaining to the authorities must be issued to, `*.` standing for any one label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sender_names: Vec<String>,
 }
 
 impl ServedTlsDto {
     /// Whether the receiver says anything about its TLS.
     pub fn is_set(&self) -> bool {
-        self.certificate.is_some() || self.trusted_authorities.is_some()
+        self.certificate.is_some()
+            || self.trusted_authorities.is_some()
+            || !self.sender_fingerprints.is_empty()
+            || !self.sender_names.is_empty()
     }
 
     /// The same settings as any connector's.
@@ -279,9 +289,10 @@ impl SourceDto {
             SourceKindDto::Postgres(s) | SourceKindDto::MySql(s) => {
                 s.password.iter().map(|r| ("password", r)).collect()
             }
-            SourceKindDto::Metrics { .. } | SourceKindDto::Logs { .. } | SourceKindDto::SyslogReceiver { .. } => {
-                Vec::new()
-            }
+            SourceKindDto::Metrics { .. }
+            | SourceKindDto::Logs { .. }
+            | SourceKindDto::SyslogReceiver { .. }
+            | SourceKindDto::SocketReceiver { .. } => Vec::new(),
         }
     }
 
@@ -318,9 +329,10 @@ impl SourceDto {
             SourceKindDto::HecReceiver { tokens, .. } => tokens.values_mut().map(|t| &mut t.token).collect(),
             SourceKindDto::S2sReceiver { tokens, .. } => tokens.values_mut().collect(),
             SourceKindDto::Postgres(s) | SourceKindDto::MySql(s) => s.password.iter_mut().collect(),
-            SourceKindDto::Metrics { .. } | SourceKindDto::Logs { .. } | SourceKindDto::SyslogReceiver { .. } => {
-                Vec::new()
-            }
+            SourceKindDto::Metrics { .. }
+            | SourceKindDto::Logs { .. }
+            | SourceKindDto::SyslogReceiver { .. }
+            | SourceKindDto::SocketReceiver { .. } => Vec::new(),
         }
     }
 }
@@ -401,7 +413,8 @@ impl SourceDto {
             | SourceKindDto::OtlpReceiver { .. }
             | SourceKindDto::PrometheusReceiver { .. }
             | SourceKindDto::ElasticReceiver { .. }
-            | SourceKindDto::SyslogReceiver { .. } => Vec::new(),
+            | SourceKindDto::SyslogReceiver { .. }
+            | SourceKindDto::SocketReceiver { .. } => Vec::new(),
         }
     }
 
@@ -424,7 +437,8 @@ impl SourceDto {
             | SourceKindDto::OtlpReceiver { tls, .. }
             | SourceKindDto::PrometheusReceiver { tls, .. }
             | SourceKindDto::ElasticReceiver { tls, .. }
-            | SourceKindDto::SyslogReceiver { tls, .. } => Some(tls.tls()),
+            | SourceKindDto::SyslogReceiver { tls, .. }
+            | SourceKindDto::SocketReceiver { tls, .. } => Some(tls.tls()),
             SourceKindDto::EventHubs { .. }
             | SourceKindDto::Sftp { .. }
             | SourceKindDto::Metrics { .. }
@@ -519,7 +533,7 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         tls: TlsDto,
         #[serde(flatten)]
-        framing: ObjectFramingDto,
+        framing: FramingSettingsDto,
         #[serde(default, flatten)]
         read: ReadFormatDto,
         /// How this source's record bytes become text. See [`EncodingLabel`].
@@ -545,7 +559,7 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         tls: TlsDto,
         #[serde(flatten)]
-        framing: ObjectFramingDto,
+        framing: FramingSettingsDto,
         #[serde(default, flatten)]
         read: ReadFormatDto,
         /// How this source's record bytes become text. See [`EncodingLabel`].
@@ -575,7 +589,7 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         tls: TlsDto,
         #[serde(flatten)]
-        framing: ObjectFramingDto,
+        framing: FramingSettingsDto,
         #[serde(default, flatten)]
         read: ReadFormatDto,
         /// How this source's record bytes become text. See [`EncodingLabel`].
@@ -604,7 +618,7 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         tls: TlsDto,
         #[serde(flatten)]
-        framing: ObjectFramingDto,
+        framing: FramingSettingsDto,
         #[serde(default, flatten)]
         read: ReadFormatDto,
         /// How this source's record bytes become text. See [`EncodingLabel`].
@@ -633,7 +647,7 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         access: SftpAccessDto,
         #[serde(flatten)]
-        framing: ObjectFramingDto,
+        framing: FramingSettingsDto,
         #[serde(default, flatten)]
         read: ReadFormatDto,
         /// How this source's record bytes become text. See [`EncodingLabel`].
@@ -660,7 +674,7 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         tls: TlsDto,
         #[serde(flatten)]
-        framing: ObjectFramingDto,
+        framing: FramingSettingsDto,
         #[serde(default, flatten)]
         read: ReadFormatDto,
         /// How this source's record bytes become text. See [`EncodingLabel`].
@@ -684,7 +698,7 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         tls: TlsDto,
         #[serde(flatten)]
-        framing: ObjectFramingDto,
+        framing: FramingSettingsDto,
         #[serde(default, flatten)]
         read: ReadFormatDto,
         /// How this source's record bytes become text. See [`EncodingLabel`].
@@ -828,6 +842,8 @@ pub enum SourceKindDto {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
         #[serde(flatten)]
+        connections: ConnectionLimitsDto,
+        #[serde(flatten)]
         tls: ServedTlsDto,
         /// Token name -> the credential holding a token a forwarder may present, its outputs.conf `token`. A
         /// forwarder presenting none, or another, is cut off.
@@ -898,11 +914,13 @@ pub enum SourceKindDto {
     /// What syslog senders send to `port`, as RFC 5424 or RFC 3164 messages: over TCP framed by octet count or ended
     /// by a newline (RFC 6587), under TLS (RFC 5425) when it names a certificate; over UDP one to a datagram (RFC 5426).
     /// Every worker of the group listens, and each message is one record. Syslog has no acknowledgement, so delivery
-    /// is best-effort. A full receiver stops reading TCP, so the sender's window fills, and drops UDP.
+    /// is best-effort. A full receiver stops reading TCP, so the sender's window fills, and drops UDP datagrams.
     #[serde(rename_all = "camelCase")]
     SyslogReceiver {
         #[serde(flatten)]
         listener: ReceiverSettingsDto,
+        #[serde(flatten)]
+        connections: ConnectionLimitsDto,
         #[serde(flatten)]
         tls: ServedTlsDto,
         /// The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token, so
@@ -919,9 +937,37 @@ pub enum SourceKindDto {
         transport: Transport,
         /// A pattern whose first capture group is where a message over TCP ends, the group dropped, as Splunk's
         /// `LINE_BREAKER`, for senders that end a message with something other than a newline, or with nothing.
-        /// Absent, a message ends at a newline. Octet counting still frames a message that starts with its length.
+        /// Absent, a message ends at a newline. A message that starts with a digit 1 to 9 is framed by octet counting,
+        /// whatever this says.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         line_breaker: Option<String>,
+    },
+    /// What senders send to `port` in a protocol smeltr has no receiver for: over TCP cut into records by its
+    /// framing, under TLS when it names a certificate; over UDP a datagram to a record. Every worker of the group
+    /// listens. Nothing is acknowledged, so delivery is best-effort. A full receiver stops reading TCP, so the
+    /// sender's window fills, and drops UDP datagrams.
+    #[serde(rename_all = "camelCase")]
+    SocketReceiver {
+        #[serde(flatten)]
+        listener: ReceiverSettingsDto,
+        #[serde(flatten)]
+        connections: ConnectionLimitsDto,
+        #[serde(flatten)]
+        tls: ServedTlsDto,
+        /// The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Nothing it receives carries a
+        /// token, so this is what admits a sender, unless the receiver names authorities a sender's certificate must
+        /// chain to.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allow_from: Vec<String>,
+        /// How a record's bytes become text. See [`EncodingLabel`].
+        #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
+        encoding: EncodingLabel,
+        /// What senders send over. Absent is TCP. Over UDP each datagram is a record, served without TLS.
+        #[serde(default, skip_serializing_if = "Transport::is_tcp")]
+        transport: Transport,
+        /// TCP only: where one record ends and the next starts.
+        #[serde(flatten)]
+        framing: FramingSettingsDto,
     },
 }
 
@@ -939,7 +985,8 @@ impl SourceKindDto {
             | SourceKindDto::OtlpReceiver { listener, .. }
             | SourceKindDto::PrometheusReceiver { listener, .. }
             | SourceKindDto::ElasticReceiver { listener, .. }
-            | SourceKindDto::SyslogReceiver { listener, .. } => Some(listener.port),
+            | SourceKindDto::SyslogReceiver { listener, .. }
+            | SourceKindDto::SocketReceiver { listener, .. } => Some(listener.port),
             _ => None,
         }
     }
@@ -947,7 +994,9 @@ impl SourceKindDto {
     /// What a receiver's senders send over. TCP for every kind but a syslog receiver given UDP.
     pub fn receiver_transport(&self) -> Transport {
         match self {
-            SourceKindDto::SyslogReceiver { transport, .. } => *transport,
+            SourceKindDto::SyslogReceiver { transport, .. } | SourceKindDto::SocketReceiver { transport, .. } => {
+                *transport
+            }
             _ => Transport::Tcp,
         }
     }
@@ -962,6 +1011,43 @@ pub struct ReceiverSettingsDto {
     pub port: u16,
     #[serde(default, skip_serializing_if = "MaxRequestBytes::is_default")]
     pub max_request_bytes: MaxRequestBytes,
+}
+
+/// How many connections a receiver whose senders stream over TCP holds open, and how long it keeps an idle one.
+/// Flattened into the S2S, syslog and socket receivers' fields.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectionLimitsDto {
+    /// The most connections it holds at once, on each worker.
+    #[serde(default, skip_serializing_if = "MaxConnections::is_default")]
+    pub max_connections: MaxConnections,
+    /// The most it holds from one address. Absent, as many as `maxConnections`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections_per_sender: Option<u64>,
+    /// How long a connection the receiver waits on may send nothing before it is closed. Absent, an idle one is held
+    /// while there is room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_secs: Option<u64>,
+}
+
+/// The most connections a receiver that streams holds at once.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct MaxConnections(pub u64);
+
+impl MaxConnections {
+    pub const DEFAULT: u64 = crate::plan::topology::ConnectionLimits::DEFAULT_MAX as u64;
+    pub const MAX: u64 = 1_000_000;
+
+    pub fn is_default(&self) -> bool {
+        self.0 == Self::DEFAULT
+    }
+}
+
+impl Default for MaxConnections {
+    fn default() -> Self {
+        MaxConnections(Self::DEFAULT)
+    }
 }
 
 /// A token a HEC receiver admits.
@@ -1007,11 +1093,8 @@ pub struct MaxRequestBytes(pub u64);
 
 impl MaxRequestBytes {
     pub const DEFAULT: u64 = 10 * 1024 * 1024;
-    /// The least a file may hold. A receiver runs at no less than `FLOOR`.
-    pub const MIN: u64 = 1024;
-    /// The least every receiver runs at, whatever its file holds: RFC 5425 (4.3.1) has a syslog receiver take messages
-    /// of 2048 octets.
-    pub const FLOOR: u64 = 2048;
+    /// RFC 5425 (4.3.1) has a syslog receiver take messages of 2048 octets.
+    pub const MIN: u64 = 2048;
     /// What one request may hold of a receiver's inbox (`io::receiver::INBOX_BYTES`).
     pub const MAX: u64 = 64 * 1024 * 1024;
 
@@ -1091,6 +1174,7 @@ impl SourceKindDto {
             SourceKindDto::PrometheusReceiver { .. } => SourceMeta::prometheus_receiver(),
             SourceKindDto::ElasticReceiver { .. } => SourceMeta::ELASTIC_RECEIVER,
             SourceKindDto::SyslogReceiver { .. } => SourceMeta::SYSLOG_RECEIVER,
+            SourceKindDto::SocketReceiver { .. } => SourceMeta::SOCKET_RECEIVER,
             SourceKindDto::Postgres(sql) => sql.meta(SqlKind::Postgres),
             SourceKindDto::MySql(sql) => sql.meta(SqlKind::MySql),
         };
@@ -1157,6 +1241,7 @@ impl SourceKindDto {
             | SourceKindDto::S2sReceiver { .. }
             | SourceKindDto::OtlpReceiver { .. }
             | SourceKindDto::SyslogReceiver { .. }
+            | SourceKindDto::SocketReceiver { .. }
             | SourceKindDto::PrometheusReceiver { .. }
             | SourceKindDto::ElasticReceiver { .. } => false,
         }
@@ -1177,7 +1262,8 @@ impl SourceKindDto {
             | SourceKindDto::Sftp { encoding, .. }
             | SourceKindDto::AzureBlobQueue { encoding, .. }
             | SourceKindDto::GcsPubSub { encoding, .. }
-            | SourceKindDto::SyslogReceiver { encoding, .. } => Encoding::for_label(&encoding.0).unwrap_or_default(),
+            | SourceKindDto::SyslogReceiver { encoding, .. }
+            | SourceKindDto::SocketReceiver { encoding, .. } => Encoding::for_label(&encoding.0).unwrap_or_default(),
             SourceKindDto::Metrics { .. }
             | SourceKindDto::Logs { .. }
             | SourceKindDto::HttpApi { .. }
@@ -2182,16 +2268,82 @@ impl SftpAccessDto {
     }
 }
 
-/// How an object source's objects become records. Flattened into each object source.
+/// How a stream's bytes become records: an object source's objects, or what a socket receiver's senders send over
+/// TCP. Flattened into each.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct ObjectFramingDto {
+pub struct FramingSettingsDto {
     #[serde(default, skip_serializing_if = "FramingDto::is_default")]
     pub framing: FramingDto,
     /// `"lines"` only: a pattern whose first capture group is where an event ends, the group dropped, as Splunk's
     /// `LINE_BREAKER`. Without one, an event ends at a line end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_breaker: Option<String>,
+    /// `"lengthPrefix"` only, and required there: where each message's or record's length is and what it counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_prefix: Option<LengthPrefixDto>,
+    /// `"fixed"` only, and required there: how many bytes every message or record is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_bytes: Option<u64>,
+}
+
+/// Where a message's length is and what it counts. It counts the whole message or record, its header and length
+/// included, or only the bytes after the length.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LengthPrefixDto {
+    /// How many bytes of the message come before its length. Absent is none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub offset: u64,
+    /// How many bytes the length is, 1 to 8.
+    pub bytes: u64,
+    #[serde(default, skip_serializing_if = "ByteOrderDto::is_default")]
+    pub order: ByteOrderDto,
+    #[serde(default, skip_serializing_if = "CountsDto::is_default")]
+    pub counts: CountsDto,
+}
+
+/// Which byte of a number comes first.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ByteOrderDto {
+    /// The most significant first, as a network protocol writes it.
+    #[default]
+    Big,
+    Little,
+}
+
+impl ByteOrderDto {
+    pub fn is_default(&self) -> bool {
+        *self == ByteOrderDto::Big
+    }
+}
+
+/// What a message's length counts.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CountsDto {
+    /// The bytes that follow the length.
+    #[default]
+    Rest,
+    /// The whole message, its header and length among them.
+    Message,
+}
+
+impl CountsDto {
+    pub fn is_default(&self) -> bool {
+        *self == CountsDto::Rest
+    }
+}
+
+impl FramingSettingsDto {
+    /// Whether it says anything but the default, a line per record.
+    pub fn is_set(&self) -> bool {
+        !self.framing.is_default()
+            || self.line_breaker.is_some()
+            || self.length_prefix.is_some()
+            || self.fixed_bytes.is_some()
+    }
 }
 
 /// What an object's bytes become.
@@ -2205,6 +2357,10 @@ pub enum FramingDto {
     Object,
     /// One record per line, unescaped as a `bytes` object destination wrote it.
     EscapedLines,
+    /// One record per message, each saying how long it is where `lengthPrefix` says.
+    LengthPrefix,
+    /// One record per `fixedBytes` bytes.
+    Fixed,
 }
 
 impl FramingDto {

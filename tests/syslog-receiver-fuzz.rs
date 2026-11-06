@@ -16,8 +16,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use smeltr::io::framing::Framing;
 use smeltr::io::{Source, SourceRecord};
-use smeltr::plan::topology::{Receiver, SourceMeta, SyslogReceiverConfig, Transport};
+use smeltr::plan::topology::{Receiver, SocketReceiverConfig, SourceMeta, Transport};
 
 use crate::harness::docker::{Container, Hook, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
@@ -120,12 +121,14 @@ fn admits(settings: &Settings) -> bool {
 }
 
 fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
-    let syslog = Receiver::Syslog(SyslogReceiverConfig {
+    let syslog = Receiver::Syslog(SocketReceiverConfig {
         allow_from: settings.allow_from.iter().map(|n| n.parse().unwrap()).collect(),
         transport: settings.transport,
-        line_breaker: settings
-            .line_breaker
-            .map(|b| smeltr::io::line_breaker::LineBreaker(regex::bytes::Regex::new(b.pattern()).unwrap())),
+        framing: Framing::Syslog(
+            settings
+                .line_breaker
+                .map(|b| smeltr::io::line_breaker::LineBreaker(regex::bytes::Regex::new(b.pattern()).unwrap())),
+        ),
         ..Default::default()
     });
     receiver::build(
@@ -169,9 +172,6 @@ const ENDINGS: &[&str] = &[
     "a last line over the limit",
     "a line over the limit, then a malformed frame, the connection left open",
 ];
-
-/// The endings whose last line the receiver takes only once the connection ends.
-const ENDED_BY_HANGING_UP: &[usize] = &[1, 5, 9];
 
 /// Datagrams a UDP sender sends, each by what it holds.
 const DATAGRAMS: &[&str] = &[
@@ -220,8 +220,6 @@ struct Connection {
     /// Whether it leaves its side open once written, for the receiver to close.
     left_open: bool,
     taken: Vec<Vec<u8>>,
-    /// Whether its last record is one the receiver takes only once the connection ends.
-    ended_by_hanging_up: bool,
 }
 
 /// A random connection, the `n`th, to a receiver reading messages of at most `max` bytes, and the labels it reaches
@@ -358,7 +356,6 @@ fn connection(rng: &mut Rng, n: usize, max: usize, labels: &mut Vec<String>) -> 
         abrupt: false,
         left_open: ending == ENDINGS.len() - 1,
         taken,
-        ended_by_hanging_up: ENDED_BY_HANGING_UP.contains(&ending),
     }
 }
 
@@ -392,8 +389,6 @@ fn broken_connection(rng: &mut Rng, n: usize, max: usize, breaker: Breaker, labe
         Breaker::Start => b"",
     };
     let (mut bytes, mut taken) = (Vec::new(), Vec::new());
-    // Whether the last frame is a message that only the connection's end breaks.
-    let mut waits = false;
     for i in 0..rng.below(8) {
         let kind = rng.below(if only_messages { 3 } else { BROKEN_FRAMES.len() });
         labels.push(BROKEN_FRAMES[kind].to_string());
@@ -416,8 +411,6 @@ fn broken_connection(rng: &mut Rng, n: usize, max: usize, breaker: Breaker, labe
                 )
             }
         };
-        // A blank's break may reach the end, but it holds nothing to drop, and its bytes break the message before.
-        waits = kind <= 2;
         bytes.extend(frame);
         taken.extend(record);
     }
@@ -434,14 +427,12 @@ fn broken_connection(rng: &mut Rng, n: usize, max: usize, breaker: Breaker, labe
             let message = [named, text(rng)].concat();
             bytes.extend(&message);
             taken.push(message);
-            waits = true;
         }
         // Dropped: the sender hung up before it was whole.
         2 => {
             let message = [named, text(rng)].concat();
             bytes.extend(format!("{} ", message.len() + 1 + rng.below(100)).bytes());
             bytes.extend(message);
-            waits = false;
         }
         // Truncated to the limit, and what follows it read.
         3 => {
@@ -453,13 +444,11 @@ fn broken_connection(rng: &mut Rng, n: usize, max: usize, breaker: Breaker, labe
             bytes.extend(&after);
             bytes.extend(end);
             taken.push(after);
-            waits = true;
         }
         4 => {
             let message = padded(&named, max + 1 + rng.below(100));
             bytes.extend(&message);
             taken.push(message[..max].to_vec());
-            waits = true;
         }
         // Truncated once past the slack, its rest discarded to its break, and the malformed frame after it closes
         // the connection.
@@ -469,7 +458,6 @@ fn broken_connection(rng: &mut Rng, n: usize, max: usize, breaker: Breaker, labe
             bytes.extend(end);
             bytes.extend(b"12x message");
             taken.push(run[..max].to_vec());
-            waits = false;
         }
     }
     let pieces = pieces(rng, bytes.len(), labels);
@@ -480,9 +468,6 @@ fn broken_connection(rng: &mut Rng, n: usize, max: usize, breaker: Breaker, labe
         abrupt: false,
         left_open: ending == BROKEN_ENDINGS.len() - 1,
         taken,
-        // A break that reaches the last byte held waits for what comes after it, so the last message waits for the
-        // connection's end.
-        ended_by_hanging_up: waits,
     }
 }
 
@@ -650,8 +635,11 @@ fn every_setting_takes_each_message_once_however_it_is_framed() {
             .chain(ipv6.then_some(&"::1")))
         .map(|ip| format!("listen {ip}"))
         .chain(["Tcp", "Udp"].map(|t| format!("transport {t}")))
-        .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
-        .chain(["Nothing", "Trusted", "Stranger"].map(|p| format!("presents {p} under Vouched")))
+        .chain(Tls::ALL.map(|tls| format!("tls {tls:?}")))
+        .chain(
+            (Tls::ALL.into_iter().filter(|tls| tls.checks_sender()))
+                .flat_map(|tls| ["Nothing", "Trusted", "Stranger"].map(|p| format!("presents {p} under {tls:?}"))),
+        )
         .chain(
             [
                 "no networks",
@@ -674,7 +662,8 @@ fn every_setting_takes_each_message_once_however_it_is_framed() {
     );
     fuzz::run(1..201, |seed| {
         let mut rng = Rng::seeded(seed);
-        let settings = random_settings(&mut rng, ipv6);
+        let mut settings = random_settings(&mut rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         let max = settings.max_request_bytes;
         let allowed = admits(&settings);
         // What the receiver is set to is tried only by a sender it allows.
@@ -720,22 +709,12 @@ fn every_setting_takes_each_message_once_however_it_is_framed() {
                             Presents::Stranger,
                         ]);
                     }
-                    let mut dropped = false;
-                    if settings.tls != Tls::None && rng.chance(4) {
-                        connection.abrupt = true;
-                        // Hanging up unsaid reads as cut short, so what waited on the hang-up is not taken.
-                        if connection.ended_by_hanging_up {
-                            connection.taken.pop();
-                            reached.retain(|label| {
-                                !ENDINGS.contains(&label.as_str()) && !BROKEN_ENDINGS.contains(&label.as_str())
-                            });
-                            dropped = true;
-                        }
+                    // A TLS sender may hang up without a `close_notify`, which the receiver takes as a clean hang-up.
+                    connection.abrupt = settings.tls != Tls::None && rng.chance(4);
+                    if settings.tls.checks_sender() && allowed {
+                        cov.reach(format!("presents {:?} under {:?}", connection.presents, settings.tls));
                     }
-                    if settings.tls == Tls::Vouched && allowed {
-                        cov.reach(format!("presents {:?} under Vouched", connection.presents));
-                    }
-                    let tls_admits = settings.tls != Tls::Vouched || connection.presents == Presents::Trusted;
+                    let tls_admits = settings.tls.admits(connection.presents);
                     what.push(format!(
                         "connection {n}, presenting {:?}: {:?}",
                         connection.presents,
@@ -743,7 +722,7 @@ fn every_setting_takes_each_message_once_however_it_is_framed() {
                     ));
                     if allowed && tls_admits {
                         labels.extend(reached);
-                        if dropped {
+                        if connection.abrupt {
                             labels.push("a TLS sender hanging up without saying so".into());
                         }
                         expected.extend(connection.taken.iter().cloned());
@@ -898,7 +877,7 @@ impl Sender {
                         "    tls On\n    tls.verify On\n    tls.ca_file /smeltr/ca.pem\n    tls.vhost localhost\n",
                     );
                 }
-                if tls == Tls::Vouched {
+                if tls.checks_sender() {
                     output.push_str("    tls.crt_file /smeltr/sender.pem\n    tls.key_file /smeltr/sender-key.pem\n");
                 }
                 Some((
@@ -913,9 +892,11 @@ impl Sender {
                 let tls = match tls {
                     Tls::None => "{insecure: true}".to_string(),
                     Tls::Served => "{ca_file: /smeltr/ca.pem, server_name_override: localhost}".to_string(),
-                    Tls::Vouched => "{ca_file: /smeltr/ca.pem, server_name_override: localhost, cert_file: \
+                    Tls::Vouched | Tls::Pinned | Tls::Named | Tls::Misnamed => {
+                        "{ca_file: /smeltr/ca.pem, server_name_override: localhost, cert_file: \
                                      /smeltr/sender.pem, key_file: /smeltr/sender-key.pem}"
-                        .to_string(),
+                            .to_string()
+                    }
                 };
                 // The exporter sends a log's `message` attribute, so the line read moves there.
                 Some((
@@ -1055,7 +1036,7 @@ fn live_senders_deliver_every_line_once_under_random_configurations() {
         settings.transport = transport;
         settings.tls = tls;
         settings.allow_from = match tls {
-            Tls::Vouched if rng.chance(2) => Vec::new(),
+            tls if tls.checks_sender() && rng.chance(2) => Vec::new(),
             _ => vec![*rng.pick(&["127.0.0.0/8", "127.0.0.1/32", "0.0.0.0/0"])],
         };
         settings.max_request_bytes = 1 << 16;

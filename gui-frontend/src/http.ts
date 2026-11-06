@@ -95,12 +95,14 @@ export function urlWarning(
   return said.length > 0 ? said.join(' ') : undefined;
 }
 
-/** Whether `tls` sets anything, as `config_file::dto::TlsDto::is_set` reads it. */
+/** Whether `tls` sets anything, as `config_file::dto::TlsDto::is_set` and `ServedTlsDto::is_set` read it. */
 export function tlsSet(tls: TlsDto): boolean {
   return (
     tls.certificate !== undefined ||
     tls.trustedAuthorities !== undefined ||
-    tls.trustPublic !== undefined
+    tls.trustPublic !== undefined ||
+    tls.senderFingerprints !== undefined ||
+    tls.senderNames !== undefined
   );
 }
 

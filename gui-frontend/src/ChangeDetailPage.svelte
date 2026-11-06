@@ -54,7 +54,7 @@
   import { lessMotion } from './glide';
   import ChangeObjects from './ChangeObjects.svelte';
   import { scopeOf, type ObjectChange } from './objectChanges';
-  import { deployBlocker } from './access';
+  import { deployBlocker, NOT_IN_DEMO } from './access';
   import { threads } from './threads';
   import { newSideLines, parseUnifiedDiff } from './unifiedDiff';
 
@@ -326,7 +326,7 @@
     if (loaded.branch.behind > 0) {
       return `Behind main by ${count(loaded.branch.behind, 'commit')} — bring the branch current first.`;
     }
-    return deployBlocker(loaded.branch.touches);
+    return NOT_IN_DEMO || deployBlocker(loaded.branch.touches);
   });
 
   /** Seeded from the change itself: renaming starts from what is there,
@@ -438,7 +438,7 @@
         <div class="left">
           <PageHeader title={loaded.change.title}>
             {#snippet beside()}
-              <Locked refusedInDemo>
+              <Locked>
                 <button
                   type="button"
                   class="icon pencil"
@@ -548,6 +548,7 @@
                 {lines}
                 onposted={loadTimeline}
                 onstatechanged={load}
+                touches={loaded.branch.touches}
               />
             {:else if tab === 'saves'}
               {#if timelineFailed}

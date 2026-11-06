@@ -109,6 +109,19 @@ describe('what a person may do', () => {
     ).toBe('');
     expect(deployBlocker(touches, { administrator: true, areas: {} })).toBe('');
   });
+
+  it('says approving takes what deploying does, when asked for an approval', async () => {
+    await signInAs({ administrator: false, areas: { storefront: 'editor' } });
+    expect(deployBlocker(['groups/storefront/sources.json'], undefined, 'Approving this')).toBe(
+      'Approving this takes a deployer in storefront.',
+    );
+    expect(deployBlocker(['README.md'], undefined, 'Approving this')).toBe(
+      'Approving this takes an administrator: it changes README.md.',
+    );
+    expect(deployBlocker(['groups/storefront/sources.json'], undefined, 'Requesting changes')).toBe(
+      'Requesting changes takes a deployer in storefront.',
+    );
+  });
 });
 
 describe('one rule for any account', () => {

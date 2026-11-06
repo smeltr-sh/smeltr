@@ -171,7 +171,15 @@
       "result": "bool"
     },
     {
+      "params": "(str, str, i64)",
+      "result": "bool"
+    },
+    {
       "params": "(array of scalars, value)",
+      "result": "bool"
+    },
+    {
+      "params": "(array of scalars, value, i64)",
       "result": "bool"
     }
   ],
@@ -181,7 +189,15 @@
       "result": "i64"
     },
     {
+      "params": "(str, str, i64)",
+      "result": "i64"
+    },
+    {
       "params": "(array of scalars, value)",
+      "result": "i64"
+    },
+    {
+      "params": "(array of scalars, value, i64)",
       "result": "i64"
     }
   ],
@@ -236,6 +252,18 @@
   "lastIndexOf": [
     {
       "params": "(str, str)",
+      "result": "i64"
+    },
+    {
+      "params": "(str, str, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(array of scalars, value)",
+      "result": "i64"
+    },
+    {
+      "params": "(array of scalars, value, i64)",
       "result": "i64"
     }
   ],

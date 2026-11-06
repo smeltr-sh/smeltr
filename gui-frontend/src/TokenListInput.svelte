@@ -159,6 +159,11 @@
     font-size: var(--text-label);
     padding: 0;
     cursor: text;
+    /* A value longer than its field, such as a fingerprint, breaks rather than spills past it. */
+    min-width: 0;
+    white-space: normal;
+    word-break: break-all;
+    text-align: start;
   }
 
   .chip-edit {

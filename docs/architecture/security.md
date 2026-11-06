@@ -239,20 +239,45 @@ A receiver is where a worker takes the data it did not fetch: every
 worker of the group listens on the receiver's port, and whoever is admitted
 there puts records into the group's pipelines. So a receiver admits a sender
 that presents one of its tokens, each a credential like any other, or, served
-under a certificate with trusted authorities, a sender whose certificate chains to one
-of them, and a receiver that would admit anyone is refused at load. A token
+under a certificate, a sender whose certificate chains to one of its trusted
+authorities or is one it names by fingerprint, whoever issued it (RFC 5425,
+5.1), and, when it names hosts, only those of them issued to one of the named
+hosts (RFC 5425, 5.2). A receiver that would admit anyone is refused at load. A
+sender it refuses by its certificate is refused in the handshake. A token
 crosses the network in every request; without a certificate it crosses in the
 clear, which suits a receiver behind a balancer that ends TLS for it. A
 token is checked before any of the body is read, and the bodies being read
-count against what the receiver may hold, so a sender without one cannot
-make a worker hold anything. A gzip body counts as it inflates, and is held
-to the receiver's request limit. The health path needs no token, and says
-only whether the receiver takes requests; a receiver that names trusted authorities
-admits no connection without a certificate that chains to them,
-the health path's included. Syslog carries no token, so a syslog receiver admits
-by the networks a sender connects from, or by its certificate. Over UDP it has
-no certificate to check, and a datagram's source address can be forged, so a
-UDP receiver's networks admit whoever can send from inside them or claim to.
+count against what the receiver may hold, so a sender without one cannot make
+a worker hold anything. A gzip body counts as it inflates, and is held to the
+receiver's request limit. The health path needs no token, and says only
+whether the receiver takes requests; a receiver that names trusted authorities
+admits no connection without a certificate that chains to them, the health
+path's included. The syslog protocol and a socket receiver's protocols carry
+no token, so these receivers admit a sender by the networks it connects from,
+or by its certificate. Over UDP there is no certificate to check, and a
+datagram's source address can be forged, so a UDP receiver's networks admit
+whoever can send from inside them or claim to.
+
+A receiver that holds connections open bounds them so that connections
+cannot exhaust a worker: a cap on each worker, an optional cap per sender,
+and an optional idle timeout.
+
+```mermaid
+flowchart TD
+  A[new connection] --> B{receiver holds its maximum?}
+  B -- no --> C[accepted]
+  B -- yes --> D{some connection idle long enough?}
+  D -- yes --> E[the one idle longest is closed, the new one takes its place]
+  D -- no --> F[new connection is closed]
+```
+
+The per-sender cap, which counts by address, applies the same rule to one
+address's connections. A connection is idle only while the receiver waits to
+read from it, so a receiver that has stopped reading because it cannot take
+more closes none for idleness. By default there is no per-sender cap, because
+behind a balancer or NAT every sender comes from one address, and no idle
+timeout, so a sender that writes on every connection often enough can hold
+every place; an administrator who faces one sets the per-sender cap.
 
 ## Scrapers
 

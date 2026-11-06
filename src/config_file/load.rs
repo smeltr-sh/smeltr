@@ -16,8 +16,10 @@ use crate::core::error::{Category, ExceptionKind};
 use crate::core::id::{DestId, FunctionId, SourceId};
 use crate::format::encoding::Encoding;
 use crate::io::entra::IMDS_API_VERSION;
+use crate::io::framing::{ByteOrder, Counts, LengthPrefix};
 use crate::io::line_breaker::{LineBreaker, PER_LINE};
 use crate::io::logs::LogsSourceConfig;
+use crate::io::object_source::MAX_RECORD_BYTES;
 use crate::io::trust::Side;
 use crate::metrics::MetricsSourceConfig;
 use crate::ops::timeparse;
@@ -789,6 +791,7 @@ fn to_tls(dto: &TlsDto, of: &str, side: Side) -> Option<Tls> {
         authorities: dto.trusted_authorities.clone(),
         trust_public: side == Side::Client && dto.trust_public != Some(false),
         side,
+        senders: Default::default(),
     })
 }
 
@@ -1191,6 +1194,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             listener,
             tls,
             tokens.iter(),
+            Default::default(),
             &of,
         ),
         SourceKindDto::OtlpReceiver {
@@ -1205,6 +1209,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             listener,
             tls,
             tokens.iter(),
+            Default::default(),
             &of,
         ),
         SourceKindDto::PrometheusReceiver {
@@ -1218,6 +1223,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             listener,
             tls,
             tokens.iter(),
+            Default::default(),
             &of,
         ),
         SourceKindDto::ElasticReceiver {
@@ -1231,6 +1237,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             listener,
             tls,
             tokens.iter(),
+            Default::default(),
             &of,
         ),
         SourceKindDto::HecReceiver {
@@ -1252,10 +1259,12 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             listener,
             tls,
             tokens.iter().map(|(name, t)| (name, &t.token)),
+            Default::default(),
             &of,
         ),
         SourceKindDto::S2sReceiver {
             listener,
+            connections,
             tls,
             tokens,
             sourcetypes,
@@ -1267,28 +1276,55 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             listener,
             tls,
             tokens.iter(),
+            to_connection_limits(connections),
             &of,
         ),
         SourceKindDto::SyslogReceiver {
             listener,
+            connections,
             tls,
             allow_from,
             encoding,
             transport,
             line_breaker,
         } => receiver_config(
-            crate::plan::topology::Receiver::Syslog(crate::plan::topology::SyslogReceiverConfig {
+            crate::plan::topology::Receiver::Syslog(crate::plan::topology::SocketReceiverConfig {
                 // Validation refused a block that does not parse, or a label that names no encoding, before any of
                 // this ran.
                 allow_from: allow_from.iter().filter_map(|b| b.trim().parse().ok()).collect(),
                 encoding: Encoding::for_label(&encoding.0).unwrap_or_default(),
                 transport: *transport,
-                line_breaker: line_breaker.as_deref().and_then(to_line_breaker),
+                framing: Framing::Syslog(line_breaker.as_deref().and_then(to_line_breaker)),
             }),
             false,
             listener,
             tls,
             std::iter::empty(),
+            to_connection_limits(connections),
+            &of,
+        ),
+        SourceKindDto::SocketReceiver {
+            listener,
+            connections,
+            tls,
+            allow_from,
+            encoding,
+            transport,
+            framing,
+        } => receiver_config(
+            crate::plan::topology::Receiver::Socket(crate::plan::topology::SocketReceiverConfig {
+                // Validation refused a block that does not parse, or a label that names no encoding, before any of
+                // this ran.
+                allow_from: allow_from.iter().filter_map(|b| b.trim().parse().ok()).collect(),
+                encoding: Encoding::for_label(&encoding.0).unwrap_or_default(),
+                transport: *transport,
+                framing: to_framing(framing),
+            }),
+            false,
+            listener,
+            tls,
+            std::iter::empty(),
+            to_connection_limits(connections),
             &of,
         ),
         SourceKindDto::AzureBlobQueue {
@@ -1493,7 +1529,7 @@ fn to_kafka_props(dto: &crate::config_file::dto::KafkaPropsDto) -> crate::plan::
     }
 }
 
-fn to_framing(dto: &ObjectFramingDto) -> Framing {
+fn to_framing(dto: &FramingSettingsDto) -> Framing {
     match dto.framing {
         // Validation refused a pattern that does not compile before any of this ran, so the fallback is unreachable.
         FramingDto::Lines => dto
@@ -1503,6 +1539,23 @@ fn to_framing(dto: &ObjectFramingDto) -> Framing {
             .map_or(Framing::Lines, Framing::LineBreaker),
         FramingDto::Object => Framing::Object,
         FramingDto::EscapedLines => Framing::EscapedLines,
+        // Validation refused a length prefix or a fixed size that is absent or out of range.
+        FramingDto::LengthPrefix => {
+            let prefix = dto.length_prefix.expect("validation required a lengthPrefix");
+            Framing::LengthPrefix(LengthPrefix {
+                offset: prefix.offset as usize,
+                width: prefix.bytes as usize,
+                order: match prefix.order {
+                    ByteOrderDto::Big => ByteOrder::Big,
+                    ByteOrderDto::Little => ByteOrder::Little,
+                },
+                counts: match prefix.counts {
+                    CountsDto::Rest => Counts::Rest,
+                    CountsDto::Message => Counts::Message,
+                },
+            })
+        }
+        FramingDto::Fixed => Framing::Fixed(dto.fixed_bytes.expect("validation required fixedBytes") as usize),
     }
 }
 
@@ -1524,7 +1577,7 @@ fn to_line_breaker(pattern: &str) -> Option<LineBreaker> {
 }
 
 /// A listing source of `queue`. Nothing hides a listed object, so its visibility is the queue kinds' default.
-fn listed(queue: ObjectQueue, tls: Option<Tls>, framing: &ObjectFramingDto, encoding: &EncodingLabel) -> SourceKind {
+fn listed(queue: ObjectQueue, tls: Option<Tls>, framing: &FramingSettingsDto, encoding: &EncodingLabel) -> SourceKind {
     SourceKind::Objects(ObjectSourceConfig {
         queue,
         tls,
@@ -2144,17 +2197,43 @@ fn receiver_config<'a>(
     listener: &ReceiverSettingsDto,
     tls: &ServedTlsDto,
     tokens: impl Iterator<Item = (&'a String, &'a SecretRefDto)>,
+    connections: crate::plan::topology::ConnectionLimits,
     of: &str,
 ) -> SourceKind {
     SourceKind::Receiver(crate::plan::topology::ReceiverConfig {
         receiver,
         listen: std::net::SocketAddr::new(std::net::Ipv6Addr::UNSPECIFIED.into(), listener.port),
         tokens: tokens.map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
-        tls: to_tls(&tls.tls(), of, Side::Server),
-        max_request_bytes: usize::try_from(listener.max_request_bytes.0.max(MaxRequestBytes::FLOOR))
-            .unwrap_or(usize::MAX),
+        tls: to_tls(&tls.tls(), of, Side::Server).map(|served| Tls {
+            senders: to_senders(tls),
+            ..served
+        }),
+        max_request_bytes: usize::try_from(listener.max_request_bytes.0).unwrap_or(usize::MAX),
         answer_after_delivery,
+        connections,
     })
+}
+
+/// Whom a receiver admits by a sender's certificate besides its authorities. What does not read was refused at save.
+fn to_senders(tls: &ServedTlsDto) -> crate::plan::topology::Senders {
+    crate::plan::topology::Senders {
+        fingerprints: tls
+            .sender_fingerprints
+            .iter()
+            .filter_map(|f| crate::io::senders::Fingerprint::parse(f).ok())
+            .collect(),
+        names: tls.sender_names.iter().map(|n| n.trim().to_string()).collect(),
+    }
+}
+
+/// What `dto` says of a receiver's connections.
+fn to_connection_limits(dto: &ConnectionLimitsDto) -> crate::plan::topology::ConnectionLimits {
+    let size = |n: u64| usize::try_from(n).unwrap_or(usize::MAX);
+    crate::plan::topology::ConnectionLimits {
+        max: size(dto.max_connections.0),
+        per_sender: dto.max_connections_per_sender.map(size),
+        idle: dto.idle_timeout_secs.map(std::time::Duration::from_secs),
+    }
 }
 
 /// Checks what a connector's TLS settings say, before anything reads them: a certificate named by name, authorities
@@ -2453,18 +2532,55 @@ fn check_encoding(encoding: &EncodingLabel, id: &str, errors: &mut ItemErrors<'_
     }
 }
 
-/// Refuses a line breaker on any framing but lines, and one `check_line_breaker` refuses.
-fn check_framing(dto: &ObjectFramingDto, id: &str, errors: &mut ItemErrors<'_>) {
-    let Some(line_breaker) = &dto.line_breaker else {
-        return;
-    };
+/// Refuses a line breaker on any framing but lines, and one `check_line_breaker` refuses; a length prefix and a fixed
+/// size on any framing but their own, absent from their own, or that no message or record of `max` bytes could hold.
+/// `unit` is the reader's word for it: a receiver's "message", an object's "record".
+fn check_framing(dto: &FramingSettingsDto, id: &str, max: u64, unit: &str, errors: &mut ItemErrors<'_>) {
     let what = format!("source {id:?}");
-    if dto.framing == FramingDto::Lines {
-        check_line_breaker(&what, line_breaker, errors.at("lineBreaker"));
-    } else {
-        errors
-            .at("lineBreaker")
-            .push(format!("{what} sets lineBreaker, which only lines framing reads"));
+    if let Some(line_breaker) = &dto.line_breaker {
+        if dto.framing == FramingDto::Lines {
+            check_line_breaker(&what, line_breaker, errors.at("lineBreaker"));
+        } else {
+            errors
+                .at("lineBreaker")
+                .push(format!("{what} sets lineBreaker, which only lines framing reads"));
+        }
+    }
+    match (dto.framing, dto.length_prefix) {
+        (FramingDto::LengthPrefix, None) => errors.at("lengthPrefix").push(format!(
+            "{what} cuts {unit}s by a length prefix; give the length's size in bytes, and its offset if any, in lengthPrefix"
+        )),
+        (FramingDto::LengthPrefix, Some(prefix)) => {
+            if !(1..=8).contains(&prefix.bytes) {
+                errors.at("lengthPrefix").push(format!(
+                    "{what} reads a length of {} bytes; it must be 1 to 8",
+                    prefix.bytes
+                ));
+            } else if prefix.offset.saturating_add(prefix.bytes) > max {
+                errors.at("lengthPrefix").push(format!(
+                    "{what} reads a length that ends {} bytes into a {unit}, past the largest {unit} of {}",
+                    prefix.offset.saturating_add(prefix.bytes),
+                    bytes::exact(max as usize)
+                ));
+            }
+        }
+        (_, Some(_)) => errors.at("lengthPrefix").push(format!(
+            "{what} sets lengthPrefix, which only lengthPrefix framing reads"
+        )),
+        (_, None) => {}
+    }
+    match (dto.framing, dto.fixed_bytes) {
+        (FramingDto::Fixed, None) => errors.at("fixedBytes").push(format!(
+            "{what} cuts {unit}s by a fixed size; give how many bytes in fixedBytes"
+        )),
+        (FramingDto::Fixed, Some(size)) if size == 0 || size > max => errors.at("fixedBytes").push(format!(
+            "{what} cuts a {unit} every {size} bytes; it must be 1 to {}, the largest {unit}",
+            bytes::exact(max as usize)
+        )),
+        (FramingDto::Fixed, Some(_)) | (_, None) => {}
+        (_, Some(_)) => errors
+            .at("fixedBytes")
+            .push(format!("{what} sets fixedBytes, which only fixed framing reads")),
     }
 }
 
@@ -2983,7 +3099,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_s3_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 check_queue(queue_url, *visibility_secs, &what, errors);
             }
             SourceKindDto::S3List {
@@ -3003,7 +3119,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_s3_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 check_bucket_name(bucket, &what, errors);
                 check_listing(
                     prefix,
@@ -3032,7 +3148,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_endpoint(access.endpoint.as_deref(), "endpoint", &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 if bucket.trim().is_empty() {
                     errors.at("bucket").push(format!("{what} names no bucket"));
                 }
@@ -3063,7 +3179,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_azure_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 if container.trim().is_empty() {
                     errors.at("container").push(format!("{what} names no container"));
                 }
@@ -3091,7 +3207,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 let what = format!("source {:?}", s.id);
                 check_sftp_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 check_listing(
                     prefix,
                     *poll_interval_secs,
@@ -3199,12 +3315,14 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             }
             SourceKindDto::S2sReceiver {
                 listener,
+                connections,
                 tls,
                 tokens,
                 sourcetypes,
             } => {
                 let what = format!("source {:?}", s.id);
                 check_receiver(&what, listener, tls, tokens, errors);
+                check_connection_limits(&what, connections, true, errors);
                 check_sourcetypes(&s.id, sourcetypes, errors);
             }
             SourceKindDto::OtlpReceiver {
@@ -3218,6 +3336,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             } => check_receiver(&format!("source {:?}", s.id), listener, tls, tokens, errors),
             SourceKindDto::SyslogReceiver {
                 listener,
+                connections,
                 tls,
                 allow_from,
                 encoding,
@@ -3226,6 +3345,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             } => {
                 let what = format!("source {:?}", s.id);
                 check_syslog_receiver(&what, listener, tls, allow_from, *transport, errors);
+                check_connection_limits(&what, connections, *transport == Transport::Tcp, errors);
                 check_encoding(encoding, &s.id, errors);
                 if let Some(line_breaker) = line_breaker {
                     match transport {
@@ -3233,6 +3353,31 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                             "{what} sets lineBreaker, which only TCP reads: over UDP a datagram is a message"
                         )),
                         Transport::Tcp => check_line_breaker(&what, line_breaker, errors.at("lineBreaker")),
+                    }
+                }
+            }
+            SourceKindDto::SocketReceiver {
+                listener,
+                connections,
+                tls,
+                allow_from,
+                encoding,
+                transport,
+                framing,
+            } => {
+                let what = format!("source {:?}", s.id);
+                check_syslog_receiver(&what, listener, tls, allow_from, *transport, errors);
+                check_connection_limits(&what, connections, *transport == Transport::Tcp, errors);
+                check_encoding(encoding, &s.id, errors);
+                match transport {
+                    Transport::Udp if framing.is_set() => errors.at("framing").push(format!(
+                        "{what} sets a framing, which only TCP reads: over UDP a datagram is a record"
+                    )),
+                    Transport::Udp => {}
+                    // A receiver keeps a message to its largest request.
+                    Transport::Tcp => {
+                        let max = listener.max_request_bytes.0;
+                        check_framing(framing, &s.id, max, "message", errors);
                     }
                 }
             }
@@ -3343,7 +3488,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_azure_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 check_queue(queue_url, *visibility_secs, &what, errors);
                 let poison = crate::io::storage_queue::POISON_SUFFIX;
                 let name = queue_url
@@ -3383,7 +3528,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 let what = format!("source {:?}", s.id);
                 check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, errors);
+                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
                 check_subscription(subscription, &what, errors);
                 check_endpoint(pubsub_endpoint.as_deref(), "pubsubEndpoint", &what, errors);
                 check_endpoint(access.endpoint.as_deref(), "endpoint", &what, errors);
@@ -4479,8 +4624,8 @@ fn check_records_at(what: &str, records: ApiRecordsDto, records_at: &Option<Stri
 }
 
 /// What a receiver must be before it can listen: a port, an address that is one, a certificate to serve, and someone
-/// it admits. With neither a token nor authorities that vouch for a sender, anyone who can reach the port could
-/// send.
+/// it admits. With no token, authorities or sender fingerprints to admit a sender by, anyone who can reach the port
+/// could send.
 fn check_receiver<T>(
     what: &str,
     listener: &ReceiverSettingsDto,
@@ -4491,8 +4636,8 @@ fn check_receiver<T>(
     let vouches = check_listener(what, listener, tls, errors);
     if tokens.is_empty() && !vouches {
         errors.at("tokens").push(format!(
-            "{what} admits anyone who can reach its port; give it a token, or trusted authorities a sender's certificate \
-             must chain to"
+            "{what} admits anyone who can reach its port; give it a token, trusted authorities a sender's certificate \
+             must chain to, or fingerprints of the certificates it admits"
         ));
     }
     for name in tokens.keys() {
@@ -4501,6 +4646,48 @@ fn check_receiver<T>(
                 .at("tokens")
                 .push(format!("{what} names a token by a blank name"));
         }
+    }
+}
+
+/// A receiver's connection limits. Only a receiver whose transport is `tcp` reads them.
+fn check_connection_limits(what: &str, connections: &ConnectionLimitsDto, tcp: bool, errors: &mut ItemErrors<'_>) {
+    let ConnectionLimitsDto {
+        max_connections,
+        max_connections_per_sender,
+        idle_timeout_secs,
+    } = connections;
+    let set = [
+        ("maxConnections", !max_connections.is_default()),
+        ("maxConnectionsPerSender", max_connections_per_sender.is_some()),
+        ("idleTimeoutSecs", idle_timeout_secs.is_some()),
+    ];
+    for (field, set) in set {
+        if set && !tcp {
+            errors.at(field).push(format!(
+                "{what} sets {field}, which only TCP reads: over UDP no connection is held open"
+            ));
+        }
+    }
+    if !(1..=MaxConnections::MAX).contains(&max_connections.0) {
+        errors.at("maxConnections").push(format!(
+            "{what} holds up to {} connections; maxConnections is between 1 and {}",
+            max_connections.0,
+            MaxConnections::MAX
+        ));
+    }
+    if let Some(n) = max_connections_per_sender
+        && !(1..=max_connections.0).contains(n)
+    {
+        errors.at("maxConnectionsPerSender").push(format!(
+            "{what} holds up to {n} connections from one sender; maxConnectionsPerSender is between 1 and its \
+             maxConnections, {}",
+            max_connections.0
+        ));
+    }
+    if *idle_timeout_secs == Some(0) {
+        errors.at("idleTimeoutSecs").push(format!(
+            "{what} closes a connection idle for 0 seconds; idleTimeoutSecs is at least 1"
+        ));
     }
 }
 
@@ -4524,8 +4711,8 @@ fn check_syslog_receiver(
     let vouches = vouches && transport == Transport::Tcp;
     if allow_from.is_empty() && !vouches {
         errors.at("allowFrom").push(format!(
-            "{what} admits anyone who can reach its port; give it the networks its senders connect from, or \
-             trusted authorities a sender's certificate must chain to"
+            "{what} admits anyone who can reach its port; give it the networks its senders connect from, trusted \
+             authorities a sender's certificate must chain to, or fingerprints of the certificates it admits"
         ));
     }
     for block in allow_from {
@@ -4539,7 +4726,7 @@ fn check_syslog_receiver(
 }
 
 /// What every receiver's listener must be: a port, and a certificate to serve where it serves TLS. Whether its
-/// authorities vouch for a sender, which then needs nothing else to be admitted.
+/// authorities or sender fingerprints vouch for a sender, which then needs nothing else to be admitted.
 fn check_listener(what: &str, listener: &ReceiverSettingsDto, tls: &ServedTlsDto, errors: &mut ItemErrors<'_>) -> bool {
     let ReceiverSettingsDto {
         port,
@@ -4565,7 +4752,30 @@ fn check_listener(what: &str, listener: &ReceiverSettingsDto, tls: &ServedTlsDto
             MaxRequestBytes::MAX
         ));
     }
-    tls.trusted_authorities.as_deref().is_some_and(|a| !blank(a))
+    for fingerprint in &tls.sender_fingerprints {
+        if let Err(why) = crate::io::senders::Fingerprint::parse(fingerprint) {
+            errors.at("senderFingerprints").push(format!(
+                "{what} admits a sender by {fingerprint:?}, which is not a fingerprint: {why}. Write one as \
+                 sha-256:AB:CD:…"
+            ));
+        }
+    }
+    for name in &tls.sender_names {
+        if !crate::io::senders::is_host(name.trim()) {
+            errors.at("senderNames").push(format!(
+                "{what} admits senders named {name:?}, which is not a host name; give one as host.example.com, or \
+                 *.example.com for any host in it"
+            ));
+        }
+    }
+    let authorities = tls.trusted_authorities.as_deref().is_some_and(|a| !blank(a));
+    if !tls.sender_names.is_empty() && !authorities {
+        errors.at("senderNames").push(format!(
+            "{what} names its senders' hosts and trusts no authority, so no certificate can match those names; paste \
+             the trusted authorities their certificates chain to"
+        ));
+    }
+    authorities || !tls.sender_fingerprints.is_empty()
 }
 
 /// Refuses two receivers on one port: every worker of the group binds each, and the second bind would fail on every
@@ -7296,11 +7506,11 @@ mod tests {
             ),
             (
                 "receiverRequestBytes",
-                // A form offers no less than a receiver runs at.
-                Receiver::FLOOR,
+                Receiver::MIN,
                 Some(Receiver::MAX),
                 Receiver::DEFAULT,
             ),
+            ("maxConnections", 1, Some(MaxConnections::MAX), MaxConnections::DEFAULT),
             (
                 "maxObjectBytes",
                 Object::MIN as u64,

@@ -329,6 +329,37 @@ fn an_untyped_local_takes_its_type_from_its_own_binding() {
     }
 }
 
+/// A name first written `null` or `[]` takes the type the writes after it blend to. A write that cannot blend with
+/// the writes before it is refused: `let x = []; x = 1;`.
+#[test]
+fn a_write_that_cannot_blend_with_the_writes_before_it_is_refused() {
+    for body in [
+        "let l = []; l = [1]; l = \"s\";",
+        "let l = []; l = \"s\"; l = [1];",
+        "let x = null; x = 1; x = \"s\";",
+    ] {
+        let e = err(vec![code(0, body)]);
+        assert!(e.contains("`\"s\"` is str, not"), "{body}: {e}");
+    }
+    let plan = ok(vec![code(
+        0,
+        "let l = []; l = [1]; l = [1.5]; m = l; let x = null; x = 1; x = 2.5; n = x;",
+    )]);
+    assert_eq!(run(&plan, &["{}"])[0]["m"], json!([1.5]));
+    assert_eq!(run(&plan, &["{}"])[0]["n"], json!(2.5));
+    let plan = ok(vec![code(
+        0,
+        "let x = null; if (length(_raw) > 2) { x = 1; } else { x = \"s\"; } n = x;",
+    )]);
+    assert_eq!(
+        run(&plan, &["{}", "{\"k\": 1}"])
+            .iter()
+            .map(|r| r["n"].clone())
+            .collect::<Vec<_>>(),
+        [json!("s"), json!(1)]
+    );
+}
+
 /// Sibling `if`/`else` blocks may each declare the same local name.
 #[test]
 fn sibling_branches_may_each_declare_the_same_local() {

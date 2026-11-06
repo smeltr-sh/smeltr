@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use smeltr::io::raw::{RawRead, RawTap};
 use smeltr::io::{Source, build_source};
 use smeltr::plan::topology::{
-    ApiRecords, HeldSecrets, HttpReceiverConfig, Receiver, ReceiverConfig, SourceKind, SyslogReceiverConfig, Tls,
+    ApiRecords, HeldSecrets, HttpReceiverConfig, Receiver, ReceiverConfig, SocketReceiverConfig, SourceKind, Tls,
     Transport,
 };
 
@@ -80,7 +80,8 @@ fn free_port() -> SocketAddr {
 
 fn syslog(listen: SocketAddr, transport: Transport, allow_from: &[&str], tls: Option<Tls>) -> ReceiverConfig {
     ReceiverConfig {
-        receiver: Receiver::Syslog(SyslogReceiverConfig {
+        receiver: Receiver::Syslog(SocketReceiverConfig {
+            framing: smeltr::io::framing::Framing::Syslog(None),
             allow_from: allow_from.iter().map(|n| n.parse().unwrap()).collect(),
             transport,
             ..Default::default()
@@ -90,6 +91,7 @@ fn syslog(listen: SocketAddr, transport: Transport, allow_from: &[&str], tls: Op
         tls,
         max_request_bytes: 1 << 16,
         answer_after_delivery: false,
+        connections: Default::default(),
     }
 }
 
@@ -104,6 +106,7 @@ fn http(listen: SocketAddr) -> ReceiverConfig {
         tls: None,
         max_request_bytes: 1 << 16,
         answer_after_delivery: false,
+        connections: Default::default(),
     }
 }
 
@@ -134,6 +137,7 @@ fn served_by(authority: &Authority) -> (Tls, HeldSecrets) {
         authorities: None,
         trust_public: false,
         side: smeltr::io::trust::Side::Server,
+        senders: Default::default(),
     };
     (tls, secrets)
 }
