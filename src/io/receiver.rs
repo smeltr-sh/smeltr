@@ -500,14 +500,36 @@ fn close_idle_http(open: &Arc<Mutex<Connections>>, said: &Arc<Mutex<Said>>) {
     });
 }
 
-/// Why `Admitting` closed a connection before its handshake. It is the error the connection fails with, and the one a
-/// capture shows when one is watching.
-#[derive(Debug)]
-pub(super) struct Refusal(String);
+/// Why a receiver refused a connection before its handshake. It is the error an HTTP connection fails with, and what a
+/// capture shows when one is watching. Its message is built only when it is read.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Refusal {
+    why: connections::Refused,
+    limits: ConnectionLimits,
+    budget: usize,
+}
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        let Refusal { why, limits, budget } = *self;
+        match why {
+            connections::Refused::Full => write!(
+                f,
+                "refused: the receiver holds its maxConnections, {}, and none has been idle a minute to close for it",
+                limits.max.unwrap_or(budget)
+            ),
+            connections::Refused::FullFromSender => write!(
+                f,
+                "refused: the receiver holds its maxConnectionsPerSender, {}, from this sender, and none has been \
+                 idle a minute to close for it",
+                limits.per_sender.unwrap_or_default()
+            ),
+            connections::Refused::WorkerFull => write!(
+                f,
+                "refused: the worker's receivers hold the {budget} connections its open-file limit leaves room for, \
+                 and none has been idle a minute to close for it"
+            ),
+        }
     }
 }
 
@@ -546,7 +568,7 @@ where
         let place = match admitted {
             Ok(place) => place,
             Err(refusal) => {
-                let refused = std::io::Error::other(Refusal(refusal));
+                let refused = std::io::Error::other(refusal);
                 return futures_util::future::Either::Left(std::future::ready(Err(refused)));
             }
         };
@@ -3256,7 +3278,7 @@ async fn serve_streams<H, F>(
             Ok(place) => place,
             Err(refusal) => {
                 if shared.watching() {
-                    offer_closed(&*shared, &remote, tls.is_some(), &refusal);
+                    offer_closed(&*shared, &remote, tls.is_some(), &refusal.to_string());
                 }
                 continue;
             }
@@ -3319,7 +3341,7 @@ impl Said {
 
     /// Admits a connection from `peer` to `open`, logging what it closed to make room. Returns the connection's place, or
     /// why it is refused.
-    fn admit(&mut self, open: &Arc<Mutex<Connections>>, peer: std::net::IpAddr) -> Result<connections::Place, String> {
+    fn admit(&mut self, open: &Arc<Mutex<Connections>>, peer: std::net::IpAddr) -> Result<connections::Place, Refusal> {
         let (closed, place) = Connections::admit(open, peer);
         for (gone, why) in closed {
             self.closed(gone, why);
@@ -3370,32 +3392,21 @@ impl Said {
     }
 
     /// Logs that a connection from `peer` was refused, and returns why.
-    fn refused(&mut self, peer: std::net::IpAddr, why: connections::Refused) -> String {
+    fn refused(&mut self, peer: std::net::IpAddr, why: connections::Refused) -> Refusal {
         let at = match why {
             connections::Refused::Full => 0,
             connections::Refused::FullFromSender => 1,
             connections::Refused::WorkerFull => 2,
         };
-        let (limits, budget) = (&self.limits, self.budget);
-        let message = match why {
-            connections::Refused::Full => format!(
-                "refused: the receiver holds its maxConnections, {}, and none has been idle a minute to close for it",
-                limits.max.unwrap_or(budget)
-            ),
-            connections::Refused::FullFromSender => format!(
-                "refused: the receiver holds its maxConnectionsPerSender, {}, from this sender, and none has been \
-                 idle a minute to close for it",
-                limits.per_sender.unwrap_or_default()
-            ),
-            connections::Refused::WorkerFull => format!(
-                "refused: the worker's receivers hold the {budget} connections its open-file limit leaves room for, \
-                 and none has been idle a minute to close for it"
-            ),
+        let refusal = Refusal {
+            why,
+            limits: self.limits,
+            budget: self.budget,
         };
         if self.refused[at].due() {
-            tracing::warn!(name: "receiver_connection_refused", target: "sources", subject = %peer, "{message}");
+            tracing::warn!(name: "receiver_connection_refused", target: "sources", subject = %peer, "{refusal}");
         }
-        message
+        refusal
     }
 }
 
