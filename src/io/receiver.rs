@@ -3514,7 +3514,7 @@ fn socket(listen: Listen) -> std::io::Result<socket2::Socket> {
 /// Binds `listen` with `SO_REUSEADDR` on unix, so a port a stopped process held a moment ago binds again.
 /// `[::]` is every address of the host, so it is bound dual-stack, taking IPv4 senders as well; on a host without
 /// IPv6, it binds `0.0.0.0` instead.
-pub(crate) fn bind(listen: Listen) -> std::io::Result<socket2::Socket> {
+pub fn bind(listen: Listen) -> std::io::Result<socket2::Socket> {
     bind_reusing(listen, cfg!(unix))
 }
 

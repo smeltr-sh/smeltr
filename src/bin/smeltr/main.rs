@@ -2443,17 +2443,12 @@ async fn run_leader() {
 /// leader that failed to start for its own reasons. It stays in every branch below, including the ones this
 /// function's own callers never trigger in that test.
 fn bind_listener(addr: std::net::SocketAddr) -> std::net::TcpListener {
-    let domain = if addr.is_ipv6() {
-        socket2::Domain::IPV6
-    } else {
-        socket2::Domain::IPV4
-    };
     let bound = (|| -> std::io::Result<std::net::TcpListener> {
-        let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
-        #[cfg(unix)]
-        socket.set_reuse_address(true)?;
-        socket.bind(&addr.into())?;
-        socket.listen(1024)?;
+        let listen = smeltr::plan::topology::Listen {
+            transport: smeltr::plan::topology::Transport::Tcp,
+            address: addr,
+        };
+        let socket = smeltr::io::receiver::bind(listen)?;
         socket.set_nonblocking(true)?;
         Ok(socket.into())
     })();
@@ -2487,6 +2482,17 @@ mod tests {
         FormatRequest, GrokCapturesRequest, LineBreakerRequest, captures_of, format_code, line_breaker_verdict,
     };
     use smeltr::expr::pretty::Kind;
+
+    /// A leader on every address takes IPv4 on every OS, Windows too. A host without IPv6 has nothing to test.
+    #[test]
+    fn a_leader_on_every_address_takes_ipv4() {
+        if std::net::TcpListener::bind("[::1]:0").is_err() {
+            return;
+        }
+        let listener = super::bind_listener("[::]:0".parse().unwrap());
+        let port = listener.local_addr().unwrap().port();
+        std::net::TcpStream::connect(("127.0.0.1", port)).expect("IPv4 reaches a leader on [::]");
+    }
 
     fn column(name: &str, ty: &str) -> smeltr::heartbeat::CaptureColumn {
         smeltr::heartbeat::CaptureColumn {
