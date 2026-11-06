@@ -285,6 +285,15 @@ impl Framer {
         Ok(0)
     }
 
+    /// How many bytes it holds of an octet-counted frame not yet whole, once every whole message is cut.
+    fn unfinished(&self) -> usize {
+        let rest = &self.held[self.cut..];
+        match (self.discarding, rest.first()) {
+            (Discarding::Nothing, Some(b'1'..=b'9')) => rest.len(),
+            _ => 0,
+        }
+    }
+
     /// Whether what it holds waits on a line breaker's break, which a quiet sender may never send.
     fn waits(&self) -> bool {
         let breaking = self.discarding == Discarding::Break
@@ -605,8 +614,9 @@ impl Handler {
                 return End::Malformed(malformed);
             }
             if broke {
-                // Only `finish` measures an unfinished octet-counted frame.
-                return End::Gone { partial: 0 };
+                return End::Gone {
+                    partial: framer.unfinished(),
+                };
             }
         }
         let mut messages = Messages::default();
@@ -1096,5 +1106,18 @@ mod tests {
             .await;
         assert_eq!(ended, End::Gone { partial: 0 });
         assert_eq!(admitted, ["<13>a", "<13>b"]);
+    }
+
+    #[tokio::test]
+    async fn a_broken_connection_counts_its_unfinished_octet_counted_frame() {
+        let ended = handler()
+            .read(
+                Breaks([b"<13>a\n10 <13>".to_vec()].into(), std::io::ErrorKind::ConnectionReset),
+                "127.0.0.1",
+                |_, _| async { Ok(()) },
+                &mut Held::alone(),
+            )
+            .await;
+        assert_eq!(ended, End::Gone { partial: 7 });
     }
 }
