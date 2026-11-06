@@ -1481,7 +1481,7 @@ const addReceiver: Move = {
 };
 
 /** The journey's receiver serves TLS under the leader's certificate, and admits a sender by its certificate's
- * fingerprint. */
+ * fingerprint. The fingerprint is random, so after this move the receiver admits none of the journey's senders. */
 const admitSenders: Move = {
   name: 'admit-senders',
   weight: (w) => (w.password && w.editing.sources.some((s) => s.startsWith('in-')) ? 1 : 0),
@@ -1499,7 +1499,7 @@ const admitSenders: Move = {
         .isVisible())
     )
       await page.getByText(id, { exact: true }).first().click();
-    const advanced = page.getByRole('button', { name: /^Advanced/ }).last();
+    const advanced = page.getByRole('button', { name: /^Advanced(?! TLS)/ }).last();
     if ((await advanced.getAttribute('aria-expanded')) === 'false') await advanced.click();
     await page
       .getByRole('combobox', { name: /^server certificate\b/ })
