@@ -478,6 +478,18 @@
 
   /** Free space leads, because it is what the worker may still write. Total says how much room
    * that is out of. */
+  function formatConnections(resources: WorkerRow['resources']): string {
+    if (resources?.connectionBudget == null) return '--';
+    return `up to ${resources.connectionBudget.toLocaleString('en-US')}`;
+  }
+
+  function connectionsTitle(resources: WorkerRow['resources']): string {
+    const limit = resources?.openFileLimit;
+    return limit == null
+      ? 'The connections this worker’s receivers may hold together'
+      : `The connections this worker’s receivers may hold together, within its open-file limit of ${limit.toLocaleString('en-US')}`;
+  }
+
   function formatDisk(resources: WorkerRow['resources']): string {
     if (resources?.diskFreeBytes == null || resources.diskTotalBytes == null) return '--';
     return `${bytes(resources.diskFreeBytes)} free of ${bytes(resources.diskTotalBytes)}`;
@@ -946,7 +958,7 @@
                 ? 'never'
                 : `${selectedWorker.stopAfterUnreachableSecs}s`}
             </dd>
-            <dt><WorkerGroupIcon />Group</dt>
+            <dt class="glyphed"><WorkerGroupIcon />Group</dt>
             <dd>{selectedWorker.groupId ?? '--'}</dd>
             <dt>Threads</dt>
             <dd>{runningThreads(selectedWorker.threads)}</dd>
@@ -971,6 +983,10 @@
             <dt>Disk</dt>
             <dd title="Free space on the filesystem holding this worker’s state directory">
               {formatDisk(selectedWorker.resources)}
+            </dd>
+            <dt>Connections</dt>
+            <dd title={connectionsTitle(selectedWorker.resources)}>
+              {formatConnections(selectedWorker.resources)}
             </dd>
             {#if selectedWorker.listens.length > 0}
               <dt>Receivers</dt>

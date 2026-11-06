@@ -48,7 +48,7 @@ describe('rankedSuggestions', () => {
 
   it('finds a name by the starts of its words', () => {
     expect(rankedSuggestions(CONDITION_FUNCTIONS, 'pt')[0].name).toBe('parseTime');
-    expect(rankedSuggestions(CONDITION_FUNCTIONS, 'int')[0].name).toBe('parseInt');
+    expect(rankedSuggestions(CONDITION_FUNCTIONS, 'int')[0].name).toBe('readInt');
   });
 
   it('puts an exact name first', () => {

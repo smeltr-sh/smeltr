@@ -5474,6 +5474,16 @@ fn otlp_receivers_of_different_signals_share_a_port() {
     );
     let e = refusal(&sources(&[
         otlp("a", "", ""),
+        otlp("b", r#","signal":"traces""#, r#","maxConnections":5"#),
+    ]));
+    assert!(
+        e.contains(
+            r#"source "b" shares port 4318 with source "a", which serves it; give both the same maxConnections, maxConnectionsPerSender and idleTimeoutSecs"#
+        ),
+        "{e}"
+    );
+    let e = refusal(&sources(&[
+        otlp("a", "", ""),
         format!(r#"{{"id":"b","type":"httpReceiver","port":4318{RECEIVER_TOKEN}}}"#),
     ]));
     assert!(
@@ -6704,11 +6714,10 @@ fn a_receiver_admits_senders_by_fingerprint_and_by_name() {
     assert!(e.contains("admits anyone"), "{e}");
 }
 
-/// A receiver that streams holds the default maximum of connections unless told otherwise, and an admin may
-/// tighten that, cap one sender, and close idle connections. Over UDP, which holds no connection, the settings are
-/// refused.
+/// A receiver holds the default maximum of connections unless told otherwise, and an admin may tighten that, cap one
+/// sender, and close idle connections. Over UDP, which holds no connection, the settings are refused.
 #[test]
-fn a_receiver_that_streams_takes_connection_limits() {
+fn a_receiver_takes_connection_limits() {
     use smeltr::plan::topology::{ConnectionLimits, SourceKind};
 
     let socket = |extra: &str| {
@@ -6725,13 +6734,13 @@ fn a_receiver_that_streams_takes_connection_limits() {
         r.connections
     };
     assert_eq!(limits(&socket("")), ConnectionLimits::default());
-    assert_eq!(ConnectionLimits::default().max, 10_000);
+    assert_eq!(ConnectionLimits::default().max, None);
     let json = socket(r#","maxConnections":500,"maxConnectionsPerSender":20,"idleTimeoutSecs":600"#);
     assert_eq!(refusal(&json), "");
     assert_eq!(
         limits(&json),
         ConnectionLimits {
-            max: 500,
+            max: Some(500),
             per_sender: Some(20),
             idle: Some(std::time::Duration::from_secs(600)),
         }
@@ -6757,6 +6766,11 @@ fn a_receiver_that_streams_takes_connection_limits() {
         "between 1 and its maxConnections, 10"
     ));
     assert!(refused_at(
+        &socket(r#","maxConnectionsPerSender":1000001"#),
+        "maxConnectionsPerSender",
+        "between 1 and 1000000"
+    ));
+    assert!(refused_at(
         &socket(r#","idleTimeoutSecs":0"#),
         "idleTimeoutSecs",
         "at least 1"
@@ -6767,9 +6781,8 @@ fn a_receiver_that_streams_takes_connection_limits() {
         "only TCP reads"
     ));
     let http = http_receiver_config(8088, &format!(r#"{RECEIVER_TOKEN},"maxConnections":5"#));
-    let e =
-        serde_json::from_str::<smeltr::config_file::FileConfig>(&http).expect_err("an HTTP receiver takes none yet");
-    assert!(e.to_string().contains("maxConnections"), "{e}");
+    assert_eq!(refusal(&http), "");
+    assert_eq!(limits(&http).max, Some(5));
     assert_eq!(
         refusal(&s2s_receiver_config(&format!(
             r#"{S2S_TOKEN},"maxConnectionsPerSender":4"#

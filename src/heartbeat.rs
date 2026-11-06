@@ -428,10 +428,19 @@ pub struct ResourceReport {
     pub disk_free_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_total_bytes: Option<u64>,
+    /// How many files the worker may hold open (`RLIMIT_NOFILE`). Absent from a worker older than this field, and
+    /// where the platform sets no such limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_file_limit: Option<u64>,
+    /// How many connections the worker's receivers may hold together, within its open-file limit
+    /// (`io::connections::Budget`). Absent from a worker older than this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_budget: Option<u64>,
 }
 
 impl From<crate::resources::ResourceUsage> for ResourceReport {
     fn from(u: crate::resources::ResourceUsage) -> ResourceReport {
+        let files = crate::io::connections::open_files();
         ResourceReport {
             cpu_percent: u.cpu_percent,
             cpu_limit_cores: Some(u.cpu_limit_cores),
@@ -441,6 +450,8 @@ impl From<crate::resources::ResourceUsage> for ResourceReport {
             memory_limited: u.memory_limited,
             disk_free_bytes: u.disk_free_bytes,
             disk_total_bytes: u.disk_total_bytes,
+            open_file_limit: files.limit,
+            connection_budget: Some(files.budget as u64),
         }
     }
 }
@@ -2055,6 +2066,8 @@ mod tests {
             memory_limited: true,
             disk_free_bytes: Some(21_474_836_480),
             disk_total_bytes: Some(107_374_182_400),
+            open_file_limit: Some(524_288),
+            connection_budget: Some(516_096),
         })
         .unwrap();
         for key in [
@@ -2066,6 +2079,8 @@ mod tests {
             "memoryLimited",
             "diskFreeBytes",
             "diskTotalBytes",
+            "openFileLimit",
+            "connectionBudget",
         ] {
             assert!(json.get(key).is_some(), "{key} is not on the wire: {json}");
         }

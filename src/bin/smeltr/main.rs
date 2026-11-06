@@ -1844,6 +1844,25 @@ fn start() {
     // Before either role starts, so nothing this process has to say about itself predates somewhere to say it.
     smeltr::logs::start();
 
+    // Before any receiver opens: the soft limit is what bounds the connections they hold. The worker's runtime
+    // process inherits the raised limit from its supervisor.
+    if !runtime_child {
+        match smeltr::io::connections::raise_open_file_limit() {
+            Ok(files) => tracing::info!(
+                name: "open_files", target: "processes",
+                limit = ?files.limit,
+                connections = files.budget,
+                "the worker may hold this many files open, and its receivers this many connections"
+            ),
+            Err(e) => tracing::warn!(
+                name: "open_files_not_raised", target: "processes",
+                error = %e,
+                connections = smeltr::io::connections::open_files().budget,
+                "the worker could not raise its open-file limit to its hard limit, so its receivers hold fewer connections"
+            ),
+        }
+    }
+
     if runtime_child {
         smeltr::worker::child::run_runtime_child();
     }
@@ -2387,7 +2406,7 @@ async fn run_leader() {
             );
             let mut server =
                 axum_server::tls_rustls::from_tcp_rustls(listener, config).expect("wrap smeltr listener with TLS");
-            smeltr::leader::listen::bound(server.http_builder(), smeltr::leader::listen::HEADER_READ);
+            smeltr::leader::listen::bound(server.http_builder(), smeltr::io::receiver::HEADER_READ);
             server
                 .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
                 .await
@@ -2396,7 +2415,7 @@ async fn run_leader() {
         None => {
             tracing::info!(name: "listening", target: "api", %addr, tls = false, "smeltr is listening, with TLS disabled by SMELTR_LEADER_TLS");
             let mut server = axum_server::from_tcp(listener).expect("hand smeltr listener to the server");
-            smeltr::leader::listen::bound(server.http_builder(), smeltr::leader::listen::HEADER_READ);
+            smeltr::leader::listen::bound(server.http_builder(), smeltr::io::receiver::HEADER_READ);
             // `into_make_service_with_connect_info` rather than the plain one: the login throttle keys on the
             // socket's own peer, and nothing else may stand in for it.
             server
@@ -2424,17 +2443,12 @@ async fn run_leader() {
 /// leader that failed to start for its own reasons. It stays in every branch below, including the ones this
 /// function's own callers never trigger in that test.
 fn bind_listener(addr: std::net::SocketAddr) -> std::net::TcpListener {
-    let domain = if addr.is_ipv6() {
-        socket2::Domain::IPV6
-    } else {
-        socket2::Domain::IPV4
-    };
     let bound = (|| -> std::io::Result<std::net::TcpListener> {
-        let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
-        #[cfg(unix)]
-        socket.set_reuse_address(true)?;
-        socket.bind(&addr.into())?;
-        socket.listen(1024)?;
+        let listen = smeltr::plan::topology::Listen {
+            transport: smeltr::plan::topology::Transport::Tcp,
+            address: addr,
+        };
+        let socket = smeltr::io::receiver::bind(listen)?;
         socket.set_nonblocking(true)?;
         Ok(socket.into())
     })();
@@ -2468,6 +2482,17 @@ mod tests {
         FormatRequest, GrokCapturesRequest, LineBreakerRequest, captures_of, format_code, line_breaker_verdict,
     };
     use smeltr::expr::pretty::Kind;
+
+    /// A leader on every address takes IPv4 on every OS, Windows too. A host without IPv6 has nothing to test.
+    #[test]
+    fn a_leader_on_every_address_takes_ipv4() {
+        if std::net::TcpListener::bind("[::1]:0").is_err() {
+            return;
+        }
+        let listener = super::bind_listener("[::]:0".parse().unwrap());
+        let port = listener.local_addr().unwrap().port();
+        std::net::TcpStream::connect(("127.0.0.1", port)).expect("IPv4 reaches a leader on [::]");
+    }
 
     fn column(name: &str, ty: &str) -> smeltr::heartbeat::CaptureColumn {
         smeltr::heartbeat::CaptureColumn {

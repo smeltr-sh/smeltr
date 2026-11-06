@@ -133,8 +133,8 @@
       (s.maxRequestBytes ?? LIMITS.receiverRequestBytes.default) !==
         LIMITS.receiverRequestBytes.default ||
       s.answerAfterDelivery === true ||
-      (streams(s) &&
-        ((s.maxConnections ?? LIMITS.maxConnections.default) !== LIMITS.maxConnections.default ||
+      (overTcp(s) &&
+        (s.maxConnections !== undefined ||
           s.maxConnectionsPerSender !== undefined ||
           s.idleTimeoutSecs !== undefined)) ||
       ((s.type === 'syslogReceiver' || s.type === 'socketReceiver') &&
@@ -144,17 +144,9 @@
     );
   }
 
-  type StreamingReceiver = Extract<
-    SourceDto,
-    { type: 's2sReceiver' | 'syslogReceiver' | 'socketReceiver' }
-  >;
-
-  /** Whether `s`'s senders stream over a connection it holds open, which its connection limits hold to. */
-  function streams(s: ReceiverSource): s is StreamingReceiver {
-    return (
-      s.type === 's2sReceiver' ||
-      ((s.type === 'syslogReceiver' || s.type === 'socketReceiver') && s.transport !== 'udp')
-    );
+  /** Whether `s`'s senders connect over TCP, so it holds their connections to its connection limits. */
+  function overTcp(s: ReceiverSource): boolean {
+    return !((s.type === 'syslogReceiver' || s.type === 'socketReceiver') && s.transport === 'udp');
   }
 
   type SyslogReceiver = Extract<SourceDto, { type: 'syslogReceiver' }>;
@@ -1251,7 +1243,7 @@
         />
       </Field>
     {/if}
-    {#if streams(source)}
+    {#if overTcp(source)}
       {@render connectionLimits(source)}
     {/if}
     {#if source.type === 'socketReceiver'}
@@ -1271,24 +1263,23 @@
   </Advanced>
 {/snippet}
 
-<!-- How many connections a receiver whose senders stream holds open, and how long it keeps an idle one. -->
-{#snippet connectionLimits(source: StreamingReceiver)}
+<!-- How many connections a receiver holds open over TCP, and how long it keeps an idle one. -->
+{#snippet connectionLimits(source: ReceiverSource)}
   <Field optional field="maxConnections" label="max connections">
     {#snippet help()}
       The most connections it holds open on each worker, at most
       {LIMITS.maxConnections.max.toLocaleString('en-US')}. When it holds that many, a new connection
       takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new
-      one is closed.
+      one is closed. Empty, it may hold as many as the worker's open-file limit leaves room for,
+      shared with the worker's other receivers.
     {/snippet}
     <input
       type="number"
       min={LIMITS.maxConnections.min}
       max={LIMITS.maxConnections.max}
-      value={source.maxConnections ?? LIMITS.maxConnections.default}
-      oninput={(e) => {
-        const n = bounded(e.currentTarget, LIMITS.maxConnections);
-        source.maxConnections = n === LIMITS.maxConnections.default ? undefined : n;
-      }}
+      value={source.maxConnections ?? ''}
+      placeholder="as the worker allows"
+      oninput={(e) => (source.maxConnections = bounded(e.currentTarget, LIMITS.maxConnections))}
     />
   </Field>
   <Field optional field="maxConnectionsPerSender" label="max connections per sender">
@@ -1302,13 +1293,13 @@
     <input
       type="number"
       min="1"
-      max={source.maxConnections ?? LIMITS.maxConnections.default}
+      max={source.maxConnections ?? LIMITS.maxConnections.max}
       value={source.maxConnectionsPerSender ?? ''}
       placeholder="no limit"
       oninput={(e) =>
         (source.maxConnectionsPerSender = bounded(e.currentTarget, {
           min: 1,
-          max: source.maxConnections ?? LIMITS.maxConnections.default,
+          max: source.maxConnections ?? LIMITS.maxConnections.max,
         }))}
     />
   </Field>

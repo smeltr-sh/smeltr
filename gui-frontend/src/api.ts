@@ -290,48 +290,53 @@ export type SourceDto =
       /** Which of the app's keys `privateKey` is, for an app with several. */
       keyId?: string;
     })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'httpReceiver';
-      /** The path senders POST to. Absent is `/`. */
-      path?: string;
-      /** Token name to the credential holding a token a sender presents as `Authorization: Bearer`. */
-      tokens?: Record<string, SecretRef>;
-      /** Absent is `body`. */
-      records?: ApiRecords;
-      /** The JSON pointer to the array `array` reads. Absent is a body that is the array. */
-      recordsAt?: string;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'hecReceiver';
-      /** Token name to a token a sender presents as `Authorization: Splunk`. */
-      tokens?: Record<string, HecToken>;
-      /** Sourcetype to where a raw request's events end, by the request's `sourcetype`. A sourcetype not named
-       * here is an event per line. */
-      sourcetypes?: Record<string, Sourcetype>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'otlpReceiver';
-      /** The signal it takes. Absent is `logs`. The receivers of other signals may share its port. */
-      signal?: OtlpSignal;
-      /** Token name to the credential holding a token an exporter presents as `Authorization: Bearer`. */
-      tokens?: Record<string, SecretRef>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'prometheusReceiver';
-      /** Token name to the credential holding a token a sender presents as `Authorization: Bearer`. */
-      tokens?: Record<string, SecretRef>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'elasticReceiver';
-      /** Token name to the credential holding a token a sender presents as `Authorization: Bearer` or `ApiKey`, or
-       * as a Basic password. */
-      tokens?: Record<string, SecretRef>;
-    })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'httpReceiver';
+        /** The path senders POST to. Absent is `/`. */
+        path?: string;
+        /** Token name to the credential holding a token a sender presents as `Authorization: Bearer`. */
+        tokens?: Record<string, SecretRef>;
+        /** Absent is `body`. */
+        records?: ApiRecords;
+        /** The JSON pointer to the array `array` reads. Absent is a body that is the array. */
+        recordsAt?: string;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'hecReceiver';
+        /** Token name to a token a sender presents as `Authorization: Splunk`. */
+        tokens?: Record<string, HecToken>;
+        /** Sourcetype to where a raw request's events end, by the request's `sourcetype`. A sourcetype not named
+         * here is an event per line. */
+        sourcetypes?: Record<string, Sourcetype>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'otlpReceiver';
+        /** The signal it takes. Absent is `logs`. The receivers of other signals may share its port. */
+        signal?: OtlpSignal;
+        /** Token name to the credential holding a token an exporter presents as `Authorization: Bearer`. */
+        tokens?: Record<string, SecretRef>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'prometheusReceiver';
+        /** Token name to the credential holding a token a sender presents as `Authorization: Bearer`. */
+        tokens?: Record<string, SecretRef>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'elasticReceiver';
+        /** Token name to the credential holding a token a sender presents as `Authorization: Bearer` or `ApiKey`, or
+         * as a Basic password. */
+        tokens?: Record<string, SecretRef>;
+      })
   | (ReceiverSettings &
       ConnectionLimits & {
         id: string;
@@ -530,8 +535,8 @@ export const LIMITS = {
   logAnalyticsRequestBytes: { min: 4 * 1024, max: 1024 * 1024, default: 1024 * 1024 },
   /** A receiver's `maxRequestBytes` (`MaxRequestBytes`): at most what one request may hold of its inbox. */
   receiverRequestBytes: { min: 2048, max: 64 * 1024 * 1024, default: 10 * 1024 * 1024 },
-  /** A receiver's `maxConnections` (`MaxConnections`), on each worker. */
-  maxConnections: { min: 1, max: 1_000_000, default: 10_000 },
+  /** A receiver's `maxConnections` (`ConnectionLimits::MOST`), on each worker. Absent, the worker's budget. */
+  maxConnections: { min: 1, max: 1_000_000 },
   maxObjectBytes: { min: 64 * 1024, max: 64 * 1024 * 1024 * 1024, default: 64 * 1024 * 1024 },
   stallAfterSecs: { min: 1, max: 120, default: 30 },
   bufferBytes: { min: 4 * 1024 * 1024, max: 1024 * 1024 * 1024, default: 64 * 1024 * 1024 },
@@ -926,10 +931,9 @@ export interface ReceiverSettings extends Pick<
   answerAfterDelivery?: boolean;
 }
 
-/** How many connections a receiver whose senders stream over TCP holds open, mirroring
- * `config_file::dto::ConnectionLimitsDto`. */
+/** How many connections a receiver holds open over TCP, mirroring `config_file::dto::ConnectionLimitsDto`. */
 export interface ConnectionLimits {
-  /** Absent is `LIMITS.maxConnections.default`. */
+  /** Absent, as many as the worker's budget for every receiver's connections. */
   maxConnections?: number;
   /** Absent, as many as `maxConnections`. */
   maxConnectionsPerSender?: number;
@@ -3122,6 +3126,11 @@ export type ResourceReport = {
    * would not answer. */
   diskFreeBytes?: number;
   diskTotalBytes?: number;
+  /** How many files the worker may hold open. Absent from a worker older than this field, and where the
+   * platform sets no such limit. */
+  openFileLimit?: number;
+  /** How many connections the worker's receivers may hold together. Absent from a worker older than this field. */
+  connectionBudget?: number;
 };
 
 /** One worker thread as last heartbeated. `lastSeenMillisAgo` is the only
