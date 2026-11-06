@@ -539,15 +539,10 @@ fn every_framing_takes_each_frame_once_however_it_is_written() {
                             Presents::Stranger,
                         ]);
                     }
-                    if settings.tls != Tls::None && rng.chance(4) {
-                        connection.abrupt = true;
-                        // Hanging up without a close_notify reads as cut short, so what waited on the hang-up is not
-                        // taken.
-                        if connection.ended_by_hanging_up {
-                            connection.taken.pop();
-                            reached.retain(|label| label != "an unterminated last frame");
-                            reached.push("a TLS sender hanging up without saying so".into());
-                        }
+                    // A TLS sender may hang up without a close_notify, which the receiver takes as a clean hang-up.
+                    connection.abrupt = settings.tls != Tls::None && rng.chance(4);
+                    if connection.abrupt {
+                        reached.push("a TLS sender hanging up without saying so".into());
                     }
                     if settings.tls == Tls::Vouched && allowed {
                         cov.reach(format!("presents {:?} under Vouched", connection.presents));
@@ -964,9 +959,9 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
                         (_, 1) => End::Unsaid,
                         _ => End::HangUp,
                     };
-                    // A plain sender's hang-up and a TLS sender's close_notify end the stream; a hang-up without a
-                    // close_notify or a reset cuts it short, so what waits on the end of the stream is not taken, and
-                    // a reset may lose what the receiver had not read yet.
+                    // A hang-up ends the stream, under TLS with or without a close_notify. A reset cuts it short, so
+                    // what waits on the end of the stream is not taken, and what the receiver had not read yet may be
+                    // lost.
                     let mut pauses = vec![0u64; c.pieces.len()];
                     if c.pieces.len() > 1 && rng.chance(4) {
                         let at = rng.below(c.pieces.len() - 1);
@@ -1013,7 +1008,7 @@ fn live_misbehaving_senders_never_get_a_record_invented_or_lost() {
                         continue;
                     }
                     cov.reach(format!("end {end:?}"));
-                    if matches!(end, End::Unsaid | End::Reset) && c.ended_by_hanging_up {
+                    if end == End::Reset && c.ended_by_hanging_up {
                         c.taken.pop();
                         reached.retain(|label| label != "an unterminated last frame");
                     }

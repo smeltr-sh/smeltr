@@ -177,7 +177,7 @@ EOF`;
     </li>
     <li>
       A message the sender hung up partway through is dropped. A TLS sender that hangs up without
-      saying so first is taken to have hung up partway.
+      saying so first is treated as any sender that hangs up: the messages it sent whole are taken.
     </li>
     <li>An empty datagram gives no record.</li>
   </ul>

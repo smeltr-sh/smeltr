@@ -294,6 +294,13 @@ impl Framer {
         self.held.len() - self.cut
     }
 
+    /// Like `cut`, but the line breaker searches everything held, however little arrived since it last searched,
+    /// because nothing more is coming.
+    pub(super) fn cut_whole(&mut self, messages: &mut Messages) -> Result<(), Malformed> {
+        self.searched.found();
+        self.cut(messages)
+    }
+
     /// Adds every frame held whole to `messages`, in order. What follows the last stays held for the next push. A
     /// refused frame leaves the frames before it in `messages`.
     pub(super) fn cut(&mut self, messages: &mut Messages) -> Result<(), Malformed> {
