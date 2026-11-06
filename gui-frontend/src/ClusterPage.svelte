@@ -946,7 +946,7 @@
                 ? 'never'
                 : `${selectedWorker.stopAfterUnreachableSecs}s`}
             </dd>
-            <dt><WorkerGroupIcon />Group</dt>
+            <dt class="glyphed"><WorkerGroupIcon />Group</dt>
             <dd>{selectedWorker.groupId ?? '--'}</dd>
             <dt>Threads</dt>
             <dd>{runningThreads(selectedWorker.threads)}</dd>
