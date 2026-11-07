@@ -638,7 +638,6 @@
         schemaFindings={schemasLoading ? undefined : schemaFound}
         onopen={openTab}
         behind={loaded.branch.behind}
-        leftOut={loaded.branch.leftOut?.length ?? 0}
         {bringingCurrent}
         bringCurrentDisabled={bringingCurrent ? BUSY : mergeConflicts !== null ? UNCHOSEN : ''}
         onbringcurrent={() => confirmBringCurrent()}
