@@ -494,16 +494,6 @@
               class="pick"
               onclick={() => {
                 identityPicking = false;
-                location.hash = '#/me/agent';
-              }}
-            >
-              <span>Agent</span>
-            </button>
-            <button
-              type="button"
-              class="pick"
-              onclick={() => {
-                identityPicking = false;
                 location.hash = TAB_HOME.me;
               }}
             >

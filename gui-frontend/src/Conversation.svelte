@@ -86,7 +86,7 @@
   async function read(id: string) {
     try {
       const got = await getConversation(id);
-      if (refused(got)) return;
+      if (refused(got) || id !== open) return;
       shown = got.conversation;
     } catch (e) {
       reported(e);

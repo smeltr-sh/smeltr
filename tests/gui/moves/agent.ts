@@ -1,13 +1,24 @@
-// The Agent page, as the person signed in reaches it from their name.
+// The Agent page, as the person signed in reaches it from the agent panel.
 import { expect } from '../fleet';
 import type { Locator, Page } from '@playwright/test';
 import type { Rng } from '../fuzz';
 
-/** The Agent page, through the menu under the person's name. */
+/** The Agent page with no conversation open, through the agent panel's link unless the page is already open. */
 export async function openAgent(page: Page) {
-  await page.getByRole('button', { name: /^signed in as / }).click();
-  await page.getByRole('button', { name: 'Agent', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Agent', exact: true })).toBeVisible();
+  const heading = page.getByRole('heading', { name: 'Agent', exact: true });
+  const chip = page.getByRole('button', { name: 'Agent panel', exact: true });
+  await expect(heading.or(chip)).toBeVisible();
+  if (await chip.isVisible()) {
+    if ((await chip.getAttribute('aria-pressed')) !== 'true') await chip.click();
+    await page
+      .getByRole('complementary', { name: 'Agent' })
+      .getByRole('link', { name: 'Open on the Agent page' })
+      .click();
+    await expect(heading).toBeVisible();
+  }
+  // The panel's link opens the conversation it shows.
+  await page.getByRole('link', { name: 'New conversation' }).click();
+  await expect(page).toHaveURL(/#\/me\/agent$/);
 }
 
 /** The conversation `title` in the page's list. */
