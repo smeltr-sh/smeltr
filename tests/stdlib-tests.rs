@@ -73,6 +73,34 @@ fn isnull_length_and_tostring_work_end_to_end() {
     b.reclaim(&mut env.pool);
 }
 
+/// A keyword cannot be written as a bare field name, but `$["..."]` names any field, a keyword's spelling included.
+#[test]
+fn a_keyword_is_written_only_as_a_quoted_name() {
+    for (word, _) in smeltr::expr::lex::KEYWORDS {
+        let bare = harness::pipeline(vec![code(0, &format!("{word} = \"x\";"))]);
+        assert!(
+            compile(&bare, &SourceMeta::KAFKA).is_err(),
+            "`{word} = \"x\";` compiled, and must be refused"
+        );
+        let quoted = harness::pipeline(vec![
+            code(0, "status = __source.offset;"),
+            code(1, &format!(r#"$["{word}"] = "x"; copy = $["{word}"];"#)),
+        ]);
+        let plan = compile(&quoted, &SourceMeta::KAFKA)
+            .unwrap_or_else(|e| panic!("`$[\"{word}\"] = \"x\";` does not compile: {e:?}"));
+        let mut env = Env::new();
+        let mut b = Batch::new(&plan.slot_layout, 1, 0);
+        seed_offset(&mut env, &mut b, &[200]);
+        let rows = env.run_json(&plan, &mut b);
+        assert_eq!(rows[0][word], "x", "`$[\"{word}\"] = \"x\";` does not write the field");
+        assert_eq!(
+            rows[0]["copy"], "x",
+            "`$[\"{word}\"]` does not read back what was written"
+        );
+        b.reclaim(&mut env.pool);
+    }
+}
+
 /// `true`, `false` and `null` are values before a dot too, never the name of a field.
 #[test]
 fn a_method_is_called_on_true_false_and_null() {
