@@ -30,7 +30,8 @@ fn fail_overflowed(ctx: &mut Ctx, out: &mut Column, len: usize, overflowed: impl
 /// infinity is an `Overflow`, and a NaN a `NaN`. A row null from its inputs is left alone.
 pub fn fail_non_finite(ctx: &mut Ctx, out: &mut Column) {
     let len = out.len();
-    // A constant holds a literal's value, which the lexer keeps finite.
+    // No kernel returns a constant column, so a constant here is a literal's value, which the lexer keeps finite: it
+    // needs no check.
     let Ok(o) = out.f64_mut() else { return };
     for i in 0..len {
         let v = o.values[i];
