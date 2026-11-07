@@ -154,6 +154,16 @@ const ABC: &str = r#"{"a": {"b": 1, "c": 2}}"#;
 const K8S: &str = r#"{"labels": {"app": "cart", "app.kubernetes.io/name": "cart"}}"#;
 
 cases! {
+    // -- a number result fits its type, or is null and marked
+    a_float_product_past_f64_is_an_overflow: r#"x: f64; Object.assign($, json(_raw)) try { y = x * 10.0; } catch (e) { k = e.kind; }"#,
+        [r#"{"x": 1e308}"#], Rows(&[(r#"{"x": 1e308, "k": "Overflow"}"#, None)]);
+    a_function_result_past_f64_is_an_overflow: r#"x: f64; Object.assign($, json(_raw)) try { y = idiv(x, 0.0000001); } catch (e) { k = e.kind; }"#,
+        [r#"{"x": 1e308}"#], Rows(&[(r#"{"x": 1e308, "k": "Overflow"}"#, None)]);
+    a_float_power_with_no_real_value_is_a_nan: r#"x: f64; Object.assign($, json(_raw)) try { y = (-8.0) ** x; } catch (e) { k = e.kind; }"#,
+        [r#"{"x": 0.5}"#], Rows(&[(r#"{"x": 0.5, "k": "NaN"}"#, None)]);
+    a_float_literal_past_f64_is_refused: "y = 1e400;",
+        [r#"{}"#], Error(&["too large for a float"]);
+
     // -- parsers
     a_parser_coerces_a_declared_key_and_keeps_the_rest: "a: i64; Object.assign($, json(_raw))",
         [r#"{"a": "5", "b": 1}"#], Rows(&[(r#"{"a": 5, "b": 1}"#, None)]);
