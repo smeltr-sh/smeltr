@@ -1,8 +1,13 @@
 <script lang="ts">
   type Topic = 'start' | 'build' | 'operate';
-  type Item =
-    | { kind: 'video'; topic: Topic; title: string; minutes: number; src: string; poster: string }
-    | { kind: 'guide'; topic: Topic; title: string; href: string };
+  type Video = {
+    topic: Topic;
+    title: string;
+    minutes?: number;
+    src?: string;
+    poster?: string;
+    guide: string;
+  };
 
   const topics: [Topic | 'all', string][] = [
     ['all', 'All'],
@@ -12,27 +17,18 @@
   ];
   const topicName = Object.fromEntries(topics) as Record<Topic, string>;
 
-  const items: Item[] = [
+  // A video with no `src` is planned: its card says so and links the guide that covers it today.
+  const items: Video[] = [
+    { topic: 'start', title: 'Install smeltr', guide: '/docs/getting-started' },
     {
-      kind: 'video',
       topic: 'build',
       title: 'Fixing a feed in smeltr',
       minutes: 6,
       src: '/videos/walkthrough.mp4',
       poster: '/videos/walkthrough-poster.png',
+      guide: '/docs/first-pipeline',
     },
-    { kind: 'guide', topic: 'start', title: 'Set up a deployment', href: '/docs/getting-started' },
-    { kind: 'guide', topic: 'start', title: 'Install a leader', href: '/docs/install-leader/container' },
-    { kind: 'guide', topic: 'start', title: 'First login', href: '/docs/first-login' },
-    { kind: 'guide', topic: 'start', title: 'Enroll a worker', href: '/docs/enroll-worker/host' },
-    { kind: 'guide', topic: 'build', title: 'First pipeline tutorial', href: '/docs/first-pipeline' },
-    { kind: 'guide', topic: 'build', title: 'Capture a sample', href: '/docs/capture-sample' },
-    { kind: 'guide', topic: 'build', title: 'Schemas', href: '/docs/schemas' },
-    { kind: 'guide', topic: 'build', title: 'Pipeline steps', href: '/docs/steps' },
-    { kind: 'guide', topic: 'operate', title: 'Review & deploy', href: '/docs/review' },
-    { kind: 'guide', topic: 'operate', title: 'Operate the fleet', href: '/docs/operations' },
-    { kind: 'guide', topic: 'operate', title: 'Upgrade', href: '/docs/upgrade' },
-    { kind: 'guide', topic: 'operate', title: 'Troubleshooting', href: '/docs/troubleshooting' },
+    { topic: 'operate', title: 'Review and deploy a change', guide: '/docs/review' },
   ];
 
   let shown: Topic | 'all' = $state('all');
@@ -59,24 +55,27 @@
 
   <div class="library">
     {#each visible as item (item.title)}
-      {#if item.kind === 'video'}
-        <article class="video">
+      <article class="video">
+        {#if item.src}
           <!-- svelte-ignore a11y_media_has_caption -->
           <video controls preload="none" poster={item.poster}>
             <source src={item.src} type="video/mp4" />
           </video>
-          <div class="copy">
-            <p class="eyebrow">Video · {item.minutes} min · {topicName[item.topic]}</p>
-            <h2>{item.title}</h2>
+        {:else}
+          <div class="thumb"><span>Coming soon</span></div>
+        {/if}
+        <div class="copy">
+          <p class="eyebrow">
+            {topicName[item.topic]}{#if item.minutes}&nbsp;· {item.minutes} min{/if}
+          </p>
+          <h2>{item.title}</h2>
+          {#if item.src}
             <a href="/demo/try/" rel="external">Try it yourself in the demo →</a>
-          </div>
-        </article>
-      {:else}
-        <a class="guide" href={item.href}>
-          <p class="eyebrow">Guide · {topicName[item.topic]}</p>
-          <h3>{item.title} →</h3>
-        </a>
-      {/if}
+          {:else}
+            <a href={item.guide}>Read the guide →</a>
+          {/if}
+        </div>
+      </article>
     {/each}
   </div>
 </div>
@@ -96,53 +95,47 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1rem;
   }
-  .video,
-  .guide {
+  .video {
+    display: flex;
+    flex-direction: column;
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
     background: var(--panel);
-  }
-  .video {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
     overflow: hidden;
   }
-  video {
+  video,
+  .thumb {
     display: block;
     width: 100%;
+    aspect-ratio: 16 / 9;
     background: #131313;
   }
+  .thumb {
+    display: grid;
+    place-items: center;
+    background: var(--band-bg);
+    color: var(--band-dim);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
   .copy {
-    padding: 1.6rem;
-    align-self: center;
+    padding: 1.3rem 1.4rem 1.5rem;
+  }
+  .copy .eyebrow {
+    margin-bottom: 0.5rem;
   }
   .copy h2 {
-    font-size: 1.6rem;
-    margin: 0 0 1rem;
+    font-size: 1.3rem;
+    margin: 0 0 0.9rem;
   }
   .copy a {
     font-weight: 600;
-  }
-  .guide {
-    display: block;
-    padding: 1.2rem 1.4rem;
-    color: var(--ink);
-    text-decoration: none;
-  }
-  .guide:hover {
-    border-color: var(--accent);
-  }
-  .guide .eyebrow {
-    margin-bottom: 0.5rem;
-  }
-  .guide h3 {
-    margin: 0;
-    font-size: 1.05rem;
+    font-size: 0.92rem;
   }
   @media (max-width: 46rem) {
-    .library,
-    .video {
+    .library {
       grid-template-columns: 1fr;
     }
   }
