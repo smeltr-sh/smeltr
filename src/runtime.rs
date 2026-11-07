@@ -3468,9 +3468,7 @@ fn copy_for_captures(
     if taps.is_empty() {
         return Vec::new();
     }
-    let record = crate::plan::dictionary::record_type(plan, &route.on_exception.tag_field);
-    let written = crate::worker::capture::written_columns(&record);
-    let internal = crate::worker::capture::internal_columns(plan);
+    let finished = crate::worker::capture::Finished::of(plan, &route.on_exception.tag_field);
     let mut doc = Vec::new();
     let mut errors = ErrorSink::new();
     let mut pool = BufferPool::new();
@@ -3507,22 +3505,8 @@ fn copy_for_captures(
                         .map(|(_, v)| v.clone())
                 });
                 let placement = tap.placement.and_then(|p| r.placements[p as usize].clone());
-                let fields = internal
-                    .iter()
-                    .map(|(_, slot)| {
-                        doc.clear();
-                        let ty = &plan.slot_layout[*slot];
-                        let written = crate::format::json::write_value(batch.peek(*slot), ty, row, &mut doc);
-                        crate::worker::capture::tapped_value(written.then_some(&doc[..]))
-                    })
-                    .collect();
-                let sent = crate::worker::capture::sent_row(
-                    object,
-                    &written,
-                    &internal,
-                    fields,
-                    [placement, doc_id, Some(route.id.clone())],
-                );
+                let mut sent = finished.row(batch, row, object);
+                crate::worker::capture::place(&mut sent, [placement, doc_id, Some(route.id.clone())]);
                 bytes += sent.1.size();
                 copied.push(sent);
             }

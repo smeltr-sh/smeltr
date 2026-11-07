@@ -2178,6 +2178,8 @@ export interface PreviewRequest {
   /** Say which steps changed each row's fields and dropped it. The leader
    * runs the pipeline once more per step for it. */
   attribution?: boolean;
+  /** Also return the rows as a sample holds them (`PreviewResult.as_sample`), to save as one. */
+  asSample?: boolean;
   /** Asks what may follow a `.` instead of running the sample. */
   afterDot?: { text: string; dot: number; at: DotAt };
   /** A capture filter at a destination to check against each route delivering there. Asked, the preview answers it
@@ -2268,6 +2270,15 @@ export interface PreviewResult {
   schema_findings?: number;
   /** The fields the schemas the pipeline produces require or recommend and its rows lack. */
   missing?: MissingField[];
+  /** Answers `PreviewRequest.asSample`. */
+  as_sample?: AsSample;
+}
+
+/** A sample's columns and records, without its name, and each record's `PreviewRow.row`. */
+export interface AsSample {
+  columns: { name: string; type: string }[];
+  records: SampleRecordDto[];
+  rows: number[];
 }
 
 /** A field a schema requires or recommends that a pipeline's rows lack (`schema::Missing`). */
@@ -2322,6 +2333,7 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       at_micros: req.atMicros ?? null,
       filter: req.filter ?? null,
       attribution: req.attribution ?? false,
+      as_sample: req.asSample ?? false,
       after_dot: req.afterDot ?? null,
       capture_filter: req.captureFilter ?? null,
     },

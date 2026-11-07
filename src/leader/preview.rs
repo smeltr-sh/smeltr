@@ -52,6 +52,9 @@ pub struct PreviewRequest {
     /// field's every value for the whole run and compares them, which costs about one more run.
     #[serde(default)]
     pub attribution: bool,
+    /// Also return the rows shown as a sample holds them (`Preview::as_sample`), to be saved as one.
+    #[serde(default)]
+    pub as_sample: bool,
     /// What may follow a `.` in an expression of the config. Asked, the preview answers it instead of running the
     /// sample, and `Preview::after_dot` holds the answer.
     #[serde(default)]
@@ -150,6 +153,18 @@ pub struct Preview {
     /// The answer to `PreviewRequest::capture_filter`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capture_filter: Option<CaptureFilterCheck>,
+    /// Answers `PreviewRequest::as_sample`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub as_sample: Option<AsSample>,
+}
+
+/// A sample's columns and records, without its name, and the row each record is in the preview, so a caller can keep
+/// the records of the rows it shows.
+#[derive(serde::Serialize)]
+pub struct AsSample {
+    pub columns: Vec<crate::heartbeat::CaptureColumn>,
+    pub records: Vec<crate::io::RecordObject>,
+    pub rows: Vec<u32>,
 }
 
 /// The record by its compiled types alone, and with the sample's output filling what only a row knows. `sampled` is
@@ -930,6 +945,7 @@ pub fn run_preview(
             pipeline_names,
             after_dot: None,
             capture_filter: None,
+            as_sample: None,
             rows: vec![],
             unfiltered: filter.as_ref().map(|_| 0),
             parsers: vec![],
@@ -976,10 +992,13 @@ pub fn run_preview(
         );
         // An unroll makes rows of its own, which no longer line up with the sample's.
         let touched = (req.attribution && batch.rows() == records.len()).then(|| touched(&plan, &batch));
+        let sample = req
+            .as_sample
+            .then(|| as_sample(&plan, &on_exception.tag_field, &batch, &rows));
         batch.reclaim(&mut pool);
-        (rows, touched)
+        (rows, touched, sample)
     });
-    let (preview_rows, touched) = match previewed {
+    let (preview_rows, touched, as_sample) = match previewed {
         Ok(previewed) => previewed,
         Err(over) => {
             let mut refused = Preview::failed(
@@ -1072,7 +1091,37 @@ pub fn run_preview(
         warnings,
         schema_findings: found.len() as u32,
         missing,
+        as_sample,
     })
+}
+
+/// The rows of `batch` that `plan` finished and `rows` shows, as a sample holds them: each as a capture at a
+/// destination takes it, with no `__destination` fields, since the row was not sent to a destination. In row order,
+/// each with its row.
+fn as_sample(plan: &Plan, tag_field: &str, batch: &Batch, rows: &[plan::output::PreviewRow]) -> AsSample {
+    let finished = crate::worker::capture::Finished::of(plan, tag_field);
+    let mut taken = Vec::new();
+    let mut numbers = Vec::new();
+    for shown in rows.iter().filter(|r| r.matched) {
+        let Some(doc) = &shown.json else {
+            continue;
+        };
+        let mut object = crate::worker::capture::tapped_object(doc);
+        // Drop the `__` fields a preview that shows them wrote into the document: the document as sent to a destination
+        // has none.
+        object.retain(|key, _| !tree::is_internal(key));
+        let (columns, row) = finished.row(batch, shown.row as usize, object);
+        taken.push(crate::heartbeat::CaptureBatch {
+            columns,
+            rows: vec![row],
+        });
+        numbers.push(shown.row);
+    }
+    AsSample {
+        columns: config_file::sample_columns(&taken),
+        records: taken.iter().flat_map(config_file::sample_records).collect(),
+        rows: numbers,
+    }
 }
 
 /// A warning for each field of `record`, what `plan` writes, that breaks the schemas the pipeline produces
@@ -1436,6 +1485,7 @@ pub fn run_pipeline_actual(
             at_micros: Some(locked_at),
             filter: None,
             attribution: false,
+            as_sample: false,
             after_dot: None,
             capture_filter: None,
         },
@@ -1573,6 +1623,7 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 attribution: false,
+                as_sample: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -1648,6 +1699,55 @@ mod tests {
         );
     }
 
+    /// The rows a preview shows save as the sample a destination capture of the pipeline would hold: only the rows
+    /// its filter leaves, each typed as the pipeline writes it, with the `__` fields the pipeline holds and none a
+    /// destination is given. Another pipeline's preview reads it under those types.
+    #[test]
+    fn the_rows_a_preview_shows_save_as_a_sample_typed_as_the_pipeline_writes_them() {
+        let records = ["http://a/x", "http://b/y"]
+            .map(|raw| serde_json::json!({ "_raw": raw }).as_object().unwrap().clone())
+            .to_vec();
+        let previewed = run_preview(
+            PreviewRequest {
+                config: compiling(),
+                pipeline: Some("p".into()),
+                sample: None,
+                show_internal: true,
+                at_micros: None,
+                filter: Some(r#"u.path == "/x""#.into()),
+                attribution: false,
+                as_sample: true,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &[],
+            records,
+        );
+        assert!(
+            previewed.succeeded(),
+            "{:?}",
+            previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        let sample = previewed.body.as_sample.unwrap();
+        assert_eq!(sample.records.len(), 1, "only the row the filter leaves");
+        assert_eq!(sample.rows, [0]);
+        assert_eq!(sample.records[0]["x"], serde_json::json!(1));
+        assert_eq!(sample.records[0]["u"]["path"], serde_json::json!("/x"));
+        let x = sample.columns.iter().find(|c| c.name == "x").unwrap();
+        assert_eq!(x.ty, "i64", "typed as the pipeline writes it");
+        let named = |name: &str| sample.columns.iter().any(|c| c.name.starts_with(name));
+        assert!(
+            named("__source."),
+            "the `__` fields the pipeline holds, as a capture carries them"
+        );
+        assert!(!named("__destination") && !named("__live"), "{:?}", sample.columns);
+
+        let meta = SourceMeta::of_columns(&sample.columns).unwrap();
+        let read = read_sample(&meta, &sample.columns, &sample.records).unwrap();
+        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+    }
+
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {
         let config = match at {
             DotAt::Destination(_) => compiling(),
@@ -1662,6 +1762,7 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 attribution: false,
+                as_sample: false,
                 after_dot: Some(AfterDotRequest {
                     dot: text.len() - 1,
                     text: text.into(),
@@ -1757,6 +1858,7 @@ mod tests {
                     at_micros: None,
                     filter: None,
                     attribution: false,
+                    as_sample: false,
                     after_dot: None,
                     capture_filter: Some(CaptureFilterRequest {
                         text: text.into(),
@@ -1795,6 +1897,7 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 attribution: false,
+                as_sample: false,
                 after_dot: Some(AfterDotRequest {
                     text: "_raw.".into(),
                     dot: 4,
@@ -1834,6 +1937,7 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 attribution: false,
+                as_sample: false,
                 after_dot: None,
                 capture_filter: None,
             },

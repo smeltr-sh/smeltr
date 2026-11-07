@@ -80,6 +80,7 @@
     declared,
     canLock,
     onlock,
+    onsaveoutput,
     onjump,
     onassign,
     preview,
@@ -112,6 +113,8 @@
     canLock: boolean;
     /** Locks the run as a test; absent where the pipeline is read only. */
     onlock?: () => void;
+    /** Saves the output rows on screen as a sample, by `PreviewRow.row`; absent where no sample may be saved. */
+    onsaveoutput?: (rows: Set<number>) => void;
     onjump: (step: Step) => void;
     /** Writes a field in an eval step; absent where the pipeline is read only. */
     onassign?: (path: string) => void;
@@ -656,6 +659,16 @@
       };
     return gridSort.apply(rows.map((_, i) => i).filter(matches), by);
   });
+
+  /** The rows on screen that have output, by `PreviewRow.row`: a dropped row has none. */
+  let outputShown = $derived(
+    new Set(
+      gridOrder
+        .map((i) => gridRows![i])
+        .filter((r) => r.json !== null)
+        .map((r) => r.row),
+    ),
+  );
 </script>
 
 <section
@@ -763,6 +776,15 @@
           >
         {/if}
         <span class="grow"></span>
+        {#if onsaveoutput}
+          <Button
+            type="button"
+            onclick={() => onsaveoutput(outputShown)}
+            disabled={outputShown.size === 0 ? INCOMPLETE : ''}
+          >
+            Save output as sample
+          </Button>
+        {/if}
         {#if onlock}
           <Button
             type="button"

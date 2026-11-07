@@ -1749,6 +1749,62 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   );
 });
 
+// A6, a pipeline's output as a sample, for another pipeline, such as an enrichment, to run over and lock a test on.
+test('A6: the output rows on screen are saved as a sample that another pipeline runs over', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await jsonPipeline(
+    api,
+    'orders',
+    [
+      { name: 'id', type: 'i64' },
+      { name: 'total', type: 'f64' },
+    ],
+    { id: 'orders-sample', name: 'orders', records: ORDERS },
+  );
+  await api.put(`/api/areas/shared/pipelines/enrich${ON}`, {
+    id: 'enrich',
+    name: 'enrich',
+    steps: [
+      { type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'enriched = true;' },
+    ],
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  await admin.getByRole('combobox', { name: 'Search the output' }).fill('SPRING');
+  await expect(admin.getByText('2 of 3 rows')).toBeVisible();
+  await admin.getByRole('button', { name: 'Save output as sample' }).click();
+  const dialog = admin.getByRole('dialog');
+  await expect(dialog.getByText('2 records')).toBeVisible();
+  await dialog.getByLabel('Name').fill('orders, parsed');
+  await admin.screenshot({ path: test.info().outputPath('save-output.png'), fullPage: true });
+  await dialog.getByRole('button', { name: 'Save sample' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  const listed = (await api.get(`/api/areas/shared/samples${ON}`)).samples;
+  const made = listed.find((s: { name: string }) => s.name === 'orders, parsed');
+  expect(made.records).toBe(2);
+  expect(made.source).toBeUndefined();
+  const saved = (await api.get(`/api/areas/shared/samples/${made.id}${ON}`)).sample;
+  expect(saved.columns).toContainEqual({ name: 'total', type: 'f64' });
+  expect(saved.records.map((r: { id: number }) => r.id)).toEqual([1, 3]);
+
+  // Typed as the first pipeline wrote it, so `total` compares as a number.
+  await goto(admin, leader, '#/build/pipelines/enrich');
+  const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
+  await sampleMenu.click();
+  await admin
+    .getByRole('listbox', { name: 'Saved samples' })
+    .getByRole('option', { name: /^orders, parsed/ })
+    .click();
+  await expect(sampleMenu).toContainText('2 records');
+  await admin.getByRole('combobox', { name: 'Search the output' }).fill('total > 15');
+  await expect(admin.getByText('ƒ expression')).toBeVisible();
+  await expect(admin.getByText('1 of 2 rows')).toBeVisible();
+});
+
 // A8, bad rows go somewhere.
 test('A8: while authoring, a row that fails to parse is shown failing, with why', async ({
   admin,
