@@ -579,8 +579,8 @@ def samples():
 
 
 def waiting():
-    """Samples of the feeds no pipeline parses yet. A deploy leaves out a sample no test names, so these stay on the
-    branch a visitor builds on, ready for the pipeline they write."""
+    """Samples of the feeds no pipeline parses yet. They are saved on the branch a visitor builds on, not deployed,
+    ready for the pipeline they write."""
     return {
         "network": [
             {"id": "panos-threat-sample", "name": "PAN-OS threats", "source": "panw-threats",

@@ -100,9 +100,9 @@
   </p>
   <p>
     You need at least one captured record to save. Choose <strong>Discard</strong> if the records
-    are not useful. Capture only enough to test the case you care about. A saved sample stays on
-    your branch and deploys only when a test uses it; the change's review lists the others under
-    <strong>Left out</strong>.
+    are not useful. Capture only enough to test the case you care about. A saved sample deploys with
+    your branch, whether or not a test uses it. To keep one off <code>main</code>, delete it before
+    you deploy.
   </p>
   <h2 id="blocked">Capture a blocked source</h2>
   <p>
