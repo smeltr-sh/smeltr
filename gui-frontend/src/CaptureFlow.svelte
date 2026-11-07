@@ -504,7 +504,15 @@
     onsave={!use && canEdit(savedIn) ? save : undefined}
     use={use
       ? { title: use.title, label: use.label, take }
-      : { label: 'Use these records', take: keep, off: NOT_IN_DEMO }}
+      : {
+          label: 'Use these records',
+          take: keep,
+          off:
+            NOT_IN_DEMO ||
+            (capture.status && heldCount(capture.status) === 0
+              ? 'Nothing has been captured yet.'
+              : ''),
+        }}
     ondiscard={discard}
   />
 {/if}

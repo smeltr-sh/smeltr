@@ -106,12 +106,9 @@
     if (done && !busy) ondiscard();
   }}
   onsubmit={() => {
-    // Enter in the name field saves, as Save sample would, though Use is the window's primary.
-    const naming = !!onsave && document.activeElement?.id === 'capture-name';
     if (!done) onstop();
-    else if (naming && held > 0 && saveName.trim()) onsave(saveName.trim());
-    else if (!naming && use) use.take();
-    else if (!naming) onsave?.(saveName.trim());
+    else if (use) use.take();
+    else onsave?.(saveName.trim());
   }}
 >
   <div class="content">
@@ -221,7 +218,17 @@
       {#if done && onsave}
         <div class="name" class:off={held === 0}>
           <label for="capture-name">Save as</label>
-          <input id="capture-name" bind:value={saveName} disabled={held === 0} />
+          <input
+            id="capture-name"
+            bind:value={saveName}
+            disabled={held === 0}
+            onkeydown={(e) => {
+              // Enter here saves, as Save sample would, though the window's primary may be another.
+              if (e.key !== 'Enter' || !use) return;
+              e.preventDefault();
+              if (!busy && saveName.trim()) onsave?.(saveName.trim());
+            }}
+          />
         </div>
       {/if}
     {/if}
@@ -262,13 +269,8 @@
         <Button
           type="submit"
           class="primary"
-          disabled={busy
-            ? BUSY
-            : !status
-              ? 'Wait for the capture to start.'
-              : held === 0
-                ? 'Nothing has been captured yet.'
-                : (use.off ?? '')}>{use.label}</Button
+          disabled={busy ? BUSY : !status ? 'Wait for the capture to start.' : (use.off ?? '')}
+          >{use.label}</Button
         >
       {/if}
     {:else}
