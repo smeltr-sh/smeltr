@@ -34,6 +34,7 @@ pub mod envelope;
 pub mod forget;
 pub mod git;
 pub mod holds;
+pub mod housekeeping;
 pub mod listen;
 pub mod lock;
 pub mod log_levels;
@@ -466,11 +467,6 @@ async fn heartbeat(
     })
     .await
     .unwrap_or_default();
-    // Decided before the cutover below, not after. The bundle this beat can still be handed holds both roots;
-    // the one the cutover leaves behind holds only the incoming root, and a worker that has not taken it yet
-    // cannot verify the leader that would hand it over. So the worker whose beat carries the deadline past gets
-    // the overlap it was promised, and the shortened bundle on the beat after.
-    //
     // The one moment a replaced authority can reach a worker: it asks, over a connection its own token
     // authenticates and its current authority verified.
     let authority = authority_to_hand(&state.data_dir, &req.authority_fingerprints, req.takes_authority);
@@ -480,43 +476,6 @@ async fn heartbeat(
     if stopping && kind == store::WorkerKind::Ephemeral {
         forget::forget(&state, &worker_id).await;
     }
-    // The leader's only periodic tick, so the look for ephemeral workers gone without a word rides it too.
-    forget::sweep(&state, now_ms).await;
-    if state.registry.prune_due(now_ms, PRUNE_PROGRESS_EVERY) {
-        let state = state.clone();
-        tokio::spawn(async move {
-            prune_source_progress(&state).await;
-            pack_repo(&state).await;
-        });
-    }
-
-    // A rotation ends on a fact workers report, and this is where they report it. The leader has no other
-    // periodic tick (design doc, Control plane), so the check rides the beat that carries the evidence.
-    cut_over_if_due(&state, now_ms).await;
-
-    // Every issue begins and ends in the log as it happens, read or not: the whole catalog, once an interval
-    // across the fleet, behind the beat. A catalog that fails here fails the Issues page the same way, which says so.
-    if state.registry.issue_look_due(now_ms, heartbeat_interval) {
-        let state = state.clone();
-        tokio::spawn(async move {
-            static SAID: std::sync::Mutex<crate::logs::Repeat> = std::sync::Mutex::new(crate::logs::Repeat::new());
-            let looked = catalog(&state).await;
-            let mut said = SAID.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            match looked {
-                Ok(_) => said.clear(),
-                Err(e) if said.due() => {
-                    tracing::warn!(name: "issues_unreadable", target: "status", error = %e, "the issues could not be read, so none are logged as beginning or ending")
-                }
-                Err(_) => {}
-            }
-        });
-    }
-
-    // A finished session that nobody collected would otherwise hold its records until the process restarted. The
-    // heartbeat is the leader's only periodic tick, so the sweep rides it.
-    state
-        .captures
-        .sweep(std::time::Duration::from_secs(capture::MAX_DEADLINE_SECS));
     // The whole of what this worker should run: it lets go of a session still filling that this leaves out
     // (`Captures::invitations_for`). On the blocking pool, because `holder` waits on any beat in progress, which
     // holds the holds lock across its store writes; an async thread parked on that would stall every handler.
@@ -1077,7 +1036,6 @@ pub struct SystemInfo {
 }
 
 async fn health(State(state): State<AppState>) -> Envelope<HealthResponse> {
-    forget::sweep(&state, warnings::now_millis()).await;
     Envelope::ok(health_snapshot(&state))
 }
 
@@ -1114,9 +1072,6 @@ pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning
 /// second, independently-cheap fetch rather than reshaping the first.
 pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
     let now_ms = warnings::now_millis();
-    // What the page polls, and so one of the reads a look for gone ephemeral workers rides: a fleet that has
-    // scaled to nothing sends no heartbeat to carry it.
-    forget::sweep(state, now_ms).await;
     let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
     let snapshot = state.registry.snapshot();
     let data_dir = state.data_dir.clone();
@@ -1160,10 +1115,6 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let normal_warnings =
         warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, &marks, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
-    // The other place a rotation's deadline is looked at. The heartbeat carries the evidence a cutover waits on,
-    // but a leader whose workers have all gone quiet receives none -- and this is what the page polls while
-    // somebody is watching the rotation it promised would end.
-    cut_over_if_due(state, now_ms).await;
     let (signing, rotating) = serving_authority(&state.data_dir);
     let serving = serving_certificate(&state.data_dir);
     let presenting = enrollment_codes::Presenting::read(&tls::dir_of(&state.data_dir));
@@ -3616,9 +3567,6 @@ impl From<store::WorkerCredentialRecord> for WorkerOut {
 /// What `GET /api/workers` serves: every worker that has ever enrolled, heartbeating or not, less the ephemeral
 /// workers gone long enough to be forgotten. A store error is returned, not an empty list.
 pub async fn worker_credentials_snapshot(state: &AppState) -> Result<Vec<WorkerOut>, StoreError> {
-    // The look for gone workers rides every read of the fleet: one scaled to nothing sends no heartbeat to carry
-    // it, and the roster may be the only page anybody opens.
-    forget::sweep(state, warnings::now_millis()).await;
     let creds = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
     Ok(creds
         .into_iter()
@@ -3837,13 +3785,13 @@ async fn expected_workers(state: &AppState) -> Result<std::collections::HashSet<
     })
 }
 
-/// Each worker an open rotation waits for, by id, and whether it holds `incoming` yet. An error where the roster
-/// could not be read, which is not a fleet with nobody in it.
-pub async fn rotation_workers(state: &AppState, incoming: &str) -> Result<Vec<(String, bool)>, String> {
+/// Each worker an open rotation waits for, by id, and whether it has said it holds `incoming` since `since_ms`, as
+/// [`Registry::authorities_held`]. An error where the roster could not be read, which is not a fleet with nobody in it.
+pub async fn rotation_workers(state: &AppState, incoming: &str, since_ms: i64) -> Result<Vec<(String, bool)>, String> {
     let expected = expected_workers(state).await?;
     Ok(state
         .registry
-        .holders(&expected)
+        .holders(&expected, since_ms)
         .into_iter()
         .map(|(worker, held)| (worker, held.iter().any(|root| root == incoming)))
         .collect())
@@ -3871,7 +3819,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
     let holders = expected_workers(state)
         .await
         .ok()
-        .map(|expected| state.registry.authorities_held(&expected));
+        .map(|expected| state.registry.authorities_held(&expected, rotation.started_millis));
     let cut_over = match tls::cut_over_if_due(
         &dir,
         crate::startup_config::leader_certificate_names(&state.origin_hosts),
@@ -5019,7 +4967,7 @@ mod warnings_endpoint_tests {
             store: Arc::new(store),
             ..state("roster-unreadable")
         };
-        let read = rotation_workers(&state, "incoming").await;
+        let read = rotation_workers(&state, "incoming", 0).await;
         assert!(
             read.as_ref()
                 .is_err_and(|e| e.starts_with("could not read which workers are enrolled: ")),
@@ -5067,10 +5015,9 @@ mod warnings_endpoint_tests {
         assert_eq!(warnings[0].severity, warnings::Severity::Warning);
     }
 
-    /// A fleet scaled to nothing sends no heartbeat, and the Workers page reads the roster and never the warnings.
-    /// So reading the roster is itself a look for gone ephemeral workers.
+    /// A fleet scaled to nothing sends no heartbeat, and its gone ephemeral workers are still forgotten.
     #[tokio::test]
-    async fn reading_the_roster_forgets_a_gone_ephemeral_worker() {
+    async fn housekeeping_forgets_a_gone_ephemeral_worker() {
         let mut state = state("roster-forgets");
         // A leader up long enough to have heard the silence: one just started forgets nobody for it.
         state.registry =
@@ -5094,6 +5041,7 @@ mod warnings_endpoint_tests {
         .await
         .unwrap();
 
+        housekeeping::tick(&state, warnings::now_millis()).await;
         let roster = worker_credentials_snapshot(&state).await.unwrap();
         assert!(
             roster.is_empty(),
