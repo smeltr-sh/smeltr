@@ -102,7 +102,9 @@ pub fn export(
         .filter(|s| schemas.contains(&s.id))
         .cloned()
         .collect();
-    let kept = |part: Part, id: &str| !left_out.contains(&(part, id.to_string()));
+    // The pipeline asked for is what the export is of, so it is never left out.
+    let kept =
+        |part: Part, id: &str| (part, id) == (Part::Pipeline, pipeline) || !left_out.contains(&(part, id.to_string()));
 
     let route_ids: BTreeSet<&String> = file.routes.iter().map(|r| &r.id).collect();
     let tests: Vec<&TestSummary> = (tests.iter())
@@ -255,9 +257,11 @@ mod tests {
             (Part::Pipeline, "common".to_string()),
             (Part::Test, "t-common".to_string()),
             (Part::Source, "fw".to_string()),
+            (Part::Pipeline, "fw-normalize".to_string()),
         ]);
         let e = export(&bundle(), &tests(), "fw-normalize", true, &left_out).unwrap();
-        assert!(!e.file.pipelines.iter().any(|p| p.id == "common") && e.file.sources.is_empty());
+        assert_eq!(ids(&e.file.pipelines, |p| &p.id), ["fw-normalize"]);
+        assert!(e.file.sources.is_empty());
         assert_eq!(e.tests.iter().map(|t| &t.id).collect::<Vec<_>>(), ["t-fw-end"]);
         assert_eq!(e.samples, ["s-fw-end"]);
         assert!(e.secrets.is_empty() && e.certificates.is_empty());
