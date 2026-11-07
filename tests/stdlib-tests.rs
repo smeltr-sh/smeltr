@@ -73,6 +73,31 @@ fn isnull_length_and_tostring_work_end_to_end() {
     b.reclaim(&mut env.pool);
 }
 
+/// `true`, `false` and `null` are values before a dot too, never the name of a field.
+#[test]
+fn a_method_is_called_on_true_false_and_null() {
+    let plan = compile_ok(vec![
+        code(0, "status = __source.offset;"),
+        code(
+            1,
+            r#"
+            yes = true.toString();
+            no = false.toString();
+            none = isNull(null.toString());
+            "#,
+        ),
+    ]);
+    let mut env = Env::new();
+    let mut b = Batch::new(&plan.slot_layout, 1, 0);
+    seed_offset(&mut env, &mut b, &[200]);
+
+    let rows = env.run_json(&plan, &mut b);
+    assert_eq!(rows[0]["yes"], "true");
+    assert_eq!(rows[0]["no"], "false");
+    assert_eq!(rows[0]["none"], true);
+    b.reclaim(&mut env.pool);
+}
+
 #[test]
 fn parseint_parsefloat_and_round_work_end_to_end() {
     let plan = compile_ok(vec![code(
