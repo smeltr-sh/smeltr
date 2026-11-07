@@ -65,8 +65,9 @@ struct's field, a push and a write to an `f64` name. `array<i64>` beside
 `array<f64>` is `array<f64>`. `/` yields `f64`; `idiv(a, b)` divides and
 truncates toward zero as `%` does, an `i64` from two `i64`s and an `f64`
 beside an `f64`, and a divisor of zero fails the row. An `i64` result that overflows fails the row: null, with an
-`Overflow` exception. A `datetime` or `duration` operand yields the type
-its operator says.
+`Overflow` exception. An `f64` result fails it too, since smeltr holds no infinite or NaN `f64`: an infinity is an
+`Overflow`, a NaN, as `(-8) ** 0.5` gives, a `NaN`, and a literal too large for a float is a compile error. A
+`datetime` or `duration` operand yields the type its operator says.
 
 `+` takes two texts or two numbers; `str + i64` is a compile error. Text
 from a number is a template literal or `toString()`; a number from text is

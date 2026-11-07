@@ -3,6 +3,7 @@
 //! The table pairs like with like: an `I64` beside an `F64` is widened by the compiler before any kernel runs. An
 //! `I64` row whose result does not fit is null and marked `Overflow` (design doc, Language). The loop runs with
 //! wrapping arithmetic and a branchless witness; only a batch the witness tripped on is walked again to find its rows.
+//! An `F64` row whose result is not finite is null too, an infinity marked `Overflow` and a NaN marked `NaN`.
 
 use super::helpers::{One, Operand, Rows, Side, alloc_with_merged_validity, f64_values, native, side, two_sides};
 use crate::core::column::{Column, DataType, Validity};
@@ -19,6 +20,28 @@ fn fail_overflowed(ctx: &mut Ctx, out: &mut Column, len: usize, overflowed: impl
             o.values[i] = 0;
             o.validity.set_valid(i, false);
             ctx.raise(i, ExceptionKind::Overflow);
+        }
+    }
+}
+
+/// Null and raise every row of the `F64` column `out` that is not finite, as an `I64` that does not fit is: an
+/// infinity is an `Overflow`, and a NaN a `NaN`. A row null from its inputs is left alone.
+fn fail_non_finite(ctx: &mut Ctx, out: &mut Column) {
+    let len = out.len();
+    let o = out.f64_mut().unwrap();
+    for i in 0..len {
+        let v = o.values[i];
+        if !v.is_finite() && o.validity.is_valid(i) {
+            o.values[i] = 0.0;
+            o.validity.set_valid(i, false);
+            ctx.raise(
+                i,
+                if v.is_nan() {
+                    ExceptionKind::NaN
+                } else {
+                    ExceptionKind::Overflow
+                },
+            );
         }
     }
 }
@@ -127,6 +150,9 @@ macro_rules! div_like {
                 }
                 for row in zeros {
                     ctx.raise(row as usize, ExceptionKind::DivideByZero);
+                }
+                if out_ty == DataType::F64 {
+                    fail_non_finite(ctx, &mut out);
                 }
                 out
             }
@@ -289,6 +315,7 @@ macro_rules! float_arith {
                         o.values[i] = f(a.at(i) as f64, b.at(i) as f64);
                     }
                 }
+                fail_non_finite(ctx, &mut out);
                 out
             }
             let len = ins[0].len();
@@ -326,6 +353,7 @@ pub fn div_f64_f64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     for row in zeros {
         ctx.raise(row as usize, ExceptionKind::DivideByZero);
     }
+    fail_non_finite(ctx, &mut out);
     out
 }
 
@@ -799,5 +827,48 @@ mod tests {
         assert_eq!(run(&mut p, abs_num, &[&a]), (vec![None, Some(6)], overflow));
         a.reclaim(&mut p);
         b.reclaim(&mut p);
+    }
+
+    /// Each row of `k`'s F64 output, `None` where null, and `(row, kind)` per exception.
+    fn run_f64(p: &mut BufferPool, k: OpKernel, a: &[f64], b: &[f64]) -> (Vec<Option<f64>>, Vec<(u32, ExceptionKind)>) {
+        let column = |p: &mut BufferPool, values: &[f64]| {
+            let mut c = Column::alloc(p, &DataType::F64, values.len());
+            c.f64_mut().unwrap().values.copy_from_slice(values);
+            c
+        };
+        let (a, b) = (column(p, a), column(p, b));
+        let mut errors = ErrorSink::new();
+        let out = {
+            let mut ctx = Ctx::new(p, &mut errors);
+            k(&mut ctx, &[&a, &b])
+        };
+        let f = out.f64().unwrap();
+        let rows = (0..out.len())
+            .map(|i| f.validity.is_valid(i).then(|| f.values[i]))
+            .collect();
+        for c in [out, a, b] {
+            c.reclaim(p);
+        }
+        (rows, errors.entries().iter().map(|a| (a.row, a.kind.clone())).collect())
+    }
+
+    /// A float result past `f64`'s range is null and an `Overflow`, as an integer's is, and a NaN is null and a
+    /// `NaN`. The row beside it keeps its value.
+    #[test]
+    fn a_float_that_is_not_finite_is_null_and_marked() {
+        let mut p = BufferPool::new();
+        let overflow = vec![(0, ExceptionKind::Overflow)];
+        type Case = (OpKernel, [f64; 2], [f64; 2], f64, Vec<(u32, ExceptionKind)>);
+        let cases: [Case; 6] = [
+            (add_f64_f64, [f64::MAX, 1.0], [f64::MAX, 1.0], 2.0, overflow.clone()),
+            (sub_f64_f64, [-f64::MAX, 3.0], [f64::MAX, 1.0], 2.0, overflow.clone()),
+            (mul_f64_f64, [1e308, 2.0], [10.0, 1.0], 2.0, overflow.clone()),
+            (div_f64_f64, [1e308, 4.0], [1e-308, 2.0], 2.0, overflow.clone()),
+            (pow_f64_f64, [0.0, 2.0], [-1.0, 1.0], 2.0, overflow),
+            (pow_f64_f64, [-8.0, 2.0], [0.5, 1.0], 2.0, vec![(0, ExceptionKind::NaN)]),
+        ];
+        for (k, a, b, kept, want) in cases {
+            assert_eq!(run_f64(&mut p, k, &a, &b), (vec![None, Some(kept)], want));
+        }
     }
 }
