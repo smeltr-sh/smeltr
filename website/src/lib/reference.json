@@ -634,7 +634,7 @@
         {
           "name": "writeFloat",
           "signature": "number.writeFloat(type, order)",
-          "summary": "The bytes of a number as the given `type`, `\"f32\"` or `\"f64\"`. An `\"f32\"` rounds to the nearest one it holds, and a number past its range is null and throws an `Overflow` exception. A type or an order it does not know is null and throws a `CoercionRefused` exception.",
+          "summary": "The bytes of a number as the given `type`, `\"f32\"` or `\"f64\"`. An `\"f32\"` rounds to the nearest one it holds, and a number past its range is null and throws an `Overflow` exception. An infinity, which arithmetic can make, throws a `NaN` exception. A type or an order it does not know is null and throws a `CoercionRefused` exception.",
           "examples": [
             {
               "expr": "writeFloat(1.5, \"f32\").toString(\"hex\")",

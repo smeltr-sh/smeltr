@@ -251,11 +251,14 @@ fn a_value_its_field_cannot_hold_makes_the_message_null() {
 fn a_number_is_written_in_its_type_and_order() {
     let (rows, kinds) = run(
         r#"[writeInt(258, "u16"), writeInt(258, "u16", "little"), writeInt(-1, "i8"), writeFloat(1.5, "f32"),
-            writeInt(128, "i8"), writeInt(1, "f32"), writeFloat(1, "u8")].map((w) => toString(w, "hex"))"#,
+            writeInt(128, "i8"), writeInt(1, "f32"), writeFloat(1, "u8"), writeFloat(1e308 * 10, "f64")].map((w) => toString(w, "hex"))"#,
         &["00"],
     );
-    assert_eq!(rows, [json!(["0102", "0201", "ff", "3fc00000", null, null, null])]);
-    assert_eq!(kinds, ["Overflow", "CoercionRefused", "CoercionRefused"]);
+    assert_eq!(
+        rows,
+        [json!(["0102", "0201", "ff", "3fc00000", null, null, null, null])]
+    );
+    assert_eq!(kinds, ["Overflow", "CoercionRefused", "CoercionRefused", "NaN"]);
 }
 
 #[test]

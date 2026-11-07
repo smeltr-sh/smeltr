@@ -128,9 +128,13 @@ impl NumType {
         Ok(())
     }
 
-    /// Appends `x` as this float type in `order`. A value past an `f32`'s range is an `Overflow`; one between two
-    /// `f32`s rounds to the nearer.
+    /// Appends `x` as this float type in `order`. An infinity, which arithmetic can make, is refused with a `NaN`
+    /// error, as `readFloat` refuses one. A value past an `f32`'s range is an `Overflow`; one between two `f32`s
+    /// rounds to the nearer.
     fn put_float(self, x: f64, order: Order, out: &mut Vec<u8>) -> Result<(), ExceptionKind> {
+        if !x.is_finite() {
+            return Err(ExceptionKind::NaN);
+        }
         match (self, order) {
             (NumType::F32, _) if (x as f32).is_infinite() => return Err(ExceptionKind::Overflow),
             (NumType::F32, Order::Big) => out.extend((x as f32).to_be_bytes()),
