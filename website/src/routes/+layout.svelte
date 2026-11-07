@@ -19,6 +19,13 @@
   ];
   let productMenu: HTMLDetailsElement | undefined = $state();
   afterNavigate(() => productMenu?.removeAttribute('open'));
+  function closeProductMenu(event: MouseEvent | KeyboardEvent) {
+    if (!productMenu?.open) return;
+    if (event instanceof KeyboardEvent && event.key !== 'Escape') return;
+    if (event instanceof MouseEvent && productMenu.contains(event.target as Node)) return;
+    productMenu.open = false;
+    if (event instanceof KeyboardEvent) productMenu.querySelector('summary')?.focus();
+  }
   const onProductPage = $derived(productPages.some(([href]) => page.url.pathname === href));
 
   function measureHeader(node: HTMLElement) {
@@ -38,6 +45,8 @@
   <!-- One address per page for search engines, whichever host, scheme or slash a link used. -->
   <link rel="canonical" href={`https://smeltr.sh${page.url.pathname}`} />
 </svelte:head>
+
+<svelte:window onclick={closeProductMenu} onkeydown={closeProductMenu} />
 
 <a class="skip-link" href="#main">Skip to content</a>
 
