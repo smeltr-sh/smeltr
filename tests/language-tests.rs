@@ -163,6 +163,8 @@ cases! {
         [r#"{"x": 0.5}"#], Rows(&[(r#"{"x": 0.5, "k": "NaN"}"#, None)]);
     a_float_literal_past_f64_is_refused: "y = 1e400;",
         [r#"{}"#], Error(&["too large for a float"]);
+    a_duration_sum_past_i64_is_an_overflow: r#"d: duration; Object.assign($, json(_raw)) try { y = d + d; } catch (e) { k = e.kind; }"#,
+        [r#"{"d": 5000000000000000000}"#], Rows(&[(r#"{"d": 5000000000000000000, "k": "Overflow"}"#, None)]);
 
     // -- parsers
     a_parser_coerces_a_declared_key_and_keeps_the_rest: "a: i64; Object.assign($, json(_raw))",
