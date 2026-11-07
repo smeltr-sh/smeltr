@@ -58,7 +58,7 @@
   <section class="video-section" id="walkthrough" aria-labelledby="video-heading">
     <div class="section-intro centered">
       <p class="eyebrow">Walkthrough · 6 min</p>
-      <h2 id="video-heading">Fixing a feed in smeltr.</h2>
+      <h2 id="video-heading">Fixing a feed in smeltr</h2>
       <p>
         Find two problems on a demo fleet, fix them on a branch, lock the result as a test, and
         open the fix for review.
