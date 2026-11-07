@@ -654,7 +654,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/agent/conversations/:id",
-        what: "Read back this conversation, the only one you can read, with `this` as its id, by a range of turns or a search: `items`, each with the `turn` it is of, and `turns`, how many there are. Query, at least one of: from (the first turn, counted from 0), to (stop before this turn; without it, read through the last), q (instead of whole turns, a snippet of each item whose text holds every word of q, within from and to; narrow a long answer with more words or a range).",
+        what: "Read back this conversation, the only one you can read, with `this` as its id, by a range of turns or a search: `items`, each with the `turn` it is of, and `turns`, how many there are. Query, at least one of: from (the first turn, counted from 0), to (stop before this turn; without it, only the `from` turn is read, or with no `from` every turn through the last), q (instead of whole turns, a snippet of each item whose text holds every word of q, within the turns from and to name: the newest 20 hits, and `found`, how many items match), skip (with q, pass over that many of the newest hits to read older ones).",
         body: "",
     },
     Route {
@@ -979,6 +979,18 @@ pub const LEFT_OUT: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The catalog entry names the hits a search answers with. A string cannot be built from the constant, so this
+    /// test holds them together.
+    #[test]
+    fn the_read_back_route_says_how_many_hits_a_search_gives() {
+        let route = CATALOG
+            .iter()
+            .find(|r| r.path == "/api/agent/conversations/:id")
+            .unwrap();
+        let hits = format!("the newest {} hits", crate::chat_api::SEARCH_HITS);
+        assert!(route.what.contains(&hits), "{}", route.what);
+    }
 
     /// Routes outside the gate: signing in, and what workers and enrollment use, each with its own credential.
     const UNGATED: &[(&str, &str)] = &[
