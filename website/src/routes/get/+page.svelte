@@ -33,7 +33,9 @@
           <li>
             <span class="command-row">
               <code class="command">{pull}</code>
-              <button class="compact" onclick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+              <button class="compact" onclick={copy} aria-label="Copy the docker pull command"
+                >{copied ? 'Copied' : 'Copy'}</button
+              ><span class="live" aria-live="polite">{copied ? 'Copied' : ''}</span>
             </span>
             <a href="/docs/install-leader/container">Run the container image</a>
           </li>
@@ -157,6 +159,14 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 0.55rem 0.75rem;
+  }
+  /* Read out by a screen reader, which hears the button by its label, not its text. */
+  .live {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
   .downloads {
     list-style: none;

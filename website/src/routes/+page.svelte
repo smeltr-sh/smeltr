@@ -16,8 +16,8 @@
 
 {#if latest}
   <a class="release-ribbon" href="/releases/{latest.version}">
-    <span><strong>Smeltr {latest.version}</strong> {latest.summary}</span>
-    <span class="go">What's in {latest.version} →</span>
+    <span><strong>Smeltr {latest.version}</strong> is out.</span>
+    <span class="go">What's in it →</span>
   </a>
 {/if}
 <div class="marketing">
@@ -128,7 +128,6 @@
   }
   .release-ribbon strong {
     color: var(--ink);
-    margin-right: 0.5rem;
   }
   .release-ribbon .go {
     color: var(--accent);
