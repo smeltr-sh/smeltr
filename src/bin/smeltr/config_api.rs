@@ -426,7 +426,7 @@ impl Writing {
 
     /// Sets the files the next `save` commits beside the config. Lookup files are read from the parent with them laid
     /// over it, a commit no branch names, so a table is checked against a file this save adds.
-    fn stage(&mut self, files: Vec<git::FileEdit>) -> Result<(), Refusal> {
+    pub(crate) fn stage(&mut self, files: Vec<git::FileEdit>) -> Result<(), Refusal> {
         // Once per Writing: a second staging would lay its files over the parent, not over the first.
         debug_assert!(self.staged.is_empty(), "a Writing stages once");
         if files.is_empty() {
@@ -503,8 +503,27 @@ fn errors_of_read(reading: &Reading, raw: &RawBundle) -> Vec<config_file::Valida
 }
 
 /// The worker group whose subtree `prefix` is. `None` for `shared/`.
-fn group_of(prefix: &str) -> Option<&str> {
+pub(crate) fn group_of(prefix: &str) -> Option<&str> {
     prefix.strip_prefix(&format!("{}/", config_file::GROUPS_DIR))
+}
+
+/// The bundle that group `group_id` runs: `shared/`'s file merged with the group's own, shared first. `system.json`
+/// comes from the group's own alone.
+pub(crate) fn merged_file(shared: &FileConfig, own: &FileConfig, group_id: &str) -> FileConfig {
+    let mut merged = FileConfig {
+        version: own.version,
+        on_exception: own.on_exception.clone(),
+        name: own.name.clone(),
+        sources: [&shared.sources[..], &own.sources[..]].concat(),
+        destinations: [&shared.destinations[..], &own.destinations[..]].concat(),
+        pipelines: [&shared.pipelines[..], &own.pipelines[..]].concat(),
+        routes: [&shared.routes[..], &own.routes[..]].concat(),
+        lookup_tables: [&shared.lookup_tables[..], &own.lookup_tables[..]].concat(),
+        grok_patterns: [&shared.grok_patterns[..], &own.grok_patterns[..]].concat(),
+        schemas: [&shared.schemas[..], &own.schemas[..]].concat(),
+    };
+    config_file::fill_default_group_ids(&mut merged.sources, group_id);
+    merged
 }
 
 /// The problems of the bundle a group runs, from lenient reads of `shared/` and of the group's own subtree, each
@@ -525,20 +544,7 @@ fn errors_of_merge(
         .collect();
     declared_at.extend(raw.file.lookup_tables.iter().map(|t| (t.id.clone(), at.clone())));
 
-    // Shared first, as the merge that runs orders them. `system.json` is the group's alone.
-    let mut merged = FileConfig {
-        version: raw.file.version,
-        on_exception: raw.file.on_exception.clone(),
-        name: raw.file.name.clone(),
-        sources: [&shared_raw.file.sources[..], &raw.file.sources[..]].concat(),
-        destinations: [&shared_raw.file.destinations[..], &raw.file.destinations[..]].concat(),
-        pipelines: [&shared_raw.file.pipelines[..], &raw.file.pipelines[..]].concat(),
-        routes: [&shared_raw.file.routes[..], &raw.file.routes[..]].concat(),
-        lookup_tables: [&shared_raw.file.lookup_tables[..], &raw.file.lookup_tables[..]].concat(),
-        grok_patterns: [&shared_raw.file.grok_patterns[..], &raw.file.grok_patterns[..]].concat(),
-        schemas: [&shared_raw.file.schemas[..], &raw.file.schemas[..]].concat(),
-    };
-    config_file::fill_default_group_ids(&mut merged.sources, group_id);
+    let merged = merged_file(&shared_raw.file, &raw.file, group_id);
 
     // A file `shared/` could not parse breaks this group too. Named with its subtree: a group has a `system.json`
     // of its own, and the two must not read as one file.
@@ -595,6 +601,11 @@ pub struct Save {
 }
 
 impl Save {
+    /// The commit this save produced, when it was written.
+    pub(crate) fn commit(&self) -> Option<&str> {
+        self.commit.as_deref()
+    }
+
     pub(crate) fn done(commit: String) -> Envelope<Save> {
         Envelope::ok(Save {
             commit: Some(commit),
@@ -611,7 +622,7 @@ impl Save {
 
 /// The section a mutation replaces, and so the only file `edits_for` writes.
 #[derive(PartialEq, Eq)]
-enum Touches {
+pub(crate) enum Touches {
     Sources,
     Destinations,
     Routes,
@@ -620,6 +631,9 @@ enum Touches {
     Schemas,
     OnlyPipelines,
     OnlyManifest,
+    /// Every section but the manifest, each written only if it changed. An import uses it, since it adds to several
+    /// sections at once.
+    Every,
 }
 
 fn json_bytes<T: serde::Serialize>(value: &T) -> Vec<u8> {
@@ -672,6 +686,25 @@ fn edits_for(file: &FileConfig, old: &RawBundle, touches: Touches) -> Result<Vec
         }
         Touches::OnlyManifest => return section("system.json", config_file::manifest_bytes(file)),
         Touches::OnlyPipelines => {}
+        Touches::Every => {
+            let changed = |of: fn(&FileConfig) -> Vec<u8>| of(file) != of(&old.file);
+            let sections = [
+                (Touches::Sources, changed(|f| json_bytes(&f.sources))),
+                (Touches::Destinations, changed(|f| json_bytes(&f.destinations))),
+                (Touches::Routes, changed(|f| json_bytes(&f.routes))),
+                (Touches::LookupTables, changed(|f| json_bytes(&f.lookup_tables))),
+                (Touches::GrokPatterns, changed(|f| json_bytes(&f.grok_patterns))),
+                (Touches::Schemas, true),
+                (Touches::OnlyPipelines, true),
+            ];
+            let mut edits = Vec::new();
+            for (touches, changed) in sections {
+                if changed {
+                    edits.extend(edits_for(file, old, touches)?);
+                }
+            }
+            return Ok(edits);
+        }
     }
 
     let pipelines = config_file::slugged_pipelines(file).map_err(|e| Refusal::invalid(e.to_string()))?;
@@ -890,7 +923,7 @@ impl Writing {
     /// files staged. The swap is a compare-and-swap on the commit that was read, so a writer who lost a race is
     /// refused rather than overwriting the winner, and no lock is held. It spawns git, which is why every caller runs
     /// it through `blocking`.
-    fn save(
+    pub(crate) fn save(
         &self,
         touches: Touches,
         message: &str,

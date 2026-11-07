@@ -136,6 +136,18 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "GET",
+        path: "/api/areas/:area/pipelines/:id/export",
+        what: "A pipeline and what it reads, as a bundle in a zip to download: the pipelines it calls, its lookup tables with their files, its grok patterns, schemas, and the samples and tests that lock it. Query: branch, at, routes (true also includes the routes that run it, with their sources and destinations).",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/areas/:area/pipelines/:id/export/contents",
+        what: "What that export holds, by kind and id, with each lookup table's file and its size in bytes. Query: as the export's.",
+        body: "",
+    },
+    Route {
+        method: "GET",
         path: "/api/areas/:area/pipeline-callers",
         what: "Map of pipeline id to the pipelines that call it directly. Query: branch.",
         body: "",
@@ -934,6 +946,7 @@ pub const LEFT_OUT: &[(&str, &str)] = &[
     ("POST", "/api/agent/conversations/:id/stop"),
     ("POST", "/api/agent/conversations/:id/context"),
     ("POST", "/api/areas/:area/lookups/upload"),
+    ("POST", "/api/areas/:area/imports"),
     ("PUT", "/api/me/agent-permissions"),
     ("POST", "/api/accounts/:id/keys"),
     ("GET", "/api/metrics"),

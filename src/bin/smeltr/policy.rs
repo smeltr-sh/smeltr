@@ -164,6 +164,8 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             | ["unreadable"]
             | ["pipelines"]
             | ["pipeline-callers"]
+            | ["pipelines", _, "export"]
+            | ["pipelines", _, "export", "contents"]
             | ["tests"]
             | ["stats"]
             | ["lookups", "file" | "mmdb"]
@@ -177,7 +179,7 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             Method::PUT,
             ["sources" | "destinations" | "routes" | "lookups" | "grok-patterns" | "schemas" | "manifest"],
         )
-        | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"]) => Level::Editor,
+        | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"] | ["imports"]) => Level::Editor,
         // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
         (Method::POST, ["sources", _, "lower" | "reset-history"]) => Level::Editor,
 
@@ -292,6 +294,8 @@ mod tests {
             "/api/areas/payments/pipelines",
             "/api/areas/payments/pipelines/p1",
             "/api/areas/payments/pipeline-callers",
+            "/api/areas/payments/pipelines/p1/export",
+            "/api/areas/payments/pipelines/p1/export/contents",
             "/api/areas/payments/sources/s1/connections",
             "/api/areas/payments/tests",
             "/api/areas/payments/tests/t1",
@@ -319,6 +323,7 @@ mod tests {
             (Method::DELETE, "/api/areas/payments/tests/t1"),
             (Method::POST, "/api/areas/payments/undo"),
             (Method::POST, "/api/areas/payments/lookups/upload"),
+            (Method::POST, "/api/areas/payments/imports"),
             (Method::PUT, "/api/areas/payments/files/pipelines/x.json"),
             (Method::DELETE, "/api/areas/payments/files/x.json"),
             (Method::PUT, "/api/areas/payments/schemas"),

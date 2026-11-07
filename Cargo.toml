@@ -152,6 +152,8 @@ tower-service = "0.3"
 tower-http = { version = "0.6", default-features = false, features = ["compression-gzip", "decompression-gzip"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 zstd = { version = "0.14", default-features = false }
+# A pipeline's export is a bundle in a zip, read back through the same loader as any bundle.
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame"] }
 snap = { version = "1", default-features = false }
 # Prometheus orders exemplars of one time and value by their labels' xxhash64.

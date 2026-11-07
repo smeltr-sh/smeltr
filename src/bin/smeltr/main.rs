@@ -26,6 +26,8 @@ mod chat_api;
 mod cluster;
 mod config_api;
 mod docs_api;
+mod export_api;
+mod import_api;
 // What the crate's fuzzers share, compiled here as `tests/harness` compiles it: the library's is test-only.
 #[cfg(test)]
 #[path = "../../fuzz.rs"]
@@ -1196,6 +1198,15 @@ async fn setup_leader(
                 smeltr::lookup::store::MAX_FILE_BYTES as usize,
             )),
         )
+        // Not on `app` below with the rest of the config routes: matching an import's credentials reads the secret
+        // list, and its lookup files go into the store. An export holds its lookup files, so it is streamed to disk
+        // like one.
+        .route(
+            "/api/areas/:area/imports",
+            post(import_api::import).layer(axum::extract::DefaultBodyLimit::max(
+                smeltr::lookup::store::MAX_FILE_BYTES as usize,
+            )),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(PEOPLE_BODY_LIMIT))
         .route_layer(axum::middleware::from_fn_with_state(auth, gate::require_principal));
     let routes = smeltr::leader::compose(state.clone(), admin_and_cluster);
@@ -2248,6 +2259,14 @@ async fn run_leader() {
             get(config_api::get_pipeline)
                 .put(config_api::put_pipeline)
                 .delete(config_api::delete_pipeline),
+        )
+        .route(
+            "/api/areas/:area/pipelines/:id/export",
+            get(export_api::export_pipeline),
+        )
+        .route(
+            "/api/areas/:area/pipelines/:id/export/contents",
+            get(export_api::export_contents),
         )
         .route("/api/areas/:area/pipeline-callers", get(pipeline_callers))
         .route("/api/areas/:area/:section/:id/connections", get(get_connections))

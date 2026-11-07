@@ -816,6 +816,75 @@ const addPipeline: Move = {
   },
 };
 
+const exportPipeline: Move = {
+  name: 'export-pipeline',
+  weight: (w) => (w.password && w.editing.pipelines.length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const name = rng.pick(world.editing.pipelines);
+    const routes = rng.chance(2);
+    // A fresh browser edits `shared/`, where the moves add their pipelines.
+    const on = world.branch === null ? '' : `?branch=${encodeURIComponent(world.branch)}`;
+    const res = await (await j.truth()).get(`/api/areas/shared${on}`);
+    const id = (res.config.pipelines as { id: string; name: string }[]).find(
+      (p) => p.name === name,
+    )!.id;
+    await goto(page, leader, '#/build/pipelines');
+    await page
+      .getByRole('row', { name: new RegExp(`^${name}\\b`) })
+      .getByRole('button', { name: 'Export' })
+      .click();
+    const dialog = page.getByRole('dialog', { name: `export ${id}` });
+    if (routes)
+      await dialog
+        .getByRole('switch', { name: 'Include routes, sources and destinations' })
+        .check();
+    await expect(dialog.getByRole('row', { name: new RegExp(`^Pipeline ${id} `) })).toBeVisible();
+    const href = await dialog.getByRole('link', { name: 'Download' }).getAttribute('href');
+    const zip = await (await page.request.get(new URL(href!, leader.url).toString())).body();
+    expect(zip.subarray(0, 2).toString()).toBe('PK');
+    // A zip names each file in the clear, so its names can be found in the bytes.
+    expect(zip.includes(`pipelines/${id}.json`)).toBe(true);
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    return `export "${name}"${routes ? ' with its routes' : ''}`;
+  },
+};
+
+const importPipeline: Move = {
+  name: 'import-pipeline',
+  // On a branch: an import on `main` would ask for one, and one that changes nothing would not start it.
+  weight: (w) => (w.password && w.branch !== null && w.editing.pipelines.length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const name = rng.pick(world.editing.pipelines);
+    const on = `?branch=${encodeURIComponent(world.branch!)}`;
+    const res = await (await j.truth()).get(`/api/areas/shared${on}`);
+    const id = (res.config.pipelines as { id: string; name: string }[]).find(
+      (p) => p.name === name,
+    )!.id;
+    const zip = await page.request.get(
+      `${leader.url}/api/areas/shared/pipelines/${id}/export${on}`,
+    );
+    await goto(page, leader, '#/build/pipelines');
+    await page.getByRole('button', { name: 'Import' }).click();
+    const dialog = page.getByRole('dialog', { name: /import pipeline/ });
+    await dialog.getByLabel('Import into').selectOption('Shared');
+    await dialog.getByLabel('Export file').setInputFiles({
+      name: `${id}.zip`,
+      mimeType: 'application/zip',
+      buffer: await zip.body(),
+    });
+    // Exported from this branch, every object is the one already here, so the import writes nothing.
+    await expect(dialog.getByRole('row', { name: new RegExp(`^Pipeline ${id} `) })).toContainText(
+      'Same as here',
+    );
+    await dialog.getByRole('button', { name: 'Import' }).click();
+    await expect(dialog).toBeHidden();
+    await editingIsSaved(j);
+    return `import "${name}" back, every object the same as here`;
+  },
+};
+
 const addRoute: Move = {
   name: 'add-route',
   leadsTo: ['open-change', 'blast-radius'],
@@ -3245,6 +3314,8 @@ export const MOVES: readonly Move[] = [
   fillAvro,
   addDestination,
   addPipeline,
+  exportPipeline,
+  importPipeline,
   addRoute,
   addRouteToNewDestination,
   refusedRoute,
