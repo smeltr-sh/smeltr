@@ -251,6 +251,7 @@ impl Schema {
     }
 
     /// Whether its chunks carry their variants' own bytes.
+    #[cfg(test)]
     pub fn cuts_variant_bytes(&self) -> bool {
         self.variants.is_some()
     }

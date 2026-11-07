@@ -1212,6 +1212,7 @@ impl Store {
 
     /// Errors if `worker_id` has ever enrolled, revoked or not. An enrollment code must not take over an existing
     /// worker's identity or resurrect a revoked one.
+    #[cfg(test)]
     pub fn store_worker_credential(&self, worker_id: &str, token_hash: &str) -> Result<(), StoreError> {
         let conn = self.conn.lock().unwrap();
         let inserted = conn.execute(

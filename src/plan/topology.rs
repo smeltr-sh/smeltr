@@ -1738,23 +1738,6 @@ impl DestinationKind {
         }
     }
 
-    /// The least buffer the destination runs with: the requests it starts with outstanding, each whole. 0 for one that
-    /// sends no request of a size of its own.
-    pub fn least_buffer_bytes(&self) -> usize {
-        match self {
-            DestinationKind::Elasticsearch(e) => e.max_bulk_bytes * e.in_flight,
-            DestinationKind::SplunkHec(s) => s.max_request_bytes * s.in_flight,
-            DestinationKind::Http(h) => h.max_request_bytes * h.in_flight,
-            DestinationKind::Prometheus(p) => p.max_request_bytes,
-            DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig { http, .. })
-            | DestinationKind::Otlp(OtlpDestinationConfig { http, .. }) => http.max_request_bytes * http.in_flight,
-            DestinationKind::Kafka(_)
-            | DestinationKind::Objects(_)
-            | DestinationKind::Iceberg(_)
-            | DestinationKind::Delta(_) => 0,
-        }
-    }
-
     /// Whether this destination may hold a variant as Parquet's variant, and so reads its bytes (`parquet::Schema`).
     pub fn holds_native_variants(&self) -> bool {
         match self {

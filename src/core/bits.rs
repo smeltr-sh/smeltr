@@ -72,6 +72,7 @@ pub fn and_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     mask_tail(&mut dst[..w], len);
 }
 
+#[cfg(test)]
 #[inline]
 pub fn or_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     let w = words_for(len);
@@ -81,6 +82,7 @@ pub fn or_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     mask_tail(&mut dst[..w], len);
 }
 
+#[cfg(test)]
 #[inline]
 pub fn xor_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     let w = words_for(len);
@@ -91,6 +93,7 @@ pub fn xor_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
 }
 
 /// `dst = a & !b`: the Drop kernel, `live' = live & !dropped`.
+#[cfg(test)]
 #[inline]
 pub fn and_not_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     let w = words_for(len);
@@ -112,6 +115,7 @@ pub fn not_into(dst: &mut [u64], a: &[u64], len: usize) {
 
 // -- in-place forms ---------------------------------------------------------
 
+#[cfg(test)]
 #[inline]
 pub fn and_assign(dst: &mut [u64], src: &[u64], len: usize) {
     let w = words_for(len);
@@ -127,14 +131,6 @@ pub fn or_assign(dst: &mut [u64], src: &[u64], len: usize) {
         dst[i] |= src[i];
     }
     mask_tail(&mut dst[..w], len);
-}
-
-#[inline]
-pub fn and_not_assign(dst: &mut [u64], src: &[u64], len: usize) {
-    let w = words_for(len);
-    for i in 0..w {
-        dst[i] &= !src[i];
-    }
 }
 
 /// True when every bit in [0, len) is set. Bits past `len` are ignored.
@@ -179,6 +175,7 @@ pub fn index_of_set(masks: &[&[u64]], len: usize) -> Vec<Option<u32>> {
 }
 
 /// Collect set-bit indices into a gather list: how a selection becomes the `indices` argument to `Batch::gather`.
+#[cfg(test)]
 pub fn to_indices(bits: &[u64], len: usize, out: &mut Vec<u32>) {
     out.clear();
     out.reserve(popcount(&bits[..words_for(len)]));

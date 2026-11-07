@@ -395,11 +395,6 @@ impl Actor {
             recorded: Recorded::default(),
         }
     }
-
-    /// Whether this is an account rather than the leader, its host or nobody.
-    pub fn is_account(&self) -> bool {
-        ![Actor::SYSTEM_ID, Actor::HOST_ID, Actor::ANONYMOUS_ID].contains(&self.id.as_str())
-    }
 }
 
 /// Why a durable account operation was refused. Distinct from [`StoreError`], which is the store failing rather

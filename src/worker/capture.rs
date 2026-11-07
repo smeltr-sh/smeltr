@@ -1745,10 +1745,6 @@ pub fn source_kind_of(dto: crate::config_file::SourceDto) -> Result<crate::plan:
         .ok_or_else(|| "the capture's source did not load".to_string())
 }
 
-/// A worker's share of a capture, tracked so `worker::run_worker` can drive cold sources without the transform
-/// threads knowing they exist.
-pub type SharedCaptures = Arc<Captures>;
-
 #[cfg(test)]
 mod tests {
     use super::*;

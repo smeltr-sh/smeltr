@@ -75,9 +75,6 @@ export type LeaderSecret = { secret: string; version: number };
 export const isLeaderStored = (r: SecretRef | undefined): r is LeaderSecret =>
   typeof r === 'object' && r !== null;
 
-/** How a leader-stored reference reads where there is no picker for one. */
-export const secretLabel = (r: LeaderSecret) => `${r.secret} @ v${r.version}`;
-
 /** The TLS a connector speaks of its own: what it presents to the far end, and what it verifies the far end
  * against. A client under none presents no certificate and trusts the public roots; a receiver under none serves
  * plain TCP. Mirrors `config_file::dto::TlsDto`. */
@@ -1442,11 +1439,6 @@ function noBranchChosen<T>(): T {
     ok: false,
     errors: [bareError('not saved -- no branch was chosen to save it on')],
   } as T;
-}
-
-/** The commit the editor is working from, `null` before its first read. */
-export function currentBaseCommit(): string | null {
-  return baseCommit;
 }
 
 // -- the scope being edited -------------------------------------------------
@@ -5233,9 +5225,6 @@ export function deleteAccount(id: string): Promise<object | AccountRefusal> {
 //
 // A role is what holding it gives, and the provider groups that give it (`roles_api.rs`).
 // Administrators only, like the roster.
-
-/** The built-in role that holds everything. */
-export const ADMINISTRATOR = 'administrator';
 
 export interface RoleDto {
   name: string;
