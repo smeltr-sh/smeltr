@@ -12,6 +12,7 @@
   const sorted = $derived(sort.key === key);
 </script>
 
+<!-- The arrow's meaning, for a screen reader: a head outside a table has no `aria-sort` to say it. -->
 <button type="button" class="sort-head" class:sorted onclick={() => sort.toggle(key)}
   >{@render children()}<span class="arrow" aria-hidden="true"
     >{sorted ? (sort.dir === 1 ? '↑' : '↓') : ''}</span

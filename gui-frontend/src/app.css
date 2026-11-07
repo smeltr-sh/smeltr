@@ -37,7 +37,7 @@ body {
   color: var(--dim);
 }
 
-/* What every component would otherwise repeat. Each sits at zero specificity, so a component's own rule wins. */
+/* Styles every component would otherwise repeat. Each sits at zero specificity, so a component's own rule wins. */
 
 /* An uppercase label (STYLE_GUIDE.md, "Typography"): a step's kind, a dialog's header rule. */
 :where(.uppercase-label) {

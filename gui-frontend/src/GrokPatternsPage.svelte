@@ -173,6 +173,7 @@
           <tr>
             <th class="name">Name</th>
             <th>Pattern</th>
+            <!-- Names a column whose head would otherwise be an empty cell. -->
             <th class="act"><span class="visually-hidden">Remove</span></th>
           </tr>
         </thead>

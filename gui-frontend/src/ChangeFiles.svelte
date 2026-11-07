@@ -153,6 +153,7 @@
           <th aria-sort={fileSort.aria('change')}
             ><SortButton sort={fileSort} key="change">Change</SortButton></th
           >
+          <!-- Names a column whose head would otherwise be an empty cell. -->
           <th><span class="visually-hidden">Edit</span></th>
         </tr>
       </thead>
