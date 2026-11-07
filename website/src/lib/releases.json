@@ -71,7 +71,7 @@
         ]
       }
     ],
-    "changes": [
+    "fixes": [
       {
         "title": "Build pipelines",
         "items": [
@@ -81,12 +81,14 @@
       {
         "title": "Smeltr language",
         "items": [
+          "`true`, `false` and `null` before a dot are values: `true.toString()` no longer looks for a field named `true.toString`.",
           "A variable first set to `null` or `[]` refuses a later write that cannot blend with the writes before it: `let l = []; l = \"s\";` no longer compiles."
         ]
       },
       {
         "title": "Sources",
         "items": [
+          "A syslog receiver with a line breaker keeps every whole message it holds when a sender over TLS hangs up without closing TLS.",
           "An HTTP, HEC, OTLP, Prometheus or Elasticsearch receiver answers a request as soon as it has received it, so its sender is not held while a destination writes its file. Receivers already deployed change too when the worker is upgraded. A worker that crashes loses the records its receivers answered but had not yet delivered. To answer only after every destination has the records, as before, turn on `answerAfterDelivery`.",
           "A worker raises its open-file limit to the most its host allows when it starts, and its receivers share the connections over TCP that the limit leaves room for, after what the worker keeps for its destinations and files. When they hold that many, a new connection takes the place of the one idle longest on any receiver, if that one has been idle a minute. Otherwise the new one is closed. The Cluster page shows how many connections each worker may hold. `maxConnections` caps one receiver's connections. `maxConnectionsPerSender` caps one address's connections, and `idleTimeoutSecs` closes idle ones. An HTTP, HEC, OTLP, Prometheus or Elasticsearch receiver also closes an HTTP/1 connection that sends no request for 30 seconds, so a sender that keeps its connection open between requests opens a new one.",
           "A syslog message larger than its receiver's message size is cut to that size and the connection reads on; before, the connection was closed. A larger datagram is cut too, where it was dropped. Every receiver takes messages or requests of at least 2048 bytes, and a saved size below that runs at 2048."
@@ -101,6 +103,9 @@
       {
         "title": "Run a fleet",
         "items": [
+          "A source's normal is learned only from times no warning about it held, so an outage no longer lowers it.",
+          "Lag climbing is judged on the highest lag of each five minutes, over thirty minutes, so it no longer raises and clears with each commit.",
+          "On Windows, a leader listening on `[::]` takes IPv4 too.",
           "The leader sets how often its workers report, with `SMELTR_LEADER_HEARTBEAT_INTERVAL_MS`. A worker's own heartbeat interval does nothing now, and a worker that sets it in its file says at start that it can be removed.",
           "Furthest from normal on the Status page ranks sources against the normal their warnings use."
         ]
@@ -108,36 +113,9 @@
       {
         "title": "Security",
         "items": [
+          "A leader serving a stand-in certificate can rotate away from it; before, every rotation was refused until a restart, which did not help.",
           "The update check sends the leader's operating system and CPU architecture beside its version.",
           "The container image leaves out expat, which smeltr does not use."
-        ]
-      }
-    ],
-    "fixes": [
-      {
-        "title": "Smeltr language",
-        "items": [
-          "`true`, `false` and `null` before a dot are values: `true.toString()` no longer looks for a field named `true.toString`."
-        ]
-      },
-      {
-        "title": "Sources",
-        "items": [
-          "A syslog receiver with a line breaker keeps every whole message it holds when a sender over TLS hangs up without closing TLS."
-        ]
-      },
-      {
-        "title": "Run a fleet",
-        "items": [
-          "A source's normal is learned only from times no warning about it held, so an outage no longer lowers it.",
-          "Lag climbing is judged on the highest lag of each five minutes, over thirty minutes, so it no longer raises and clears with each commit.",
-          "On Windows, a leader listening on `[::]` takes IPv4 too."
-        ]
-      },
-      {
-        "title": "Security",
-        "items": [
-          "A leader serving a stand-in certificate can rotate away from it; before, every rotation was refused until a restart, which did not help."
         ]
       }
     ]

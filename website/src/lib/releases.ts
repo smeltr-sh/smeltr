@@ -10,7 +10,6 @@ export type Release = {
   summary: string;
   highlights?: { title: string; text: string; href: string }[];
   features?: NoteGroup[];
-  changes?: NoteGroup[];
   fixes?: NoteGroup[];
 };
 
@@ -22,7 +21,7 @@ export function categorized(release: Release): { title: string; groups: NoteGrou
   return categories
     .map((c) => ({
       title: c.title,
-      groups: release[c.key as 'features' | 'changes' | 'fixes'] ?? [],
+      groups: release[c.key as 'features' | 'fixes'] ?? [],
     }))
     .filter((c) => c.groups.length > 0);
 }
