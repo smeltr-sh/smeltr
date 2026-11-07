@@ -857,12 +857,15 @@
                   >
                   {#each columns as path (path)}
                     {@const name = splitPath(fromRecord(path))}
-                    <th class="cell" title={fromRecord(path)} aria-sort={gridSort.aria(path)}
+                    <th
+                      class="cell ellipsis"
+                      title={fromRecord(path)}
+                      aria-sort={gridSort.aria(path)}
                       ><SortButton sort={gridSort} key={path}
                         ><span class="head-name"
                           ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
-                        >{#if view.showTypes && columnTypes.get(path)}<span class="head-type"
-                            >{': '}{columnTypes.get(path)}</span
+                        >{#if view.showTypes && columnTypes.get(path)}<span
+                            class="head-type ellipsis">{': '}{columnTypes.get(path)}</span
                           >{/if}</SortButton
                       ></th
                     >
@@ -870,14 +873,15 @@
                   {#each missingColumns as m (m.path)}
                     {@const name = splitPath(fromRecord(m.path))}
                     <th
-                      class="cell missing-head"
+                      class="cell missing-head ellipsis"
                       title="{m.schema} requires {fromRecord(m.path)}; the rows lack it"
                       ><span class="missing-name"
                         ><span class="head-name"
                           ><span aria-hidden="true">⚠&nbsp;</span><span class="path-prefix"
                             >{name.prefix}</span
                           >{name.leaf}</span
-                        >{#if view.showTypes}<span class="head-type">{': '}{m.written_as}</span
+                        >{#if view.showTypes}<span class="head-type ellipsis"
+                            >{': '}{m.written_as}</span
                           >{/if}</span
                       ></th
                     >
@@ -910,7 +914,7 @@
                     >
                     {#each columns as path (path)}
                       {@const field = fieldAt(m.before, m.after, path)}
-                      <td class="cell">
+                      <td class="cell ellipsis">
                         {#if !field}
                           <span class="dim">&mdash;</span>
                         {:else if field.state === 'removed'}
@@ -925,7 +929,7 @@
                       </td>
                     {/each}
                     {#each missingColumns as m (m.path)}
-                      <td class="cell"><span class="missing">missing</span></td>
+                      <td class="cell ellipsis"><span class="missing">missing</span></td>
                     {/each}
                   </tr>
 
@@ -1218,12 +1222,6 @@
     text-align: right;
   }
 
-  .cell {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   /* The rail marks how far the open record reaches, and stays put while the
      grid scrolls sideways under it. A record the step changed takes the
      added color, as a diff does. */
@@ -1284,11 +1282,8 @@
     margin-left: -0.25rem;
     min-width: 0;
     flex-shrink: 10;
-    overflow: hidden;
-    text-overflow: ellipsis;
     font-family: var(--mono);
     opacity: 0.7;
-    white-space: nowrap;
   }
 
   /* The nesting recedes so the eye lands on the field's own name. */

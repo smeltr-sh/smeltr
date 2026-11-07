@@ -112,8 +112,4 @@
     flex-direction: column;
     gap: 0.7rem;
   }
-
-  .mono {
-    font-family: var(--mono);
-  }
 </style>

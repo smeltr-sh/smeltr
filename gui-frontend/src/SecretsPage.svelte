@@ -571,8 +571,4 @@
     color: var(--ink);
     font-size: var(--text-note);
   }
-
-  .mono {
-    font-family: var(--mono);
-  }
 </style>

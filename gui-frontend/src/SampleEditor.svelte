@@ -379,9 +379,6 @@
     color: var(--dim);
     font-size: var(--text-note);
   }
-  .mono {
-    font-family: var(--mono);
-  }
   td.long {
     min-width: 28rem;
   }

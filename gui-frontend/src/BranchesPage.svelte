@@ -451,9 +451,6 @@
   .warn {
     color: var(--warn);
   }
-  .mono {
-    font-family: var(--mono);
-  }
   .sub {
     font-size: var(--text-micro);
     margin-top: 0.1rem;

@@ -256,7 +256,4 @@
     font-family: var(--mono);
     resize: vertical;
   }
-  .mono {
-    font-family: var(--mono);
-  }
 </style>

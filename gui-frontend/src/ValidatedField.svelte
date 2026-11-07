@@ -687,7 +687,7 @@
               {/if}
             </span>
             {#if c.field?.description && !c.set}
-              <span class="fn-desc path-desc"><Ticked text={c.field.description} /></span>
+              <span class="fn-desc ellipsis"><Ticked text={c.field.description} /></span>
             {/if}
           </li>
         {/each}
@@ -1192,12 +1192,6 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
-  }
-
-  .path-desc {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .suggestions li.path-more {

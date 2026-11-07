@@ -326,7 +326,7 @@
         onclick={() => (removedOpen = !removedOpen)}
       >
         <span class="sign"></span><span class="chevron"><ChevronIcon open={removedOpen} /></span>
-        <span class="removed-names"
+        <span class="removed-names ellipsis"
           >{split.removed.length} removed: {split.removed.map((n) => n.path).join(', ')}</span
         >
       </button>
@@ -544,9 +544,6 @@
 
   .removed-names {
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   /* Sits under the value it belongs to, and is as wide as the line so the
