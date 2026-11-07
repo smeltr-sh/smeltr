@@ -1984,7 +1984,7 @@ const produceSchema: Move = {
 
 const pasteSample: Move = {
   name: 'paste-sample',
-  leadsTo: ['edit-sample', 'delete-sample'],
+  leadsTo: ['edit-sample', 'delete-sample', 'save-output-sample'],
   weight: (w) => (w.password && w.editing.samples.length < 2 ? 1 : 0),
   run: async (j) => {
     const { page, leader, rng, world } = j;
@@ -2150,6 +2150,72 @@ const deleteSample: Move = {
     world.editing.samples = world.editing.samples.filter((s) => s !== name);
     await editingIsSaved(j);
     return `delete ${name}`;
+  },
+};
+
+/** The pipelines the journey added, whose steps each set a field to its own name and read none, so any pasted
+ * record runs. */
+const added = (w: World) => w.editing.pipelines.filter((p) => p.startsWith('pipe '));
+const outputs = (w: World) => w.editing.samples.filter((s) => s.startsWith('output '));
+
+/** Runs a pipeline the journey added over a pasted sample and saves its output as a sample, and checks the leader
+ * holds each record as the pipeline finished it: its own fields, and each field the pipeline's steps set. */
+const saveOutputSample: Move = {
+  name: 'save-output-sample',
+  weight: (w) => (added(w).length && pasted(w).length && outputs(w).length < 2 ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const pipeline = rng.pick(added(world));
+    const input = rng.pick(pasted(world));
+    const name = `output ${world.made++}`;
+    const api = await j.truth();
+    const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
+    const sampleNamed = async (n: string) => {
+      const { samples } = await api.get(`/api/areas/shared/samples?${on}`);
+      const id = samples.find((s: { name: string }) => s.name === n).id;
+      return (await api.get(`/api/areas/shared/samples/${encodeURIComponent(id)}?${on}`))
+        .sample as { source?: string; records: Record<string, unknown>[] };
+    };
+    const records = (await sampleNamed(input)).records;
+
+    await goto(page, leader, '#/build/pipelines');
+    await page.getByRole('link', { name: pipeline, exact: true }).click();
+    const menu = page.getByRole('button', { name: 'Choose a sample' });
+    await menu.click();
+    await page
+      .getByRole('listbox', { name: 'Saved samples' })
+      .getByRole('option', { name: new RegExp(`^${input}\\b`) })
+      .click();
+    const saveOutput = page.getByRole('button', { name: 'Save output as sample' });
+    await expect(saveOutput).toBeEnabled();
+    await saveOutput.click();
+    const dialog = page.getByRole('dialog', { name: 'save output as sample' });
+    const count = `${records.length} record${records.length === 1 ? '' : 's'}`;
+    await expect(dialog.getByText(count, { exact: true })).toBeVisible();
+    await dialog.getByLabel('Name').fill(name);
+    await saveBy(j, dialog.getByRole('button', { name: 'Save sample' }), () =>
+      expect(dialog).toBeHidden(),
+    );
+    world.editing.samples.push(name);
+
+    const saved = await sampleNamed(name);
+    expect(saved.source, `${name} does not name a source`).toBeUndefined();
+    expect(saved.records, `${name} holds one record for each record of ${input}`).toHaveLength(
+      records.length,
+    );
+    const set = world.editing.steps
+      .filter((s) => s.startsWith(`${pipeline}:`))
+      .map((s) => s.slice(pipeline.length + 1));
+    records.forEach((record, i) => {
+      for (const field of ownFields(record))
+        expect(saved.records[i][field], `${name}'s record ${i + 1} should keep ${field}`).toEqual(
+          record[field],
+        );
+      for (const field of set)
+        expect(saved.records[i][field], `"${pipeline}" should have set ${field}`).toBe(field);
+    });
+    await editingIsSaved(j);
+    return `save "${pipeline}"'s output over ${input} as ${name}`;
   },
 };
 
@@ -3398,6 +3464,7 @@ export const MOVES: readonly Move[] = [
   pasteSample,
   editSample,
   deleteSample,
+  saveOutputSample,
   capture,
   saveInputSample,
   addGroup,
