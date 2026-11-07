@@ -23,10 +23,6 @@ pub const MAX_ROUNDS: usize = 25;
 /// The most of one request's answer the model reads. The rest is cut, and the model told so.
 pub const MAX_RESULT: usize = 64 * 1024;
 
-/// The most of an answer to an earlier message that the model reads again. Each later request resends the answers,
-/// so only the start of each is resent; the stored conversation keeps it whole.
-pub const EARLIER_RESULT: usize = 2 * 1024;
-
 /// The most one answer may spend, thinking included.
 const MAX_TOKENS: u32 = 16_000;
 
@@ -155,8 +151,6 @@ pub fn system_prompt(catalog: &[Route]) -> String {
            person before deploying anything.\n\
          - `:area` is `shared` or a worker group's id.\n\
          - `at` reads at a commit instead of a branch's tip.\n\
-         - An answer to a request made before the person's latest message is shown cut to its start. To read it \
-           whole, send that read again; it answers as things are now. Never send a write again to see its answer.\n\
          - Every JSON answer is `{ ok, errors, ...fields }`; a list comes under a named field.\n\
          - Bodies are camelCase, except `/api/areas/:area/preview/pipeline` and `.../preview/routes`, whose fields are snake_case.\n\n\
          Routes (method, path, what it does, body):\n",
@@ -229,12 +223,12 @@ pub fn parse(catalog: &[Route], input: &Value) -> Result<ApiCall, String> {
     })
 }
 
-/// `text`, cut to `most` bytes on a character boundary, saying so when it was.
-fn cut(text: String, most: usize) -> String {
-    if text.len() <= most {
+/// `text`, cut to [`MAX_RESULT`] bytes on a character boundary, saying so when it was.
+fn cut(text: String) -> String {
+    if text.len() <= MAX_RESULT {
         return text;
     }
-    let mut end = most;
+    let mut end = MAX_RESULT;
     while !text.is_char_boundary(end) {
         end -= 1;
     }
@@ -245,20 +239,10 @@ fn cut(text: String, most: usize) -> String {
     )
 }
 
-/// `turns` as a model can be asked them: a call the conversation left unanswered is answered [`NOT_RUN`], what was
-/// said between two answers is one turn, and an answer from before the person's latest message is cut to
-/// [`EARLIER_RESULT`].
+/// `turns` as a model can be asked them: a call the conversation left unanswered is answered [`NOT_RUN`], and
+/// what was said between two answers is one turn.
 pub fn ready(turns: Vec<Turn>) -> Vec<Turn> {
-    let latest = turns
-        .iter()
-        .rposition(|t| matches!(t, Turn::Asked(said) if said.iter().any(|s| matches!(s, Said::Text(_)))));
-    let turns = turns.into_iter().enumerate().map(|(at, turn)| match turn {
-        Turn::Asked(said) if latest.is_some_and(|latest| at < latest) => {
-            Turn::Asked(said.into_iter().map(earlier).collect())
-        }
-        turn => turn,
-    });
-    let mut out: Vec<Turn> = Vec::new();
+    let mut out: Vec<Turn> = Vec::with_capacity(turns.len());
     let mut owed: Vec<String> = Vec::new();
     for turn in turns {
         match turn {
@@ -287,23 +271,6 @@ pub fn ready(turns: Vec<Turn>) -> Vec<Turn> {
     }
     settle(&mut out, &mut owed);
     out
-}
-
-/// `said` as the model reads it after the person has sent a later message: a result is cut to its start, and
-/// text is left whole.
-fn earlier(said: Said) -> Said {
-    match said {
-        Said::Result {
-            call_id,
-            output,
-            is_error,
-        } => Said::Result {
-            call_id,
-            output: cut(output, EARLIER_RESULT),
-            is_error,
-        },
-        said => said,
-    }
 }
 
 /// Answer the calls still `owed` at the end of `out`, ahead of anything else said there.
@@ -339,10 +306,7 @@ async fn run_call(host: &dyn Host, catalog: &[Route], call: &Call) -> Said {
             }
             Ok(request) => {
                 let answer = host.request(&request).await;
-                (
-                    cut(format!("{}\n{}", answer.status, answer.body), MAX_RESULT),
-                    answer.status >= 400,
-                )
+                (cut(format!("{}\n{}", answer.status, answer.body)), answer.status >= 400)
             }
         }
     };
@@ -783,51 +747,6 @@ mod tests {
             ["c2", "c1"],
             "the call left unrun is answered when asked again"
         );
-    }
-
-    #[tokio::test]
-    async fn an_answer_from_before_the_latest_message_is_read_again_cut() {
-        let read = || {
-            reply(
-                "",
-                &[("c1", json!({"method": "GET", "path": "/api/areas/shared/pipelines"}))],
-            )
-        };
-        let model = Scripted::new(vec![read(), reply("done", &[]), read(), reply("done", &[])]);
-        let host = Fake::new(usize::MAX, &"x".repeat(2 * EARLIER_RESULT));
-        run(
-            &model,
-            &host,
-            CATALOG,
-            "",
-            Vec::new(),
-            asked("Read."),
-            &Asking::default(),
-        )
-        .await
-        .unwrap();
-        let before = host.kept.lock().unwrap().clone();
-        run(&model, &host, CATALOG, "", before, asked("Again."), &Asking::default())
-            .await
-            .unwrap();
-        let asked = model.asked.lock().unwrap();
-        let whole = format!("200\n{}", "x".repeat(2 * EARLIER_RESULT));
-        assert_eq!(
-            results(&asked[1][2])[0].1,
-            whole,
-            "an answer is read whole in its own turn"
-        );
-        let last = &asked[3];
-        let earlier = &results(&last[2])[0].1;
-        assert!(
-            earlier.starts_with("200\nxxx") && earlier.len() < EARLIER_RESULT + 100,
-            "{earlier}"
-        );
-        assert!(
-            earlier.ends_with(&format!("only the first {EARLIER_RESULT} are shown]")),
-            "{earlier}"
-        );
-        assert_eq!(results(&last[6])[0].1, whole);
     }
 
     #[test]
