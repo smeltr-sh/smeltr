@@ -1420,6 +1420,10 @@ fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collecti
         }
     }
     let body = |head: &str| -> Vec<&str> {
+        // A unit struct, such as `NoUnknownKeys`, has no fields and so no keys.
+        if text.contains(&head.replace(" {", ";")) {
+            return Vec::new();
+        }
         let start = text
             .find(head)
             .unwrap_or_else(|| panic!("no `{head}` in the config DTOs"));
