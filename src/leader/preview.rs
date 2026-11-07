@@ -55,8 +55,8 @@ pub struct PreviewRequest {
     /// Also return the rows shown as a sample holds them (`Preview::as_sample`), to be saved as one.
     #[serde(default)]
     pub as_sample: bool,
-    /// The commit on the editor's branch that holds the pipeline run as it is here, if one does: what a sample saved
-    /// from its output records as `__capture.config`. The leader sets it; a caller cannot.
+    /// The commit on the editor's branch that holds the pipeline exactly as it ran, if there is one: what a sample
+    /// saved from its output records as `__capture.config`. The leader sets it; a caller cannot.
     #[serde(skip)]
     pub saved_at: Option<String>,
     /// What may follow a `.` in an expression of the config. Asked, the preview answers it instead of running the
@@ -1137,7 +1137,7 @@ fn as_sample(
         });
         numbers.push(shown.row);
     }
-    // How the output was made stands in for how its input was captured, which these records no longer are.
+    // How the output was made stands in for how its input was captured, because these records are no longer a capture.
     let mut columns = config_file::sample_columns(&taken);
     columns.retain(|c| !c.name.starts_with("__capture."));
     columns.extend(made.iter().map(|(c, _)| c.clone()));

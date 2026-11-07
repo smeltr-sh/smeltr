@@ -618,8 +618,8 @@ fn refused_on_branch(
 /// `req.config` with each schema it names but does not declare taken from `reading`, the area as the branch holds
 /// it. The pipeline editor sends none: a standard's runs to megabytes, and sending it with every preview stalls the
 /// page that builds the request. A schema the config declares wins over the branch's.
-/// The commit `reading` resolved, if the pipeline `req` runs is saved there as it is in `req`, for a sample of its output
-/// to name. Only a preview asked for one compares them.
+/// The commit `reading` resolved, if it holds the pipeline `req` runs exactly as `req` has it; a sample of the output
+/// names it. Only a preview asked for a sample compares them.
 fn saved_at(req: &PreviewRequest, reading: &config_api::Reading) -> Option<String> {
     if !req.as_sample {
         return None;
