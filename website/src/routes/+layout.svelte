@@ -4,11 +4,29 @@
   import '../app.css';
   import '#lib/marketing.css';
   import { page } from '$app/state';
+  import { afterNavigate } from '$app/navigation';
   import Logo from '#lib/components/Logo.svelte';
   import ThemeToggle from '#lib/components/ThemeToggle.svelte';
   import { source } from '#lib/release.ts';
 
   let { children } = $props();
+
+  const productPages = [
+    ['/siem-costs', 'Cut SIEM costs'],
+    ['/one-schema', 'One schema'],
+    ['/feed-health', 'Feed health'],
+    ['/how-it-works', 'How it works'],
+  ];
+  let productMenu: HTMLDetailsElement | undefined = $state();
+  afterNavigate(() => productMenu?.removeAttribute('open'));
+  function closeProductMenu(event: MouseEvent | KeyboardEvent) {
+    if (!productMenu?.open) return;
+    if (event instanceof KeyboardEvent && event.key !== 'Escape') return;
+    if (event instanceof MouseEvent && productMenu.contains(event.target as Node)) return;
+    productMenu.open = false;
+    if (event instanceof KeyboardEvent) productMenu.querySelector('summary')?.focus();
+  }
+  const onProductPage = $derived(productPages.some(([href]) => page.url.pathname === href));
 
   function measureHeader(node: HTMLElement) {
     const update = () =>
@@ -28,6 +46,8 @@
   <link rel="canonical" href={`https://smeltr.sh${page.url.pathname}`} />
 </svelte:head>
 
+<svelte:window onclick={closeProductMenu} onkeydown={closeProductMenu} />
+
 <a class="skip-link" href="#main">Skip to content</a>
 
 <header use:measureHeader>
@@ -38,9 +58,20 @@
     </a>
 
     <div class="links">
-      {#each [['/siem-costs', 'Cut SIEM costs'], ['/one-schema', 'One schema'], ['/feed-health', 'Feed health'], ['/how-it-works', 'How it works']] as [href, label] (href)}
-        <a {href} aria-current={page.url.pathname === href ? 'page' : undefined}>{label}</a>
-      {/each}
+      <details class="menu" bind:this={productMenu}>
+        <summary class:current={onProductPage}>Product</summary>
+        <div class="menu-panel">
+          {#each productPages as [href, label] (href)}
+            <a {href} aria-current={page.url.pathname === href ? 'page' : undefined}>{label}</a>
+          {/each}
+        </div>
+      </details>
+      <a
+        href="/learn"
+        aria-current={page.url.pathname === '/learn' || page.url.pathname.startsWith('/learn/')
+          ? 'page'
+          : undefined}>Learn</a
+      >
       <a
         href="/docs"
         aria-current={page.url.pathname === '/docs' || page.url.pathname.startsWith('/docs/')
@@ -65,7 +96,8 @@
     </a>
   </div>
   <p>
-    <a href="/releases">Releases</a> · <a href={source}>Source code</a> ·
+    <a href="/releases">Releases</a> · <a href="/learn">Learn</a> · <a href={source}>Source code</a>
+    ·
     <a href="mailto:support@smeltr.sh">support@smeltr.sh</a>
   </p>
 </footer>
@@ -134,8 +166,51 @@
     text-decoration: underline 3px var(--accent);
     text-underline-offset: 0.4rem;
   }
-  .links a:hover {
+  .links a:hover,
+  .menu summary:hover {
     color: var(--ink);
+  }
+  .menu {
+    position: relative;
+  }
+  .menu summary {
+    list-style: none;
+    cursor: pointer;
+    color: var(--dim);
+  }
+  .menu summary::-webkit-details-marker {
+    display: none;
+  }
+  .menu summary::after {
+    content: ' ▾';
+    font-size: 0.75em;
+  }
+  .menu summary.current {
+    color: var(--ink);
+    font-weight: 600;
+    text-decoration: underline 3px var(--accent);
+    text-underline-offset: 0.4rem;
+  }
+  .menu-panel {
+    position: absolute;
+    top: calc(100% + 0.9rem);
+    left: -0.9rem;
+    z-index: 11;
+    display: grid;
+    min-width: 12rem;
+    padding: 0.4rem 0;
+    background: var(--band-bg);
+    border: 1px solid var(--band-line);
+    border-radius: var(--radius-card);
+  }
+  .menu-panel a {
+    padding: 0.5rem 0.9rem;
+    white-space: nowrap;
+  }
+  .menu-panel a[aria-current='page'] {
+    text-decoration: none;
+    border-left: 3px solid var(--accent);
+    padding-left: calc(0.9rem - 3px);
   }
   main {
     min-height: 70vh;

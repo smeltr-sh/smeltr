@@ -11,7 +11,7 @@
   <section class="page-hero">
     <p class="eyebrow"><a href="/releases">Releases</a></p>
     <h1>Smeltr {r.version}</h1>
-    <p class="date">{r.date ?? 'Not released yet'}</p>
+    <p class="date">{r.date}</p>
     <p class="lede">{r.summary}</p>
   </section>
   {#if r.highlights?.length}
