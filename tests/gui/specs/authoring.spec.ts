@@ -14,7 +14,7 @@ import { execFileSync } from 'node:child_process';
 const ON = '?branch=work';
 
 /** Captures three records in the open capture dialog and saves them as the sample `name`. */
-async function captureThree(page: Page, name: string) {
+async function captureThree(page: Page, name: string, enter = false) {
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('spinbutton', { name: 'records' }).fill('3');
   await dialog.getByRole('spinbutton', { name: 'seconds' }).fill('60');
@@ -23,7 +23,9 @@ async function captureThree(page: Page, name: string) {
   await expect(capture).toBeVisible({ timeout: 90_000 });
   await expect(capture.getByText(/3\s*of 3/)).toBeVisible();
   await capture.getByLabel('Save as').fill(name);
-  await capture.getByRole('button', { name: 'Save sample' }).click();
+  // Enter in the name saves, though the window's primary is Use these records.
+  if (enter) await capture.getByLabel('Save as').press('Enter');
+  else await capture.getByRole('button', { name: 'Save sample' }).click();
   await expect(capture).toBeHidden();
 }
 
@@ -142,7 +144,7 @@ test("A1: a capture from smeltr's own metrics source, read by a worker, is saved
     'source:own-metrics',
   );
   await expect(dialog.getByRole('combobox', { name: /^Worker group/ })).toHaveValue('default');
-  await captureThree(admin, 'worker counters');
+  await captureThree(admin, 'worker counters', true);
 
   const row = admin.getByRole('row', { name: /worker counters/ });
   await expect(row).toContainText('own-metrics');

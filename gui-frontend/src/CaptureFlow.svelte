@@ -504,9 +504,7 @@
     onsave={!use && canEdit(savedIn) ? save : undefined}
     use={use
       ? { title: use.title, label: use.label, take }
-      : NOT_IN_DEMO
-        ? undefined
-        : { label: 'Use these records', take: keep }}
+      : { label: 'Use these records', take: keep, off: NOT_IN_DEMO }}
     ondiscard={discard}
   />
 {/if}
