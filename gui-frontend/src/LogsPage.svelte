@@ -243,7 +243,12 @@
     </div>
 
     <form class="text" onsubmit={submit}>
-      <select name="worker" value={filters.worker ?? ''} onchange={onSelect}>
+      <select
+        name="worker"
+        value={filters.worker ?? ''}
+        onchange={onSelect}
+        disabled={!workerOptions.length}
+      >
         <option value="">worker</option>
         {#each workerOptions as w (w.workerId)}
           <option value={w.workerId}>{w.workerId}{w.revoked ? ' (revoked)' : ''}</option>
