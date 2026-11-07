@@ -296,7 +296,8 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
 });
 
 // A1, an editor: the capture that could be saved as a sample is run over unsaved instead, and nothing is committed.
-test('A1: an editor runs a pipeline over a capture without saving it', async ({
+// Saved after, from the menu of the input's and the output's saves, it is the sample run over and a test may lock it.
+test('A1: an editor runs a pipeline over a capture without saving it, then saves it', async ({
   api,
   leader,
   fleet,
@@ -343,6 +344,31 @@ test('A1: an editor runs a pipeline over a capture without saving it', async ({
   await expect(chip).toContainText('Your capture');
   await expect(chip).toContainText('3 records', { timeout: 30_000 });
   expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toEqual([]);
+
+  await admin.getByRole('button', { name: 'Save as sample', exact: true }).click();
+  await expect(admin.getByRole('button', { name: /^Save output as sample/ })).toContainText(
+    'The 3 rows on screen',
+  );
+  await admin.getByRole('button', { name: /^Save input as sample/ }).click();
+  const saving = admin.getByRole('dialog');
+  await expect(saving).toContainText('3 records');
+  await saving.getByLabel('Name').fill('own metrics, captured');
+  await saving.getByRole('button', { name: 'Save sample' }).click();
+  await expect(saving).toHaveCount(0);
+
+  await expect(chip).toContainText('own metrics, captured');
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled({
+    timeout: 15_000,
+  });
+  // The output's save is its own again, with no unsaved input beside it.
+  await expect(admin.getByRole('button', { name: 'Save output as sample' })).toBeVisible();
+  const [sample] = (await api.get(`/api/areas/shared/samples${ON}`)).samples;
+  expect(sample).toMatchObject({
+    name: 'own metrics, captured',
+    source: 'own-metrics',
+    records: 3,
+  });
+  expect((await api.get('/api/captures/mine')).capture).toBeUndefined();
 });
 
 // A1, a source's card: one route to one destination is a line; a second destination turns it top to bottom, a [+]

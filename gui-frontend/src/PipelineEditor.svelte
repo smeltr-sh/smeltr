@@ -793,6 +793,15 @@
     await loadSamples();
   }
 
+  /** Once the input is saved as a sample, the leader holds the capture no longer: the editor runs over the sample,
+   * which a test may lock. */
+  async function savedInput(id: string) {
+    savingInput = false;
+    held = null;
+    await loadSamples();
+    await chooseSample(id);
+  }
+
   /** Run over a finished capture where the leader holds it, unsaved. Answers why it cannot. */
   function useCapture(status: CaptureStatus): string | undefined {
     held = status;
@@ -1031,6 +1040,8 @@
     return { columns, records: records.filter((_, i) => rows.has(of[i])) };
   }
   let savingOutput = $state<Set<number> | null>(null);
+  /** The dialog is open to save the held capture, the input run over, as a sample. */
+  let savingInput = $state(false);
 
   function goLockTest() {
     location.hash = `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`;
@@ -1657,6 +1668,9 @@
         canLock={canLockTest}
         onlock={readOnly ? undefined : goLockTest}
         onsaveoutput={readOnly ? undefined : (rows) => (savingOutput = rows)}
+        saveinput={!readOnly && held && heldSession(selectedSample) === held.session
+          ? { records: heldCount(held), onsave: () => (savingInput = true) }
+          : undefined}
         onjump={(step) => (jumpToStepId = step.id)}
         onassign={readOnly ? undefined : assignField}
         preview={(steps, sample, filter) => fetchPreview(steps, sample, { filter })}
@@ -1687,18 +1701,20 @@
     </div>
     {#if !readOnly}
       <AddSampleDialog
-        open={capturing || adding || savingOutput !== null}
-        start={capturing ? 'capture' : savingOutput ? 'output' : undefined}
+        open={capturing || adding || savingOutput !== null || savingInput}
+        start={capturing ? 'capture' : savingOutput ? 'output' : savingInput ? 'input' : undefined}
         target={captureAt ?? captureTarget}
         onuse={useCapture}
         output={savingOutput ? () => outputOf(savingOutput!) : undefined}
+        input={savingInput && held ? held : undefined}
         oncancel={() => {
           capturing = false;
           adding = false;
           savingOutput = null;
+          savingInput = false;
           captureAt = null;
         }}
-        onsaved={savingOutput ? savedOutput : captured}
+        onsaved={savingOutput ? savedOutput : savingInput ? savedInput : captured}
       />
     {:else if capturing && captureAt}
       <CaptureFlow

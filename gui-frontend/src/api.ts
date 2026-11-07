@@ -3011,6 +3011,8 @@ export interface CaptureWorkerDto {
 
 export interface CaptureStatusDto {
   session: string;
+  /** The source a capture of one reads: what a sample saved from it stands for. */
+  source?: string;
   done: boolean;
   /** Ended by whoever was watching, before its deadline or its total. What it
    * holds is what it will ever hold. */

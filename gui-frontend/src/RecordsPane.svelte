@@ -44,6 +44,7 @@
   import InlineError from './InlineError.svelte';
   import { RECOMMENDED_NAMED } from './schemas';
   import ShowAll from './ShowAll.svelte';
+  import { count } from './time';
   import {
     countStates,
     fieldAt,
@@ -81,6 +82,7 @@
     canLock,
     onlock,
     onsaveoutput,
+    saveinput,
     onjump,
     onassign,
     preview,
@@ -115,6 +117,9 @@
     onlock?: () => void;
     /** Saves the output rows on screen as a sample, by `PreviewRow.row`; absent where no sample may be saved. */
     onsaveoutput?: (rows: Set<number>) => void;
+    /** The input's record count and its save action, given while the input is a capture not saved yet. The output's
+     * save button then opens a menu of both. */
+    saveinput?: { records: number; onsave: () => void };
     onjump: (step: Step) => void;
     /** Writes a field in an eval step; absent where the pipeline is read only. */
     onassign?: (path: string) => void;
@@ -660,6 +665,8 @@
     return gridSort.apply(rows.map((_, i) => i).filter(matches), by);
   });
 
+  /** The menu of the input's and the output's saves is open. */
+  let savingOpen = $state(false);
   /** The rows on screen that have output, by `PreviewRow.row`: a dropped row has none. */
   let outputShown = $derived(
     new Set(
@@ -776,7 +783,28 @@
           >
         {/if}
         <span class="grow"></span>
-        {#if onsaveoutput}
+        {#if onsaveoutput && saveinput}
+          <ChipPicker kind="columns" compact bind:open={savingOpen}>
+            {#snippet face()}Save as sample <span aria-hidden="true">▾</span>{/snippet}
+            <!-- Choosing closes the menu (`ChipPicker` leaves that to its caller). -->
+            <div onclick={() => (savingOpen = false)} role="presentation">
+              <button type="button" class="pick" onclick={saveinput.onsave}
+                >Save input as sample <span class="dim"
+                  >Your capture, {count(saveinput.records, 'record')} as captured</span
+                ></button
+              >
+              <Button
+                type="button"
+                class="pick"
+                onclick={() => onsaveoutput(outputShown)}
+                disabled={outputShown.size === 0 ? INCOMPLETE : ''}
+                >Save output as sample <span class="dim"
+                  >The {count(outputShown.size, 'row')} on screen</span
+                ></Button
+              >
+            </div>
+          </ChipPicker>
+        {:else if onsaveoutput}
           <Button
             type="button"
             onclick={() => onsaveoutput(outputShown)}
