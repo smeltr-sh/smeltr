@@ -353,7 +353,8 @@ impl SourceDto {
 
 /// The keys of a source or destination that none of its fields name, refused as the bundle is read.
 /// `deny_unknown_fields` cannot refuse them on a type that flattens another into it, so this takes what the
-/// flattening leaves over.
+/// flattening leaves over. Each struct holds it as its last flattened field: serde fills flattened fields in order,
+/// and a flattened field after it would find its keys already taken.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NoUnknownKeys;
 
