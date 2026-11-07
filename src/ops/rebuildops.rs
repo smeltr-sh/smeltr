@@ -2,9 +2,8 @@
 //! parse skips taken out. The rest of the text is kept byte for byte, its quoting and spacing included, so what reads
 //! the line downstream reads it as it read the original. A row that does not split whole is kept as it came.
 
-use super::helpers::short_circuit_empty;
 use crate::core::bits;
-use crate::core::column::{Column, DataType, List, StrBuilder, VarType};
+use crate::core::column::{Column, List, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
 use crate::format::{csv_scan, kv_scan};
 use crate::plan::config::{CsvConfig, KvConfig};
@@ -50,9 +49,6 @@ pub fn kv_rebuild(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// Runs `each` on every row whose arguments are all there; a null one makes the row null.
 fn rebuild(ctx: &mut Ctx, ins: &[&Column], each: impl Fn(&Args, usize, &[u8]) -> Option<Vec<u8>>) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let filled: Vec<Column> = ins
         .iter()
         .map(|c| match c.constant_value() {

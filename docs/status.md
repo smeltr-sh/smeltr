@@ -194,6 +194,7 @@ catalog's volume entry both wait on it.
 - **Scaling past one bundle** (Scope): nothing tells an operator a source is a consumer group rather than a topic.
 - **Browser tests reach only what a user story names,** and none reads Kafka or Elasticsearch.
 - **The array functions take an array of scalars** (Language). `slice`, `remove`, `resize`, `concat`, `+`, `includes`, `indexOf` and `join` refuse an array of arrays or of objects.
+- **A typed source's NaN or infinity reaches the language.** The language's `f64` holds neither, but Avro, Postgres, MySQL and the OTLP and Prometheus receivers write one into an `f64` field as it is (`values::column`, `receiver::rows_chunk`), so a field `x` holds it while `x + 0` is null with an exception. A source that reads text refuses it.
 
 ### GUI
 

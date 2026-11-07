@@ -328,20 +328,6 @@ fn min_rem_negative_one_does_not_trap() {
     }
 }
 
-#[test]
-fn empty_input_short_circuits_to_empty_output() {
-    let mut p = BufferPool::new();
-    let a = Column::empty(DataType::I64, 4);
-    let b = i64_col(&mut p, &[1, 2, 3, 4]);
-    let (out, _) = run(&mut p, arith::add_i64_i64, &[&a, &b]);
-    assert!(out.is_unbound(), "no buffers should be allocated at all");
-    assert_eq!(out.len(), 4);
-    assert!(out.has_nulls());
-    for c in [out, a, b] {
-        c.reclaim(&mut p);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Temporal
 // ---------------------------------------------------------------------------
@@ -2062,16 +2048,6 @@ fn datetime_part_extraction_propagates_null() {
     }
 }
 
-#[test]
-fn datetime_part_extraction_short_circuits_on_unbound_input() {
-    let mut p = BufferPool::new();
-    let c = Column::empty(DataType::DateTime, 3);
-    let (year, _) = run(&mut p, datetime::dt_year, &[&c]);
-    assert!(year.is_unbound());
-    assert_eq!(year.len(), 3);
-    year.reclaim(&mut p);
-}
-
 // ---------------------------------------------------------------------------
 // Stdlib: Array length
 // ---------------------------------------------------------------------------
@@ -2119,16 +2095,6 @@ fn array_length_propagates_a_null_row() {
     for c in [out, a] {
         c.reclaim(&mut p);
     }
-}
-
-#[test]
-fn array_length_short_circuits_on_unbound_input() {
-    let mut p = BufferPool::new();
-    let a = Column::empty(DataType::Array(Box::new(DataType::Str)), 4);
-    let (out, _) = run(&mut p, arrayops::array_length, &[&a]);
-    assert!(out.is_unbound());
-    assert_eq!(out.len(), 4);
-    out.reclaim(&mut p);
 }
 
 #[test]

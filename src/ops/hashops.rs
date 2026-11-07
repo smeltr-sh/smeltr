@@ -6,8 +6,7 @@
 use aws_lc_rs::digest;
 use md5::Digest;
 
-use super::helpers::short_circuit_empty;
-use crate::core::column::{Column, DataType, StrBuilder, VarType};
+use crate::core::column::{Column, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
 
 pub fn md5(ctx: &mut Ctx, ins: &[&Column]) -> Column {
@@ -34,9 +33,6 @@ pub fn sha512(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 
 fn hex_digest(ctx: &mut Ctx, ins: &[&Column], digest_hex: impl Fn(&[u8], &mut Vec<u8>)) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
     let mut hex = Vec::with_capacity(2 * digest::MAX_OUTPUT_LEN);

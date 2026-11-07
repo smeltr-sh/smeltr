@@ -3,7 +3,7 @@
 //! `length`, `slice` and `indexOf` all count Unicode characters, so the three agree and a slice never lands
 //! mid-codepoint. JS counts UTF-16 code units, and can. Case mapping and `trim` are Unicode-aware.
 
-use super::helpers::{Operand, alloc_with_merged_validity, short_circuit_empty, side};
+use super::helpers::{Operand, alloc_with_merged_validity, side};
 use crate::core::bits;
 use crate::core::column::{Column, DataType, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
@@ -12,9 +12,6 @@ use crate::core::ctx::Ctx;
 /// one value, written into every row.
 pub fn concat_n(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
 
     let parts: Vec<_> = ins.iter().map(|c| side::var(c).unwrap()).collect();
     let total: usize = parts.iter().map(|p| p.total_bytes(len)).sum();
@@ -54,9 +51,6 @@ pub fn concat_str_str(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// `length`: characters for `Str`, bytes for `Bytes`. An all-ASCII column is an offset subtraction per row.
 pub fn str_length(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let mut out = Column::alloc(ctx.pool, &DataType::I64, len);
     {
@@ -97,9 +91,6 @@ fn char_slice_bytes(text: &str, ascii: bool, start: i64, end: i64) -> (usize, us
 /// `slice(value, start[, end])`. `start >= end` after clamping yields `""`.
 pub fn str_slice(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let starts = side::i64(ins[1]);
     let ends = ins.get(2).and_then(|c| side::i64(c));
@@ -163,9 +154,6 @@ fn find_char_pos(text: &[u8], ascii: bool, needle: &[u8], from_end: bool, from: 
 /// `indexOf` and `lastIndexOf`: character position of an occurrence, or `-1`. A null `from` is a null answer.
 fn index_of(ctx: &mut Ctx, ins: &[&Column], from_end: bool) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let needle = side::var(ins[1]).unwrap();
     let from = ins.get(2).map(|c| side::i64(c).unwrap());
@@ -198,9 +186,6 @@ macro_rules! str_predicate {
     ($name:ident, $f:expr) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::Bool, len) {
-                return e;
-            }
             let v = ins[0].var().unwrap();
             let pat = side::var(ins[1]).unwrap();
             let mut out = alloc_with_merged_validity(ctx, &DataType::Bool, len, &[Some(v.validity), pat.validity()]);
@@ -224,9 +209,6 @@ str_predicate!(str_ends_with, |v, p| v.ends_with(p));
 /// construction rather than by agreement.
 pub fn str_includes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Bool, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let needle = side::var(ins[1]).unwrap();
     let from = ins.get(2).map(|c| side::i64(c).unwrap());
@@ -251,9 +233,6 @@ macro_rules! str_case {
     ($name:ident, $f:ident) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-                return e;
-            }
             let v = ins[0].var().unwrap();
             let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
             for i in 0..len {
@@ -275,9 +254,6 @@ str_case!(str_to_lower, to_lowercase);
 
 pub fn str_trim(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
     for i in 0..len {
@@ -295,9 +271,6 @@ macro_rules! str_trim_side {
     ($name:ident, $f:ident) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-                return e;
-            }
             let v = ins[0].var().unwrap();
             let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
             for i in 0..len {
@@ -341,9 +314,6 @@ macro_rules! str_pad {
         /// `(value, length[, pad])`; the pad defaults to a space.
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-                return e;
-            }
             let v = ins[0].var().unwrap();
             let target = side::i64(ins[1]).unwrap();
             let pad_col = ins.get(2).and_then(|c| side::var(c));
@@ -379,9 +349,6 @@ const BUILD_MAX_BYTES: usize = 16 << 20;
 /// `repeat(value, count)`. A negative count, or a result over [`BUILD_MAX_BYTES`], is null.
 pub fn str_repeat(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let count = side::i64(ins[1]).unwrap();
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
@@ -411,9 +378,6 @@ pub fn str_last_index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// JS gives `undefined`, and an `IndexOutOfRange` warning, as on an array.
 pub fn str_at(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let index = side::i64(ins[1]).unwrap();
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);

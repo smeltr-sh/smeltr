@@ -3,10 +3,11 @@
 //! The table pairs like with like: an `I64` beside an `F64` is widened by the compiler before any kernel runs. An
 //! `I64` row whose result does not fit is null and marked `Overflow` (design doc, Language). The loop runs with
 //! wrapping arithmetic and a branchless witness; only a batch the witness tripped on is walked again to find its rows.
+//! An `F64` row whose result is not finite is null too, an infinity marked `Overflow` and a NaN marked `NaN`:
+//! `expr::eval` runs `fail_non_finite` on every kernel's result, so a float kernel here need not. A `datetime` or
+//! `duration` result outside `i64` microseconds is null and marked `Overflow`, by `temporal!` and `div_like!`.
 
-use super::helpers::{
-    One, Operand, Rows, Side, alloc_with_merged_validity, f64_values, native, short_circuit_empty, side, two_sides,
-};
+use super::helpers::{One, Operand, Rows, Side, alloc_with_merged_validity, f64_values, native, side, two_sides};
 use crate::core::column::{Column, DataType, Validity};
 use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
@@ -21,6 +22,30 @@ fn fail_overflowed(ctx: &mut Ctx, out: &mut Column, len: usize, overflowed: impl
             o.values[i] = 0;
             o.validity.set_valid(i, false);
             ctx.raise(i, ExceptionKind::Overflow);
+        }
+    }
+}
+
+/// Null and raise every row of the `F64` column `out` that is not finite, as an `I64` that does not fit is: an
+/// infinity is an `Overflow`, and a NaN a `NaN`. A row null from its inputs is left alone.
+pub fn fail_non_finite(ctx: &mut Ctx, out: &mut Column) {
+    let len = out.len();
+    // No kernel returns a constant column, so a constant here is a literal's value, which the lexer keeps finite: it
+    // needs no check.
+    let Ok(o) = out.f64_mut() else { return };
+    for i in 0..len {
+        let v = o.values[i];
+        if !v.is_finite() && o.validity.is_valid(i) {
+            o.values[i] = 0.0;
+            o.validity.set_valid(i, false);
+            ctx.raise(
+                i,
+                if v.is_nan() {
+                    ExceptionKind::NaN
+                } else {
+                    ExceptionKind::Overflow
+                },
+            );
         }
     }
 }
@@ -56,9 +81,6 @@ macro_rules! int_arith {
                 out
             }
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-                return e;
-            }
             two_sides!(ctx, ins, len, i64, i64, run)
         }
     };
@@ -97,13 +119,11 @@ pub fn mul_i64_i64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
         out
     }
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
-    }
     two_sides!(ctx, ins, len, i64, i64, run)
 }
 
-/// A row whose divisor is zero is null and marked `DivideByZero`.
+/// A row whose divisor is zero is null and marked `DivideByZero`, and a row for which `$f` gives `None` is null and
+/// marked `Overflow`.
 macro_rules! div_like {
     ($name:ident, $la:ident, $ra:ident, $out:expr, $zero:expr, $f:expr) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
@@ -118,6 +138,7 @@ macro_rules! div_like {
                 let out_ty = $out;
                 let mut out = alloc_with_merged_validity(ctx, &out_ty, len, &[va, vb]);
                 let mut zeros: Vec<u32> = Vec::new();
+                let mut overflowed: Vec<u32> = Vec::new();
                 {
                     let f = $f;
                     // A null operand is null already, thrown for where it was made: only a value divided by zero throws.
@@ -129,19 +150,23 @@ macro_rules! div_like {
                             }
                             None
                         } else {
-                            Some(f(a.at(i), b.at(i)))
+                            let v = f(a.at(i), b.at(i));
+                            if v.is_none() && held(va, i) && held(vb, i) {
+                                overflowed.push(i as u32);
+                            }
+                            v
                         }
                     });
                 }
                 for row in zeros {
                     ctx.raise(row as usize, ExceptionKind::DivideByZero);
                 }
+                for row in overflowed {
+                    ctx.raise(row as usize, ExceptionKind::Overflow);
+                }
                 out
             }
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &$out, len) {
-                return e;
-            }
             two_sides!(ctx, ins, len, $la, $ra, run)
         }
     };
@@ -219,16 +244,19 @@ impl From<f64> for Slot {
 }
 
 // `/` on integers yields F64 (design doc, Language).
-div_like!(div_i64_i64, i64, i64, DataType::F64, 0, |x: i64, y: i64| x as f64
-    / y as f64);
+div_like!(div_i64_i64, i64, i64, DataType::F64, 0, |x: i64, y: i64| Some(
+    x as f64 / y as f64
+));
 // `idiv(a, b)`: integer division truncating toward zero, the pair of `%`. `i64::MIN / -1` traps, hence
 // `wrapping_div`.
-div_like!(idiv_wrapping, i64, i64, DataType::I64, 0, |x: i64, y: i64| x
-    .wrapping_div(y));
+div_like!(idiv_wrapping, i64, i64, DataType::I64, 0, |x: i64, y: i64| Some(
+    x.wrapping_div(y)
+));
 
-div_like!(rem_f64_f64, f64, f64, DataType::F64, 0.0, |x: f64, y: f64| x % y);
-div_like!(idiv_f64_f64, f64, f64, DataType::F64, 0.0, |x: f64, y: f64| (x / y)
-    .trunc());
+div_like!(rem_f64_f64, f64, f64, DataType::F64, 0.0, |x: f64, y: f64| Some(x % y));
+div_like!(idiv_f64_f64, f64, f64, DataType::F64, 0.0, |x: f64, y: f64| Some(
+    (x / y).trunc()
+));
 
 /// Whether a `numeric_join` function answers `i64` over `ins`: every column is `i64` or all null, as
 /// `Ret::NumericJoin` types it, so the column has the type the compiler gave the call.
@@ -257,29 +285,30 @@ pub fn idiv_i64_i64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     out
 }
 // `i64::MIN % -1` traps, hence `wrapping_rem`.
-div_like!(rem_i64_i64, i64, i64, DataType::I64, 0, |x: i64, y: i64| x
-    .wrapping_rem(y));
+div_like!(rem_i64_i64, i64, i64, DataType::I64, 0, |x: i64, y: i64| Some(
+    x.wrapping_rem(y)
+));
 div_like!(
     rem_dur_dur,
     duration,
     duration,
     DataType::Duration,
     0,
-    |x: i64, y: i64| x.wrapping_rem(y)
+    |x: i64, y: i64| Some(x.wrapping_rem(y))
 );
-div_like!(div_dur_dur, duration, duration, DataType::F64, 0, |x: i64, y: i64| x
-    as f64
-    / y as f64);
-div_like!(div_dur_i64, duration, i64, DataType::Duration, 0, |x: i64, y: i64| x
-    .wrapping_div(y));
 div_like!(
-    div_dur_f64,
+    div_dur_dur,
     duration,
-    f64,
-    DataType::Duration,
-    0.0,
-    |x: i64, y: f64| (x as f64 / y) as i64
+    duration,
+    DataType::F64,
+    0,
+    |x: i64, y: i64| Some(x as f64 / y as f64)
 );
+div_like!(div_dur_i64, duration, i64, DataType::Duration, 0, |x: i64, y: i64| x
+    .checked_div(y));
+div_like!(div_dur_f64, duration, f64, DataType::Duration, 0.0, |x: i64, y: f64| {
+    micros(x as f64 / y)
+});
 
 macro_rules! float_arith {
     ($name:ident, $la:ident, $ra:ident, $f:expr) => {
@@ -303,9 +332,6 @@ macro_rules! float_arith {
                 out
             }
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::F64, len) {
-                return e;
-            }
             two_sides!(ctx, ins, len, $la, $ra, run)
         }
     };
@@ -321,9 +347,6 @@ float_arith!(pow_i64_i64, i64, i64, |x: f64, y: f64| x.powf(y));
 /// Float division. Divide by zero is null, not infinity.
 pub fn div_f64_f64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::F64, len) {
-        return e;
-    }
     let av = f64_values(ins[0]).unwrap();
     let bv = f64_values(ins[1]).unwrap();
     let mut out = alloc_with_merged_validity(ctx, &DataType::F64, len, &[ins[0].validity(), ins[1].validity()]);
@@ -346,7 +369,13 @@ pub fn div_f64_f64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     out
 }
 
-// DateTime and Duration are both i64 microseconds; the type table keeps instants and spans apart.
+/// The microseconds `f` truncates to, or `None` where no `i64` holds them.
+fn micros(f: f64) -> Option<i64> {
+    in_i64_range(f).then_some(f as i64)
+}
+
+// DateTime and Duration are both i64 microseconds; the type table keeps instants and spans apart. A row for which `$f`
+// gives `None` is out of their range: null and marked `Overflow`.
 macro_rules! temporal {
     ($name:ident, $la:ident, $ra:ident, $out:expr, $f:expr) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
@@ -360,6 +389,7 @@ macro_rules! temporal {
             ) -> Column {
                 let out_ty = $out;
                 let mut out = alloc_with_merged_validity(ctx, &out_ty, len, &[va, vb]);
+                let mut overflowed = Vec::new();
                 {
                     let o = match out_ty {
                         DataType::DateTime => out.datetime_mut().unwrap(),
@@ -367,59 +397,57 @@ macro_rules! temporal {
                     };
                     let f = $f;
                     for i in 0..len {
-                        o.values[i] = f(a.at(i), b.at(i));
+                        match f(a.at(i), b.at(i)) {
+                            Some(v) => o.values[i] = v,
+                            None => {
+                                o.values[i] = 0;
+                                if o.validity.is_valid(i) {
+                                    o.validity.set_valid(i, false);
+                                    overflowed.push(i);
+                                }
+                            }
+                        }
                     }
+                }
+                for i in overflowed {
+                    ctx.raise(i, ExceptionKind::Overflow);
                 }
                 out
             }
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &$out, len) {
-                return e;
-            }
             two_sides!(ctx, ins, len, $la, $ra, run)
         }
     };
 }
 
 temporal!(add_dt_dur, datetime, duration, DataType::DateTime, |x: i64, y: i64| x
-    .wrapping_add(y));
+    .checked_add(y));
 temporal!(add_dur_dt, duration, datetime, DataType::DateTime, |x: i64, y: i64| x
-    .wrapping_add(y));
+    .checked_add(y));
 temporal!(sub_dt_dur, datetime, duration, DataType::DateTime, |x: i64, y: i64| x
-    .wrapping_sub(y));
+    .checked_sub(y));
 temporal!(sub_dt_dt, datetime, datetime, DataType::Duration, |x: i64, y: i64| x
-    .wrapping_sub(y));
+    .checked_sub(y));
 temporal!(add_dur_dur, duration, duration, DataType::Duration, |x: i64, y: i64| x
-    .wrapping_add(y));
+    .checked_add(y));
 temporal!(sub_dur_dur, duration, duration, DataType::Duration, |x: i64, y: i64| x
-    .wrapping_sub(y));
+    .checked_sub(y));
 temporal!(mul_dur_i64, duration, i64, DataType::Duration, |x: i64, y: i64| x
-    .wrapping_mul(y));
+    .checked_mul(y));
 temporal!(mul_i64_dur, i64, duration, DataType::Duration, |x: i64, y: i64| x
-    .wrapping_mul(y));
-temporal!(
-    mul_dur_f64,
-    duration,
-    f64,
-    DataType::Duration,
-    |x: i64, y: f64| (x as f64 * y) as i64
-);
-temporal!(
-    mul_f64_dur,
-    f64,
-    duration,
-    DataType::Duration,
-    |x: f64, y: i64| (x * y as f64) as i64
-);
+    .checked_mul(y));
+temporal!(mul_dur_f64, duration, f64, DataType::Duration, |x: i64, y: f64| micros(
+    x as f64 * y
+));
+temporal!(mul_f64_dur, f64, duration, DataType::Duration, |x: f64, y: i64| micros(
+    x * y as f64
+));
 
 macro_rules! unary_i64 {
     ($name:ident, $acc:ident, $mut_acc:ident, $ty:expr, $f:expr) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
             let out_ty = $ty;
-            if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-                return e;
-            }
             let a = ins[0].$acc().unwrap();
             let mut out = alloc_with_merged_validity(ctx, &out_ty, len, &[Some(a.validity), None]);
             {
@@ -455,9 +483,6 @@ macro_rules! round_f64_to_i64 {
     ($name:ident, $f:ident) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-                return e;
-            }
             let a = ins[0].f64().unwrap();
             let mut out = alloc_with_merged_validity(ctx, &DataType::I64, len, &[Some(a.validity), None]);
             {
@@ -480,9 +505,6 @@ round_f64_to_i64!(round_f64, round);
 
 pub fn neg_f64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::F64, len) {
-        return e;
-    }
     let a = ins[0].f64().unwrap();
     let mut out = alloc_with_merged_validity(ctx, &DataType::F64, len, &[Some(a.validity), None]);
     {
@@ -498,9 +520,6 @@ pub fn neg_f64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 pub fn abs_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     if ins[0].data_type() == DataType::I64 {
-        if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-            return e;
-        }
         let a = ins[0].i64().unwrap();
         let mut out = alloc_with_merged_validity(ctx, &DataType::I64, len, &[Some(a.validity), None]);
         {
@@ -513,9 +532,6 @@ pub fn abs_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
         fail_overflowed(ctx, &mut out, len, |i| a.values[i] == i64::MIN);
         out
     } else {
-        if let Some(e) = short_circuit_empty(ins, &DataType::F64, len) {
-            return e;
-        }
         let a = ins[0].f64().unwrap();
         let mut out = alloc_with_merged_validity(ctx, &DataType::F64, len, &[Some(a.validity), None]);
         {
@@ -571,10 +587,6 @@ macro_rules! minmax {
             }
             let len = ins[0].len();
             let all_i64 = joins_to_i64(ins);
-            let out_ty = if all_i64 { DataType::I64 } else { DataType::F64 };
-            if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-                return e;
-            }
             if ins.len() != 2 {
                 return minmax_n(ctx, ins, len, all_i64, $fi, $ff);
             }
@@ -628,9 +640,6 @@ pub fn clamp_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let all_i64 = joins_to_i64(ins);
     let out_ty = if all_i64 { DataType::I64 } else { DataType::F64 };
-    if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-        return e;
-    }
     let bitmaps = [ins[0].validity(), ins[1].validity(), ins[2].validity()];
     let mut out = alloc_with_merged_validity(ctx, &out_ty, len, &bitmaps);
     // Each operand as a slice: a constant bound is filled once, outside the pool, and the loop stays a slice loop.
@@ -674,9 +683,6 @@ macro_rules! bitwise {
     ($name:ident, $f:expr) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-                return e;
-            }
             let a = ins[0].i64().unwrap();
             let b = ins[1].i64().unwrap();
             let mut out = alloc_with_merged_validity(ctx, &DataType::I64, len, &[Some(a.validity), Some(b.validity)]);
@@ -702,9 +708,6 @@ bitwise!(shr_i64, |x: i64, y: i64| x.wrapping_shr(y as u32));
 /// `sign`: `-1`, `0` or `1` as `I64` for either numeric type. JS returns `NaN` for `NaN`; here that row is null.
 pub fn sign_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
-    }
     if ins[0].data_type() == DataType::I64 {
         let a = ins[0].i64().unwrap();
         let mut out = alloc_with_merged_validity(ctx, &DataType::I64, len, &[Some(a.validity), None]);
@@ -847,5 +850,106 @@ mod tests {
         assert_eq!(run(&mut p, abs_num, &[&a]), (vec![None, Some(6)], overflow));
         a.reclaim(&mut p);
         b.reclaim(&mut p);
+    }
+
+    /// Each row of `k`'s F64 output, `None` where null, and `(row, kind)` per exception.
+    fn run_f64(p: &mut BufferPool, k: OpKernel, a: &[f64], b: &[f64]) -> (Vec<Option<f64>>, Vec<(u32, ExceptionKind)>) {
+        let column = |p: &mut BufferPool, values: &[f64]| {
+            let mut c = Column::alloc(p, &DataType::F64, values.len());
+            c.f64_mut().unwrap().values.copy_from_slice(values);
+            c
+        };
+        let (a, b) = (column(p, a), column(p, b));
+        let mut errors = ErrorSink::new();
+        let out = {
+            let mut ctx = Ctx::new(p, &mut errors);
+            let mut out = k(&mut ctx, &[&a, &b]);
+            fail_non_finite(&mut ctx, &mut out);
+            out
+        };
+        let f = out.f64().unwrap();
+        let rows = (0..out.len())
+            .map(|i| f.validity.is_valid(i).then(|| f.values[i]))
+            .collect();
+        for c in [out, a, b] {
+            c.reclaim(p);
+        }
+        (rows, errors.entries().iter().map(|a| (a.row, a.kind.clone())).collect())
+    }
+
+    /// A float result past `f64`'s range is null and an `Overflow`, as an integer's is, and a NaN is null and a `NaN`.
+    /// The row beside it keeps its value.
+    #[test]
+    fn a_float_that_is_not_finite_is_null_and_marked() {
+        let mut p = BufferPool::new();
+        let overflow = vec![(0, ExceptionKind::Overflow)];
+        type Case = (OpKernel, [f64; 2], [f64; 2], f64, Vec<(u32, ExceptionKind)>);
+        let cases: [Case; 6] = [
+            (add_f64_f64, [f64::MAX, 1.0], [f64::MAX, 1.0], 2.0, overflow.clone()),
+            (sub_f64_f64, [-f64::MAX, 3.0], [f64::MAX, 1.0], 2.0, overflow.clone()),
+            (mul_f64_f64, [1e308, 2.0], [10.0, 1.0], 2.0, overflow.clone()),
+            (div_f64_f64, [1e308, 4.0], [1e-308, 2.0], 2.0, overflow.clone()),
+            (pow_f64_f64, [0.0, 2.0], [-1.0, 1.0], 2.0, overflow),
+            (pow_f64_f64, [-8.0, 2.0], [0.5, 1.0], 2.0, vec![(0, ExceptionKind::NaN)]),
+        ];
+        for (k, a, b, kept, want) in cases {
+            assert_eq!(run_f64(&mut p, k, &a, &b), (vec![None, Some(kept)], want));
+        }
+    }
+
+    /// A `datetime` or `duration` result outside `i64` microseconds is null and an `Overflow`, as an `i64` one is,
+    /// whether it is a sum, a product, or a float's product converted. The row beside it keeps its value.
+    #[test]
+    fn a_time_result_out_of_range_is_null_and_marked() {
+        let mut p = BufferPool::new();
+        let column = |p: &mut BufferPool, ty: DataType, values: &[i64]| {
+            let mut c = Column::alloc(p, &ty, values.len());
+            match ty {
+                DataType::DateTime => c.datetime_mut().unwrap().values.copy_from_slice(values),
+                _ => c.duration_mut().unwrap().values.copy_from_slice(values),
+            }
+            c
+        };
+        let rows = |out: &Column| -> Vec<Option<i64>> {
+            let f = match out.data_type() {
+                DataType::DateTime => out.datetime().unwrap(),
+                _ => out.duration().unwrap(),
+            };
+            (0..out.len())
+                .map(|i| f.validity.is_valid(i).then(|| f.values[i]))
+                .collect()
+        };
+        let dt = column(&mut p, DataType::DateTime, &[i64::MAX, 1]);
+        let dur = column(&mut p, DataType::Duration, &[1, 1]);
+        let big = column(&mut p, DataType::Duration, &[i64::MAX, 2]);
+        let two = i64s(&mut p, &[2, 2], &[]);
+        let mut f = Column::alloc(&mut p, &DataType::F64, 2);
+        f.f64_mut().unwrap().values.copy_from_slice(&[1e300, 0.5]);
+        let mut tiny = Column::alloc(&mut p, &DataType::F64, 2);
+        tiny.f64_mut().unwrap().values.copy_from_slice(&[1e-300, 0.5]);
+        type Case<'a> = (OpKernel, [&'a Column; 2], i64);
+        let cases: [Case; 5] = [
+            (add_dt_dur, [&dt, &dur], 2),
+            (add_dur_dur, [&big, &dur], 3),
+            (mul_dur_i64, [&big, &two], 4),
+            (mul_dur_f64, [&big, &f], 1),
+            (div_dur_f64, [&big, &tiny], 4),
+        ];
+        for (k, ins, kept) in cases {
+            let mut errors = ErrorSink::new();
+            let out = {
+                let mut ctx = Ctx::new(&mut p, &mut errors);
+                k(&mut ctx, &ins)
+            };
+            let kinds: Vec<_> = errors.entries().iter().map(|a| (a.row, a.kind.clone())).collect();
+            assert_eq!(
+                (rows(&out), kinds),
+                (vec![None, Some(kept)], vec![(0, ExceptionKind::Overflow)])
+            );
+            out.reclaim(&mut p);
+        }
+        for c in [dt, dur, big, two, f, tiny] {
+            c.reclaim(&mut p);
+        }
     }
 }

@@ -17,7 +17,7 @@ use crate::expr::ir::{Ir, IrKind, Layer};
 use crate::ops::arrayops::{Piece, build_from_pieces};
 use crate::ops::logic::take_met;
 use crate::ops::objectops::ObjectOp;
-use crate::ops::{BinOp, UnOp, convert, table};
+use crate::ops::{BinOp, OpKernel, UnOp, convert, table};
 
 /// A borrow of a batch column or an owned intermediate.
 pub enum Val<'a> {
@@ -103,7 +103,8 @@ fn eval_node<'a>(ir: &Ir, batch: &'a Batch, ctx: &mut Ctx) -> Val<'a> {
             let a = eval_val(operand, batch, ctx);
             let start = ctx.errors.len();
             let out = match table::unop_kernel(*op, &a.as_col().data_type()) {
-                Some(k) => k(ctx, &[a.as_col()]),
+                Some(_) if *op != UnOp::Not && a.as_col().is_unbound() => Column::empty(ir.ty.clone(), rows),
+                Some(k) => run_kernel(ctx, k, &[a.as_col()]),
                 // `!null` is true, whatever type the absent value was declared.
                 None if *op == UnOp::Not && a.as_col().is_unbound() => {
                     Column::filled(ctx.pool, &Scalar::Bool(true), rows)
@@ -131,8 +132,11 @@ fn eval_node<'a>(ir: &Ir, batch: &'a Batch, ctx: &mut Ctx) -> Val<'a> {
         // node's type, so `xs + ys + zs` is one pass rather than two with an intermediate.
         IrKind::ConcatN(items) => {
             let arrays = matches!(ir.ty, DataType::Array(_));
+            let ty = ir.ty.clone();
             Val::Owned(eval_nary(items, batch, ctx, move |ctx, cols| {
-                if arrays {
+                if any_unbound(cols) {
+                    Column::empty(ty.clone(), rows)
+                } else if arrays {
                     crate::ops::arrayops::array_concat(ctx, cols)
                 } else {
                     crate::ops::strops::concat_n(ctx, cols)
@@ -523,7 +527,8 @@ fn eval_call(
                 rows,
                 |i| func.takes_constant_at(i),
                 |ctx, cols| match func.kernel() {
-                    Some(k) => k(ctx, cols),
+                    Some(_) if !func.reads_unbound() && any_unbound(cols) => Column::empty(expected.clone(), rows),
+                    Some(k) => run_kernel(ctx, k, cols),
                     None => Column::empty(expected.clone(), rows),
                 },
             );
@@ -566,6 +571,16 @@ fn pattern_of<'a>(ir: &Ir, ctx: &Ctx<'a>) -> Option<&'a crate::core::ctx::Compil
         IrKind::Regex(id) => ctx.patterns.get(id),
         _ => None,
     }
+}
+
+/// What `k` gives for `ins`, with every `f64` row that is not finite null and marked: no kernel's result holds an
+/// infinity or a NaN, whether or not the kernel checks.
+fn run_kernel(ctx: &mut Ctx, k: OpKernel, ins: &[&Column]) -> Column {
+    let mut out = k(ctx, ins);
+    if out.data_type() == DataType::F64 && !out.is_unbound() {
+        crate::ops::arith::fail_non_finite(ctx, &mut out);
+    }
+    out
 }
 
 /// A literal operand stays one value: the text, `&&`, `||` and `??` kernels read it as one, and an array chain has
@@ -698,6 +713,12 @@ fn with_rows_where_refused(
     out
 }
 
+/// Whether an input is unbound, which makes a kernel's whole result null: null in, null out. Answered here, before the
+/// kernel runs, for every kernel but those that read an unbound value (`??`, `&&`, `||`, `!`, `StdFunc::reads_unbound`).
+fn any_unbound(cols: &[&Column]) -> bool {
+    cols.iter().any(|c| c.is_unbound())
+}
+
 /// Dispatch a binary operator on the operands' runtime types.
 fn apply_binary(op: BinOp, a: &Column, b: &Column, expected: &DataType, rows: usize, ctx: &mut Ctx) -> Column {
     let (at, bt) = (a.data_type(), b.data_type());
@@ -716,7 +737,8 @@ fn apply_binary(op: BinOp, a: &Column, b: &Column, expected: &DataType, rows: us
                 _ => {}
             }
             let out = match table::kernel(op, &at, &bt) {
-                Some(k) => k(ctx, ins),
+                Some(_) if any_unbound(ins) => Column::empty(expected.clone(), rows),
+                Some(k) => run_kernel(ctx, k, ins),
                 None => Column::empty(expected.clone(), rows),
             };
             if op.is_comparison() {

@@ -5,7 +5,6 @@
 //! moved from Elastic keeps its field names. Text that does not read is a null row with a `CoercionRefused`, as
 //! `parseInt` gives one; a blank text is null and clean.
 
-use super::helpers::short_circuit_empty;
 use super::stdfuncs::{Field, object_type};
 use crate::core::column::{Column, DataType, StrBuilder, VarLen, VarType};
 use crate::core::ctx::Ctx;
@@ -21,9 +20,6 @@ fn blank(text: &[u8]) -> bool {
 /// A text-to-text kernel: `f` gives the row's text, or `None` where it does not read.
 fn text_map(ctx: &mut Ctx, ins: &[&Column], f: impl Fn(&[u8], &mut Vec<u8>) -> bool) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
     let mut out = Vec::new();
@@ -403,9 +399,6 @@ where
 {
     let len = ins[0].len();
     let ty = object_type(fields);
-    if let Some(e) = short_circuit_empty(ins, &ty, len) {
-        return e;
-    }
     let v: VarLen<'t> = ins[0].var().unwrap();
     let mut b = ObjectBuilder::new(ctx, fields, len);
     for i in 0..len {

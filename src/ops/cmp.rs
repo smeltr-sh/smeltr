@@ -1,7 +1,7 @@
 //! Comparison kernels. Every one produces a `Bool` bitmap, written a word at a time. A kernel's row is null where an
 //! operand is; `settle_nulls` then gives that row the value JavaScript does.
 
-use super::helpers::{One, Operand, Side, alloc_with_merged_validity, native, short_circuit_empty, two_sides};
+use super::helpers::{One, Operand, Side, alloc_with_merged_validity, native, two_sides};
 use crate::core::bits;
 use crate::core::column::{Column, DataType, Validity};
 use crate::core::ctx::Ctx;
@@ -45,9 +45,6 @@ macro_rules! cmp_fixed {
                 out
             }
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::Bool, len) {
-                return e;
-            }
             two_sides!(ctx, ins, len, $la, $ra, run)
         }
     };
@@ -86,9 +83,6 @@ macro_rules! cmp_bool {
     ($name:ident, $f:expr) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::Bool, len) {
-                return e;
-            }
             let a = ins[0].bool().unwrap();
             let b = ins[1].bool().unwrap();
             let mut out = alloc_with_merged_validity(ctx, &DataType::Bool, len, &[Some(a.validity), Some(b.validity)]);
@@ -129,9 +123,6 @@ macro_rules! cmp_var {
                 out
             }
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::Bool, len) {
-                return e;
-            }
             two_sides!(ctx, ins, len, var, var, run)
         }
     };

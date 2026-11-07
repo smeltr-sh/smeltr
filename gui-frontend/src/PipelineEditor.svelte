@@ -728,25 +728,37 @@
   /** The sample the rows on screen came from. */
   let lastSample = $state('');
 
+  let samplesLoaded = $state(false);
   async function loadSamples() {
     try {
       const res = await listSamples();
       samples = res.samples;
-      // `sample` came in from the URL (a sample row's "Run in a pipeline"
-      // link, or a pipeline opened from the list while it held one). With
-      // none, or a stale one not on this branch, the editor opens on the
-      // last one this pipeline ran over, else on none: which records to run is
-      // the author's to choose.
-      lastUsed = readLastUsed();
-      const opening = sample || lastUsed;
-      if (!selectedSample && opening && samples.some((s) => s.id === opening)) {
-        await chooseSample(opening);
-      }
+      samplesLoaded = true;
     } catch (e) {
       reported(e);
     }
   }
   loadSamples();
+
+  // The pipeline, and the sample in the URL, that the opening choice was last
+  // made for. This component is reused across a route change, so each pipeline
+  // opened chooses afresh and does not keep the previous pipeline's choice.
+  let openedFor = '';
+  $effect(() => {
+    const opened = JSON.stringify([pipelineId, sample]);
+    if (!samplesLoaded || loading || !pipelineId || opened === openedFor) return;
+    openedFor = opened;
+    // `sample` came in from the URL (a sample row's "Run in a pipeline"
+    // link, or a pipeline opened from the list while it held one). With
+    // none, or a stale one not on this branch, the editor opens on the
+    // last one this pipeline ran over, else on none: which records to run is
+    // the author's to choose.
+    untrack(() => {
+      lastUsed = readLastUsed();
+      const opening = [sample, lastUsed].find((id) => id && samples.some((s) => s.id === id));
+      if (opening || selectedSample) void chooseSample(opening ?? '');
+    });
+  });
 
   // The tests of this pipeline, for the samples they lock. A failure only
   // leaves the padlocks off.

@@ -981,9 +981,7 @@ fn run_array_fold(
                         assemble(&[&mapped, seed_col], &src_of_row, seed_col.data_type(), ctx)
                     }
                     (DataType::I64, DataType::I64) => fold_i64(seed_col, &mapped, &offsets, rows, &keep, fold.op, ctx),
-                    (DataType::F64, DataType::F64) => {
-                        fold_f64(seed_col, &mapped, &offsets, rows, &keep, fold.op, ctx.pool)
-                    }
+                    (DataType::F64, DataType::F64) => fold_f64(seed_col, &mapped, &offsets, rows, &keep, fold.op, ctx),
                     (_, DataType::Str | DataType::Bytes) => {
                         fold_var(seed_col, &mapped, &offsets, rows, &keep, ctx.pool)
                     }
@@ -1171,12 +1169,12 @@ fn fold_f64(
     rows: usize,
     keep: &impl Fn(usize) -> bool,
     op: crate::plan::compile::FoldOp,
-    pool: &mut BufferPool,
+    ctx: &mut Ctx,
 ) -> Column {
     use crate::plan::compile::FoldOp;
     let sv = seed_col.f64().unwrap();
     let mv = mapped.f64().unwrap();
-    let mut out = Column::alloc(pool, &DataType::F64, rows);
+    let mut out = Column::alloc(ctx.pool, &DataType::F64, rows);
     {
         let o = out.f64_mut().unwrap();
         for row in 0..rows {
@@ -1188,11 +1186,25 @@ fn fold_f64(
                     acc_valid = false;
                     continue;
                 }
-                acc = if op == FoldOp::Add {
-                    acc + mv.values[i]
+                let (next, call) = if op == FoldOp::Add {
+                    (acc + mv.values[i], "+")
                 } else {
-                    acc * mv.values[i]
+                    (acc * mv.values[i], "*")
                 };
+                // An infinity or a NaN fails the row, as it does in the arithmetic kernels.
+                if !next.is_finite() {
+                    acc_valid = false;
+                    let kind = if next.is_nan() {
+                        ExceptionKind::NaN
+                    } else {
+                        ExceptionKind::Overflow
+                    };
+                    let a = ctx.raise(row, kind);
+                    let operands = [acc, mv.values[i]].map(|v| Read::new(None, Some(v.to_string())));
+                    (a.call, a.read) = (call, operands.to_vec());
+                    continue;
+                }
+                acc = next;
             }
             o.values[row] = acc;
             o.validity.set_valid(row, acc_valid);

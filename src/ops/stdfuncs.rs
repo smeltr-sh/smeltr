@@ -337,11 +337,12 @@ macro_rules! ret {
     };
 }
 
-/// `null_safe` names the functions that answer on null rather than propagating it; `variadic` those whose last
-/// parameter repeats.
+/// `null_safe` names the functions that answer on null rather than propagating it; `reads_unbound` those whose kernel
+/// reads an unbound argument; `variadic` those whose last parameter repeats.
 macro_rules! stdfuncs {
     (
         null_safe: [ $($nfunc:ident),* ];
+        reads_unbound: [ $($ufunc:ident),* ];
         variadic: [ $($vfunc:ident),* ];
         $( $func:ident $name:literal = $kern:expr ; $( [ $($p:ident),* ] => ( $($r:tt)+ ) ),+ ; )*
     ) => {
@@ -376,6 +377,12 @@ macro_rules! stdfuncs {
                 !matches!(self, $(StdFunc::$nfunc)|*)
             }
 
+            /// Whether the kernel runs on an unbound argument. Every other kernel's result is null when one is, and
+            /// `expr::eval` answers that without running it.
+            pub fn reads_unbound(self) -> bool {
+                matches!(self, $(StdFunc::$ufunc)|*)
+            }
+
             /// Whether the last parameter of every row repeats: `push(xs, a, b, c)`, `min(a, b, c)`. One call is one
             /// pass, where a chain of two-argument calls is one pass and one intermediate column each.
             pub fn is_variadic(self) -> bool {
@@ -398,6 +405,8 @@ fn some(k: OpKernel) -> Option<OpKernel> {
 
 stdfuncs! {
     null_safe: [IsNull, Push, Insert];
+    // `communityId` reads an unbound port: only TCP, UDP and SCTP need one.
+    reads_unbound: [IsNull, Push, Insert, CommunityId];
     variadic: [Push, Insert, Concat, Min, Max, InCidr];
 
     IsNull      "isNull"      = some(logic::is_null);          [Any] => (Bool);
