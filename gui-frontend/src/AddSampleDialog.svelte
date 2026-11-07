@@ -195,7 +195,7 @@
     <Button type="button" onclick={oncancel} disabled={busy ? BUSY : ''}>Cancel</Button>
     {#if way}
       <Button type="submit" class="primary" disabled={busy ? BUSY : !canSave ? INCOMPLETE : ''}>
-        {busy ? 'Saving…' : 'Save sample'}
+        {busy ? (way === 'output' && !taken ? 'Loading…' : 'Saving…') : 'Save sample'}
       </Button>
     {/if}
   {/snippet}
