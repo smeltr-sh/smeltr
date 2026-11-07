@@ -46,6 +46,9 @@ const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60)
 
 const NO_CONVERSATION: &str = "there is no such conversation";
 
+/// What the agent calls the conversation it works in, in place of its id.
+const THIS: &str = "this";
+
 /// The turns a page holds when its reader names no limit.
 pub const PAGE_TURNS: usize = 20;
 /// The most turns a page may hold.
@@ -413,7 +416,7 @@ async fn begin(
 
 async fn turn(host: &Turned, turns: Vec<Turn>, message: String) -> Result<Ended, String> {
     let (model, asking) = client(host, &turns).await?;
-    let system = agent::system_prompt(CATALOG, &host.conversation);
+    let system = agent::system_prompt(CATALOG);
     agent::run(
         model.as_ref(),
         host,
@@ -431,13 +434,7 @@ async fn fresh(host: &Turned, turns: Vec<Turn>, summarize: bool) -> Result<Ended
     let fresh = match summarize {
         true => {
             let (model, asking) = client(host, &turns).await?;
-            agent::summarize(
-                model.as_ref(),
-                &agent::system_prompt(CATALOG, &host.conversation),
-                turns,
-                &asking,
-            )
-            .await?
+            agent::summarize(model.as_ref(), &agent::system_prompt(CATALOG), turns, &asking).await?
         }
         false => Fresh {
             summary: None,
@@ -694,9 +691,12 @@ pub async fn read(
     Path(id): Path<String>,
     Query(page): Query<Page>,
 ) -> Response {
-    if by_agent.as_ref().is_some_and(|Extension(mark)| mark.conversation != id) {
-        return refuse(StatusCode::NOT_FOUND, NO_CONVERSATION);
-    }
+    // The agent names the conversation it works in as `this`, so its prompt is the same in every conversation.
+    let id = match &by_agent {
+        Some(Extension(mark)) if id == THIS => mark.conversation.clone(),
+        Some(_) => return refuse(StatusCode::NOT_FOUND, NO_CONVERSATION),
+        None => id,
+    };
     if let Some(refused) = refused_while_off(&auth).await {
         return refused;
     }

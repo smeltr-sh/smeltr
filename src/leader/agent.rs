@@ -139,9 +139,9 @@ How to work:
 - Build a pipeline one step at a time against a sample with preview, then lock a test, save, add the route, check it with route preview, and open a change.
 - Say what you changed and on which branch."#;
 
-/// The system prompt of the agent in `conversation`: who the agent is, how it reaches the API, and every route it
-/// may call.
-pub fn system_prompt(catalog: &[Route], conversation: &str) -> String {
+/// The system prompt: who the agent is, how it reaches the API, and every route it may call. The same for every
+/// conversation, so the provider can cache it.
+pub fn system_prompt(catalog: &[Route]) -> String {
     let mut prompt = String::from(
         "You are the AI agent in Smeltr, a log and event pipeline. You act for the person talking to you, through \
          the leader's API, with the `request` tool. Every request is judged as theirs, limited to what they let \
@@ -158,14 +158,10 @@ pub fn system_prompt(catalog: &[Route], conversation: &str) -> String {
          - `:area` is `shared` or a worker group's id.\n\
          - `at` reads at a commit instead of a branch's tip.\n\
          - An answer to a request made before the person's latest message is shown cut to its start. To read it \
-           whole, send that read again; it answers as things are now. Never send a write again to see its answer.\n",
-    );
-    prompt.push_str(&format!(
-        "- This conversation's id is `{conversation}`. Once it is long, you read a summary in place of its older \
-         turns; read those turns back with `GET /api/agent/conversations/{conversation}`.\n"
-    ));
-    prompt.push_str(
-        "- Every JSON answer is `{ ok, errors, ...fields }`; a list comes under a named field.\n\
+           whole, send that read again; it answers as things are now. Never send a write again to see its answer.\n\
+         - Once the conversation is long, you read a summary in place of its older turns; read those turns back \
+           with `GET /api/agent/conversations/this`.\n\
+         - Every JSON answer is `{ ok, errors, ...fields }`; a list comes under a named field.\n\
          - Bodies are camelCase, except `/api/areas/:area/preview/pipeline` and `.../preview/routes`, whose fields are snake_case.\n\n\
          Routes (method, path, what it does, body):\n",
     );
@@ -859,7 +855,7 @@ mod tests {
 
     #[test]
     fn the_prompt_lists_every_route() {
-        let prompt = system_prompt(CATALOG, "c_1");
+        let prompt = system_prompt(CATALOG);
         assert!(prompt.contains("- GET /api/areas/:area/pipelines: The area's pipelines.\n"));
         assert!(prompt.contains(
             "- PUT /api/areas/:area/pipelines/:id: Create or replace a pipeline. Body: { id, name, steps }\n"

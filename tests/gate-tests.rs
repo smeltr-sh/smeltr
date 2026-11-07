@@ -1407,7 +1407,7 @@ fn a_persons_agent_calls_the_api_as_them_within_what_they_let_it() {
     assert_eq!(status, 404);
 }
 
-/// An agent reads back the conversation it works in, a page or a search at a time, and no other.
+/// An agent reads back the conversation it works in, as `this`, a page or a search at a time, and no other.
 #[test]
 fn an_agent_reads_back_only_its_own_conversation() {
     let leader = start("agent-read-back");
@@ -1448,13 +1448,6 @@ fn an_agent_reads_back_only_its_own_conversation() {
     );
     assert_eq!(status, 202);
     turn_ended(&leader, &op, &id);
-    let asked = model.asked.lock().unwrap().last().cloned().unwrap();
-    assert!(
-        asked["system"]
-            .to_string()
-            .contains(&format!("This conversation's id is `{id}`")),
-        "{asked}"
-    );
 
     // A search finds the items holding every word, the last `limit` of them.
     let (status, found) = leader.get_as(
@@ -1471,7 +1464,7 @@ fn an_agent_reads_back_only_its_own_conversation() {
     assert!(whole["conversation"]["items"][0].get("turn").is_none(), "{whole}");
 
     // Past its summary, the agent reads how the conversation started.
-    let read = say(&id, &format!("read back /api/agent/conversations/{id}"));
+    let read = say(&id, "read back /api/agent/conversations/this");
     let output = last_result(&read);
     let (status, page) = output.split_once('\n').unwrap();
     assert_eq!(status, "200", "{output}");
