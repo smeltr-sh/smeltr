@@ -4,6 +4,7 @@
   heartbeat.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import { reported } from './errors.svelte';
   import Panel from './Panel.svelte';
   import Field from './Field.svelte';
@@ -33,7 +34,7 @@
   let addingLevel = $state('trace');
   let defaultShown = $state(STARTUP);
   let rows = $state<LevelOverrideDto[]>([]);
-  let busy = $state(false);
+  const busy = new Busy();
   let message = $state('');
 
   function adopt(result: LogLevelsResult) {
@@ -85,19 +86,14 @@
 
   async function save(event: SubmitEvent) {
     event.preventDefault();
-    if (busy) return;
-    busy = true;
+    if (busy.on) return;
     message = '';
-    try {
+    await busy.run(async () => {
       const result = await putLogLevels(shown);
       if (!result.ok) return;
       adopt(result);
       message = 'saved';
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 </script>
 
@@ -203,7 +199,7 @@
     <InlineSaveBar
       {dirty}
       label="Save log levels"
-      disabled={busy ? BUSY : ''}
+      disabled={busy.on ? BUSY : ''}
       ondiscard={() => saved && show(saved)}
     />
   </Panel>

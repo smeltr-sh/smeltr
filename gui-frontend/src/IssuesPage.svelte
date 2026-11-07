@@ -8,6 +8,7 @@
   appearing on the next poll, the same as a single warning does today.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Collapsible from './Collapsible.svelte';
@@ -15,7 +16,6 @@
   import Button, { BUSY } from './Button.svelte';
   import { ask } from './Confirm.svelte';
   import { holds } from './access';
-  import { reported } from './errors.svelte';
   import {
     listWarnings,
     lowerSourceRows,
@@ -63,18 +63,13 @@
     w.group !== null &&
     holds(w.group, 'editor');
 
-  let marking = $state(false);
+  const marking = new Busy();
 
   async function mark(call: () => Promise<unknown>) {
-    marking = true;
-    try {
+    await marking.run(async () => {
       await call();
       refresh();
-    } catch (e) {
-      reported(e);
-    } finally {
-      marking = false;
-    }
+    });
   }
 
   async function resetHistory(w: WarningDto, group: string) {
@@ -241,14 +236,14 @@
                   {#if warning.severity === 'warning'}
                     <Button
                       class="compact"
-                      disabled={marking ? BUSY : ''}
+                      disabled={marking.on ? BUSY : ''}
                       onclick={() => mark(() => lowerSourceRows(group, warning.subjectId))}
                       >Lower to info</Button
                     >
                   {/if}
                   <Button
                     class="compact"
-                    disabled={marking ? BUSY : ''}
+                    disabled={marking.on ? BUSY : ''}
                     onclick={() => resetHistory(warning, group)}>Reset history</Button
                   >
                 {/if}

@@ -10,6 +10,7 @@
   review diff holds only what really changed.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import ShowAll from './ShowAll.svelte';
   import { bareError, errors, reported } from './errors.svelte';
@@ -73,7 +74,7 @@
   let previewErrors = $state<ApiError[]>([]);
 
   let name = $state('');
-  let saving = $state(false);
+  const saving = new Busy();
   let conflict = $state<SaveConflict | null>(null);
 
   const SHOWN = 5;
@@ -177,7 +178,7 @@
   }
 
   let droppedCount = $derived(pipeline ? expected.filter((v) => v === null).length : 0);
-  let canLock = $derived(!loading && previewOk && name.trim() !== '' && !saving);
+  let canLock = $derived(!loading && previewOk && name.trim() !== '' && !saving.on);
 
   function buildTest(): TestDto {
     const base = {
@@ -193,9 +194,8 @@
 
   async function lockTest() {
     if (!canLock) return;
-    saving = true;
     conflict = null;
-    try {
+    await saving.run(async () => {
       const res = await putTest(buildTest());
       if (res.ok) {
         if (relock) history.back();
@@ -204,11 +204,7 @@
         conflict = res.conflict;
         errors.shown(res.errors);
       }
-    } catch (e) {
-      reported(e);
-    } finally {
-      saving = false;
-    }
+    });
   }
 
   /** Retried onto whatever branch the conflict panel just switched to. */
@@ -259,7 +255,7 @@
             bind:value={name}
             placeholder="what this test checks"
             data-guide="lock-name"
-            disabled={saving}
+            disabled={saving.on}
           />
         </Field>
       </div>
@@ -356,15 +352,15 @@
 
     <div class="card">
       <div class="row explain-row">
-        <Button onclick={cancel} disabled={saving ? BUSY : ''}>Cancel</Button>
+        <Button onclick={cancel} disabled={saving.on ? BUSY : ''}>Cancel</Button>
         {#if editable()}
           <Button
             class="primary"
             data-guide="lock"
             onclick={lockTest}
-            disabled={saving ? BUSY : !canLock ? INCOMPLETE : ''}
+            disabled={saving.on ? BUSY : !canLock ? INCOMPLETE : ''}
           >
-            {saving ? 'Locking…' : 'Lock the test'}
+            {saving.on ? 'Locking…' : 'Lock the test'}
           </Button>
         {/if}
       </div>

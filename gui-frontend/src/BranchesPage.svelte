@@ -5,6 +5,7 @@
   any other branch, carrying its title and its tests.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
@@ -169,24 +170,19 @@
   }
 
   // One write at a time: two branches started at once would race on a name.
-  let busy = $state(false);
+  const busy = new Busy();
   let newName = $state('');
 
   async function start() {
     const name = newName.trim();
-    if (!name || busy) return;
-    busy = true;
-    try {
+    if (!name || busy.on) return;
+    await busy.run(async () => {
       const res = await createBranch(name);
       if (res.ok) {
         newName = '';
         await load();
       }
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   /** Deleting takes the commits with it. Nothing else holds them: a branch is
@@ -199,16 +195,15 @@
     // is already the question, and `ask` refuses a second while it is up.
     const heldHere = b.name === currentBranch() ? listHeld().map(heldLabel) : [];
     const loses = heldHere.length > 0 ? ` Unsaved edits on it go too: ${heldHere.join(', ')}.` : '';
-    if (busy) return;
+    if (busy.on) return;
     const ok = await ask({
       title: 'delete branch',
       body: `Delete the branch ${b.name}.${carries}${loses}`,
       action: 'Delete',
       danger: true,
     });
-    if (!ok || busy) return;
-    busy = true;
-    try {
+    if (!ok || busy.on) return;
+    await busy.run(async () => {
       const res = await deleteBranch(b.name);
       if (!res.ok) return;
       if (leaveBranch(b.name)) {
@@ -216,11 +211,7 @@
         // question belongs before the delete, which `remove` asks.
         location.reload();
       } else await load();
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   function behindText(n: number): string {
@@ -289,8 +280,8 @@
   </PageHeader>
 
   <form class="start" data-guide="branch-start" onsubmit={(e) => (e.preventDefault(), start())}>
-    <input placeholder="a name for new work" bind:value={newName} disabled={busy} />
-    <Button type="submit" disabled={busy ? BUSY : newName.trim() === '' ? INCOMPLETE : ''}
+    <input placeholder="a name for new work" bind:value={newName} disabled={busy.on} />
+    <Button type="submit" disabled={busy.on ? BUSY : newName.trim() === '' ? INCOMPLETE : ''}
       >Start a branch</Button
     >
   </form>
@@ -427,10 +418,10 @@
                     class="compact"
                     data-guide={b.commits === 0 ? 'branch-open' : undefined}
                     onclick={() => open(b.name)}
-                    disabled={busy ? BUSY : ''}>Open</Button
+                    disabled={busy.on ? BUSY : ''}>Open</Button
                   >
                 {/if}
-                <Button class="compact" onclick={() => remove(b)} disabled={busy ? BUSY : ''}
+                <Button class="compact" onclick={() => remove(b)} disabled={busy.on ? BUSY : ''}
                   >Delete</Button
                 >
               </td>

@@ -5,6 +5,7 @@
   whether one is stored.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, SAVE_FIRST, UNCHANGED } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -25,7 +26,7 @@
 
   let settings = $state<RemoteSettingsDto | null>(null);
   let loadFailed = $state(false);
-  let busy = $state(false);
+  const busy = new Busy();
 
   let url = $state('');
   let user = $state('');
@@ -85,9 +86,8 @@
 
   async function save(event: SubmitEvent) {
     event.preventDefault();
-    if (busy || pollProblem) return;
-    busy = true;
-    try {
+    if (busy.on || pollProblem) return;
+    await busy.run(async () => {
       answer(
         await putRemoteSettings({
           url: url.trim(),
@@ -97,33 +97,19 @@
           approvePushes,
         }),
       );
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   async function disconnect() {
-    busy = true;
-    try {
+    await busy.run(async () => {
       answer(await putRemoteSettings({ url: '', user: '', pollSeconds: 0, approvePushes: false }));
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   async function syncNow() {
-    busy = true;
-    try {
+    await busy.run(async () => {
       answer(await syncRemote());
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 </script>
 
@@ -224,15 +210,16 @@
 
     <div class="buttons">
       {#if settings.url}
-        <Button type="button" onclick={disconnect} disabled={busy ? BUSY : ''}>Disconnect</Button>
-        <Button type="button" onclick={syncNow} disabled={busy ? BUSY : dirty ? SAVE_FIRST : ''}
+        <Button type="button" onclick={disconnect} disabled={busy.on ? BUSY : ''}>Disconnect</Button
+        >
+        <Button type="button" onclick={syncNow} disabled={busy.on ? BUSY : dirty ? SAVE_FIRST : ''}
           >Sync now</Button
         >
       {/if}
       <Button
         class="primary"
         type="submit"
-        disabled={busy ? BUSY : !dirty ? UNCHANGED : pollProblem}>Save</Button
+        disabled={busy.on ? BUSY : !dirty ? UNCHANGED : pollProblem}>Save</Button
       >
     </div>
   </Panel>

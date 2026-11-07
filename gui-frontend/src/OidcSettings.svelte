@@ -71,6 +71,7 @@
 </script>
 
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE, UNCHANGED } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -93,7 +94,7 @@
 
   let settings = $state<OidcSettingsDto | null>(null);
   let loadFailed = $state(false);
-  let busy = $state(false);
+  const busy = new Busy();
   let enabled = $state(false);
   let issuer = $state('');
   let clientId = $state('');
@@ -144,7 +145,7 @@
         groupsClaim.trim() !== settings.groupsClaim),
   );
   const savable = $derived(
-    dirty && !busy && issuerError === '' && claimProblem === '' && missing.length === 0,
+    dirty && !busy.on && issuerError === '' && claimProblem === '' && missing.length === 0,
   );
 
   function answer(result: OidcSettingsResult) {
@@ -155,8 +156,7 @@
   async function save(event: SubmitEvent) {
     event.preventDefault();
     if (!savable) return;
-    busy = true;
-    try {
+    await busy.run(async () => {
       const result = await putOidcSettings({
         enabled,
         issuer: issuer.trim(),
@@ -165,11 +165,7 @@
         groupsClaim: groupsClaim.trim(),
       });
       if (!refused(result)) answer(result);
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   function discard() {
@@ -252,13 +248,13 @@
     {/if}
 
     <div class="buttons">
-      <Button type="button" onclick={discard} disabled={busy ? BUSY : !dirty ? UNCHANGED : ''}
+      <Button type="button" onclick={discard} disabled={busy.on ? BUSY : !dirty ? UNCHANGED : ''}
         >Discard</Button
       >
       <Button
         class="primary"
         type="submit"
-        disabled={busy ? BUSY : !dirty ? UNCHANGED : !savable ? INCOMPLETE : ''}>Save</Button
+        disabled={busy.on ? BUSY : !dirty ? UNCHANGED : !savable ? INCOMPLETE : ''}>Save</Button
       >
     </div>
   </Panel>
