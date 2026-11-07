@@ -615,9 +615,6 @@ fn refused_on_branch(
     }
 }
 
-/// `req.config` with each schema it names but does not declare taken from `reading`, the area as the branch holds
-/// it. The pipeline editor sends none: a standard's runs to megabytes, and sending it with every preview stalls the
-/// page that builds the request. A schema the config declares wins over the branch's.
 /// The commit `reading` resolved, if it holds the pipeline `req` runs exactly as `req` has it; a sample of the output
 /// names it. Only a preview asked for a sample compares them.
 fn saved_at(req: &PreviewRequest, reading: &config_api::Reading) -> Option<String> {
@@ -633,6 +630,9 @@ fn saved_at(req: &PreviewRequest, reading: &config_api::Reading) -> Option<Strin
     (serde_json::to_value(run).ok()? == serde_json::to_value(&saved).ok()?).then(|| reading.commit.clone())
 }
 
+/// `req.config` with each schema it names but does not declare taken from `reading`, the area as the branch holds
+/// it. The pipeline editor sends none: a standard's runs to megabytes, and sending it with every preview stalls the
+/// page that builds the request. A schema the config declares wins over the branch's.
 fn with_branch_schemas(req: &mut PreviewRequest, reading: &config_api::Reading) {
     let Ok(mut file) = serde_json::from_str::<config_file::FileConfig>(&req.config) else {
         return;
