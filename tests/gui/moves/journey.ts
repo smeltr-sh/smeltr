@@ -2272,6 +2272,9 @@ const saveInputSample: Move = {
     await expect(use).toBeEnabled({ timeout: 60_000 });
     await use.click();
     await expect(chip).toContainText('Your capture');
+    await expect(chip).toContainText(/\d+ records?/, { timeout: 30_000 });
+    // A capture ends at its deadline holding fewer than it asked for, when the source was slow.
+    const held = Number((await chip.textContent())?.match(/(\d+) records?/)?.[1]);
 
     await page.getByRole('button', { name: 'Save as sample', exact: true }).click();
     await page.getByRole('button', { name: /^Save input as sample/ }).click();
@@ -2294,7 +2297,7 @@ const saveInputSample: Move = {
     expect(
       samples.find((s: { name: string }) => s.name === name),
       `${name} stands for ${source}`,
-    ).toMatchObject({ source, records: 2 });
+    ).toMatchObject({ source, records: held });
     expect(
       (await api.get('/api/captures/mine')).capture,
       'the capture is held no longer',
