@@ -636,8 +636,8 @@ pub async fn list(State(auth): State<Auth>, actor: Extension<Actor>, by_agent: O
 
 /// `GET /api/agent/models`: the models the stored key reaches, and the administrator's, which a new conversation
 /// starts from. Asked of the provider each time, so a model it adds shows without a restart.
-pub async fn models(State(auth): State<Auth>, by_agent: Option<Extension<ByAgent>>) -> Response {
-    if let Some(refused) = refused(&auth, &by_agent).await {
+pub async fn models(State(auth): State<Auth>) -> Response {
+    if let Some(refused) = refused_while_off(&auth).await {
         return refused;
     }
     let store = auth.store.clone();

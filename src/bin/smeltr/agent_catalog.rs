@@ -1,8 +1,7 @@
 //! The routes the AI agent can call, as its system prompt describes them (`leader::agent`).
 //!
 //! Every gated route is here or in [`LEFT_OUT`], which a test holds to the router. What is left out is what an agent
-//! cannot send as a JSON request; what is the person's own (signing in and out, their conversations); and what
-//! answers a key, which only the person is shown.
+//! cannot send as a JSON request, and what is the person's own; the list is on [`LEFT_OUT`].
 
 use smeltr::leader::agent::Route;
 
@@ -342,6 +341,12 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "GET",
+        path: "/api/captures/mine",
+        what: "The capture the caller holds, as `capture`, while the leader still holds it and the caller views its group; otherwise no `capture`. No query.",
+        body: "",
+    },
+    Route {
+        method: "GET",
         path: "/api/areas/:area/samples",
         what: "The area's sample summaries (id, name, source, record count). Query: branch.",
         body: "",
@@ -468,6 +473,12 @@ pub const CATALOG: &[Route] = &[
         path: "/api/warnings",
         what: "The warning catalog as `warnings`, filtered to what the caller sees. `info=true` adds its info entries: facts that \
                ask nothing of anyone.",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/metrics",
+        what: "The warnings the caller sees, in Prometheus text, as a scraper reads them; `/api/warnings` gives them as JSON. No query.",
         body: "",
     },
     Route {
@@ -605,6 +616,12 @@ pub const CATALOG: &[Route] = &[
         body: "",
     },
     Route {
+        method: "POST",
+        path: "/api/accounts/:id/keys",
+        what: "Give a key account a new key. The answer holds the key itself, this once. No query.",
+        body: "{ label?: string, expiresInDays?: number (1 or more; left out, the key never expires) }",
+    },
+    Route {
         method: "DELETE",
         path: "/api/accounts/:id/keys/:key",
         what: "Revoke one of a key account's keys. No query.",
@@ -626,6 +643,12 @@ pub const CATALOG: &[Route] = &[
         method: "GET",
         path: "/api/docs/page",
         what: "One page of the user docs as text, or with section one heading's text and what is under it. Query: path (/docs/...), section (a heading's id).",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/agent/models",
+        what: "The models the person can pick from, as `models`, and the default, as `default`. No query.",
         body: "",
     },
     Route {
@@ -933,23 +956,19 @@ pub const CATALOG: &[Route] = &[
 ];
 
 #[cfg(test)]
-/// Gated paths the agent cannot call: its person's conversations and the models they pick from, a file upload that
-/// is no JSON request, what a person sets for their own agent, which no agent changes, and the warnings as a scraper
-/// reads them, which `/api/warnings` gives the agent as JSON.
+/// Gated paths the agent cannot call: its person's conversations, a file upload that is no JSON request, and what a
+/// person sets for their own agent, which no agent changes.
 pub const LEFT_OUT: &[(&str, &str)] = &[
     ("POST", "/api/agent/conversations"),
     ("GET", "/api/agent/conversations"),
     ("GET", "/api/agent/conversations/:id"),
     ("DELETE", "/api/agent/conversations/:id"),
-    ("GET", "/api/agent/models"),
     ("POST", "/api/agent/conversations/:id/messages"),
     ("POST", "/api/agent/conversations/:id/stop"),
     ("POST", "/api/agent/conversations/:id/context"),
     ("POST", "/api/areas/:area/lookups/upload"),
     ("POST", "/api/areas/:area/imports"),
     ("PUT", "/api/me/agent-permissions"),
-    ("POST", "/api/accounts/:id/keys"),
-    ("GET", "/api/metrics"),
 ];
 
 #[cfg(test)]

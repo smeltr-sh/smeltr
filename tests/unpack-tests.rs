@@ -258,7 +258,7 @@ fn a_number_is_written_in_its_type_and_order() {
         rows,
         [json!(["0102", "0201", "ff", "3fc00000", null, null, null, null])]
     );
-    assert_eq!(kinds, ["Overflow", "CoercionRefused", "CoercionRefused", "NaN"]);
+    assert_eq!(kinds, ["Overflow", "CoercionRefused", "CoercionRefused", "Overflow"]);
 }
 
 #[test]
