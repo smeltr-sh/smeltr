@@ -27,6 +27,7 @@ mod cluster;
 mod config_api;
 mod docs_api;
 mod export_api;
+mod import_api;
 // What the crate's fuzzers share, compiled here as `tests/harness` compiles it: the library's is test-only.
 #[cfg(test)]
 #[path = "../../fuzz.rs"]
@@ -1193,6 +1194,15 @@ async fn setup_leader(
         .route(
             "/api/areas/:area/lookups/upload",
             post(upload_lookup).layer(axum::extract::DefaultBodyLimit::max(
+                smeltr::lookup::store::MAX_FILE_BYTES as usize,
+            )),
+        )
+        // Not on `app` below with the rest of the config routes: matching an import's credentials reads the secret
+        // list, and its lookup files go into the store. An export holds its lookup files, so it is streamed to disk
+        // like one.
+        .route(
+            "/api/areas/:area/imports",
+            post(import_api::import).layer(axum::extract::DefaultBodyLimit::max(
                 smeltr::lookup::store::MAX_FILE_BYTES as usize,
             )),
         )

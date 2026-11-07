@@ -173,7 +173,7 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             Method::PUT,
             ["sources" | "destinations" | "routes" | "lookups" | "grok-patterns" | "schemas" | "manifest"],
         )
-        | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"]) => Level::Editor,
+        | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"] | ["imports"]) => Level::Editor,
         // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
         (Method::POST, ["sources", _, "lower" | "reset-history"]) => Level::Editor,
 
@@ -316,6 +316,7 @@ mod tests {
             (Method::DELETE, "/api/areas/payments/tests/t1"),
             (Method::POST, "/api/areas/payments/undo"),
             (Method::POST, "/api/areas/payments/lookups/upload"),
+            (Method::POST, "/api/areas/payments/imports"),
             (Method::PUT, "/api/areas/payments/files/pipelines/x.json"),
             (Method::DELETE, "/api/areas/payments/files/x.json"),
             (Method::PUT, "/api/areas/payments/schemas"),

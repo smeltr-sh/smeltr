@@ -187,9 +187,13 @@ flowchart LR
   M --> S[one save on a branch]
 ```
 
-Import reads the zip with the loader that reads every bundle, so a format
-version or a field this build does not read is refused as it would be in any
-bundle. It writes one save onto the importer's branch, in the area being
+Import unpacks the zip into a directory of its own, refusing an entry named
+outside it, a link, or more bytes in all than the lookup store takes. It reads
+that directory with the loader that reads every bundle, so a format version or
+a field this build does not read is refused as it would be in any bundle. The
+first request lists each object as new, the same as one already held, or taken,
+and writes nothing; the second carries the file again with the answers, against
+the commit the list was read at. Nothing is held between the two. It writes one save onto the importer's branch, in the area being
 imported into, refused if it makes the bundle's errors worse; the change is
 reviewed and deployed like any other. An object identical to one already
 there is not written again. An id the importing leader holds for a different

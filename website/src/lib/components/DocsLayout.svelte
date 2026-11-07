@@ -75,6 +75,7 @@
       links: [
         { href: '/docs/first-pipeline', title: 'First pipeline tutorial' },
         { href: '/docs/review', title: 'Review & deploy' },
+        { href: '/docs/move-pipeline', title: 'Move a pipeline' },
         {
           title: 'Git & configuration',
           links: [

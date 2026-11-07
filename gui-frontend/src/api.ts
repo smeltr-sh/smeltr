@@ -1954,6 +1954,72 @@ export function exportUrl(id: string, routes: boolean): string {
   return branched(exportRoute(id, routes));
 }
 
+// -- import -----------------------------------------------------------------
+//
+// An export read into this area (`config_file::Objects`). Sent once without answers, it writes nothing and lists what
+// the file holds; sent again with an answer for each taken id and credential, it saves.
+
+/** The kinds of object an export holds. */
+export type ImportPart =
+  | 'pipeline'
+  | 'lookupTable'
+  | 'grokPattern'
+  | 'schema'
+  | 'sample'
+  | 'test'
+  | 'route'
+  | 'source'
+  | 'destination';
+
+/** One object the file holds, and how it stands beside this area. A taken one carries both versions as JSON. */
+export interface ImportListed {
+  part: ImportPart;
+  id: string;
+  standing: 'new' | 'same' | 'taken';
+  imported?: string;
+  here?: string;
+}
+
+/** A secret or certificate the file's sources and destinations name, and which of them name it. */
+export interface ImportCredential {
+  name: string;
+  certificate: boolean;
+  namedBy: string[];
+}
+
+/** The answer for a taken id: keep the imported object, keep the one here, or keep both, the imported one renamed. */
+export type ImportKeep = { keep: 'imported' } | { keep: 'here' } | { keep: 'renamed'; as: string };
+
+export interface ImportAnswers {
+  taken: ({ part: ImportPart; id: string } & ImportKeep)[];
+  /** The secret here each one the file names is matched to, by name. */
+  secrets: Record<string, string>;
+  certificates: Record<string, string>;
+}
+
+export type ImportResult = {
+  ok: boolean;
+  errors: ApiError[];
+  listed?: ImportListed[];
+  credentials?: ImportCredential[];
+  /** The commit the area was read at, which the answers are sent against. */
+  at?: string;
+  /** The commit the import was saved in. */
+  commit?: string;
+};
+
+/** `file` read into this area: listed when `answers` is absent, saved against `at` when it is present. */
+export function importExport(
+  file: File,
+  answers?: ImportAnswers,
+  at?: string,
+): Promise<ImportResult> {
+  const body = new FormData();
+  body.append('file', file);
+  if (answers) body.append('answers', JSON.stringify(answers));
+  return configJson(inArea('/imports'), { method: 'POST', body }, { base: at ?? null });
+}
+
 // -- samples ----------------------------------------------------------------
 //
 // Records under a name, saved beside the config they are authored against

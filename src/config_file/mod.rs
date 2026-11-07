@@ -30,6 +30,7 @@ mod fuzz_iceberg;
 #[cfg(test)]
 mod fuzz_loader;
 mod impact;
+mod import;
 mod links;
 mod load;
 mod merge;
@@ -61,6 +62,7 @@ pub use dto::{
 };
 pub use export::{Export, export};
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
+pub use import::{Credential, Keep, Listed, Objects, Part, Standing, describe};
 pub use links::{Connections, Kind, Links, Object};
 pub use load::{
     BundleAt, DeclaredAt, ItemRef, LoadError, RESERVED_KAFKA_PROPS, TLS_KAFKA_PROPS, ValidationError,
