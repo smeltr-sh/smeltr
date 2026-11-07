@@ -110,7 +110,8 @@
     /** The whole pipeline's types, each side. */
     declared: { before: Declared | null; after: Declared | null };
     canLock: boolean;
-    onlock: () => void;
+    /** Locks the run as a test; absent where the pipeline is read only. */
+    onlock?: () => void;
     onjump: (step: Step) => void;
     /** Writes a field in an eval step; absent where the pipeline is read only. */
     onassign?: (path: string) => void;
@@ -762,15 +763,17 @@
           >
         {/if}
         <span class="grow"></span>
-        <Button
-          type="button"
-          class="primary"
-          data-guide="lock-test"
-          onclick={onlock}
-          disabled={!canLock ? INCOMPLETE : ''}
-        >
-          Lock this as a test
-        </Button>
+        {#if onlock}
+          <Button
+            type="button"
+            class="primary"
+            data-guide="lock-test"
+            onclick={onlock}
+            disabled={!canLock ? INCOMPLETE : ''}
+          >
+            Lock this as a test
+          </Button>
+        {/if}
       </div>
 
       <div class="results">

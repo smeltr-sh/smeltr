@@ -44,8 +44,14 @@ beforeEach(async () => {
         answer = { ok: true, errors: [], upstream: [], downstream: [], groups: [], drawnIn: [] };
       } else if (url.pathname === '/api/areas/shared/pipelines/audit') {
         answer = { ok: true, pipeline: { id: 'audit', name: 'Audit', steps: [] }, errors: [] };
+      } else if (url.pathname === '/api/areas/shared/samples') {
+        answer = { ok: true, samples: [], errors: [] };
+      } else if (url.pathname === '/api/areas/shared/tests') {
+        answer = { ok: true, tests: [], errors: [] };
+      } else if (url.pathname === '/api/areas/shared/preview/pipeline') {
+        answer = { ok: true, stage: null, errors: [], rows: [], parsers: [] };
       } else {
-        // What an editor alone may ask for: samples and previews.
+        // What an editor alone may ask for.
         return new Response(JSON.stringify({ ok: false, error: 'this needs editor in shared' }), {
           status: 403,
         });
@@ -69,15 +75,16 @@ afterEach(async () => {
 });
 
 describe('a viewer in the pipeline editor', () => {
-  it('reads the steps and asks for no sample or preview', async () => {
+  it('reads the samples and runs the preview, and is offered nothing that saves', async () => {
     editor = mount(PipelineEditor, { target, props: { id: 'audit' } });
     await vi.waitFor(() => expect(target.querySelector('#pipeline-name')).not.toBeNull());
     await new Promise((resolve) => setTimeout(resolve, 600));
     await tick();
-    expect(asked.filter((p) => /^\/api\/areas\/[^/]+\/(samples|preview)/.test(p))).toEqual([]);
-    expect(target.querySelector('#sample')).toBeNull();
+    expect(asked).toContain('/api/areas/shared/samples');
+    expect(asked).toContain('/api/areas/shared/preview/pipeline');
     expect(target.querySelector('p.error')).toBeNull();
-    expect(target.textContent).not.toContain('Run now');
+    for (const saves of ['Run now', 'Lock this as a test', 'Paste or file'])
+      expect(target.textContent).not.toContain(saves);
   });
 
   it('offers the raw JSON, read and not saved', async () => {

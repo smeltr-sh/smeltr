@@ -23,7 +23,7 @@
   import SchemaFields from './SchemaFields.svelte';
   import NewSchema, { READ_FORMATS, type SchemaDraft } from './NewSchema.svelte';
   import CrossButton from './CrossButton.svelte';
-  import { resourcesTabs } from './nav';
+  import { RESOURCES_TABS } from './nav';
   import {
     readSchema,
     importSchema,
@@ -193,7 +193,7 @@
         its rows do not fit them. A destination can name the schemas it accepts.
       {/snippet}
     </PageHeader>
-    <SecondaryTabs tabs={resourcesTabs()} active="#/build/schemas" ariaLabel="Resources" />
+    <SecondaryTabs tabs={RESOURCES_TABS} active="#/build/schemas" ariaLabel="Resources" />
 
     <div>
       <UnreadableFiles problems={editor.bundleProblems} onchanged={() => editor.load()} />

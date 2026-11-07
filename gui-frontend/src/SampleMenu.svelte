@@ -35,14 +35,14 @@
     pipeline: string;
     mayCapture: (source: Connected) => boolean;
     onpick: (id: string) => void;
-    /** Opens the dialog that makes a new sample. */
-    onadd: () => void;
-    /** Starts a capture at `source`. */
-    oncapture: (source: Connected) => void;
+    /** Opens the dialog that makes a new sample; absent for a viewer, who may not save one. */
+    onadd?: () => void;
+    /** Starts a capture at `source`; absent for a viewer, who may not capture. */
+    oncapture?: (source: Connected) => void;
   } = $props();
 
   type Tab = 'saved' | 'capture';
-  const TABS: Tab[] = ['saved', 'capture'];
+  let tabs = $derived<Tab[]>(oncapture ? ['saved', 'capture'] : ['saved']);
   let open = $state(false);
   let tab = $state<Tab>('saved');
   let query = $state('');
@@ -65,7 +65,7 @@
 
   let sources = $state<Connected[]>([]);
   async function loadSources() {
-    if (!pipeline) return;
+    if (!pipeline || !oncapture) return;
     try {
       const res = await getConnections('pipeline', pipeline);
       sources = res.upstream.filter((c) => c.kind === 'source' && mayCapture(c));
@@ -111,20 +111,22 @@
   {/snippet}
   {#snippet children()}
     <div class="menu">
-      <SecondaryTabs tabs={TABS} active={tab} onselect={show} ariaLabel="Sample">
+      <SecondaryTabs {tabs} active={tab} onselect={show} ariaLabel="Sample">
         {#snippet label(t)}
           {t === 'saved' ? 'Saved' : 'Capture'}
           <span class="dim">{t === 'saved' ? samples.length : sources.length}</span>
         {/snippet}
         {#snippet after()}
-          <button
-            type="button"
-            class="add"
-            onclick={() => {
-              open = false;
-              onadd();
-            }}>Paste or file</button
-          >
+          {#if onadd}
+            <button
+              type="button"
+              class="add"
+              onclick={() => {
+                open = false;
+                onadd();
+              }}>Paste or file</button
+            >
+          {/if}
         {/snippet}
       </SecondaryTabs>
 
@@ -182,7 +184,7 @@
               aria-selected="false"
               onclick={() => {
                 open = false;
-                oncapture(c);
+                oncapture?.(c);
               }}><span class="name mono">◉ {c.id}</span></button
             >
           {/each}

@@ -731,17 +731,14 @@
       reported(e);
     }
   }
-  // Samples and what a preview shows are production records, an editor's to read: a viewer is
-  // shown the steps alone.
-  if (!readOnly) loadSamples();
+  loadSamples();
 
   // The tests of this pipeline, for the samples they lock. A failure only
   // leaves the padlocks off.
   let tests: TestSummary[] = $state([]);
-  if (!readOnly)
-    listTests()
-      .then((res) => (tests = res.tests))
-      .catch(() => {});
+  listTests()
+    .then((res) => (tests = res.tests))
+    .catch(() => {});
   let lockedBy = $derived.by(() => {
     const by = new Map<string, string[]>();
     for (const t of tests)
@@ -971,8 +968,8 @@
   $effect(() => {
     const key = signature;
     void selectedSample;
-    // A viewer is shown the steps alone. A run before the scope's bundle loads finds the pipelines it calls missing.
-    if (readOnly || !autoRun || key === '' || !configRead) return;
+    // A run before the scope's bundle loads finds the pipelines it calls missing.
+    if (!autoRun || key === '' || !configRead) return;
     const timer = setTimeout(() => void run(), RECOMPUTE_MS);
     return () => clearTimeout(timer);
   });
@@ -1480,7 +1477,7 @@
 
     <div
       class="columns"
-      style={`grid-template-columns: ${readOnly ? '1fr' : `${stepsWidth === null ? `minmax(${STEPS_MIN}px, 1fr)` : `${stepsWidth}px`} 11px minmax(0, 1fr)`}`}
+      style={`grid-template-columns: ${stepsWidth === null ? `minmax(${STEPS_MIN}px, 1fr)` : `${stepsWidth}px`} 11px minmax(0, 1fr)`}
     >
       <section class="editor">
         {#if proposed}<p class="proposed">{proposed}</p>{/if}
@@ -1541,64 +1538,64 @@
         <InlineError message={requestError} />
       </section>
 
-      {#if !readOnly}
-        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-        <div
-          class="divider"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize the columns"
-          onpointerdown={drag}
-          ondblclick={snap}
-        >
-          <span class="grip" aria-hidden="true">&#8596;</span>
-        </div>
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="divider"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the columns"
+        onpointerdown={drag}
+        ondblclick={snap}
+      >
+        <span class="grip" aria-hidden="true">&#8596;</span>
+      </div>
 
-        <RecordsPane
-          bind:this={records}
-          {pipelineId}
-          {steps}
-          {signature}
-          {sampleRows}
-          {selectedSample}
-          {lastSample}
-          {result}
-          {lastGoodResult}
-          {gridRows}
-          {attribution}
-          {stepNumbers}
-          {pause}
-          {pauseRun}
-          declared={{ before: sampleDeclared, after: runDeclared }}
-          canLock={canLockTest}
-          onlock={goLockTest}
-          onjump={(step) => (jumpToStepId = step.id)}
-          onassign={readOnly ? undefined : assignField}
-          preview={(steps, sample, filter) => fetchPreview(steps, sample, { filter })}
-        >
-          {#snippet head()}<InlineError message={proposeError} />{/snippet}
-          {#snippet sampleMenu()}
-            <SampleMenu
-              {samples}
-              selected={selectedSample}
-              {lastUsed}
-              records={selectedSample && lastGoodResult && lastSample === selectedSample
-                ? lastGoodResult.rows.length
-                : null}
-              {lockedBy}
-              pipeline={loadedId}
-              mayCapture={(c) => mayCapture(sourceTarget(c))}
-              onpick={chooseSample}
-              onadd={() => (adding = true)}
-              oncapture={(c) => {
-                captureAt = sourceTarget(c);
-                capturing = true;
-              }}
-            />
-          {/snippet}
-          {#snippet stage()}{@render stageChips()}{/snippet}
-        </RecordsPane>
-      {/if}
+      <RecordsPane
+        bind:this={records}
+        {pipelineId}
+        {steps}
+        {signature}
+        {sampleRows}
+        {selectedSample}
+        {lastSample}
+        {result}
+        {lastGoodResult}
+        {gridRows}
+        {attribution}
+        {stepNumbers}
+        {pause}
+        {pauseRun}
+        declared={{ before: sampleDeclared, after: runDeclared }}
+        canLock={canLockTest}
+        onlock={readOnly ? undefined : goLockTest}
+        onjump={(step) => (jumpToStepId = step.id)}
+        onassign={readOnly ? undefined : assignField}
+        preview={(steps, sample, filter) => fetchPreview(steps, sample, { filter })}
+      >
+        {#snippet head()}<InlineError message={proposeError} />{/snippet}
+        {#snippet sampleMenu()}
+          <SampleMenu
+            {samples}
+            selected={selectedSample}
+            {lastUsed}
+            records={selectedSample && lastGoodResult && lastSample === selectedSample
+              ? lastGoodResult.rows.length
+              : null}
+            {lockedBy}
+            pipeline={loadedId}
+            mayCapture={(c) => mayCapture(sourceTarget(c))}
+            onpick={chooseSample}
+            onadd={readOnly ? undefined : () => (adding = true)}
+            oncapture={readOnly
+              ? undefined
+              : (c) => {
+                  captureAt = sourceTarget(c);
+                  capturing = true;
+                }}
+          />
+        {/snippet}
+        {#snippet stage()}{@render stageChips()}{/snippet}
+      </RecordsPane>
     </div>
     {#if !readOnly}
       <AddSampleDialog

@@ -58,7 +58,7 @@ export function areaOfPath(path: string): string | null {
   return group ? group[1] : null;
 }
 
-/** Whether saving, capturing and previewing are open in `area`. */
+/** Whether saving and capturing are open in `area`. */
 export function canEdit(area: string = currentScope()): boolean {
   return holds(area, 'editor');
 }
