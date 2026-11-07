@@ -3924,6 +3924,24 @@ fn a_folded_accumulators_overflow_names_it() {
     assert_eq!(fields, [Some("total".to_string())]);
 }
 
+/// A float fold that leaves `f64`'s range fails its row as `+` does: null, marked `Overflow`, naming the accumulator.
+#[test]
+fn a_float_folds_overflow_names_it() {
+    let plan = ok(vec![
+        code(0, &json("xs: array<f64>;")),
+        code(1, "total = 0.5; for (let x of xs) { total = total * x; let z = x; }"),
+    ]);
+    assert!(plan.barriers.is_empty());
+    let errors = run_scoped_on(&plan, &[r#"{"xs":[1e308,10.0]}"#], None);
+    let names = plan.slot_names();
+    let got: Vec<_> = errors
+        .entries()
+        .iter()
+        .map(|e| (e.kind.label(), e.field.and_then(|f| names.get(&f).cloned())))
+        .collect();
+    assert_eq!(got, [("Overflow", Some("total".to_string()))]);
+}
+
 /// An operator folding a variant accumulator is refused, as it is in the general loop.
 #[test]
 fn a_loop_folding_a_variant_with_an_operator_is_refused() {

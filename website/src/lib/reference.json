@@ -3360,7 +3360,7 @@
     {
       "kind": "Overflow",
       "category": "math",
-      "when": "`i64` arithmetic overflowed. The result is null."
+      "when": "`i64` arithmetic overflowed, or `f64` arithmetic gave an infinity. The result is null."
     },
     {
       "kind": "DivideByZero",
@@ -3370,7 +3370,7 @@
     {
       "kind": "NaN",
       "category": "math",
-      "when": "A parse met `NaN`, `Infinity` or a number past `f64`'s range. That key has no value."
+      "when": "A parse met `NaN`, `Infinity` or a number past `f64`'s range, and that key has no value. Or `f64` arithmetic gave a NaN, as `(-8) ** 0.5` does, and the result is null."
     },
     {
       "kind": "LoopBudgetExceeded",

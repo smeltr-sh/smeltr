@@ -10,8 +10,7 @@ use std::sync::OnceLock;
 
 use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 
-use super::helpers::short_circuit_empty;
-use super::stdfuncs::{Field, object_type};
+use super::stdfuncs::Field;
 use crate::core::column::{Column, DataType, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
 
@@ -57,9 +56,6 @@ impl UserAgent {
 /// `parseUserAgent(text)`. A header met twice in a batch is read once.
 pub fn parse_user_agent(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &object_type(USER_AGENT), len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let rules = rules();
     let mut seen: HashMap<&[u8], UserAgent> = HashMap::new();

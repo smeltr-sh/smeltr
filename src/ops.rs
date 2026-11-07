@@ -162,7 +162,7 @@ pub(crate) mod helpers {
     }
 
     use crate::core::bits;
-    use crate::core::column::{Column, DataType, Fixed, Scalar, Validity, VarLen};
+    use crate::core::column::{Column, DataType, Fixed, FixedMut, Scalar, Validity, VarLen};
     use crate::core::ctx::Ctx;
 
     /// One kernel operand as the loop reads it: a row of the column, or the one value a constant column holds for
@@ -391,8 +391,8 @@ pub(crate) mod helpers {
     /// Allocate an output column whose validity is the AND of every bitmap given (null in, null out). Values at null
     /// rows are still computed; nothing reads them. A constant operand has no bitmap and passes `None`: it is valid in
     /// every row, so it drops out of the AND. No bitmap at all and the result is valid in every row. An `Empty` input
-    /// has no bitmap either and is null in every row; the caller has already answered for it, through
-    /// `short_circuit_empty`.
+    /// has no bitmap either and is null in every row; `expr::eval` has already answered for it, before
+    /// the kernel ran.
     pub fn alloc_with_merged_validity(
         ctx: &mut Ctx,
         out_ty: &DataType,
@@ -422,10 +422,55 @@ pub(crate) mod helpers {
         out
     }
 
-    /// The kernel prologue: an unbound (`Empty`) input makes the whole result null, so return an `Empty` output without
-    /// allocating.
-    ///
-    /// Not for the operators where null does not propagate (`??`, `||`, `&&`, `isNull`).
+    /// A column of `ty` (`I64`, `DateTime` or `Duration`) holding `f`'s value on each row. A row is null where a bitmap
+    /// in `inputs` says so, and `f` is not asked for it, or where `f` answers `None`.
+    pub fn map_i64(
+        ctx: &mut Ctx,
+        ty: &DataType,
+        len: usize,
+        inputs: &[Option<&Validity>],
+        f: impl FnMut(usize) -> Option<i64>,
+    ) -> Column {
+        let mut out = alloc_with_merged_validity(ctx, ty, len, inputs);
+        let o = match ty {
+            DataType::DateTime => out.datetime_mut(),
+            DataType::Duration => out.duration_mut(),
+            _ => out.i64_mut(),
+        };
+        fill(o.expect("an i64 column"), len, f);
+        out
+    }
+
+    /// `map_i64` for an `F64` column.
+    pub fn map_f64(
+        ctx: &mut Ctx,
+        len: usize,
+        inputs: &[Option<&Validity>],
+        f: impl FnMut(usize) -> Option<f64>,
+    ) -> Column {
+        let mut out = alloc_with_merged_validity(ctx, &DataType::F64, len, inputs);
+        fill(out.f64_mut().expect("an f64 column"), len, f);
+        out
+    }
+
+    /// Every row is written: a pooled buffer is not zeroed.
+    fn fill<T: Copy + Default>(o: FixedMut<'_, T>, len: usize, mut f: impl FnMut(usize) -> Option<T>) {
+        for i in 0..len {
+            match o.validity.is_valid(i).then(|| f(i)).flatten() {
+                Some(v) => o.values[i] = v,
+                None => {
+                    o.values[i] = T::default();
+                    o.validity.set_valid(i, false);
+                }
+            }
+        }
+        o.validity.recount();
+    }
+
+    /// An unbound (`Empty`) input makes the whole result null, so return an `Empty` output without allocating.
+    /// `expr::eval` already does this before a kernel runs. This is for the kernels that are called without it:
+    /// `parseInt`, `parseFloat` and `parseTime`, which the convert pass after a parse calls itself, and `communityId`,
+    /// which reads an unbound port but not an unbound address, so checks only its addresses and transport.
     #[inline]
     pub fn short_circuit_empty(ins: &[&Column], out_ty: &DataType, len: usize) -> Option<Column> {
         if ins.iter().any(|c| c.is_unbound()) {

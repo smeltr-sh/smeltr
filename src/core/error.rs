@@ -52,7 +52,7 @@ pub enum ExceptionKind {
     UnparsableField { to: DataType },
     /// A value a declaration met could not be coerced to the declared type: the value is null.
     CoercionRefused { to: DataType },
-    /// I64 arithmetic overflowed: the result is null.
+    /// I64 arithmetic overflowed, or F64 arithmetic gave an infinity: the result is null.
     Overflow,
     /// Division by zero. Result is null, not Infinity.
     DivideByZero,
@@ -70,7 +70,8 @@ pub enum ExceptionKind {
     /// An array read or write, or a string read, named a position the value does not have: the read is null, the write
     /// does nothing.
     IndexOutOfRange,
-    /// A parse met `NaN`, `Infinity` or a number past f64's range, which no f64 holds: that key has no value.
+    /// A parse met `NaN`, `Infinity` or a number past f64's range, which no f64 in smeltr holds: that key has no
+    /// value. Or F64 arithmetic gave a NaN: the result is null.
     NaN,
     /// No route on the row's source took it.
     Unmatched,
