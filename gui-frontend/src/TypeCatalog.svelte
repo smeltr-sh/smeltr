@@ -191,7 +191,7 @@
       {/if}
       <div class="types">
         {#each groups as g (g.category)}
-          {#if categories.length > 1 || groups.length > 1}<div class="category">
+          {#if categories.length > 1 || groups.length > 1}<div class="category uppercase-label">
               {g.category}
             </div>{/if}
           {#if cards}
@@ -372,11 +372,6 @@
   /* The uppercase label (STYLE_GUIDE.md, "Typography"). */
   .category {
     margin: 0.9rem 0 0.4rem;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--dim);
   }
 
   .category:first-child {

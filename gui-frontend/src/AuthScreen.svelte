@@ -190,7 +190,7 @@
 </script>
 
 <main>
-  <p class="eyebrow">
+  <p class="eyebrow uppercase-label">
     {#if !changing}Leader access{:else if oncancel}Your account{:else}Required before you continue{/if}
   </p>
   <h1>
@@ -292,11 +292,6 @@
 
   .eyebrow {
     margin: 0;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
   }
 
   h1 {

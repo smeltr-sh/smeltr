@@ -17,6 +17,7 @@
 </script>
 
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY } from './Button.svelte';
   import ConversationEntry from './ConversationEntry.svelte';
   import ConversationEvent from './ConversationEvent.svelte';
@@ -65,7 +66,7 @@
 
   let shown = $state<ConversationDto | null>(null);
   let message = $state('');
-  let busy = $state(false);
+  const busy = new Busy();
   let available = $state<AgentModelDto[]>([]);
   let fallback = $state('');
   let model = $state('');
@@ -118,10 +119,9 @@
   async function send(e: SubmitEvent) {
     e.preventDefault();
     const text = message.trim();
-    if (busy || !text) return;
-    busy = true;
+    if (busy.on || !text) return;
     const asked = { model: model || undefined, effort: effort || undefined };
-    try {
+    await busy.run(async () => {
       if (open) {
         const sent = await sendToConversation(open, text, asked);
         if (refused(sent)) return;
@@ -134,11 +134,7 @@
         onstarted(started.id);
       }
       onchanged?.();
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   async function stop() {
@@ -361,7 +357,7 @@
           <Button
             type="submit"
             class="primary"
-            disabled={busy
+            disabled={busy.on
               ? BUSY
               : !message.trim()
                 ? 'Write a message first.'
@@ -369,7 +365,7 @@
                   ? BUSY
                   : ''}
           >
-            {busy ? 'Sending…' : 'Send'}
+            {busy.on ? 'Sending…' : 'Send'}
           </Button>
         </div>
       </form>

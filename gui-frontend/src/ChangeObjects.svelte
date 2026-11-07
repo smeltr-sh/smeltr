@@ -142,18 +142,6 @@
   let scopes = $derived([...new Set(branch.touches.map(scopeOf))].sort());
 
   let changes = $state<ObjectChange[]>([]);
-  /** A sample no test names, which a deploy leaves out (`BranchDto.leftOut`). Only the whole change says, since
-   * one save does not deploy. */
-  let leftOutPaths = $derived(new Set(branch.leftOut ?? []));
-  function isLeftOut(c: ObjectChange): boolean {
-    return (
-      span.whole &&
-      c.section === SAMPLES &&
-      leftOutPaths.has(`${prefixOf(c.scope)}${SAMPLES}/${c.id}.json`)
-    );
-  }
-  let deploying = $derived(changes.filter((c) => !isLeftOut(c)));
-  let leftOutSamples = $derived(changes.filter(isLeftOut));
   let loading = $state(true);
   let loadFailed = $state(false);
   let loads = 0;
@@ -495,7 +483,8 @@
           <span class="mono dim">{position(step.position)}</span>
           <span class="type">{step.type}</span>
           {#if step.status === 'same' && step.summary}
-            <span class="mono dim inline-summary" title={step.summary}>{step.summary}</span>
+            <span class="mono dim inline-summary ellipsis" title={step.summary}>{step.summary}</span
+            >
           {/if}
           <span class="grow"></span>
           {#if step.status !== 'same'}
@@ -529,11 +518,11 @@
         {#if step.then?.length || step.else?.length}
           <div class="branches">
             {#if step.then?.length}
-              <span class="branch-label">then</span>
+              <span class="branch-label uppercase-label">then</span>
               {@render stepList(c, step.then)}
             {/if}
             {#if step.else?.length}
-              <span class="branch-label">else</span>
+              <span class="branch-label uppercase-label">else</span>
               {@render stepList(c, step.else)}
             {/if}
           </div>
@@ -543,13 +532,13 @@
   </div>
 {/snippet}
 
-{#snippet objectCard(c: ObjectChange, leftOut: boolean)}
+{#snippet objectCard(c: ObjectChange)}
   {@const key = keyOf(c)}
   {@const tests = span.whole ? testsOf(c) : null}
   {@const target = undoTarget(c)}
   <div class="card">
     <div class="obj-head">
-      {#if !leftOut}<span class="badge {c.status}">{c.status}</span>{/if}
+      <span class="badge {c.status}">{c.status}</span>
       {#if c.moved}<span class="dim note">moved</span>{/if}
       <span class="label mono">{c.label}</span>
       <span class="dim note kind">{c.noun} &middot; {c.scope}</span>
@@ -577,9 +566,8 @@
         aria-pressed={!!showingJson[key]}
         onclick={() => (showingJson = { ...showingJson, [key]: !showingJson[key] })}>JSON</button
       >
-      <!-- A group's own card is read only: neither undo nor a comment names a manifest. A left-out sample
-        never reaches main, so it has nothing to undo. -->
-      {#if target && span.whole && !leftOut && canEdit(c.scope)}
+      <!-- A group's own card is read only: neither undo nor a comment names a manifest. -->
+      {#if target && span.whole && canEdit(c.scope)}
         <Button
           type="button"
           class="compact"
@@ -606,7 +594,7 @@
                   ? '-'
                   : ' '} {line.text}</div>{/each}</pre>
       </div>
-    {:else if !leftOut}
+    {:else}
       {#if c.fields.length > 0}
         <table class="fields">
           <tbody>
@@ -684,12 +672,7 @@
       bind:value={view}
     />
     {#if view === 'objects' && !loading && !loadFailed}
-      <span class="dim note"
-        >{count(
-          deploying.length,
-          'object',
-        )}{#if leftOutSamples.length > 0}{` · ${count(leftOutSamples.length, 'sample')} left out`}{/if}</span
-      >
+      <span class="dim note">{count(changes.length, 'object')}</span>
     {/if}
     <select class="saves" aria-label="Saves" bind:value={range}>
       <option value="all">All saves</option>
@@ -733,21 +716,9 @@
   {:else if changes.length === 0}
     <p class="dim">No objects changed.</p>
   {:else}
-    {#each deploying as c (keyOf(c))}
-      {@render objectCard(c, false)}
+    {#each changes as c (keyOf(c))}
+      {@render objectCard(c)}
     {/each}
-    {#if leftOutSamples.length > 0}
-      <div class="card left-out">
-        <h2 class="card-note">Left out</h2>
-        <p class="card-note">
-          No test uses these samples. They stay on <code>{branch.name}</code> until it is deployed, then
-          are deleted with it. To deploy one, lock it as a test.
-        </p>
-        {#each leftOutSamples as c (keyOf(c))}
-          {@render objectCard(c, true)}
-        {/each}
-      </div>
-    {/if}
   {/if}
 </div>
 
@@ -767,9 +738,6 @@
     margin-left: auto;
     width: auto;
     max-width: 22rem;
-  }
-  .mono {
-    font-family: var(--mono);
   }
   .note {
     font-size: var(--text-note);
@@ -884,9 +852,6 @@
     font-size: var(--text-label);
   }
   .inline-summary {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     min-width: 0;
   }
   .card-findings {
@@ -914,11 +879,6 @@
   }
   .branch-label {
     padding: 0 0.8rem;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
   }
 
   /* The comment button arrives on its row's hover or focus, and stays while
@@ -944,30 +904,13 @@
     border-bottom: 1px solid var(--border);
   }
 
-  .elsewhere h2,
-  .left-out h2 {
+  .elsewhere h2 {
     font-size: var(--text-micro);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--dim);
     border-bottom: 1px solid var(--border);
-  }
-  /* Its samples sit inside it, each folded to its head. */
-  .left-out {
-    display: grid;
-    gap: 0.6rem;
-    padding-bottom: 0.8rem;
-  }
-  .left-out > p {
-    padding-top: 0;
-    padding-bottom: 0;
-  }
-  .left-out > .card {
-    margin: 0 0.8rem;
-  }
-  .left-out > .card .obj-head {
-    border-bottom: 0;
   }
   .away {
     display: grid;

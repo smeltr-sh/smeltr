@@ -84,6 +84,9 @@ pub struct CaptureStatus {
     /// The destination a capture there reads, by name. Absent on a capture of a source.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination: Option<String>,
+    /// The source this capture was taken from, by name: what a sample saved from the capture stands for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     pub done: bool,
     /// Ended by whoever was watching, before its deadline or its total. What it holds is what it will ever hold.
     pub stopped: bool,
@@ -324,6 +327,10 @@ impl Session {
         CaptureStatus {
             session: session.to_string(),
             destination: self.invitation.destination.clone(),
+            source: match &self.invitation.destination {
+                Some(_) => None,
+                None => self.invitation.source.as_ref().map(|s| s.id.clone()),
+            },
             done: self.done(),
             stopped: self.stopped,
             max_matches: self.invitation.max_matches,
@@ -1961,6 +1968,27 @@ mod tests {
         assert_eq!(invitation.destination.as_deref(), Some("es"));
         assert!(invitation.source.is_none());
         assert_eq!(captures.status("s1").unwrap().destination.as_deref(), Some("es"));
+        assert!(captures.status("s1").unwrap().source.is_none());
         assert!(captures.status("s1").is_some_and(|s| !s.done));
+    }
+
+    /// A source's capture names the source, so a sample saved from it later stands for that source.
+    #[test]
+    fn a_source_capture_names_its_source() {
+        let captures = Captures::default();
+        captures.open(
+            "s1".to_string(),
+            request(Some(60)),
+            expect(&["w1"]),
+            Default::default(),
+            Vec::new(),
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
+        );
+        let status = captures.status("s1").unwrap();
+        assert_eq!(status.source.as_deref(), Some("orders"));
+        assert!(status.destination.is_none());
     }
 }

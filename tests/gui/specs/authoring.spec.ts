@@ -296,7 +296,8 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
 });
 
 // A1, an editor: the capture that could be saved as a sample is run over unsaved instead, and nothing is committed.
-test('A1: an editor runs a pipeline over a capture without saving it', async ({
+// Saved after, from the menu of the input's and the output's saves, it is the sample run over and a test may lock it.
+test('A1: an editor runs a pipeline over a capture without saving it, then saves it', async ({
   api,
   leader,
   fleet,
@@ -343,6 +344,31 @@ test('A1: an editor runs a pipeline over a capture without saving it', async ({
   await expect(chip).toContainText('Your capture');
   await expect(chip).toContainText('3 records', { timeout: 30_000 });
   expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toEqual([]);
+
+  await admin.getByRole('button', { name: 'Save as sample', exact: true }).click();
+  await expect(admin.getByRole('button', { name: /^Save output as sample/ })).toContainText(
+    'The 3 rows on screen',
+  );
+  await admin.getByRole('button', { name: /^Save input as sample/ }).click();
+  const saving = admin.getByRole('dialog');
+  await expect(saving).toContainText('3 records');
+  await saving.getByLabel('Name').fill('own metrics, captured');
+  await saving.getByRole('button', { name: 'Save sample' }).click();
+  await expect(saving).toHaveCount(0);
+
+  await expect(chip).toContainText('own metrics, captured');
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled({
+    timeout: 15_000,
+  });
+  // The output's save is its own again, with no unsaved input beside it.
+  await expect(admin.getByRole('button', { name: 'Save output as sample' })).toBeVisible();
+  const [sample] = (await api.get(`/api/areas/shared/samples${ON}`)).samples;
+  expect(sample).toMatchObject({
+    name: 'own metrics, captured',
+    source: 'own-metrics',
+    records: 3,
+  });
+  expect((await api.get('/api/captures/mine')).capture).toBeUndefined();
 });
 
 // A1, a source's card: one route to one destination is a line; a second destination turns it top to bottom, a [+]
@@ -1747,6 +1773,71 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
     'Failing',
     { timeout: 15_000 },
   );
+});
+
+// A6, a pipeline's output as a sample, for another pipeline, such as an enrichment, to run over and lock a test on.
+test('A6: the output rows on screen are saved as a sample that another pipeline runs over', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await jsonPipeline(
+    api,
+    'orders',
+    [
+      { name: 'id', type: 'i64' },
+      { name: 'total', type: 'f64' },
+    ],
+    { id: 'orders-sample', name: 'orders', records: ORDERS },
+  );
+  await api.put(`/api/areas/shared/pipelines/enrich${ON}`, {
+    id: 'enrich',
+    name: 'enrich',
+    steps: [
+      { type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'enriched = true;' },
+    ],
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  await admin.getByRole('combobox', { name: 'Search the output' }).fill('SPRING');
+  await expect(admin.getByText('2 of 3 rows')).toBeVisible();
+  const dialog = admin.getByRole('dialog');
+
+  // Loading the rows saves nothing, so Cancel is live while they load, and their late answer is dropped.
+  let answer = () => {};
+  const held = new Promise<void>((resolve) => (answer = resolve));
+  await admin.route('**/preview/pipeline*', async (route) => {
+    if (route.request().postDataJSON()?.as_sample) await held;
+    await route.continue();
+  });
+  await admin.getByRole('button', { name: 'Save output as sample' }).click();
+  await expect(dialog.getByRole('button', { name: 'Loading…' })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
+  answer();
+  await admin.unrouteAll({ behavior: 'wait' });
+
+  await admin.getByRole('button', { name: 'Save output as sample' }).click();
+  await expect(dialog.getByText('2 records')).toBeVisible();
+  await dialog.getByLabel('Name').fill('orders, parsed');
+  await admin.screenshot({ path: test.info().outputPath('save-output.png'), fullPage: true });
+  await dialog.getByRole('button', { name: 'Save sample' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  const listed = (await api.get(`/api/areas/shared/samples${ON}`)).samples;
+  const made = listed.find((s: { name: string }) => s.name === 'orders, parsed');
+  expect(made.records).toBe(2);
+  expect(made.source).toBeUndefined();
+  const saved = (await api.get(`/api/areas/shared/samples/${made.id}${ON}`)).sample;
+  expect(saved.columns).toContainEqual({ name: 'total', type: 'f64' });
+  expect(saved.records.map((r: { id: number }) => r.id)).toEqual([1, 3]);
+
+  // Typed as the first pipeline wrote it, so `total` compares as a number.
+  await goto(admin, leader, `#/build/pipelines/enrich/for/${made.id}`);
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText('2 records');
+  await admin.getByRole('combobox', { name: 'Search the output' }).fill('total > 15');
+  await expect(admin.getByText('ƒ expression')).toBeVisible();
+  await expect(admin.getByText('1 of 2 rows')).toBeVisible();
 });
 
 // A8, bad rows go somewhere.

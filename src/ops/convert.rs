@@ -49,23 +49,6 @@ pub fn stringify(ctx: &mut Ctx, col: &Column) -> Column {
     }
 }
 
-/// One value as `toString` renders a row of it. Text is its own rendering.
-pub fn scalar_string(ctx: &mut Ctx, value: &Scalar) -> String {
-    match value {
-        Scalar::Str(s) => s.clone(),
-        Scalar::Bytes(b) => BytesForm::Base64.text(b),
-        _ => {
-            let one = Column::filled(ctx.pool, value, 1);
-            let text = to_string(ctx, &[&one]);
-            let rendered = text.var().expect("toString renders every non-text scalar");
-            let s = String::from_utf8_lossy(rendered.get(0)).into_owned();
-            text.reclaim(ctx.pool);
-            one.reclaim(ctx.pool);
-            s
-        }
-    }
-}
-
 /// I64/F64/Bool/Bytes/DateTime/Duration -> Str. Bytes take an optional second argument, the form to write them in.
 /// A `Str` argument never reaches here: `plan::resolve` elides `toString` of a string.
 pub fn to_string(ctx: &mut Ctx, ins: &[&Column]) -> Column {

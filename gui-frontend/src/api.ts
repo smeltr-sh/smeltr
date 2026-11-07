@@ -75,9 +75,6 @@ export type LeaderSecret = { secret: string; version: number };
 export const isLeaderStored = (r: SecretRef | undefined): r is LeaderSecret =>
   typeof r === 'object' && r !== null;
 
-/** How a leader-stored reference reads where there is no picker for one. */
-export const secretLabel = (r: LeaderSecret) => `${r.secret} @ v${r.version}`;
-
 /** The TLS a connector speaks of its own: what it presents to the far end, and what it verifies the far end
  * against. A client under none presents no certificate and trusts the public roots; a receiver under none serves
  * plain TCP. Mirrors `config_file::dto::TlsDto`. */
@@ -1444,11 +1441,6 @@ function noBranchChosen<T>(): T {
   } as T;
 }
 
-/** The commit the editor is working from, `null` before its first read. */
-export function currentBaseCommit(): string | null {
-  return baseCommit;
-}
-
 // -- the scope being edited -------------------------------------------------
 //
 // Which bundle a config call reads or writes within the branch: the one every
@@ -1602,12 +1594,9 @@ async function configJson<T extends { commit?: string | null }>(
   return result;
 }
 
-function putBody(body: unknown): RequestInit {
-  return {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  };
+/** A request sending `body` as JSON; `send` names its type. */
+function json(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body: unknown): RequestInit {
+  return { method, body: JSON.stringify(body) };
 }
 
 export function getConfig(): Promise<GetConfigResult> {
@@ -1690,14 +1679,14 @@ export async function undoChanges(
 }
 
 export function putSources(sources: SourceDto[], base?: string | null): Promise<MutationResult> {
-  return configJson(inArea('/sources'), putBody(sources), { base });
+  return configJson(inArea('/sources'), json('PUT', sources), { base });
 }
 
 export function putDestinations(
   destinations: DestinationDto[],
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(inArea('/destinations'), putBody(destinations), { base });
+  return configJson(inArea('/destinations'), json('PUT', destinations), { base });
 }
 
 /** What the leader reads out of a PEM: every certificate in it, or why it is
@@ -1717,7 +1706,7 @@ export async function describeCertificates(
 }
 
 export function putRoutes(routes: RouteDto[], base?: string | null): Promise<MutationResult> {
-  return configJson(inArea('/routes'), putBody(routes), { base });
+  return configJson(inArea('/routes'), json('PUT', routes), { base });
 }
 
 /** The group's manifest. A `null` leaves the built-in answers. Refused in `shared/`: the manifest is a group's own. */
@@ -1727,25 +1716,25 @@ export function putManifest(
   },
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(inArea('/manifest'), putBody(manifest), { base });
+  return configJson(inArea('/manifest'), json('PUT', manifest), { base });
 }
 
 export function putGrokPatterns(
   grokPatterns: GrokPatternDto[],
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(inArea('/grok-patterns'), putBody(grokPatterns), { base });
+  return configJson(inArea('/grok-patterns'), json('PUT', grokPatterns), { base });
 }
 
 export function putSchemas(schemas: SchemaDto[], base?: string | null): Promise<MutationResult> {
-  return configJson(inArea('/schemas'), putBody(schemas), { base });
+  return configJson(inArea('/schemas'), json('PUT', schemas), { base });
 }
 
 export function putLookupTables(
   lookupTables: LookupTableDto[],
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(inArea('/lookups'), putBody(lookupTables), { base });
+  return configJson(inArea('/lookups'), json('PUT', lookupTables), { base });
 }
 
 /** A lookup file upload: one commit on the branch, like every other save. */
@@ -1877,7 +1866,7 @@ export function putConfigFile(
   text: string,
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(fileRoute(path), putBody({ text }), { base });
+  return configJson(fileRoute(path), json('PUT', { text }), { base });
 }
 
 export function deleteConfigFile(path: string, base?: string | null): Promise<MutationResult> {
@@ -1897,7 +1886,9 @@ export function putPipeline(
   pipeline: PipelineDto,
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(inArea(`/pipelines/${encodeURIComponent(id)}`), putBody(pipeline), { base });
+  return configJson(inArea(`/pipelines/${encodeURIComponent(id)}`), json('PUT', pipeline), {
+    base,
+  });
 }
 
 export function deletePipeline(id: string): Promise<MutationResult> {
@@ -2147,7 +2138,7 @@ export function sampleAt(
 
 /** Create or replace, by the sample's own id. */
 export function putSample(sample: SampleDto): Promise<MutationResult> {
-  return configJson(inArea(`/samples/${encodeURIComponent(sample.id)}`), putBody(sample));
+  return configJson(inArea(`/samples/${encodeURIComponent(sample.id)}`), json('PUT', sample));
 }
 
 export function deleteSample(id: string): Promise<MutationResult> {
@@ -2178,6 +2169,8 @@ export interface PreviewRequest {
   /** Say which steps changed each row's fields and dropped it. The leader
    * runs the pipeline once more per step for it. */
   attribution?: boolean;
+  /** Also return the rows as a sample holds them (`PreviewResult.as_sample`), to save as one. */
+  asSample?: boolean;
   /** Asks what may follow a `.` instead of running the sample. */
   afterDot?: { text: string; dot: number; at: DotAt };
   /** A capture filter at a destination to check against each route delivering there. Asked, the preview answers it
@@ -2268,6 +2261,15 @@ export interface PreviewResult {
   schema_findings?: number;
   /** The fields the schemas the pipeline produces require or recommend and its rows lack. */
   missing?: MissingField[];
+  /** Answers `PreviewRequest.asSample`. */
+  as_sample?: AsSample;
+}
+
+/** A sample's columns and records, without its name, and each record's `PreviewRow.row`. */
+export interface AsSample {
+  columns: { name: string; type: string }[];
+  records: SampleRecordDto[];
+  rows: number[];
 }
 
 /** A field a schema requires or recommends that a pipeline's rows lack (`schema::Missing`). */
@@ -2322,6 +2324,7 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       at_micros: req.atMicros ?? null,
       filter: req.filter ?? null,
       attribution: req.attribution ?? false,
+      as_sample: req.asSample ?? false,
       after_dot: req.afterDot ?? null,
       capture_filter: req.captureFilter ?? null,
     },
@@ -2642,7 +2645,7 @@ export function testAt(
 
 /** Lock a test, or replace one under the same id. */
 export function putTest(test: TestDto): Promise<MutationResult> {
-  return configJson(inArea(`/tests/${encodeURIComponent(test.id)}`), putBody(test));
+  return configJson(inArea(`/tests/${encodeURIComponent(test.id)}`), json('PUT', test));
 }
 
 export function deleteTest(id: string): Promise<MutationResult> {
@@ -2999,6 +3002,8 @@ export interface CaptureWorkerDto {
 
 export interface CaptureStatusDto {
   session: string;
+  /** The source a capture of one reads: what a sample saved from it stands for. */
+  source?: string;
   done: boolean;
   /** Ended by whoever was watching, before its deadline or its total. What it
    * holds is what it will ever hold. */
@@ -3167,11 +3172,7 @@ export function saveCapture(
 ): Promise<SaveCaptureResult & { commit?: string }> {
   return configJson(
     inArea('/samples', into),
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ capture: session, id, name, source }),
-    },
+    json('POST', { capture: session, id, name, source }),
     // A capture says what went wrong in its own flow, from start to save.
     { base, weight: 'quiet' },
   );
@@ -3449,11 +3450,10 @@ export function createWorkerGroup(
   name: string,
   hue?: number,
 ): Promise<CreateWorkerGroupResult> {
-  return configJson('/api/worker-groups', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, name, ...(hue === undefined ? {} : { hue }) }),
-  });
+  return configJson(
+    '/api/worker-groups',
+    json('POST', { id, name, ...(hue === undefined ? {} : { hue }) }),
+  );
 }
 
 /** Renames an existing group. A config write on a branch like any other, so
@@ -3463,11 +3463,7 @@ export function createWorkerGroup(
 export function updateWorkerGroup(id: string, name: string): Promise<CreateWorkerGroupResult> {
   return configJson(
     `/api/worker-groups/${encodeURIComponent(id)}`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    },
+    json('PUT', { name }),
     // Refused beside the name being edited.
     { weight: 'quiet' },
   );
@@ -3488,15 +3484,7 @@ export type SetGroupHueResult = { ok: boolean; errors: ApiError[] };
  * write, this is not a config write and needs no branch or deploy -- valid
  * for any id, including `SHARED_SCOPE`. */
 export function updateGroupHue(id: string, hue: number): Promise<SetGroupHueResult> {
-  return apiJson(
-    `/api/worker-groups/${encodeURIComponent(id)}/hue`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hue }),
-    },
-    'quiet',
-  );
+  return apiJson(`/api/worker-groups/${encodeURIComponent(id)}/hue`, json('PUT', { hue }), 'quiet');
 }
 
 /** An enrollment code, as it is shown the once. The leader keeps only the hash
@@ -3529,10 +3517,7 @@ export type MintEnrollmentCodeRequest =
 export function mintEnrollmentCode(
   request: MintEnrollmentCodeRequest,
 ): Promise<MintEnrollmentCodeResult> {
-  return apiJson('/api/enrollment-codes', {
-    method: 'POST',
-    body: JSON.stringify(request),
-  });
+  return apiJson('/api/enrollment-codes', json('POST', request));
 }
 
 /** An enrollment code still outstanding: not spent out, not expired, not withdrawn. */
@@ -3601,10 +3586,7 @@ export function getWorkerSettings(): Promise<WorkerSettingsResult> {
 export function putWorkerSettings(
   ephemeralForgetAfterSeconds: number,
 ): Promise<WorkerSettingsResult> {
-  return apiJson('/api/settings/workers', {
-    method: 'PUT',
-    body: JSON.stringify({ ephemeralForgetAfterSeconds }),
-  });
+  return apiJson('/api/settings/workers', json('PUT', { ephemeralForgetAfterSeconds }));
 }
 
 /** How much of a source's past throughput at this time of day its normal holds,
@@ -3627,10 +3609,7 @@ export function getWarningSettings(): Promise<WarningSettingsResult> {
 }
 
 export function putWarningSettings(sourceRowsBandPercent: number): Promise<WarningSettingsResult> {
-  return apiJson('/api/settings/warnings', {
-    method: 'PUT',
-    body: JSON.stringify({ sourceRowsBandPercent }),
-  });
+  return apiJson('/api/settings/warnings', json('PUT', { sourceRowsBandPercent }));
 }
 
 /** The level the lines one override names are kept at. It names a class and a type, a class,
@@ -3665,7 +3644,7 @@ export function getLogLevels(): Promise<LogLevelsResult> {
 }
 
 export function putLogLevels(levels: LogLevelsDto): Promise<LogLevelsResult> {
-  return apiJson('/api/settings/log-levels', { method: 'PUT', body: JSON.stringify(levels) });
+  return apiJson('/api/settings/log-levels', json('PUT', levels));
 }
 
 /** Whether this leader looks for a newer release. */
@@ -3684,7 +3663,7 @@ export function getUpdateSettings(): Promise<UpdateSettingsResult> {
 }
 
 export function putUpdateSettings(check: boolean): Promise<UpdateSettingsResult> {
-  return apiJson('/api/settings/updates', { method: 'PUT', body: JSON.stringify({ check }) });
+  return apiJson('/api/settings/updates', json('PUT', { check }));
 }
 
 /** Why the last sync did not leave `main` at the remote's head. */
@@ -3735,7 +3714,7 @@ export function putRemoteSettings(req: {
   pollSeconds: number;
   approvePushes: boolean;
 }): Promise<RemoteSettingsResult> {
-  return apiJson('/api/settings/git-remote', { method: 'PUT', body: JSON.stringify(req) });
+  return apiJson('/api/settings/git-remote', json('PUT', req));
 }
 
 export function syncRemote(): Promise<RemoteSettingsResult> {
@@ -3820,17 +3799,14 @@ export function getAlertSettings(): Promise<AlertSettingsResult> {
 
 /** `password` undefined keeps the stored one; empty removes it. */
 export function putAlertMail(req: AlertMail & { password?: string }): Promise<AlertSettingsResult> {
-  return apiJson('/api/settings/alerts/mail', { method: 'PUT', body: JSON.stringify(req) });
+  return apiJson('/api/settings/alerts/mail', json('PUT', req));
 }
 
 /** Every channel; one left out is removed. `secret` undefined keeps the stored one; empty removes it. */
 export function putAlertChannels(
   channels: (AlertChannel & { secret?: string })[],
 ): Promise<AlertSettingsResult> {
-  return apiJson('/api/settings/alerts/channels', {
-    method: 'PUT',
-    body: JSON.stringify({ channels }),
-  });
+  return apiJson('/api/settings/alerts/channels', json('PUT', { channels }));
 }
 
 export type AlertTestResult = { ok: boolean; errors: ApiError[]; host?: string; status?: number };
@@ -3839,11 +3815,7 @@ export type AlertTestResult = { ok: boolean; errors: ApiError[]; host?: string; 
 export function testAlertChannel(
   channel: AlertChannel & { secret?: string },
 ): Promise<AlertTestResult> {
-  return apiJson(
-    '/api/settings/alerts/test',
-    { method: 'POST', body: JSON.stringify(channel) },
-    'quiet',
-  );
+  return apiJson('/api/settings/alerts/test', json('POST', channel), 'quiet');
 }
 
 /** Asks a heartbeating worker to restart its deployment, on its next heartbeat. */
@@ -3926,21 +3898,16 @@ export function createSecret(
   description: string,
   value?: string,
 ): Promise<AdminActionResult> {
-  return apiJson('/api/secrets', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, custody, description, ...(value === undefined ? {} : { value }) }),
-  });
+  return apiJson(
+    '/api/secrets',
+    json('POST', { name, custody, description, ...(value === undefined ? {} : { value }) }),
+  );
 }
 
 /** Stores a value as a new version, keeping the ones still in use. It is
  * staged, not live: what deploys it is a bundle quoting that version. */
 export function storeSecretValue(name: string, value: string): Promise<AdminActionResult> {
-  return apiJson(`/api/secrets/${encodeURIComponent(name)}/versions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value }),
-  });
+  return apiJson(`/api/secrets/${encodeURIComponent(name)}/versions`, json('POST', { value }));
 }
 
 /** What a rotation's second half is: a change, drafted on `branch`, pointing
@@ -3963,11 +3930,7 @@ export async function pointSecretAt(
 ): Promise<PointSecretResult> {
   const result = await apiJson<PointSecretResult>(
     `/api/secrets/${encodeURIComponent(name)}/references`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version, branch }),
-    },
+    json('POST', { version, branch }),
   );
   // A config write like any other -- it drafts or advances a change -- but it goes through
   // apiJson rather than configJson, since it takes its branch in the body and carries no base
@@ -4040,11 +4003,10 @@ export function createCertificate(
   certificate: string,
   privateKey: string,
 ): Promise<AdminActionResult> {
-  return apiJson('/api/certificates', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind: 'supplied', name, description, certificate, privateKey }),
-  });
+  return apiJson(
+    '/api/certificates',
+    json('POST', { kind: 'supplied', name, description, certificate, privateKey }),
+  );
 }
 
 /** Has this leader issue a certificate for `names` under its own authority. */
@@ -4054,11 +4016,10 @@ export function issueCertificate(
   names: string[],
   validityDays: number,
 ): Promise<AdminActionResult> {
-  return apiJson('/api/certificates', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind: 'issued', name, description, names, validityDays }),
-  });
+  return apiJson(
+    '/api/certificates',
+    json('POST', { kind: 'issued', name, description, names, validityDays }),
+  );
 }
 
 /** The lifetimes offered for a certificate this leader issues. Each renewal lasts the same. */
@@ -4070,11 +4031,10 @@ export function replaceCertificate(
   certificate: string,
   privateKey: string,
 ): Promise<AdminActionResult> {
-  return apiJson(`/api/certificates/${encodeURIComponent(name)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ certificate, privateKey }),
-  });
+  return apiJson(
+    `/api/certificates/${encodeURIComponent(name)}`,
+    json('PUT', { certificate, privateKey }),
+  );
 }
 
 /** Whether a candidate is the stored value -- what answers "does this still
@@ -4085,11 +4045,10 @@ export function verifySecret(
   version: number,
   candidate: string,
 ): Promise<{ matches: boolean }> {
-  return apiJson(`/api/secrets/${encodeURIComponent(name)}/verify`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ version, candidate }),
-  });
+  return apiJson(
+    `/api/secrets/${encodeURIComponent(name)}/verify`,
+    json('POST', { version, candidate }),
+  );
 }
 
 /** Where the secrets encryption key stands (`EncryptionKeyOut`). `missing` and
@@ -4782,8 +4741,6 @@ export type BranchDto = {
   commits: number;
   behind: number;
   touches: string[];
-  /** Those of `touches` that are samples no test names, which a deploy leaves out. */
-  leftOut?: string[];
   change?: ChangeDto;
   /** Present only while a git remote is set. */
   push?: PushDto;
@@ -4854,15 +4811,7 @@ export interface MergeConflicts {
 }
 
 function post<T>(url: string, body?: unknown, weight?: Weight): Promise<T> {
-  return apiJson(
-    url,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body ?? {}),
-    },
-    weight,
-  );
+  return apiJson(url, json('POST', body ?? {}), weight);
 }
 
 export function createBranch(name: string): Promise<BranchMutationResult> {
@@ -4958,11 +4907,7 @@ export function retitleChange(
   return announced(
     apiJson(
       `/api/branches/${encodeURIComponent(branch)}`,
-      {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, description }),
-      },
+      json('PATCH', { title, description }),
       'quiet',
     ),
   );
@@ -5233,10 +5178,10 @@ export function createLocalAccount(
   displayName: string,
   roles: string[],
 ): Promise<TemporaryPasswordDto | AccountRefusal> {
-  return accountCall('/api/accounts', {
-    method: 'POST',
-    body: JSON.stringify({ authSource: 'local', username, displayName, roles }),
-  });
+  return accountCall(
+    '/api/accounts',
+    json('POST', { authSource: 'local', username, displayName, roles }),
+  );
 }
 
 /** An enabled key account holding no key yet. */
@@ -5244,10 +5189,7 @@ export function createKeyAccount(
   displayName: string,
   roles: string[],
 ): Promise<AccountDto | AccountRefusal> {
-  return accountCall('/api/accounts', {
-    method: 'POST',
-    body: JSON.stringify({ authSource: 'key', displayName, roles }),
-  });
+  return accountCall('/api/accounts', json('POST', { authSource: 'key', displayName, roles }));
 }
 
 /** One change to an account: the leader takes one field per request, and roles only for a local or
@@ -5258,10 +5200,7 @@ export function changeAccount(
   id: string,
   change: AccountChange,
 ): Promise<AccountDto | AccountRefusal> {
-  return accountCall(`/api/accounts/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    body: JSON.stringify(change),
-  });
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}`, json('PATCH', change));
 }
 
 export function resetAccountPassword(id: string): Promise<TemporaryPasswordDto | AccountRefusal> {
@@ -5287,9 +5226,6 @@ export function deleteAccount(id: string): Promise<object | AccountRefusal> {
 // A role is what holding it gives, and the provider groups that give it (`roles_api.rs`).
 // Administrators only, like the roster.
 
-/** The built-in role that holds everything. */
-export const ADMINISTRATOR = 'administrator';
-
 export interface RoleDto {
   name: string;
   /** The administrator role, which holds everything, gives no level in an area, and is never removed. */
@@ -5311,14 +5247,7 @@ export function putRole(
   groups: string[],
   areas: Record<string, AccessLevel>,
 ): Promise<{ ok: boolean; errors: ApiError[] }> {
-  return apiJson(
-    `/api/roles/${encodeURIComponent(name)}`,
-    {
-      method: 'PUT',
-      body: JSON.stringify({ groups, areas }),
-    },
-    'quiet',
-  );
+  return apiJson(`/api/roles/${encodeURIComponent(name)}`, json('PUT', { groups, areas }), 'quiet');
 }
 
 export function deleteRole(name: string): Promise<{ ok: boolean; errors: ApiError[] }> {
@@ -5356,10 +5285,10 @@ export function createKey(
   label: string,
   expiresInDays: number | null,
 ): Promise<CreatedKeyDto | AccountRefusal> {
-  return accountCall(`/api/accounts/${encodeURIComponent(id)}/keys`, {
-    method: 'POST',
-    body: JSON.stringify({ label, expiresInDays }),
-  });
+  return accountCall(
+    `/api/accounts/${encodeURIComponent(id)}/keys`,
+    json('POST', { label, expiresInDays }),
+  );
 }
 
 export function revokeKey(id: string, key: string): Promise<object | AccountRefusal> {
@@ -5388,10 +5317,7 @@ export function getAgentPermissions(): Promise<AgentPermissionsDto> {
 export function putAgentPermissions(
   permissions: AgentPermissionsDto,
 ): Promise<AgentPermissionsDto | AccountRefusal> {
-  return accountCall('/api/me/agent-permissions', {
-    method: 'PUT',
-    body: JSON.stringify(permissions),
-  });
+  return accountCall('/api/me/agent-permissions', json('PUT', permissions));
 }
 
 // -- what belongs to the leader rather than to a person ----------------------
@@ -5470,10 +5396,7 @@ export function putSessionSettings(
   idleSeconds: number,
   absoluteSeconds: number,
 ): Promise<SessionSettingsDto | AccountRefusal> {
-  return accountCall('/api/settings/sessions', {
-    method: 'PUT',
-    body: JSON.stringify({ idleSeconds, absoluteSeconds }),
-  });
+  return accountCall('/api/settings/sessions', json('PUT', { idleSeconds, absoluteSeconds }));
 }
 
 /** The Single sign-on tab of Admin -> Accounts (`oidc_api.rs`). The client
@@ -5507,7 +5430,7 @@ export function putOidcSettings(req: {
   clientSecret?: string;
   groupsClaim: string;
 }): Promise<OidcSettingsResult | AccountRefusal> {
-  return accountCall('/api/settings/oidc', { method: 'PUT', body: JSON.stringify(req) });
+  return accountCall('/api/settings/oidc', json('PUT', req));
 }
 
 /** Which API the model endpoint speaks: Anthropic's Messages API, OpenAI's, or another service that speaks
@@ -5549,7 +5472,7 @@ export function putAgentSettings(req: {
   keepDays?: number;
   contextTokens?: number;
 }): Promise<AgentSettingsResult | AccountRefusal> {
-  return accountCall('/api/settings/agent', { method: 'PUT', body: JSON.stringify(req) });
+  return accountCall('/api/settings/agent', json('PUT', req));
 }
 
 /** What one certificate says about itself. Epoch milliseconds, like every
@@ -5631,10 +5554,7 @@ export const OWN_CERTIFICATE = 'leader';
 
 /** Serves the certificate `name` from the list. */
 export function putCertificate(name: string): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/tls', {
-    method: 'PUT',
-    body: JSON.stringify({ certificate: name }),
-  });
+  return accountCall('/api/settings/tls', json('PUT', { certificate: name }));
 }
 
 /** How long a rotation may wait for the fleet, mirroring
@@ -5651,10 +5571,10 @@ export function beginRotation(
   waitHours: number,
   authorityValidityDays: number,
 ): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/tls/rotation', {
-    method: 'POST',
-    body: JSON.stringify({ waitHours, authorityValidityDays }),
-  });
+  return accountCall(
+    '/api/settings/tls/rotation',
+    json('POST', { waitHours, authorityValidityDays }),
+  );
 }
 
 /** Signs under the incoming authority now. A worker that has not yet taken it
@@ -5669,10 +5589,7 @@ export function cutOverRotation(): Promise<CertificatesDto | AccountRefusal> {
 export function setRotationDeadline(
   deadlineMillis: number,
 ): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/tls/rotation/deadline', {
-    method: 'PUT',
-    body: JSON.stringify({ deadlineMillis }),
-  });
+  return accountCall('/api/settings/tls/rotation/deadline', json('PUT', { deadlineMillis }));
 }
 
 /** Drops the incoming authority. This leader keeps serving what it serves today. */
@@ -5747,10 +5664,7 @@ export function getAcme(): Promise<AcmeDto> {
 }
 
 export function putAcme(settings: AcmeSettings): Promise<AcmeDto | AccountRefusal> {
-  return accountCall('/api/settings/tls/acme', {
-    method: 'PUT',
-    body: JSON.stringify(settings),
-  });
+  return accountCall('/api/settings/tls/acme', json('PUT', settings));
 }
 
 /** Begins ordering a certificate from the authority the settings name, served once issued: at once under the
@@ -5850,10 +5764,7 @@ export function startConversation(
   message: string,
   asked: Asked = {},
 ): Promise<{ id: string } | AccountRefusal> {
-  return accountCall('/api/agent/conversations', {
-    method: 'POST',
-    body: JSON.stringify({ message, ...asked }),
-  });
+  return accountCall('/api/agent/conversations', json('POST', { message, ...asked }));
 }
 
 export function sendToConversation(
@@ -5861,10 +5772,7 @@ export function sendToConversation(
   message: string,
   asked: Asked = {},
 ): Promise<object | AccountRefusal> {
-  return accountCall(conversationPath(id, '/messages'), {
-    method: 'POST',
-    body: JSON.stringify({ message, ...asked }),
-  });
+  return accountCall(conversationPath(id, '/messages'), json('POST', { message, ...asked }));
 }
 
 export function stopConversation(id: string): Promise<object | AccountRefusal> {
@@ -5877,10 +5785,7 @@ export function restartConversation(
   id: string,
   summarize: boolean,
 ): Promise<object | AccountRefusal> {
-  return accountCall(conversationPath(id, '/context'), {
-    method: 'POST',
-    body: JSON.stringify({ summarize }),
-  });
+  return accountCall(conversationPath(id, '/context'), json('POST', { summarize }));
 }
 
 export function deleteConversation(id: string): Promise<object | AccountRefusal> {

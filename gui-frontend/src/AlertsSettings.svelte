@@ -764,10 +764,6 @@
     font-size: var(--text-note);
   }
 
-  .mono {
-    font-family: var(--mono);
-  }
-
   .sends {
     overflow-wrap: anywhere;
   }

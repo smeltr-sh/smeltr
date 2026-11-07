@@ -200,8 +200,4 @@
   .read-back .sep {
     opacity: 0.5;
   }
-
-  .mono {
-    font-family: var(--mono);
-  }
 </style>

@@ -188,9 +188,10 @@ fallback.
 - Body: `--font-body`, IBM Plex Sans 400/500/600/700, set on `body`.
   Chrome and prose.
 - Mono: `--mono`, IBM Plex Mono 400/500. Values only (see "Restraint").
+  Class `.mono` (`app.css`).
 - An uppercase label -- a step's kind, a column head, a dialog's header
   rule -- is the body face at `--text-micro`, weight 700, tracked 0.08em,
-  `--dim`.
+  `--dim`. Class `.uppercase-label` (`app.css`).
 
 `oklch()` assumes an evergreen browser, an accepted tradeoff for an
 internal tool.

@@ -620,20 +620,11 @@ struct Location {
 
 impl Location {
     fn parse(uri: &str) -> Result<Location, String> {
-        let (scheme, rest) = uri
-            .split_once("://")
-            .filter(|(scheme, _)| S3_SCHEMES.contains(scheme))
-            .ok_or_else(|| {
-                format!("its location {uri:?} is not in S3, the one store an iceberg table is written to")
-            })?;
-        let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
-        if bucket.is_empty() {
-            return Err(format!("its location {uri:?} names no bucket"));
-        }
+        let (scheme, bucket, key) = objects::s3_uri(uri, &S3_SCHEMES, "an iceberg table")?;
         Ok(Location {
             scheme: scheme.to_string(),
             bucket: bucket.to_string(),
-            key: key.trim_matches('/').to_string(),
+            key,
         })
     }
 

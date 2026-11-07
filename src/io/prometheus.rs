@@ -218,20 +218,20 @@ pub(super) const CUSTOM_BUCKETS_SCHEMA: i32 = -53;
 
 /// What a sender says of a metric family: its type, its help and its unit.
 #[derive(Clone, PartialEq, prost::Message)]
-struct MetricMetadata {
+pub(super) struct MetricMetadata {
     #[prost(enumeration = "MetricType", tag = "1")]
-    r#type: i32,
+    pub(super) r#type: i32,
     #[prost(string, tag = "2")]
-    metric_family_name: String,
+    pub(super) metric_family_name: String,
     #[prost(string, tag = "4")]
-    help: String,
+    pub(super) help: String,
     #[prost(string, tag = "5")]
-    unit: String,
+    pub(super) unit: String,
 }
 
 /// A metric family's type, as OpenMetrics has them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
-enum MetricType {
+pub(super) enum MetricType {
     Unknown = 0,
     Counter = 1,
     Gauge = 2,
@@ -252,40 +252,40 @@ const METADATA_FIELD: u64 = 3;
 // exemplar's label, a help and a unit are each an index into the request's `symbols`.
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct TimeSeriesV2 {
+pub(super) struct TimeSeriesV2 {
     /// Each label's name and value, in pairs.
     #[prost(uint32, repeated, tag = "1")]
-    labels_refs: Vec<u32>,
+    pub(super) labels_refs: Vec<u32>,
     #[prost(message, repeated, tag = "2")]
-    samples: Vec<Sample>,
+    pub(super) samples: Vec<Sample>,
     #[prost(message, repeated, tag = "3")]
-    histograms: Vec<Histogram>,
+    pub(super) histograms: Vec<Histogram>,
     #[prost(message, repeated, tag = "4")]
-    exemplars: Vec<ExemplarV2>,
+    pub(super) exemplars: Vec<ExemplarV2>,
     #[prost(message, optional, tag = "5")]
-    metadata: Option<MetadataV2>,
+    pub(super) metadata: Option<MetadataV2>,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct ExemplarV2 {
+pub(super) struct ExemplarV2 {
     #[prost(uint32, repeated, tag = "1")]
-    labels_refs: Vec<u32>,
+    pub(super) labels_refs: Vec<u32>,
     #[prost(double, tag = "2")]
-    value: f64,
+    pub(super) value: f64,
     /// Milliseconds since the epoch.
     #[prost(int64, tag = "3")]
-    timestamp: i64,
+    pub(super) timestamp: i64,
 }
 
 /// A series' family's metadata. Its type numbers are 1.0's.
 #[derive(Clone, PartialEq, prost::Message)]
-struct MetadataV2 {
+pub(super) struct MetadataV2 {
     #[prost(enumeration = "MetricType", tag = "1")]
-    r#type: i32,
+    pub(super) r#type: i32,
     #[prost(uint32, tag = "3")]
-    help_ref: u32,
+    pub(super) help_ref: u32,
     #[prost(uint32, tag = "4")]
-    unit_ref: u32,
+    pub(super) unit_ref: u32,
 }
 
 /// `Request.symbols`.

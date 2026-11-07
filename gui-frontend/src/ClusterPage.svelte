@@ -702,7 +702,7 @@
         {#each warnings.slice(0, RIBBON_ISSUES) as w, i (i)}
           <span class="issue-row">
             <StateMark state={severityState(w.severity)} />
-            <span class="issue-teaser">{w.subjectId}: {w.message}</span>
+            <span class="issue-teaser ellipsis">{w.subjectId}: {w.message}</span>
           </span>
         {/each}
         {#if warnings.length > RIBBON_ISSUES}
@@ -1283,9 +1283,6 @@
      with an ellipsis rather than pushing "View all issues" off screen. */
   .issue-teaser {
     min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
   }
   .issue-more {
     flex: none;

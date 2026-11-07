@@ -1147,7 +1147,7 @@ pub fn written_columns(record: &DataType) -> Vec<CaptureColumn> {
 /// Every `__` field a pipeline's plan holds at its end, as a column with the slot that holds it: its `__source` fields
 /// and any `__destination` field it set. Not `__live`, which is true on every row a destination is sent, and not a name
 /// in `DESTINATION_COLUMNS`, which a destination capture fills with what the row was actually given.
-pub fn internal_columns(plan: &crate::plan::compile::Plan) -> Vec<(CaptureColumn, crate::core::id::SlotId)> {
+fn internal_columns(plan: &crate::plan::compile::Plan) -> Vec<(CaptureColumn, crate::core::id::SlotId)> {
     plan.tree
         .leaves()
         .into_iter()
@@ -1169,21 +1169,72 @@ pub fn tapped_object(doc: &[u8]) -> crate::io::RecordObject {
 }
 
 /// A tapped row's value of an internal field, as `format::json::write_value` wrote it: null where it wrote none.
-pub fn tapped_value(doc: Option<&[u8]>) -> serde_json::Value {
+fn tapped_value(doc: Option<&[u8]>) -> serde_json::Value {
     doc.and_then(|doc| serde_json::from_slice(doc).ok()).unwrap_or_default()
 }
 
-/// One row a pipeline finished, as a capture at a destination shows it: `object`, the row's document, under
-/// `written` (`written_columns`), then `fields`, its values of `internal` (`internal_columns`), then its
-/// `__destination` values in `DESTINATION_COLUMNS` order. Returns the columns and the row under them.
+/// The rows a pipeline finished, read as a capture at a destination shows them, and as a sample of its output holds
+/// them: each under the fields the pipeline writes, then every `__` field its plan holds for the row, which the
+/// document as sent to a destination leaves out.
+pub struct Finished<'a> {
+    plan: &'a crate::plan::compile::Plan,
+    written: Vec<CaptureColumn>,
+    internal: Vec<(CaptureColumn, crate::core::id::SlotId)>,
+}
+
+impl<'a> Finished<'a> {
+    /// The rows `plan` finishes, its exceptions tagged under `tag_field`.
+    pub fn of(plan: &'a crate::plan::compile::Plan, tag_field: &str) -> Finished<'a> {
+        let record = crate::plan::dictionary::record_type(plan, tag_field);
+        Finished {
+            plan,
+            written: written_columns(&record),
+            internal: internal_columns(plan),
+        }
+    }
+
+    /// Row `row` of `batch`, which the plan ran over, whose document as sent to a destination reads as `object`.
+    /// Returns the columns and the row under them.
+    pub fn row(&self, batch: &Batch, row: usize, object: crate::io::RecordObject) -> (Vec<CaptureColumn>, CapturedRow) {
+        let mut doc = Vec::new();
+        let fields = (self.internal.iter())
+            .map(|(_, slot)| {
+                doc.clear();
+                let ty = &self.plan.slot_layout[*slot];
+                let written = crate::format::json::write_value(batch.peek(*slot), ty, row, &mut doc);
+                tapped_value(written.then_some(&doc[..]))
+            })
+            .collect();
+        finished_row(object, &self.written, &self.internal, fields)
+    }
+}
+
+/// `sent`, a row as a capture at a destination shows it, with its `__destination` values in `DESTINATION_COLUMNS`
+/// order after the rest.
+pub fn place(
+    sent: &mut (Vec<CaptureColumn>, CapturedRow),
+    destination: [Option<String>; crate::heartbeat::DESTINATION_COLUMNS.len()],
+) {
+    for (name, value) in crate::heartbeat::DESTINATION_COLUMNS.iter().zip(destination) {
+        sent.0.push(CaptureColumn {
+            name: name.to_string(),
+            ty: "str".to_string(),
+        });
+        sent.1
+            .values
+            .push(value.map_or(serde_json::Value::Null, serde_json::Value::String));
+    }
+}
+
+/// One row a pipeline finished: `object`, the row's document, under `written` (`written_columns`), then `fields`, its
+/// values of `internal` (`internal_columns`). Returns the columns and the row under them.
 ///
 /// A document `written` does not describe is shown by its own keys, each a variant.
-pub fn sent_row(
+fn finished_row(
     mut object: crate::io::RecordObject,
     written: &[CaptureColumn],
     internal: &[(CaptureColumn, crate::core::id::SlotId)],
     fields: Vec<serde_json::Value>,
-    destination: [Option<String>; crate::heartbeat::DESTINATION_COLUMNS.len()],
 ) -> (Vec<CaptureColumn>, CapturedRow) {
     let fits =
         written.iter().any(|c| c.name == UNCLAIMED) || object.keys().all(|k| written.iter().any(|c| &c.name == k));
@@ -1219,13 +1270,6 @@ pub fn sent_row(
     }
     columns.extend(internal.iter().map(|(c, _)| c.clone()));
     values.extend(fields);
-    for (name, value) in crate::heartbeat::DESTINATION_COLUMNS.iter().zip(destination) {
-        columns.push(CaptureColumn {
-            name: name.to_string(),
-            ty: "str".to_string(),
-        });
-        values.push(value.map_or(serde_json::Value::Null, serde_json::Value::String));
-    }
     (
         columns,
         CapturedRow {
@@ -1243,7 +1287,9 @@ fn held_row(record: &crate::io::OwnedRecord, why: &str) -> (Vec<CaptureColumn>, 
     let object = serde_json::from_slice(&record.value)
         .unwrap_or_else(|_| crate::io::raw_object(String::from_utf8_lossy(&record.value)));
     let destination = [record.placement.clone(), record.doc_id.clone(), None];
-    let (mut columns, mut row) = sent_row(object, &[], &[], Vec::new(), destination);
+    let mut sent = finished_row(object, &[], &[], Vec::new());
+    place(&mut sent, destination);
+    let (mut columns, mut row) = sent;
     columns.insert(
         0,
         CaptureColumn {
@@ -1698,10 +1744,6 @@ pub fn source_kind_of(dto: crate::config_file::SourceDto) -> Result<crate::plan:
         .map(|s| s.kind)
         .ok_or_else(|| "the capture's source did not load".to_string())
 }
-
-/// A worker's share of a capture, tracked so `worker::run_worker` can drive cold sources without the transform
-/// threads knowing they exist.
-pub type SharedCaptures = Arc<Captures>;
 
 #[cfg(test)]
 mod tests {
@@ -2705,7 +2747,9 @@ mod tests {
             Some("d1".to_string()),
             Some(route.to_string()),
         ];
-        sent_row(object(v), &columns(written), &[], Vec::new(), destination)
+        let mut sent = finished_row(object(v), &columns(written), &[], Vec::new());
+        place(&mut sent, destination);
+        sent
     }
 
     /// A row a typed source could not read as its type is captured as the source spelled it, and marked failed.

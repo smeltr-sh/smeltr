@@ -82,8 +82,6 @@ export type World = {
   branch: string | null;
   /** The branch exists on the leader: a save went onto it. */
   branchSaved: boolean;
-  /** A save on the branch is one a deploy puts on main: anything but a sample, which no test names. */
-  landing: boolean;
   /** What the branch holds, or main when there is none. */
   editing: Config;
   /** `main`'s commits that deployed something, oldest first, the install's own first. */
@@ -141,7 +139,6 @@ export function newWorld(): World {
     password: null,
     branch: null,
     branchSaved: false,
-    landing: false,
     editing: copy(EMPTY),
     deploys: [{ subject: 'worker group default', config: copy(EMPTY) }],
     running: 0,
@@ -302,15 +299,13 @@ async function nameBranch(j: Journey) {
   world.branch = name;
 }
 
-/** Clicks `button`, which saves, naming a branch if the GUI asks for one, and waits until `done`. A deploy leaves
- * out a `sample` saved. */
-async function saveBy(j: Journey, button: Locator, done: () => Promise<void>, sample = false) {
+/** Clicks `button`, which saves, naming a branch if the GUI asks for one, and waits until `done`. */
+async function saveBy(j: Journey, button: Locator, done: () => Promise<void>) {
   await button.click();
   await nameBranch(j);
   await done();
   await settled(j.page);
   j.world.branchSaved = true;
-  if (!sample) j.world.landing = true;
 }
 
 /** Captures two rows with the capture `form`, long enough for a fleet only now deployed to send them, and saves
@@ -329,7 +324,7 @@ async function captureTwo(
   await expect(saving).toBeVisible({ timeout: 60_000 });
   await seen(saving);
   await saving.getByLabel('Save as').fill(name);
-  await saveBy(j, saving.getByRole('button', { name: 'Save sample' }), () => done(saving), true);
+  await saveBy(j, saving.getByRole('button', { name: 'Save sample' }), () => done(saving));
   j.world.editing.samples.push(name);
 }
 
@@ -1062,7 +1057,7 @@ const deploy: Move = {
     // A source deployed without a route is a stream no route takes.
     'route-stream',
   ],
-  weight: (w) => (w.change && !w.closed ? (w.landing ? 3 : 1) : 0),
+  weight: (w) => (w.change && !w.closed ? 3 : 0),
   run: async (j) => {
     const { page, leader, world } = j;
     const title = world.change!;
@@ -1074,21 +1069,11 @@ const deploy: Move = {
       .getByRole('dialog', { name: verb.toLowerCase(), exact: true })
       .getByRole('button', { name: verb, exact: true })
       .click();
-    if (!world.landing) {
-      // Only samples, all left out: main would not change, so the change stays open.
-      const refused = page.getByRole('dialog').filter({ hasText: 'there is nothing to deploy' });
-      await refused.getByRole('button', { name: 'Close' }).click();
-      await expect(page).toHaveURL(/#\/changes\/review/);
-      return `"${title}" holds only samples a deploy leaves out, and deploys nothing`;
-    }
     // The deploy itself, then the reload it ends with, can outlast the default wait on a busy machine.
     await expect(page).not.toHaveURL(/#\/changes\/review/, { timeout: 30_000 });
     const api = await j.truth();
     const history: History = await api.get('/api/main/history');
     expect(history.commits[0].subject).toBe(title);
-    // A deploy leaves out the samples no test names, and the journey writes no tests: main keeps its own.
-    const main = world.deploys[world.deploys.length - 1].config;
-    world.editing.samples = world.editing.samples.filter((s) => main.samples.includes(s));
     world.deploys.push({ subject: title, config: copy(world.editing) });
     // A rollback's hold outlives an approval: main moves, and the fleet stays where it was held.
     if (world.held) expect(history.deployed).not.toBe(history.commits[0].commit);
@@ -1100,7 +1085,6 @@ const deploy: Move = {
     expect(branches.map((b) => b.name)).not.toContain(world.branch);
     world.branch = null;
     world.branchSaved = false;
-    world.landing = false;
     world.change = null;
     await expect(page.getByRole('button', { name: /^Branch: / })).toHaveAccessibleName(
       /^Branch: main\b/,
@@ -2000,7 +1984,7 @@ const produceSchema: Move = {
 
 const pasteSample: Move = {
   name: 'paste-sample',
-  leadsTo: ['edit-sample', 'delete-sample'],
+  leadsTo: ['edit-sample', 'delete-sample', 'save-output-sample'],
   weight: (w) => (w.password && w.editing.samples.length < 2 ? 1 : 0),
   run: async (j) => {
     const { page, leader, rng, world } = j;
@@ -2169,6 +2153,72 @@ const deleteSample: Move = {
   },
 };
 
+/** The pipelines the journey added, whose steps each set a field to its own name and read none, so any pasted
+ * record runs. */
+const added = (w: World) => w.editing.pipelines.filter((p) => p.startsWith('pipe '));
+const outputs = (w: World) => w.editing.samples.filter((s) => s.startsWith('output '));
+
+/** Runs a pipeline the journey added over a pasted sample and saves its output as a sample, and checks the leader
+ * holds each record as the pipeline finished it: its own fields, and each field the pipeline's steps set. */
+const saveOutputSample: Move = {
+  name: 'save-output-sample',
+  weight: (w) => (added(w).length && pasted(w).length && outputs(w).length < 2 ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const pipeline = rng.pick(added(world));
+    const input = rng.pick(pasted(world));
+    const name = `output ${world.made++}`;
+    const api = await j.truth();
+    const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
+    const sampleNamed = async (n: string) => {
+      const { samples } = await api.get(`/api/areas/shared/samples?${on}`);
+      const id = samples.find((s: { name: string }) => s.name === n).id;
+      return (await api.get(`/api/areas/shared/samples/${encodeURIComponent(id)}?${on}`))
+        .sample as { source?: string; records: Record<string, unknown>[] };
+    };
+    const records = (await sampleNamed(input)).records;
+
+    await goto(page, leader, '#/build/pipelines');
+    await page.getByRole('link', { name: pipeline, exact: true }).click();
+    const menu = page.getByRole('button', { name: 'Choose a sample' });
+    await menu.click();
+    await page
+      .getByRole('listbox', { name: 'Saved samples' })
+      .getByRole('option', { name: new RegExp(`^${input}\\b`) })
+      .click();
+    const saveOutput = page.getByRole('button', { name: 'Save output as sample' });
+    await expect(saveOutput).toBeEnabled();
+    await saveOutput.click();
+    const dialog = page.getByRole('dialog', { name: 'save output as sample' });
+    const count = `${records.length} record${records.length === 1 ? '' : 's'}`;
+    await expect(dialog.getByText(count, { exact: true })).toBeVisible();
+    await dialog.getByLabel('Name').fill(name);
+    await saveBy(j, dialog.getByRole('button', { name: 'Save sample' }), () =>
+      expect(dialog).toBeHidden(),
+    );
+    world.editing.samples.push(name);
+
+    const saved = await sampleNamed(name);
+    expect(saved.source, `${name} does not name a source`).toBeUndefined();
+    expect(saved.records, `${name} holds one record for each record of ${input}`).toHaveLength(
+      records.length,
+    );
+    const set = world.editing.steps
+      .filter((s) => s.startsWith(`${pipeline}:`))
+      .map((s) => s.slice(pipeline.length + 1));
+    records.forEach((record, i) => {
+      for (const field of ownFields(record))
+        expect(saved.records[i][field], `${name}'s record ${i + 1} should keep ${field}`).toEqual(
+          record[field],
+        );
+      for (const field of set)
+        expect(saved.records[i][field], `"${pipeline}" should have set ${field}`).toBe(field);
+    });
+    await editingIsSaved(j);
+    return `save "${pipeline}"'s output over ${input} as ${name}`;
+  },
+};
+
 /** Picks scope `to` from the section rail's scope chip, which mounts the page afresh in it. */
 async function switchScope(page: Page, from: string, to: string) {
   // A narrow window folds the rail, and the chip with it.
@@ -2190,6 +2240,27 @@ async function switchScope(page: Page, from: string, to: string) {
   await expect(page.getByRole('button', { name: chip(to), exact: true })).toBeVisible();
 }
 
+/** Waits until a worker of `default` runs the deployed commit: a capture asks the workers running the route, and a
+ * deploy reaches them in time. One may never take it: the workers share a host, so only one holds a receiver's port,
+ * and the others keep what they ran. */
+async function deployReached(j: Journey) {
+  const api = await j.truth();
+  await expect
+    .poll(
+      async () => {
+        const c = await api.get('/api/cluster');
+        return c.health.threads.some(
+          (t: { workerId: string; groupId: string; commit: string }) =>
+            t.groupId === 'default' &&
+            heartbeating(j.world).includes(t.workerId) &&
+            t.commit === c.deployedCommit,
+        );
+      },
+      { timeout: 60_000 },
+    )
+    .toBe(true);
+}
+
 const capture: Move = {
   name: 'capture',
   weight: (w) => {
@@ -2203,23 +2274,7 @@ const capture: Move = {
     const live = new Set(flowing(world).map((r) => r.to));
     const destination = rng.pick(world.editing.destinations.filter((d) => live.has(d)));
     const name = `captured ${world.made++}`;
-    // A capture asks the workers running the route, and a deploy reaches them in time. One may never take it:
-    // the workers share a host, so only one holds a receiver's port, and the others keep what they ran.
-    const api = await j.truth();
-    await expect
-      .poll(
-        async () => {
-          const c = await api.get('/api/cluster');
-          return c.health.threads.some(
-            (t: { workerId: string; groupId: string; commit: string }) =>
-              t.groupId === 'default' &&
-              heartbeating(world).includes(t.workerId) &&
-              t.commit === c.deployedCommit,
-          );
-        },
-        { timeout: 60_000 },
-      )
-      .toBe(true);
+    await deployReached(j);
     await goto(page, leader, '#/build/destinations');
     // A capture runs on a group's workers, so it is started from the group's scope.
     await switchScope(page, 'shared', 'default');
@@ -2239,6 +2294,71 @@ const capture: Move = {
     await editingIsSaved(j);
     await switchScope(page, 'default', 'shared');
     return `capture 2 rows at ${destination} as ${name}`;
+  },
+};
+
+/** The running routes from a metrics source whose pipeline the branch still holds: a capture from its editor's sample
+ * menu reads the source on the workers running it. */
+const capturable = (w: World) =>
+  w.deploys[w.running].config.routes.filter(
+    (r) => r.source.startsWith('src-') && w.editing.pipelines.includes(r.pipeline),
+  );
+
+/** Runs a pipeline over a capture of its source without saving it, then saves that input as a sample from the menu
+ * beside the output's save, and checks the sample stands for the source and holds what was captured. */
+const saveInputSample: Move = {
+  name: 'save-input-sample',
+  weight: (w) => (heartbeating(w, 'default').length && capturable(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const { source, pipeline } = rng.pick(capturable(world));
+    const name = `input ${world.made++}`;
+    await deployReached(j);
+    await goto(page, leader, '#/build/pipelines');
+    await page.getByRole('link', { name: pipeline, exact: true }).click();
+    const chip = page.getByRole('button', { name: 'Choose a sample' });
+    await chip.click();
+    await page.getByRole('tab', { name: /^Capture/ }).click();
+    await page.getByRole('option', { name: new RegExp(source) }).click();
+    const form = page.getByRole('dialog');
+    await form.getByRole('spinbutton', { name: 'records' }).fill('2');
+    await form.getByRole('spinbutton', { name: 'seconds' }).fill('45');
+    await form.getByRole('button', { name: 'Start' }).click();
+    const use = page.getByRole('button', { name: 'Use these records' });
+    await expect(use).toBeEnabled({ timeout: 60_000 });
+    await use.click();
+    await expect(chip).toContainText('Your capture');
+    await expect(chip).toContainText(/\d+ records?/, { timeout: 30_000 });
+    // A capture ends at its deadline holding fewer than it asked for, when the source was slow.
+    const held = Number((await chip.textContent())?.match(/(\d+) records?/)?.[1]);
+
+    await page.getByRole('button', { name: 'Save as sample', exact: true }).click();
+    await page.getByRole('button', { name: /^Save input as sample/ }).click();
+    // Found by what it holds: a branch prompt can open beside it.
+    const dialog = page.getByRole('dialog').filter({ has: page.getByLabel('Name') });
+    await dialog.getByLabel('Name').fill(name);
+    await saveBy(
+      j,
+      dialog.getByRole('button', { name: 'Save sample' }),
+      () => expect(dialog).toBeHidden(),
+      true,
+    );
+    await expect(chip).toContainText(name);
+    world.editing.samples.push(name);
+    await editingIsSaved(j);
+
+    const api = await j.truth();
+    const on = encodeURIComponent(world.branch ?? 'main');
+    const { samples } = await api.get(`/api/areas/shared/samples?branch=${on}`);
+    expect(
+      samples.find((s: { name: string }) => s.name === name),
+      `${name} stands for ${source}`,
+    ).toMatchObject({ source, records: held });
+    expect(
+      (await api.get('/api/captures/mine')).capture,
+      'the capture is held no longer',
+    ).toBeUndefined();
+    return `run ${pipeline} over a capture of ${source}, then save that input as ${name}`;
   },
 };
 
@@ -3344,7 +3464,9 @@ export const MOVES: readonly Move[] = [
   pasteSample,
   editSample,
   deleteSample,
+  saveOutputSample,
   capture,
+  saveInputSample,
   addGroup,
   enrollInGroup,
   addAccount,

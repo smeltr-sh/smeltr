@@ -696,10 +696,6 @@
     font-size: var(--text-note);
   }
 
-  .mono {
-    font-family: var(--mono);
-  }
-
   .picker {
     border: 0;
     padding: 0;

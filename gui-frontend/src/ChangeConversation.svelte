@@ -288,9 +288,6 @@
     display: grid;
     gap: 0.75rem;
   }
-  .mono {
-    font-family: var(--mono);
-  }
   .note {
     font-size: var(--text-note);
     margin: 0;

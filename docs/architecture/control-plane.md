@@ -281,7 +281,7 @@ holding them takes no other row for the capture, and reports nothing, until it
 has shown them. Once a capture
 is over at the leader, what the leader holds of it is final. What it holds,
 saved, is a **sample**: a bundle file on the branch it was saved to, which
-reaches `main` with the test built from it (`config-plane.md`).
+reaches `main` when that branch deploys (`config-plane.md`).
 
 A capture belongs to whoever opened it, and a person holds one at a time:
 opening another drops the last, running or not. Its owner may preview over it

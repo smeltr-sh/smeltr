@@ -16,7 +16,6 @@
     tests,
     testsLoading,
     behind,
-    leftOut = 0,
     schemaFindings,
     onopen,
     bringingCurrent,
@@ -34,8 +33,6 @@
     testsLoading: boolean;
     /** Commits `main` has that the branch does not. */
     behind: number;
-    /** Samples no test names, which the deploy leaves out. */
-    leftOut?: number;
     /** Where the rows do not fit a schema their pipeline produces, absent while they are read. */
     schemaFindings?: number;
     /** Opens the page's tab that lists what a count counts. */
@@ -99,14 +96,6 @@
         {@render opens('tests', `${tests.passed} of ${count(tests.total, 'test')} passing`)}
       {/if}
     </span>
-
-    {#if leftOut > 0}
-      <span class="item">
-        <!-- Nothing to fix: what stays on the branch is said, not warned about. -->
-        <StateMark state="info" size={17} />
-        <span>{count(leftOut, 'sample')} left out</span>
-      </span>
-    {/if}
 
     {#if schemaFindings}
       <span class="item">
@@ -208,9 +197,5 @@
     color: var(--accent);
     font-weight: 600;
     font-size: var(--text-note);
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 </style>

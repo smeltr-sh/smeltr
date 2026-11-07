@@ -10,6 +10,7 @@
   deploys, an admin who read only the row's name would believe it is live.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { untrack } from 'svelte';
   import { reported } from './errors.svelte';
@@ -89,7 +90,7 @@
   let newCustody: SecretDto['custody'] = $state('leader-stored');
   let newDescription = $state('');
   let newValue = $state('');
-  let saving = $state(false);
+  const saving = new Busy();
 
   function startAdding() {
     adding = true;
@@ -105,7 +106,7 @@
     secrets.some((s) => s.name === name.trim()) ? `${name.trim()} is taken` : null;
 
   const canAdd = $derived(
-    !saving &&
+    !saving.on &&
       newName.trim() !== '' &&
       nameProblem(newName) === null &&
       (newCustody !== 'leader-stored' || newValue.length > 0),
@@ -113,13 +114,12 @@
 
   /** Refused while the create is in flight: closing then would hide whether it landed. */
   function cancelAdding() {
-    if (!saving) adding = false;
+    if (!saving.on) adding = false;
   }
 
   async function add() {
     if (!canAdd) return;
-    saving = true;
-    try {
+    await saving.run(async () => {
       const res = await createSecret(
         newName.trim(),
         newCustody,
@@ -131,11 +131,7 @@
         newValue = '';
         await load();
       }
-    } catch (e) {
-      reported(e);
-    } finally {
-      saving = false;
-    }
+    });
   }
 
   // One row at a time is open, so each of these holds the name rather than a
@@ -148,7 +144,7 @@
    * never reads as another row's. */
   let checkAnswer = $state<{ name: string; matches: boolean } | null>(null);
   let rowNote = $state('');
-  let busy = $state(false);
+  const busy = new Busy();
 
   function openPanel(s: SecretDto, panel: Panel) {
     open = { name: s.name, panel };
@@ -164,8 +160,7 @@
    * this secret at it. An admin never chooses a version or a branch for
    * either half -- the branch is whichever one is already being edited. */
   async function store(name: string) {
-    busy = true;
-    try {
+    await busy.run(async () => {
       const stored = await storeSecretValue(name, storeValue);
       if (!stored.ok) return;
       open = null;
@@ -183,26 +178,17 @@
           `Stored, and pointed ${pointed.references} reference${pointed.references === 1 ? '' : 's'} ` +
           `across ${pointed.groups.join(', ')} at it. It deploys when the change does.`;
       }
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   async function check(name: string) {
-    busy = true;
-    try {
+    await busy.run(async () => {
       const version = currentVersion(secrets.find((s) => s.name === name)!)?.version;
       if (version === undefined) return;
       const { matches } = await verifySecret(name, version, checkValue);
       checkAnswer = { name, matches };
       checkValue = '';
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   async function remove(s: SecretDto) {
@@ -216,15 +202,10 @@
       danger: true,
     });
     if (!yes) return;
-    busy = true;
-    try {
+    await busy.run(async () => {
       const res = await deleteSecret(s.name);
       if (res.ok) await load();
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   const CUSTODY_LABEL: Record<SecretDto['custody'], string> = {
@@ -310,9 +291,14 @@
         </Field>
       </div>
       {#snippet actions()}
-        <Button type="button" onclick={cancelAdding} disabled={saving ? BUSY : ''}>Cancel</Button>
-        <Button type="submit" class="primary" disabled={saving ? BUSY : !canAdd ? INCOMPLETE : ''}>
-          {saving ? 'Adding…' : 'Add'}
+        <Button type="button" onclick={cancelAdding} disabled={saving.on ? BUSY : ''}>Cancel</Button
+        >
+        <Button
+          type="submit"
+          class="primary"
+          disabled={saving.on ? BUSY : !canAdd ? INCOMPLETE : ''}
+        >
+          {saving.on ? 'Adding…' : 'Add'}
         </Button>
       {/snippet}
     </Dialog>
@@ -398,14 +384,14 @@
                       <Button
                         type="button"
                         class="primary"
-                        disabled={busy
+                        disabled={busy.on
                           ? BUSY
                           : storeValue.length === 0
                             ? 'Enter a value first.'
                             : ''}
                         onclick={() => store(s.name)}
                       >
-                        {busy ? 'Storing…' : 'Store'}
+                        {busy.on ? 'Storing…' : 'Store'}
                       </Button>
                       <button type="button" onclick={() => (open = null)}>Cancel</button>
                       <Help label="New value">
@@ -428,14 +414,14 @@
                       />
                       <Button
                         type="button"
-                        disabled={busy
+                        disabled={busy.on
                           ? BUSY
                           : checkValue.length === 0
                             ? 'Enter a value first.'
                             : ''}
                         onclick={() => check(s.name)}
                       >
-                        {busy ? 'Checking…' : 'Check'}
+                        {busy.on ? 'Checking…' : 'Check'}
                       </Button>
                       <button type="button" onclick={() => (open = null)}>Close</button>
                       {#if checkAnswer && checkAnswer.name === s.name}
@@ -584,9 +570,5 @@
   .note-line {
     color: var(--ink);
     font-size: var(--text-note);
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 </style>

@@ -459,10 +459,6 @@
     color: inherit;
   }
 
-  .mono {
-    font-family: var(--mono);
-  }
-
   .records,
   .count,
   .list :global(.count) {

@@ -153,10 +153,6 @@
     min-width: 0;
   }
 
-  .mono {
-    font-family: var(--mono);
-  }
-
   .path {
     overflow-wrap: anywhere;
   }
