@@ -23,7 +23,7 @@ export const walkthrough: Video = {
   topic: 'build',
   title: 'Fixing a feed in smeltr',
   guide: '/docs/first-pipeline',
-  youtube: 'u5jKJvaDfYE',
+  youtube: 't_6-JqXfFtM',
   minutes: 6,
   poster: '/videos/walkthrough-poster.jpg',
 };
