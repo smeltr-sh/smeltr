@@ -382,6 +382,20 @@ fn s3(
     Ok(Arc::new(store))
 }
 
+/// An S3 URI's scheme, its bucket, and its key without a slash at either end, refused unless its scheme is one of
+/// `schemes`. `table` names what is written there, for the refusal.
+pub(crate) fn s3_uri<'u>(uri: &'u str, schemes: &[&str], table: &str) -> Result<(&'u str, &'u str, String), String> {
+    let (scheme, rest) = uri
+        .split_once("://")
+        .filter(|(scheme, _)| schemes.contains(scheme))
+        .ok_or_else(|| format!("its location {uri:?} is not in S3, the one store {table} is written to"))?;
+    let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
+    if bucket.is_empty() {
+        return Err(format!("its location {uri:?} names no bucket"));
+    }
+    Ok((scheme, bucket, key.trim_matches('/').to_string()))
+}
+
 /// The store for the S3 `bucket` a table's files are in, reached as `access` says, each call retried for up to
 /// `stall_after`. `grant`, when given, signs every request in place of what `access` names.
 pub(crate) fn s3_bucket(

@@ -211,17 +211,10 @@ struct Root {
 
 impl Root {
     fn parse(uri: &str) -> Result<Root, String> {
-        let (_, rest) = uri
-            .split_once("://")
-            .filter(|(scheme, _)| S3_SCHEMES.contains(scheme))
-            .ok_or_else(|| format!("its location {uri:?} is not in S3, the one store a delta table is written to"))?;
-        let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
-        if bucket.is_empty() {
-            return Err(format!("its location {uri:?} names no bucket"));
-        }
+        let (_, bucket, key) = objects::s3_uri(uri, &S3_SCHEMES, "a delta table")?;
         Ok(Root {
             bucket: bucket.to_string(),
-            key: key.trim_matches('/').to_string(),
+            key,
         })
     }
 

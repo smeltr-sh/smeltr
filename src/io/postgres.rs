@@ -33,8 +33,8 @@ use tokio_rustls::TlsConnector;
 use super::IoError;
 use super::sql::{Dialect, Statement, quote};
 use super::sql_source::{
-    CALL_TIMEOUT, CONNECT_TIMEOUT, Connection, Described, Driver, Encrypted, FULL_SCAN_ROWS, Failure, MAX_RESULT_BYTES,
-    Rows, STATEMENT_MARGIN, Shell, Verdict, held, too_large,
+    CALL_TIMEOUT, CONNECT_TIMEOUT, Connection, Described, Driver, Encrypted, Failure, MAX_RESULT_BYTES, Rows,
+    STATEMENT_MARGIN, Shell, Verdict, held, text_at, too_large,
 };
 use super::values::Value;
 use crate::core::column::DataType;
@@ -286,7 +286,11 @@ impl Driver for PostgresDriver {
                     }
                 }
                 tx.commit().await.map_err(failed)?;
-                Ok(verdict(&scans, indexes(&plan), returned(&plan)))
+                Ok(Verdict::of(
+                    scans.iter().map(Scan::read),
+                    indexes(&plan),
+                    returned(&plan),
+                ))
             })
         })
     }
@@ -1159,11 +1163,14 @@ struct Scan {
     rows: u64,
 }
 
-/// The text at `key` in the plan node `node`.
-fn text_at<'p>(node: &'p [u8], key: &str) -> Option<&'p str> {
-    match variant::read(variant::member(node, key)?) {
-        variant::Value::Str(s) => Some(s),
-        _ => None,
+impl Scan {
+    /// Its relation, schema-qualified where the plan names the schema, and the rows it reads.
+    fn read(&self) -> (String, u64) {
+        let relation = match &self.schema {
+            Some(schema) => format!("{schema}.{}", self.name),
+            None => self.name.clone(),
+        };
+        (relation, self.rows)
     }
 }
 
@@ -1243,20 +1250,6 @@ fn returned(explained: &[u8]) -> u64 {
         .and_then(|statement| variant::member(statement, "Plan"))
         .and_then(|plan| number_at(plan, "Plan Rows"))
         .map_or(0, |r| r as u64)
-}
-
-/// The largest scan past [`FULL_SCAN_ROWS`], or `Indexed` through `indexes`, returning about `rows`.
-fn verdict(scans: &[Scan], indexes: Vec<String>, rows: u64) -> Verdict {
-    match scans.iter().filter(|s| s.rows > FULL_SCAN_ROWS).max_by_key(|s| s.rows) {
-        Some(scan) => Verdict::FullScan {
-            relation: match &scan.schema {
-                Some(schema) => format!("{schema}.{}", scan.name),
-                None => scan.name.clone(),
-            },
-            rows: scan.rows,
-        },
-        None => Verdict::Indexed { indexes, rows },
-    }
 }
 
 #[cfg(test)]
@@ -1546,7 +1539,7 @@ mod tests {
         let found = scans(&explained);
         assert_eq!(found.len(), 3);
         assert_eq!(
-            verdict(&found, Vec::new(), 100),
+            Verdict::of(found.iter().map(Scan::read), Vec::new(), 100),
             Verdict::FullScan {
                 relation: "app.events".into(),
                 rows: 250_000
@@ -1556,8 +1549,8 @@ mod tests {
             indexes: Vec::new(),
             rows: 100,
         };
-        assert_eq!(verdict(&found[..1], Vec::new(), 100), indexed);
-        assert_eq!(verdict(&[], Vec::new(), 100), indexed);
+        assert_eq!(Verdict::of(found[..1].iter().map(Scan::read), Vec::new(), 100), indexed);
+        assert_eq!(Verdict::of([], Vec::new(), 100), indexed);
     }
 
     #[test]
@@ -1582,7 +1575,11 @@ mod tests {
         }]));
         assert!(scans(&explained).is_empty());
         assert_eq!(
-            verdict(&scans(&explained), indexes(&explained), returned(&explained)),
+            Verdict::of(
+                scans(&explained).iter().map(Scan::read),
+                indexes(&explained),
+                returned(&explained)
+            ),
             Verdict::Indexed {
                 indexes: vec!["orders_pkey".into(), "lines_order".into()],
                 rows: 20
