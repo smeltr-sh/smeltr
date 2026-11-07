@@ -149,7 +149,7 @@
     border-radius: var(--radius);
     padding: 0.55rem 0.75rem;
   }
-  /* Read out by a screen reader, which hears the button by its label, not its text. */
+  /* A screen reader hears the button by its fixed label, so this hidden region is what tells it the command was copied. */
   .live {
     position: absolute;
     width: 1px;
