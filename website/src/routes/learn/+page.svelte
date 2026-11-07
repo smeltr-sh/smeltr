@@ -11,7 +11,7 @@
   const visible = $derived(videos.filter((v) => shown === 'all' || v.topic === shown));
 </script>
 
-<svelte:head><title>Learn smeltr</title></svelte:head>
+<svelte:head><title>Learn — smeltr</title></svelte:head>
 
 <div class="marketing">
   <section class="page-hero">
