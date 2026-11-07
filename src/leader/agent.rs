@@ -136,7 +136,6 @@ How to work:
 
 - Read before you write: the area's config shows the shapes to copy and the ids in use.
 - When you are not sure how something works or is set, search the user docs (`GET /api/docs?q=`) and read the section before you guess.
-- Build a pipeline one step at a time against a sample with preview, then lock a test, save, add the route, check it with route preview, and open a change.
 - Say what you changed and on which branch."#;
 
 /// The system prompt: who the agent is, how it reaches the API, and every route it may call.
