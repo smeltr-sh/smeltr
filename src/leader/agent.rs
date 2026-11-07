@@ -386,11 +386,12 @@ pub async fn run(
     let heard = |text: &str| host.heard(text);
     // A summary written part way does not use up a round.
     let mut round = 0;
+    let mut failed = false;
     loop {
         if !host.live().await {
             return Ok(Ended::Stopped);
         }
-        summarize_if_due(model, host, system, &mut turns, asking).await?;
+        summarize_if_due(model, host, system, &mut turns, asking, &mut failed).await?;
         // Straight after a summary, what is read is the last answer and what followed it, which a summary cannot
         // make shorter.
         let summarized = matches!(turns.last(), Some(Turn::Fresh(_)));
@@ -425,7 +426,7 @@ pub async fn run(
         host.keep(&answered).await?;
         turns.push(answered);
         if calls.is_empty() {
-            summarize_if_due(model, host, system, &mut turns, asking).await?;
+            summarize_if_due(model, host, system, &mut turns, asking, &mut failed).await?;
             return Ok(Ended::Answered);
         }
         if round == MAX_ROUNDS {
@@ -451,20 +452,25 @@ pub async fn run(
 }
 
 /// Keep a summary of `turns` when the leader is due to write one. A summary that fails leaves them as they are, and
-/// the next request carries them without a summary.
+/// the next request carries them without a summary. Once a summary has failed, the turn asks for no other.
 async fn summarize_if_due(
     model: &dyn Model,
     host: &dyn Host,
     system: &str,
     turns: &mut Vec<Turn>,
     asking: &Asking,
+    failed: &mut bool,
 ) -> Result<(), String> {
-    if !model.due(turns) {
+    if *failed || !model.due(turns) {
         return Ok(());
     }
     match summarize(model, system, turns.clone(), asking).await {
         Ok(fresh) => compacted(host, turns, fresh).await,
-        Err(_) => Ok(()),
+        Err(why) => {
+            tracing::warn!(name: "summary_failed", target: "api", %why, "the model wrote no summary of a long conversation");
+            *failed = true;
+            Ok(())
+        }
     }
 }
 

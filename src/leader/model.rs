@@ -355,9 +355,16 @@ pub struct Reply {
 }
 
 impl Reply {
-    /// Whether the provider wrote a summary into this answer that stands in for the conversation before it.
+    /// Whether the provider wrote a sealed summary into this answer, which stands in for the conversation before it
+    /// and cannot be read (OpenAI's).
     pub fn compacted(&self) -> bool {
         holds_compaction(&self.native)
+            && !self
+                .native
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|b| b["content"].is_string())
     }
 }
 
