@@ -345,7 +345,7 @@ test('A1: an editor runs a pipeline over a capture without saving it, then saves
   await expect(chip).toContainText('3 records', { timeout: 30_000 });
   expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toEqual([]);
 
-  await admin.getByRole('button', { name: 'Save as sample ▾' }).click();
+  await admin.getByRole('button', { name: 'Save as sample', exact: true }).click();
   await expect(admin.getByRole('button', { name: /^Save output as sample/ })).toContainText(
     'The 3 rows on screen',
   );

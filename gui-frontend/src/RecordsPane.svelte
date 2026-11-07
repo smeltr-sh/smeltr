@@ -665,9 +665,9 @@
     return gridSort.apply(rows.map((_, i) => i).filter(matches), by);
   });
 
-  /** The rows on screen that have output, by `PreviewRow.row`: a dropped row has none. */
   /** The menu of the input's and the output's saves is open. */
   let savingOpen = $state(false);
+  /** The rows on screen that have output, by `PreviewRow.row`: a dropped row has none. */
   let outputShown = $derived(
     new Set(
       gridOrder
@@ -785,7 +785,7 @@
         <span class="grow"></span>
         {#if onsaveoutput && saveinput}
           <ChipPicker kind="columns" compact bind:open={savingOpen}>
-            {#snippet face()}Save as sample ▾{/snippet}
+            {#snippet face()}Save as sample <span aria-hidden="true">▾</span>{/snippet}
             <!-- Choosing closes the menu (`ChipPicker` leaves that to its caller). -->
             <div onclick={() => (savingOpen = false)} role="presentation">
               <button type="button" class="pick" onclick={saveinput.onsave}
