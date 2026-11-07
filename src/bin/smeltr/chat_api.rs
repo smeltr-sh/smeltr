@@ -839,6 +839,76 @@ pub async fn stop(
     Envelope::done().into_response()
 }
 
+/// `POST /api/agent/conversations/:id/redact`: which item of the conversation to redact, counted from 0 as its read
+/// lists them. An item is what the GUI shows as a line.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Redaction {
+    pub item: usize,
+}
+
+/// `POST /api/agent/conversations/:id/redact`: make every character of one item `*` where it is stored, so neither
+/// the disk nor a later request holds what it said. Refused while a turn runs, because the run sends the model the turns as it read them.
+pub async fn redact(
+    State(auth): State<Auth>,
+    actor: Extension<Actor>,
+    by_agent: Option<Extension<ByAgent>>,
+    Path(id): Path<String>,
+    Json(request): Json<Redaction>,
+) -> Response {
+    if let Some(refused) = refused(&auth, &by_agent).await {
+        return refused;
+    }
+    let owner = match owned(&auth, &actor, &id).await {
+        Ok(c) => c,
+        Err(refused) => return *refused,
+    };
+    // The title is the start of the first message, so redacting that message stars it too.
+    let title = (request.item == 0).then(|| "*".repeat(owner.title.chars().count()));
+    let (slot, store, conversation) = (auth.chats.slot(&id), auth.store.clone(), id.clone());
+    let redacted = store_call(move || {
+        let run = hold(&slot);
+        if run.as_ref().is_some_and(|r| r.running) {
+            return Ok(Err((StatusCode::CONFLICT, "the agent is still answering")));
+        }
+        let mut left = request.item;
+        for (nth, stored) in store.turns_of(&conversation)?.iter().enumerate() {
+            let count = items(stored).len();
+            if left >= count {
+                left -= count;
+                continue;
+            }
+            let Ok(mut turn) = serde_json::from_str::<Turn>(stored) else {
+                return Ok(Err((StatusCode::UNPROCESSABLE_ENTITY, "that item cannot be read")));
+            };
+            if !turn.redact(left) {
+                return Ok(Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "that item holds nothing to redact",
+                )));
+            }
+            let Ok(turn) = serde_json::to_string(&turn) else {
+                return Ok(Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "the redacted turn cannot be written",
+                )));
+            };
+            store.rewrite_turn(&conversation, nth, &turn, title.as_deref())?;
+            return Ok(Ok(()));
+        }
+        Ok(Err((StatusCode::NOT_FOUND, "the conversation has no such item")))
+    });
+    match redacted.await {
+        // That it was redacted is recorded; what it said is not.
+        Ok(Ok(())) => {
+            smeltr::leader::accounts::record_async(auth.store.clone(), &actor, "conversation-redact", &id, "ok").await;
+            Envelope::done().into_response()
+        }
+        Ok(Err((status, why))) => refuse(status, why),
+        Err(response) => *response,
+    }
+}
+
 /// `DELETE /api/agent/conversations/:id`: delete a conversation and its turns, stopping one that runs.
 pub async fn delete(
     State(auth): State<Auth>,

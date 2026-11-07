@@ -253,6 +253,99 @@ pub struct Fresh {
     pub tokens: u64,
 }
 
+impl Turn {
+    /// Make every character of this turn's `n`th item `*`: the items a conversation shows, in order, as what was
+    /// said and each result, the answer's text and each call, or the summary. A call keeps its keys and only its
+    /// values are starred, so it stays a call the provider reads. Whatever the item said is starred too wherever the
+    /// provider's own copy of an answer repeats it. False when the turn has no `n`th item.
+    pub fn redact(&mut self, n: usize) -> bool {
+        match self {
+            Turn::Asked(said) => match said.get_mut(n) {
+                Some(Said::Text(text)) => star(text),
+                Some(Said::Result { output, .. }) => star(output),
+                None => return false,
+            },
+            Turn::Fresh(fresh) => match (n, fresh.summary.as_mut()) {
+                (0, Some(summary)) => star(summary),
+                _ => return false,
+            },
+            Turn::Answered(reply) => {
+                let n = match reply.text.is_empty() {
+                    true => n + 1,
+                    false => n,
+                };
+                let gone = match n {
+                    0 => {
+                        let stars = starred(&reply.text);
+                        vec![std::mem::replace(&mut reply.text, stars)]
+                    }
+                    n => match reply.calls.get_mut(n - 1) {
+                        Some(call) => {
+                            let mut gone = Vec::new();
+                            star_values(&mut call.input, &mut gone);
+                            gone
+                        }
+                        None => return false,
+                    },
+                };
+                for text in gone.iter().filter(|t| !t.is_empty()) {
+                    star_within(&mut reply.native, text);
+                }
+            }
+        }
+        true
+    }
+}
+
+fn starred(text: &str) -> String {
+    "*".repeat(text.chars().count())
+}
+
+fn star(text: &mut String) {
+    *text = starred(text);
+}
+
+/// Star each string in `value`, keeping its keys and shape, and say what each was in `gone`.
+fn star_values(value: &mut Value, gone: &mut Vec<String>) {
+    match value {
+        Value::String(text) => {
+            let stars = starred(text);
+            gone.push(std::mem::replace(text, stars));
+        }
+        Value::Array(items) => items.iter_mut().for_each(|v| star_values(v, gone)),
+        Value::Object(fields) => fields.values_mut().for_each(|v| star_values(v, gone)),
+        _ => {}
+    }
+}
+
+/// Star `text` wherever a string in `value` holds it, as written or escaped within JSON, as an OpenAI-compatible
+/// endpoint gives a call's arguments. A signed block that held it, such as thinking, is dropped instead: the
+/// provider refuses a signed block that was changed, and reads an answer without its thinking.
+fn star_within(value: &mut Value, text: &str) {
+    match value {
+        Value::String(s) => {
+            let quoted = serde_json::to_string(text).unwrap_or_default();
+            let escaped = quoted
+                .strip_prefix('"')
+                .and_then(|q| q.strip_suffix('"'))
+                .unwrap_or(text);
+            for form in [text, escaped] {
+                if !form.is_empty() && s.contains(form) {
+                    *s = s.replace(form, &starred(form));
+                }
+            }
+        }
+        Value::Array(items) => items.retain_mut(|item| {
+            let before = item.clone();
+            star_within(item, text);
+            let signed = item.get("signature").is_some() || item.get("encrypted_content").is_some();
+            *item == before || !signed
+        }),
+        Value::Object(fields) => fields.values_mut().for_each(|v| star_within(v, text)),
+        _ => {}
+    }
+}
+
 /// The turns a request reads, from the newest [`Turn::Fresh`] on, its summary said first. Borrowed where there is
 /// none.
 fn readable(turns: &[Turn]) -> std::borrow::Cow<'_, [Turn]> {
@@ -1354,6 +1447,83 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    /// A redacted item is stars where the conversation shows it and where the provider's copy repeats it, and a
+    /// redacted call keeps its keys.
+    #[test]
+    fn a_redacted_item_is_starred_and_so_is_the_providers_copy() {
+        let mut asked = Turn::Asked(vec![
+            Said::Text("my key is sk-1".to_string()),
+            Said::Result {
+                call_id: "c1".to_string(),
+                output: "200\nsk-2".to_string(),
+                is_error: false,
+            },
+        ]);
+        assert!(asked.redact(1));
+        assert!(!asked.redact(2));
+        assert_eq!(
+            asked,
+            Turn::Asked(vec![
+                Said::Text("my key is sk-1".to_string()),
+                Said::Result {
+                    call_id: "c1".to_string(),
+                    output: "********".to_string(),
+                    is_error: false,
+                },
+            ])
+        );
+
+        let input = json!({"method": "PUT", "path": "/api/secrets/k", "body": {"value": "sk-3", "n": 2}});
+        let answered = |text: &str| {
+            Turn::Answered(Reply {
+                text: text.to_string(),
+                calls: vec![Call {
+                    id: "c2".to_string(),
+                    name: "request".to_string(),
+                    input: input.clone(),
+                }],
+                stop: Stop::Calls,
+                usage: Usage::default(),
+                native: json!([
+                    {"type": "thinking", "thinking": "Store sk-3.", "signature": "s1"},
+                    {"type": "thinking", "thinking": "Store it.", "signature": "s2"},
+                    {"type": "text", "text": text},
+                    {"type": "tool_use", "id": "c2", "name": "request", "input": input.clone()},
+                    {"type": "function", "arguments": input.to_string()},
+                ]),
+                summary: None,
+                model: None,
+                effort: None,
+                context: None,
+            })
+        };
+        let mut turn = answered("Storing sk-3.");
+        assert!(turn.redact(0));
+        let Turn::Answered(reply) = &turn else { unreachable!() };
+        assert_eq!(reply.text, "*************");
+        assert_eq!(reply.native[2]["text"], "*************");
+        assert_eq!(reply.calls[0].input, input, "only the answer was redacted");
+
+        let mut turn = answered("Storing it.");
+        assert!(turn.redact(1));
+        assert!(!turn.redact(2));
+        let Turn::Answered(reply) = &turn else { unreachable!() };
+        let starred = json!({"method": "***", "path": "**************", "body": {"value": "****", "n": 2}});
+        assert_eq!(reply.calls[0].input, starred);
+        assert_eq!(
+            reply.native[0]["thinking"], "Store it.",
+            "a signed block not holding it stays"
+        );
+        assert_eq!(reply.native[2]["input"], starred);
+        assert!(!reply.native.to_string().contains("sk-3"), "{}", reply.native);
+
+        let mut fresh = Turn::Fresh(Fresh {
+            summary: None,
+            tokens: 0,
+        });
+        assert!(!fresh.redact(0), "a cleared context holds nothing to redact");
+    }
 
     /// A fake endpoint on loopback answering `answer` at `path`, keeping each request's headers and body.
     async fn serve(

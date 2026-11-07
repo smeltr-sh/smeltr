@@ -59,7 +59,7 @@ impl From<Need> for Refusal {
 
 /// Whether `method` on `path` is a request that changes nothing although its method could, and so owes the audit
 /// nothing: a preview, a test run, a turn in a person's own conversation with their agent. What that agent then
-/// changes comes through the gate as its own request. Deleting a conversation is recorded. A route not named here
+/// changes comes through the gate as its own request. Deleting a conversation, or redacting what it said, is recorded. A route not named here
 /// that changes nothing is recorded by the gate as a change, and warns, until it is named.
 pub fn changes_nothing(method: &Method, path: &str) -> bool {
     let Some(rest) = path.strip_prefix("/api/") else {
@@ -67,7 +67,8 @@ pub fn changes_nothing(method: &Method, path: &str) -> bool {
     };
     let segments: Vec<&str> = rest.split('/').collect();
     let looked = segments.contains(&"preview") || segments.last() == Some(&"test-runs");
-    *method == Method::POST && (looked || segments.starts_with(&["agent", "conversations"]))
+    let redact = segments.last() == Some(&"redact");
+    *method == Method::POST && (looked || segments.starts_with(&["agent", "conversations"]) && !redact)
 }
 
 /// What `method` on `path` needs.
@@ -144,7 +145,7 @@ pub fn need(method: &Method, path: &str) -> Need {
         (Method::GET | Method::HEAD | Method::POST, ["agent", "conversations"])
         | (Method::GET | Method::HEAD, ["agent", "models"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["agent", "conversations", _])
-        | (Method::POST, ["agent", "conversations", _, "messages" | "stop" | "context"]) => Need::Anyone,
+        | (Method::POST, ["agent", "conversations", _, "messages" | "stop" | "context" | "redact"]) => Need::Anyone,
         // The user docs, which are public.
         (Method::GET | Method::HEAD, ["docs"]) | (Method::GET | Method::HEAD, ["docs", "page"]) => Need::Anyone,
 
@@ -239,6 +240,7 @@ mod tests {
         assert!(changes_nothing(&Method::POST, "/api/areas/shared/preview/routes"));
         assert!(changes_nothing(&Method::POST, "/api/areas/shared/test-runs"));
         assert!(!changes_nothing(&Method::DELETE, "/api/agent/conversations/c1"));
+        assert!(!changes_nothing(&Method::POST, "/api/agent/conversations/c1/redact"));
         assert!(!changes_nothing(&Method::POST, "/api/something-new"));
     }
 
@@ -472,6 +474,7 @@ mod tests {
             (Method::POST, "/api/agent/conversations/c_1/messages"),
             (Method::POST, "/api/agent/conversations/c_1/stop"),
             (Method::POST, "/api/agent/conversations/c_1/context"),
+            (Method::POST, "/api/agent/conversations/c_1/redact"),
         ] {
             assert_eq!(need(&method, path), Need::Anyone, "{method} {path}");
         }

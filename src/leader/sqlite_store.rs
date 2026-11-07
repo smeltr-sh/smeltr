@@ -2541,6 +2541,42 @@ impl Store {
         Ok(true)
     }
 
+    /// Write `turn` in place of the `nth` turn of `conversation_id`, counted from 0, and with `title` the
+    /// conversation's title, leaving no copy of what either held in the database's file or its write-ahead log.
+    /// leader.db.previous, the copy made at each start, keeps what it held until the next start. False when there
+    /// is no such turn.
+    pub fn rewrite_turn(
+        &self,
+        conversation_id: &str,
+        nth: usize,
+        turn: &str,
+        title: Option<&str>,
+    ) -> Result<bool, StoreError> {
+        let mut conn = self.conn();
+        // The freed space is overwritten with zeros, and the log, which holds the page as it was, is emptied.
+        conn.pragma_update(None, "secure_delete", true)?;
+        let written = (|| {
+            let tx = conn.transaction()?;
+            let n = tx.execute(
+                "UPDATE agent_turns SET turn = ?3 WHERE conversation_id = ?1 AND seq =
+                 (SELECT seq FROM agent_turns WHERE conversation_id = ?1 ORDER BY seq LIMIT 1 OFFSET ?2)",
+                rusqlite::params![conversation_id, nth as i64, turn],
+            )?;
+            if let Some(title) = title.filter(|_| n > 0) {
+                tx.execute(
+                    "UPDATE agent_conversations SET title = ?2 WHERE id = ?1",
+                    (conversation_id, title),
+                )?;
+            }
+            tx.commit()?;
+            Ok::<_, rusqlite::Error>(n)
+        })();
+        conn.pragma_update(None, "secure_delete", false)?;
+        let written = written?;
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", (), |_| Ok(()))?;
+        Ok(written > 0)
+    }
+
     /// Remove a conversation and its turns. False when there was none.
     pub fn delete_conversation(&self, id: &str) -> Result<bool, StoreError> {
         let mut conn = self.conn();
@@ -5895,6 +5931,43 @@ mod tests {
         assert!(s.conversation("c_new").unwrap().is_none());
         assert!(s.delete_conversation("c_old").unwrap());
         assert!(s.turns_of("c_old").unwrap().is_empty());
+    }
+
+    /// A rewritten turn leaves nothing of what it held in the database's file or its write-ahead log.
+    #[test]
+    fn a_rewritten_turn_leaves_no_copy_on_disk() {
+        let dir = std::env::temp_dir().join(format!("smeltr-rewrite-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("rewrite.db");
+        let _ = std::fs::remove_file(&db);
+        let s = Store::open(&db, &temp_key()).unwrap();
+        s.create_conversation(&ConversationRecord {
+            id: "c_1".to_string(),
+            user_id: "u_admin".to_string(),
+            title: "my key is sk-unseen-41".to_string(),
+            created_at: 1,
+            updated_at: 1,
+        })
+        .unwrap();
+        assert!(s.append_turn("c_1", "first", 2).unwrap());
+        assert!(s.append_turn("c_1", "my key is sk-unseen-41", 3).unwrap());
+        assert!(
+            s.rewrite_turn("c_1", 1, "my key is ********", Some("my key is ********"))
+                .unwrap()
+        );
+        assert!(!s.rewrite_turn("c_1", 2, "x", None).unwrap(), "there is no third turn");
+        assert_eq!(s.conversation("c_1").unwrap().unwrap().title, "my key is ********");
+        assert_eq!(s.turns_of("c_1").unwrap(), ["first", "my key is ********"]);
+        for file in [db.clone(), dir.join("rewrite.db-wal")] {
+            let bytes = std::fs::read(&file).unwrap_or_default();
+            assert!(
+                !bytes.windows(12).any(|w| w == b"sk-unseen-41"),
+                "{} still holds it",
+                file.display()
+            );
+        }
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

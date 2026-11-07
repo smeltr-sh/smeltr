@@ -2342,6 +2342,7 @@ async fn run_leader() {
             .route("/api/agent/conversations/:id/messages", post(chat_api::add_message))
             .route("/api/agent/conversations/:id/stop", post(chat_api::stop))
             .route("/api/agent/conversations/:id/context", post(chat_api::context))
+            .route("/api/agent/conversations/:id/redact", post(chat_api::redact))
             .with_state(auth.clone()),
     );
 

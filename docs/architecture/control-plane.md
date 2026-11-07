@@ -16,7 +16,7 @@ its own. It validates people, distributes commits, previews changes over
 captured data and shows the fleet. It keeps each person's conversations with their AI agent, and
 deletes one nobody has added to for the days an administrator sets. What the model is sent of a conversation stays
 bounded: past a size, a summary stands in for its older turns, written by the provider where it can and by the
-model at the leader's ask where it cannot, while the conversation is kept whole. Standalone means smeltr plus a source plus a destination. A smeltr
+model at the leader's ask where it cannot, while the conversation is kept whole, except for what its person redacts. Standalone means smeltr plus a source plus a destination. A smeltr
 process is a leader or a worker; both roles compile into one binary, and
 setting a leader address is what makes a process a worker. Running both in
 one process spawns a worker that talks to its own leader over the same API an

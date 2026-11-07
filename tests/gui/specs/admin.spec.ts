@@ -816,7 +816,7 @@ test('a person sets what their agent may use from their name', async ({ admin, a
   });
 });
 
-test('a person asks their agent, sees what it asked the leader, and deletes the conversation', async ({
+test('a person asks their agent, sees what it asked the leader, redacts a line, and deletes the conversation', async ({
   admin,
   api,
 }) => {
@@ -845,6 +845,18 @@ test('a person asks their agent, sees what it asked the leader, and deletes the 
     await expect(admin.getByRole('heading', { name: 'Answered' })).toBeVisible();
     // The leader's answer went back to the model as the call's result.
     expect(JSON.stringify(model.asked.at(-1)?.messages.at(-1))).toContain('tool_result');
+
+    // A redacted line is stars, on the leader and on screen.
+    await admin.getByRole('button', { name: 'Redact' }).first().click();
+    await admin
+      .getByRole('dialog', { name: 'redact' })
+      .getByRole('button', { name: 'Redact', exact: true })
+      .click();
+    const stars = '*'.repeat('What pipelines do I have?'.length);
+    await expect(admin.getByText(stars, { exact: true }).first()).toBeVisible();
+    const [listed] = (await api.get('/api/agent/conversations')).conversations;
+    const read = await api.get(`/api/agent/conversations/${listed.id}`);
+    expect(read.conversation.items[0]).toEqual({ kind: 'message', text: stars });
 
     await admin.getByRole('button', { name: 'Delete conversation' }).click();
     await admin

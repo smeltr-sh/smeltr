@@ -5788,6 +5788,11 @@ export function restartConversation(
   return accountCall(conversationPath(id, '/context'), json('POST', { summarize }));
 }
 
+/** Make every character of the conversation's `item`th item, counted as its read lists them, `*` where it is stored. */
+export function redactConversationItem(id: string, item: number): Promise<object | AccountRefusal> {
+  return accountCall(conversationPath(id, '/redact'), json('POST', { item }));
+}
+
 export function deleteConversation(id: string): Promise<object | AccountRefusal> {
   return accountCall(conversationPath(id), { method: 'DELETE' });
 }
