@@ -10,7 +10,7 @@ use std::net::{IpAddr, Ipv6Addr};
 
 use ipnetwork::IpNetwork;
 
-use super::helpers::{Operand, Side, alloc_with_merged_validity, short_circuit_empty, side};
+use super::helpers::{Operand, Side, alloc_with_merged_validity, map_i64, short_circuit_empty, side};
 use crate::core::bits;
 use crate::core::column::{Column, DataType, StrBuilder, VarLen, VarType};
 use crate::core::ctx::Ctx;
@@ -45,9 +45,6 @@ fn parse_net(text: &[u8]) -> Option<IpNetwork> {
 /// `isIp(text)`: the text is an address. Text that is not one is `false`. Null stays null.
 pub fn is_ip(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Bool, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let mut out = alloc_with_merged_validity(ctx, &DataType::Bool, len, &[Some(v.validity)]);
     {
@@ -63,36 +60,19 @@ pub fn is_ip(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// `ipVersion(text)`: 4 or 6.
 pub fn ip_version(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
-    let mut out = alloc_with_merged_validity(ctx, &DataType::I64, len, &[Some(v.validity)]);
-    {
-        let o = out.i64_mut().unwrap();
-        for i in 0..len {
-            // Every row is written: a pooled buffer is not zeroed.
-            match o.validity.is_valid(i).then(|| parse_ip(v.get(i))).flatten() {
-                Some(IpAddr::V4(_)) => o.values[i] = 4,
-                Some(IpAddr::V6(_)) => o.values[i] = 6,
-                None => {
-                    o.values[i] = 0;
-                    o.validity.set_valid(i, false);
-                }
-            }
+    map_i64(ctx, &DataType::I64, len, &[Some(v.validity)], |i| {
+        match parse_ip(v.get(i))? {
+            IpAddr::V4(_) => Some(4),
+            IpAddr::V6(_) => Some(6),
         }
-        o.validity.recount();
-    }
-    out
+    })
 }
 
 /// `ipNormalize(text)`: the address in one spelling. Leading zeros go. IPv6 is lowercase with its longest run of
 /// zero groups compressed, as RFC 5952 writes it. A zone stays as written.
 pub fn ip_normalize(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
     for i in 0..len {
@@ -153,9 +133,6 @@ fn is_v6_unique_local(a: Ipv6Addr) -> bool {
 /// `ipScope(text)`: `unspecified`, `loopback`, `link-local`, `multicast`, `private` or `public`.
 pub fn ip_scope(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
     for i in 0..len {
@@ -187,9 +164,6 @@ impl Block<'_> {
 /// A row whose address or any block does not parse is null.
 pub fn in_cidr(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Bool, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let sides: Vec<_> = ins[1..].iter().map(|c| side::var(c).unwrap()).collect();
     let blocks: Vec<Block> = sides
@@ -233,9 +207,6 @@ pub fn in_cidr(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// past the width of the address is null.
 pub fn cidr_network(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let prefix = side::i64(ins[1]).unwrap();
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);

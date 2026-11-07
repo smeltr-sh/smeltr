@@ -3,7 +3,7 @@
 //!
 //! `push` reads a null array as zero elements, so a guarded `x = push(x, v)` works on the first assignment.
 
-use super::helpers::{Operand, clamped, i64_values, short_circuit_empty, side};
+use super::helpers::{Operand, clamped, i64_values, side};
 use crate::core::bits;
 use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, DataType, Fixed, FixedMut, List, Scalar, StrBuilder, Validity, VarLen, VarType};
@@ -11,9 +11,6 @@ use crate::core::ctx::{CompiledPattern, Ctx};
 
 pub fn array_length(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
-    }
     let l = ins[0].list().unwrap();
     let mut out = Column::alloc(ctx.pool, &DataType::I64, len);
     {
@@ -30,10 +27,7 @@ pub fn array_length(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// `split(value, delimiter)` -> `Array(Str)`. An empty delimiter splits into characters, as in JS. Null propagates.
 pub fn str_split(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    let out_ty = DataType::Array(Box::new(DataType::Str));
-    if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-        return e;
-    }
+    let _out_ty = DataType::Array(Box::new(DataType::Str));
     let v = ins[0].var().unwrap();
     let d = side::var(ins[1]).unwrap();
     let mut rows = ListRows::new(ctx, &v, len);
@@ -305,9 +299,6 @@ pub fn array_insert(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 pub fn array_remove(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let out_ty = ins[0].data_type();
-    if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-        return e;
-    }
     let (Ok(list), DataType::Array(elem_ty)) = (ins[0].list(), out_ty.clone()) else {
         return Column::empty(out_ty, len);
     };
@@ -421,9 +412,6 @@ pub fn array_set(ctx: &mut Ctx, array: &Column, index: &Column, value: &Column, 
 pub fn array_resize(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let out_ty = ins[0].data_type();
-    if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-        return e;
-    }
     let (Ok(list), DataType::Array(elem_ty)) = (ins[0].list(), out_ty.clone()) else {
         return Column::empty(out_ty, len);
     };
@@ -792,9 +780,6 @@ fn build_var<'a>(pool: &mut BufferPool, var_type: VarType, pieces: &[Piece<'a>],
 pub fn array_slice(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let out_ty = ins[0].data_type();
-    if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-        return e;
-    }
     let (Ok(list), DataType::Array(elem_ty)) = (ins[0].list(), out_ty.clone()) else {
         return Column::empty(out_ty, len);
     };
@@ -884,9 +869,6 @@ pub fn array_at(ctx: &mut Ctx, ins: &[&Column]) -> Column {
         DataType::Array(e) => *e,
         other => return Column::empty(other, len),
     };
-    if let Some(e) = short_circuit_empty(ins, &elem_ty, len) {
-        return e;
-    }
     let Ok(list) = ins[0].list() else {
         return Column::empty(elem_ty, len);
     };
@@ -1024,9 +1006,6 @@ fn element_eq(child: &Column, i: usize, value: &Elem<'_>) -> bool {
 pub fn array_sort(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let out_ty = ins[0].data_type();
-    if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-        return e;
-    }
     let (Ok(list), DataType::Array(elem_ty)) = (ins[0].list(), out_ty.clone()) else {
         return Column::empty(out_ty, len);
     };
@@ -1117,9 +1096,6 @@ fn element_pos(list: &List<'_>, row: usize, value: &Elem<'_>, from_end: bool, fr
 /// `>= 0`. A null array, value or `from` is a null answer.
 fn search(ctx: &mut Ctx, ins: &[&Column], from_end: bool, to: DataType) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &to, len) {
-        return e;
-    }
     let list = ins[0].list().unwrap();
     let from = ins.get(2).map(|c| side::i64(c).unwrap());
     let mut out = Column::alloc(ctx.pool, &to, len);
@@ -1175,9 +1151,6 @@ pub fn array_includes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// `join(array, separator)`: every element rendered as `toString` would, a null element as nothing, as JS has it.
 pub fn array_join(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let list = ins[0].list().unwrap();
     let sep = side::var(ins[1]).unwrap();
     let child = list.child;

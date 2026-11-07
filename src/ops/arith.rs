@@ -4,9 +4,7 @@
 //! `I64` row whose result does not fit is null and marked `Overflow` (design doc, Language). The loop runs with
 //! wrapping arithmetic and a branchless witness; only a batch the witness tripped on is walked again to find its rows.
 
-use super::helpers::{
-    One, Operand, Rows, Side, alloc_with_merged_validity, f64_values, native, short_circuit_empty, side, two_sides,
-};
+use super::helpers::{One, Operand, Rows, Side, alloc_with_merged_validity, f64_values, native, side, two_sides};
 use crate::core::column::{Column, DataType, Validity};
 use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
@@ -56,9 +54,6 @@ macro_rules! int_arith {
                 out
             }
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-                return e;
-            }
             two_sides!(ctx, ins, len, i64, i64, run)
         }
     };
@@ -97,9 +92,6 @@ pub fn mul_i64_i64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
         out
     }
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
-    }
     two_sides!(ctx, ins, len, i64, i64, run)
 }
 
@@ -139,9 +131,6 @@ macro_rules! div_like {
                 out
             }
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &$out, len) {
-                return e;
-            }
             two_sides!(ctx, ins, len, $la, $ra, run)
         }
     };
@@ -303,9 +292,6 @@ macro_rules! float_arith {
                 out
             }
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::F64, len) {
-                return e;
-            }
             two_sides!(ctx, ins, len, $la, $ra, run)
         }
     };
@@ -321,9 +307,6 @@ float_arith!(pow_i64_i64, i64, i64, |x: f64, y: f64| x.powf(y));
 /// Float division. Divide by zero is null, not infinity.
 pub fn div_f64_f64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::F64, len) {
-        return e;
-    }
     let av = f64_values(ins[0]).unwrap();
     let bv = f64_values(ins[1]).unwrap();
     let mut out = alloc_with_merged_validity(ctx, &DataType::F64, len, &[ins[0].validity(), ins[1].validity()]);
@@ -373,9 +356,6 @@ macro_rules! temporal {
                 out
             }
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &$out, len) {
-                return e;
-            }
             two_sides!(ctx, ins, len, $la, $ra, run)
         }
     };
@@ -417,9 +397,6 @@ macro_rules! unary_i64 {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
             let out_ty = $ty;
-            if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-                return e;
-            }
             let a = ins[0].$acc().unwrap();
             let mut out = alloc_with_merged_validity(ctx, &out_ty, len, &[Some(a.validity), None]);
             {
@@ -455,9 +432,6 @@ macro_rules! round_f64_to_i64 {
     ($name:ident, $f:ident) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-                return e;
-            }
             let a = ins[0].f64().unwrap();
             let mut out = alloc_with_merged_validity(ctx, &DataType::I64, len, &[Some(a.validity), None]);
             {
@@ -480,9 +454,6 @@ round_f64_to_i64!(round_f64, round);
 
 pub fn neg_f64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::F64, len) {
-        return e;
-    }
     let a = ins[0].f64().unwrap();
     let mut out = alloc_with_merged_validity(ctx, &DataType::F64, len, &[Some(a.validity), None]);
     {
@@ -498,9 +469,6 @@ pub fn neg_f64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 pub fn abs_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     if ins[0].data_type() == DataType::I64 {
-        if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-            return e;
-        }
         let a = ins[0].i64().unwrap();
         let mut out = alloc_with_merged_validity(ctx, &DataType::I64, len, &[Some(a.validity), None]);
         {
@@ -513,9 +481,6 @@ pub fn abs_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
         fail_overflowed(ctx, &mut out, len, |i| a.values[i] == i64::MIN);
         out
     } else {
-        if let Some(e) = short_circuit_empty(ins, &DataType::F64, len) {
-            return e;
-        }
         let a = ins[0].f64().unwrap();
         let mut out = alloc_with_merged_validity(ctx, &DataType::F64, len, &[Some(a.validity), None]);
         {
@@ -571,10 +536,6 @@ macro_rules! minmax {
             }
             let len = ins[0].len();
             let all_i64 = joins_to_i64(ins);
-            let out_ty = if all_i64 { DataType::I64 } else { DataType::F64 };
-            if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-                return e;
-            }
             if ins.len() != 2 {
                 return minmax_n(ctx, ins, len, all_i64, $fi, $ff);
             }
@@ -628,9 +589,6 @@ pub fn clamp_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let all_i64 = joins_to_i64(ins);
     let out_ty = if all_i64 { DataType::I64 } else { DataType::F64 };
-    if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-        return e;
-    }
     let bitmaps = [ins[0].validity(), ins[1].validity(), ins[2].validity()];
     let mut out = alloc_with_merged_validity(ctx, &out_ty, len, &bitmaps);
     // Each operand as a slice: a constant bound is filled once, outside the pool, and the loop stays a slice loop.
@@ -674,9 +632,6 @@ macro_rules! bitwise {
     ($name:ident, $f:expr) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-                return e;
-            }
             let a = ins[0].i64().unwrap();
             let b = ins[1].i64().unwrap();
             let mut out = alloc_with_merged_validity(ctx, &DataType::I64, len, &[Some(a.validity), Some(b.validity)]);
@@ -702,9 +657,6 @@ bitwise!(shr_i64, |x: i64, y: i64| x.wrapping_shr(y as u32));
 /// `sign`: `-1`, `0` or `1` as `I64` for either numeric type. JS returns `NaN` for `NaN`; here that row is null.
 pub fn sign_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
-    }
     if ins[0].data_type() == DataType::I64 {
         let a = ins[0].i64().unwrap();
         let mut out = alloc_with_merged_validity(ctx, &DataType::I64, len, &[Some(a.validity), None]);

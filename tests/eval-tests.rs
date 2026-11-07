@@ -403,6 +403,39 @@ fn unresolved_field_yields_null_not_a_crash() {
 /// column stays `i64` and the other rows keep their values. The null flows up
 /// through the outer Add like any other null.
 #[test]
+fn an_unbound_input_makes_a_kernels_result_null_unless_it_reads_one() {
+    let mut env = Env::new();
+    let b = Batch::new(
+        &layout(&[DataType::DateTime, DataType::Array(Box::new(DataType::Str))]),
+        3,
+        0,
+    );
+    let neg = Ir::new(
+        DataType::I64,
+        Span::default(),
+        IrKind::Unary {
+            op: UnOp::Neg,
+            operand: Box::new(field(A, DataType::I64)),
+        },
+    );
+    let array = DataType::Array(Box::new(DataType::Str));
+    for ir in [
+        neg,
+        call(StdFunc::Year, DataType::I64, vec![field(A, DataType::DateTime)]),
+        call(StdFunc::Length, DataType::I64, vec![field(B, array.clone())]),
+    ] {
+        let out = env.run(&ir, &b);
+        assert!(out.is_unbound(), "{:?}", ir.kind);
+        assert_eq!(out.len(), 3);
+        out.reclaim(&mut env.pool);
+    }
+    let out = env.run(&call(StdFunc::IsNull, DataType::Bool, vec![field(B, array)]), &b);
+    assert!((0..3).all(|i| out.is_valid(i) && bits::get_row(out.bool().unwrap().values, i)));
+    out.reclaim(&mut env.pool);
+    b.reclaim(&mut env.pool);
+}
+
+#[test]
 fn overflow_is_null_on_its_row_and_the_column_stays_i64() {
     let mut env = Env::new();
     let mut b = Batch::new(&layout(&[DataType::I64]), 2, 0);

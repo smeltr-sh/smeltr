@@ -9,7 +9,7 @@ use crate::core::bits;
 use crate::core::column::{Column, DataType, FixedMut, StrBuilder, VarLen, VarType};
 use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
-use crate::ops::helpers::{Labels, Operand, Side, clamped, short_circuit_empty, side};
+use crate::ops::helpers::{Labels, Operand, Side, clamped, side};
 use memchr::memmem;
 
 /// A number's type in a layout.
@@ -147,9 +147,6 @@ fn read_num<T: Copy + Default>(
     slots: for<'a> fn(&'a mut Column) -> FixedMut<'a, T>,
 ) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &to, len) {
-        return e;
-    }
     let (Some(b), Some(at), Some(ty)) = (side::var(ins[0]), side::i64(ins[1]), side::var(ins[2])) else {
         return Column::empty(to, len);
     };
@@ -232,9 +229,6 @@ pub fn read_float(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// `readBytes(b, at, n)` -> `Bytes`: the `n` bytes from byte `at`.
 pub fn read_bytes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Bytes, len) {
-        return e;
-    }
     let (Some(b), Some(at), Some(n)) = (side::var(ins[0]), side::i64(ins[1]), side::i64(ins[2])) else {
         return Column::empty(DataType::Bytes, len);
     };
@@ -290,9 +284,6 @@ enum Needle<'a> {
 /// byte, so it is never found. A null value, search or `from` is a null answer.
 fn search(ctx: &mut Ctx, ins: &[&Column], from_end: bool, to: DataType) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &to, len) {
-        return e;
-    }
     // The searched value must be a column, not a constant, as for `indexOf` on text and arrays.
     let Ok(b) = ins[0].var() else {
         return Column::empty(to, len);
