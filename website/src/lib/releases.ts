@@ -1,5 +1,6 @@
 import notes from './releases.json';
 import { source } from './release.ts';
+import { categories } from './release-categories.js';
 import type { Group, Link } from './nav.ts';
 
 /** A release's notes, as `releases.json` holds them. `date` is missing until the release ships. */
@@ -8,8 +9,28 @@ export type Release = {
   date?: string | null;
   summary: string;
   highlights?: { title: string; text: string; href: string }[];
-  sections: { title: string; items: string[] }[];
+  features?: NoteGroup[];
+  fixes?: NoteGroup[];
 };
+
+/** Notes about one area of smeltr, under one category. */
+type NoteGroup = { title: string; items: string[] };
+
+/** Each category `release` has notes in, in the order they are shown. */
+export function categorized(release: Release): { title: string; groups: NoteGroup[] }[] {
+  return categories
+    .map((c) => ({
+      title: c.title,
+      groups: release[c.key as 'features' | 'fixes'] ?? [],
+    }))
+    .filter((c) => c.groups.length > 0);
+}
+
+/** A note's text split at its backticks, as the GitHub release's Markdown splits it: the runs between backticks are
+ * code. */
+export function codeRuns(note: string): { text: string; code: boolean }[] {
+  return note.split('`').map((text, i) => ({ text, code: i % 2 === 1 }));
+}
 
 /** A release's major, minor and patch: `just cut-release` names every release so. */
 function parts(release: Release): number[] {
