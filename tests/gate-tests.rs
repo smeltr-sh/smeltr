@@ -1081,8 +1081,9 @@ impl FakeModel {
             .collect()
     }
 
-    /// "ok" to the check made when AI agents are turned on. To an agent's turn, one call: a write when the person
-    /// said "write", a read otherwise; then, given its result, the status it came back with.
+    /// "ok" to the check made when AI agents are turned on. To an agent's turn, one call: when the person said
+    /// "read back <path>", a read of that path with `before=1`; otherwise a write when the person said "write", and a
+    /// read when not; then, given its result, the status it came back with.
     fn answer(body: &serde_json::Value) -> serde_json::Value {
         let text = |text: String| {
             serde_json::json!({
@@ -1104,12 +1105,13 @@ impl FakeModel {
         if asked.contains("Summarize the conversation") {
             return text("They read what runs in shared.".to_string());
         }
-        let input = match asked.contains("write") {
-            true => serde_json::json!({
+        let input = match asked.split_once("read back ") {
+            Some((_, path)) => serde_json::json!({"method": "GET", "path": path.trim(), "query": {"before": "1"}}),
+            None if asked.contains("write") => serde_json::json!({
                 "method": "PUT", "path": "/api/areas/shared/pipelines/p1", "query": {"branch": "agent-work"},
                 "body": {"id": "p1", "name": "p1", "steps": []},
             }),
-            false => serde_json::json!({"method": "GET", "path": "/api/areas/shared/pipelines"}),
+            None => serde_json::json!({"method": "GET", "path": "/api/areas/shared/pipelines"}),
         };
         serde_json::json!({
             "content": [{"type": "tool_use", "id": "tu_1", "name": "request", "input": input}],
@@ -1403,6 +1405,81 @@ fn a_persons_agent_calls_the_api_as_them_within_what_they_let_it() {
     assert_eq!(leader.delete_as(&op, &format!("/api/agent/conversations/{id}")), 200);
     let (status, _) = leader.get_as(&op.session, &format!("/api/agent/conversations/{id}"));
     assert_eq!(status, 404);
+}
+
+/// An agent reads back the conversation it works in, as `this`, a page or a search at a time, and no other.
+#[test]
+fn an_agent_reads_back_only_its_own_conversation() {
+    let leader = start("agent-read-back");
+    let op = operator(&leader);
+    let model = FakeModel::start();
+    agents_on(&leader, &op, &model);
+    let start = |message: &str| {
+        let (status, started) = leader.post_as(
+            &op,
+            "/api/agent/conversations",
+            serde_json::json!({ "message": message }),
+        );
+        assert_eq!(status, 202, "{started}");
+        let id = started["id"].as_str().unwrap().to_string();
+        turn_ended(&leader, &op, &id);
+        id
+    };
+    let say = |id: &str, message: &str| {
+        let (status, _) = leader.post_as(
+            &op,
+            &format!("/api/agent/conversations/{id}/messages"),
+            serde_json::json!({ "message": message }),
+        );
+        assert_eq!(status, 202);
+        turn_ended(&leader, &op, id)
+    };
+    let last_result = |read: &serde_json::Value| {
+        let items = read["items"].as_array().unwrap();
+        let result = items.iter().rev().find(|i| i["kind"] == "result").unwrap();
+        result["output"].as_str().unwrap().to_string()
+    };
+
+    let id = start("What runs in shared?");
+    let (status, _) = leader.post_as(
+        &op,
+        &format!("/api/agent/conversations/{id}/context"),
+        serde_json::json!({ "summarize": true }),
+    );
+    assert_eq!(status, 202);
+    turn_ended(&leader, &op, &id);
+
+    // A search finds the items holding every word, the last `limit` of them.
+    let (status, found) = leader.get_as(
+        &op.session,
+        &format!("/api/agent/conversations/{id}?q=RUNS%20shared&limit=1"),
+    );
+    assert_eq!(status, 200, "{found}");
+    let items = found["conversation"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{found}");
+    assert_eq!(items[0]["kind"], "fresh", "{found}");
+    // Asked for no page, the GUI reads the conversation whole, as before.
+    let (_, whole) = leader.get_as(&op.session, &format!("/api/agent/conversations/{id}"));
+    assert!(whole["conversation"].get("turns").is_none(), "{whole}");
+    assert!(whole["conversation"]["items"][0].get("turn").is_none(), "{whole}");
+
+    // Past its summary, the agent reads how the conversation started.
+    let read = say(&id, "read back /api/agent/conversations/this");
+    let output = last_result(&read);
+    let (status, page) = output.split_once('\n').unwrap();
+    assert_eq!(status, "200", "{output}");
+    let page: serde_json::Value = serde_json::from_str(page).unwrap();
+    assert_eq!(
+        page["conversation"]["items"],
+        serde_json::json!([{"kind": "message", "text": "What runs in shared?", "turn": 0}]),
+        "{page}"
+    );
+    assert!(page["conversation"]["turns"].as_u64().unwrap() > 4, "{page}");
+
+    // Any other conversation, even one of the same person's, reads to the agent as not there.
+    let other = start("Nothing much.");
+    let read = say(&other, &format!("read back /api/agent/conversations/{id}"));
+    assert!(last_result(&read).starts_with("404\n"), "{read}");
 }
 
 /// A username is taken once, whatever case it is typed in.

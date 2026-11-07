@@ -198,7 +198,9 @@ do its work is sent to that endpoint.
 An agent works by requests to the leader's own API, sent through the gate with
 the session or key it runs under, so each is judged as the GUI's would be. It reaches only
 the routes its catalog names, which leave out signing in and out and its
-person's conversations. What a request answers is data the agent reads, never
+person's conversations, except reading the one it works in: what its person
+said there and what its calls returned, so it can read back the turns that a summary
+stands in for. What a request answers is data the agent reads, never
 an instruction to it: its permissions bound what an instruction written into
 that data could do. A conversation is its person's alone.
 

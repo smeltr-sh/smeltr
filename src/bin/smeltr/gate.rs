@@ -901,7 +901,10 @@ mod tests {
 
         /// As [`serve`], with every request marked as the leader's agent marks the ones it sends for a person.
         async fn serve_by_agent(auth: Auth) -> std::net::SocketAddr {
-            serve_routes(router(auth).layer(axum::Extension(ByAgent))).await
+            serve_routes(router(auth).layer(axum::Extension(ByAgent {
+                conversation: String::new(),
+            })))
+            .await
         }
 
         fn router(auth: Auth) -> Router {

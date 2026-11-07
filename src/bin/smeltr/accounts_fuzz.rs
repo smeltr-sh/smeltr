@@ -351,7 +351,10 @@ impl Leader {
         };
         let auth = Auth::new(store.clone(), origin, Default::default());
         let at = serve(routes(auth.clone())).await;
-        let by_agent = serve(routes(auth.clone()).layer(axum::Extension(ByAgent))).await;
+        let by_agent = serve(routes(auth.clone()).layer(axum::Extension(ByAgent {
+            conversation: String::new(),
+        })))
+        .await;
         Leader {
             auth,
             store,
