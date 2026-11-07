@@ -4,8 +4,15 @@
 
   const pull = `docker pull ${image}:latest`;
   let copied = $state(false);
+  let command: HTMLElement | undefined = $state();
   async function copy() {
-    await navigator.clipboard.writeText(pull);
+    try {
+      await navigator.clipboard.writeText(pull);
+    } catch {
+      // Without clipboard access, select the command so the visitor can copy it by hand.
+      if (command) getSelection()?.selectAllChildren(command);
+      return;
+    }
     copied = true;
     setTimeout(() => (copied = false), 1500);
   }
@@ -38,7 +45,7 @@
         <ul class="downloads">
           <li>
             <span class="command-row">
-              <code class="command">{pull}</code>
+              <code class="command" bind:this={command}>{pull}</code>
               <button class="compact" onclick={copy} aria-label="Copy the docker pull command"
                 >{copied ? 'Copied' : 'Copy'}</button
               ><span class="live" aria-live="polite">{copied ? 'Copied' : ''}</span>
