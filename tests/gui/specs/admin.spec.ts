@@ -693,7 +693,7 @@ test('AI agents turned on under System offer the agent screens', async ({ admin 
 
     await admin.getByRole('button', { name: /^signed in as / }).click();
     await expect(admin.getByRole('button', { name: 'Agent permissions' })).toBeVisible();
-    await expect(admin.getByRole('button', { name: 'Agent', exact: true })).toBeVisible();
+    await expect(admin.getByRole('button', { name: 'Agent', exact: true })).toHaveCount(0);
   } finally {
     await model.stop();
   }
