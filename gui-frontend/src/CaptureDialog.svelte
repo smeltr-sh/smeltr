@@ -224,7 +224,7 @@
             disabled={held === 0}
             onkeydown={(e) => {
               // Enter here saves, as Save sample would, though the window's primary may be another.
-              if (e.key !== 'Enter' || !use) return;
+              if (e.key !== 'Enter' || e.isComposing || !use) return;
               e.preventDefault();
               if (!busy && saveName.trim()) onsave?.(saveName.trim());
             }}
