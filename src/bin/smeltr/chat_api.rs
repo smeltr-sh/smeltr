@@ -758,7 +758,7 @@ pub async fn read(
 fn read_items(turns: &[String], reading: &Reading) -> Vec<Value> {
     let to = match (reading.from, reading.to) {
         (_, Some(to)) => to,
-        (Some(from), None) => from + 1,
+        (Some(from), None) => from.saturating_add(1),
         (None, None) => turns.len(),
     }
     .min(turns.len());
