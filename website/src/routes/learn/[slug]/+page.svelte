@@ -6,13 +6,13 @@
   const video = $derived(data.video);
 </script>
 
-<svelte:head><title>{video.title}</title></svelte:head>
+<svelte:head><title>{video.title} — smeltr</title></svelte:head>
 
 <div class="marketing">
   <section class="watch">
     <p class="eyebrow">
       <a href="/learn">Learn</a> · {topicNames[video.topic]}
-      {#if video.minutes}&nbsp;· {video.minutes} min{/if}
+      {#if video.minutes}· {video.minutes} min{/if}
     </p>
     <h1>{video.title}</h1>
     <div class="player"><VideoPlayer {video} /></div>
