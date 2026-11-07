@@ -32,12 +32,15 @@
   <div class="library">
     {#each visible as video (video.title)}
       <article class="video">
-        <VideoPlayer {video} />
+        <VideoPlayer {video} href={video.youtube ? `/learn/${video.slug}` : undefined} />
         <div class="copy">
           <p class="eyebrow">
             {topicNames[video.topic]}{#if video.minutes}&nbsp;· {video.minutes} min{/if}
           </p>
-          <h2>{video.title}</h2>
+          <h2>
+            {#if video.youtube}<a href="/learn/{video.slug}">{video.title}</a
+              >{:else}{video.title}{/if}
+          </h2>
           {#if video.youtube}
             <a href="/demo/try/" rel="external">Try it yourself in the demo →</a>
           {:else}
@@ -81,6 +84,10 @@
   .copy h2 {
     font-size: 1.3rem;
     margin: 0 0 0.9rem;
+  }
+  .copy h2 a {
+    color: inherit;
+    text-decoration: none;
   }
   .copy a {
     font-weight: 600;

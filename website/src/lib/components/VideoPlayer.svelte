@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Video } from '#lib/videos.ts';
 
-  let { video }: { video: Video } = $props();
+  // With `href`, the poster links there instead of playing in place.
+  let { video, href }: { video: Video; href?: string } = $props();
 
   // YouTube's player loads only once the visitor presses play, so a visitor who
   // does not watch never contacts YouTube.
@@ -10,6 +11,11 @@
 
 {#if !video.youtube}
   <div class="frame planned"><span>Coming soon</span></div>
+{:else if href}
+  <a class="frame poster" {href} aria-label="Play {video.title}">
+    <img src={video.poster} alt="" loading="lazy" />
+    <span class="play" aria-hidden="true"></span>
+  </a>
 {:else if playing}
   <iframe
     class="frame"
