@@ -64,13 +64,15 @@ export function canEdit(area: string = currentScope()): boolean {
 }
 
 /** Whether a capture may be started at `at`: it asks `at.group`'s workers for records, which a viewer of
- * that group may. Without `at`, whether the capture form may be opened from the scope chip. Saving
- * what it caught is `canEdit`'s. */
+ * that group may. One with no group, in shared, has its group picked in the form, from any the person
+ * views. Without `at`, whether the capture form may be opened from the scope chip. Saving what it caught
+ * is `canEdit`'s. */
 export function mayCapture(at?: {
   kind: 'source' | 'destination';
   scope: string;
   group: string;
 }): boolean {
+  if (at?.group === '') return isAdministrator() || heldAreas().length > 1;
   return holds(at?.group ?? currentScope(), 'viewer');
 }
 

@@ -38,6 +38,7 @@
   } from './capture';
   import { mintSampleId } from './ids';
   import { canEdit } from './access';
+  import { neverLocked } from './Locked.svelte';
   import {
     getConfig,
     configAt,
@@ -75,8 +76,14 @@
      * only one the form offers. */
     editing?: { source: SourceDto; maxMatches: number };
     /** What a finished capture is for, in place of saving it as a sample: `take` is handed it and answers why it
-     * could not use it, or nothing once it has, which closes the flow. */
-    use?: { title: string; label: string; take: (status: CaptureStatus) => string | undefined };
+     * could not use it, or nothing once it has, which closes the flow. One that `keeps` it reads it where the leader
+     * holds it, so the flow lets go of it rather than discarding it. */
+    use?: {
+      title: string;
+      label: string;
+      keeps?: boolean;
+      take: (status: CaptureStatus) => string | undefined;
+    };
     /** Cancel or Escape. */
     oncancel: () => void;
     /** A step back to what came before, in the form's header. */
@@ -84,6 +91,9 @@
     /** A capture, saved: the new sample's id. Without it, saving closes the flow. */
     onsaved?: (id: string) => void;
   } = $props();
+
+  // Whoever may open it may capture, on a page they may only read too (`mayCapture`).
+  neverLocked();
 
   // Fixed for the life of this flow: the page opens a new one for another target.
   // svelte-ignore state_referenced_locally
@@ -320,9 +330,15 @@
   /** Hand the finished capture to `use`, which closes the flow once it has taken it. */
   async function take() {
     if (!use || !capture.status) return;
-    error = use.take(capture.status) ?? '';
-    if (error) return;
-    await capture.discard();
+    const status = capture.status;
+    // Let go before `take`, whose effects may close this flow, which discards what it still follows.
+    const kept = use.keeps ? capture.release() : '';
+    error = use.take(status) ?? '';
+    if (error) {
+      if (kept) capture.follow(kept);
+      return;
+    }
+    if (!kept) await capture.discard();
     oncancel();
   }
 

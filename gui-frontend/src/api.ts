@@ -2034,7 +2034,7 @@ export interface PreviewRequest {
   config: string;
   /** Defaults to the config's first pipeline. */
   pipeline?: string;
-  /** A saved sample, by id. Omitted runs no records. */
+  /** A saved sample, by id, or a capture the caller holds, as `heldChoice` names it. Omitted runs no records. */
   sample?: string;
   /** Show `__`-prefixed control variables in the output. */
   showInternal?: boolean;
@@ -2167,13 +2167,25 @@ export interface DictionaryOut {
   sampled: Dictionary | null;
 }
 
+/** A capture the caller holds, named where a sample's id goes. No sample id starts with a NUL. */
+const HELD = '\0capture:';
+export function heldChoice(session: string): string {
+  return `${HELD}${session}`;
+}
+/** The capture's session `choice` names, if it names one rather than a sample. */
+export function heldSession(choice: string): string | undefined {
+  return choice.startsWith(HELD) ? choice.slice(HELD.length) : undefined;
+}
+
 export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
+  const capture = req.sample && heldSession(req.sample);
   return post(
     branched(inArea('/preview/pipeline')),
     {
       config: req.config,
       pipeline: req.pipeline ?? null,
-      sample: req.sample ?? null,
+      sample: (!capture && req.sample) || null,
+      capture: capture || null,
       show_internal: req.showInternal ?? false,
       at_micros: req.atMicros ?? null,
       filter: req.filter ?? null,
@@ -2978,6 +2990,22 @@ export function startCapture(
     ),
 ): Promise<StartCaptureResult> {
   return post('/api/captures', body, 'quiet');
+}
+
+/** The capture the leader holds for whoever is signed in, which a preview may run over. */
+export function myCapture(): Promise<CaptureStatusResult> {
+  return expandStatus(apiJson('/api/captures/mine', undefined, 'quiet'));
+}
+
+/** A finished capture's records, as a sample holds them. */
+export async function capturedRecords(session: string): Promise<SampleRecordDto[]> {
+  const res = await fetch(captureDownloadUrl(session));
+  if (!res.ok) throw new Error(`the capture's records could not be read (${res.status})`);
+  const text = await res.text();
+  return text
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => JSON.parse(line) as SampleRecordDto);
 }
 
 export function captureStatus(session: string): Promise<CaptureStatusResult> {

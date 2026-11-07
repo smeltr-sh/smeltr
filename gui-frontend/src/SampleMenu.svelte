@@ -18,6 +18,7 @@
     lockedBy,
     pipeline,
     mayCapture,
+    held,
     onpick,
     onadd,
     oncapture,
@@ -34,20 +35,27 @@
     /** The pipeline, whose sources a capture is offered from; empty before its first save. */
     pipeline: string;
     mayCapture: (source: Connected) => boolean;
+    /** The capture the leader holds for whoever is signed in, picked as `choice`: listed above the sources. */
+    held?: { choice: string; records: number };
     onpick: (id: string) => void;
     /** Opens the dialog that makes a new sample; absent for a viewer, who may not save one. */
     onadd?: () => void;
-    /** Starts a capture at `source`; absent for a viewer, who may not capture. */
+    /** Starts a capture at `source`; absent for whoever may not capture. */
     oncapture?: (source: Connected) => void;
   } = $props();
 
   type Tab = 'saved' | 'capture';
-  let tabs = $derived<Tab[]>(oncapture ? ['saved', 'capture'] : ['saved']);
+  let tabs = $derived<Tab[]>(oncapture || held ? ['saved', 'capture'] : ['saved']);
   let open = $state(false);
   let tab = $state<Tab>('saved');
   let query = $state('');
 
-  let selectedName = $derived(samples.find((s) => s.id === selected)?.name ?? selected);
+  const HELD_NAME = 'Your capture';
+  let selectedName = $derived(
+    held?.choice === selected
+      ? HELD_NAME
+      : (samples.find((s) => s.id === selected)?.name ?? selected),
+  );
 
   // -- saved ---------------------------------------------------------------
 
@@ -176,6 +184,21 @@
           autofocus
         />
         <div class="list" role="listbox" aria-label="Sources">
+          {#if held && !query.trim()}
+            <button
+              type="button"
+              class="item"
+              role="option"
+              aria-selected={held.choice === selected}
+              onclick={() => {
+                open = false;
+                onpick(held.choice);
+              }}
+            >
+              <span class="name">{HELD_NAME}</span>
+              <span class="dim">{count(held.records, 'record')} · not saved</span>
+            </button>
+          {/if}
           {#each foundSources as c (`${c.area}/${c.id}`)}
             <button
               type="button"

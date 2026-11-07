@@ -796,6 +796,8 @@ export class DemoLeader {
       const read = path.match(/^\/api\/branches\/([^/]+)\/(timeline|diff)$/);
       if (read?.[2] === 'timeline') return this.timeline(decodeURIComponent(read[1]));
       if (read?.[2] === 'diff') return this.diff(decodeURIComponent(read[1]), q.get('path'));
+      // The demo's visitor saves what they capture, so the leader holds none for them.
+      if (path === '/api/captures/mine') return ok({});
       const capture = path.match(/^\/api\/captures\/([^/]+)$/);
       if (capture) return this.captureStatus(decodeURIComponent(capture[1]));
       const live = this.live(url, branch);

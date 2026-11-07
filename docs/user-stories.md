@@ -328,9 +328,10 @@ administrators reach Admin, and at least one local administrator
 remains.
 
 **P5 — Records are a viewer's to read.** A viewer reads an area's samples,
-runs a preview over them and captures a group's live records. Saving a
-capture as a sample takes editor, as changing the configuration does. Every
-capture is audited with what it read.
+runs a preview over them and captures a group's live records, and runs a
+preview over their own capture without saving it. Saving a capture as a
+sample takes editor, as changing the configuration does. Every capture is
+audited with what it read.
 
 **P6 — A team sees its own areas.** A change, a commit, the map and the
 status pages show a person only the areas they hold; a change reaching an

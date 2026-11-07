@@ -205,6 +205,80 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   await expect(captured).toBeHidden();
 });
 
+// A1, a viewer: they capture a source feeding a pipeline from its editor's sample menu and run the pipeline over it,
+// unsaved; the menu offers it again after a reload.
+test('A1: a viewer runs a pipeline over a capture without saving it', async ({
+  api,
+  leader,
+  fleet,
+  browser,
+}) => {
+  await api.put('/api/areas/shared/sources?branch=arrive', [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+  ]);
+  await api.put('/api/areas/shared/pipelines/tidy?branch=arrive', {
+    id: 'tidy',
+    name: 'tidy',
+    steps: [],
+  });
+  await api.put('/api/areas/shared/destinations?branch=arrive', [
+    { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
+  ]);
+  await api.put('/api/areas/shared/routes?branch=arrive', [
+    {
+      id: 'r1',
+      source: 'own-metrics',
+      condition: null,
+      pipeline: 'tidy',
+      deliver: [{ to: ['es-a'] }],
+    },
+  ]);
+  await api.openChange('arrive', 'Tidy own metrics');
+  await api.deploy('arrive');
+  await fleet.startWorker(leader, api, 'default', 'w1');
+  await api.put('/api/roles/smeltr-readers', { areas: { default: 'viewer' } });
+  const made = await api.post('/api/accounts', {
+    authSource: 'local',
+    username: 'vera',
+    displayName: 'Vera Viewer',
+    roles: ['smeltr-readers'],
+  });
+  const first = await signedIn(leader, 'vera', made.temporaryPassword);
+  await first.put('/api/auth/password', { username: 'vera', newPassword: 'vera-chosen-password' });
+  await first.ctx.dispose();
+
+  const viewer = await (await browser.newContext({ ignoreHTTPSErrors: true })).newPage();
+  await viewer.addInitScript(() => localStorage.setItem('smeltr-scope', 'shared'));
+  await viewer.goto(leader.url);
+  await signInThroughGui(viewer, 'vera', 'vera-chosen-password');
+  await expect(viewer.getByRole('button', { name: 'Sign in' })).toHaveCount(0);
+  await goto(viewer, leader, '#/build/pipelines/tidy');
+
+  await viewer.getByRole('button', { name: 'Choose a sample' }).click();
+  await viewer.getByRole('tab', { name: /^Capture/ }).click();
+  await viewer.getByRole('option', { name: /own-metrics/ }).click();
+  const form = viewer.getByRole('dialog');
+  await form.getByRole('spinbutton', { name: 'records' }).fill('3');
+  await form.getByRole('button', { name: 'Start' }).click();
+  const use = viewer.getByRole('button', { name: 'Use these records' });
+  await expect(use).toBeEnabled({ timeout: 60_000 });
+  await expect(viewer.getByRole('button', { name: 'Save sample' })).toHaveCount(0);
+  await use.click();
+  await expect(viewer.getByRole('dialog')).toHaveCount(0);
+
+  const chip = viewer.getByRole('button', { name: 'Choose a sample' });
+  await expect(chip).toContainText('Your capture');
+  await expect(chip).toContainText('3 records', { timeout: 30_000 });
+  await expect(viewer.getByRole('button', { name: 'Lock this as a test' })).toHaveCount(0);
+
+  // Nothing was saved, and the leader still holds it for her after a reload.
+  expect((await api.get('/api/areas/shared/samples')).samples).toEqual([]);
+  await viewer.reload();
+  await viewer.getByRole('button', { name: 'Choose a sample' }).click();
+  await viewer.getByRole('tab', { name: /^Capture/ }).click();
+  await expect(viewer.getByRole('option', { name: /Your capture/ })).toContainText('3 records');
+});
+
 // A1, a source's card: one route to one destination is a line; a second destination turns it top to bottom, a [+]
 // on a line writes a condition there, and a second pipeline is a second route from the same source.
 test('A1: a route card turns at a second destination, takes conditions on its lines, and grows a pipeline', async ({

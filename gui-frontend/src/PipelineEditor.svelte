@@ -6,7 +6,8 @@
 
   The records come from a saved sample, so what a preview ran over has a
   name and is in the branch's history; the sample menu also saves a
-  capture or pasted records as one. The editor opens on the sample named in
+  capture or pasted records as one. Whoever may not save one runs over the
+  capture the leader holds for them instead, which nothing keeps. The editor opens on the sample named in
   the URL, else on the one this pipeline last ran over in this browser.
 -->
 <script lang="ts">
@@ -72,6 +73,11 @@
     listSamples,
     listTests,
     getSample,
+    myCapture,
+    capturedRecords,
+    heldChoice,
+    heldSession,
+    type CaptureStatus,
     proposeOnboard,
     SHARED_SCOPE,
     previewFailure,
@@ -108,6 +114,8 @@
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
   import AddSampleDialog from './AddSampleDialog.svelte';
+  import CaptureFlow from './CaptureFlow.svelte';
+  import { heldCount } from './capture';
   import RecordsPane, { type PauseRun } from './RecordsPane.svelte';
   import { RECOMPUTE_MS } from './FindBox.svelte';
   import SampleMenu from './SampleMenu.svelte';
@@ -676,6 +684,11 @@
   let selectedSample = $state('');
   let sampleRows: SampleRecordDto[] = $state([]);
   let capturing = $state(false);
+  /** The finished capture the leader holds for whoever is signed in, which a preview may run over unsaved. */
+  let held = $state<CaptureStatus | null>(null);
+  myCapture()
+    .then((res) => (held = res.capture?.done ? res.capture : null))
+    .catch(() => {});
   /** The dialog is open on its catalog, for a sample pasted, uploaded or captured. */
   let adding = $state(false);
 
@@ -756,6 +769,14 @@
     if (making) await proposeFrom(sampleRows);
   }
 
+  /** Run over a finished capture where the leader holds it, unsaved. Answers why it cannot. */
+  function useCapture(status: CaptureStatus): string | undefined {
+    if (heldCount(status) === 0) return 'Nothing was captured, so there is nothing to run.';
+    held = status;
+    void chooseSample(heldChoice(status.session));
+    return undefined;
+  }
+
   // The sample a pipeline last ran over, remembered per pipeline in this browser: the editor
   // opens on it, and the sample menu lists it first.
   const sampleKey = (pipeline: string) => `smeltr-workspace-sample:${pipeline}`;
@@ -767,7 +788,8 @@
   async function chooseSample(id: string) {
     const pipeline = untrack(() => pipelineId);
     selectedSample = id;
-    if (id) {
+    const session = heldSession(id);
+    if (id && !session) {
       lastUsed = id;
       store(sampleKey(pipeline), id);
     }
@@ -778,6 +800,10 @@
     records?.clearFind();
     if (!id) return;
     try {
+      if (session) {
+        sampleRows = await capturedRecords(session);
+        return;
+      }
       const res = await getSample(id);
       if (res.sample) sampleRows = res.sample.records;
     } catch (e) {
@@ -951,10 +977,14 @@
     }
   }
 
-  // Locking a test needs a saved pipeline to attach it to, a sample to name,
-  // and a run that actually produced the output being locked.
+  // Locking a test needs a saved pipeline to attach it to, a saved sample to
+  // name, and a run that actually produced the output being locked.
   let canLockTest = $derived(
-    loadedId !== '' && selectedSample !== '' && result !== null && result.ok,
+    loadedId !== '' &&
+      selectedSample !== '' &&
+      !heldSession(selectedSample) &&
+      result !== null &&
+      result.ok,
   );
 
   function goLockTest() {
@@ -1204,7 +1234,9 @@
   let proposalStep: Step | null = $state(null);
   let proposal = $state<FieldProposal | null>(null);
   let selectedSampleName = $derived(
-    samples.find((s) => s.id === selectedSample)?.name ?? selectedSample,
+    heldSession(selectedSample)
+      ? 'your capture'
+      : (samples.find((s) => s.id === selectedSample)?.name ?? selectedSample),
   );
 
   /** Writes `path` in the last open eval step, or in a new one at the end, and opens that step for its value. */
@@ -1584,14 +1616,13 @@
             {lockedBy}
             pipeline={loadedId}
             mayCapture={(c) => mayCapture(sourceTarget(c))}
+            held={held ? { choice: heldChoice(held.session), records: heldCount(held) } : undefined}
             onpick={chooseSample}
             onadd={readOnly ? undefined : () => (adding = true)}
-            oncapture={readOnly
-              ? undefined
-              : (c) => {
-                  captureAt = sourceTarget(c);
-                  capturing = true;
-                }}
+            oncapture={(c) => {
+              captureAt = sourceTarget(c);
+              capturing = true;
+            }}
           />
         {/snippet}
         {#snippet stage()}{@render stageChips()}{/snippet}
@@ -1608,6 +1639,20 @@
           captureAt = null;
         }}
         onsaved={captured}
+      />
+    {:else if capturing && captureAt}
+      <CaptureFlow
+        target={captureAt}
+        use={{
+          title: 'Capture records to run',
+          label: 'Use these records',
+          keeps: true,
+          take: useCapture,
+        }}
+        oncancel={() => {
+          capturing = false;
+          captureAt = null;
+        }}
       />
     {/if}
   </SectionShell>

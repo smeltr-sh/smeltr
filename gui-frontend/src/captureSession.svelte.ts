@@ -46,6 +46,9 @@ export const POLL_RETRY_MS = [1000, 2000, 4000, 8000];
 export class CaptureSession {
   /** Empty when there is nothing to stop, save or discard. */
   session = $state('');
+  /** `session`, outside reactivity, for `destroy`: a teardown reads state as it was before the change that tears
+   * it down, which would discard a session already let go. */
+  #held = '';
   /** `null` until the leader has answered the first poll. */
   status = $state<CaptureStatus | null>(null);
 
@@ -93,6 +96,7 @@ export class CaptureSession {
     }
     this.stopPolling();
     this.session = session;
+    this.#held = session;
     this.status = null;
     this.#failures = 0;
     void this.poll();
@@ -125,6 +129,7 @@ export class CaptureSession {
         // Nothing to stop, save or discard any more.
         this.#report(errorText(res.errors) || 'the capture is gone');
         this.session = '';
+        this.#held = '';
         this.status = null;
         return;
       }
@@ -140,6 +145,7 @@ export class CaptureSession {
       if (this.#failures >= POLL_RETRY_MS.length) {
         this.#report(`lost contact with the leader: ${errorMessage(e)}`);
         this.session = '';
+        this.#held = '';
         this.status = null;
         return;
       }
@@ -180,8 +186,9 @@ export class CaptureSession {
    * leader's to forget. Answers the session it held. */
   release(): string {
     this.stopPolling();
-    const session = this.session;
+    const session = this.#held;
     this.session = '';
+    this.#held = '';
     this.status = null;
     return session;
   }

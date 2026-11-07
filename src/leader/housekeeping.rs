@@ -44,7 +44,5 @@ pub async fn tick(state: &AppState, now_ms: i64) {
     }
 
     // A finished session that nobody collected would otherwise hold its records until the process restarted.
-    state
-        .captures
-        .sweep(std::time::Duration::from_secs(capture::MAX_DEADLINE_SECS));
+    state.captures.sweep(capture::HELD_IDLE, capture::HELD_AT_MOST);
 }
