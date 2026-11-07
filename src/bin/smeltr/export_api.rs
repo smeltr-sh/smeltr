@@ -2,7 +2,7 @@
 //! file as its bytes rather than the pointer a commit holds, and the samples and tests it includes. Importing
 //! reads it back through the same loader as any bundle.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
 
@@ -11,7 +11,8 @@ use axum::http::header;
 use axum::response::{IntoResponse, Response};
 
 use smeltr::config_file::{
-    self, FileConfig, FileSet, LookupSourceDto, TestSummary, list_tests, sample_path, slugify, test_path,
+    self, Credential, FileConfig, FileSet, LookupSourceDto, Objects, Part, PartId, TestSummary, list_tests,
+    sample_path, slugify, test_path,
 };
 use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::{blocking, blocking_answer};
@@ -26,19 +27,29 @@ pub struct ExportQuery {
     /// Include the routes that run the pipeline, with their sources and destinations.
     #[serde(default)]
     routes: bool,
-    /// Include the tests that lock what the export holds, and the samples they run over.
-    #[serde(default = "yes")]
-    tests: bool,
+    /// The objects to leave out, as JSON: a list of `{part, id}`, as an import's answers name them.
+    #[serde(default, rename = "leftOut")]
+    left_out: Option<String>,
 }
 
-fn yes() -> bool {
-    true
+impl ExportQuery {
+    fn left_out(&self) -> Result<BTreeSet<(Part, String)>, Refusal> {
+        let Some(text) = &self.left_out else {
+            return Ok(BTreeSet::new());
+        };
+        let named: Vec<PartId> =
+            serde_json::from_str(text).map_err(|e| Refusal::bad_request(format!("malformed leftOut: {e}")))?;
+        Ok(named.into_iter().map(|o| (o.part, o.id)).collect())
+    }
 }
 
 /// Pipeline `id`'s export from `area`, as a zip to download. The zip is written as it is sent, so a large lookup file
 /// is never held in memory.
 pub async fn export_pipeline(AxPath((area, id)): AxPath<(String, String)>, Query(q): Query<ExportQuery>) -> Response {
-    let files = blocking(move || exported(&leader_data_dir(), &area, &id, &q).map(|(_, files)| (id, files)));
+    let files = blocking(move || {
+        let left_out = q.left_out()?;
+        exported(&leader_data_dir(), &area, &id, &q, &left_out).map(|(_, files)| (id, files))
+    });
     let (id, files) = match files.await {
         Ok(found) => found,
         Err(e) => return Envelope::<()>::refused(e).into_response(),
@@ -88,13 +99,19 @@ pub struct Contents {
     lookup_tables: Vec<TableContents>,
     grok_patterns: Vec<String>,
     schemas: Vec<String>,
-    samples: Vec<String>,
-    tests: Vec<String>,
+    tests: Vec<TestContents>,
     routes: Vec<String>,
     sources: Vec<String>,
     destinations: Vec<String>,
-    secrets: Vec<String>,
-    certificates: Vec<String>,
+    /// Each secret and certificate an exported source or destination names, and which of them name it.
+    credentials: Vec<Credential>,
+}
+
+/// A test and the sample it runs over. The export holds a sample while it holds a test that reads it.
+#[derive(serde::Serialize)]
+struct TestContents {
+    id: String,
+    sample: String,
 }
 
 /// A lookup table, and the file it reads with that file's size. An inline table has no file.
@@ -116,7 +133,8 @@ pub async fn export_contents(
 }
 
 fn contents_in(data_dir: &Path, area: &str, id: &str, q: &ExportQuery) -> Result<Contents, Refusal> {
-    let (export, files) = exported(data_dir, area, id, q)?;
+    // Everything, so a person can choose what to leave out of the download.
+    let (export, files) = exported(data_dir, area, id, q, &BTreeSet::new())?;
     let ids = |items: Vec<&String>| items.into_iter().cloned().collect();
     let file = &export.file;
     Ok(Contents {
@@ -133,13 +151,22 @@ fn contents_in(data_dir: &Path, area: &str, id: &str, q: &ExportQuery) -> Result
             .collect(),
         grok_patterns: ids(file.grok_patterns.iter().map(|g| &g.id).collect()),
         schemas: ids(file.schemas.iter().map(|s| &s.id).collect()),
-        samples: export.samples,
-        tests: export.tests,
+        tests: (export.tests.iter())
+            .map(|t| TestContents {
+                id: t.id.clone(),
+                sample: t.sample.clone(),
+            })
+            .collect(),
         routes: ids(file.routes.iter().map(|r| &r.id).collect()),
         sources: ids(file.sources.iter().map(|s| &s.id).collect()),
         destinations: ids(file.destinations.iter().map(|d| &d.id).collect()),
-        secrets: export.secrets.into_iter().collect(),
-        certificates: export.certificates.into_iter().collect(),
+        credentials: Objects {
+            file: export.file,
+            samples: Vec::new(),
+            tests: Vec::new(),
+            contents: BTreeMap::new(),
+        }
+        .credentials(),
     })
 }
 
@@ -175,6 +202,7 @@ fn exported(
     area: &str,
     id: &str,
     q: &ExportQuery,
+    left_out: &BTreeSet<(Part, String)>,
 ) -> Result<(config_file::Export, BTreeMap<String, Held>), Refusal> {
     let own = q.config.open_in(data_dir, area)?;
     // `shared/` is read at the same commit, so the two halves of what the group runs are of one moment.
@@ -191,12 +219,8 @@ fn exported(
     let tests: Vec<TestSummary> = (scopes.iter())
         .flat_map(|(scope, _)| list_tests(&mut scope.files()).0)
         .collect();
-    let mut export = config_file::export(&merged, &tests, id, q.routes)
+    let export = config_file::export(&merged, &tests, id, q.routes, left_out)
         .ok_or_else(|| Refusal::not_found(format!("no pipeline {id:?}")))?;
-    if !q.tests {
-        export.samples.clear();
-        export.tests.clear();
-    }
 
     let mut files: BTreeMap<String, Held> = config_file::bundle_files(&export.file)
         .map_err(|e| Refusal::internal(e.to_string()))?
@@ -211,7 +235,7 @@ fn exported(
         files.insert(path.to_string(), lookup_bytes(from, path)?);
     }
     let samples = export.samples.iter().map(|s| sample_path(s));
-    for path in samples.chain(export.tests.iter().map(|t| test_path(t))) {
+    for path in samples.chain(export.tests.iter().map(|t| test_path(&t.id))) {
         let path = path.map_err(|e| Refusal::internal(e.to_string()))?;
         files.insert(path.clone(), Held::Bytes(read_from(&scopes, &path)?));
     }
@@ -356,7 +380,7 @@ mod tests {
     #[test]
     fn an_export_is_a_bundle_holding_the_lookup_bytes_and_the_tests_samples() {
         let data = seeded("whole");
-        let (_, files) = exported(&data, "west", "audit", &query()).unwrap();
+        let (_, files) = exported(&data, "west", "audit", &query(), &BTreeSet::new()).unwrap();
         let mut zip = Vec::new();
         zipped(&files, &mut zip).unwrap();
         let files = unzipped(zip);
@@ -379,10 +403,11 @@ mod tests {
     }
 
     #[test]
-    fn without_tests_the_export_holds_neither_tests_nor_samples() {
-        let data = seeded("untested");
-        let Query(q) = Query::<ExportQuery>::try_from_uri(&"/?tests=false".parse().unwrap()).unwrap();
-        let (_, files) = exported(&data, "west", "audit", &q).unwrap();
+    fn what_is_left_out_is_not_in_the_download_and_a_sample_goes_with_its_tests() {
+        let data = seeded("left-out");
+        let uri = r#"/?leftOut=[{"part":"test","id":"t1"}]"#.replace('"', "%22");
+        let Query(q) = Query::<ExportQuery>::try_from_uri(&uri.parse().unwrap()).unwrap();
+        let (_, files) = exported(&data, "west", "audit", &q, &q.left_out().unwrap()).unwrap();
         assert!(files.contains_key("pipelines/audit.json") && files.contains_key("lookups/sites.csv"));
         assert!(
             !files
@@ -397,7 +422,9 @@ mod tests {
     #[test]
     fn a_pipeline_the_area_lacks_is_not_found() {
         let data = seeded("missing");
-        let refused = exported(&data, "west", "nope", &query()).err().unwrap();
+        let refused = exported(&data, "west", "nope", &query(), &BTreeSet::new())
+            .err()
+            .unwrap();
         assert!(refused.message().contains("no pipeline"), "{}", refused.message());
         let _ = std::fs::remove_dir_all(&data);
     }
@@ -412,11 +439,13 @@ mod tests {
             (table.id.as_str(), table.file.as_deref(), table.bytes),
             ("sites", Some("lookups/sites.csv"), Some(SITES.len()))
         );
-        assert_eq!(
-            (contents.samples, contents.tests),
-            (vec!["s1".to_string()], vec!["t1".to_string()])
-        );
-        assert!(contents.routes.is_empty() && contents.secrets.is_empty());
+        let tests: Vec<_> = contents
+            .tests
+            .iter()
+            .map(|t| (t.id.as_str(), t.sample.as_str()))
+            .collect();
+        assert_eq!(tests, [("t1", "s1")]);
+        assert!(contents.routes.is_empty() && contents.credentials.is_empty());
         let _ = std::fs::remove_dir_all(&data);
     }
 }

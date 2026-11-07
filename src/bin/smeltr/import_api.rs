@@ -10,8 +10,8 @@ use axum::extract::{Extension, Multipart, State};
 use axum::http::StatusCode;
 
 use smeltr::config_file::{
-    self, Credential, FileConfig, FileSet, Keep, Listed, LookupSourceDto, Objects, Part, SecretRefDto, describe,
-    read_sample, read_test,
+    self, Credential, FileConfig, FileSet, Keep, Listed, LookupSourceDto, Objects, Part, PartId, SecretRefDto,
+    describe, read_sample, read_test,
 };
 use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::store::Actor;
@@ -54,13 +54,6 @@ pub struct Answers {
     /// not already held where it is imported.
     #[serde(default)]
     left_out: Vec<PartId>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PartId {
-    part: Part,
-    id: String,
 }
 
 #[derive(serde::Deserialize)]

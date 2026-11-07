@@ -166,10 +166,11 @@ touches another.
 A pipeline moves to another leader as an export: a bundle in a zip holding the
 pipeline and what it reads, so it loads and runs on its own. That is the
 pipelines it calls, however deep, the lookup tables they read, the grok
-patterns they name, however deep, the schemas they produce, and, unless left
-out, the samples and tests that lock any of them. With routes included, the export adds each
+patterns they name, however deep, the schemas they produce, and the tests that
+lock any of them, with the samples those tests run over. With routes included, the export adds each
 route that runs the pipeline, its source, the destinations it delivers to and
-those their refusals go to, and the schemas those destinations accept. The
+those their refusals go to, and the schemas those destinations accept. The exporter can leave out any of these but
+the pipeline itself; a sample goes with the tests that read it. The
 group's own settings stay behind: its exception answers, what only they
 deliver to, and its name. The importing group runs under its own. A lookup file
 travels as its bytes, not as the pointer a commit holds. The export holds

@@ -839,7 +839,7 @@ const exportPipeline: Move = {
       await dialog
         .getByRole('switch', { name: 'Include routes, sources and destinations' })
         .check();
-    await expect(dialog.getByRole('row', { name: /^Pipelines/ })).toContainText(id);
+    await expect(dialog.getByRole('row', { name: new RegExp(`^Pipeline ${id} `) })).toBeVisible();
     const href = await dialog.getByRole('link', { name: 'Download' }).getAttribute('href');
     const zip = await (await page.request.get(new URL(href!, leader.url).toString())).body();
     expect(zip.subarray(0, 2).toString()).toBe('PK');

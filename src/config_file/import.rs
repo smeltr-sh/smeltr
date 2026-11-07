@@ -28,6 +28,14 @@ pub enum Part {
     Destination,
 }
 
+/// One object, by its kind and id, that an import or an export leaves out.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartId {
+    pub part: Part,
+    pub id: String,
+}
+
 /// The objects of a bundle and the samples and tests beside it: what an export holds, or what an area has.
 #[derive(Clone, Debug)]
 pub struct Objects {
@@ -137,7 +145,16 @@ impl Objects {
 
     /// `values`, with each lookup table's file named by its content hash, which is what makes two tables the same.
     fn compared(&self) -> BTreeMap<(Part, String), serde_json::Value> {
-        let mut values = self.values();
+        // A secret or certificate name belongs to the leader it was made on, and an import matches it to one on this
+        // leader, so two sources that differ only in those names are the same source.
+        let mut unnamed = self.clone();
+        for c in self.credentials() {
+            match c.certificate {
+                false => unnamed.match_secret(&c.name, &SecretRefDto::WorkerLocal(String::new())),
+                true => unnamed.match_certificate(&c.name, ""),
+            }
+        }
+        let mut values = unnamed.values();
         for ((part, _), value) in &mut values {
             let path = value.get("path").and_then(|p| p.as_str());
             if let (Part::LookupTable, Some(hash)) = (part, path.and_then(|p| self.contents.get(p))) {
@@ -241,14 +258,7 @@ impl Objects {
 
     /// Keeps only the objects `keep` answers true for.
     fn retain(&mut self, keep: impl Fn(Part, &str) -> bool) {
-        let f = &mut self.file;
-        f.pipelines.retain(|o| keep(Part::Pipeline, &o.id));
-        f.lookup_tables.retain(|o| keep(Part::LookupTable, &o.id));
-        f.grok_patterns.retain(|o| keep(Part::GrokPattern, &o.id));
-        f.schemas.retain(|o| keep(Part::Schema, &o.id));
-        f.routes.retain(|o| keep(Part::Route, &o.id));
-        f.sources.retain(|o| keep(Part::Source, &o.id));
-        f.destinations.retain(|o| keep(Part::Destination, &o.id));
+        retain_file(&mut self.file, &keep);
         self.samples.retain(|o| keep(Part::Sample, &o.id));
         self.tests.retain(|o| keep(Part::Test, &o.id));
     }
@@ -398,6 +408,17 @@ impl Objects {
             *d = rewritten(d, from, to);
         }
     }
+}
+
+/// Keeps only the objects of `f` that `keep` answers true for.
+pub(super) fn retain_file(f: &mut FileConfig, keep: &impl Fn(Part, &str) -> bool) {
+    f.pipelines.retain(|o| keep(Part::Pipeline, &o.id));
+    f.lookup_tables.retain(|o| keep(Part::LookupTable, &o.id));
+    f.grok_patterns.retain(|o| keep(Part::GrokPattern, &o.id));
+    f.schemas.retain(|o| keep(Part::Schema, &o.id));
+    f.routes.retain(|o| keep(Part::Route, &o.id));
+    f.sources.retain(|o| keep(Part::Source, &o.id));
+    f.destinations.retain(|o| keep(Part::Destination, &o.id));
 }
 
 /// What a person calls `part`, in a sentence.
@@ -596,6 +617,24 @@ mod tests {
             refused,
             [r#"lookup table "sites" can't be renamed to "sites": that id is taken"#]
         );
+    }
+
+    #[test]
+    fn a_source_that_differs_only_in_the_secrets_and_certificates_it_names_is_the_same() {
+        let mut here = here();
+        here.file.sources = imported().file.sources;
+        here.match_secret("kafka-password", &SecretRefDto::WorkerLocal("KAFKA_FW".into()));
+        here.match_certificate("kafka-client", "fw-client");
+        assert_eq!(standing(&imported().list(&here), Part::Source, "fw"), Standing::Same);
+        here.file.sources[0].id = "other".into();
+        here.file
+            .sources
+            .extend(imported().file.sources.into_iter().map(|mut s| {
+                s.id = "fw".into();
+                serde_json::from_value(json!({"id": s.id, "type": "kafka", "brokers": "c:9092", "topics": ["fw"]}))
+                    .unwrap()
+            }));
+        assert_eq!(standing(&imported().list(&here), Part::Source, "fw"), Standing::Taken);
     }
 
     #[test]

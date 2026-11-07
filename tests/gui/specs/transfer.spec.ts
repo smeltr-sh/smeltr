@@ -62,25 +62,31 @@ test('a pipeline is exported with the pipeline it calls, and its routes when ask
     .getByRole('button', { name: 'Export' })
     .click();
   const dialog = admin.getByRole('dialog', { name: /export firewall/ });
-  const row = (kind: string) => dialog.getByRole('row', { name: new RegExp(`^${kind}`) });
-  await expect(row('Pipelines')).toContainText('firewall, common');
-  await expect(row('Grok patterns')).toContainText('FW_LINE');
-  await expect(row('Routes')).toBeHidden();
-  await expect(row('Tests')).toContainText('firewall-lines');
-  await expect(row('Samples')).toContainText('lines');
+  const row = (kind: string, id: string) =>
+    dialog.getByRole('row', { name: new RegExp(`^${kind} ${id}\\b`) });
+  await expect(row('Pipeline', 'firewall')).toBeVisible();
+  await expect(row('Pipeline', 'common')).toBeVisible();
+  await expect(row('Grok pattern', 'FW_LINE')).toBeVisible();
+  await expect(row('Test', 'firewall-lines')).toBeVisible();
+  await expect(row('Sample', 'lines')).toContainText('With its tests');
+  await expect(row('Route', 'fw-out')).toBeHidden();
+  // The pipeline exported is always in its export.
+  await expect(dialog.getByRole('checkbox', { name: 'Export Pipeline firewall' })).toBeDisabled();
 
-  await dialog.getByRole('switch', { name: 'Include tests and samples' }).uncheck();
-  await expect(row('Tests')).toBeHidden();
-  await expect(row('Samples')).toBeHidden();
-  await expect(dialog.getByRole('link', { name: 'Download' })).toHaveAttribute(
-    'href',
-    /tests=false/,
-  );
+  // A sample leaves with its last test.
+  await dialog.getByRole('checkbox', { name: 'Export Test firewall-lines' }).uncheck();
+  await expect(row('Sample', 'lines')).toBeHidden();
+  const untested = await dialog.getByRole('link', { name: 'Download' }).getAttribute('href');
+  const lean = await (await admin.request.get(new URL(untested!, leader.url).toString())).body();
+  expect(lean.includes('tests/firewall-lines.json')).toBe(false);
+  expect(lean.includes('samples/lines.json')).toBe(false);
+  expect(lean.includes('pipelines/common.json')).toBe(true);
+  await dialog.getByRole('checkbox', { name: 'Export Test firewall-lines' }).check();
 
   await dialog.getByRole('switch', { name: 'Include routes, sources and destinations' }).check();
-  await expect(row('Routes')).toContainText('fw-out');
-  await expect(row('Sources')).toContainText('fw');
-  await expect(row('Destinations')).toContainText('out');
+  await expect(row('Route', 'fw-out')).toBeVisible();
+  await expect(row('Source', 'fw')).toBeVisible();
+  await expect(row('Destination', 'out')).toBeVisible();
 
   const href = await dialog.getByRole('link', { name: 'Download' }).getAttribute('href');
   const res = await admin.request.get(new URL(href!, leader.url).toString());

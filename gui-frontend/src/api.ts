@@ -1922,13 +1922,13 @@ export interface ExportContents {
   lookupTables: ExportTable[];
   grokPatterns: string[];
   schemas: string[];
-  samples: string[];
-  tests: string[];
+  /** Each test with the sample it runs over: a sample is exported while a test that reads it is. */
+  tests: { id: string; sample: string }[];
   routes: string[];
   sources: string[];
   destinations: string[];
-  secrets: string[];
-  certificates: string[];
+  /** Each secret and certificate an exported source or destination names, and which of them name it. */
+  credentials: ImportCredential[];
 }
 
 export type ExportContentsResult = {
@@ -1937,34 +1937,25 @@ export type ExportContentsResult = {
   commit?: string;
 } & Partial<ExportContents>;
 
-/** What an export includes beyond the pipeline and what it reads. */
-export interface ExportIncludes {
-  /** The routes that run the pipeline, with their sources and destinations. */
-  routes: boolean;
-  /** The tests that lock what the export holds, and the samples they run over. */
-  tests: boolean;
-}
-
-function exportRoute(id: string, { routes, tests }: ExportIncludes, rest = ''): string {
+function exportRoute(id: string, routes: boolean, rest = '', leftOut: PartId[] = []): string {
   const query = new URLSearchParams();
   if (routes) query.set('routes', 'true');
-  if (!tests) query.set('tests', 'false');
+  if (leftOut.length > 0) query.set('leftOut', JSON.stringify(leftOut));
   const q = query.size > 0 ? `?${query}` : '';
   return inArea(`/pipelines/${encodeURIComponent(id)}/export${rest}${q}`);
 }
 
-export function exportContents(
-  id: string,
-  includes: ExportIncludes,
-): Promise<ExportContentsResult> {
-  return configJson<ExportContentsResult>(exportRoute(id, includes, '/contents'), undefined, {
+/** Everything the export of `id` can hold, so a person can choose what to leave out. */
+export function exportContents(id: string, routes: boolean): Promise<ExportContentsResult> {
+  return configJson<ExportContentsResult>(exportRoute(id, routes, '/contents'), undefined, {
     adopt: false,
   });
 }
 
-/** The export itself. A plain link rather than a fetch: the browser names the file and puts it where downloads go. */
-export function exportUrl(id: string, includes: ExportIncludes): string {
-  return branched(exportRoute(id, includes));
+/** The export itself, without `leftOut`. A plain link rather than a fetch: the browser names the file and puts it
+ * where downloads go. */
+export function exportUrl(id: string, routes: boolean, leftOut: PartId[]): string {
+  return branched(exportRoute(id, routes, '', leftOut));
 }
 
 // -- import -----------------------------------------------------------------
@@ -2005,13 +1996,19 @@ export interface ImportCredential {
 /** The answer for a taken id: keep the imported object, keep the one here, or keep both, the imported one renamed. */
 export type ImportKeep = { keep: 'imported' } | { keep: 'here' } | { keep: 'renamed'; as: string };
 
+/** One object an import or an export leaves out. */
+export interface PartId {
+  part: ImportPart;
+  id: string;
+}
+
 export interface ImportAnswers {
   taken: ({ part: ImportPart; id: string } & ImportKeep)[];
   /** The secret here each one the file names is matched to, by name. */
   secrets: Record<string, string>;
   certificates: Record<string, string>;
   /** The objects not to import. The save is refused if what is left names one that isn't already held where it is imported. */
-  leftOut: { part: ImportPart; id: string }[];
+  leftOut: PartId[];
 }
 
 export type ImportResult = {

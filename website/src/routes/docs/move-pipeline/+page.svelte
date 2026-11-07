@@ -32,7 +32,8 @@
       <strong>Include routes, sources and destinations</strong>.
     </li>
     <li>
-      To leave out the tests and samples, turn off <strong>Include tests and samples</strong>.
+      Every object is exported at first. Untick <strong>Export</strong> on each row you want to leave
+      out. A sample goes with the tests that run over it.
     </li>
     <li>Select <strong>Download</strong>.</li>
   </ol>
