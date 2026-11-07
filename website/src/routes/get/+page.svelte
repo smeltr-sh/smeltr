@@ -192,7 +192,14 @@
   }
   @media (max-width: 46rem) {
     .marketing .release {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .downloads li {
+      flex-wrap: wrap;
+    }
+    .command-row {
+      flex-basis: 100%;
+      min-width: 0;
     }
   }
   h2 {
