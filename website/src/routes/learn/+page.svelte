@@ -1,38 +1,14 @@
 <script lang="ts">
-  type Topic = 'start' | 'build' | 'operate';
-  type Video = {
-    topic: Topic;
-    title: string;
-    minutes?: number;
-    src?: string;
-    poster?: string;
-    guide: string;
-  };
+  import VideoPlayer from '#lib/components/VideoPlayer.svelte';
+  import { topicNames, videos, type Topic } from '#lib/videos.ts';
 
-  const topics: [Topic | 'all', string][] = [
-    ['all', 'All'],
-    ['start', 'Get started'],
-    ['build', 'Build & test'],
-    ['operate', 'Deploy & operate'],
-  ];
-  const topicName = Object.fromEntries(topics) as Record<Topic, string>;
-
-  // A video with no `src` is planned: its card says so and links the guide that covers it today.
-  const items: Video[] = [
-    { topic: 'start', title: 'Install smeltr', guide: '/docs/getting-started' },
-    {
-      topic: 'build',
-      title: 'Fixing a feed in smeltr',
-      minutes: 6,
-      src: '/videos/walkthrough.mp4',
-      poster: '/videos/walkthrough-poster.png',
-      guide: '/docs/first-pipeline',
-    },
-    { topic: 'operate', title: 'Review and deploy a change', guide: '/docs/review' },
-  ];
+  const filters: [Topic | 'all', string][] = [['all', 'All'], ...Object.entries(topicNames)] as [
+    Topic | 'all',
+    string,
+  ][];
 
   let shown: Topic | 'all' = $state('all');
-  const visible = $derived(items.filter((i) => shown === 'all' || i.topic === shown));
+  const visible = $derived(videos.filter((v) => shown === 'all' || v.topic === shown));
 </script>
 
 <svelte:head><title>Learn smeltr</title></svelte:head>
@@ -43,7 +19,7 @@
   </section>
 
   <div class="filters" role="group" aria-label="Topic">
-    {#each topics as [id, label] (id)}
+    {#each filters as [id, label] (id)}
       <button
         class="compact"
         class:primary={shown === id}
@@ -54,25 +30,18 @@
   </div>
 
   <div class="library">
-    {#each visible as item (item.title)}
+    {#each visible as video (video.title)}
       <article class="video">
-        {#if item.src}
-          <!-- svelte-ignore a11y_media_has_caption -->
-          <video controls preload="none" poster={item.poster}>
-            <source src={item.src} type="video/mp4" />
-          </video>
-        {:else}
-          <div class="thumb"><span>Coming soon</span></div>
-        {/if}
+        <VideoPlayer {video} />
         <div class="copy">
           <p class="eyebrow">
-            {topicName[item.topic]}{#if item.minutes}&nbsp;· {item.minutes} min{/if}
+            {topicNames[video.topic]}{#if video.minutes}&nbsp;· {video.minutes} min{/if}
           </p>
-          <h2>{item.title}</h2>
-          {#if item.src}
+          <h2>{video.title}</h2>
+          {#if video.youtube}
             <a href="/demo/try/" rel="external">Try it yourself in the demo →</a>
           {:else}
-            <a href={item.guide}>Read the guide →</a>
+            <a href={video.guide}>Read the guide →</a>
           {/if}
         </div>
       </article>
@@ -102,23 +71,6 @@
     border-radius: var(--radius-card);
     background: var(--panel);
     overflow: hidden;
-  }
-  video,
-  .thumb {
-    display: block;
-    width: 100%;
-    aspect-ratio: 16 / 9;
-    background: #131313;
-  }
-  .thumb {
-    display: grid;
-    place-items: center;
-    background: var(--band-bg);
-    color: var(--band-dim);
-    font-family: var(--mono);
-    font-size: 0.75rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
   }
   .copy {
     padding: 1.3rem 1.4rem 1.5rem;

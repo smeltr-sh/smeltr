@@ -22,9 +22,10 @@
   <section class="page-hero">
     <h1>Get smeltr</h1>
     <p class="lede">
-      Free for individuals and for organizations with fewer than 250 employees. Larger
-      organizations pay $10,000 a year for each production leader, the server that manages your
-      workers. <a href="#license">License details →</a>
+      Free for individuals and for organizations with fewer than 250 employees. Larger organizations
+      pay $10,000 a year for each production leader, the server that manages your workers. <a
+        href="#license">License details →</a
+      >
     </p>
   </section>
   {#if latest}

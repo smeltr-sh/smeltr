@@ -4,6 +4,8 @@
   import HomeDataFlow from '#lib/components/HomeDataFlow.svelte';
   import { source } from '#lib/release.ts';
   import { latest } from '#lib/releases.ts';
+  import VideoPlayer from '#lib/components/VideoPlayer.svelte';
+  import { walkthrough } from '#lib/videos.ts';
 </script>
 
 <svelte:head>
@@ -57,17 +59,14 @@
 
   <section class="video-section" id="walkthrough" aria-labelledby="video-heading">
     <div class="section-intro centered">
-      <p class="eyebrow">Walkthrough · 6 min</p>
-      <h2 id="video-heading">Fixing a feed in smeltr</h2>
+      <p class="eyebrow">Walkthrough · {walkthrough.minutes} min</p>
+      <h2 id="video-heading">{walkthrough.title}</h2>
       <p>
-        Find two problems on a demo fleet, fix them on a branch, lock the result as a test, and
-        open the fix for review.
+        Find two problems on a demo fleet, fix them on a branch, lock the result as a test, and open
+        the fix for review.
       </p>
     </div>
-    <!-- svelte-ignore a11y_media_has_caption -->
-    <video controls preload="none" poster="/videos/walkthrough-poster.png">
-      <source src="/videos/walkthrough.mp4" type="video/mp4" />
-    </video>
+    <div class="player"><VideoPlayer video={walkthrough} /></div>
     <p class="connection-links">
       <a href="/demo/try/" rel="external">Try it yourself in the demo →</a>
     </p>
@@ -140,14 +139,12 @@
   .marketing .video-section {
     border-top: 1px solid var(--border);
   }
-  video {
-    display: block;
-    width: 100%;
+  .player {
     max-width: 60rem;
     margin: 0 auto;
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
-    background: #131313;
+    overflow: hidden;
   }
   .marketing .home-hero {
     text-align: center;

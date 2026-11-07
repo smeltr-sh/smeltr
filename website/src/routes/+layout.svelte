@@ -82,7 +82,8 @@
     </a>
   </div>
   <p>
-    <a href="/releases">Releases</a> · <a href="/learn">Learn</a> · <a href={source}>Source code</a> ·
+    <a href="/releases">Releases</a> · <a href="/learn">Learn</a> · <a href={source}>Source code</a>
+    ·
     <a href="mailto:support@smeltr.sh">support@smeltr.sh</a>
   </p>
 </footer>
