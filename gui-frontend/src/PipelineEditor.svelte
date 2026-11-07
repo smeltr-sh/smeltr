@@ -701,8 +701,8 @@
   // the sample away from under whoever is fixing it. `result` still drives
   // the error itself -- this only decides what the grid below it shows.
   let lastGoodResult = $state<PreviewResult | null>(null);
-  /** The instant `lastGoodResult` ran at. */
-  let lastGoodAt = 0;
+  /** The instant `lastGoodResult` ran at, and the steps it ran. */
+  let lastGoodRun: { at: number; steps: Step[] } = { at: 0, steps: [] };
   // The name boxes and the Fields menu offer the produced schemas' fields, each marked where the record holds it.
   const produced = provideProducedSchemas();
   $effect(() => {
@@ -985,11 +985,12 @@
     const sample = selectedSample;
     const at = Date.now() * 1000;
     try {
-      const res = await fetchPreview(steps, sample, { at, attribution: true });
+      const ran = $state.snapshot(steps);
+      const res = await fetchPreview(ran, sample, { at, attribution: true });
       // A run of a sample put away while it ran answers for nothing on screen.
       if (sample !== selectedSample) return;
       result = res;
-      if (res.ok) [lastGoodResult, lastGoodAt] = [res, at];
+      if (res.ok) [lastGoodResult, lastGoodRun] = [res, { at, steps: ran }];
       lastSample = sample;
     } catch (e) {
       requestError = unreported(e);
@@ -1008,11 +1009,11 @@
       result.ok,
   );
 
-  /** The output rows `rows` names, as a sample holds them. It re-runs the preview at the instant the grid ran, so the
-   * rows are the ones on screen. */
+  /** The output rows `rows` names, as a sample holds them. It re-runs the steps the grid ran, at the instant it ran
+   * them, so the rows are the ones on screen. */
   async function outputOf(rows: Set<number>): Promise<Pick<SampleDto, 'columns' | 'records'>> {
-    const [shown, at] = pause && pauseRun ? [pause.after, pauseAt] : [steps, lastGoodAt];
-    const res = await fetchPreview(shown, lastSample, { at, asSample: true });
+    const { at, steps: ran } = pause && pauseRun ? pauseRan : lastGoodRun;
+    const res = await fetchPreview(ran, lastSample, { at, asSample: true });
     if (!res.ok || !res.as_sample) throw new Error(previewFailure(res));
     const { columns, records, rows: of } = res.as_sample;
     return { columns, records: records.filter((_, i) => rows.has(of[i])) };
@@ -1124,8 +1125,8 @@
   });
 
   let pauseRun = $state<PauseRun | null>(null);
-  /** The instant the pause ran at. */
-  let pauseAt = 0;
+  /** The instant the pause ran at, and the steps it ran, up to and including its step. */
+  let pauseRan: { at: number; steps: Step[] } = { at: 0, steps: [] };
   let pauseLoading = $state(false);
   let errorsOpen = $state(false);
   /** A failed stage as the error chip names it. */
@@ -1151,7 +1152,7 @@
       // One instant for both sides, so the only difference between them is
       // the step.
       const at = Date.now() * 1000;
-      pauseAt = at;
+      pauseRan = { at, steps: $state.snapshot(after) };
       const [beforeRes, afterRes] = await Promise.all([
         fetchPreview(before, sample, { at }),
         fetchPreview(after, sample, { at, attribution: true }),
