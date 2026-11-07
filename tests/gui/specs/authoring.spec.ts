@@ -216,6 +216,9 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
   await viewer.getByRole('tab', { name: /^Capture/ }).click();
   await expect(viewer.getByRole('option', { name: /Your capture/ })).toContainText('3 records');
+  // The tab counts the held capture, and no count of sources says the list is empty.
+  await expect(viewer.getByRole('tab', { name: /^Capture/ })).toContainText('1');
+  await expect(viewer.getByText('0 of 0 sources')).toHaveCount(0);
 });
 
 // A1, a viewer: they capture a source feeding a pipeline from its editor's sample menu and run the pipeline over it,

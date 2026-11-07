@@ -122,7 +122,8 @@
       <SecondaryTabs {tabs} active={tab} onselect={show} ariaLabel="Sample">
         {#snippet label(t)}
           {t === 'saved' ? 'Saved' : 'Capture'}
-          <span class="dim">{t === 'saved' ? samples.length : sources.length}</span>
+          <span class="dim">{t === 'saved' ? samples.length : sources.length + (held ? 1 : 0)}</span
+          >
         {/snippet}
         {#snippet after()}
           {#if onadd}
@@ -212,7 +213,10 @@
             >
           {/each}
         </div>
-        <div class="foot dim">{foundSources.length} of {count(sources.length, 'source')}</div>
+        <!-- The count is of sources, so it says nothing beside a held capture when there are none. -->
+        {#if sources.length || !held}
+          <div class="foot dim">{foundSources.length} of {count(sources.length, 'source')}</div>
+        {/if}
       {/if}
     </div>
   {/snippet}
