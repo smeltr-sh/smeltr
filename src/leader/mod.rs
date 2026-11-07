@@ -4022,14 +4022,45 @@ pub fn router(state: AppState) -> Router {
 }
 
 /// `app` answering gzipped to a client that takes it, by tower-http's defaults, and taking a gzipped request on every
-/// route. A route's body limit holds the body as inflated, so a small gzipped body cannot become a large one.
+/// route. A route's body limit holds the body as inflated, so a small gzipped body cannot become a large one. A zip
+/// is already compressed, so it is sent as it is.
 pub fn gzipped(app: Router) -> Router {
-    app.layer(tower_http::compression::CompressionLayer::new())
+    use tower_http::compression::{DefaultPredicate, Predicate, predicate::NotForContentType};
+    let zipped = NotForContentType::const_new("application/zip");
+    app.layer(tower_http::compression::CompressionLayer::new().compress_when(DefaultPredicate::new().and(zipped)))
         .layer(tower_http::decompression::RequestDecompressionLayer::new())
 }
 
 /// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written --
 /// but two must not name one file between them if one ever does.
+#[cfg(test)]
+mod gzipped_tests {
+    use axum::{body::Body, http::Request, routing::get};
+    use tower_service::Service;
+
+    use super::*;
+
+    async fn encoding(content_type: &'static str) -> Option<String> {
+        let body = "x".repeat(1000);
+        let mut app = gzipped(Router::new().route(
+            "/",
+            get(move || async move { ([("content-type", content_type)], body) }),
+        ));
+        let req = Request::get("/")
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.call(req).await.unwrap();
+        (res.headers().get("content-encoding")).map(|v| v.to_str().unwrap().to_string())
+    }
+
+    #[tokio::test]
+    async fn a_zip_is_sent_as_it_is_and_the_rest_gzipped() {
+        assert_eq!(encoding("application/json").await.as_deref(), Some("gzip"));
+        assert_eq!(encoding("application/zip").await, None);
+    }
+}
+
 #[cfg(test)]
 mod deployed_certificate_tests {
     use super::*;
