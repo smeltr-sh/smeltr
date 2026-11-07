@@ -55,6 +55,9 @@ pub struct PreviewRequest {
     /// Also return the rows shown as a sample holds them (`Preview::as_sample`), to be saved as one.
     #[serde(default)]
     pub as_sample: bool,
+    /// Also return the record the pipeline writes (`Preview::dictionary`).
+    #[serde(default)]
+    pub dictionary: bool,
     /// What may follow a `.` in an expression of the config. Asked, the preview answers it instead of running the
     /// sample, and `Preview::after_dot` holds the answer.
     #[serde(default)]
@@ -133,7 +136,7 @@ pub struct Preview {
     /// the parse decided, so it is what the parser did rather than a second reading of the records.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parsers: Vec<ParserOut>,
-    /// The record the pipeline writes (`plan::dictionary`). Absent when it did not compile.
+    /// The record the pipeline writes (`plan::dictionary`), when asked. Absent when it did not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictionary: Option<DictionaryOut>,
     /// What compiles but is likely a mistake (`Plan::warnings`), each placed at its step as an error is.
@@ -953,7 +956,7 @@ pub fn run_preview(
             rows: vec![],
             unfiltered: filter.as_ref().map(|_| 0),
             parsers: vec![],
-            dictionary: Some(DictionaryOut {
+            dictionary: req.dictionary.then(|| DictionaryOut {
                 compiled: Dictionary::of(&record),
                 sampled: None,
             }),
@@ -1090,7 +1093,7 @@ pub fn run_preview(
         pipeline_names,
         after_dot: None,
         capture_filter: None,
-        dictionary: Some(DictionaryOut {
+        dictionary: req.dictionary.then(|| DictionaryOut {
             compiled: Dictionary::of(&record),
             sampled: Some(Dictionary::of(&sampled)),
         }),
@@ -1513,6 +1516,7 @@ pub fn run_pipeline_actual(
             filter: None,
             attribution: false,
             as_sample: false,
+            dictionary: false,
             after_dot: None,
             capture_filter: None,
         },
@@ -1651,6 +1655,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -1744,6 +1749,7 @@ mod tests {
                 filter: Some(r#"u.path == "/x""#.into()),
                 attribution: false,
                 as_sample: true,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -1802,6 +1808,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: true,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -1838,6 +1845,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                dictionary: false,
                 after_dot: Some(AfterDotRequest {
                     dot: text.len() - 1,
                     text: text.into(),
@@ -1934,6 +1942,7 @@ mod tests {
                     filter: None,
                     attribution: false,
                     as_sample: false,
+                    dictionary: false,
                     after_dot: None,
                     capture_filter: Some(CaptureFilterRequest {
                         text: text.into(),
@@ -1973,6 +1982,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                dictionary: false,
                 after_dot: Some(AfterDotRequest {
                     text: "_raw.".into(),
                     dot: 4,
@@ -2013,6 +2023,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },

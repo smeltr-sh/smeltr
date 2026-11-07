@@ -559,6 +559,7 @@ async fn import_schema(
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2708,6 +2709,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2752,6 +2754,7 @@ mod tests {
                 filter: None,
                 attribution: true,
                 as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2792,6 +2795,7 @@ mod tests {
                 filter: None,
                 attribution: true,
                 as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2855,6 +2859,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2879,6 +2884,7 @@ mod tests {
                 filter: Some(filter.to_string()),
                 attribution: false,
                 as_sample: false,
+                dictionary: true,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2899,6 +2905,34 @@ mod tests {
         assert_eq!(previewed.unfiltered, Some(3));
         let sampled = &previewed.dictionary.as_ref().unwrap().sampled.as_ref().unwrap().fields;
         assert!(sampled.iter().any(|(name, _)| name == "y"), "{sampled:?}");
+    }
+
+    /// The record the pipeline writes comes only when asked: it is the largest part of an answer.
+    #[test]
+    fn a_preview_says_the_record_it_writes_only_when_asked() {
+        let config = r#"{"version":1,"sources":[],"destinations":[],"routes":[],
+            "pipelines":[{"id":"p","name":"p","steps":[{"id":"c","type":"code","body":"x = _raw;"}]}]}"#;
+        let previewed = super::run_preview(
+            super::PreviewRequest {
+                config: config.to_string(),
+                pipeline: None,
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                as_sample: false,
+                dictionary: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &[],
+            serde_json::from_str(r#"[{"_raw":"a"}]"#).unwrap(),
+        );
+        assert!(previewed.succeeded(), "{:?}", previewed.errors);
+        assert_eq!(previewed.rows.len(), 1);
+        assert!(previewed.dictionary.is_none());
     }
 
     /// A filter reads the exception tag, as a delivery rule does.
@@ -2937,6 +2971,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -3346,6 +3381,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -3383,6 +3419,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -3434,6 +3471,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -3505,6 +3543,7 @@ mod tests {
                     filter: None,
                     attribution: false,
                     as_sample: false,
+                    dictionary: false,
                     after_dot: None,
                     capture_filter: None,
                 },

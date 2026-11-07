@@ -642,7 +642,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/docs/page",
-        what: "One page of the user docs as text, or with section one heading's text and what is under it. Query: path (/docs/...), section (a heading's id).",
+        what: "One page of the user docs: its opening text, and its headings as `headings`; or with section one heading's text and what is under it. Query: path (/docs/...), section (a heading's id).",
         body: "",
     },
     Route {

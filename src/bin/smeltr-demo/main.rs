@@ -179,6 +179,8 @@ struct PreviewBody {
     attribution: bool,
     #[serde(default)]
     as_sample: bool,
+    #[serde(default)]
+    dictionary: bool,
     after_dot: Option<AfterDotRequest>,
     #[serde(default)]
     capture_filter: Option<CaptureFilterRequest>,
@@ -211,6 +213,7 @@ async fn preview(State(service): State<Service>, Json(body): Json<PreviewBody>) 
                 filter: body.filter,
                 attribution: body.attribution,
                 as_sample: body.as_sample,
+                dictionary: body.dictionary,
                 after_dot: body.after_dot,
                 capture_filter: body.capture_filter,
             };

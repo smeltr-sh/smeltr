@@ -41,17 +41,22 @@ pub async fn list(Query(query): Query<ListQuery>) -> Response {
         .map(|page| Listed {
             path: &page.path,
             title: &page.title,
-            headings: page.sections[1..]
-                .iter()
-                .map(|s| Heading {
-                    id: &s.id,
-                    level: s.level,
-                    heading: &s.heading,
-                })
-                .collect(),
+            headings: headings(page),
         })
         .collect();
     Envelope::ok(serde_json::json!({ "pages": pages })).into_response()
+}
+
+/// A page's headings, after its opening.
+fn headings(page: &'static docs::Page) -> Vec<Heading> {
+    page.sections[1..]
+        .iter()
+        .map(|s| Heading {
+            id: &s.id,
+            level: s.level,
+            heading: &s.heading,
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -64,12 +69,25 @@ pub struct PageQuery {
 struct Read {
     path: String,
     text: String,
+    /// Without a section: the page's headings, each read by its id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    headings: Option<Vec<Heading>>,
 }
 
-/// `GET /api/docs/page`: one page's text, or with `section` one heading's and what is under it.
+/// `GET /api/docs/page`: one page's opening and its headings, or with `section` one heading's text and what is under
+/// it.
 pub async fn page(Query(query): Query<PageQuery>) -> Response {
-    match docs::read(&query.path, query.section.as_deref()) {
-        Some(text) => Envelope::ok(Read { path: query.path, text }).into_response(),
-        None => refuse(StatusCode::NOT_FOUND, "no such page or section"),
-    }
+    let Some(text) = docs::read(&query.path, query.section.as_deref()) else {
+        return refuse(StatusCode::NOT_FOUND, "no such page or section");
+    };
+    let headings = query
+        .section
+        .is_none()
+        .then(|| docs::page(&query.path).map(headings).unwrap_or_default());
+    Envelope::ok(Read {
+        path: query.path,
+        text,
+        headings,
+    })
+    .into_response()
 }
