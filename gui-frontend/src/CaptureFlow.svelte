@@ -35,9 +35,10 @@
     filterPlaceholder,
     type CaptureAt,
     type CaptureTarget,
+    heldCount,
   } from './capture';
   import { mintSampleId } from './ids';
-  import { canEdit } from './access';
+  import { NOT_IN_DEMO, canEdit } from './access';
   import { neverLocked } from './Locked.svelte';
   import {
     getConfig,
@@ -64,6 +65,7 @@
     target,
     editing,
     use,
+    onuse,
     oncancel,
     onback,
     onsaved,
@@ -75,15 +77,12 @@
     /** A source as a form edits it, saved or not, in place of a target picked from the configuration: the
      * only one the form offers. */
     editing?: { source: SourceDto; maxMatches: number };
-    /** What a finished capture is for, in place of saving it as a sample: `take` is handed it and answers why it
-     * could not use it, or nothing once it has, which closes the flow. One that `keeps` it reads it where the leader
-     * holds it, so the flow lets go of it rather than discarding it. */
-    use?: {
-      title: string;
-      label: string;
-      keeps?: boolean;
-      take: (status: CaptureStatus) => string | undefined;
-    };
+    /** A form's own purpose for a finished capture, in place of using or saving it: `take` is handed it and answers
+     * why it could not use it, or nothing once it has, which discards it and closes the flow. */
+    use?: { title: string; label: string; take: (status: CaptureStatus) => string | undefined };
+    /** What Use these records does here, once the leader keeps the capture for whoever took it: answers why it
+     * could not, or nothing. Without it, the capture is kept for any pipeline's sample menu. */
+    onuse?: (status: CaptureStatus) => string | undefined;
     /** Cancel or Escape. */
     oncancel: () => void;
     /** A step back to what came before, in the form's header. */
@@ -330,15 +329,27 @@
   /** Hand the finished capture to `use`, which closes the flow once it has taken it. */
   async function take() {
     if (!use || !capture.status) return;
+    error = use.take(capture.status) ?? '';
+    if (error) return;
+    await capture.discard();
+    oncancel();
+  }
+
+  /** Keep the finished capture at the leader for whoever took it, and close. */
+  function keep() {
+    if (!capture.status) return;
     const status = capture.status;
-    // Let go before `take`, whose effects may close this flow, which discards what it still follows.
-    const kept = use.keeps ? capture.release() : '';
-    error = use.take(status) ?? '';
-    if (error) {
-      if (kept) capture.follow(kept);
+    if (heldCount(status) === 0) {
+      error = 'Nothing was captured, so there is nothing to run.';
       return;
     }
-    if (!kept) await capture.discard();
+    // Let go first: `onuse`'s effects may close this flow, which discards what it still follows.
+    const kept = capture.release();
+    error = onuse?.(status) ?? '';
+    if (error) {
+      capture.follow(kept);
+      return;
+    }
     oncancel();
   }
 
@@ -490,8 +501,12 @@
     {busy}
     {error}
     onstop={stop}
-    onsave={canEdit(savedIn) ? save : undefined}
-    use={use && { title: use.title, label: use.label, take }}
+    onsave={!use && canEdit(savedIn) ? save : undefined}
+    use={use
+      ? { title: use.title, label: use.label, take }
+      : NOT_IN_DEMO
+        ? undefined
+        : { label: 'Use these records', take: keep }}
     ondiscard={discard}
   />
 {/if}

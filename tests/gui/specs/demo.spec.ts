@@ -37,7 +37,7 @@ test('a visitor captures a sample, saves it on a branch and previews a pipeline 
     .fill('_raw.includes("TRAFFIC")');
   await dialog.locator("input[aria-label='records']").fill('50');
   await dialog.locator('button[type=submit]', { hasText: 'Start' }).click();
-  await expect(page.getByText('Save the capture')).toBeVisible();
+  await expect(page.getByText('Captured from panw-firewalls')).toBeVisible();
   await expect(page.getByText('Finished. 50 records')).toBeVisible();
 
   await page.getByRole('button', { name: 'Save sample' }).click();

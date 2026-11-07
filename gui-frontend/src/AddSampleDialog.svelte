@@ -27,7 +27,7 @@
     open,
     start,
     target,
-    use,
+    onuse,
     oncancel,
     onsaved,
   }: {
@@ -36,8 +36,8 @@
     start?: SampleWay;
     /** What a capture starts on (`CaptureFlow`). */
     target?: ComponentProps<typeof CaptureFlow>['target'];
-    /** What a capture is for without saving it (`CaptureFlow`). */
-    use?: ComponentProps<typeof CaptureFlow>['use'];
+    /** What Use these records does with a capture (`CaptureFlow`). */
+    onuse?: ComponentProps<typeof CaptureFlow>['onuse'];
     oncancel: () => void;
     /** The new sample's id, once it is saved. */
     onsaved: (id: string) => void;
@@ -174,7 +174,13 @@
 </Dialog>
 
 {#if open && way === 'capture'}
-  <CaptureFlow {target} {use} {oncancel} onback={start ? undefined : () => pick(null)} {onsaved} />
+  <CaptureFlow
+    {target}
+    {onuse}
+    {oncancel}
+    onback={start ? undefined : () => pick(null)}
+    {onsaved}
+  />
 {/if}
 
 <style>

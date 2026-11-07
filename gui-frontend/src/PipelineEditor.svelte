@@ -771,7 +771,6 @@
 
   /** Run over a finished capture where the leader holds it, unsaved. Answers why it cannot. */
   function useCapture(status: CaptureStatus): string | undefined {
-    if (heldCount(status) === 0) return 'Nothing was captured, so there is nothing to run.';
     held = status;
     capturing = false;
     adding = false;
@@ -781,12 +780,6 @@
     });
     return undefined;
   }
-  const USE_CAPTURE = {
-    title: 'Capture records to run',
-    label: 'Use these records',
-    keeps: true,
-    take: useCapture,
-  };
 
   // The sample a pipeline last ran over, remembered per pipeline in this browser: the editor
   // opens on it, and the sample menu lists it first.
@@ -1644,7 +1637,7 @@
         open={capturing || adding}
         start={capturing ? 'capture' : undefined}
         target={captureAt ?? captureTarget}
-        use={USE_CAPTURE}
+        onuse={useCapture}
         oncancel={() => {
           capturing = false;
           adding = false;
@@ -1655,7 +1648,7 @@
     {:else if capturing && captureAt}
       <CaptureFlow
         target={captureAt}
-        use={USE_CAPTURE}
+        onuse={useCapture}
         oncancel={() => {
           capturing = false;
           captureAt = null;

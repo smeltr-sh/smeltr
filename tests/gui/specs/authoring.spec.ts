@@ -19,7 +19,7 @@ async function captureThree(page: Page, name: string) {
   await dialog.getByRole('spinbutton', { name: 'records' }).fill('3');
   await dialog.getByRole('spinbutton', { name: 'seconds' }).fill('60');
   await dialog.getByRole('button', { name: 'Start' }).click();
-  const capture = page.getByRole('dialog', { name: /Save the capture/ });
+  const capture = page.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(capture).toBeVisible({ timeout: 90_000 });
   await expect(capture.getByText(/3\s*of 3/)).toBeVisible();
   await capture.getByLabel('Save as').fill(name);
@@ -150,7 +150,8 @@ test("A1: a capture from smeltr's own metrics source, read by a worker, is saved
 });
 
 // A1, a viewer captures what a group runs, to look at and download. Saving it as a sample is an editor's, and the
-// audit says what the capture read.
+// audit says what the capture read. The capture window is the one a pipeline editor opens: kept from the map, the
+// capture is there to run a pipeline over.
 test('A1: a viewer captures a deployed source from the map and downloads it', async ({
   api,
   leader,
@@ -160,6 +161,11 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   await api.put('/api/areas/shared/sources?branch=arrive', [
     { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
   ]);
+  await api.put('/api/areas/shared/pipelines/tidy?branch=arrive', {
+    id: 'tidy',
+    name: 'tidy',
+    steps: [],
+  });
   await api.openChange('arrive', 'Read own metrics');
   await api.deploy('arrive');
   await fleet.startWorker(leader, api, 'default', 'w1');
@@ -201,8 +207,13 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   expect(
     events.map((e: { action: string; target: string }) => `${e.action} ${e.target}`),
   ).toContain('capture-start default: source own-metrics as deployed');
-  await captured.getByRole('button', { name: 'Discard' }).click();
+  await captured.getByRole('button', { name: 'Use these records' }).click();
   await expect(captured).toBeHidden();
+
+  await goto(viewer, leader, '#/build/pipelines/tidy');
+  await viewer.getByRole('button', { name: 'Choose a sample' }).click();
+  await viewer.getByRole('tab', { name: /^Capture/ }).click();
+  await expect(viewer.getByRole('option', { name: /Your capture/ })).toContainText('3 records');
 });
 
 // A1, a viewer: they capture a source feeding a pipeline from its editor's sample menu and run the pipeline over it,
@@ -810,7 +821,7 @@ test('A1: a receiver is captured as sent, warned of, and downloaded', async ({
   await dialog.getByRole('button', { name: 'Start', exact: true }).click();
 
   // What a sender wrote reaches the capture however little of it frames as syslog.
-  const capture = admin.getByRole('dialog', { name: /Save the capture/ });
+  const capture = admin.getByRole('dialog', { name: /^Captured (from|at) / });
   const sent = 'not syslog at all\0';
   const deadline = Date.now() + 60_000;
   while (!(await capture.isVisible())) {
@@ -3663,7 +3674,7 @@ test('A1: a capture shows eight records, and a button shows the rest', async ({
   await dialog.getByRole('spinbutton', { name: 'seconds' }).fill('60');
   await dialog.getByRole('button', { name: 'Start' }).click();
 
-  const capture = admin.getByRole('dialog', { name: /Save the capture/ });
+  const capture = admin.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(capture).toBeVisible({ timeout: 90_000 });
   const more = capture.getByRole('button', { name: '4 more records' });
   await expect(more).toBeVisible();

@@ -58,9 +58,9 @@
     onstop: () => void;
     /** Saves it as a sample named `name`; absent for a viewer, who may not save one. */
     onsave?: (name: string) => void;
-    /** What the capture is for without saving it: its title, and the action that takes it. Beside `onsave`, it is a
-     * second way out and the title is saving's. */
-    use?: { title: string; label: string; take: () => void };
+    /** The primary action on a finished capture, and its label. One with a `title` is a form's own purpose for it,
+     * which names the dialog. */
+    use?: { title?: string; label: string; take: () => void };
     /** Discard: the session goes. */
     ondiscard: () => void;
   } = $props();
@@ -97,21 +97,18 @@
 <Dialog
   open
   wide
-  title={use && !onsave
-    ? use.title
-    : done && onsave
-      ? 'Save the capture'
-      : destination !== undefined
-        ? `${done ? 'Captured' : 'Capturing'} at ${destination}`
-        : `${done ? 'Captured' : 'Capturing'} from ${source}`}
+  title={use?.title ??
+    (destination !== undefined
+      ? `${done ? 'Captured' : 'Capturing'} at ${destination}`
+      : `${done ? 'Captured' : 'Capturing'} from ${source}`)}
   oncancel={() => {
     // Escape refuses, and while the capture runs there is nothing to refuse yet.
     if (done && !busy) ondiscard();
   }}
   onsubmit={() => {
     if (!done) onstop();
-    else if (onsave) onsave(saveName.trim());
-    else use?.take();
+    else if (use) use.take();
+    else onsave?.(saveName.trim());
   }}
 >
   <div class="content">
@@ -239,19 +236,11 @@
             download>Download</a
           >{/if}
       {/if}
-      {#if use}
-        <Button
-          type={onsave ? 'button' : 'submit'}
-          class={onsave ? '' : 'primary'}
-          onclick={onsave ? use.take : undefined}
-          disabled={busy ? BUSY : !status ? 'Wait for the capture to start.' : ''}
-          >{use.label}</Button
-        >
-      {/if}
       {#if onsave}
         <Button
-          type="submit"
-          class="primary"
+          type={use ? 'button' : 'submit'}
+          class={use ? '' : 'primary'}
+          onclick={use ? () => onsave(saveName.trim()) : undefined}
           data-guide="capture-save"
           disabled={busy
             ? BUSY
@@ -265,6 +254,14 @@
         >
           {busy ? 'Saving…' : 'Save sample'}
         </Button>
+      {/if}
+      {#if use}
+        <Button
+          type="submit"
+          class="primary"
+          disabled={busy ? BUSY : !status ? 'Wait for the capture to start.' : ''}
+          >{use.label}</Button
+        >
       {/if}
     {:else}
       <Button
