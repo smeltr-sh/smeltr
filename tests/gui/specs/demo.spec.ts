@@ -37,8 +37,9 @@ test('a visitor captures a sample, saves it on a branch and previews a pipeline 
     .fill('_raw.includes("TRAFFIC")');
   await dialog.locator("input[aria-label='records']").fill('50');
   await dialog.locator('button[type=submit]', { hasText: 'Start' }).click();
-  await expect(page.getByText('Save the capture')).toBeVisible();
+  await expect(page.getByText('Captured from panw-firewalls')).toBeVisible();
   await expect(page.getByText('Finished. 50 records')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Use these records' })).toBeDisabled();
 
   await page.getByRole('button', { name: 'Save sample' }).click();
   // main is never edited, so the save asks for a branch and the demo's leader forks one.

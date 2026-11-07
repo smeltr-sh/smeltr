@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use smeltr::config_file;
 use smeltr::leader::access::{Access, Level};
 use smeltr::leader::accounts;
-use smeltr::leader::capture::{CaptureRequest, CaptureStatus, Captures};
+use smeltr::leader::capture::{CaptureRequest, CaptureStatus, Captures, Opened};
 use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::store::Actor;
 use smeltr::leader::{AppState, blocking};
@@ -67,7 +67,9 @@ pub async fn start_capture(
     .await
     .unwrap_or_else(|_| (None, captured(&state.data_dir, &request, None)));
     let store = state.store.clone();
-    let response = open_capture(state, request, config).await.into_response();
+    let response = open_capture(state, request, actor.id.clone(), config)
+        .await
+        .into_response();
     // A capture reads live records out of a group, so who opened one, and on what, is recorded.
     if response.status().is_success() {
         accounts::record_async(store, &actor, "capture-start", &what, "ok").await;
@@ -110,7 +112,13 @@ fn runs(data_dir: &std::path::Path, commit: &str, group: &str, source: &config_f
     })
 }
 
-async fn open_capture(state: AppState, request: CaptureRequest, config: Option<String>) -> Envelope<StartedCapture> {
+/// `owner` holds the capture in place of any other they held (`Captures::open`).
+async fn open_capture(
+    state: AppState,
+    request: CaptureRequest,
+    owner: String,
+    config: Option<String>,
+) -> Envelope<StartedCapture> {
     if !takes_its_start(&request) {
         return Envelope::refused(Refusal::invalid(
             "only a Kafka or Event Hubs source's capture takes a start",
@@ -123,7 +131,7 @@ async fn open_capture(state: AppState, request: CaptureRequest, config: Option<S
         (Some(source), None) => source.clone(),
         (None, Some(destination)) => {
             let destination = destination.clone();
-            return start_destination_capture(&state, request, &destination, config);
+            return start_destination_capture(&state, request, owner, &destination, config);
         }
         _ => return Envelope::refused(Refusal::invalid("a capture names one source or one destination")),
     };
@@ -199,9 +207,14 @@ async fn open_capture(state: AppState, request: CaptureRequest, config: Option<S
             "a capture carries credentials to its workers"
         );
     }
-    let invitation = state
-        .captures
-        .open(session.clone(), request, expected, holding, granted, config);
+    let invitation = state.captures.open(
+        session.clone(),
+        request,
+        expected,
+        holding,
+        granted,
+        Opened { owner, config },
+    );
     Envelope::ok(StartedCapture {
         session: Some(session),
         max_matches: Some(invitation.max_matches),
@@ -216,6 +229,7 @@ async fn open_capture(state: AppState, request: CaptureRequest, config: Option<S
 fn start_destination_capture(
     state: &AppState,
     request: CaptureRequest,
+    owner: String,
     destination: &str,
     config: Option<String>,
 ) -> Envelope<StartedCapture> {
@@ -231,9 +245,14 @@ fn start_destination_capture(
     }
     let (expected, holding) = waits_for(state, &request.group, None, Some(destination));
     let session = format!("{:016x}", rand_session());
-    let invitation = state
-        .captures
-        .open(session.clone(), request, expected, holding, Vec::new(), config);
+    let invitation = state.captures.open(
+        session.clone(),
+        request,
+        expected,
+        holding,
+        Vec::new(),
+        Opened { owner, config },
+    );
     Envelope::ok(StartedCapture {
         session: Some(session),
         max_matches: Some(invitation.max_matches),
@@ -320,6 +339,43 @@ fn rand_session() -> u64 {
 pub struct Followed {
     #[serde(skip_serializing_if = "Option::is_none")]
     capture: Option<CaptureStatus>,
+}
+
+/// The capture the caller holds (`Captures::open`), if the leader still holds it and they still view its group.
+pub async fn my_capture(
+    State(state): State<AppState>,
+    Extension(access): Extension<Access>,
+    Extension(actor): Extension<Actor>,
+) -> Envelope<Followed> {
+    let capture = state
+        .captures
+        .held_by(&actor.id)
+        .filter(|session| followed(&state.captures, &access, session))
+        .and_then(|session| state.captures.status(&session));
+    Envelope::ok(Followed { capture })
+}
+
+/// A finished capture's records, as a preview runs them in place of a saved sample's, or why it cannot run them. Only
+/// whoever opened the capture previews over it, while they view its group.
+pub fn held_for_preview(
+    captures: &Captures,
+    access: &Access,
+    actor: &Actor,
+    session: &str,
+) -> Result<(Vec<smeltr::heartbeat::CaptureColumn>, Vec<smeltr::io::RecordObject>), String> {
+    let gone = || {
+        "this capture is no longer held: a newer one replaced it, or it went unused too long, or it was dropped to make \
+         room. Capture again"
+            .to_string()
+    };
+    if captures.owner(session).as_deref() != Some(actor.id.as_str()) || !followed(captures, access, session) {
+        return Err(gone());
+    }
+    let status = captures.status(session).ok_or_else(gone)?;
+    if !status.done {
+        return Err("this capture is still running. Stop it to use what it holds".to_string());
+    }
+    Ok(held_records(captures, session, &status))
 }
 
 pub async fn capture_status(
@@ -997,6 +1053,32 @@ mod tests {
         assert_eq!(typed_twice[0].ty, "variant", "a variant holds either");
     }
 
+    /// A capture is previewed over only by whoever opened it, once it is over, and only while they view its group.
+    #[test]
+    fn only_its_owner_previews_over_a_finished_capture() {
+        let (captures, own, other) = payments_capture();
+        let person = |id: &str| Actor {
+            id: id.to_string(),
+            ..Actor::system()
+        };
+        let gone = held_for_preview(&captures, &own, &person("alice"), "no-such-id").unwrap_err();
+        assert_eq!(
+            held_for_preview(&captures, &own, &person("bob"), "c1").unwrap_err(),
+            gone
+        );
+        assert_eq!(
+            held_for_preview(&captures, &other, &person("alice"), "c1").unwrap_err(),
+            gone
+        );
+        assert!(
+            held_for_preview(&captures, &own, &person("alice"), "c1")
+                .unwrap_err()
+                .contains("still running")
+        );
+        captures.stop("c1");
+        assert!(held_for_preview(&captures, &own, &person("alice"), "c1").is_ok());
+    }
+
     /// A capture in "payments", someone who views "payments", and someone who views only "search".
     fn payments_capture() -> (Captures, Access, Access) {
         use std::collections::BTreeMap;
@@ -1012,7 +1094,10 @@ mod tests {
             ["w1".to_string()].into(),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "alice".to_string(),
+                config: None,
+            },
         );
         let viewer = |area: &str| Access::Areas(BTreeMap::from([(area.to_string(), Level::Viewer)]));
         (captures, viewer("payments"), viewer("search"))

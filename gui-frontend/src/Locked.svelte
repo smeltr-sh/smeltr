@@ -9,7 +9,8 @@
   const UNLOCKED = Symbol('unlocked');
 
   /** Called while a component initialises: no `Locked` below it disables anything, whatever page
-   * the address names. For a screen shown in place of a page, as signing in is. */
+   * the address names. For a screen shown in place of a page, as signing in is, and for a form that
+   * changes nothing the page holds, as a capture's is. */
   export function neverLocked(): void {
     setContext(UNLOCKED, true);
   }

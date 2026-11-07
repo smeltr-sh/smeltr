@@ -58,8 +58,9 @@
     onstop: () => void;
     /** Saves it as a sample named `name`; absent for a viewer, who may not save one. */
     onsave?: (name: string) => void;
-    /** What the capture is for, in place of saving it: its title, and the action that takes it. */
-    use?: { title: string; label: string; take: () => void };
+    /** The primary action on a finished capture, and its label. One with a `title` is a form's own purpose for it,
+     * which names the dialog. */
+    use?: { title?: string; label: string; take: () => void; off?: string };
     /** Discard: the session goes. */
     ondiscard: () => void;
   } = $props();
@@ -96,13 +97,10 @@
 <Dialog
   open
   wide
-  title={use
-    ? use.title
-    : done && onsave
-      ? 'Save the capture'
-      : destination !== undefined
-        ? `${done ? 'Captured' : 'Capturing'} at ${destination}`
-        : `${done ? 'Captured' : 'Capturing'} from ${source}`}
+  title={use?.title ??
+    (destination !== undefined
+      ? `${done ? 'Captured' : 'Capturing'} at ${destination}`
+      : `${done ? 'Captured' : 'Capturing'} from ${source}`)}
   oncancel={() => {
     // Escape refuses, and while the capture runs there is nothing to refuse yet.
     if (done && !busy) ondiscard();
@@ -217,10 +215,20 @@
           before you save or share them.
         </p>
       {/if}
-      {#if done && !use && onsave}
+      {#if done && onsave}
         <div class="name" class:off={held === 0}>
           <label for="capture-name">Save as</label>
-          <input id="capture-name" bind:value={saveName} disabled={held === 0} />
+          <input
+            id="capture-name"
+            bind:value={saveName}
+            disabled={held === 0}
+            onkeydown={(e) => {
+              // Enter here saves, as Save sample would, though the window's primary may be another.
+              if (e.key !== 'Enter' || e.isComposing || !use) return;
+              e.preventDefault();
+              if (!busy && saveName.trim()) onsave?.(saveName.trim());
+            }}
+          />
         </div>
       {/if}
     {/if}
@@ -238,17 +246,11 @@
             download>Download</a
           >{/if}
       {/if}
-      {#if use}
+      {#if onsave}
         <Button
-          type="submit"
-          class="primary"
-          disabled={busy ? BUSY : !status ? 'Wait for the capture to start.' : ''}
-          >{use.label}</Button
-        >
-      {:else if onsave}
-        <Button
-          type="submit"
-          class="primary"
+          type={use ? 'button' : 'submit'}
+          class={use ? '' : 'primary'}
+          onclick={use ? () => onsave(saveName.trim()) : undefined}
           data-guide="capture-save"
           disabled={busy
             ? BUSY
@@ -262,6 +264,14 @@
         >
           {busy ? 'Saving…' : 'Save sample'}
         </Button>
+      {/if}
+      {#if use}
+        <Button
+          type="submit"
+          class="primary"
+          disabled={busy ? BUSY : !status ? 'Wait for the capture to start.' : (use.off ?? '')}
+          >{use.label}</Button
+        >
       {/if}
     {:else}
       <Button

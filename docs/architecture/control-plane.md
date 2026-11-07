@@ -283,6 +283,14 @@ is over at the leader, what the leader holds of it is final. What it holds,
 saved, is a **sample**: a bundle file on the branch it was saved to, which
 reaches `main` with the test built from it (`config-plane.md`).
 
+A capture belongs to whoever opened it, and a person holds one at a time:
+opening another drops the last, running or not. Its owner may preview over it
+unsaved. A finished capture is held while it is read, and dropped once nobody
+has read it for a while; no capture is held past a fixed time from its
+opening. What every capture holds together has a ceiling, which counts a
+running capture at the most it may grow to. A new capture drops the oldest until it
+fits.
+
 ## Warnings
 
 The leader raises every warning, because the sharpest one, a worker gone

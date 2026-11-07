@@ -4563,7 +4563,10 @@ mod secrets_delivery_tests {
             ["w1".to_string()].into(),
             Default::default(),
             Vec::new(),
-            None,
+            capture::Opened {
+                owner: "c1".into(),
+                config: None,
+            },
         );
         assert_eq!(listed(answer(&state, beat("g", vec![])).await), vec!["c1".to_string()]);
         assert_eq!(
@@ -4583,7 +4586,10 @@ mod secrets_delivery_tests {
             ["w1".to_string()].into(),
             Default::default(),
             Vec::new(),
-            None,
+            capture::Opened {
+                owner: "c2".into(),
+                config: None,
+            },
         );
         assert_eq!(listed(answer(&state, beat("g", vec![])).await), vec!["c2".to_string()]);
         state.captures.close("c2");

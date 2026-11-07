@@ -380,6 +380,7 @@ mod tests {
         for (method, path) in [
             (Method::POST, "/api/captures"),
             (Method::GET, "/api/captures/c1"),
+            (Method::GET, "/api/captures/mine"),
             (Method::POST, "/api/captures/c1/stop"),
             (Method::GET, "/api/captures/c1/download"),
             (Method::DELETE, "/api/captures/c1"),

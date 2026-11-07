@@ -35,9 +35,11 @@
     filterPlaceholder,
     type CaptureAt,
     type CaptureTarget,
+    heldCount,
   } from './capture';
   import { mintSampleId } from './ids';
-  import { canEdit } from './access';
+  import { NOT_IN_DEMO, canEdit } from './access';
+  import { neverLocked } from './Locked.svelte';
   import {
     getConfig,
     configAt,
@@ -63,6 +65,7 @@
     target,
     editing,
     use,
+    onuse,
     oncancel,
     onback,
     onsaved,
@@ -74,9 +77,12 @@
     /** A source as a form edits it, saved or not, in place of a target picked from the configuration: the
      * only one the form offers. */
     editing?: { source: SourceDto; maxMatches: number };
-    /** What a finished capture is for, in place of saving it as a sample: `take` is handed it and answers why it
-     * could not use it, or nothing once it has, which closes the flow. */
+    /** A form's own purpose for a finished capture, in place of using or saving it: `take` is handed it and answers
+     * why it could not use it, or nothing once it has, which discards it and closes the flow. */
     use?: { title: string; label: string; take: (status: CaptureStatus) => string | undefined };
+    /** What Use these records does here, once the leader keeps the capture for whoever took it: answers why it
+     * could not, or nothing. Without it, the capture is kept for any pipeline's sample menu. */
+    onuse?: (status: CaptureStatus) => string | undefined;
     /** Cancel or Escape. */
     oncancel: () => void;
     /** A step back to what came before, in the form's header. */
@@ -84,6 +90,9 @@
     /** A capture, saved: the new sample's id. Without it, saving closes the flow. */
     onsaved?: (id: string) => void;
   } = $props();
+
+  // Whoever may open it may capture, on a page they may only read too (`mayCapture`).
+  neverLocked();
 
   // Fixed for the life of this flow: the page opens a new one for another target.
   // svelte-ignore state_referenced_locally
@@ -326,6 +335,24 @@
     oncancel();
   }
 
+  /** Keep the finished capture at the leader for whoever took it, and close. */
+  function keep() {
+    if (!capture.status) return;
+    const status = capture.status;
+    if (heldCount(status) === 0) {
+      error = 'Nothing was captured, so there is nothing to run.';
+      return;
+    }
+    // Let go first: `onuse`'s effects may close this flow, which discards what it still follows.
+    const kept = capture.release();
+    error = onuse?.(status) ?? '';
+    if (error) {
+      capture.follow(kept);
+      return;
+    }
+    oncancel();
+  }
+
   /** Back to the form, to change it and start again or to cancel. */
   async function discard() {
     error = '';
@@ -474,8 +501,18 @@
     {busy}
     {error}
     onstop={stop}
-    onsave={canEdit(savedIn) ? save : undefined}
-    use={use && { title: use.title, label: use.label, take }}
+    onsave={!use && canEdit(savedIn) ? save : undefined}
+    use={use
+      ? { title: use.title, label: use.label, take }
+      : {
+          label: 'Use these records',
+          take: keep,
+          off:
+            NOT_IN_DEMO ||
+            (capture.status && heldCount(capture.status) === 0
+              ? 'Nothing has been captured yet.'
+              : ''),
+        }}
     ondiscard={discard}
   />
 {/if}

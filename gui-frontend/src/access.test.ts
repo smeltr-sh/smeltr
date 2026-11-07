@@ -60,6 +60,8 @@ describe('what a person may do', () => {
     expect(mayCapture({ kind: 'source', scope: 'shared', group: 'payments' })).toBe(true);
     expect(mayCapture({ kind: 'destination', scope: 'payments', group: 'payments' })).toBe(true);
     expect(mayCapture({ kind: 'source', scope: 'shared', group: 'default' })).toBe(false);
+    // A shared source with no group yet takes one the viewer views, picked in the form.
+    expect(mayCapture({ kind: 'source', scope: 'shared', group: '' })).toBe(true);
   });
 
   it('lists the areas held, shared first', async () => {

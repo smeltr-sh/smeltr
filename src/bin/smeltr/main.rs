@@ -438,43 +438,59 @@ async fn line_breaker(Json(req): Json<LineBreakerRequest>) -> Envelope {
     line_breaker_verdict(req)
 }
 
+/// A pipeline preview's body: a `PreviewRequest`, or one that runs over a capture the leader holds in place of a
+/// saved sample.
+#[derive(serde::Deserialize)]
+struct PipelinePreviewBody {
+    #[serde(flatten)]
+    req: PreviewRequest,
+    /// A finished capture the caller opened, by its session id.
+    #[serde(default)]
+    capture: Option<String>,
+}
+
 async fn preview(
+    axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
+    axum::extract::Extension(actor): axum::extract::Extension<smeltr::leader::store::Actor>,
+    axum::extract::Extension(access): axum::extract::Extension<smeltr::leader::access::Access>,
     axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-    Json(req): Json<PreviewRequest>,
+    Json(body): Json<PipelinePreviewBody>,
 ) -> Envelope<Preview> {
+    let PipelinePreviewBody { mut req, capture } = body;
+    let given = match capture {
+        None => (Vec::new(), Vec::new()),
+        Some(session) => match capture_api::held_for_preview(&state.captures, &access, &actor, &session) {
+            Ok(held) => {
+                req.sample = None;
+                held
+            }
+            Err(message) => return Preview::failed("sample", vec![ApiError::new(message)], vec![]),
+        },
+    };
     // Reading the branch spawns git, so it goes off the async executor.
     let branch = q.name().to_string();
-    blocking_answer(move || {
-        preview_on(
-            &smeltr::startup_config::leader_data_dir(),
-            &branch,
-            &area,
-            req,
-            Vec::new(),
-        )
-    })
-    .await
+    blocking_answer(move || preview_on(&smeltr::startup_config::leader_data_dir(), &branch, &area, req, given)).await
 }
 
 /// A preview of what the editor is looking at on `branch`: its sample and any lookup path in it resolve the same way
 /// a save would, against the bundle on that branch. A group's preview runs with `shared/` merged in, as the group
 /// runs once deployed, so a pipeline calling a shared pipeline or reading a shared lookup table previews rather than
-/// naming it unknown. `data_dir` explicit, as for `Reading::open_in`. `records` are run where the request names no
-/// sample: what an import hands over.
+/// naming it unknown. `data_dir` explicit, as for `Reading::open_in`. `given` is run where the request names no
+/// sample: what an import hands over, or a capture.
 fn preview_on(
     data_dir: &std::path::Path,
     branch: &str,
     scope: &str,
     mut req: PreviewRequest,
-    records: Vec<smeltr::io::RecordObject>,
+    given: (Vec<smeltr::heartbeat::CaptureColumn>, Vec<smeltr::io::RecordObject>),
 ) -> Envelope<Preview> {
     let reading = match config_api::Reading::open_in(data_dir, branch, scope) {
         Ok(reading) => reading,
         Err(e) => return Envelope::refused(e),
     };
     let sample = match &req.sample {
-        None => Ok((Vec::new(), records)),
+        None => Ok(given),
         Some(id) => match config_file::read_sample(&mut reading.files(), id) {
             Ok(Some(sample)) => Ok((sample.columns, sample.records)),
             Ok(None) => Err(format!("there is no sample {id:?} on this branch")),
@@ -545,7 +561,7 @@ async fn import_schema(
                 after_dot: None,
                 capture_filter: None,
             },
-            records,
+            (Vec::new(), records),
         );
         if !preview.succeeded() {
             return Envelope::refused(Refusal::all(preview.status, preview.errors));
@@ -1167,6 +1183,9 @@ async fn setup_leader(
         )
         .route("/api/captures/:session/stop", post(capture_api::stop_capture))
         .route("/api/captures/:session/download", get(capture_api::download_capture))
+        .route("/api/captures/mine", get(capture_api::my_capture))
+        // Here for `State<AppState>`: a preview may run over a capture the leader holds.
+        .route("/api/areas/:area/preview/pipeline", post(preview))
         // Not on `app` below with the rest of the worker-groups routes: both need `State<AppState>` -- the listing
         // for `shared`'s hue, the create for a new group's -- the same reason `get_map` is here. `deploy_change`
         // asks the store whether a remote owns `main`.
@@ -2191,7 +2210,6 @@ async fn run_leader() {
     }
 
     let app = Router::new()
-        .route("/api/areas/:area/preview/pipeline", post(preview))
         .route("/api/preview/grok", post(grok_captures))
         .route("/api/preview/onboard", post(onboard_propose))
         .route("/api/preview/line-breaker", post(line_breaker))
@@ -3323,7 +3341,7 @@ mod tests {
                 after_dot: None,
                 capture_filter: None,
             },
-            Vec::new(),
+            (Vec::new(), Vec::new()),
         );
 
         assert!(
@@ -3359,7 +3377,7 @@ mod tests {
                 after_dot: None,
                 capture_filter: None,
             },
-            Vec::new(),
+            (Vec::new(), Vec::new()),
         );
         assert!(!response.succeeded(), "{} rows", response.rows.len());
         std::fs::remove_dir_all(&data).ok();
@@ -3409,7 +3427,7 @@ mod tests {
                 after_dot: None,
                 capture_filter: None,
             },
-            Vec::new(),
+            (Vec::new(), Vec::new()),
         );
 
         assert!(
@@ -3479,7 +3497,7 @@ mod tests {
                     after_dot: None,
                     capture_filter: None,
                 },
-                Vec::new(),
+                (Vec::new(), Vec::new()),
             );
             assert!(response.succeeded(), "{:?}", response.errors);
             (response.warnings.iter())

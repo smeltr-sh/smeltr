@@ -325,7 +325,7 @@ async function captureTwo(
   await form.getByRole('spinbutton', { name: 'records' }).fill('2');
   await form.getByRole('spinbutton', { name: 'seconds' }).fill('45');
   await form.getByRole('button', { name: 'Start' }).click();
-  const saving = j.page.getByRole('dialog', { name: /Save the capture/ });
+  const saving = j.page.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(saving).toBeVisible({ timeout: 60_000 });
   await seen(saving);
   await saving.getByLabel('Save as').fill(name);

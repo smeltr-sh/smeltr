@@ -174,7 +174,8 @@ A person sees only the areas they hold. A change, its diff and a commit in
 the history are shown whole to someone holding viewer in every area they
 touch, and to nobody else, as though absent. The map, the status pages, a
 node's counts and the list of groups show only the groups held. A capture is answered only to a
-viewer of the group it runs in. A role names areas by name and outlives the
+viewer of the group it runs in, and previewed over unsaved only by whoever
+opened it. A role names areas by name and outlives the
 group: a group removed and created again under the same id is given to the
 roles that named it.
 
