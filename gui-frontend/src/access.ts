@@ -72,7 +72,7 @@ export function mayCapture(at?: {
   scope: string;
   group: string;
 }): boolean {
-  if (at?.group === '') return isAdministrator() || heldAreas().length > 1;
+  if (at?.group === '') return isAdministrator() || heldAreas().some((a) => a !== SHARED_SCOPE);
   return holds(at?.group ?? currentScope(), 'viewer');
 }
 
