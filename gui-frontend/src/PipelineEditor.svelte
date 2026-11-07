@@ -755,9 +755,8 @@
     // the author's to choose.
     untrack(() => {
       lastUsed = readLastUsed();
-      const opening = sample || lastUsed;
-      const found = samples.some((s) => s.id === opening);
-      if (found || selectedSample) void chooseSample(found ? opening : '');
+      const opening = [sample, lastUsed].find((id) => id && samples.some((s) => s.id === id));
+      if (opening || selectedSample) void chooseSample(opening ?? '');
     });
   });
 

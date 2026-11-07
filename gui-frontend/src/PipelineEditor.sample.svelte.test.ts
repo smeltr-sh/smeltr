@@ -110,6 +110,8 @@ describe('the sample a pipeline opens on', () => {
     // No sample in the link: the one this pipeline last ran over.
     Object.assign(route, { id: 'c', sample: undefined });
     await lastRan('s3');
+    Object.assign(route, { id: 'b', sample: 'gone' });
+    await lastRan('s2');
 
     // Neither: none, so no preview runs over the previous pipeline's sample.
     ranOver = [];
