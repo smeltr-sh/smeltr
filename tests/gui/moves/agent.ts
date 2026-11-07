@@ -32,7 +32,10 @@ export async function pickModel(page: Page, rng: Rng): Promise<{ model: string; 
   const chip = page.getByRole('button', { name: 'Model and effort' });
   const older = rng.chance(2);
   await chip.click();
-  if (older) await page.getByRole('button', { name: /^More models/ }).click();
+  // A model already picked is listed with the newest, so More models is there only while Opus 5 is not picked.
+  const more = page.getByRole('button', { name: /^More models/ });
+  await expect(page.getByRole('button', { name: /^Effort/ })).toBeVisible();
+  if (older && (await more.count())) await more.click();
   await page.getByRole('button', { name: older ? /^Opus 5$/ : /^Opus 5\.5/ }).click();
   const [label, effort] = rng.pick(EFFORTS);
   await chip.click();
