@@ -12,7 +12,7 @@
 //! durable for the same reason `latest_state` is: a fact that began before a restart must keep its true start.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use crate::heartbeat::{MetricValueDto, ThreadHeartbeat, ThreadKind};
@@ -205,6 +205,18 @@ impl Default for Registry {
 }
 
 impl Registry {
+    /// Locks every thread's last report and returns it, even if a panic poisoned the mutex. A panic mid-update
+    /// leaves part of one heartbeat applied, and that worker's next heartbeat replaces it.
+    fn threads(&self) -> MutexGuard<'_, HashMap<(String, String), ThreadState>> {
+        self.threads.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Locks the authority each worker last reported and returns it, even if a panic poisoned the mutex, for the
+    /// same reason.
+    fn authorities(&self) -> MutexGuard<'_, HashMap<String, Reported>> {
+        self.authorities.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Opens (or creates) the registry's own database at `path` and rebuilds in-memory state from what is durable
     /// there: every thread's last report, and every fact's true start time -- so a restart no longer resets either.
     /// `path` is the caller's to choose, the way `store::Store::open` already leaves `leader.db`'s
@@ -332,7 +344,7 @@ impl Registry {
             ),
             None => Ok(()),
         };
-        let mut threads = self.threads.lock().unwrap();
+        let mut threads = self.threads();
         let last_seen = Instant::now();
         if stopping {
             threads.retain(|(w, _), _| w != worker_id);
@@ -374,11 +386,8 @@ impl Registry {
                 "a forgotten worker's rows could not be dropped from disk, so they come back at the next restart"
             );
         }
-        self.threads
-            .lock()
-            .unwrap()
-            .retain(|(worker, _), _| worker != worker_id);
-        self.authorities.lock().unwrap().remove(worker_id);
+        self.threads().retain(|(worker, _), _| worker != worker_id);
+        self.authorities().remove(worker_id);
     }
 
     /// Whether a look for gone ephemeral workers is due at `now_ms`, and if so, that the next is `every` later.
@@ -400,7 +409,7 @@ impl Registry {
     /// Records which authorities a worker would accept, as it just reported them, and whether it takes one from
     /// this leader at all.
     pub fn record_authority(&self, worker_id: &str, fingerprints: Vec<String>, takes_authority: bool) {
-        self.authorities.lock().unwrap().insert(
+        self.authorities().insert(
             worker_id.to_string(),
             Reported {
                 held: fingerprints,
@@ -414,9 +423,7 @@ impl Registry {
     /// out. A rotation reaches them through their operator or not at all.
     pub fn not_taking_authority(&self) -> Vec<String> {
         let mut names: Vec<String> = self
-            .authorities
-            .lock()
-            .unwrap()
+            .authorities()
             .iter()
             .filter(|(_, reported)| !reported.takes)
             .map(|(worker, _)| worker.clone())
@@ -450,7 +457,7 @@ impl Registry {
 
     /// [`Self::authorities_held`], each list beside the worker it is for, in id order.
     pub fn holders(&self, expected: &HashSet<String>, since_ms: i64) -> Vec<(String, Vec<String>)> {
-        let held = self.authorities.lock().unwrap();
+        let held = self.authorities();
         let mut holders: Vec<(String, Vec<String>)> = expected
             .iter()
             .filter_map(|worker| match held.get(worker) {
@@ -468,14 +475,14 @@ impl Registry {
     /// Beside the enrolled roster rather than instead of it: a worker heartbeating is evidence the roster cannot
     /// contradict, and one enrolled but never heard from is exactly the worker a rotation must not sign away from.
     pub fn known_workers(&self) -> HashSet<String> {
-        let mut known: HashSet<String> = self.authorities.lock().unwrap().keys().cloned().collect();
-        known.extend(self.threads.lock().unwrap().keys().map(|(worker, _)| worker.clone()));
+        let mut known: HashSet<String> = self.authorities().keys().cloned().collect();
+        known.extend(self.threads().keys().map(|(worker, _)| worker.clone()));
         known
     }
 
     /// Whether `worker_id` has heartbeated within `within` without saying it was stopping.
     pub fn heartbeating(&self, worker_id: &str, within: std::time::Duration) -> bool {
-        self.threads.lock().unwrap().iter().any(|((worker, _), s)| {
+        self.threads().iter().any(|((worker, _), s)| {
             worker == worker_id && s.worker.stopped_at_ms.is_none() && s.last_seen.elapsed() <= within
         })
     }
@@ -486,9 +493,7 @@ impl Registry {
     /// the window is not expected -- it may be gone -- and one that enrolls later is not either; the capture's
     /// deadline is what covers both.
     pub fn workers_in(&self, group: &str, within: std::time::Duration) -> HashSet<String> {
-        self.threads
-            .lock()
-            .unwrap()
+        self.threads()
             .iter()
             .filter(|((_, _), s)| s.report.group_id == group && s.last_seen.elapsed() <= within)
             .map(|((worker_id, _), _)| worker_id.clone())
@@ -497,7 +502,7 @@ impl Registry {
 
     /// Every thread the leader has heard from.
     pub fn snapshot(&self) -> Vec<ThreadHealth> {
-        let map = self.threads.lock().unwrap();
+        let map = self.threads();
         // One clock reading for every row, so the threads of one heartbeat report one age.
         let now = Instant::now();
         map.iter()
@@ -557,7 +562,7 @@ impl Registry {
     /// Every fact the clock holds for one catalog entry: what a caller that cannot yet say whether those facts still
     /// hold passes back to [`Registry::observe_facts`], so their start times are kept rather than forgotten.
     pub fn facts_of(&self, entry: &str) -> Vec<FactKey> {
-        let clock = self.fact_clock.lock().unwrap();
+        let clock = self.fact_clock.lock().unwrap_or_else(|e| e.into_inner());
         clock.keys().filter(|k| k.entry == entry).cloned().collect()
     }
 

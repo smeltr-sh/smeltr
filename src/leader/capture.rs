@@ -438,7 +438,7 @@ impl Captures {
                 .clamp(1, MAX_DEADLINE_SECS),
             secrets,
         };
-        let mut sessions = self.0.lock().unwrap();
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         drop_to_hold(&mut sessions, &owner);
         sessions.insert(
             id,
@@ -488,7 +488,7 @@ impl Captures {
         group: &str,
         holder: impl Fn(&str) -> Option<String>,
     ) -> Vec<CaptureInvitation> {
-        let mut sessions = self.0.lock().unwrap();
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = Vec::new();
         for session in sessions.values_mut() {
             if session.invitation.group != group || session.done() || session.answered.contains(worker_id) {
@@ -523,7 +523,7 @@ impl Captures {
         let dropped = |why: &str| {
             crate::debug_when!(DROPPED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).due(), name: "report_dropped", target: "captures", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
         };
-        let mut sessions = self.0.lock().unwrap();
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let Some(session) = sessions.get_mut(&report.session) else {
             dropped("no such session");
             return;
@@ -565,7 +565,7 @@ impl Captures {
 
     /// Where `session` stands. Reading it keeps it held.
     pub fn status(&self, session: &str) -> Option<CaptureStatus> {
-        let mut sessions = self.0.lock().unwrap();
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let s = sessions.get_mut(session)?;
         s.used = Instant::now();
         Some(s.status(session))
@@ -573,12 +573,16 @@ impl Captures {
 
     /// Who opened `session`, by `Actor::id`.
     pub fn owner(&self, session: &str) -> Option<String> {
-        self.0.lock().unwrap().get(session).map(|s| s.owner.clone())
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session)
+            .map(|s| s.owner.clone())
     }
 
     /// The capture `owner` holds, by its session id.
     pub fn held_by(&self, owner: &str) -> Option<String> {
-        let sessions = self.0.lock().unwrap();
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         sessions
             .iter()
             .find(|(_, s)| s.owner == owner)
@@ -589,7 +593,7 @@ impl Captures {
     /// opened, what it read, in which group, under which filter, on which commit, and each worker that failed with
     /// why. A field with nothing to say is left out.
     pub fn capture_fields(&self, session: &str) -> Vec<(crate::heartbeat::CaptureColumn, serde_json::Value)> {
-        let sessions = self.0.lock().unwrap();
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let Some(s) = sessions.get(session) else {
             return Vec::new();
         };
@@ -647,7 +651,11 @@ impl Captures {
 
     /// The group `session` was opened against, which is the area whoever follows it must edit.
     pub fn group(&self, session: &str) -> Option<String> {
-        self.0.lock().unwrap().get(session).map(|s| s.invitation.group.clone())
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session)
+            .map(|s| s.invitation.group.clone())
     }
 
     /// End a capture still running where it stands. What it holds is what it will ever hold: records that land
@@ -655,7 +663,7 @@ impl Captures {
     /// its next heartbeat's answer no longer lists it -- a supervisor's own capture on that beat, a runtime's on the
     /// deployer's next turn. A capture already over is answered as it ended.
     pub fn stop(&self, session: &str) -> Option<CaptureStatus> {
-        let mut sessions = self.0.lock().unwrap();
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let s = sessions.get_mut(session)?;
         if !s.done() {
             s.stopped = true;
@@ -665,7 +673,7 @@ impl Captures {
 
     /// Forget a session. Called when its records have been saved as a sample, or when whoever started it gave up.
     pub fn close(&self, session: &str) -> Option<CaptureStatus> {
-        let mut sessions = self.0.lock().unwrap();
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         sessions.remove(session).map(|s| s.status(session))
     }
 
@@ -675,7 +683,7 @@ impl Captures {
     pub fn sweep(&self, idle: Duration, at_most: Duration) {
         let _pass =
             tracing::trace_span!(target: "captures", "a background pass", task = "drop finished captures").entered();
-        let mut sessions = self.0.lock().unwrap();
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         sessions.retain(|id, s| {
             let keep = (!s.done() || s.used.elapsed() < idle) && s.elapsed() < at_most;
             if !keep {
