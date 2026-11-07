@@ -603,6 +603,7 @@ impl Captures {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_file::KafkaSourceDto;
     use crate::config_file::{SourceDto, SourceKindDto};
 
     fn expect(workers: &[&str]) -> HashSet<String> {
@@ -615,7 +616,8 @@ mod tests {
             group: "prod-west".to_string(),
             source: Some(SourceDto {
                 id: "orders".to_string(),
-                kind: SourceKindDto::Kafka {
+                kind: SourceKindDto::Kafka(KafkaSourceDto {
+                    unknown: Default::default(),
                     schema_registry: None,
                     read: Default::default(),
                     brokers: "b1:9092".to_string(),
@@ -627,7 +629,7 @@ mod tests {
                     fetch_bytes: Default::default(),
                     encoding: Default::default(),
                     props: Default::default(),
-                },
+                }),
             }),
             destination: None,
             filter: None,

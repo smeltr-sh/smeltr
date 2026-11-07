@@ -784,7 +784,7 @@ fn run(seeds: std::ops::Range<u64>, generate: fn(&mut Rng) -> Case, expected: Ve
 }
 
 #[test]
-fn known_iceberg_configs_get_the_verdict_check_iceberg_gives() {
+fn known_iceberg_configs_get_the_verdict_their_check_gives() {
     // Every field the rules refuse at, which is every option but compression, whose every value is one.
     let refusals = (OPTIONS.iter())
         .filter(|o| **o != "compression")

@@ -673,7 +673,7 @@ fn run(seeds: std::ops::Range<u64>, generate: fn(&mut Rng) -> Case, expected: Ve
 }
 
 #[test]
-fn known_delta_configs_get_the_verdict_check_delta_gives() {
+fn known_delta_configs_get_the_verdict_their_check_gives() {
     // Every field the rules refuse at, which is every option but the two no value of the right type breaks.
     let refusals = (OPTIONS.iter())
         .filter(|o| !matches!(**o, "unityCatalog" | "compression"))

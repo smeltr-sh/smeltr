@@ -52,11 +52,18 @@ pub use bundle::{
     unsafe_secret_name,
 };
 pub use dto::{
-    AnswerDto, AssignmentDto, BufferBytes, CompoundTypeDto, CustomPatternDto, DataTypeDto, DeliverRuleDto,
-    DestinationDto, DestinationKindDto, FetchBytes, FieldDto, FileConfig, GrokPatternDto, LeaderSecretDto,
-    LookupOutputDto, LookupSourceDto, LookupTableDto, MatchKindDto, MultiplicityDto, OnExceptionDto, PUBSUB_ENDPOINT,
-    ParserKindDto, PipelineDto, RenamePairDto, Requirement, RouteDto, SchemaDto, SchemaFieldDto, SecretRefDto,
-    SourceDto, SourceKindDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto,
+    AnswerDto, AssignmentDto, AzureBlobDestinationDto, AzureBlobListSourceDto, AzureBlobQueueSourceDto, BufferBytes,
+    CompoundTypeDto, CustomPatternDto, DataTypeDto, DeliverRuleDto, DeltaDestinationDto, DestinationDto,
+    DestinationKindDto, ElasticReceiverSourceDto, ElasticsearchDestinationDto, EventHubsDestinationDto,
+    EventHubsSourceDto, FetchBytes, FieldDto, FileConfig, GcsDestinationDto, GcsListSourceDto, GcsPubSubSourceDto,
+    GrokPatternDto, HecReceiverSourceDto, HttpApiSourceDto, HttpDestinationDto, HttpReceiverSourceDto,
+    IcebergDestinationDto, KafkaDestinationDto, KafkaSourceDto, LeaderSecretDto, LogAnalyticsDestinationDto,
+    LogsSourceDto, LookupOutputDto, LookupSourceDto, LookupTableDto, MatchKindDto, MetricsSourceDto, MultiplicityDto,
+    NoUnknownKeys, OktaLogsSourceDto, OnExceptionDto, OtlpDestinationDto, OtlpReceiverSourceDto, PUBSUB_ENDPOINT,
+    ParserKindDto, PipelineDto, PrometheusDestinationDto, PrometheusReceiverSourceDto, RenamePairDto, Requirement,
+    RouteDto, S2sReceiverSourceDto, S3DestinationDto, S3ListSourceDto, S3SqsSourceDto, SchemaDto, SchemaFieldDto,
+    SecretRefDto, SftpDestinationDto, SftpSourceDto, SocketReceiverSourceDto, SourceDto, SourceKindDto,
+    SplunkHecDestinationDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto, SyslogReceiverSourceDto,
 };
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
 pub use links::{Connections, Kind, Links, Object};

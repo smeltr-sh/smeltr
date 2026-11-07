@@ -4358,6 +4358,7 @@ mod secrets_delivery_tests {
     use store::Store;
 
     use super::*;
+    use crate::config_file::ElasticsearchDestinationDto;
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -4615,7 +4616,9 @@ mod secrets_delivery_tests {
             .expect("the file is there");
         let dtos: Vec<crate::config_file::DestinationDto> = serde_json::from_slice(&bytes).unwrap();
         match &dtos[0].kind {
-            crate::config_file::DestinationKindDto::Elasticsearch { auth, .. } => auth.clone().expect("an auth"),
+            crate::config_file::DestinationKindDto::Elasticsearch(ElasticsearchDestinationDto { auth, .. }) => {
+                auth.clone().expect("an auth")
+            }
             other => panic!("expected elasticsearch, got {other:?}"),
         }
     }
