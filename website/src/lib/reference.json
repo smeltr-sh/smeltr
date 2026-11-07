@@ -378,97 +378,6 @@
       ]
     },
     {
-      "id": "conversion",
-      "title": "Conversion",
-      "blurb": "Reading one type as another. A parse whose text does not convert is null on that row and throws a `CoercionRefused` exception on the record; it never returns an approximation. Blank text is null and throws nothing. Text that reads as an instant is read with [parseTime](#parseTime).",
-      "functions": [
-        {
-          "name": "parseInt",
-          "signature": "value.parseInt(radix = 10)",
-          "summary": "Parses a whole string as an integer. Surrounding whitespace is allowed; trailing junk is not.",
-          "examples": [
-            {
-              "expr": "\"42\".parseInt()",
-              "result": "42"
-            },
-            {
-              "expr": "\" 42 \".parseInt()",
-              "result": "42",
-              "note": "surrounding space is ignored"
-            },
-            {
-              "expr": "\"12abc\".parseInt()",
-              "result": "null",
-              "note": "not `12`: the whole text must be a number",
-              "throws": ["CoercionRefused"]
-            },
-            {
-              "expr": "\"0x1f\".parseInt(16)",
-              "result": "31",
-              "note": "an explicit radix, 2 to 36"
-            },
-            {
-              "expr": "parseInt(\"ff\", 16)",
-              "result": "255",
-              "note": "the same call, written as a function"
-            }
-          ]
-        },
-        {
-          "name": "parseHex",
-          "signature": "value.parseHex()",
-          "summary": "Parses a hexadecimal string, with or without a `0x` prefix. An alias for `parseInt(value, 16)`.",
-          "examples": [
-            {
-              "expr": "\"0x1f\".parseHex()",
-              "result": "31"
-            },
-            {
-              "expr": "\"ff\".parseHex()",
-              "result": "255",
-              "note": "the `0x` is optional"
-            },
-            {
-              "expr": "\"zz\".parseHex()",
-              "result": "null",
-              "throws": ["CoercionRefused"]
-            },
-            {
-              "expr": "parseHex(\"ff\")",
-              "result": "255",
-              "note": "the same call, written as a function"
-            }
-          ]
-        },
-        {
-          "name": "parseFloat",
-          "signature": "value.parseFloat()",
-          "summary": "Parses a whole string as a floating-point number.",
-          "examples": [
-            {
-              "expr": "\"3.5\".parseFloat()",
-              "result": "3.5"
-            },
-            {
-              "expr": "\"1e3\".parseFloat()",
-              "result": "1000.0",
-              "note": "an `f64` always writes a decimal point, so it cannot be read back as an integer"
-            },
-            {
-              "expr": "\"3.5kb\".parseFloat()",
-              "result": "null",
-              "throws": ["CoercionRefused"]
-            },
-            {
-              "expr": "parseFloat(\"3.5\")",
-              "result": "3.5",
-              "note": "the same call, written as a function"
-            }
-          ]
-        }
-      ]
-    },
-    {
       "id": "binary",
       "title": "Bytes",
       "blurb": "A `bytes` value: made from text and read back as text, read at a byte position, and searched. A byte position counts from 0. A read that runs past the end of the bytes is null and throws an `IndexOutOfRange` exception. A number's type is `\"u8\"`, `\"u16\"`, `\"u32\"` or `\"u64\"` unsigned, `\"i8\"`, `\"i16\"`, `\"i32\"` or `\"i64\"` signed, or `\"f32\"` or `\"f64\"`. Its byte order is `\"big\"` or `\"little\"`, and big when the call names none. `unpack` reads a whole layout of fields at once.",
@@ -966,7 +875,8 @@
         "An `i64` result that does not fit, from `+`, `-`, `*`, negation, `abs`, `idiv`, `round`, `floor`, `ceil` or `trunc`, is null on that row and throws an `Overflow` exception on the record: `9223372036854775807 * 2` is null, not a wrapped negative.",
         "A value divided by zero with `/`, `%` or `idiv` is null on that row and throws a `DivideByZero` exception on the record. A null divided by zero is null and throws nothing.",
         "An `f64` result that is not finite, such as `1e308 * 10`, throws no exception. JSON has no spelling for it, so the output omits the field.",
-        "Bitwise operands are signed and already 64 bits wide, so there is no narrowing step and no unsigned shift. The shift count is taken modulo 64, and bits pushed off the end are gone: `1 << 65` is `2`, and `(1 << 62) << 2` is `0`."
+        "Bitwise operands are signed and already 64 bits wide, so there is no narrowing step and no unsigned shift. The shift count is taken modulo 64, and bits pushed off the end are gone: `1 << 65` is `2`, and `(1 << 62) << 2` is `0`.",
+        "When text does not convert, `parseInt`, `parseHex` and `parseFloat` give null on that row and throw a `CoercionRefused` exception on the record; they never return an approximation. Blank text is null and throws nothing."
       ],
       "functions": [
         {
@@ -1193,6 +1103,90 @@
             {
               "expr": "sign(0.5)",
               "result": "1"
+            }
+          ]
+        },
+        {
+          "name": "parseInt",
+          "signature": "value.parseInt(radix = 10)",
+          "summary": "Parses a whole string as an integer. Surrounding whitespace is allowed; trailing junk is not.",
+          "examples": [
+            {
+              "expr": "\"42\".parseInt()",
+              "result": "42"
+            },
+            {
+              "expr": "\" 42 \".parseInt()",
+              "result": "42",
+              "note": "surrounding space is ignored"
+            },
+            {
+              "expr": "\"12abc\".parseInt()",
+              "result": "null",
+              "note": "not `12`: the whole text must be a number",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "\"0x1f\".parseInt(16)",
+              "result": "31",
+              "note": "an explicit radix, 2 to 36"
+            },
+            {
+              "expr": "parseInt(\"ff\", 16)",
+              "result": "255",
+              "note": "the same call, written as a function"
+            }
+          ]
+        },
+        {
+          "name": "parseHex",
+          "signature": "value.parseHex()",
+          "summary": "Parses a hexadecimal string, with or without a `0x` prefix. An alias for `parseInt(value, 16)`.",
+          "examples": [
+            {
+              "expr": "\"0x1f\".parseHex()",
+              "result": "31"
+            },
+            {
+              "expr": "\"ff\".parseHex()",
+              "result": "255",
+              "note": "the `0x` is optional"
+            },
+            {
+              "expr": "\"zz\".parseHex()",
+              "result": "null",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "parseHex(\"ff\")",
+              "result": "255",
+              "note": "the same call, written as a function"
+            }
+          ]
+        },
+        {
+          "name": "parseFloat",
+          "signature": "value.parseFloat()",
+          "summary": "Parses a whole string as a floating-point number.",
+          "examples": [
+            {
+              "expr": "\"3.5\".parseFloat()",
+              "result": "3.5"
+            },
+            {
+              "expr": "\"1e3\".parseFloat()",
+              "result": "1000.0",
+              "note": "an `f64` always writes a decimal point, so it cannot be read back as an integer"
+            },
+            {
+              "expr": "\"3.5kb\".parseFloat()",
+              "result": "null",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "parseFloat(\"3.5\")",
+              "result": "3.5",
+              "note": "the same call, written as a function"
             }
           ]
         },
@@ -2595,28 +2589,6 @@
           ]
         },
         {
-          "name": "parseDuration",
-          "signature": "value.parseDuration()",
-          "group": "Reading text",
-          "summary": "Parses text into a duration: the count of microseconds `toString()` writes, whole or as a decimal rounded to the microsecond. Text that is no count is null.",
-          "examples": [
-            {
-              "expr": "\"90000000\".parseDuration().countIn(\"s\")",
-              "result": "90.0"
-            },
-            {
-              "expr": "duration(250, \"ms\").toString().parseDuration() == duration(250, \"ms\")",
-              "result": "true",
-              "note": "what `toString()` writes reads back as the same span"
-            },
-            {
-              "expr": "\"soon\".parseDuration()",
-              "result": "null",
-              "throws": ["CoercionRefused"]
-            }
-          ]
-        },
-        {
           "name": "formatTime",
           "signature": "value.formatTime(format)",
           "group": "Writing text",
@@ -2901,6 +2873,28 @@
             "A span is held to the microsecond, so anything finer truncates toward zero: `duration(1500, \"ns\")` is one microsecond and `duration(1, \"ns\")` is a zero span. A fractional count of any unit rounds the same way.",
             "There is no month or year: how long either one is depends on which one, and a span is a count with no calendar attached to answer that. A week is seven days, so it is here.",
             "A literal unit is checked when the pipeline compiles: `duration(1, \"y\")` does not compile. A unit computed per row that names no unit makes the result null. A span too large to hold is null."
+          ]
+        },
+        {
+          "name": "parseDuration",
+          "signature": "value.parseDuration()",
+          "group": "Reading text",
+          "summary": "Parses text into a duration: the count of microseconds `toString()` writes, whole or as a decimal rounded to the microsecond. Text that is no count is null.",
+          "examples": [
+            {
+              "expr": "\"90000000\".parseDuration().countIn(\"s\")",
+              "result": "90.0"
+            },
+            {
+              "expr": "duration(250, \"ms\").toString().parseDuration() == duration(250, \"ms\")",
+              "result": "true",
+              "note": "what `toString()` writes reads back as the same span"
+            },
+            {
+              "expr": "\"soon\".parseDuration()",
+              "result": "null",
+              "throws": ["CoercionRefused"]
+            }
           ]
         },
         {
