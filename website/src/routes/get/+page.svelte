@@ -1,5 +1,14 @@
 <script lang="ts">
   import { image, latestFile, license, source } from '#lib/release.ts';
+  import { latest } from '#lib/releases.ts';
+
+  const pull = `docker pull ${image}:latest`;
+  let copied = $state(false);
+  async function copy() {
+    await navigator.clipboard.writeText(pull);
+    copied = true;
+    setTimeout(() => (copied = false), 1500);
+  }
 </script>
 
 <svelte:head
@@ -13,7 +22,55 @@
   <section class="page-hero">
     <h1>Get smeltr</h1>
   </section>
+  {#if latest}
+    <section class="release" id="download" aria-labelledby="release-heading">
+      <div class="files">
+        <p class="eyebrow">Latest release</p>
+        <h2 id="release-heading">Smeltr {latest.version}</h2>
+        <p class="date">{latest.date}</p>
+        <p>{latest.summary}</p>
+        <ul class="downloads">
+          <li>
+            <span class="command-row">
+              <code class="command">{pull}</code>
+              <button class="compact" onclick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+            </span>
+            <a href="/docs/install-leader/container">Run the container image</a>
+          </li>
+          <li>
+            <a href={latestFile('smeltr-linux.tar.gz')}>Linux x86-64</a>
+            <a href="/docs/install-leader/binary">Install the binary</a>
+          </li>
+          <li>
+            <a href={latestFile('smeltr-windows.zip')}>Windows x86-64</a>
+            <a href="/docs/install-leader/binary">Install the binary</a>
+          </li>
+          <li>
+            <span
+              ><a href={latestFile('smeltr-extras.zip')}>Extras</a>: image archive, SBOM, CVE report
+              and STIG report</span
+            >
+            <a href="/docs/release-extras">Release extras</a>
+          </li>
+          <li><a href={source}>Source code</a></li>
+        </ul>
+      </div>
+      <aside>
+        <h3>Highlights</h3>
+        <ul>
+          {#each latest.highlights ?? [] as h (h.title)}
+            <li><a href={h.href}>{h.title}</a></li>
+          {/each}
+        </ul>
+        <p class="more">
+          <a href="/releases/{latest.version}">What's in {latest.version} →</a><br />
+          <a href="/releases">What changed in each release →</a>
+        </p>
+      </aside>
+    </section>
+  {/if}
   <article>
+    <h2 id="pricing">Pricing</h2>
     <p>
       Smeltr is free for production use by individuals, and by organizations with fewer than 250
       employees. Organizations with 250 or more employees pay $10,000 per year for each server they
@@ -29,44 +86,6 @@
       Every plan includes the same features. Email support is included with the paid license; the
       free plan has no support.
     </p>
-    <h2 id="download">Download</h2>
-    <p>
-      These are the files of the latest release. <a href="/releases"
-        >What changed in each release →</a
-      >
-    </p>
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr><th>Download</th><th>Install guide</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><code class="command">docker pull {image}:latest</code></td>
-            <td><a href="/docs/install-leader/container">Run the container image</a></td>
-          </tr>
-          <tr>
-            <td><a href={latestFile('smeltr-linux.tar.gz')}>Linux x86-64</a></td>
-            <td><a href="/docs/install-leader/binary">Install the binary</a></td>
-          </tr>
-          <tr>
-            <td><a href={latestFile('smeltr-windows.zip')}>Windows x86-64</a></td>
-            <td><a href="/docs/install-leader/binary">Install the binary</a></td>
-          </tr>
-          <tr>
-            <td>
-              <a href={latestFile('smeltr-extras.zip')}>Extras</a>: image archive, SBOM, CVE report
-              and STIG report
-            </td>
-            <td><a href="/docs/release-extras">Release extras</a></td>
-          </tr>
-          <tr>
-            <td><a href={source}>Source code</a></td>
-            <td></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
     <p>
       To purchase a production license, email
       <a href="mailto:support@smeltr.sh">support@smeltr.sh</a>.
@@ -97,11 +116,85 @@
 </div>
 
 <style>
-  /* A command is copied whole and a name is short, so a narrow screen scrolls the table
-     rather than breaking its cells. */
-  th,
-  td {
+  .marketing .page-hero {
+    padding-bottom: 1.5rem;
+  }
+  .marketing .release {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 20rem;
+    gap: 1.25rem;
+    align-items: start;
+    padding-block: 0 1rem;
+  }
+  .files,
+  aside {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--panel);
+    padding: 1.6rem;
+  }
+  .files h2 {
+    margin: 0;
+  }
+  .date {
+    margin: 0.2rem 0 1rem;
+    color: var(--dim);
+    font-size: 0.92rem;
+  }
+  .command-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex: 1;
+    max-width: 34rem;
+  }
+  .command-row code {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
     white-space: nowrap;
+    background: var(--field);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.55rem 0.75rem;
+  }
+  .downloads {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .downloads li {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: center;
+    padding: 0.8rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .downloads li:last-child {
+    border-bottom: 0;
+  }
+  aside h3 {
+    margin: 0 0 0.75rem;
+    font-size: 1.05rem;
+  }
+  aside ul {
+    padding-left: 1.1rem;
+    margin: 0;
+  }
+  aside li {
+    margin: 0.45rem 0;
+    font-size: 0.92rem;
+  }
+  aside .more {
+    margin: 1.2rem 0 0;
+    font-size: 0.92rem;
+    line-height: 1.9;
+  }
+  @media (max-width: 46rem) {
+    .marketing .release {
+      grid-template-columns: 1fr;
+    }
   }
   h2 {
     margin-top: 3rem;
