@@ -740,9 +740,9 @@
   }
   loadSamples();
 
-  // The pipeline and the URL's sample the opening choice was last made for.
-  // This component is reused across a route change, so each pipeline opened
-  // chooses afresh rather than keep the one before's.
+  // The pipeline, and the sample in the URL, that the opening choice was last
+  // made for. This component is reused across a route change, so each pipeline
+  // opened chooses afresh and does not keep the previous pipeline's choice.
   let openedFor = '';
   $effect(() => {
     const opened = JSON.stringify([pipelineId, sample]);

@@ -8,7 +8,7 @@ import { load, signedOut } from './session';
 
 let editor: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
-/** The sample each preview asked for ran over. */
+/** The sample each preview ran over. */
 let ranOver: (string | null)[];
 /** The route, as App hands it to the one editor it keeps across a change of pipeline. */
 const route = $state<{ id: string; sample?: string }>({ id: 'a' });
@@ -101,7 +101,7 @@ describe('the sample a pipeline opens on', () => {
     });
     await lastRan('s1');
 
-    // The link's sample, not the one the pipeline before chose.
+    // The link's sample, not the one the previous pipeline chose.
     Object.assign(route, { id: 'c', sample: 's3' });
     await lastRan('s3');
     Object.assign(route, { id: 'b', sample: 's2' });
@@ -111,7 +111,7 @@ describe('the sample a pipeline opens on', () => {
     Object.assign(route, { id: 'c', sample: undefined });
     await lastRan('s3');
 
-    // Neither: none, so no preview runs over the one before's.
+    // Neither: none, so no preview runs over the previous pipeline's sample.
     ranOver = [];
     Object.assign(route, { id: 'd', sample: undefined });
     await vi.waitFor(() => expect(target.querySelector('#pipeline-name')).not.toBeNull());
