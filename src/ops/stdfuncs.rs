@@ -523,14 +523,16 @@ impl StdFunc {
             .any(|row| matches!(row.params.get(i), Some(p) if *p != Param::Pattern))
     }
 
-    /// Whether argument `i` may come as a constant column: the kernel reads it as one value. A position outside the
-    /// set is given rows by `expr::eval`. `min`, `max` and `clamp` read every argument the same way; the rest read a
-    /// needle, count, index, unit or format beside the value they work on.
+    /// Whether argument `i` may come as a constant column, which the kernel reads as the same value in every row. Any
+    /// other argument is filled out to a value per row by `expr::eval` first. A function that reads all its arguments
+    /// alike, such as `min`, `max`, `clamp` and `concat`, takes any of them as a constant; most others read a needle,
+    /// count, index, unit or format beside the value they work on. An array argument is never a constant, so what this
+    /// answers at an array's position is never used.
     pub fn takes_constant_at(self, i: usize) -> bool {
         use StdFunc::*;
         match self {
-            Min | Max | Clamp | Idiv | IsNull | CommunityId | Decode | Encode | FormatTime | ReadInt | ReadFloat
-            | ReadBytes | WriteInt | WriteFloat => true,
+            Min | Max | Clamp | Concat | Idiv | IsNull | CommunityId | Decode | Encode | FormatTime | ReadInt
+            | ReadFloat | ReadBytes | WriteInt | WriteFloat => true,
             StartsWith | EndsWith | Split | Join | Repeat | At | Insert | Remove | Resize | Duration | CountIn
             | ParseInt | CidrNetwork | ToString | ParseBytes => i == 1,
             Slice | PadStart | PadEnd | ParseTime | Includes | IndexOf | LastIndexOf => i == 1 || i == 2,
@@ -1194,7 +1196,6 @@ mod constants {
                 for i in 0..tys.len() {
                     let takes = row.func.takes_constant_at(i);
                     if matches!(tys[i], DataType::Array(_)) {
-                        assert!(!takes, "{}: an array is never a constant", row.name);
                         continue;
                     }
                     let what = format!("{}{tys:?} at {i}", row.name);
@@ -1214,7 +1215,8 @@ mod constants {
                         );
                     }
                 }
-                if (0..tys.len()).all(|i| row.func.takes_constant_at(i)) {
+                let arrays = tys.iter().any(|t| matches!(t, DataType::Array(_)));
+                if !arrays && (0..tys.len()).all(|i| row.func.takes_constant_at(i)) {
                     let what = format!("{}{tys:?}, every argument constant", row.name);
                     let filled = outcome(k, &tys, &|_| true, false).expect(&what);
                     assert_eq!(outcome(k, &tys, &|_| true, true).as_ref(), Some(&filled), "{what}");
