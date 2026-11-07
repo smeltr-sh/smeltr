@@ -51,6 +51,8 @@ const THIS: &str = "this";
 
 /// The bytes of an item a search hit shows around what it found.
 const SNIPPET: usize = 300;
+/// The most hits one search answers with.
+pub const SEARCH_HITS: usize = 20;
 
 /// The turns running now, and the router their calls go through.
 #[derive(Default)]
@@ -176,6 +178,9 @@ pub struct ConversationDto {
     /// Read by a range or a search, how many turns the conversation holds; each item then says which turn it is of.
     #[serde(skip_serializing_if = "Option::is_none")]
     turns: Option<usize>,
+    /// With `q`, how many items hold every word; the answer holds the newest [`SEARCH_HITS`] of them past `skip`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    found: Option<usize>,
     /// What made the last answer, which the next message starts from.
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
@@ -672,12 +677,16 @@ pub struct Reading {
     /// The first turn read, counted from 0. Without it, the first.
     #[serde(default)]
     from: Option<usize>,
-    /// The turn the read stops before. Without it, the read goes to the last turn.
+    /// The turn the read stops before. Without it, the read is of `from` alone, or with no `from` goes to the last
+    /// turn.
     #[serde(default)]
     to: Option<usize>,
     /// Instead of whole turns, a snippet of each item whose text holds every word of it, ignoring case.
     #[serde(default)]
     q: Option<String>,
+    /// With `q`, how many of the newest hits to pass over, to read the ones before them.
+    #[serde(default)]
+    skip: Option<usize>,
 }
 
 impl Reading {
@@ -713,6 +722,9 @@ pub async fn read(
             "name the turns with from or to, or search with q",
         );
     }
+    if reading.q.as_deref().is_some_and(|q| q.trim().is_empty()) {
+        return refuse(StatusCode::BAD_REQUEST, "q needs a word to search for");
+    }
     let conversation = match owned(&auth, &actor, &id).await {
         Ok(c) => c,
         Err(refused) => return *refused,
@@ -729,6 +741,10 @@ pub async fn read(
     let running = run.as_ref().is_some_and(|r| r.running);
     let parsed: Vec<Turn> = turns.iter().filter_map(|t| serde_json::from_str(t).ok()).collect();
     let last = last_answer(&parsed);
+    let (items, found) = match named {
+        true => read_items(&turns, &reading),
+        false => (turns.iter().flat_map(|t| items(t)).collect(), None),
+    };
     let body = ConversationDto {
         summary: summary(conversation, running),
         ended: run.as_ref().and_then(|r| r.ended).map(Ended::as_str),
@@ -737,11 +753,9 @@ pub async fn read(
             .filter(|r| r.running && !r.writing.is_empty())
             .map(|r| r.writing.clone()),
         error: run.and_then(|r| r.error),
-        items: match named {
-            true => read_items(&turns, &reading),
-            false => turns.iter().flat_map(|t| items(t)).collect(),
-        },
+        items,
         turns: named.then_some(turns.len()),
+        found,
         model: last.and_then(|r| r.model.clone()),
         effort: last.and_then(|r| r.effort),
         context: filled(&parsed),
@@ -750,9 +764,14 @@ pub async fn read(
 }
 
 /// The items of `turns` that `reading` asks for, each saying which turn it is of: whole, or with `q` a snippet of
-/// each that matches.
-fn read_items(turns: &[String], reading: &Reading) -> Vec<Value> {
-    let to = reading.to.unwrap_or(turns.len()).min(turns.len());
+/// each that matches, the newest [`SEARCH_HITS`] past `skip`, and how many match.
+fn read_items(turns: &[String], reading: &Reading) -> (Vec<Value>, Option<usize>) {
+    let to = match (reading.from, reading.to) {
+        (_, Some(to)) => to,
+        (Some(from), None) => from.saturating_add(1),
+        (None, None) => turns.len(),
+    }
+    .min(turns.len());
     let from = reading.from.unwrap_or(0).min(to);
     let numbered = turns[from..to].iter().enumerate().flat_map(|(n, t)| {
         items(t).into_iter().map(move |mut item| {
@@ -768,9 +787,9 @@ fn read_items(turns: &[String], reading: &Reading) -> Vec<Value> {
         .map(str::to_lowercase)
         .collect();
     if reading.q.is_none() {
-        return numbered.collect();
+        return (numbered.collect(), None);
     }
-    numbered
+    let hits: Vec<Value> = numbered
         .filter_map(|item| {
             let text = said_in(&item);
             let lower = text.to_lowercase();
@@ -784,7 +803,10 @@ fn read_items(turns: &[String], reading: &Reading) -> Vec<Value> {
             };
             Some(json!({"kind": item["kind"], "turn": item["turn"], "snippet": snippet(&text, at)}))
         })
-        .collect()
+        .collect();
+    let end = hits.len().saturating_sub(reading.skip.unwrap_or(0));
+    let page = hits[end.saturating_sub(SEARCH_HITS)..end].to_vec();
+    (page, Some(hits.len()))
 }
 
 /// About [`SNIPPET`] bytes of `text` around byte `at`, marked with `…` where it was cut.
@@ -947,5 +969,25 @@ mod tests {
         assert!(cut.starts_with('…') && cut.ends_with('…'), "{cut}");
         assert!(cut.contains("needle"), "{cut}");
         assert_eq!(snippet("short", 0), "short");
+    }
+
+    /// A search answers with its newest hits and how many there are, and `skip` reads the ones before them.
+    #[test]
+    fn a_search_is_read_a_page_of_hits_at_a_time() {
+        let turns: Vec<String> = (0..SEARCH_HITS + 5)
+            .map(|n| serde_json::to_string(&Turn::Asked(vec![Said::Text(format!("hit {n}"))])).unwrap())
+            .collect();
+        let search = |skip| Reading {
+            q: Some("hit".to_string()),
+            skip,
+            ..Reading::default()
+        };
+        let (newest, found) = read_items(&turns, &search(None));
+        assert_eq!(found, Some(SEARCH_HITS + 5));
+        assert_eq!(newest.len(), SEARCH_HITS);
+        assert_eq!(newest[0]["turn"], 5);
+        let (older, _) = read_items(&turns, &search(Some(SEARCH_HITS)));
+        let older: Vec<&Value> = older.iter().map(|i| &i["turn"]).collect();
+        assert_eq!(older, [0, 1, 2, 3, 4]);
     }
 }
