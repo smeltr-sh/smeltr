@@ -49,6 +49,7 @@ function site(servicePort: number): http.Server {
           answer.pipe(res);
         },
       );
+      out.on('error', () => res.destroy());
       req.pipe(out);
       return;
     }
