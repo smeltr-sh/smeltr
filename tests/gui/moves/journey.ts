@@ -868,6 +868,7 @@ const importPipeline: Move = {
     await goto(page, leader, '#/build/pipelines');
     await page.getByRole('button', { name: 'Import' }).click();
     const dialog = page.getByRole('dialog', { name: /import pipeline/ });
+    await dialog.getByLabel('Import into').selectOption('Shared');
     await dialog.getByLabel('Export file').setInputFiles({
       name: `${id}.zip`,
       mimeType: 'application/zip',

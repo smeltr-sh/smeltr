@@ -1,6 +1,7 @@
 <!--
-  Importing an export into this area. Choosing the file lists what it holds, each object new, the same as one
-  here, or taken: its id holds something else here. A taken id is answered by keeping one side or renaming the
+  Importing an export into shared or a group, which the importer chooses: the leader the export came from may not
+  have the same groups. Choosing both lists what the file holds, each object new, the same as one here, or taken:
+  its id holds something else here. A taken id is answered by keeping one side or renaming the
   imported object, and each secret and certificate the file names is matched to one here. Import saves once every
   one has an answer, against the commit the list was read at.
 -->
@@ -9,9 +10,12 @@
   import Dialog from './Dialog.svelte';
   import Field from './Field.svelte';
   import {
+    SHARED_SCOPE,
     importExport,
     listCertificates,
     listSecrets,
+    listWorkerGroups,
+    type WorkerGroupDto,
     type ImportAnswers,
     type ImportCredential,
     type ImportListed,
@@ -38,6 +42,9 @@
   };
   const STANDINGS = { new: 'New', same: 'Same as here', taken: 'Taken' };
 
+  /** Shared or a group's id; '' until one is chosen. */
+  let into = $state('');
+  let groups = $state<WorkerGroupDto[]>([]);
   let file = $state<File | null>(null);
   let listed = $state<ImportListed[]>([]);
   let credentials = $state<ImportCredential[]>([]);
@@ -56,11 +63,16 @@
   let taken = $derived(listed.filter((l) => l.standing === 'taken'));
 
   $effect(() => {
-    if (open) reset();
+    if (!open) return;
+    into = '';
+    file = null;
+    reset();
+    listWorkerGroups()
+      .then((res) => (groups = res.ok ? res.groups : []))
+      .catch(reported);
   });
 
   function reset() {
-    file = null;
     listed = [];
     credentials = [];
     at = undefined;
@@ -69,21 +81,26 @@
     matches = {};
   }
 
-  async function choose(input: HTMLInputElement) {
-    const chosen = input.files?.[0];
-    if (!chosen) return;
+  function choose(input: HTMLInputElement) {
+    file = input.files?.[0] ?? null;
+    list();
+  }
+
+  /** Lists the file against the scope chosen, once both are; each new choice lists it again. */
+  async function list() {
     reset();
-    file = chosen;
+    const [chosen, scope] = [file, into];
+    if (!chosen || !scope) return;
     busy = true;
     try {
       const [res, secrets, certificates] = await Promise.all([
-        importExport(chosen),
+        importExport(chosen, scope),
         listSecrets(),
         listCertificates(),
       ]);
       secretsHere = secrets.map((s) => s.name);
       certificatesHere = certificates.map((c) => c.name);
-      if (!res.ok || file !== chosen) return;
+      if (!res.ok || file !== chosen || into !== scope) return;
       listed = res.listed ?? [];
       credentials = res.credentials ?? [];
       at = res.at;
@@ -102,6 +119,7 @@
 
   /** Why Import is disabled, or '' when every taken id and credential has an answer. */
   let unanswered = $derived.by(() => {
+    if (!into) return 'Choose where to import into first.';
     if (!file || listed.length === 0) return 'Choose an export file first.';
     for (const l of taken) {
       const keep = keeps[key(l)];
@@ -133,7 +151,7 @@
     };
     busy = true;
     try {
-      const res = await importExport(file, answers, at);
+      const res = await importExport(file, into, answers, at);
       if (res.ok) onimported();
     } catch (e) {
       reported(e);
@@ -145,6 +163,15 @@
 
 <Dialog {open} title="import pipeline" wide {oncancel}>
   <div class="body">
+    <Field label="Import into" required>
+      <select bind:value={into} disabled={busy} onchange={list}>
+        <option value="" disabled>Choose</option>
+        <option value={SHARED_SCOPE}>Shared</option>
+        {#each groups as g (g.id)}
+          <option value={g.id}>Worker group {g.id}</option>
+        {/each}
+      </select>
+    </Field>
     <Field label="Export file" required>
       <input type="file" accept=".zip" disabled={busy} onchange={(e) => choose(e.currentTarget)} />
     </Field>
@@ -174,6 +201,12 @@
       {#each taken as l (key(l))}
         <section class="taken-id" aria-label="{PARTS[l.part]} {l.id}">
           <h4>{PARTS[l.part]} {l.id}</h4>
+          {#if l.inShared}
+            <p class="dim">
+              Shared holds this one, so an import into a group can only choose Here, or Both, rename
+              imported.
+            </p>
+          {/if}
           <div class="versions">
             {#each [['Imported', l.imported], ['Here', l.here]] as [label, text] (label)}
               <div role="group" aria-label={label}>
@@ -186,7 +219,9 @@
             <Field label="Keep">
               <select bind:value={keeps[key(l)]} disabled={busy}>
                 <option value="" disabled>Choose</option>
-                <option value="imported">Imported</option>
+                {#if !l.inShared}
+                  <option value="imported">Imported</option>
+                {/if}
                 <option value="here">Here</option>
                 <option value="renamed">Both, rename imported</option>
               </select>
@@ -253,7 +288,8 @@
   }
   h3,
   h4,
-  h5 {
+  h5,
+  .taken-id p {
     margin: 0;
   }
   .taken-id {

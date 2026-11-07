@@ -137,7 +137,7 @@ fn contents_in(data_dir: &Path, area: &str, id: &str, q: &ExportQuery) -> Result
 }
 
 /// The file a lookup table reads, relative to its bundle. An inline table reads none.
-fn table_file(source: &LookupSourceDto) -> Option<&str> {
+pub(crate) fn table_file(source: &LookupSourceDto) -> Option<&str> {
     match source {
         LookupSourceDto::Csv { path, .. } | LookupSourceDto::Mmdb { path } => Some(path),
         LookupSourceDto::Inline { .. } => None,

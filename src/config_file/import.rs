@@ -34,6 +34,9 @@ pub struct Objects {
     pub file: FileConfig,
     pub samples: Vec<SampleDto>,
     pub tests: Vec<TestDto>,
+    /// Each lookup file's content hash, by the path a table names it at. A table is compared by its file's contents,
+    /// not by the name the file is stored under.
+    pub contents: BTreeMap<String, String>,
 }
 
 /// How an imported object stands beside the importing area.
@@ -59,6 +62,9 @@ pub struct Listed {
     pub imported: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub here: Option<String>,
+    /// The one here is in `shared/`, and the import is into a group: it can be kept or renamed beside, not replaced.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub in_shared: bool,
 }
 
 /// The importer's answer for a taken id.
@@ -124,24 +130,44 @@ impl Objects {
         root.map(|p| p.id.as_str())
     }
 
+    /// Every object's kind and id.
+    pub fn ids(&self) -> BTreeSet<(Part, String)> {
+        self.values().into_keys().collect()
+    }
+
+    /// `values`, with each lookup table's file named by its content hash, which is what makes two tables the same.
+    fn compared(&self) -> BTreeMap<(Part, String), serde_json::Value> {
+        let mut values = self.values();
+        for ((part, _), value) in &mut values {
+            let path = value.get("path").and_then(|p| p.as_str());
+            if let (Part::LookupTable, Some(hash)) = (part, path.and_then(|p| self.contents.get(p))) {
+                value["path"] = serde_json::Value::String(format!("sha256:{hash}"));
+            }
+        }
+        values
+    }
+
     /// Each object of this import, in the order an export lists them, and how it stands beside `here`.
     pub fn list(&self, here: &Objects) -> Vec<Listed> {
-        let here = here.values();
+        let (here_shown, here) = (here.values(), here.compared());
+        let shown = self.values();
         let pretty = |v: &serde_json::Value| serde_json::to_string_pretty(v).expect("a JSON value prints");
-        let mut listed: Vec<Listed> = (self.values().into_iter())
+        let mut listed: Vec<Listed> = (self.compared().into_iter())
             .map(|((part, id), imported)| {
-                let standing = match here.get(&(part, id.clone())) {
+                let key = (part, id.clone());
+                let standing = match here.get(&key) {
                     None => Standing::New,
                     Some(there) if *there == imported => Standing::Same,
                     Some(_) => Standing::Taken,
                 };
                 let taken = standing == Standing::Taken;
                 Listed {
-                    here: taken.then(|| pretty(&here[&(part, id.clone())])),
-                    imported: taken.then(|| pretty(&imported)),
+                    here: taken.then(|| pretty(&here_shown[&key])),
+                    imported: taken.then(|| pretty(&shown[&key])),
                     part,
                     id,
                     standing,
+                    in_shared: false,
                 }
             })
             .collect();
@@ -163,14 +189,13 @@ impl Objects {
         if !unanswered.is_empty() {
             return Err(unanswered);
         }
-        let held_here = here.values();
-        let held = self.values();
+        let (held_here, held) = (here.ids(), self.ids());
         let mut refused = Vec::new();
         for ((part, id), keep) in answers {
             if let Keep::Renamed(to) = keep {
                 if to.trim().is_empty()
-                    || held_here.contains_key(&(*part, to.clone()))
-                    || held.contains_key(&(*part, to.clone()))
+                    || held_here.contains(&(*part, to.clone()))
+                    || held.contains(&(*part, to.clone()))
                 {
                     refused.push(format!(
                         "{} {id:?} can't be renamed to {to:?}: that id is taken",
@@ -475,6 +500,7 @@ mod tests {
                 )
                 .unwrap(),
             ],
+            contents: BTreeMap::new(),
         }
     }
 

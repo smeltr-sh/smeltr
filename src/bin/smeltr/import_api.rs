@@ -2,7 +2,7 @@
 //! loader that reads every bundle, compared with what the area holds (`config_file::Objects`), and written as one
 //! save once every taken id and every credential has an answer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -10,8 +10,8 @@ use axum::extract::{Extension, Multipart, State};
 use axum::http::StatusCode;
 
 use smeltr::config_file::{
-    self, Credential, FileConfig, FileSet, Keep, Listed, LookupSourceDto, Objects, Part, SampleDto, SecretRefDto,
-    TestDto, read_sample, read_test,
+    self, Credential, FileConfig, FileSet, Keep, Listed, LookupSourceDto, Objects, Part, SecretRefDto, describe,
+    read_sample, read_test,
 };
 use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::store::Actor;
@@ -19,6 +19,7 @@ use smeltr::leader::tree::TreeFiles;
 use smeltr::leader::{blocking, blocking_answer};
 
 use crate::config_api::{Addressed, Naming, Touches, Writing, group_of, merged_file, store_lookup_file};
+use crate::export_api::table_file;
 
 /// The most entries an export may hold: far more than one pipeline's objects, and few enough to unpack at once.
 const MAX_ENTRIES: usize = 10_000;
@@ -143,12 +144,19 @@ fn imported(
         Ok(objects) => objects,
         Err(e) => return Envelope::refused(e),
     };
-    let here = match here(&writing, &objects) {
-        Ok(here) => here,
+    let (here, in_shared) = match here(&writing, &objects) {
+        Ok(found) => found,
         Err(e) => return Envelope::refused(e),
     };
+    let listed = || {
+        let mut listed = objects.list(&here);
+        for l in &mut listed {
+            l.in_shared = in_shared.contains(&(l.part, l.id.clone()));
+        }
+        listed
+    };
     let listing = Import {
-        listed: objects.list(&here),
+        listed: listed(),
         credentials: objects.unlike(&here).credentials(),
         at: Some(writing.parent.clone()),
         commit: None,
@@ -163,7 +171,7 @@ fn imported(
             .collect();
         Envelope::with(
             Import {
-                listed: objects.list(&here),
+                listed: listed(),
                 credentials: objects.unlike(&here).credentials(),
                 at: Some(writing.parent.clone()),
                 commit: None,
@@ -173,6 +181,19 @@ fn imported(
         )
     };
 
+    let replaces_shared: Vec<String> = (answers.taken.iter())
+        .filter(|a| a.keep == Keep::Imported && in_shared.contains(&(a.part, a.id.clone())))
+        .map(|a| {
+            format!(
+                "{} {:?} is in shared, so only an import into shared can replace it",
+                describe(a.part),
+                a.id
+            )
+        })
+        .collect();
+    if !replaces_shared.is_empty() {
+        return still_needed(replaces_shared);
+    }
     let keeps = (answers.taken.into_iter()).map(|a| ((a.part, a.id), a.keep)).collect();
     let mut written = match objects.clone().resolve(&here, &keeps) {
         Ok(written) => written,
@@ -331,37 +352,82 @@ fn strip_content_prefix(name: &str) -> &str {
 }
 
 /// What `writing`'s area holds of the kinds `imported` holds: what the group runs, `shared/` merged with its own, and
-/// the samples and tests of the ids the import holds.
-fn here(writing: &Writing, imported: &Objects) -> Result<Objects, Refusal> {
-    let (repo, commit) = (writing.repo(), writing.parent.as_str());
-    let own = writing.read().file;
-    let file = match group_of(writing.prefix()) {
-        Some(group) => {
-            let shared = config_file::read_raw_from(&mut TreeFiles::new(repo, commit, config_file::SHARED_DIR));
-            merged_file(&shared.file, &own, group)
-        }
-        None => own,
+/// the samples and tests of the ids the import holds. With it, what of that `shared/` holds, when the area is a group:
+/// an import into the group can keep those or rename beside them, but not replace them.
+fn here(writing: &Writing, imported: &Objects) -> Result<(Objects, BTreeSet<(Part, String)>), Refusal> {
+    let own = scope_objects(writing, writing.prefix(), writing.read().file, imported)?;
+    let Some(group) = group_of(writing.prefix()) else {
+        return Ok((own, BTreeSet::new()));
     };
-    let scopes = [writing.prefix().to_string(), config_file::SHARED_DIR.to_string()];
-    let failed = |e: config_file::BundleError| Refusal::internal(e.to_string());
-    let (mut samples, mut tests) = (Vec::<SampleDto>::new(), Vec::<TestDto>::new());
-    for scope in scopes
-        .iter()
-        .take(if group_of(writing.prefix()).is_some() { 2 } else { 1 })
-    {
-        let mut files = TreeFiles::new(repo, commit, scope.clone());
-        for s in &imported.samples {
-            if let Some(found) = read_sample(&mut files, &s.id).map_err(failed)? {
-                samples.push(found);
-            }
-        }
-        for t in &imported.tests {
-            if let Some(found) = read_test(&mut files, &t.id).map_err(failed)? {
-                tests.push(found);
-            }
+    let mut files = TreeFiles::new(writing.repo(), &writing.parent, config_file::SHARED_DIR);
+    let shared_file = config_file::read_raw_from(&mut files).file;
+    let shared = scope_objects(writing, config_file::SHARED_DIR, shared_file, imported)?;
+    let in_shared = shared.ids();
+    let mut here = Objects {
+        file: merged_file(&shared.file, &own.file, group),
+        samples: shared.samples,
+        tests: shared.tests,
+        contents: shared.contents,
+    };
+    here.samples.extend(own.samples);
+    here.tests.extend(own.tests);
+    here.contents.extend(own.contents);
+    Ok((here, in_shared))
+}
+
+/// The scope at `prefix`, holding `file`, with those of its samples and tests whose ids `imported` holds, and each of
+/// its lookup files' content hash.
+fn scope_objects(writing: &Writing, prefix: &str, file: FileConfig, imported: &Objects) -> Result<Objects, Refusal> {
+    let (repo, commit) = (writing.repo(), writing.parent.as_str());
+    let failed = |e: &dyn std::fmt::Display| Refusal::internal(e.to_string());
+    let mut files = TreeFiles::new(repo, commit, prefix.to_string());
+    let mut objects = Objects {
+        file,
+        samples: Vec::new(),
+        tests: Vec::new(),
+        contents: BTreeMap::new(),
+    };
+    for s in &imported.samples {
+        objects
+            .samples
+            .extend(read_sample(&mut files, &s.id).map_err(|e| failed(&e))?);
+    }
+    for t in &imported.tests {
+        objects
+            .tests
+            .extend(read_test(&mut files, &t.id).map_err(|e| failed(&e))?);
+    }
+    let at = config_file::BundleAt::Commit {
+        repo: repo.to_path_buf(),
+        commit: commit.to_string(),
+        prefix: prefix.to_string(),
+    };
+    for path in objects.file.lookup_tables.iter().filter_map(|t| table_file(&t.source)) {
+        // A file this commit does not hold as a pointer is compared by its name, as the table's JSON has it.
+        let Ok(lookup) = at.lookup(path) else { continue };
+        let file = smeltr::plan::config::LookupFile {
+            text: path.to_string(),
+            at: lookup,
+        };
+        if let Ok(Some(pointer)) = file.pointer() {
+            objects.contents.insert(path.to_string(), pointer.oid);
         }
     }
-    Ok(Objects { file, samples, tests })
+    Ok(objects)
+}
+
+/// The SHA-256 of the file at `path`, as the lookup store names a file, read a piece at a time.
+fn content_hash(path: &Path) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut digest = aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA256);
+    let mut buf = vec![0; 64 * 1024];
+    loop {
+        match file.read(&mut buf)? {
+            0 => break,
+            n => digest.update(&buf[..n]),
+        }
+    }
+    Ok(digest.finish().as_ref().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// The directory an upload is unpacked into, beside the repository, removed when this is dropped.
@@ -443,7 +509,12 @@ impl Unpacking {
             file: config_file::read_raw_from(&mut files).file,
             samples: Vec::new(),
             tests: Vec::new(),
+            contents: BTreeMap::new(),
         };
+        for path in objects.file.lookup_tables.iter().filter_map(|t| table_file(&t.source)) {
+            let hash = content_hash(&dir.join(path)).map_err(|e| refused(&format!("{path}: {e}")))?;
+            objects.contents.insert(path.to_string(), hash);
+        }
         for path in files
             .json_paths_under(config_file::SAMPLES_DIR)
             .map_err(|e| refused(&e))?
@@ -521,7 +592,8 @@ mod tests {
             "lookupTables": [{"id": "sites", "type": "csv", "path": "lookups/848eac143ba4496d-sites.csv",
                               "delimiter": ",", "headers": ["ip", "site"]}]}))
         .unwrap();
-        let sample: SampleDto = serde_json::from_value(json!({"id": "s1", "name": "one", "records": []})).unwrap();
+        let sample: config_file::SampleDto =
+            serde_json::from_value(json!({"id": "s1", "name": "one", "records": []})).unwrap();
         let mut files = config_file::bundle_files(&file).unwrap();
         files.push(("lookups/848eac143ba4496d-sites.csv".into(), SITES.to_vec()));
         files.push((
@@ -615,6 +687,62 @@ mod tests {
         assert_eq!(
             answer.errors[0].message,
             r#"lookup table "sites" needs an answer: its id is taken here"#
+        );
+    }
+
+    #[test]
+    fn a_lookup_file_stored_under_another_name_is_the_same_by_its_content() {
+        let data = leader("content");
+        let answers: Answers = serde_json::from_value(json!({
+            "taken": [{"part": "lookupTable", "id": "sites", "keep": "imported"}]}))
+        .unwrap();
+        let answer = import_into(&data, &export_zip(&[]), Some(answers));
+        assert_eq!(answer.status, StatusCode::OK, "{:?}", answer.errors);
+        let reading = crate::config_api::Reading::open_in(&data, "work", "west").unwrap();
+        let LookupSourceDto::Csv { path, .. } = &reading.raw().file.lookup_tables[0].source else {
+            panic!("a csv table")
+        };
+        assert_ne!(path, "lookups/848eac143ba4496d-sites.csv");
+        let again = import_into(&data, &export_zip(&[]), None);
+        assert!(standings(&again).contains(&(Part::LookupTable, "sites".into(), config_file::Standing::Same)));
+    }
+
+    #[test]
+    fn an_import_into_a_group_cannot_replace_what_shared_holds() {
+        let data = leader("shared");
+        let repo = git::repo_path(&data);
+        let shared: FileConfig = serde_json::from_value(json!({"version": 1,
+            "pipelines": [{"id": "audit", "name": "shared audit", "steps": []}]}))
+        .unwrap();
+        let edits: Vec<git::FileEdit> = (config_file::bundle_files(&shared).unwrap().into_iter())
+            .map(|(path, content)| git::FileEdit {
+                path: format!("{}/{path}", config_file::SHARED_DIR),
+                content: Some(content),
+            })
+            .collect();
+        let parent = git::branch_tip(&repo, "work").unwrap();
+        git::commit_edits(
+            &repo,
+            "work",
+            &parent,
+            Some(&parent),
+            &edits,
+            "shared",
+            &Actor::system(),
+        )
+        .unwrap();
+        let listing = import_into(&data, &export_zip(&[]), None);
+        let audit = (listing.body.listed.iter()).find(|l| l.id == "audit").unwrap();
+        assert!(audit.in_shared && audit.standing == config_file::Standing::Taken);
+        let answers: Answers = serde_json::from_value(json!({"taken": [
+            {"part": "pipeline", "id": "audit", "keep": "imported"},
+            {"part": "lookupTable", "id": "sites", "keep": "here"}]}))
+        .unwrap();
+        let answer = import_into(&data, &export_zip(&[]), Some(answers));
+        assert_eq!(answer.status, StatusCode::CONFLICT);
+        assert_eq!(
+            answer.errors[0].message,
+            r#"pipeline "audit" is in shared, so only an import into shared can replace it"#
         );
     }
 

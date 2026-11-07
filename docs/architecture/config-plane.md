@@ -193,9 +193,14 @@ that directory with the loader that reads every bundle, so a format version or
 a field this build does not read is refused as it would be in any bundle. The
 first request lists each object as new, the same as one already held, or taken,
 and writes nothing; the second carries the file again with the answers, against
-the commit the list was read at. Nothing is held between the two. It writes one save onto the importer's branch, in the area being
-imported into, refused if it makes the bundle's errors worse; the change is
-reviewed and deployed like any other. An object identical to one already
+the commit the list was read at. Nothing is held between the two. The importer chooses where it goes, shared or a
+group, since the groups of the leader that exported it need not be this one's.
+An import into a group is compared with what the group runs, `shared/` merged
+with its own, and cannot replace an object `shared/` holds: it keeps the one already there
+or renames the imported one beside it. A lookup table is compared by its file's
+content, not its file's name. It writes the imported objects as one save onto the importer's branch, in
+shared or the chosen group. The save is refused if it adds errors to the
+configuration; otherwise the change is reviewed and deployed like any other. An object identical to one already
 there is not written again. An id the importing leader holds for a different
 object is a conflict, answered per object, as bringing a change current
 answers one: keep the imported object, keep the one already held, or rename the

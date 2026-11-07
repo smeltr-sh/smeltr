@@ -1978,6 +1978,8 @@ export interface ImportListed {
   standing: 'new' | 'same' | 'taken';
   imported?: string;
   here?: string;
+  /** The one here is in shared and the import is into a group, so it can be kept or renamed beside, not replaced. */
+  inShared?: boolean;
 }
 
 /** A secret or certificate the file's sources and destinations name, and which of them name it. */
@@ -2008,16 +2010,18 @@ export type ImportResult = {
   commit?: string;
 };
 
-/** `file` read into this area: listed when `answers` is absent, saved against `at` when it is present. */
+/** `file` read into the area `into`, shared or a group: listed when `answers` is absent, saved against `at` when it
+ * is present. */
 export function importExport(
   file: File,
+  into: string,
   answers?: ImportAnswers,
   at?: string,
 ): Promise<ImportResult> {
   const body = new FormData();
   body.append('file', file);
   if (answers) body.append('answers', JSON.stringify(answers));
-  return configJson(inArea('/imports'), { method: 'POST', body }, { base: at ?? null });
+  return configJson(inArea('/imports', into), { method: 'POST', body }, { base: at ?? null });
 }
 
 // -- samples ----------------------------------------------------------------

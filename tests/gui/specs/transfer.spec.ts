@@ -106,6 +106,7 @@ test('an export is imported, a taken id renamed and a secret matched to one here
   await goto(admin, leader, '#/build/pipelines');
   await admin.getByRole('button', { name: 'Import' }).click();
   const dialog = admin.getByRole('dialog', { name: /import pipeline/ });
+  await dialog.getByLabel('Import into').selectOption('Shared');
   await dialog.getByLabel('Export file').setInputFiles({
     name: 'firewall.zip',
     mimeType: 'application/zip',

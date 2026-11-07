@@ -39,8 +39,12 @@
   </p>
   <h2 id="import">Import</h2>
   <ol>
-    <li>On the other leader, open the branch and worker group to import into.</li>
+    <li>On the other leader, open the branch to import into.</li>
     <li>Open <strong>Build → Pipelines</strong> and select <strong>Import</strong>.</li>
+    <li>
+      Under <strong>Import into</strong>, choose shared or a worker group. This leader's groups need
+      not be the ones the export came from.
+    </li>
     <li>
       Choose the export file. The dialog lists each object it holds as <strong>New</strong>,
       <strong>Same as here</strong> or <strong>Taken</strong>.
@@ -67,6 +71,11 @@
       Every reference to it inside the import is changed to the new id.
     </li>
   </ul>
+  <p>
+    An import into a worker group cannot replace an object that shared holds, so for one of those
+    only <strong>Here</strong> and <strong>Both, rename imported</strong> are offered. A lookup table
+    whose file holds the same content as the one here is the same, whatever its file is named.
+  </p>
   <h2 id="credentials">Secrets and certificates</h2>
   <p>
     Each secret and certificate that an imported source or destination names must be matched to one
