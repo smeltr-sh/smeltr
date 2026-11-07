@@ -45,7 +45,8 @@
     ['certificates', 'Certificates'],
   ];
 
-  /** Each kind the export holds any of, with its items as one line. A table names its file and that file's size. */
+  /** Each kind the export holds any of, with its items on one line. A table is listed with its file's name as
+   * uploaded, without the content hash prefix the leader stores it under, and the file's size. */
   let rows = $derived(
     contents === null
       ? []
@@ -55,7 +56,7 @@
               ? item
               : item.file === undefined
                 ? item.id
-                : `${item.id} (${item.file.replace(/^lookups\//, '')}, ${bytes(item.bytes ?? 0)})`,
+                : `${item.id} (${item.file.replace(/^lookups\/([0-9a-f]{16}-)?/, '')}, ${bytes(item.bytes ?? 0)})`,
           );
           return items.length > 0 ? [[label, items.join(', ')] as const] : [];
         }),
