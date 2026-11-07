@@ -166,10 +166,11 @@ touches another.
 A pipeline moves to another leader as an export: a bundle in a zip holding the
 pipeline and what it reads, so it loads and runs on its own. That is the
 pipelines it calls, however deep, the lookup tables they read, the grok
-patterns they name, however deep, the schemas they produce, and the samples
-and tests that lock any of them. With routes included, the export adds each
+patterns they name, however deep, the schemas they produce, and the tests that
+lock any of them, with the samples those tests run over. With routes included, the export adds each
 route that runs the pipeline, its source, the destinations it delivers to and
-those their refusals go to, and the schemas those destinations accept. The
+those their refusals go to, and the schemas those destinations accept. The exporter can leave out any of these, the
+pipeline itself included; a sample goes with the tests that read it. The
 group's own settings stay behind: its exception answers, what only they
 deliver to, and its name. The importing group runs under its own. A lookup file
 travels as its bytes, not as the pointer a commit holds. The export holds
@@ -187,17 +188,28 @@ flowchart LR
   M --> S[one save on a branch]
 ```
 
-Import reads the zip with the loader that reads every bundle, so a format
-version or a field this build does not read is refused as it would be in any
-bundle. It writes one save onto the importer's branch, in the area being
-imported into, refused if it makes the bundle's errors worse; the change is
-reviewed and deployed like any other. An object identical to one already
+Import unpacks the zip into a directory of its own, refusing an entry named
+outside it, a link, or more bytes in all than the lookup store takes. It reads
+that directory with the loader that reads every bundle, so a format version or
+a field this build does not read is refused as it would be in any bundle. The
+first request lists each object as new, the same as one already held, or taken,
+and writes nothing; the second carries the file again with the answers, against
+the commit the list was read at. Nothing is held between the two. The importer chooses where it goes, shared or a
+group, since the groups of the leader that exported it need not be this one's.
+An import into a group is compared with what the group runs, `shared/` merged
+with its own, and cannot replace an object `shared/` holds: it keeps the one already there
+or renames the imported one beside it. A lookup table is compared by its file's
+content, not its file's name. It writes the imported objects as one save onto the importer's branch, in
+shared or the chosen group. The save is refused if it adds errors to the
+configuration; otherwise the change is reviewed and deployed like any other. An object identical to one already
 there is not written again. An id the importing leader holds for a different
 object is a conflict, answered per object, as bringing a change current
 answers one: keep the imported object, keep the one already held, or rename the
 imported one, which rewrites every reference to it inside the import. Each
 secret and certificate an imported source or destination names is matched to
-one the importing leader lists.
+one the importing leader lists. The importer can leave out any object; one that
+an imported object uses must then already exist where it is imported, or the
+save is refused.
 
 ## Kafka client settings
 

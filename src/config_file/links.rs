@@ -288,7 +288,7 @@ fn pattern_names(text: &str) -> BTreeSet<String> {
 }
 
 /// Every step, an `if` step's branches included.
-fn walk(steps: &[StepDto], f: &mut impl FnMut(&StepDto)) {
+pub(super) fn walk(steps: &[StepDto], f: &mut impl FnMut(&StepDto)) {
     for step in steps {
         f(step);
         if let StepDto::If { then, r#else, .. } = step {

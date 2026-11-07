@@ -946,6 +946,7 @@ pub const LEFT_OUT: &[(&str, &str)] = &[
     ("POST", "/api/agent/conversations/:id/stop"),
     ("POST", "/api/agent/conversations/:id/context"),
     ("POST", "/api/areas/:area/lookups/upload"),
+    ("POST", "/api/areas/:area/imports"),
     ("PUT", "/api/me/agent-permissions"),
     ("POST", "/api/accounts/:id/keys"),
     ("GET", "/api/metrics"),

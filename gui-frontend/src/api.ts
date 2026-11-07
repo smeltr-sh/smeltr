@@ -1922,13 +1922,13 @@ export interface ExportContents {
   lookupTables: ExportTable[];
   grokPatterns: string[];
   schemas: string[];
-  samples: string[];
-  tests: string[];
+  /** Each test with the sample it runs over: a sample is exported while a test that reads it is. */
+  tests: { id: string; sample: string }[];
   routes: string[];
   sources: string[];
   destinations: string[];
-  secrets: string[];
-  certificates: string[];
+  /** Each secret and certificate an exported source or destination names, and which of them name it. */
+  credentials: ImportCredential[];
 }
 
 export type ExportContentsResult = {
@@ -1937,21 +1937,103 @@ export type ExportContentsResult = {
   commit?: string;
 } & Partial<ExportContents>;
 
-function exportRoute(id: string, routes: boolean, rest = ''): string {
-  return inArea(
-    `/pipelines/${encodeURIComponent(id)}/export${rest}${routes ? '?routes=true' : ''}`,
-  );
+function exportRoute(id: string, routes: boolean, rest = '', leftOut: PartId[] = []): string {
+  const query = new URLSearchParams();
+  if (routes) query.set('routes', 'true');
+  if (leftOut.length > 0) query.set('leftOut', JSON.stringify(leftOut));
+  const q = query.size > 0 ? `?${query}` : '';
+  return inArea(`/pipelines/${encodeURIComponent(id)}/export${rest}${q}`);
 }
 
+/** Everything the export of `id` can hold, so a person can choose what to leave out. */
 export function exportContents(id: string, routes: boolean): Promise<ExportContentsResult> {
   return configJson<ExportContentsResult>(exportRoute(id, routes, '/contents'), undefined, {
     adopt: false,
   });
 }
 
-/** The export itself. A plain link rather than a fetch: the browser names the file and puts it where downloads go. */
-export function exportUrl(id: string, routes: boolean): string {
-  return branched(exportRoute(id, routes));
+/** The export itself, without `leftOut`. A plain link rather than a fetch: the browser names the file and puts it
+ * where downloads go. */
+export function exportUrl(id: string, routes: boolean, leftOut: PartId[]): string {
+  return branched(exportRoute(id, routes, '', leftOut));
+}
+
+// -- import -----------------------------------------------------------------
+//
+// An export read into this area (`config_file::Objects`). Sent once without answers, it writes nothing and lists what
+// the file holds; sent again with an answer for each taken id and credential, it saves.
+
+/** The kinds of object an export holds. */
+export type ImportPart =
+  | 'pipeline'
+  | 'lookupTable'
+  | 'grokPattern'
+  | 'schema'
+  | 'sample'
+  | 'test'
+  | 'route'
+  | 'source'
+  | 'destination';
+
+/** One object the file holds, and how it stands beside this area. A taken one carries both versions as JSON. */
+export interface ImportListed {
+  part: ImportPart;
+  id: string;
+  standing: 'new' | 'same' | 'taken';
+  imported?: string;
+  here?: string;
+  /** The one here is in shared and the import is into a group, so it can be kept or renamed beside, not replaced. */
+  inShared?: boolean;
+}
+
+/** A secret or certificate the file's sources and destinations name, and which of them name it. */
+export interface ImportCredential {
+  name: string;
+  certificate: boolean;
+  namedBy: string[];
+}
+
+/** The answer for a taken id: keep the imported object, keep the one here, or keep both, the imported one renamed. */
+export type ImportKeep = { keep: 'imported' } | { keep: 'here' } | { keep: 'renamed'; as: string };
+
+/** One object an import or an export leaves out. */
+export interface PartId {
+  part: ImportPart;
+  id: string;
+}
+
+export interface ImportAnswers {
+  taken: ({ part: ImportPart; id: string } & ImportKeep)[];
+  /** The secret here each one the file names is matched to, by name. */
+  secrets: Record<string, string>;
+  certificates: Record<string, string>;
+  /** The objects not to import. The save is refused if what is left names one that isn't already held where it is imported. */
+  leftOut: PartId[];
+}
+
+export type ImportResult = {
+  ok: boolean;
+  errors: ApiError[];
+  listed?: ImportListed[];
+  credentials?: ImportCredential[];
+  /** The commit the area was read at, which the answers are sent against. */
+  at?: string;
+  /** The commit the import was saved in. */
+  commit?: string;
+};
+
+/** `file` read into the area `into`, shared or a group: listed when `answers` is absent, saved against `at` when it
+ * is present. */
+export function importExport(
+  file: File,
+  into: string,
+  answers?: ImportAnswers,
+  at?: string,
+): Promise<ImportResult> {
+  const body = new FormData();
+  body.append('file', file);
+  if (answers) body.append('answers', JSON.stringify(answers));
+  return configJson(inArea('/imports', into), { method: 'POST', body }, { base: at ?? null });
 }
 
 // -- samples ----------------------------------------------------------------

@@ -17,6 +17,7 @@
   import { NOT_IN_DEMO, editable } from './access';
   import { sharedConfig, listPipelines, deletePipeline, type PipelineDto } from './api';
   import ExportDialog from './ExportDialog.svelte';
+  import ImportDialog from './ImportDialog.svelte';
 
   // Carried from a sample row's "Run in a pipeline" link (`nav.ts`'s `for`
   // route). Not validated against the sample library here -- a stale link
@@ -47,6 +48,7 @@
   let deletingId = $state('');
   /** The pipeline the export dialog is open for. */
   let exporting = $state('');
+  let importing = $state(false);
 
   // One sort for both bands: each band sorts within itself, so the shared rows stay under their own heading.
   const pipelineSort = new TableSort<'name' | 'steps'>();
@@ -122,6 +124,8 @@
   {#if !readOnly}
     <div class="toolbar">
       <a class="btn primary" href={newPipelineHash}>+ Add pipeline</a>
+      <Button type="button" disabled={NOT_IN_DEMO} onclick={() => (importing = true)}>Import</Button
+      >
     </div>
   {/if}
 
@@ -200,6 +204,14 @@
   {/if}
 </SectionShell>
 <ExportDialog open={exporting !== ''} pipeline={exporting} oncancel={() => (exporting = '')} />
+<ImportDialog
+  open={importing}
+  oncancel={() => (importing = false)}
+  onimported={() => {
+    importing = false;
+    void load();
+  }}
+/>
 
 <style>
   /* What `shared/` gave this group: listed, because the group runs it, and not this page's to change. */
