@@ -374,6 +374,7 @@ impl<'a> Lexer<'a> {
         let text = self.text[start..self.pos].replace('_', "");
         if is_float {
             match text.parse::<f64>() {
+                Ok(v) if !v.is_finite() => Err(self.err(start, format!("`{text}` is too large for a float"))),
                 Ok(v) => Ok(self.emit(Token::Float(v), start, true)),
                 Err(e) => Err(self.err(start, format!("bad float literal: {e}"))),
             }
@@ -382,6 +383,7 @@ impl<'a> Lexer<'a> {
                 Ok(v) => Ok(self.emit(Token::Int(v), start, true)),
                 // An integer too large for i64 becomes a float.
                 Err(_) => match text.parse::<f64>() {
+                    Ok(v) if !v.is_finite() => Err(self.err(start, format!("`{text}` is too large for a float"))),
                     Ok(v) => Ok(self.emit(Token::Float(v), start, true)),
                     Err(e) => Err(self.err(start, format!("bad number: {e}"))),
                 },
@@ -891,6 +893,15 @@ mod tests {
     #[test]
     fn oversized_integer_becomes_a_float() {
         assert!(matches!(toks("99999999999999999999")[0], Token::Float(_)));
+    }
+
+    /// A literal no `f64` holds is refused, as arithmetic that makes one is.
+    #[test]
+    fn a_number_too_large_for_a_float_is_refused() {
+        for src in ["1e400", &"9".repeat(400)] {
+            let err = Lexer::tokenize(src).unwrap_err();
+            assert!(err.message.contains("too large for a float"), "{src}: {}", err.message);
+        }
     }
 
     #[test]
