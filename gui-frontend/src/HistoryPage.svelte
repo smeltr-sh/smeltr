@@ -237,9 +237,6 @@
   .small {
     font-size: var(--text-micro);
   }
-  .mono {
-    font-family: var(--mono);
-  }
   .nowrap {
     white-space: nowrap;
   }

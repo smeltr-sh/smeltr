@@ -117,7 +117,7 @@
     {:else}
       <div class="tiles">
         <div class="tile">
-          <span class="tile-label">Records</span>
+          <span class="uppercase-label">Records</span>
           <span class="tile-value">{held}<span class="tile-of"> of {status.maxMatches}</span></span>
           <div class="meter" aria-hidden="true">
             <div
@@ -127,7 +127,7 @@
           </div>
         </div>
         <div class="tile">
-          <span class="tile-label">{done ? 'Ended' : 'Time left'}</span>
+          <span class="uppercase-label">{done ? 'Ended' : 'Time left'}</span>
           <span class="tile-value">
             {#if status.stopped}stopped{:else if done}finished{:else}{status.secondsLeft}s{/if}
           </span>
@@ -296,9 +296,6 @@
     font-size: var(--text-body);
     line-height: 1.5;
   }
-  .mono {
-    font-family: var(--mono);
-  }
 
   .tiles {
     display: flex;
@@ -313,13 +310,6 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
     background: var(--bg);
-  }
-  .tile-label {
-    font-size: var(--text-micro);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--dim);
   }
   .tile-value {
     font-size: 1.4rem;

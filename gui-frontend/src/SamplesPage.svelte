@@ -5,6 +5,7 @@
   branch's history rather than over whatever was last typed into a box.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY } from './Button.svelte';
   import { reported, unreported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
@@ -43,7 +44,7 @@
   // A file under `samples/` that did not parse; the rest still list.
   let loadWarnings = $state<string[]>([]);
 
-  let saving = $state(false);
+  const saving = new Busy();
 
   let adding = $state(false);
 
@@ -55,7 +56,7 @@
   let testsRunError = $state('');
   // Keyed by test id; absent while its run is still in flight.
   let results: Record<string, TestResult> = $state({});
-  let deletingTest = $state(false);
+  const deletingTest = new Busy();
 
   let pipelineNames: PipelineNames = $state({});
   pipelineNamesAt(currentBranch(), currentScope()).then((names) => (pipelineNames = names));
@@ -120,15 +121,10 @@
       danger: true,
     });
     if (!ok) return;
-    deletingTest = true;
-    try {
+    await deletingTest.run(async () => {
       const res = await deleteTest(t.id);
       if (res.ok) await loadTests();
-    } catch (e) {
-      reported(e);
-    } finally {
-      deletingTest = false;
-    }
+    });
   }
 
   async function load() {
@@ -161,15 +157,10 @@
       danger: true,
     });
     if (!ok) return;
-    saving = true;
-    try {
+    await saving.run(async () => {
       const res = await deleteSample(s.id);
       if (res.ok) await load();
-    } catch (e) {
-      reported(e);
-    } finally {
-      saving = false;
-    }
+    });
   }
 </script>
 
@@ -183,7 +174,7 @@
 
   {#if !readOnly}
     <div class="toolbar">
-      <Button class="primary" onclick={() => (adding = true)} disabled={saving ? BUSY : ''}
+      <Button class="primary" onclick={() => (adding = true)} disabled={saving.on ? BUSY : ''}
         >+ Add sample</Button
       >
     </div>
@@ -250,13 +241,13 @@
                 {#if !readOnly}
                   <Button
                     onclick={() => (editing = editing === s.id ? null : s.id)}
-                    disabled={saving ? BUSY : ''}>Edit</Button
+                    disabled={saving.on ? BUSY : ''}>Edit</Button
                   >
                 {/if}
               </td>
               <td class="right">
                 {#if !readOnly}
-                  <Button onclick={() => remove(s)} disabled={saving ? BUSY : ''}>Delete</Button>
+                  <Button onclick={() => remove(s)} disabled={saving.on ? BUSY : ''}>Delete</Button>
                 {/if}
               </td>
             </tr>
@@ -340,7 +331,7 @@
                 </td>
                 <td class="right">
                   {#if !readOnly}
-                    <Button onclick={() => removeTest(t)} disabled={deletingTest ? BUSY : ''}>
+                    <Button onclick={() => removeTest(t)} disabled={deletingTest.on ? BUSY : ''}>
                       Delete
                     </Button>
                   {/if}
@@ -359,9 +350,6 @@
     display: flex;
     gap: 0.5rem;
     margin: 1.2rem 0;
-  }
-  .mono {
-    font-family: var(--mono);
   }
   .warn {
     color: var(--warn);

@@ -30,7 +30,7 @@
   <a class="new" class:here={!open} href="#/me/agent">New conversation</a>
   {#each conversations as c (c.id)}
     <a class="item" class:here={c.id === open} href="#/me/agent/{c.id}">
-      <span class="title">{firstLineText(c.title)}</span>
+      <span class="title ellipsis">{firstLineText(c.title)}</span>
       <span class="dim">{c.running ? 'working…' : ago(c.updatedAt / 1000)}</span>
     </a>
   {:else}
@@ -60,11 +60,6 @@
   }
   .list .new {
     margin-bottom: 0.4rem;
-  }
-  .title {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .dim {
     color: var(--dim);

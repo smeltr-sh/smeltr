@@ -170,9 +170,6 @@
     flex-direction: column;
     gap: 0.9rem;
   }
-  .mono {
-    font-family: var(--mono);
-  }
   th {
     text-align: left;
   }

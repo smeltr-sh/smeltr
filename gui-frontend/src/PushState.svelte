@@ -98,9 +98,6 @@
   .refused {
     color: var(--error);
   }
-  .mono {
-    font-family: var(--mono);
-  }
   .push :global(button) {
     white-space: nowrap;
   }

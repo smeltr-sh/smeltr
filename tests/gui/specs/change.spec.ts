@@ -415,21 +415,6 @@ test('a sample the branch deleted is put back from its card on the change page',
     name: 'keep',
     records: [{ _raw: 'a line' }],
   });
-  // A sample reaches main only with a test that uses it.
-  await api.put('/api/areas/shared/pipelines/p?branch=seed', {
-    id: 'p',
-    name: 'p',
-    steps: [{ type: 'drop', id: 'none', condition: 'false' }],
-  });
-  await api.put('/api/areas/shared/tests/keep?branch=seed', {
-    id: 'keep',
-    name: 'keep',
-    pipeline: 'p',
-    sample: 'keep',
-    lockedAt: 0,
-    rowsIn: 1,
-    expected: [null],
-  });
   await api.openChange('seed', 'Add a sample');
   await api.deploy('seed');
   await api.delete('/api/areas/shared/samples/keep?branch=tidy');

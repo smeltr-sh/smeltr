@@ -90,8 +90,4 @@
   .open:hover {
     background: var(--hover, rgb(255 255 255 / 0.06));
   }
-
-  .mono {
-    font-family: var(--mono);
-  }
 </style>

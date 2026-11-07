@@ -97,9 +97,9 @@
   onopen={load}
 >
   {#snippet face()}
-    {#if scope === SHARED_SCOPE}<span class="scope-name">Shared configuration</span
+    {#if scope === SHARED_SCOPE}<span class="scope-name ellipsis">Shared configuration</span
       >{:else}<WorkerGroupIcon /><span class="dim">Workers</span>
-      <span class="scope-name">{scope}</span>{/if}{#if !administrator}{@const level =
+      <span class="scope-name ellipsis">{scope}</span>{/if}{#if !administrator}{@const level =
         levelIn(scope)}{#if level}<LevelMark {level} named={false} />{:else}<span>no access</span
         >{/if}{/if}
     <span class="scope-dot" aria-hidden="true"></span>
@@ -139,9 +139,6 @@
      overlong group name clips into. */
   .scope-name {
     max-width: 9rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   /* The group whose bundle a Build page is editing. The page carries the same hue at the seam

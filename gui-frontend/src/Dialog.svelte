@@ -87,7 +87,7 @@
         onsubmit?.();
       }}
     >
-      <h2 id={titleId}>
+      <h2 class="uppercase-label" id={titleId}>
         {#if onback}
           <button type="button" class="icon back" aria-label="Back" onclick={onback}
             >&lsaquo;</button
@@ -137,11 +137,6 @@
     margin: 0;
     padding: 0.5rem 0.85rem;
     border-bottom: 1px solid var(--border);
-    font-size: var(--text-micro);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--dim);
   }
 
   .back {

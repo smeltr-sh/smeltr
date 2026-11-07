@@ -59,10 +59,6 @@
     background: color-mix(in srgb, var(--ink) 6%, var(--panel));
   }
 
-  .mono {
-    font-family: var(--mono);
-  }
-
   .dim,
   .note.dim {
     color: var(--dim);

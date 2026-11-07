@@ -483,7 +483,8 @@
           <span class="mono dim">{position(step.position)}</span>
           <span class="type">{step.type}</span>
           {#if step.status === 'same' && step.summary}
-            <span class="mono dim inline-summary" title={step.summary}>{step.summary}</span>
+            <span class="mono dim inline-summary ellipsis" title={step.summary}>{step.summary}</span
+            >
           {/if}
           <span class="grow"></span>
           {#if step.status !== 'same'}
@@ -517,11 +518,11 @@
         {#if step.then?.length || step.else?.length}
           <div class="branches">
             {#if step.then?.length}
-              <span class="branch-label">then</span>
+              <span class="branch-label uppercase-label">then</span>
               {@render stepList(c, step.then)}
             {/if}
             {#if step.else?.length}
-              <span class="branch-label">else</span>
+              <span class="branch-label uppercase-label">else</span>
               {@render stepList(c, step.else)}
             {/if}
           </div>
@@ -738,9 +739,6 @@
     width: auto;
     max-width: 22rem;
   }
-  .mono {
-    font-family: var(--mono);
-  }
   .note {
     font-size: var(--text-note);
   }
@@ -854,9 +852,6 @@
     font-size: var(--text-label);
   }
   .inline-summary {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     min-width: 0;
   }
   .card-findings {
@@ -884,11 +879,6 @@
   }
   .branch-label {
     padding: 0 0.8rem;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
   }
 
   /* The comment button arrives on its row's hover or focus, and stays while
