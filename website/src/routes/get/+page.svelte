@@ -21,6 +21,10 @@
 <div class="marketing">
   <section class="page-hero">
     <h1>Get smeltr</h1>
+    <p class="lede">
+      Free for individuals and for organizations with fewer than 250 employees. Larger
+      organizations pay $10,000 a year for each production leader. <a href="#license">License details →</a>
+    </p>
   </section>
   {#if latest}
     <section class="release" id="download" aria-labelledby="release-heading">
@@ -72,7 +76,7 @@
     </section>
   {/if}
   <article>
-    <h2 id="pricing">Pricing</h2>
+    <h2 id="license">License details</h2>
     <p>
       Smeltr is free for production use by individuals, and by organizations with fewer than 250
       employees. Organizations with 250 or more employees pay $10,000 per year for each server they
@@ -92,7 +96,6 @@
       To purchase a production license, email
       <a href="mailto:support@smeltr.sh">support@smeltr.sh</a>.
     </p>
-    <h2 id="license">License details</h2>
     <p>
       Employees are counted as your organization already reports them, together with those of any
       parent company and of everything it controls. Contractors are not counted.
