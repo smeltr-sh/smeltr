@@ -82,8 +82,6 @@ export type World = {
   branch: string | null;
   /** The branch exists on the leader: a save went onto it. */
   branchSaved: boolean;
-  /** A save on the branch is one a deploy puts on main: anything but a sample, which no test names. */
-  landing: boolean;
   /** What the branch holds, or main when there is none. */
   editing: Config;
   /** `main`'s commits that deployed something, oldest first, the install's own first. */
@@ -141,7 +139,6 @@ export function newWorld(): World {
     password: null,
     branch: null,
     branchSaved: false,
-    landing: false,
     editing: copy(EMPTY),
     deploys: [{ subject: 'worker group default', config: copy(EMPTY) }],
     running: 0,
@@ -302,15 +299,13 @@ async function nameBranch(j: Journey) {
   world.branch = name;
 }
 
-/** Clicks `button`, which saves, naming a branch if the GUI asks for one, and waits until `done`. A deploy leaves
- * out a `sample` saved. */
-async function saveBy(j: Journey, button: Locator, done: () => Promise<void>, sample = false) {
+/** Clicks `button`, which saves, naming a branch if the GUI asks for one, and waits until `done`. */
+async function saveBy(j: Journey, button: Locator, done: () => Promise<void>) {
   await button.click();
   await nameBranch(j);
   await done();
   await settled(j.page);
   j.world.branchSaved = true;
-  if (!sample) j.world.landing = true;
 }
 
 /** Captures two rows with the capture `form`, long enough for a fleet only now deployed to send them, and saves
@@ -329,7 +324,7 @@ async function captureTwo(
   await expect(saving).toBeVisible({ timeout: 60_000 });
   await seen(saving);
   await saving.getByLabel('Save as').fill(name);
-  await saveBy(j, saving.getByRole('button', { name: 'Save sample' }), () => done(saving), true);
+  await saveBy(j, saving.getByRole('button', { name: 'Save sample' }), () => done(saving));
   j.world.editing.samples.push(name);
 }
 
@@ -1062,7 +1057,7 @@ const deploy: Move = {
     // A source deployed without a route is a stream no route takes.
     'route-stream',
   ],
-  weight: (w) => (w.change && !w.closed ? (w.landing ? 3 : 1) : 0),
+  weight: (w) => (w.change && !w.closed ? 3 : 0),
   run: async (j) => {
     const { page, leader, world } = j;
     const title = world.change!;
@@ -1074,21 +1069,11 @@ const deploy: Move = {
       .getByRole('dialog', { name: verb.toLowerCase(), exact: true })
       .getByRole('button', { name: verb, exact: true })
       .click();
-    if (!world.landing) {
-      // Only samples, all left out: main would not change, so the change stays open.
-      const refused = page.getByRole('dialog').filter({ hasText: 'there is nothing to deploy' });
-      await refused.getByRole('button', { name: 'Close' }).click();
-      await expect(page).toHaveURL(/#\/changes\/review/);
-      return `"${title}" holds only samples a deploy leaves out, and deploys nothing`;
-    }
     // The deploy itself, then the reload it ends with, can outlast the default wait on a busy machine.
     await expect(page).not.toHaveURL(/#\/changes\/review/, { timeout: 30_000 });
     const api = await j.truth();
     const history: History = await api.get('/api/main/history');
     expect(history.commits[0].subject).toBe(title);
-    // A deploy leaves out the samples no test names, and the journey writes no tests: main keeps its own.
-    const main = world.deploys[world.deploys.length - 1].config;
-    world.editing.samples = world.editing.samples.filter((s) => main.samples.includes(s));
     world.deploys.push({ subject: title, config: copy(world.editing) });
     // A rollback's hold outlives an approval: main moves, and the fleet stays where it was held.
     if (world.held) expect(history.deployed).not.toBe(history.commits[0].commit);
@@ -1100,7 +1085,6 @@ const deploy: Move = {
     expect(branches.map((b) => b.name)).not.toContain(world.branch);
     world.branch = null;
     world.branchSaved = false;
-    world.landing = false;
     world.change = null;
     await expect(page.getByRole('button', { name: /^Branch: / })).toHaveAccessibleName(
       /^Branch: main\b/,
