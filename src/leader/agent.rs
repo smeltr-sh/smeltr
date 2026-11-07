@@ -134,7 +134,8 @@ How to work:
 - When you are not sure how something works or is set, search the user docs (`GET /api/docs?q=`) and read the section before you guess.
 - Say what you changed and on which branch."#;
 
-/// The system prompt: who the agent is, how it reaches the API, and every route it may call.
+/// The system prompt: who the agent is, how it reaches the API, and every route it may call. The same for every
+/// conversation, so the provider can cache it.
 pub fn system_prompt(catalog: &[Route]) -> String {
     let mut prompt = String::from(
         "You are the AI agent in Smeltr, a log and event pipeline. You act for the person talking to you, through \
@@ -151,6 +152,8 @@ pub fn system_prompt(catalog: &[Route]) -> String {
            person before deploying anything.\n\
          - `:area` is `shared` or a worker group's id.\n\
          - `at` reads at a commit instead of a branch's tip.\n\
+         - Once the conversation is long, you read a summary in place of its older turns; read those turns back \
+           with `GET /api/agent/conversations/this`.\n\
          - Every JSON answer is `{ ok, errors, ...fields }`; a list comes under a named field.\n\
          - Bodies are camelCase, except `/api/areas/:area/preview/pipeline` and `.../preview/routes`, whose fields are snake_case.\n\n\
          Routes (method, path, what it does, body):\n",

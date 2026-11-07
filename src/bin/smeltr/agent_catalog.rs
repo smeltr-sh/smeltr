@@ -653,6 +653,12 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "GET",
+        path: "/api/agent/conversations/:id",
+        what: "Read back this conversation, the only one you can read, with `this` as its id, a page of turns at a time: `items`, each with the `turn` it is of, and `turns`, how many there are. Query: before (only the turns before this one, counted from 0; the last page without it), limit (turns on the page, 20 if left out, at most 100), q (instead of a page: the last `limit` items before `before` whose text holds every word of q).",
+        body: "",
+    },
+    Route {
+        method: "GET",
         path: "/api/me/agent-permissions",
         what: "What the caller lets their own agent use. No query.",
         body: "",
@@ -956,12 +962,11 @@ pub const CATALOG: &[Route] = &[
 ];
 
 #[cfg(test)]
-/// Gated paths the agent cannot call: its person's conversations, a file upload that is no JSON request, and what a
-/// person sets for their own agent, which no agent changes.
+/// Gated paths the agent cannot call: its person's conversations, except reading the one it works in; a file upload
+/// that is no JSON request; and what a person sets for their own agent, which no agent changes.
 pub const LEFT_OUT: &[(&str, &str)] = &[
     ("POST", "/api/agent/conversations"),
     ("GET", "/api/agent/conversations"),
-    ("GET", "/api/agent/conversations/:id"),
     ("DELETE", "/api/agent/conversations/:id"),
     ("POST", "/api/agent/conversations/:id/messages"),
     ("POST", "/api/agent/conversations/:id/stop"),
@@ -974,6 +979,22 @@ pub const LEFT_OUT: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The catalog entry names the page sizes the handler uses. A string cannot be built from the constants, so this
+    /// test holds them together.
+    #[test]
+    fn the_read_back_route_says_the_page_sizes() {
+        let route = CATALOG
+            .iter()
+            .find(|r| r.path == "/api/agent/conversations/:id")
+            .unwrap();
+        let sizes = format!(
+            "{} if left out, at most {}",
+            crate::chat_api::PAGE_TURNS,
+            crate::chat_api::MOST_PAGE_TURNS
+        );
+        assert!(route.what.contains(&sizes), "{}", route.what);
+    }
 
     /// Routes outside the gate: signing in, and what workers and enrollment use, each with its own credential.
     const UNGATED: &[(&str, &str)] = &[

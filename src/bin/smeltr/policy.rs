@@ -127,11 +127,13 @@ pub fn need(method: &Method, path: &str) -> Need {
             Need::Somewhere(Level::Deployer)
         }
 
-        // What the Status and Map pages read, the area picker, and what a source or destination form asks of
-        // the build. The streams are filtered by their handler to the groups the caller views.
+        // What the Status and Map pages read, the warnings as Prometheus scrapes them, the area picker, and what a
+        // source or destination form asks of the build. The streams and the warnings are filtered by their handlers
+        // to the groups the caller views.
         (Method::GET | Method::HEAD, ["cluster"])
         | (Method::GET | Method::HEAD, ["streams"])
         | (Method::GET | Method::HEAD, ["warnings"])
+        | (Method::GET | Method::HEAD, ["metrics"])
         | (Method::GET | Method::HEAD, ["flow"])
         | (Method::GET | Method::HEAD, ["map"])
         | (Method::GET | Method::HEAD, ["map", "measurements"])
@@ -140,9 +142,10 @@ pub fn need(method: &Method, path: &str) -> Need {
 
         // What a person lets their own agent use.
         (Method::GET | Method::HEAD | Method::PUT, ["me", "agent-permissions"]) => Need::Anyone,
+        // The models a person picks from for their agent.
+        (Method::GET | Method::HEAD, ["agent", "models"]) => Need::Anyone,
         // A person's conversations with their agent, which their handlers keep to the person.
         (Method::GET | Method::HEAD | Method::POST, ["agent", "conversations"])
-        | (Method::GET | Method::HEAD, ["agent", "models"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["agent", "conversations", _])
         | (Method::POST, ["agent", "conversations", _, "messages" | "stop" | "context"]) => Need::Anyone,
         // The user docs, which are public.
@@ -462,10 +465,14 @@ mod tests {
     }
 
     #[test]
+    fn the_models_are_anyone_s_to_read() {
+        assert_eq!(get("/api/agent/models"), Need::Anyone);
+    }
+
+    #[test]
     fn a_person_s_conversations_are_anyone_s_to_have() {
         assert_eq!(get("/api/agent/conversations"), Need::Anyone);
         assert_eq!(get("/api/agent/conversations/c_1"), Need::Anyone);
-        assert_eq!(get("/api/agent/models"), Need::Anyone);
         for (method, path) in [
             (Method::POST, "/api/agent/conversations"),
             (Method::DELETE, "/api/agent/conversations/c_1"),
@@ -489,6 +496,7 @@ mod tests {
         for path in [
             "/api/cluster",
             "/api/warnings",
+            "/api/metrics",
             "/api/streams",
             "/api/flow",
             "/api/map",
