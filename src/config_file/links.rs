@@ -277,14 +277,16 @@ pub(super) fn delivered_to(layer: &Option<OnExceptionDto>) -> impl Iterator<Item
 
 /// Every `NAME` in a `%{NAME}` or `%{NAME:field}` in `text`.
 fn pattern_names(text: &str) -> BTreeSet<String> {
-    (text.match_indices("%{"))
-        .filter_map(|(i, _)| {
-            let rest = &text[i + 2..];
-            let end = rest.find(['}', ':'])?;
-            Some(rest[..end].to_string())
-        })
-        .filter(|name| !name.is_empty())
-        .collect()
+    pattern_name_spans(text).map(|span| text[span].to_string()).collect()
+}
+
+/// Where each `NAME` in a `%{NAME}` or `%{NAME:field}` in `text` sits, as a byte range.
+pub(super) fn pattern_name_spans(text: &str) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+    text.match_indices("%{").filter_map(|(i, _)| {
+        let start = i + 2;
+        let end = start + text[start..].find(['}', ':'])?;
+        (end > start).then_some(start..end)
+    })
 }
 
 /// Every step, an `if` step's branches included.
