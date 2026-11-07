@@ -1801,8 +1801,23 @@ test('A6: the output rows on screen are saved as a sample that another pipeline 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await admin.getByRole('combobox', { name: 'Search the output' }).fill('SPRING');
   await expect(admin.getByText('2 of 3 rows')).toBeVisible();
-  await admin.getByRole('button', { name: 'Save output as sample' }).click();
   const dialog = admin.getByRole('dialog');
+
+  // Loading the rows saves nothing, so Cancel is live while they load, and their late answer is dropped.
+  let answer = () => {};
+  const held = new Promise<void>((resolve) => (answer = resolve));
+  await admin.route('**/preview/pipeline*', async (route) => {
+    if (route.request().postDataJSON()?.as_sample) await held;
+    await route.continue();
+  });
+  await admin.getByRole('button', { name: 'Save output as sample' }).click();
+  await expect(dialog.getByRole('button', { name: 'Loading…' })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
+  answer();
+  await admin.unrouteAll({ behavior: 'wait' });
+
+  await admin.getByRole('button', { name: 'Save output as sample' }).click();
   await expect(dialog.getByText('2 records')).toBeVisible();
   await dialog.getByLabel('Name').fill('orders, parsed');
   await admin.screenshot({ path: test.info().outputPath('save-output.png'), fullPage: true });
@@ -1818,14 +1833,8 @@ test('A6: the output rows on screen are saved as a sample that another pipeline 
   expect(saved.records.map((r: { id: number }) => r.id)).toEqual([1, 3]);
 
   // Typed as the first pipeline wrote it, so `total` compares as a number.
-  await goto(admin, leader, '#/build/pipelines/enrich');
-  const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
-  await sampleMenu.click();
-  await admin
-    .getByRole('listbox', { name: 'Saved samples' })
-    .getByRole('option', { name: /^orders, parsed/ })
-    .click();
-  await expect(sampleMenu).toContainText('2 records');
+  await goto(admin, leader, `#/build/pipelines/enrich/for/${made.id}`);
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText('2 records');
   await admin.getByRole('combobox', { name: 'Search the output' }).fill('total > 15');
   await expect(admin.getByText('ƒ expression')).toBeVisible();
   await expect(admin.getByText('1 of 2 rows')).toBeVisible();

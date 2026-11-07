@@ -9,6 +9,7 @@
 
 <script lang="ts">
   import { Busy } from './busy.svelte';
+  import { reported } from './errors.svelte';
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { untrack } from 'svelte';
   import Dialog from './Dialog.svelte';
@@ -83,6 +84,10 @@
 
   let way: SampleWay | null = $state(null);
   const busy = new Busy();
+  /** The `output` records are on their way. Loading saves nothing, so Cancel stays live. */
+  let loading = $state(false);
+  /** Bumped as the dialog opens or closes, so a load answering a closed opening is dropped. */
+  let opening = 0;
 
   // Paste and upload: an uploaded file is a paste that came from disk, one
   // record per non-empty line.
@@ -99,6 +104,7 @@
 
   // Every opening starts clean, so a cancel leaves nothing for the next one.
   $effect(() => {
+    opening++;
     if (!open) return;
     untrack(() => {
       name = '';
@@ -106,15 +112,23 @@
       text = '';
       taken = null;
       error = '';
+      loading = false;
       pick(start ?? null);
       if (start === 'output' && output) void take(output);
     });
   });
 
   async function take(output: () => Promise<Pick<SampleDto, 'columns' | 'records'>>) {
-    await busy.run(async () => {
-      taken = await output();
-    });
+    const at = opening;
+    loading = true;
+    try {
+      const answer = await output();
+      if (at === opening) taken = answer;
+    } catch (e) {
+      if (at === opening) reported(e);
+    } finally {
+      if (at === opening) loading = false;
+    }
   }
 
   function pick(next: SampleWay | null) {
@@ -224,8 +238,12 @@
   {#snippet actions()}
     <Button type="button" onclick={oncancel} disabled={busy.on ? BUSY : ''}>Cancel</Button>
     {#if way}
-      <Button type="submit" class="primary" disabled={busy.on ? BUSY : !canSave ? INCOMPLETE : ''}>
-        {busy.on ? (way === 'output' && !taken ? 'Loading…' : 'Saving…') : 'Save sample'}
+      <Button
+        type="submit"
+        class="primary"
+        disabled={busy.on || loading ? BUSY : !canSave ? INCOMPLETE : ''}
+      >
+        {loading ? 'Loading…' : busy.on ? 'Saving…' : 'Save sample'}
       </Button>
     {/if}
   {/snippet}
