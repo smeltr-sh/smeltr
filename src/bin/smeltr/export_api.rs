@@ -28,22 +28,48 @@ pub struct ExportQuery {
     routes: bool,
 }
 
-/// Pipeline `id`'s export from `area`, as a zip to download.
+/// Pipeline `id`'s export from `area`, as a zip to download. The zip is written as it is sent, so a large lookup file
+/// is never held in memory.
 pub async fn export_pipeline(AxPath((area, id)): AxPath<(String, String)>, Query(q): Query<ExportQuery>) -> Response {
-    let zip = blocking(move || {
-        let (_, files) = exported(&leader_data_dir(), &area, &id, &q)?;
-        Ok::<_, Refusal>((id, zipped(&files)?))
-    });
-    match zip.await {
-        Ok((id, zip)) => {
-            let disposition = format!("attachment; filename=\"{}.zip\"", slugify(&id));
-            let headers = [
-                (header::CONTENT_TYPE, "application/zip".to_string()),
-                (header::CONTENT_DISPOSITION, disposition),
-            ];
-            (headers, zip).into_response()
+    let files = blocking(move || exported(&leader_data_dir(), &area, &id, &q).map(|(_, files)| (id, files)));
+    let (id, files) = match files.await {
+        Ok(found) => found,
+        Err(e) => return Envelope::<()>::refused(e).into_response(),
+    };
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tokio::task::spawn_blocking(move || {
+        // Once the headers are sent, a failure can only end the body early.
+        if let Err(e) = zipped(
+            &files,
+            std::io::BufWriter::with_capacity(64 * 1024, Sending(tx.clone())),
+        ) {
+            let _ = tx.blocking_send(Err(e));
         }
-        Err(e) => Envelope::<()>::refused(e).into_response(),
+    });
+    // A fused stream: it answers 'ended' again when asked after its end, because the compression layer asks once more.
+    let body = futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|chunk| (chunk, rx)) });
+    let body = futures_util::StreamExt::fuse(body);
+    let disposition = format!("attachment; filename=\"{}.zip\"", slugify(&id));
+    let headers = [
+        (header::CONTENT_TYPE, "application/zip".to_string()),
+        (header::CONTENT_DISPOSITION, disposition),
+    ];
+    (headers, axum::body::Body::from_stream(body)).into_response()
+}
+
+/// A writer that hands what it is given to the response body, waiting while the body is behind.
+struct Sending(tokio::sync::mpsc::Sender<std::io::Result<bytes::Bytes>>);
+
+impl Write for Sending {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .blocking_send(Ok(bytes::Bytes::copy_from_slice(buf)))
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the download was cancelled"))?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -93,7 +119,7 @@ fn contents_in(data_dir: &Path, area: &str, id: &str, q: &ExportQuery) -> Result
                 let path = table_file(&t.source).map(str::to_string);
                 TableContents {
                     id: t.id.clone(),
-                    bytes: path.as_ref().and_then(|p| files.get(p)).map(Vec::len),
+                    bytes: path.as_ref().and_then(|p| files.get(p)).map(|held| held.len()),
                     file: path,
                 }
             })
@@ -118,13 +144,31 @@ fn table_file(source: &LookupSourceDto) -> Option<&str> {
     }
 }
 
+/// A file of the export: its bytes, or a stored lookup file mapped where the store keeps it, so that even a large
+/// one is not copied into memory.
+enum Held {
+    Bytes(Vec<u8>),
+    Mapped(memmap2::Mmap),
+}
+
+impl std::ops::Deref for Held {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Held::Bytes(bytes) => bytes,
+            Held::Mapped(map) => map,
+        }
+    }
+}
+
 /// What pipeline `id`'s export from `area` holds, and every file of it by its path in the bundle.
 fn exported(
     data_dir: &Path,
     area: &str,
     id: &str,
     q: &ExportQuery,
-) -> Result<(config_file::Export, BTreeMap<String, Vec<u8>>), Refusal> {
+) -> Result<(config_file::Export, BTreeMap<String, Held>), Refusal> {
     let own = q.config.open_in(data_dir, area)?;
     // `shared/` is read at the same commit, so the two halves of what the group runs are of one moment.
     let shared = match own.group_id() {
@@ -143,9 +187,10 @@ fn exported(
     let export = config_file::export(&merged, &tests, id, q.routes)
         .ok_or_else(|| Refusal::not_found(format!("no pipeline {id:?}")))?;
 
-    let mut files: BTreeMap<String, Vec<u8>> = config_file::bundle_files(&export.file)
+    let mut files: BTreeMap<String, Held> = config_file::bundle_files(&export.file)
         .map_err(|e| Refusal::internal(e.to_string()))?
         .into_iter()
+        .map(|(path, bytes)| (path, Held::Bytes(bytes)))
         .collect();
     for table in &export.file.lookup_tables {
         let Some(path) = table_file(&table.source) else {
@@ -157,7 +202,7 @@ fn exported(
     let samples = export.samples.iter().map(|s| sample_path(s));
     for path in samples.chain(export.tests.iter().map(|t| test_path(t))) {
         let path = path.map_err(|e| Refusal::internal(e.to_string()))?;
-        files.insert(path.clone(), read_from(&scopes, &path)?);
+        files.insert(path.clone(), Held::Bytes(read_from(&scopes, &path)?));
     }
     Ok((export, files))
 }
@@ -169,13 +214,13 @@ fn declared_in<'a>(scopes: &[(&'a Reading, FileConfig)], declares: impl Fn(&File
     found.unwrap_or(&scopes[scopes.len() - 1]).0
 }
 
-/// The lookup file at `path` in `scope`, as the bytes the store holds for it.
-fn lookup_bytes(scope: &Reading, path: &str) -> Result<Vec<u8>, Refusal> {
+/// The lookup file at `path` in `scope`, mapped where the store holds it.
+fn lookup_bytes(scope: &Reading, path: &str) -> Result<Held, Refusal> {
     let file = smeltr::plan::config::LookupFile {
         text: path.to_string(),
         at: scope.at().lookup(path).map_err(|e| Refusal::not_found(e.to_string()))?,
     };
-    Ok(file.map().map_err(|e| Refusal::internal(e.to_string()))?.to_vec())
+    Ok(Held::Mapped(file.map().map_err(|e| Refusal::internal(e.to_string()))?))
 }
 
 /// The file at `path` in the first scope, the group's own first, that holds one.
@@ -188,16 +233,15 @@ fn read_from(scopes: &[(&Reading, FileConfig)], path: &str) -> Result<Vec<u8>, R
     Err(Refusal::internal(format!("{path} is gone")))
 }
 
-/// `files` as a zip, each at its path.
-fn zipped(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, Refusal> {
-    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+/// `files` as a zip, each at its path, written to `out` as it is made.
+fn zipped(files: &BTreeMap<String, Held>, out: impl Write) -> std::io::Result<()> {
+    let mut zip = zip::ZipWriter::new_stream(out);
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    let failed = |e: &dyn std::fmt::Display| Refusal::internal(format!("couldn't write the export: {e}"));
     for (path, bytes) in files {
-        zip.start_file(path.as_str(), options).map_err(|e| failed(&e))?;
-        zip.write_all(bytes).map_err(|e| failed(&e))?;
+        zip.start_file(path.as_str(), options)?;
+        zip.write_all(bytes)?;
     }
-    Ok(zip.finish().map_err(|e| failed(&e))?.into_inner())
+    zip.finish()?.into_inner().flush()
 }
 
 #[cfg(test)]
@@ -302,7 +346,9 @@ mod tests {
     fn an_export_is_a_bundle_holding_the_lookup_bytes_and_the_tests_samples() {
         let data = seeded("whole");
         let (_, files) = exported(&data, "west", "audit", &query()).unwrap();
-        let files = unzipped(zipped(&files).unwrap());
+        let mut zip = Vec::new();
+        zipped(&files, &mut zip).unwrap();
+        let files = unzipped(zip);
         assert_eq!(
             files["lookups/sites.csv"], SITES,
             "the bytes, not the pointer a commit holds"
@@ -324,7 +370,7 @@ mod tests {
     #[test]
     fn a_pipeline_the_area_lacks_is_not_found() {
         let data = seeded("missing");
-        let refused = exported(&data, "west", "nope", &query()).unwrap_err();
+        let refused = exported(&data, "west", "nope", &query()).err().unwrap();
         assert!(refused.message().contains("no pipeline"), "{}", refused.message());
         let _ = std::fs::remove_dir_all(&data);
     }
