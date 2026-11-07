@@ -4031,8 +4031,6 @@ pub fn gzipped(app: Router) -> Router {
         .layer(tower_http::decompression::RequestDecompressionLayer::new())
 }
 
-/// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written --
-/// but two must not name one file between them if one ever does.
 #[cfg(test)]
 mod gzipped_tests {
     use axum::{body::Body, http::Request, routing::get};
@@ -4061,6 +4059,8 @@ mod gzipped_tests {
     }
 }
 
+/// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written --
+/// but two must not name one file between them if one ever does.
 #[cfg(test)]
 mod deployed_certificate_tests {
     use super::*;
