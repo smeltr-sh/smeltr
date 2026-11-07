@@ -615,19 +615,24 @@ fn refused_on_branch(
     }
 }
 
-/// The commit `reading` resolved, if it holds the pipeline `req` runs exactly as `req` has it; a sample of the output
-/// names it. Only a preview asked for a sample compares them.
+/// The commit `reading` resolved, if it holds everything `req` runs exactly as `req` has it; a sample of the output
+/// names it. The editor sends a part of the bundle, so each thing it sends is compared with the one of its id on the
+/// branch. Only a preview asked for a sample compares them.
 fn saved_at(req: &PreviewRequest, reading: &config_api::Reading) -> Option<String> {
     if !req.as_sample {
         return None;
     }
-    let file = serde_json::from_str::<config_file::FileConfig>(&req.config).ok()?;
-    let run = match &req.pipeline {
-        Some(id) => file.pipelines.iter().find(|p| &p.id == id),
-        None => file.pipelines.first(),
-    }?;
-    let saved = reading.raw().file.pipelines.into_iter().find(|p| p.id == run.id)?;
-    (serde_json::to_value(run).ok()? == serde_json::to_value(&saved).ok()?).then(|| reading.commit.clone())
+    let sent = serde_json::to_value(serde_json::from_str::<config_file::FileConfig>(&req.config).ok()?).ok()?;
+    let saved = serde_json::to_value(reading.raw().file).ok()?;
+    let held = |kind: &str, item: &serde_json::Value| match (&saved[kind], item.get("id")) {
+        (serde_json::Value::Array(items), Some(id)) => items.iter().any(|s| s.get("id") == Some(id) && s == item),
+        (whole, _) => whole == item,
+    };
+    let all_held = sent.as_object()?.iter().all(|(kind, value)| match value {
+        serde_json::Value::Array(items) => items.iter().all(|item| held(kind, item)),
+        value => &saved[kind] == value,
+    });
+    all_held.then(|| reading.commit.clone())
 }
 
 /// `req.config` with each schema it names but does not declare taken from `reading`, the area as the branch holds
@@ -3417,10 +3422,10 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    /// A sample of a preview's output names the commit holding the pipeline it ran, and only while the pipeline is
-    /// saved there as it ran: an edit not saved yet ran a pipeline no commit holds.
+    /// A sample of a preview's output names the commit holding the bundle it ran, and only while the bundle is saved
+    /// there as it ran: an edit not saved yet, to the pipeline or beside it, ran a bundle no commit holds.
     #[test]
-    fn a_sample_of_the_output_names_the_commit_only_while_the_pipeline_is_saved() {
+    fn a_sample_of_the_output_names_the_commit_only_while_the_bundle_is_saved() {
         use smeltr::config_file;
 
         let data = std::env::temp_dir().join(format!("smeltr-preview-saved-{}", std::process::id()));
@@ -3472,6 +3477,13 @@ mod tests {
             serde_json::json!("2023-11-14T22:13:20.000000Z"),
             "{made}"
         );
+
+        let mut beside = group.clone();
+        let mut other = beside.pipelines[0].clone();
+        other.id = "other".to_string();
+        beside.pipelines.push(other);
+        let made = output(&beside);
+        assert_eq!(made.get("config"), None, "an edit beside the pipeline: {made}");
 
         group.pipelines[0].name = "edited".to_string();
         let made = output(&group);
