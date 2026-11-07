@@ -1356,6 +1356,7 @@ export class DemoLeader {
       at_micros: number | null;
       filter: string | null;
       attribution?: boolean;
+      as_sample?: boolean;
       after_dot: unknown;
       capture_filter: unknown;
     },
@@ -1377,6 +1378,7 @@ export class DemoLeader {
       atMicros: req.at_micros,
       filter: req.filter,
       attribution: req.attribution ?? false,
+      asSample: req.as_sample ?? false,
       afterDot: req.after_dot ?? undefined,
       captureFilter: req.capture_filter ?? undefined,
     });

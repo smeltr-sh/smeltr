@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::bundle::{BundleError, FileSet, slugify};
+use crate::plan::tree::UNCLAIMED;
 
 /// Where samples live inside a bundle, beside `pipelines/`.
 pub const SAMPLES_DIR: &str = "samples";
@@ -192,6 +193,95 @@ pub fn list_samples(files: &mut dyn FileSet) -> (Vec<SampleSummary>, Vec<(String
     (found, unreadable)
 }
 
+/// A batch's rows as a sample stores them: each column in the record by its path, `__source` and `__destination`
+/// columns included, and the keys of an open record's unclaimed column (`UNCLAIMED`) back in the record. A null is a
+/// field the row did not have. A failed value is its original text, and the record lists its field under
+/// `io::MISTYPED_FIELDS` (`io::take_mistyped`), so a preview of the sample fails it as the pipeline did.
+pub fn sample_records(batch: &crate::heartbeat::CaptureBatch) -> impl Iterator<Item = crate::io::RecordObject> + '_ {
+    batch.rows.iter().map(|row| {
+        let mut record = crate::io::RecordObject::new();
+        for (column, value) in batch.columns.iter().zip(&row.values) {
+            if value.is_null() {
+                continue;
+            }
+            match (column.name.as_str(), value) {
+                (UNCLAIMED, serde_json::Value::Object(keys)) => record.extend(keys.clone()),
+                _ => put_path(&mut record, &column.name, value.clone()),
+            }
+        }
+        if !row.failed.is_empty() {
+            let names = row
+                .failed
+                .iter()
+                .map(|&c| batch.columns[c].name.clone().into())
+                .collect();
+            put_path(&mut record, crate::io::MISTYPED_FIELDS, serde_json::Value::Array(names));
+        }
+        record
+    })
+}
+
+/// The one set of columns a sample of `batches` holds: each column of every batch, in the order first seen. An open
+/// record's unclaimed column (`UNCLAIMED`) becomes one column for each key its rows hold, typed as a variant, which
+/// holds a value of any type. Batches differ where workers run different builds, or where a destination is fed by
+/// several routes; a name they type differently becomes a variant.
+pub fn sample_columns(batches: &[crate::heartbeat::CaptureBatch]) -> Vec<crate::heartbeat::CaptureColumn> {
+    let unclaimed = |batch: &crate::heartbeat::CaptureBatch, at: usize| {
+        let mut keys: Vec<crate::heartbeat::CaptureColumn> = Vec::new();
+        for row in &batch.rows {
+            if let Some(serde_json::Value::Object(object)) = row.values.get(at) {
+                for key in object.keys().map(|k| crate::plan::tree::spell(k).into_owned()) {
+                    if !keys.iter().any(|c| c.name == key) {
+                        keys.push(crate::heartbeat::CaptureColumn {
+                            name: key,
+                            ty: "variant".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        keys
+    };
+    let each = batches.iter().flat_map(|b| {
+        b.columns
+            .iter()
+            .enumerate()
+            .flat_map(move |(at, c)| match c.name == UNCLAIMED {
+                true => unclaimed(b, at),
+                false => vec![c.clone()],
+            })
+    });
+    let mut columns: Vec<crate::heartbeat::CaptureColumn> = Vec::new();
+    for column in each {
+        match columns.iter_mut().find(|c| c.name == column.name) {
+            None => columns.push(column),
+            Some(seen) if seen.ty != column.ty => seen.ty = "variant".to_string(),
+            Some(_) => {}
+        }
+    }
+    columns
+}
+
+/// Set `value` at `path`, a record field's name, in `object`: under each of its keys in turn (`plan::tree::segments`),
+/// as `io::value_at` reads it back.
+pub fn put_path(object: &mut serde_json::Map<String, serde_json::Value>, path: &str, value: serde_json::Value) {
+    let keys: Vec<_> = crate::plan::tree::segments(path).collect();
+    let Some((last, parents)) = keys.split_last() else {
+        return;
+    };
+    let mut at = object;
+    for key in parents {
+        let inner = at
+            .entry(key.as_ref())
+            .or_insert_with(|| serde_json::Value::Object(Default::default()));
+        let serde_json::Value::Object(inner) = inner else {
+            return;
+        };
+        at = inner;
+    }
+    at.insert(last.to_string(), value);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,5 +420,119 @@ mod tests {
     fn an_id_with_nothing_to_slug_is_refused() {
         assert!(sample_path("...").is_err());
         assert_eq!(sample_path("Orders West!").unwrap(), "samples/orders-west.json");
+    }
+
+    /// A source batch saves as the sample records a paste would make: its fields by path in the record, its
+    /// `__source` columns under its `__source`, a field the row did not have left out, and a failed value as its
+    /// original text, its field listed under `io::MISTYPED_FIELDS`.
+    #[test]
+    fn a_source_batch_saves_as_sample_records() {
+        use crate::heartbeat::{CaptureBatch, CaptureColumn, CapturedRow};
+        let column = |name: &str, ty: &str| CaptureColumn {
+            name: name.to_string(),
+            ty: ty.to_string(),
+        };
+        let batch = CaptureBatch {
+            columns: vec![
+                column("user.name", "str"),
+                column(r#"labels["a.b"]"#, "i64"),
+                column("id", "i64"),
+                column("__source.offset", "i64"),
+            ],
+            rows: vec![CapturedRow {
+                values: vec![
+                    serde_json::json!("ann"),
+                    serde_json::Value::Null,
+                    serde_json::json!("true"),
+                    serde_json::json!(7),
+                ],
+                failed: vec![2],
+                worker: Some("w1".to_string()),
+            }],
+        };
+        let saved: Vec<_> = sample_records(&batch).collect();
+        assert_eq!(
+            serde_json::to_value(&saved).unwrap(),
+            serde_json::json!([{"user": {"name": "ann"}, "id": "true", "__source": {"offset": 7},
+                "smeltr": {"mistyped": ["id"]}}])
+        );
+        let mut one = batch.clone();
+        one.rows[0].values[1] = serde_json::json!(2);
+        let saved = sample_records(&one).next().unwrap();
+        assert_eq!(
+            saved["labels"],
+            serde_json::json!({"a.b": 2}),
+            "a quoted key is one key"
+        );
+    }
+
+    /// A destination batch saves as one object per row: its fields, its `__source` and `__destination` columns, and an
+    /// open record's unclaimed keys back in it, as in the document as sent to a destination.
+    #[test]
+    fn a_destination_batch_saves_its_placement_in_the_record() {
+        use crate::heartbeat::{CaptureBatch, CaptureColumn, CapturedRow};
+        let column = |name: &str, ty: &str| CaptureColumn {
+            name: name.to_string(),
+            ty: ty.to_string(),
+        };
+        let batch = CaptureBatch {
+            columns: vec![
+                column("n", "i64"),
+                column(UNCLAIMED, "{...}"),
+                column("__source.topic", "str"),
+                column("__destination.route", "str"),
+            ],
+            rows: vec![CapturedRow {
+                values: vec![
+                    serde_json::json!(2),
+                    serde_json::json!({"extra": "x"}),
+                    serde_json::json!("t"),
+                    serde_json::json!("orders"),
+                ],
+                failed: Vec::new(),
+                worker: None,
+            }],
+        };
+        let saved: Vec<_> = sample_records(&batch).collect();
+        assert_eq!(
+            serde_json::to_value(&saved).unwrap(),
+            serde_json::json!([{"n": 2, "extra": "x", "__source": {"topic": "t"},
+                "__destination": {"route": "orders"}}])
+        );
+        assert_eq!(
+            sample_columns(&[batch])
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            ["n", "extra", "__source.topic", "__destination.route"],
+            "each unclaimed key is a column of its own"
+        );
+    }
+
+    /// Batches of several routes save as one set of columns, unless they type one name two ways.
+    #[test]
+    fn a_sample_holds_every_batch_s_columns_once() {
+        use crate::heartbeat::{CaptureBatch, CaptureColumn};
+        let batch = |columns: &[(&str, &str)]| {
+            CaptureBatch::new(
+                columns
+                    .iter()
+                    .map(|(name, ty)| CaptureColumn {
+                        name: name.to_string(),
+                        ty: ty.to_string(),
+                    })
+                    .collect(),
+            )
+        };
+        let columns = sample_columns(&[
+            batch(&[("a", "i64"), ("b", "str")]),
+            batch(&[("a", "i64"), ("c", "f64")]),
+        ]);
+        assert_eq!(
+            columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["a", "b", "c"]
+        );
+        let typed_twice = sample_columns(&[batch(&[("a", "i64")]), batch(&[("a", "str")])]);
+        assert_eq!(typed_twice[0].ty, "variant", "a variant holds either");
     }
 }

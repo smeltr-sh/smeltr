@@ -96,6 +96,7 @@
     type LookupTableDto,
     type PipelineDto,
     type Connected,
+    type SampleDto,
     type SampleRecordDto,
     type SampleSummary,
     type TestSummary,
@@ -700,6 +701,8 @@
   // the sample away from under whoever is fixing it. `result` still drives
   // the error itself -- this only decides what the grid below it shows.
   let lastGoodResult = $state<PreviewResult | null>(null);
+  /** The instant `lastGoodResult` ran at, and the steps it ran. */
+  let lastGoodRun: { at: number; steps: Step[] } = { at: 0, steps: [] };
   // The name boxes and the Fields menu offer the produced schemas' fields, each marked where the record holds it.
   const produced = provideProducedSchemas();
   $effect(() => {
@@ -781,6 +784,13 @@
     await loadSamples();
     await chooseSample(id);
     if (making) await proposeFrom(sampleRows);
+  }
+
+  /** Once the output is saved as a sample, the editor keeps running over the sample it had: the new one is for
+   * another pipeline. */
+  async function savedOutput() {
+    savingOutput = null;
+    await loadSamples();
   }
 
   /** Run over a finished capture where the leader holds it, unsaved. Answers why it cannot. */
@@ -876,6 +886,7 @@
       at,
       filter,
       attribution,
+      asSample,
     }: {
       /** Microseconds since the epoch. */
       at?: number;
@@ -883,6 +894,8 @@
       filter?: string;
       /** Which steps touched, dropped and failed each row. */
       attribution?: boolean;
+      /** Return the rows as a sample holds them too (`PreviewRequest.asSample`). */
+      asSample?: boolean;
     } = {},
   ): Promise<PreviewResult> {
     const held = unfinished.hold(stepsSubset);
@@ -906,6 +919,7 @@
       atMicros: at,
       filter,
       attribution,
+      asSample,
     });
     return { ...res, errors: res.errors.map(held.restore) };
   }
@@ -981,12 +995,14 @@
     running = true;
     requestError = '';
     const sample = selectedSample;
+    const at = Date.now() * 1000;
     try {
-      const res = await fetchPreview(steps, sample, { attribution: true });
+      const ran = $state.snapshot(steps);
+      const res = await fetchPreview(ran, sample, { at, attribution: true });
       // A run of a sample put away while it ran answers for nothing on screen.
       if (sample !== selectedSample) return;
       result = res;
-      if (res.ok) lastGoodResult = res;
+      if (res.ok) [lastGoodResult, lastGoodRun] = [res, { at, steps: ran }];
       lastSample = sample;
     } catch (e) {
       requestError = unreported(e);
@@ -1004,6 +1020,17 @@
       result !== null &&
       result.ok,
   );
+
+  /** The output rows `rows` names, as a sample holds them. It re-runs the steps the grid ran, at the instant it ran
+   * them, so the rows are the ones on screen. */
+  async function outputOf(rows: Set<number>): Promise<Pick<SampleDto, 'columns' | 'records'>> {
+    const { at, steps: ran } = pause && pauseRun ? pauseRan : lastGoodRun;
+    const res = await fetchPreview(ran, lastSample, { at, asSample: true });
+    if (!res.ok || !res.as_sample) throw new Error(previewFailure(res));
+    const { columns, records, rows: of } = res.as_sample;
+    return { columns, records: records.filter((_, i) => rows.has(of[i])) };
+  }
+  let savingOutput = $state<Set<number> | null>(null);
 
   function goLockTest() {
     location.hash = `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`;
@@ -1110,6 +1137,8 @@
   });
 
   let pauseRun = $state<PauseRun | null>(null);
+  /** The instant the pause ran at, and the steps it ran, up to and including its step. */
+  let pauseRan: { at: number; steps: Step[] } = { at: 0, steps: [] };
   let pauseLoading = $state(false);
   let errorsOpen = $state(false);
   /** A failed stage as the error chip names it. */
@@ -1135,6 +1164,7 @@
       // One instant for both sides, so the only difference between them is
       // the step.
       const at = Date.now() * 1000;
+      pauseRan = { at, steps: $state.snapshot(after) };
       const [beforeRes, afterRes] = await Promise.all([
         fetchPreview(before, sample, { at }),
         fetchPreview(after, sample, { at, attribution: true }),
@@ -1626,6 +1656,7 @@
         declared={{ before: sampleDeclared, after: runDeclared }}
         canLock={canLockTest}
         onlock={readOnly ? undefined : goLockTest}
+        onsaveoutput={readOnly ? undefined : (rows) => (savingOutput = rows)}
         onjump={(step) => (jumpToStepId = step.id)}
         onassign={readOnly ? undefined : assignField}
         preview={(steps, sample, filter) => fetchPreview(steps, sample, { filter })}
@@ -1656,16 +1687,18 @@
     </div>
     {#if !readOnly}
       <AddSampleDialog
-        open={capturing || adding}
-        start={capturing ? 'capture' : undefined}
+        open={capturing || adding || savingOutput !== null}
+        start={capturing ? 'capture' : savingOutput ? 'output' : undefined}
         target={captureAt ?? captureTarget}
         onuse={useCapture}
+        output={savingOutput ? () => outputOf(savingOutput!) : undefined}
         oncancel={() => {
           capturing = false;
           adding = false;
+          savingOutput = null;
           captureAt = null;
         }}
-        onsaved={captured}
+        onsaved={savingOutput ? savedOutput : captured}
       />
     {:else if capturing && captureAt}
       <CaptureFlow

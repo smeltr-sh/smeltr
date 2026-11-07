@@ -5,7 +5,7 @@
 -->
 <script lang="ts" module>
   import { reported } from './errors.svelte';
-  export type SampleWay = 'paste' | 'upload' | 'capture';
+  export type SampleWay = 'paste' | 'upload' | 'capture' | 'output';
 </script>
 
 <script lang="ts">
@@ -20,7 +20,7 @@
   import { SYSTEM_GLYPHS } from './systemGlyphs';
   import { mintSampleId } from './ids';
   import { count } from './time';
-  import { putSample, recordsFromText } from './api';
+  import { putSample, recordsFromText, type SampleDto } from './api';
   import { mayCapture } from './access';
 
   let {
@@ -28,6 +28,7 @@
     start,
     target,
     onuse,
+    output,
     oncancel,
     onsaved,
   }: {
@@ -38,6 +39,9 @@
     target?: ComponentProps<typeof CaptureFlow>['target'];
     /** What Use these records does with a capture (`CaptureFlow`). */
     onuse?: ComponentProps<typeof CaptureFlow>['onuse'];
+    /** A pipeline's output rows, as a sample holds them: what the dialog saves when it opens at `output`, the
+     * `SampleWay` for a pipeline's output. */
+    output?: () => Promise<Pick<SampleDto, 'columns' | 'records'>>;
     oncancel: () => void;
     /** The new sample's id, once it is saved. */
     onsaved: (id: string) => void;
@@ -60,6 +64,7 @@
     paste: 'paste a sample',
     upload: 'upload a sample',
     capture: 'capture a sample',
+    output: 'save output as sample',
   };
 
   let way: SampleWay | null = $state(null);
@@ -70,7 +75,9 @@
   let name = $state('');
   let source = $state('');
   let text = $state('');
-  let records = $derived(recordsFromText(text));
+  /** The records `output` returned, for the `output` `SampleWay`. */
+  let taken = $state<Pick<SampleDto, 'columns' | 'records'> | null>(null);
+  let records = $derived(way === 'output' ? (taken?.records ?? []) : recordsFromText(text));
 
   // Every opening starts clean, so a cancel leaves nothing for the next one.
   $effect(() => {
@@ -79,9 +86,22 @@
       name = '';
       source = '';
       text = '';
+      taken = null;
       pick(start ?? null);
+      if (start === 'output' && output) void take(output);
     });
   });
+
+  async function take(output: () => Promise<Pick<SampleDto, 'columns' | 'records'>>) {
+    busy = true;
+    try {
+      taken = await output();
+    } catch (e) {
+      reported(e);
+    } finally {
+      busy = false;
+    }
+  }
 
   function pick(next: SampleWay | null) {
     // Records pasted are not an upload's, nor the reverse.
@@ -107,6 +127,7 @@
         id,
         name: name.trim(),
         source: source.trim() || undefined,
+        columns: taken?.columns,
         records,
       });
       // A refusal is the dialog's error bar's to say.
@@ -160,6 +181,13 @@
       {/if}
       <span class="dim">{count(records.length, 'record')}</span>
     </div>
+  {:else if way === 'output'}
+    <div class="form-body">
+      <Field required label="Name">
+        <input bind:value={name} placeholder="orders-west, enriched" />
+      </Field>
+      <span class="dim">{count(records.length, 'record')}</span>
+    </div>
   {:else}
     <TypeCatalog types={WAYS} onpick={pick} />
   {/if}
@@ -167,7 +195,7 @@
     <Button type="button" onclick={oncancel} disabled={busy ? BUSY : ''}>Cancel</Button>
     {#if way}
       <Button type="submit" class="primary" disabled={busy ? BUSY : !canSave ? INCOMPLETE : ''}>
-        {busy ? 'Saving…' : 'Save sample'}
+        {busy ? (way === 'output' && !taken ? 'Loading…' : 'Saving…') : 'Save sample'}
       </Button>
     {/if}
   {/snippet}
