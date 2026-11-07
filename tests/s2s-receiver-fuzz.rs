@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,7 @@ use smeltr::plan::topology::{HecReceiverConfig, Receiver, S2sReceiverConfig, Sou
 use crate::harness::docker::{Container, Hook, Scratch, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::harness::receiver::{self, Pki, Presents, Tls, commit};
+use crate::harness::sender::{self, Speaks};
 
 /// One receiver's settings, as an operator could save them.
 struct Settings {
@@ -1576,53 +1577,6 @@ fn compressed(rng: &mut Rng, v4: &[u8]) -> Vec<u8> {
     [&[0xf9][..], zlib.get_ref()].concat()
 }
 
-/// A forwarder's side of its connection, over TCP or TLS.
-enum Wire {
-    Plain(TcpStream),
-    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
-}
-
-impl Read for Wire {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            Wire::Plain(tcp) => tcp.read(buf),
-            Wire::Tls(tls) => tls.read(buf),
-        }
-    }
-}
-
-impl Write for Wire {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match self {
-            Wire::Plain(tcp) => tcp.write(buf),
-            Wire::Tls(tls) => tls.write(buf),
-        }
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            Wire::Plain(tcp) => tcp.flush(),
-            Wire::Tls(tls) => tls.flush(),
-        }
-    }
-}
-
-impl Wire {
-    /// Hangs up its side, as a forwarder done sending does, and reads on.
-    fn close_write(&mut self) {
-        match self {
-            Wire::Plain(tcp) => {
-                let _ = tcp.shutdown(Shutdown::Write);
-            }
-            Wire::Tls(tls) => {
-                tls.conn.send_close_notify();
-                let _ = tls.flush();
-                let _ = tls.sock.shutdown(Shutdown::Write);
-            }
-        }
-    }
-}
-
 /// How many records holding each id's bytes are not yet delivered. An id whose bytes no record will hold counts one
 /// forever.
 type Undelivered = Mutex<HashMap<u64, usize>>;
@@ -1700,14 +1654,11 @@ fn forward(
     let tcp = TcpStream::connect(at).map_err(|e| format!("connecting: {e}"))?;
     tcp.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
     tcp.set_write_timeout(Some(Duration::from_secs(30))).unwrap();
-    let mut wire = match tls {
-        Tls::None => Wire::Plain(tcp),
-        _ => {
-            let connection =
-                rustls::ClientConnection::new(pki.client(plan.presents), "localhost".try_into().unwrap()).unwrap();
-            Wire::Tls(Box::new(rustls::StreamOwned::new(connection, tcp)))
-        }
+    let speaks = match tls {
+        Tls::None => Speaks::Plain,
+        _ => Speaks::Tls(plan.presents),
     };
+    let mut wire = sender::speaking(tcp, speaks, pki);
     let _ = wire.write_all(&plan.opening).and_then(|()| wire.flush());
     if plan.answered {
         let mut size = [0; 4];
@@ -1727,7 +1678,7 @@ fn forward(
     let acks = plan.streamed && plan.ack;
     // Over TCP, acks are read as they come, so one sent before its records were delivered is read while they are not.
     let reader = match &wire {
-        Wire::Plain(tcp) if acks => {
+        sender::Stream::Plain(tcp) if acks => {
             let mut tcp = tcp.try_clone().unwrap();
             let (heard, undelivered) = (heard.clone(), undelivered.clone());
             Some(std::thread::spawn(move || {
@@ -2075,14 +2026,11 @@ fn httpout(at: SocketAddr, tls: Tls, pki: &Pki, token: &str, body: &[u8]) -> (u1
     let tcp = TcpStream::connect(at).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
     tcp.set_write_timeout(Some(Duration::from_secs(30))).unwrap();
-    let mut wire = match tls {
-        Tls::None => Wire::Plain(tcp),
-        _ => {
-            let connection =
-                rustls::ClientConnection::new(pki.client(Presents::Trusted), "localhost".try_into().unwrap()).unwrap();
-            Wire::Tls(Box::new(rustls::StreamOwned::new(connection, tcp)))
-        }
+    let speaks = match tls {
+        Tls::None => Speaks::Plain,
+        _ => Speaks::Tls(Presents::Trusted),
     };
+    let mut wire = sender::speaking(tcp, speaks, pki);
     let expect = body.len() > 16 * 1024;
     let mut head = format!(
         "POST /services/collector/s2s HTTP/1.1\r\nHost: receiver\r\nAuthorization: Splunk {token}\r\n\
