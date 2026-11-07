@@ -3143,35 +3143,23 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
 
 impl KafkaDestinationDto {
     fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            brokers,
-            default_topic,
-            tls,
-            props,
-            stall_after_secs,
-            buffer_bytes,
-            format,
-            field,
-            schema_registry,
-            ..
-        } = self;
         check_field(
             &d.id,
-            matches!(format, FormatDto::Text | FormatDto::Bytes),
-            field,
+            matches!(&self.format, FormatDto::Text | FormatDto::Bytes),
+            &self.field,
             errors,
         );
-        check_stream_avro(*format, schema_registry, &d.id, errors);
-        check_stall_after(*stall_after_secs, &d.id, errors);
-        validate_kafka_props(props, &format!("destination {:?}", d.id), errors);
-        check_kafka_tls(tls, props, &format!("destination {:?}", d.id), errors);
-        check_kafka_buffer(*buffer_bytes, &d.id, errors);
-        if blank(brokers) {
+        check_stream_avro(self.format, &self.schema_registry, &d.id, errors);
+        check_stall_after(self.stall_after_secs, &d.id, errors);
+        validate_kafka_props(&self.props, &format!("destination {:?}", d.id), errors);
+        check_kafka_tls(&self.tls, &self.props, &format!("destination {:?}", d.id), errors);
+        check_kafka_buffer(self.buffer_bytes, &d.id, errors);
+        if blank(&self.brokers) {
             errors
                 .at("brokers")
                 .push(format!("destination {:?} has no brokers", d.id));
         }
-        if blank(default_topic) {
+        if blank(&self.default_topic) {
             errors
                 .at("defaultTopic")
                 .push(format!("destination {:?} has no default topic", d.id));
@@ -3181,36 +3169,24 @@ impl KafkaDestinationDto {
 
 impl EventHubsDestinationDto {
     fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            namespace,
-            default_event_hub,
-            format,
-            field,
-            compression,
-            stall_after_secs,
-            buffer_bytes,
-            connection_string,
-            sign_in,
-            schema_registry,
-            ..
-        } = self;
+        let compression = &self.compression;
         check_field(
             &d.id,
-            matches!(format, FormatDto::Text | FormatDto::Bytes),
-            field,
+            matches!(&self.format, FormatDto::Text | FormatDto::Bytes),
+            &self.field,
             errors,
         );
-        check_stream_avro(*format, schema_registry, &d.id, errors);
-        check_stall_after(*stall_after_secs, &d.id, errors);
-        check_kafka_buffer(*buffer_bytes, &d.id, errors);
-        check_event_hubs_namespace(namespace, &format!("destination {:?}", d.id), errors);
+        check_stream_avro(self.format, &self.schema_registry, &d.id, errors);
+        check_stall_after(self.stall_after_secs, &d.id, errors);
+        check_kafka_buffer(self.buffer_bytes, &d.id, errors);
+        check_event_hubs_namespace(&self.namespace, &format!("destination {:?}", d.id), errors);
         check_event_hubs_sign_in(
-            connection_string.as_ref(),
-            sign_in,
+            self.connection_string.as_ref(),
+            &self.sign_in,
             &format!("destination {:?}", d.id),
             errors,
         );
-        if blank(default_event_hub) {
+        if blank(&self.default_event_hub) {
             errors
                 .at("defaultEventHub")
                 .push(format!("destination {:?} has no default event hub", d.id));
@@ -3629,43 +3605,33 @@ impl LogAnalyticsDestinationDto {
 
 impl SftpDestinationDto {
     fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
-        let Self { access, objects, .. } = self;
-        check_objects(&d.id, objects, "sftp", &TlsDto::default(), errors);
-        if objects.stall_after_secs.0 < SFTP_MIN_STALL_AFTER {
+        check_objects(&d.id, &self.objects, "sftp", &TlsDto::default(), errors);
+        if self.objects.stall_after_secs.0 < SFTP_MIN_STALL_AFTER {
             errors.at("stallAfterSecs").push(format!(
                 "destination {:?} sets a stall threshold of {}s; an SFTP destination needs at least \
                      {SFTP_MIN_STALL_AFTER}s, or a slow sign-in or a dead connection outlasts every write",
-                d.id, objects.stall_after_secs.0
+                d.id, self.objects.stall_after_secs.0
             ));
         }
-        check_sftp_access(access, &format!("destination {:?}", d.id), errors);
+        check_sftp_access(&self.access, &format!("destination {:?}", d.id), errors);
     }
 }
 
 impl KafkaSourceDto {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            brokers,
-            topics,
-            tls,
-            fetch_bytes,
-            encoding,
-            props,
-            ..
-        } = self;
-        check_kafka_tls(tls, props, &format!("source {:?}", s.id), errors);
-        check_encoding(encoding, &s.id, errors);
-        validate_kafka_props(props, &format!("source {:?}", s.id), errors);
-        check_fetch_bytes(*fetch_bytes, &s.id, errors);
-        if blank(brokers) {
+        check_kafka_tls(&self.tls, &self.props, &format!("source {:?}", s.id), errors);
+        check_encoding(&self.encoding, &s.id, errors);
+        validate_kafka_props(&self.props, &format!("source {:?}", s.id), errors);
+        check_fetch_bytes(self.fetch_bytes, &s.id, errors);
+        if blank(&self.brokers) {
             errors.at("brokers").push(format!("source {:?} has no brokers", s.id));
         }
-        if topics.iter().all(|t| blank(t)) {
+        if self.topics.iter().all(|t| blank(t)) {
             errors
                 .at("topics")
                 .push(format!("source {:?} subscribes to no topics", s.id));
         }
-        for topic in topics {
+        for topic in &self.topics {
             if let Some(Err(e)) = crate::io::kafka::topic_pattern(topic) {
                 errors.at("topics").push(format!(
                     "source {:?} names the topic pattern {topic:?}, which does not compile: {e}",
@@ -3678,37 +3644,27 @@ impl KafkaSourceDto {
 
 impl EventHubsSourceDto {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            namespace,
-            event_hubs,
-            consumer_group,
-            connection_string,
-            sign_in,
-            fetch_bytes,
-            encoding,
-            ..
-        } = self;
-        check_encoding(encoding, &s.id, errors);
-        check_fetch_bytes(*fetch_bytes, &s.id, errors);
-        check_event_hubs_namespace(namespace, &format!("source {:?}", s.id), errors);
+        check_encoding(&self.encoding, &s.id, errors);
+        check_fetch_bytes(self.fetch_bytes, &s.id, errors);
+        check_event_hubs_namespace(&self.namespace, &format!("source {:?}", s.id), errors);
         check_event_hubs_sign_in(
-            connection_string.as_ref(),
-            sign_in,
+            self.connection_string.as_ref(),
+            &self.sign_in,
             &format!("source {:?}", s.id),
             errors,
         );
-        if event_hubs.iter().all(|h| blank(h)) {
+        if self.event_hubs.iter().all(|h| blank(h)) {
             errors
                 .at("eventHubs")
                 .push(format!("source {:?} reads no event hubs", s.id));
         }
-        for hub in event_hubs.iter().filter(|h| h.starts_with('^')) {
+        for hub in self.event_hubs.iter().filter(|h| h.starts_with('^')) {
             errors.at("eventHubs").push(format!(
                 "source {:?} names {hub:?}; an event hub is named in full, not by a pattern",
                 s.id
             ));
         }
-        if blank(consumer_group) {
+        if blank(&self.consumer_group) {
             errors.at("consumerGroup").push(format!(
                 "source {:?} has no consumer group -- it is the group every event hub above is read \
                      under",
@@ -3747,51 +3703,29 @@ impl LogsSourceDto {
 
 impl S3SqsSourceDto {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            queue_url,
-            access,
-            tls,
-            encoding,
-            framing,
-            visibility_secs,
-            ..
-        } = self;
         let what = format!("source {:?}", s.id);
-        check_tls_reaches(tls, &s.urls(), &what, errors);
-        check_s3_access(access, &what, errors);
-        check_encoding(encoding, &s.id, errors);
-        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-        check_queue(queue_url, *visibility_secs, &what, errors);
+        check_tls_reaches(&self.tls, &s.urls(), &what, errors);
+        check_s3_access(&self.access, &what, errors);
+        check_encoding(&self.encoding, &s.id, errors);
+        check_framing(&self.framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        check_queue(&self.queue_url, self.visibility_secs, &what, errors);
     }
 }
 
 impl S3ListSourceDto {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            bucket,
-            prefix,
-            access,
-            tls,
-            encoding,
-            framing,
-            poll_interval_secs,
-            start,
-            after_commit,
-            move_prefix,
-            ..
-        } = self;
         let what = format!("source {:?}", s.id);
-        check_tls_reaches(tls, &s.urls(), &what, errors);
-        check_s3_access(access, &what, errors);
-        check_encoding(encoding, &s.id, errors);
-        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-        check_bucket_name(bucket, &what, errors);
+        check_tls_reaches(&self.tls, &s.urls(), &what, errors);
+        check_s3_access(&self.access, &what, errors);
+        check_encoding(&self.encoding, &s.id, errors);
+        check_framing(&self.framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        check_bucket_name(&self.bucket, &what, errors);
         check_listing(
-            prefix,
-            *poll_interval_secs,
-            *start,
-            *after_commit,
-            move_prefix,
+            &self.prefix,
+            self.poll_interval_secs,
+            self.start,
+            self.after_commit,
+            &self.move_prefix,
             &what,
             errors,
         );
@@ -3800,33 +3734,20 @@ impl S3ListSourceDto {
 
 impl GcsListSourceDto {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            bucket,
-            prefix,
-            access,
-            tls,
-            encoding,
-            framing,
-            poll_interval_secs,
-            start,
-            after_commit,
-            move_prefix,
-            ..
-        } = self;
         let what = format!("source {:?}", s.id);
-        check_tls_reaches(tls, &s.urls(), &what, errors);
-        check_endpoint(access.endpoint.as_deref(), "endpoint", &what, errors);
-        check_encoding(encoding, &s.id, errors);
-        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-        if bucket.trim().is_empty() {
+        check_tls_reaches(&self.tls, &s.urls(), &what, errors);
+        check_endpoint(self.access.endpoint.as_deref(), "endpoint", &what, errors);
+        check_encoding(&self.encoding, &s.id, errors);
+        check_framing(&self.framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        if self.bucket.trim().is_empty() {
             errors.at("bucket").push(format!("{what} names no bucket"));
         }
         check_listing(
-            prefix,
-            *poll_interval_secs,
-            *start,
-            *after_commit,
-            move_prefix,
+            &self.prefix,
+            self.poll_interval_secs,
+            self.start,
+            self.after_commit,
+            &self.move_prefix,
             &what,
             errors,
         );
@@ -3835,33 +3756,20 @@ impl GcsListSourceDto {
 
 impl AzureBlobListSourceDto {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            container,
-            prefix,
-            access,
-            tls,
-            encoding,
-            framing,
-            poll_interval_secs,
-            start,
-            after_commit,
-            move_prefix,
-            ..
-        } = self;
         let what = format!("source {:?}", s.id);
-        check_tls_reaches(tls, &s.urls(), &what, errors);
-        check_azure_access(access, &what, errors);
-        check_encoding(encoding, &s.id, errors);
-        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-        if container.trim().is_empty() {
+        check_tls_reaches(&self.tls, &s.urls(), &what, errors);
+        check_azure_access(&self.access, &what, errors);
+        check_encoding(&self.encoding, &s.id, errors);
+        check_framing(&self.framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        if self.container.trim().is_empty() {
             errors.at("container").push(format!("{what} names no container"));
         }
         check_listing(
-            prefix,
-            *poll_interval_secs,
-            *start,
-            *after_commit,
-            move_prefix,
+            &self.prefix,
+            self.poll_interval_secs,
+            self.start,
+            self.after_commit,
+            &self.move_prefix,
             &what,
             errors,
         );
@@ -3870,27 +3778,16 @@ impl AzureBlobListSourceDto {
 
 impl SftpSourceDto {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            prefix,
-            access,
-            encoding,
-            framing,
-            poll_interval_secs,
-            start,
-            after_commit,
-            move_prefix,
-            ..
-        } = self;
         let what = format!("source {:?}", s.id);
-        check_sftp_access(access, &what, errors);
-        check_encoding(encoding, &s.id, errors);
-        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        check_sftp_access(&self.access, &what, errors);
+        check_encoding(&self.encoding, &s.id, errors);
+        check_framing(&self.framing, &s.id, MAX_RECORD_BYTES, "record", errors);
         check_listing(
-            prefix,
-            *poll_interval_secs,
-            *start,
-            *after_commit,
-            move_prefix,
+            &self.prefix,
+            self.poll_interval_secs,
+            self.start,
+            self.after_commit,
+            &self.move_prefix,
             &what,
             errors,
         );
@@ -3899,38 +3796,29 @@ impl SftpSourceDto {
 
 impl HttpApiSourceDto {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            url,
-            method,
-            body,
-            headers,
-            credentials,
-            tls,
-            records,
-            records_at,
-            since_param,
-            since_overlap_secs,
-            poll_interval_secs,
-            start,
-            sign_in,
-            ..
-        } = self;
         let what = format!("source {:?}", s.id);
-        check_api_source(&what, ("url", url), tls, *poll_interval_secs, errors);
-        check_http_headers(&what, headers, credentials, SOURCE_HEADERS, "for every request", errors);
-        check_app_sign_in(&what, sign_in, headers, credentials, errors);
-        check_records_at(&what, *records, records_at, errors);
-        if body.is_some() && *method != ApiMethodDto::Post {
+        check_api_source(&what, ("url", &self.url), &self.tls, self.poll_interval_secs, errors);
+        check_http_headers(
+            &what,
+            &self.headers,
+            &self.credentials,
+            SOURCE_HEADERS,
+            "for every request",
+            errors,
+        );
+        check_app_sign_in(&what, &self.sign_in, &self.headers, &self.credentials, errors);
+        check_records_at(&what, self.records, &self.records_at, errors);
+        if self.body.is_some() && self.method != ApiMethodDto::Post {
             errors
                 .at("body")
                 .push(format!("{what} sends a body only with a POST; set method to \"POST\""));
         }
-        match since_param {
+        match &self.since_param {
             Some(param) if param.is_empty() || !param.bytes().all(is_query_name_byte) => errors.at("sinceParam").push(
                 format!("{what} names the query parameter {param:?}; a name is letters, digits and -._~[] only"),
             ),
             Some(param)
-                if reqwest::Url::parse(url.trim())
+                if reqwest::Url::parse(self.url.trim())
                     .is_ok_and(|u| u.query_pairs().any(|(name, _)| name == param.as_str())) =>
             {
                 errors.at("sinceParam").push(format!(
@@ -3940,13 +3828,13 @@ impl HttpApiSourceDto {
             }
             Some(_) => {}
             None => {
-                if *since_overlap_secs != 0 {
+                if self.since_overlap_secs != 0 {
                     errors.at("sinceOverlapSecs").push(format!(
                         "{what} sets an overlap and no sinceParam; the overlap is how far back sinceParam \
                              asks from"
                     ));
                 }
-                if *start != ListStartDto::Everything {
+                if self.start != ListStartDto::Everything {
                     errors.at("start").push(format!(
                         "{what} starts at new records and has no sinceParam to ask for them with; with \
                              none, every poll reads everything"
@@ -3988,18 +3876,10 @@ impl HttpReceiverSourceDto {
 
 impl HecReceiverSourceDto {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            listener,
-            connections,
-            tls,
-            tokens,
-            sourcetypes,
-            ..
-        } = self;
         let what = format!("source {:?}", s.id);
-        check_receiver(&what, listener, tls, tokens, errors);
-        check_connection_limits(&what, connections, true, errors);
-        check_sourcetypes(&s.id, sourcetypes, errors);
+        check_receiver(&what, &self.listener, &self.tls, &self.tokens, errors);
+        check_connection_limits(&what, &self.connections, true, errors);
+        check_sourcetypes(&s.id, &self.sourcetypes, errors);
     }
 }
 
@@ -4130,24 +4010,15 @@ impl OktaLogsSourceDto {
 
 impl AzureBlobQueueSourceDto {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            queue_url,
-            access,
-            tls,
-            encoding,
-            framing,
-            visibility_secs,
-            max_deliveries,
-            ..
-        } = self;
         let what = format!("source {:?}", s.id);
-        check_tls_reaches(tls, &s.urls(), &what, errors);
-        check_azure_access(access, &what, errors);
-        check_encoding(encoding, &s.id, errors);
-        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-        check_queue(queue_url, *visibility_secs, &what, errors);
+        check_tls_reaches(&self.tls, &s.urls(), &what, errors);
+        check_azure_access(&self.access, &what, errors);
+        check_encoding(&self.encoding, &s.id, errors);
+        check_framing(&self.framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        check_queue(&self.queue_url, self.visibility_secs, &what, errors);
         let poison = crate::io::storage_queue::POISON_SUFFIX;
-        let name = queue_url
+        let name = &self
+            .queue_url
             .trim()
             .trim_end_matches('/')
             .rsplit('/')
@@ -4161,11 +4032,11 @@ impl AzureBlobQueueSourceDto {
                 QUEUE_NAME_MAX - poison.len()
             ));
         }
-        if !(MaxDeliveries::MIN..=MaxDeliveries::MAX).contains(&max_deliveries.0) {
+        if !(MaxDeliveries::MIN..=MaxDeliveries::MAX).contains(&self.max_deliveries.0) {
             errors.at("maxDeliveries").push(format!(
                 "{what} moves a message to the poison queue after {} deliveries; maxDeliveries must be \
                      between {} and {}",
-                max_deliveries.0,
+                self.max_deliveries.0,
                 MaxDeliveries::MIN,
                 MaxDeliveries::MAX
             ));
@@ -4175,24 +4046,14 @@ impl AzureBlobQueueSourceDto {
 
 impl GcsPubSubSourceDto {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
-        let Self {
-            subscription,
-            pubsub_endpoint,
-            access,
-            tls,
-            encoding,
-            framing,
-            visibility_secs,
-            ..
-        } = self;
         let what = format!("source {:?}", s.id);
-        check_tls_reaches(tls, &s.urls(), &what, errors);
-        check_encoding(encoding, &s.id, errors);
-        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-        check_subscription(subscription, &what, errors);
-        check_endpoint(pubsub_endpoint.as_deref(), "pubsubEndpoint", &what, errors);
-        check_endpoint(access.endpoint.as_deref(), "endpoint", &what, errors);
-        check_visibility(*visibility_secs, ACK_DEADLINE_MAX, &what, errors);
+        check_tls_reaches(&self.tls, &s.urls(), &what, errors);
+        check_encoding(&self.encoding, &s.id, errors);
+        check_framing(&self.framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        check_subscription(&self.subscription, &what, errors);
+        check_endpoint(self.pubsub_endpoint.as_deref(), "pubsubEndpoint", &what, errors);
+        check_endpoint(self.access.endpoint.as_deref(), "endpoint", &what, errors);
+        check_visibility(self.visibility_secs, ACK_DEADLINE_MAX, &what, errors);
     }
 }
 
