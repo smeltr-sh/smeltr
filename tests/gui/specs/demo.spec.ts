@@ -143,6 +143,34 @@ test('the guide chimes as a task ticks', async ({ page }) => {
   expect(await chimes()).toBe(0);
 });
 
+test('starting and opening a branch ticks the first task, and chimes', async ({ page }) => {
+  const chimes = await listen(page);
+  await open(page, '#/changes');
+  const guide = page.getByRole('button', { name: /^Guide · / });
+  await expect(guide).toHaveText('Guide · 0/7');
+  await page.getByPlaceholder('a name for new work').fill('fix-network');
+  await page.getByRole('button', { name: 'Start a branch' }).click();
+  await page
+    .getByRole('row', { name: /fix-network/ })
+    .getByRole('button', { name: 'Open' })
+    .click();
+  await expect(guide).toHaveText('Guide · 1/7');
+  await expect.poll(chimes).toBe(1);
+});
+
+test("the guide's FortiGate task points at the parser that declares proto", async ({ page }) => {
+  await open(page, '#/map');
+  await page
+    .locator('#demo-guide li', { hasText: 'Fix the proto field' })
+    .getByText('Show me')
+    .click();
+  // The pipeline parses `_raw` with Regex/Grok first; proto is the key/value parser's.
+  await expect(page.locator('[data-guide="parser"][data-guide-ring]')).toHaveAttribute(
+    'data-parser',
+    'keyValue',
+  );
+});
+
 test('the guide folds on a click, and a muted one stays quiet', async ({ page }) => {
   const chimes = await listen(page);
   await open(page, '#/map');

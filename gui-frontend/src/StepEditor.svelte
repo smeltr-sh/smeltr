@@ -679,6 +679,7 @@
         class="expander"
         type="button"
         data-guide={step.type}
+        data-parser={step.type === 'parser' ? step.kind.type : undefined}
         aria-expanded={expanded}
         onclick={() => setExpanded(!expanded)}
       >

@@ -45,7 +45,7 @@ export interface Task {
   done: (world: World) => boolean;
 }
 
-const MAIN = 'main';
+export const MAIN = 'main';
 /** The group the two problems are in. */
 const GROUP = 'network';
 /** The source no route takes, and the pipeline whose declared `proto` the fleet's records break. */
@@ -121,7 +121,8 @@ export const TASKS: Task[] = [
     hash: PIPELINE,
     scope: GROUP,
     steps: [
-      { on: PIPELINE, at: guide('parser') },
+      // The pipeline parses `_raw` first; proto is declared by the key/value parser after it.
+      { on: PIPELINE, at: `${guide('parser')}[data-parser="keyValue"]` },
       { on: PIPELINE, at: '[aria-label="proto type"]' },
       { on: PIPELINE, at: guide('save') },
       // A text proto breaks what compares it to a number, and Save refuses until that is fixed too.
@@ -129,7 +130,7 @@ export const TASKS: Task[] = [
         on: PIPELINE,
         at: guide('assignment-error'),
         hint: {
-          text: 'Singapore sends proto as a name, so compare it as text:',
+          text: 'Singapore sends proto as a name, so compare it as a string:',
           copy: 'proto == "6" ? "tcp" : proto == "17" ? "udp" : proto',
         },
       },
@@ -165,7 +166,7 @@ export const TASKS: Task[] = [
         at: guide('review-submit'),
         hint: {
           text: 'Give it a title. The deployed commit takes it as its message:',
-          copy: 'Route cisco-asa and read FortiGate proto as text',
+          copy: 'Route cisco-asa and read FortiGate proto as a string',
         },
       },
     ],
