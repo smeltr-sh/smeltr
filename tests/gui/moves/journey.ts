@@ -2242,6 +2242,67 @@ const capture: Move = {
   },
 };
 
+/** The running routes from a metrics source whose pipeline the branch still holds: a capture from its editor's sample
+ * menu reads the source on the workers running it. */
+const capturable = (w: World) =>
+  w.deploys[w.running].config.routes.filter(
+    (r) => r.source.startsWith('src-') && w.editing.pipelines.includes(r.pipeline),
+  );
+
+/** Runs a pipeline over a capture of its source without saving it, then saves that input as a sample from the menu
+ * beside the output's save, and checks the sample stands for the source and holds what was captured. */
+const saveInputSample: Move = {
+  name: 'save-input-sample',
+  weight: (w) => (heartbeating(w, 'default').length && capturable(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const { source, pipeline } = rng.pick(capturable(world));
+    const name = `input ${world.made++}`;
+    await goto(page, leader, '#/build/pipelines');
+    await page.getByRole('link', { name: pipeline, exact: true }).click();
+    const chip = page.getByRole('button', { name: 'Choose a sample' });
+    await chip.click();
+    await page.getByRole('tab', { name: /^Capture/ }).click();
+    await page.getByRole('option', { name: new RegExp(source) }).click();
+    const form = page.getByRole('dialog');
+    await form.getByRole('spinbutton', { name: 'records' }).fill('2');
+    await form.getByRole('spinbutton', { name: 'seconds' }).fill('45');
+    await form.getByRole('button', { name: 'Start' }).click();
+    const use = page.getByRole('button', { name: 'Use these records' });
+    await expect(use).toBeEnabled({ timeout: 60_000 });
+    await use.click();
+    await expect(chip).toContainText('Your capture');
+
+    await page.getByRole('button', { name: 'Save as sample', exact: true }).click();
+    await page.getByRole('button', { name: /^Save input as sample/ }).click();
+    // Found by what it holds: a branch prompt can open beside it.
+    const dialog = page.getByRole('dialog').filter({ has: page.getByLabel('Name') });
+    await dialog.getByLabel('Name').fill(name);
+    await saveBy(
+      j,
+      dialog.getByRole('button', { name: 'Save sample' }),
+      () => expect(dialog).toBeHidden(),
+      true,
+    );
+    await expect(chip).toContainText(name);
+    world.editing.samples.push(name);
+    await editingIsSaved(j);
+
+    const api = await j.truth();
+    const on = encodeURIComponent(world.branch ?? 'main');
+    const { samples } = await api.get(`/api/areas/shared/samples?branch=${on}`);
+    expect(
+      samples.find((s: { name: string }) => s.name === name),
+      `${name} stands for ${source}`,
+    ).toMatchObject({ source, records: 2 });
+    expect(
+      (await api.get('/api/captures/mine')).capture,
+      'the capture is held no longer',
+    ).toBeUndefined();
+    return `run ${pipeline} over a capture of ${source}, then save that input as ${name}`;
+  },
+};
+
 const addGroup: Move = {
   name: 'add-group',
   leadsTo: ['enroll-in-group'],
@@ -3345,6 +3406,7 @@ export const MOVES: readonly Move[] = [
   editSample,
   deleteSample,
   capture,
+  saveInputSample,
   addGroup,
   enrollInGroup,
   addAccount,
