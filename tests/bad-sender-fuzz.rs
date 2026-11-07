@@ -20,7 +20,7 @@ use smeltr::io::SourceRecord;
 use smeltr::io::framing::Framing;
 use smeltr::plan::topology::{
     ApiRecords, ConnectionLimits, HecReceiverConfig, HttpReceiverConfig, Receiver, S2sReceiverConfig, Signal,
-    SocketReceiverConfig,
+    SocketReceiverConfig, SourceMeta,
 };
 
 use crate::harness::docker::Hook;
@@ -140,13 +140,15 @@ impl Kind {
 
     /// The text of `record` a marker is found in.
     fn text(self, record: &SourceRecord) -> Vec<u8> {
-        // Each kind's field in its order: OTLP's `severityText`, Prometheus's `name`.
-        let column = match self {
-            Kind::Otlp => 3,
-            Kind::Prometheus => 1,
+        // The field the marker is in: OTLP's `severityText`, Prometheus's `name`.
+        let (meta, name) = match self {
+            Kind::Otlp => (SourceMeta::otlp(Signal::Logs), "severityText"),
+            Kind::Prometheus => (SourceMeta::prometheus_receiver(), "name"),
             _ => return record.bytes().unwrap().to_vec(),
         };
-        let column = record.chunk.column(column);
+        let column = record
+            .chunk
+            .column(meta.record().iter().position(|(n, _)| n == name).unwrap());
         match column.constant_value() {
             Some(smeltr::core::column::Scalar::Str(s)) => s.as_bytes().to_vec(),
             _ if !column.is_valid(record.row as usize) => Vec::new(),
