@@ -49,10 +49,8 @@ const NO_CONVERSATION: &str = "there is no such conversation";
 /// What the agent calls the conversation it works in, in place of its id.
 const THIS: &str = "this";
 
-/// The turns a page holds when its reader names no limit.
-pub const PAGE_TURNS: usize = 20;
-/// The most turns a page may hold.
-pub const MOST_PAGE_TURNS: usize = 100;
+/// The bytes of an item a search hit shows around what it found.
+const SNIPPET: usize = 300;
 
 /// The turns running now, and the router their calls go through.
 #[derive(Default)]
@@ -175,7 +173,7 @@ pub struct ConversationDto {
     /// Why the last turn failed, when it did.
     error: Option<String>,
     items: Vec<Value>,
-    /// On a page, how many turns the conversation holds; each item then says which turn it is of.
+    /// Read by a range or a search, how many turns the conversation holds; each item then says which turn it is of.
     #[serde(skip_serializing_if = "Option::is_none")]
     turns: Option<usize>,
     /// What made the last answer, which the next message starts from.
@@ -666,30 +664,37 @@ pub async fn models(State(auth): State<Auth>) -> Response {
     }
 }
 
-/// `GET /api/agent/conversations/:id?before=&limit=&q=`: a page of a conversation's turns, as its agent reads it
-/// back once it outgrows the model's context.
+/// `GET /api/agent/conversations/:id?from=&to=&q=`: some of a conversation's turns, as its agent reads them back
+/// once it outgrows the model's context.
 #[derive(Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Page {
-    /// Only the turns before this one, counted from 0. Without it, up to the last.
+pub struct Reading {
+    /// The first turn read, counted from 0. Without it, the first.
     #[serde(default)]
-    before: Option<usize>,
-    /// The most turns the page holds, or with `q` the most items.
+    from: Option<usize>,
+    /// The turn the read stops before. Without it, the read goes to the last turn.
     #[serde(default)]
-    limit: Option<usize>,
-    /// Only the items whose text holds every word of it, ignoring case, among the turns before `before`.
+    to: Option<usize>,
+    /// Instead of whole turns, a snippet of each item whose text holds every word of it, ignoring case.
     #[serde(default)]
     q: Option<String>,
 }
 
+impl Reading {
+    fn named(&self) -> bool {
+        self.from.is_some() || self.to.is_some() || self.q.is_some()
+    }
+}
+
 /// `GET /api/agent/conversations/:id`: one conversation, as what was said, asked and answered in order. Its agent
-/// reads the one conversation it works in, a page at a time; the GUI reads it whole unless it asks for a page.
+/// reads the one conversation it works in, by a range of turns or a search; the GUI reads it whole unless it names
+/// one.
 pub async fn read(
     State(auth): State<Auth>,
     actor: Extension<Actor>,
     by_agent: Option<Extension<ByAgent>>,
     Path(id): Path<String>,
-    Query(page): Query<Page>,
+    Query(reading): Query<Reading>,
 ) -> Response {
     // The agent names the conversation it works in as `this`, so its prompt is the same in every conversation.
     let id = match &by_agent {
@@ -700,7 +705,14 @@ pub async fn read(
     if let Some(refused) = refused_while_off(&auth).await {
         return refused;
     }
-    let paged = by_agent.is_some() || page.before.is_some() || page.limit.is_some() || page.q.is_some();
+    let named = reading.named();
+    // A long conversation read whole would fill the model's context again.
+    if by_agent.is_some() && !named {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "name the turns with from or to, or search with q",
+        );
+    }
     let conversation = match owned(&auth, &actor, &id).await {
         Ok(c) => c,
         Err(refused) => return *refused,
@@ -725,11 +737,11 @@ pub async fn read(
             .filter(|r| r.running && !r.writing.is_empty())
             .map(|r| r.writing.clone()),
         error: run.and_then(|r| r.error),
-        items: match paged {
-            true => paged_items(&turns, &page),
+        items: match named {
+            true => read_items(&turns, &reading),
             false => turns.iter().flat_map(|t| items(t)).collect(),
         },
-        turns: paged.then_some(turns.len()),
+        turns: named.then_some(turns.len()),
         model: last.and_then(|r| r.model.clone()),
         effort: last.and_then(|r| r.effort),
         context: filled(&parsed),
@@ -737,42 +749,57 @@ pub async fn read(
     Envelope::ok(json!({"conversation": body})).into_response()
 }
 
-/// The items of `turns` that `page` asks for, each saying which turn it is of.
-fn paged_items(turns: &[String], page: &Page) -> Vec<Value> {
-    let before = page.before.unwrap_or(turns.len()).min(turns.len());
-    let limit = page.limit.unwrap_or(PAGE_TURNS).clamp(1, MOST_PAGE_TURNS);
-    let numbered = |(n, t): (usize, &String)| {
+/// The items of `turns` that `reading` asks for, each saying which turn it is of: whole, or with `q` a snippet of
+/// each that matches.
+fn read_items(turns: &[String], reading: &Reading) -> Vec<Value> {
+    let to = reading.to.unwrap_or(turns.len()).min(turns.len());
+    let from = reading.from.unwrap_or(0).min(to);
+    let numbered = turns[from..to].iter().enumerate().flat_map(|(n, t)| {
         items(t).into_iter().map(move |mut item| {
-            item["turn"] = json!(n);
+            item["turn"] = json!(from + n);
             item
         })
-    };
-    let words: Vec<String> = page
+    });
+    let words: Vec<String> = reading
         .q
         .as_deref()
         .unwrap_or_default()
         .split_whitespace()
         .map(str::to_lowercase)
         .collect();
-    if words.is_empty() {
-        let from = before.saturating_sub(limit);
-        return turns[from..before]
-            .iter()
-            .enumerate()
-            .flat_map(|(n, t)| numbered((from + n, t)))
-            .collect();
+    if reading.q.is_none() {
+        return numbered.collect();
     }
-    let found: Vec<Value> = turns[..before]
-        .iter()
-        .enumerate()
-        .flat_map(numbered)
-        .filter(|item| {
-            let text = said_in(item).to_lowercase();
-            words.iter().all(|w| text.contains(w.as_str()))
+    numbered
+        .filter_map(|item| {
+            let text = said_in(&item);
+            let lower = text.to_lowercase();
+            if !words.iter().all(|w| lower.contains(w.as_str())) {
+                return None;
+            }
+            // Lowercasing can change a text's length; then the snippet starts at its start.
+            let at = match lower.len() == text.len() {
+                true => words.first().and_then(|w| lower.find(w.as_str())).unwrap_or(0),
+                false => 0,
+            };
+            Some(json!({"kind": item["kind"], "turn": item["turn"], "snippet": snippet(&text, at)}))
         })
-        .collect();
-    let from = found.len().saturating_sub(limit);
-    found.into_iter().skip(from).collect()
+        .collect()
+}
+
+/// About [`SNIPPET`] bytes of `text` around byte `at`, marked with `…` where it was cut.
+fn snippet(text: &str, at: usize) -> String {
+    let mut start = at.saturating_sub(SNIPPET / 2);
+    while !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (start + SNIPPET).min(text.len());
+    while !text.is_char_boundary(end) {
+        end += 1;
+    }
+    let before = if start > 0 { "…" } else { "" };
+    let after = if end < text.len() { "…" } else { "" };
+    format!("{before}{}{after}", &text[start..end])
 }
 
 /// The words of an item a search looks in: what was said, answered, asked for and returned.
@@ -904,5 +931,21 @@ pub async fn sweep(auth: Auth) {
                 "could not delete the conversations nobody added to"
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A snippet keeps to whole characters around what was found, and says where it was cut.
+    #[test]
+    fn a_snippet_is_cut_around_what_was_found() {
+        let text = format!("{}needle{}", "é".repeat(SNIPPET), "x".repeat(SNIPPET));
+        let at = text.find("needle").unwrap();
+        let cut = snippet(&text, at);
+        assert!(cut.starts_with('…') && cut.ends_with('…'), "{cut}");
+        assert!(cut.contains("needle"), "{cut}");
+        assert_eq!(snippet("short", 0), "short");
     }
 }

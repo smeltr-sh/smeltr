@@ -1082,7 +1082,7 @@ impl FakeModel {
     }
 
     /// "ok" to the check made when AI agents are turned on. To an agent's turn, one call: when the person said
-    /// "read back <path>", a read of that path with `before=1`; otherwise a write when the person said "write", and a
+    /// "read back <path>", a read of that path, its query split from it; otherwise a write when the person said "write", and a
     /// read when not; then, given its result, the status it came back with.
     fn answer(body: &serde_json::Value) -> serde_json::Value {
         let text = |text: String| {
@@ -1106,7 +1106,15 @@ impl FakeModel {
             return text("They read what runs in shared.".to_string());
         }
         let input = match asked.split_once("read back ") {
-            Some((_, path)) => serde_json::json!({"method": "GET", "path": path.trim(), "query": {"before": "1"}}),
+            Some((_, path)) => {
+                let (path, query) = path.trim().split_once('?').unwrap_or((path.trim(), ""));
+                let query: serde_json::Map<String, serde_json::Value> = query
+                    .split('&')
+                    .filter_map(|pair| pair.split_once('='))
+                    .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+                    .collect();
+                serde_json::json!({"method": "GET", "path": path, "query": query})
+            }
             None if asked.contains("write") => serde_json::json!({
                 "method": "PUT", "path": "/api/areas/shared/pipelines/p1", "query": {"branch": "agent-work"},
                 "body": {"id": "p1", "name": "p1", "steps": []},
@@ -1407,7 +1415,7 @@ fn a_persons_agent_calls_the_api_as_them_within_what_they_let_it() {
     assert_eq!(status, 404);
 }
 
-/// An agent reads back the conversation it works in, as `this`, a page or a search at a time, and no other.
+/// An agent reads back the conversation it works in, as `this`, by a range of turns or a search, and no other.
 #[test]
 fn an_agent_reads_back_only_its_own_conversation() {
     let leader = start("agent-read-back");
@@ -1449,22 +1457,22 @@ fn an_agent_reads_back_only_its_own_conversation() {
     assert_eq!(status, 202);
     turn_ended(&leader, &op, &id);
 
-    // A search finds the items holding every word, the last `limit` of them.
-    let (status, found) = leader.get_as(
-        &op.session,
-        &format!("/api/agent/conversations/{id}?q=RUNS%20shared&limit=1"),
-    );
+    // A search gives a snippet of each item holding every word, with the turn it is in.
+    let (status, found) = leader.get_as(&op.session, &format!("/api/agent/conversations/{id}?q=RUNS%20shared"));
     assert_eq!(status, 200, "{found}");
     let items = found["conversation"]["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "{found}");
-    assert_eq!(items[0]["kind"], "fresh", "{found}");
-    // Asked for no page, the GUI reads the conversation whole, as before.
+    assert!(
+        items.contains(&serde_json::json!({"kind": "message", "turn": 0, "snippet": "What runs in shared?"})),
+        "{found}"
+    );
+    assert!(items.iter().all(|i| i.get("snippet").is_some()), "{found}");
+    // Naming no turns, the GUI reads the conversation whole, as before.
     let (_, whole) = leader.get_as(&op.session, &format!("/api/agent/conversations/{id}"));
     assert!(whole["conversation"].get("turns").is_none(), "{whole}");
     assert!(whole["conversation"]["items"][0].get("turn").is_none(), "{whole}");
 
     // Past its summary, the agent reads how the conversation started.
-    let read = say(&id, "read back /api/agent/conversations/this");
+    let read = say(&id, "read back /api/agent/conversations/this?to=1");
     let output = last_result(&read);
     let (status, page) = output.split_once('\n').unwrap();
     assert_eq!(status, "200", "{output}");
@@ -1475,6 +1483,9 @@ fn an_agent_reads_back_only_its_own_conversation() {
         "{page}"
     );
     assert!(page["conversation"]["turns"].as_u64().unwrap() > 4, "{page}");
+    // Naming no turns and no search, the agent is refused: the whole conversation would fill its context.
+    let read = say(&id, "read back /api/agent/conversations/this");
+    assert!(last_result(&read).starts_with("400\n"), "{read}");
 
     // Any other conversation, even one of the same person's, reads to the agent as not there.
     let other = start("Nothing much.");
