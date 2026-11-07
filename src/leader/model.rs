@@ -257,18 +257,23 @@ pub struct Fresh {
 }
 
 /// The turns a request reads, from the newest [`Turn::Fresh`] on, its summary said first. A summary keeps the last
-/// answer before it and what followed, as they were, so the model carries on from its own words. Borrowed where
-/// there is no fresh start.
+/// answer before it, and what followed, as they were. When no answer came since the fresh start before, it keeps
+/// everything since that fresh start instead, so the model carries on from its own words. Borrowed where there is
+/// no fresh start.
 fn readable(turns: &[Turn]) -> std::borrow::Cow<'_, [Turn]> {
     let Some(at) = turns.iter().rposition(|t| matches!(t, Turn::Fresh(_))) else {
         return std::borrow::Cow::Borrowed(turns);
     };
     let Turn::Fresh(fresh) = &turns[at] else { unreachable!() };
-    let kept = turns[..at]
+    let kept = match turns[..at]
         .iter()
         .rposition(|t| matches!(t, Turn::Fresh(_) | Turn::Answered(_)))
-        .filter(|from| fresh.summary.is_some() && matches!(turns[*from], Turn::Answered(_)))
-        .unwrap_or(at);
+    {
+        _ if fresh.summary.is_none() => at,
+        Some(from) if matches!(turns[from], Turn::Answered(_)) => from,
+        Some(fresh_start) => fresh_start + 1,
+        None => 0,
+    };
     let mut after: Vec<Turn> = turns[kept..at].iter().chain(&turns[at + 1..]).cloned().collect();
     if let Some(summary) = &fresh.summary {
         let said = Said::Text(format!("Summary of the conversation before this:\n{summary}"));
@@ -393,7 +398,7 @@ impl std::fmt::Debug for Heard<'_> {
 pub trait Model: Send + Sync {
     async fn ask(&self, request: Request<'_>) -> Result<Reply, String>;
     /// Whether `turns` need a summary from the leader before the next request: the last answer passed
-    /// [`compact_at`] the context, and the endpoint does not summarize them itself.
+    /// [`compact_at`] the context, and the endpoint does not summarize the conversation itself.
     fn due(&self, _turns: &[Turn]) -> bool {
         false
     }
@@ -472,7 +477,8 @@ impl Model for Client {
 /// The ask for a summary of the conversation, to carry on from in place of it. The last answer and what followed
 /// it are still read after the summary ([`readable`]).
 pub const SUMMARIZE: &str = "Summarize the conversation so far for yourself, to carry on from in place of it. You \
-    will still read your last answer and what followed it. Write these sections:\n\
+    will still read your last answer and what followed it. Write these sections, each under its name as a \
+    heading:\n\
     1. Request: what the person asked for, and why.\n\
     2. Rules: what the person told you to do or not to do.\n\
     3. Messages: every message the person wrote, word for word.\n\
@@ -1540,7 +1546,8 @@ mod tests {
         let long = |input: u64| {
             Turn::Answered(Reply {
                 usage: Usage { input, output: 10 },
-                ..compatible_reply(json!({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})).unwrap()
+                ..compatible_reply(json!({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}))
+                    .unwrap()
             })
         };
         let said = Turn::Asked(vec![Said::Text("next".to_string())]);
@@ -1557,7 +1564,7 @@ mod tests {
         assert!(due(Provider::OpenAiCompatible, DEFAULT_CONTEXT));
         assert!(!due(Provider::Anthropic, DEFAULT_CONTEXT));
         assert!(!due(Provider::OpenAi, DEFAULT_CONTEXT));
-        // Anthropic's compaction starts no lower than its least.
+        // Anthropic's compaction cannot start below ANTHROPIC_LEAST_COMPACTION.
         assert!(due(Provider::Anthropic, ANTHROPIC_LEAST_COMPACTION));
 
         let model = model(endpoint(Provider::OpenAiCompatible, "http://127.0.0.1:1")).unwrap();
@@ -2000,6 +2007,23 @@ mod tests {
         assert_eq!(
             seen[1].1["messages"],
             json!([{"role": "user", "content": [{"type": "text", "text": "Next"}]}])
+        );
+    }
+
+    #[test]
+    fn a_summary_with_no_answer_since_the_fresh_start_before_keeps_everything_since() {
+        let said = |text: &str| Turn::Asked(vec![Said::Text(text.to_string())]);
+        let fresh = |summary: &str| {
+            Turn::Fresh(Fresh {
+                summary: Some(summary.to_string()),
+                tokens: 1,
+            })
+        };
+        let turns = [said("a"), fresh("S1"), said("x"), fresh("S2")];
+        let summary = Said::Text("Summary of the conversation before this:\nS2".to_string());
+        assert_eq!(
+            readable(&turns).into_owned(),
+            [Turn::Asked(vec![summary, Said::Text("x".to_string())])]
         );
     }
 
