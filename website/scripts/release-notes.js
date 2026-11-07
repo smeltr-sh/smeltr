@@ -3,6 +3,7 @@
 // release cannot be cut or published without its notes.
 
 import { readFileSync } from 'node:fs';
+import { categories } from '../src/lib/release-categories.js';
 
 const SITE = 'https://smeltr.sh';
 const version = process.argv[2];
@@ -25,8 +26,11 @@ if (release.highlights?.length) {
     lines.push(`- **[${h.title}](${absolute(h.href)})** ${h.text}`);
   lines.push('');
 }
-for (const s of release.sections) {
-  lines.push(`## ${s.title}`, '', ...s.items.map((i) => `- ${i}`), '');
+for (const c of categories) {
+  const groups = release[c.key] ?? [];
+  if (!groups.length) continue;
+  lines.push(`## ${c.title}`, '');
+  for (const g of groups) lines.push(`### ${g.title}`, '', ...g.items.map((i) => `- ${i}`), '');
 }
 lines.push(`[Smeltr ${version} on smeltr.sh](${SITE}/releases/${version})`);
 console.log(lines.join('\n'));
