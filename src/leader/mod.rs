@@ -219,7 +219,7 @@ fn entitled(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) ->
     let Some(head) = git::deployed(&repo) else {
         return Quoted::default();
     };
-    if let Some((at, names)) = cache.0.lock().unwrap().get(group_id)
+    if let Some((at, names)) = cache.0.lock().unwrap_or_else(|e| e.into_inner()).get(group_id)
         && at == &head
     {
         return names.clone();
@@ -231,7 +231,7 @@ fn entitled(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) ->
     cache
         .0
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(group_id.to_string(), (head, names.clone()));
     names
 }
@@ -1278,7 +1278,7 @@ fn deployed_certificates(
 
     // Rebuilt rather than pruned in place: a commit no worker is running any more must not linger and grow this
     // cache forever, and the fleet moves on from one every time it redeploys.
-    let mut cached = cache.0.lock().unwrap();
+    let mut cached = cache.0.lock().unwrap_or_else(|e| e.into_inner());
     let mut fresh = std::collections::HashMap::with_capacity(running.len());
     let mut out = Vec::new();
     for (group, commit) in running {
