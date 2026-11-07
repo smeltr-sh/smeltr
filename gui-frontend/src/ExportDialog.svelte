@@ -124,7 +124,6 @@
                   type="checkbox"
                   aria-label="Export {PARTS[r.part]} {r.id}"
                   checked={!leftOut[key(r)]}
-                  disabled={r.part === 'pipeline' && r.id === pipeline}
                   onchange={(e) => (leftOut[key(r)] = !e.currentTarget.checked)}
                 />
               </td>
@@ -150,9 +149,18 @@
   </div>
   {#snippet actions()}
     <Button type="button" onclick={oncancel}>Cancel</Button>
-    <a class="btn primary" href={exportUrl(pipeline, routes, unticked)} download onclick={oncancel}
-      >Download</a
-    >
+    {#if contents !== null && unticked.length === rows.length}
+      <Button type="button" class="primary" disabled="Tick something to export first."
+        >Download</Button
+      >
+    {:else}
+      <a
+        class="btn primary"
+        href={exportUrl(pipeline, routes, unticked)}
+        download
+        onclick={oncancel}>Download</a
+      >
+    {/if}
   {/snippet}
 </Dialog>
 

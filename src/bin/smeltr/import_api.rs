@@ -260,10 +260,11 @@ fn imported(
     if let Err(e) = staged.and_then(|staged| writing.stage(staged)) {
         return Envelope::refused(e);
     }
-    let first = objects.root().unwrap_or_default();
-    let saved = writing.save(Touches::Every, &format!("import pipeline {first}"), author, |file| {
-        upsert(file, written.file)
-    });
+    let message = match objects.root() {
+        Some(root) => format!("import pipeline {root}"),
+        None => "import an export".to_string(),
+    };
+    let saved = writing.save(Touches::Every, &message, author, |file| upsert(file, written.file));
     match saved.body.commit() {
         Some(commit) => Envelope::ok(Import {
             commit: Some(commit.to_string()),

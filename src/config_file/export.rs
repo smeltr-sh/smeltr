@@ -102,9 +102,7 @@ pub fn export(
         .filter(|s| schemas.contains(&s.id))
         .cloned()
         .collect();
-    // The pipeline asked for is what the export is of, so it is never left out.
-    let kept =
-        |part: Part, id: &str| (part, id) == (Part::Pipeline, pipeline) || !left_out.contains(&(part, id.to_string()));
+    let kept = |part: Part, id: &str| !left_out.contains(&(part, id.to_string()));
 
     let route_ids: BTreeSet<&String> = file.routes.iter().map(|r| &r.id).collect();
     let tests: Vec<&TestSummary> = (tests.iter())
@@ -260,7 +258,8 @@ mod tests {
             (Part::Pipeline, "fw-normalize".to_string()),
         ]);
         let e = export(&bundle(), &tests(), "fw-normalize", true, &left_out).unwrap();
-        assert_eq!(ids(&e.file.pipelines, |p| &p.id), ["fw-normalize"]);
+        // Even the pipeline asked for: an export can be only what it reads.
+        assert!(e.file.pipelines.is_empty() && !e.file.grok_patterns.is_empty());
         assert!(e.file.sources.is_empty());
         assert_eq!(e.tests.iter().map(|t| &t.id).collect::<Vec<_>>(), ["t-fw-end"]);
         assert_eq!(e.samples, ["s-fw-end"]);
