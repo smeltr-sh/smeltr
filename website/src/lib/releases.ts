@@ -26,7 +26,8 @@ export function categorized(release: Release): { title: string; groups: NoteGrou
     .filter((c) => c.groups.length > 0);
 }
 
-/** A note's text split at its backticks, as the GitHub release's Markdown splits it: the runs between backticks are code. */
+/** A note's text split at its backticks, as the GitHub release's Markdown splits it: the runs between backticks are
+ * code. */
 export function codeRuns(note: string): { text: string; code: boolean }[] {
   return note.split('`').map((text, i) => ({ text, code: i % 2 === 1 }));
 }
