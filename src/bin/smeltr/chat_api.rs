@@ -5,7 +5,8 @@
 //! [`ByAgent`], so the gate judges it as the person's, narrowed to what they let their agent use. The session's
 //! token is held in memory for the turn and never stored.
 //!
-//! A conversation is its person's alone: anyone else's reads as not there. No agent reaches these routes.
+//! A conversation is its person's alone: anyone else's reads as not there. An agent reaches only the conversation
+//! it works in, and only to read it.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +16,7 @@ use std::time::Instant;
 use axum::Json;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
@@ -44,6 +45,11 @@ const TITLE_CHARS: usize = 80;
 const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 const NO_CONVERSATION: &str = "there is no such conversation";
+
+/// The turns a page holds when its reader names no limit.
+pub const PAGE_TURNS: usize = 20;
+/// The most turns a page may hold.
+pub const MOST_PAGE_TURNS: usize = 100;
 
 /// The turns running now, and the router their calls go through.
 #[derive(Default)]
@@ -166,6 +172,9 @@ pub struct ConversationDto {
     /// Why the last turn failed, when it did.
     error: Option<String>,
     items: Vec<Value>,
+    /// On a page, how many turns the conversation holds; each item then says which turn it is of.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turns: Option<usize>,
     /// What made the last answer, which the next message starts from.
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
@@ -179,8 +188,8 @@ pub struct ConversationDto {
     writing: Option<String>,
 }
 
-/// What every chat route refuses first: an agent, since a conversation is its person's, and anyone while AI agents
-/// are off.
+/// What every chat route but reading one refuses first: an agent, since a conversation is its person's, and anyone
+/// while AI agents are off.
 async fn refused(auth: &Auth, by_agent: &Option<Extension<ByAgent>>) -> Option<Response> {
     if by_agent.is_some() {
         return Some(refuse(
@@ -404,7 +413,7 @@ async fn begin(
 
 async fn turn(host: &Turned, turns: Vec<Turn>, message: String) -> Result<Ended, String> {
     let (model, asking) = client(host, &turns).await?;
-    let system = agent::system_prompt(CATALOG);
+    let system = agent::system_prompt(CATALOG, &host.conversation);
     agent::run(
         model.as_ref(),
         host,
@@ -422,7 +431,13 @@ async fn fresh(host: &Turned, turns: Vec<Turn>, summarize: bool) -> Result<Ended
     let fresh = match summarize {
         true => {
             let (model, asking) = client(host, &turns).await?;
-            agent::summarize(model.as_ref(), &agent::system_prompt(CATALOG), turns, &asking).await?
+            agent::summarize(
+                model.as_ref(),
+                &agent::system_prompt(CATALOG, &host.conversation),
+                turns,
+                &asking,
+            )
+            .await?
         }
         false => Fresh {
             summary: None,
@@ -579,7 +594,9 @@ impl Host for Turned {
         };
         let request = request
             .header(header::CONTENT_TYPE, "application/json")
-            .extension(ByAgent)
+            .extension(ByAgent {
+                conversation: self.conversation.clone(),
+            })
             .body(body);
         let request = match request {
             Ok(request) => request,
@@ -652,16 +669,38 @@ pub async fn models(State(auth): State<Auth>) -> Response {
     }
 }
 
-/// `GET /api/agent/conversations/:id`: one conversation, as what was said, asked and answered in order.
+/// `GET /api/agent/conversations/:id?before=&limit=&q=`: a page of a conversation's turns, as its agent reads it
+/// back once it outgrows the model's context.
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Page {
+    /// Only the turns before this one, counted from 0. Without it, up to the last.
+    #[serde(default)]
+    before: Option<usize>,
+    /// The most turns the page holds, or with `q` the most items.
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Only the items whose text holds every word of it, ignoring case, among the turns before `before`.
+    #[serde(default)]
+    q: Option<String>,
+}
+
+/// `GET /api/agent/conversations/:id`: one conversation, as what was said, asked and answered in order. Its agent
+/// reads the one conversation it works in, a page at a time; the GUI reads it whole unless it asks for a page.
 pub async fn read(
     State(auth): State<Auth>,
     actor: Extension<Actor>,
     by_agent: Option<Extension<ByAgent>>,
     Path(id): Path<String>,
+    Query(page): Query<Page>,
 ) -> Response {
-    if let Some(refused) = refused(&auth, &by_agent).await {
+    if by_agent.as_ref().is_some_and(|Extension(mark)| mark.conversation != id) {
+        return refuse(StatusCode::NOT_FOUND, NO_CONVERSATION);
+    }
+    if let Some(refused) = refused_while_off(&auth).await {
         return refused;
     }
+    let paged = by_agent.is_some() || page.before.is_some() || page.limit.is_some() || page.q.is_some();
     let conversation = match owned(&auth, &actor, &id).await {
         Ok(c) => c,
         Err(refused) => return *refused,
@@ -686,12 +725,66 @@ pub async fn read(
             .filter(|r| r.running && !r.writing.is_empty())
             .map(|r| r.writing.clone()),
         error: run.and_then(|r| r.error),
-        items: turns.iter().flat_map(|t| items(t)).collect(),
+        items: match paged {
+            true => paged_items(&turns, &page),
+            false => turns.iter().flat_map(|t| items(t)).collect(),
+        },
+        turns: paged.then_some(turns.len()),
         model: last.and_then(|r| r.model.clone()),
         effort: last.and_then(|r| r.effort),
         context: filled(&parsed),
     };
     Envelope::ok(json!({"conversation": body})).into_response()
+}
+
+/// The items of `turns` that `page` asks for, each saying which turn it is of.
+fn paged_items(turns: &[String], page: &Page) -> Vec<Value> {
+    let before = page.before.unwrap_or(turns.len()).min(turns.len());
+    let limit = page.limit.unwrap_or(PAGE_TURNS).clamp(1, MOST_PAGE_TURNS);
+    let numbered = |(n, t): (usize, &String)| {
+        items(t).into_iter().map(move |mut item| {
+            item["turn"] = json!(n);
+            item
+        })
+    };
+    let words: Vec<String> = page
+        .q
+        .as_deref()
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect();
+    if words.is_empty() {
+        let from = before.saturating_sub(limit);
+        return turns[from..before]
+            .iter()
+            .enumerate()
+            .flat_map(|(n, t)| numbered((from + n, t)))
+            .collect();
+    }
+    let found: Vec<Value> = turns[..before]
+        .iter()
+        .enumerate()
+        .flat_map(numbered)
+        .filter(|item| {
+            let text = said_in(item).to_lowercase();
+            words.iter().all(|w| text.contains(w.as_str()))
+        })
+        .collect();
+    let from = found.len().saturating_sub(limit);
+    found.into_iter().skip(from).collect()
+}
+
+/// The words of an item a search looks in: what was said, answered, asked for and returned.
+fn said_in(item: &Value) -> String {
+    let mut said: Vec<String> = ["text", "output", "summary", "error"]
+        .iter()
+        .filter_map(|field| item[field].as_str().map(str::to_string))
+        .collect();
+    if let Some(input) = item.get("input") {
+        said.push(input.to_string());
+    }
+    said.join("\n")
 }
 
 /// One stored turn as what the GUI shows: the person's messages, the agent's answers, its calls and their results.
