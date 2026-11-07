@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use super::dto::{AnswerDto, FileConfig, OnExceptionDto, SecretRefDto, StepDto};
-use super::links::walk;
+use super::links::{pattern_name_spans, walk};
 use super::sample::SampleDto;
 use super::test::TestDto;
 
@@ -438,8 +438,14 @@ pub fn describe(part: Part) -> &'static str {
 
 /// `text` with every `%{from}` and `%{from:` naming `to` instead.
 fn renamed_pattern(text: &str, from: &str, to: &str) -> String {
-    text.replace(&format!("%{{{from}}}"), &format!("%{{{to}}}"))
-        .replace(&format!("%{{{from}:"), &format!("%{{{to}:"))
+    let (mut renamed, mut copied) = (String::new(), 0);
+    for span in pattern_name_spans(text).filter(|span| &text[span.clone()] == from) {
+        renamed.push_str(&text[copied..span.start]);
+        renamed.push_str(to);
+        copied = span.end;
+    }
+    renamed.push_str(&text[copied..]);
+    renamed
 }
 
 /// Every `"certificate"` in `value` naming `from`, made to name `to`.
