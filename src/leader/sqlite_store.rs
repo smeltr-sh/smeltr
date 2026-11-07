@@ -444,14 +444,15 @@ pub(crate) const STEPS: &[&str] = &[
     "-- Each summary kept on an answer, with the person's message before that answer: the summary stands in for the
      -- turns before that message.
      CREATE TEMP TABLE summaries AS
-     SELECT conversation_id, at, MAX(summary) AS summary FROM (
-         SELECT a.conversation_id, json_extract(a.turn, '$.Answered.summary') AS summary,
+     SELECT conversation_id, at, summary FROM (
+         SELECT *, row_number() OVER (PARTITION BY conversation_id, at ORDER BY answered DESC) AS newest FROM (
+         SELECT a.conversation_id, a.seq AS answered, json_extract(a.turn, '$.Answered.summary') AS summary,
                 (SELECT MAX(m.seq) FROM agent_turns AS m, json_each(m.turn, '$.Asked') AS said
                   WHERE m.conversation_id = a.conversation_id AND m.seq < a.seq
                     AND json_type(said.value, '$.Text') = 'text') AS at
            FROM agent_turns AS a
           WHERE json_type(a.turn, '$.Answered.summary') = 'text'
-     ) WHERE at IS NOT NULL GROUP BY conversation_id, at;
+     ) WHERE at IS NOT NULL) WHERE newest = 1;
      -- Each turn moves one place later for each fresh start inserted before it, through negatives so no two meet.
      UPDATE agent_turns SET seq = -(seq + (SELECT count(*) FROM summaries AS s
          WHERE s.conversation_id = agent_turns.conversation_id AND s.at <= agent_turns.seq));
@@ -5362,9 +5363,10 @@ mod tests {
             said("first"),
             answer("one", None),
             said("second"),
-            answer("two", Some("S")),
+            answer("two", Some("older")),
+            answer("two again", Some("S")),
             said("third"),
-            answer("three", None),
+            answer("three", Some("T")),
         ]
         .iter()
         .enumerate()
@@ -5383,11 +5385,13 @@ mod tests {
             .unwrap()
             .map(|t| serde_json::from_str(&t.unwrap()).unwrap())
             .collect();
-        let fresh = crate::leader::model::Turn::Fresh(crate::leader::model::Fresh {
-            summary: Some("S".to_string()),
-            tokens: 0,
-        });
-        assert_eq!(turns.len(), 7);
+        let fresh = |summary: &str| {
+            crate::leader::model::Turn::Fresh(crate::leader::model::Fresh {
+                summary: Some(summary.to_string()),
+                tokens: 0,
+            })
+        };
+        assert_eq!(turns.len(), 9);
         let summaries: i64 = conn
             .query_row(
                 "SELECT count(*) FROM agent_turns WHERE json_type(turn, '$.Answered.summary') IS NOT NULL",
@@ -5396,10 +5400,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(summaries, 0);
-        assert_eq!(turns[2], fresh);
+        // The newest summary written ahead of a message is the one kept.
+        assert_eq!(turns[2], fresh("S"));
         assert_eq!(turns[3], serde_json::from_str(&said("second")).unwrap());
-        assert_eq!(turns[4], serde_json::from_str(&answer("two", None)).unwrap());
-        assert_eq!(turns[6], serde_json::from_str(&answer("three", None)).unwrap());
+        assert_eq!(turns[5], serde_json::from_str(&answer("two again", None)).unwrap());
+        assert_eq!(turns[6], fresh("T"));
+        assert_eq!(turns[7], serde_json::from_str(&said("third")).unwrap());
     }
 
     #[test]
