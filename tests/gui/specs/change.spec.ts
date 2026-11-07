@@ -521,30 +521,26 @@ test('History shows who changed what, who deployed it, and when', async ({
   ).toBeVisible();
 });
 
-test('a review sets apart the samples no test uses, which the deploy leaves out', async ({
+test('a review shows a sample no test uses as any other object, and the deploy keeps it', async ({
   admin,
   api,
   leader,
 }) => {
   const on = '?branch=scratch';
-  await putTables(api, 'scratch', [table('colors')]);
   await api.put(`/api/areas/shared/samples/tried${on}`, {
     id: 'tried',
     name: 'capture 14:20',
     records: [{ _raw: 'a' }],
   });
-  await api.openChange('scratch', 'Colors, and a capture');
+  await api.openChange('scratch', 'A capture');
 
   await goto(admin, leader, '#/changes/review/scratch');
-  const staying = admin.locator('.left-out');
-  await expect(staying.getByRole('heading', { name: 'Left out' })).toBeVisible();
-  await expect(staying.getByText('capture 14:20', { exact: true })).toBeVisible();
-  await expect(staying.getByRole('button', { name: 'Undo changes' })).toHaveCount(0);
-  await expect(admin.getByText('1 sample left out', { exact: true })).toBeVisible();
+  const card = admin.locator('.card').filter({ hasText: 'capture 14:20' });
+  await expect(card.getByText('added', { exact: true })).toBeVisible();
 
   await api.deploy('scratch');
   const main = await api.get('/api/areas/shared/samples?branch=main');
-  expect(main.samples).toEqual([]);
+  expect(main.samples.map((s: { name: string }) => s.name)).toEqual(['capture 14:20']);
 });
 
 test('the dock’s count of tests opens the Tests tab', async ({ admin, api, leader }) => {
