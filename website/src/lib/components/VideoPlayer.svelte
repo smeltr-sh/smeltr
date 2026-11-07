@@ -12,7 +12,7 @@
 {#if !video.youtube}
   <div class="frame planned"><span>Coming soon</span></div>
 {:else if href}
-  <a class="frame poster" {href} aria-label="Play {video.title}">
+  <a class="frame poster" {href} aria-label="Watch {video.title}">
     <img src={video.poster} alt="" loading="lazy" />
     <span class="play" aria-hidden="true"></span>
   </a>

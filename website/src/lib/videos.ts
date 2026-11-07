@@ -11,7 +11,7 @@ export const topicNames: Record<Topic, string> = {
 export type Video = {
   topic: Topic;
   title: string;
-  /** Its page's address under /learn/. */
+  /** The video's page is /learn/{slug}. */
   slug: string;
   /** Linked from the card while the video is planned. */
   guide: string;

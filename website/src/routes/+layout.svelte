@@ -66,7 +66,12 @@
           {/each}
         </div>
       </details>
-      <a href="/learn" aria-current={page.url.pathname === '/learn' ? 'page' : undefined}>Learn</a>
+      <a
+        href="/learn"
+        aria-current={page.url.pathname === '/learn' || page.url.pathname.startsWith('/learn/')
+          ? 'page'
+          : undefined}>Learn</a
+      >
       <a
         href="/docs"
         aria-current={page.url.pathname === '/docs' || page.url.pathname.startsWith('/docs/')
