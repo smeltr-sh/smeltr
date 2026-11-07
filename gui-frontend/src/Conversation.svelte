@@ -372,7 +372,6 @@
     </ConversationEntry>
   {/if}
 </section>
-}
 
 <style>
   .conversation {

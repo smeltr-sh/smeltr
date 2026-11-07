@@ -6,7 +6,6 @@
 <script lang="ts" generics="O extends { id: string; type: T }, T extends string, K extends string">
   import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
-  import { reported } from './errors.svelte';
   import type { Snippet } from 'svelte';
   import Dialog from './Dialog.svelte';
   import TypeCatalog, { type CatalogKind, type CatalogType } from './TypeCatalog.svelte';

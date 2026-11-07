@@ -4,12 +4,11 @@
   already reading a source taps what is flowing, one that is not opens it and never commits.
 -->
 <script lang="ts" module>
-  import { Busy } from './busy.svelte';
-  import { reported } from './errors.svelte';
   export type SampleWay = 'paste' | 'upload' | 'capture' | 'output' | 'input';
 </script>
 
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { untrack } from 'svelte';
   import Dialog from './Dialog.svelte';

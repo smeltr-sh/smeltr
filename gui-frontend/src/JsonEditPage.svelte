@@ -6,7 +6,6 @@
 <script lang="ts">
   import { Busy } from './busy.svelte';
   import Button, { BUSY } from './Button.svelte';
-  import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import { editable } from './access';
   import PageHeader from './PageHeader.svelte';

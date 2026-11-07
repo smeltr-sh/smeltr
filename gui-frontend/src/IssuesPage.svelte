@@ -16,7 +16,6 @@
   import Button, { BUSY } from './Button.svelte';
   import { ask } from './Confirm.svelte';
   import { holds } from './access';
-  import { reported } from './errors.svelte';
   import {
     listWarnings,
     lowerSourceRows,
