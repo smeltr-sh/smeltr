@@ -176,7 +176,7 @@ pub async fn mint(
     };
 
     let event = super::accounts::event_for(&actor, "enrollment-code-minted", &id, "ok");
-    let written = run_store(state.store, move |s| s.create_enrollment_code_recorded(&record, &event)).await;
+    let written = run_store(state.store, move |s| s.create_enrollment_code(&record, Some(&event))).await;
     if let Err(e) = written {
         return Envelope::refused(e);
     }
@@ -577,7 +577,10 @@ pub async fn withdraw(
     let event = super::accounts::event_for(&actor, "enrollment-code-withdrawn", &id, "ok");
     // One transaction, like minting: an enrollment code that is gone with nobody recorded as having withdrawn it is the
     // same hole in the audit read from the other end.
-    let result = run_store(state.store, move |s| s.withdraw_enrollment_code_recorded(&id, &event)).await;
+    let result = run_store(state.store, move |s| {
+        s.withdraw_enrollment_code(&id, event.at, Some(&event))
+    })
+    .await;
     match result {
         Ok(true) => Envelope::done(),
         Ok(false) => Envelope::refused(Refusal::not_found("that enrollment code is already gone")),

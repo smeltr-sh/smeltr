@@ -5,7 +5,7 @@
 //! operation rather than held: operator actions are rare, and a key that is not resident is not in a core dump.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension};
 
@@ -585,6 +585,12 @@ impl Store {
         })
     }
 
+    /// The connection. A panic that held it poisons the mutex but not the file: an open transaction rolls back as
+    /// it unwinds, so every later call goes on rather than failing for one that already did.
+    fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// The key, writing one if there is none and nothing is sealed yet. Refused while the key is broken: a value
     /// sealed then is one the restored key could not open.
     fn key_for_sealing(&self) -> Result<EncryptionKey, StoreError> {
@@ -597,7 +603,7 @@ impl Store {
     /// The key ids every sealed value carries, and which value each newest copy is, keyed the way
     /// [`Unopenable`] names it.
     fn sealed_by(&self) -> Result<Vec<(Unopenable, String)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn();
         let mut newest = conn.prepare(
             "SELECT v.name, v.key_id,
                     EXISTS (SELECT 1 FROM certificate_chains c WHERE c.name = v.name AND c.version = v.version)
@@ -630,7 +636,7 @@ impl Store {
 
     /// Every key id any stored version carries, older versions included.
     fn every_key_id(&self) -> Result<std::collections::BTreeSet<String>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn();
         let mut stmt = conn.prepare("SELECT DISTINCT key_id FROM secret_versions")?;
         Ok(stmt
             .query_map((), |row| row.get::<_, String>(0))?
@@ -733,7 +739,7 @@ impl Store {
             }
         };
 
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         // One transaction: a secret that exists with no version would be a leader-stored credential the fleet can
         // never obtain, and nothing would say why.
         let tx = conn.transaction()?;
@@ -777,7 +783,7 @@ impl Store {
         event: Option<&SecurityEvent>,
     ) -> Result<i64, StoreError> {
         let sealed = self.key_for_sealing()?.seal(name, value.as_bytes());
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let version = Self::take_version(&tx, name)?
             .ok_or_else(|| StoreError::not_found(format!("no leader-stored secret named {name:?}")))?;
@@ -898,24 +904,20 @@ fn used_by(conn: &Connection, code_id: &str) -> Result<Vec<String>, StoreError> 
 }
 
 impl Store {
-    /// `code_hash` is already hashed; the store never sees a raw secret.
-    pub fn create_enrollment_code(&self, code: &NewEnrollmentCode) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
-        insert_enrollment_code(&conn, code)
-    }
-
-    /// An enrollment code and the row saying who minted it, in one transaction. Like an account mutation and its audit
-    /// row: an enrollment code that exists with nobody recorded as having asked for it is the worse of the two
-    /// failures.
-    pub fn create_enrollment_code_recorded(
+    /// `code_hash` is already hashed; the store never sees a raw secret. With `event`, the row saying who minted it, in
+    /// one transaction: an enrollment code that exists with nobody recorded as having asked for it is the worse of the
+    /// two failures.
+    pub fn create_enrollment_code(
         &self,
         code: &NewEnrollmentCode,
-        event: &SecurityEvent,
+        event: Option<&SecurityEvent>,
     ) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         insert_enrollment_code(&tx, code)?;
-        insert_event(&tx, event)?;
+        if let Some(event) = event {
+            insert_event(&tx, event)?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -923,7 +925,7 @@ impl Store {
     /// Every enrollment code still usable, and every enrollment code that brought a worker in, newest first. The second
     /// is provenance: which workers arrived on an enrollment code outlives the enrollment code itself.
     pub fn list_enrollment_codes(&self, now_ms: i64) -> Result<Vec<EnrollmentCodeRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         // Still usable, or it brought somebody in. The second half is the provenance: which workers arrived on an
         // enrollment code is the question that outlives the enrollment code, and one that expired unused answers
         // nothing.
@@ -966,18 +968,17 @@ impl Store {
     /// `false` if no enrollment code has that id. A spent enrollment code is withdrawn like any other: what it already
     /// brought in stays enrolled, and what it would have brought in no longer can. The row stays, marked withdrawn:
     /// which workers it brought in is what an operator acts on next, and deleting it leaves `enrollment_code_uses` rows
-    /// belonging to nothing.
-    pub fn withdraw_enrollment_code(&self, id: &str, now_ms: i64) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn.execute(WITHDRAW_CODE, (id, now_ms))? > 0)
-    }
-
-    /// [`Store::withdraw_enrollment_code`] and the row saying who withdrew it, in one transaction.
-    pub fn withdraw_enrollment_code_recorded(&self, id: &str, event: &SecurityEvent) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// belonging to nothing. With `event`, the row saying who withdrew it, in the same transaction.
+    pub fn withdraw_enrollment_code(
+        &self,
+        id: &str,
+        now_ms: i64,
+        event: Option<&SecurityEvent>,
+    ) -> Result<bool, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let withdrawn = tx.execute(WITHDRAW_CODE, (id, event.at))? > 0;
-        if withdrawn {
+        let withdrawn = tx.execute(WITHDRAW_CODE, (id, now_ms))? > 0;
+        if withdrawn && let Some(event) = event {
             insert_event(&tx, event)?;
         }
         tx.commit()?;
@@ -986,7 +987,7 @@ impl Store {
 
     /// Every enrollment code that can still bring a worker in, newest first.
     pub fn list_usable_enrollment_codes(&self, now_ms: i64) -> Result<Vec<UsableEnrollmentCode>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut usable = conn.prepare(&format!(
             "SELECT id, group_id, fingerprint FROM enrollment_codes WHERE {USABLE_CODE} {NEWEST_FIRST}"
         ))?;
@@ -1008,7 +1009,7 @@ impl Store {
     /// and a revoked row would occupy the worker id for good -- [`Store::spend_enrollment_code`] refuses one that has
     /// ever enrolled. The hash is in the predicate so this can only take back the row it was called about.
     pub fn remove_worker_credential(&self, worker_id: &str, token_hash: &str) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         Ok(conn.execute(
             "DELETE FROM worker_credentials WHERE worker_id = ?1 AND token_hash = ?2",
             (worker_id, token_hash),
@@ -1023,7 +1024,7 @@ impl Store {
     /// retry fail on an enrollment code with none left, or collide with the row this spend already wrote on one that
     /// has.
     pub fn unspend_enrollment_code(&self, code_id: &str, worker_id: &str, token_hash: &str) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM worker_credentials WHERE worker_id = ?1 AND token_hash = ?2",
@@ -1056,7 +1057,7 @@ impl Store {
         now_ms: i64,
         event: &dyn Fn(&str) -> SecurityEvent,
     ) -> Result<Vec<String>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         // Read inside the transaction the withdrawal happens in, so an enrollment code spent between the two is not
         // withdrawn out from under the worker it just let in.
@@ -1110,7 +1111,7 @@ impl Store {
         presented: &str,
         may_have_named: &[&str],
     ) -> Result<Spend, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
 
         let found = tx
@@ -1214,7 +1215,7 @@ impl Store {
     /// worker's identity or resurrect a revoked one.
     #[cfg(test)]
     pub fn store_worker_credential(&self, worker_id: &str, token_hash: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let inserted = conn.execute(
             "INSERT OR IGNORE INTO worker_credentials (worker_id, token_hash, revoked) VALUES (?1, ?2, 0)",
             (worker_id, token_hash),
@@ -1232,7 +1233,7 @@ impl Store {
         &self,
         token_hash: &str,
     ) -> Result<Option<WorkerCredentialRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT {CREDENTIAL_COLUMNS} FROM worker_credentials WHERE token_hash = ?1"
         ))?;
@@ -1244,7 +1245,7 @@ impl Store {
     /// Records that this credential has authenticated a request, which ends the window in which a retried
     /// enrollment may replace it.
     pub fn mark_credential_used(&self, token_hash: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "UPDATE worker_credentials SET used = 1 WHERE token_hash = ?1 AND used = 0",
             (token_hash,),
@@ -1256,7 +1257,7 @@ impl Store {
     /// one transaction. `false` where there was nothing to forget -- no such worker, a permanent one, or one revoked,
     /// which is kept so it stays out.
     pub fn forget_worker(&self, worker_id: &str) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let forgotten = tx.execute(
             "DELETE FROM worker_credentials WHERE worker_id = ?1 AND kind = 'ephemeral' AND revoked = 0",
@@ -1278,7 +1279,7 @@ impl Store {
         now_ms: i64,
         event: Option<&SecurityEvent>,
     ) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let updated = tx.execute(
             "UPDATE worker_credentials SET revoked = 1, removed_at = ?2 WHERE worker_id = ?1 AND removed_at IS NULL",
@@ -1293,7 +1294,7 @@ impl Store {
 
     /// `false` if `worker_id` has never enrolled.
     pub fn revoke_worker_credential(&self, worker_id: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let updated = tx.execute(
             "UPDATE worker_credentials SET revoked = 1 WHERE worker_id = ?1",
@@ -1309,7 +1310,7 @@ impl Store {
     /// Every secret the leader knows, ordered by name.
     pub fn list_secrets(&self) -> Result<Vec<SecretRecord>, StoreError> {
         let key = self.key_if_any()?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
 
         let mut names = conn.prepare(
             "SELECT name, description,
@@ -1417,7 +1418,7 @@ impl Store {
 
     /// The certificates this leader keeps up to date, each with how.
     pub fn kept_certificates(&self) -> Result<std::collections::BTreeMap<String, Kept>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut out = std::collections::BTreeMap::new();
         let mut statement = conn.prepare("SELECT name FROM acme_certificates")?;
         for name in statement.query_map([], |row| row.get::<_, String>(0))? {
@@ -1443,7 +1444,7 @@ impl Store {
     /// Changes how this leader issues `name` from now on. Errors where it does not issue it.
     pub fn set_issued(&self, name: &str, issued: &Issued) -> Result<(), StoreError> {
         let names = serde_json::to_string(&issued.names).map_err(|e| StoreError::failed(e.to_string()))?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let updated = conn.execute(
             "UPDATE issued_certificates SET names = ?2, validity_days = ?3 WHERE name = ?1",
             (name, names, issued.validity_days),
@@ -1482,7 +1483,7 @@ impl Store {
 
     /// The chain beside `name`'s `version`, PEM. `None` for a secret that is not a certificate, or a version not held.
     pub fn certificate_chain(&self, name: &str, version: i64) -> Result<Option<String>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         Ok(conn
             .query_row(
                 "SELECT chain FROM certificate_chains JOIN secret_versions USING (name, version)
@@ -1495,7 +1496,7 @@ impl Store {
 
     /// `false` if `name` was not there. Takes every version with it.
     pub fn delete_secret(&self, name: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM certificate_chains WHERE name = ?1", (name,))?;
         tx.execute("DELETE FROM issued_certificates WHERE name = ?1", (name,))?;
@@ -1516,7 +1517,7 @@ impl Store {
         version: i64,
         event: Option<&SecurityEvent>,
     ) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM certificate_chains WHERE name = ?1 AND version = ?2",
@@ -1548,7 +1549,7 @@ impl Store {
         let Some(key) = self.key_if_any()? else {
             return Ok(Vec::new());
         };
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut out = Vec::new();
         for (name, version) in entitled {
             if held.iter().any(|(n, v)| n == name && v == version) {
@@ -1586,7 +1587,7 @@ impl Store {
         let Some(key) = self.key_if_any()? else {
             return Ok(false);
         };
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let Some(sealed) = Self::sealed(&conn, name, version)? else {
             return Ok(false);
         };
@@ -1596,7 +1597,7 @@ impl Store {
     /// Every worker that has ever enrolled, revoked or not, ordered by `worker_id`, less those forgotten or removed. The only
     /// record of a worker that enrolled and never heartbeated.
     pub fn list_worker_credentials(&self) -> Result<Vec<WorkerCredentialRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT {CREDENTIAL_COLUMNS} FROM worker_credentials WHERE removed_at IS NULL ORDER BY worker_id"
         ))?;
@@ -1667,7 +1668,7 @@ impl Store {
     /// Every hue chosen so far, keyed by whatever id it was set for -- a real group's, or `"shared"`'s. What a new
     /// group's color is picked distinct from.
     pub fn group_hues(&self) -> Result<std::collections::HashMap<String, u16>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare("SELECT group_id, hue FROM group_colors")?;
         let rows = stmt
             .query_map((), |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u16)))?
@@ -1679,7 +1680,7 @@ impl Store {
     /// group's existence, so setting one for an id that is `"shared"`, or one that never becomes a real group, is
     /// equally fine.
     pub fn set_group_hue(&self, group_id: &str, hue: u16, event: Option<&SecurityEvent>) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO group_colors (group_id, hue) VALUES (?1, ?2)
@@ -1697,7 +1698,7 @@ impl Store {
 
     /// Which worker holds `key` in `group`, and the cursor it resumes from. `None` where no worker ever has.
     pub fn source_hold(&self, group: &str, key: &SourceKey) -> Result<Option<SourceHold>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let hold = conn
             .query_row(
                 "SELECT holder, cursor FROM source_holds WHERE grp = ?1 AND source = ?2 AND place = ?3",
@@ -1715,7 +1716,7 @@ impl Store {
 
     /// Gives `key` in `group` to `holder`. Its progress stays, which is what the next holder resumes from.
     pub fn set_source_holder(&self, group: &str, key: &SourceKey, holder: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO source_holds (grp, source, place, holder) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(grp, source, place) DO UPDATE SET holder = excluded.holder",
@@ -1727,7 +1728,7 @@ impl Store {
     /// Records what `key`'s holder has delivered, in one transaction: a cursor replaces the one kept, an added entry
     /// replaces its item's, and a removed item leaves the ledger. A key nobody holds keeps no cursor.
     pub fn apply_source_progress(&self, group: &str, key: &SourceKey, progress: &Progress) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         if let Some(cursor) = &progress.cursor {
             tx.execute(
@@ -1763,7 +1764,7 @@ impl Store {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<LedgerEntry>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         // `?4 IS NULL` rather than two statements: the first page is the one with nothing before it.
         let mut stmt = conn.prepare(
             "SELECT item, entry FROM source_ledger
@@ -1785,7 +1786,7 @@ impl Store {
     /// page polling it costs one query however many sources there are. The size is kept as the ledger changes, so
     /// reading it counts nothing.
     pub fn held_sources(&self) -> Result<Vec<HeldSource>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT grp, source, place, holder, ledger_entries FROM source_holds ORDER BY grp, source, place",
         )?;
@@ -1808,7 +1809,7 @@ impl Store {
     /// Forgets `key` in `group`: its hold, its cursor and its whole ledger, in one transaction. For a source no bundle
     /// reads any more; one that comes back starts afresh.
     pub fn forget_source(&self, group: &str, key: &SourceKey) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         // The hold first, so the trigger that counts each removed item finds no hold row left to update.
         tx.execute(
@@ -1828,7 +1829,7 @@ impl Store {
     /// Whether any account exists at all. What bootstrap asks before creating the first administrator; the answer
     /// is only ever a hint, since [`Store::bootstrap_administrator`] re-checks it inside its own transaction.
     pub fn any_user_exists(&self) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let n: i64 = conn.query_row("SELECT EXISTS (SELECT 1 FROM users)", [], |row| row.get(0))?;
         Ok(n != 0)
     }
@@ -1836,7 +1837,7 @@ impl Store {
     /// Create the first administrator. `Ok(false)` when an account already existed, in which case nothing was
     /// written: the check and the insert are one transaction, so exactly one of two concurrent bootstraps wins.
     pub fn bootstrap_administrator(&self, user: NewLocalUser<'_>) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let occupied: i64 = tx.query_row("SELECT EXISTS (SELECT 1 FROM users)", [], |row| row.get(0))?;
         if occupied != 0 {
@@ -1858,7 +1859,7 @@ impl Store {
         roles: &[String],
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         if username_taken(&tx, user.username)? {
             return Ok(Err(AccountError::UsernameTaken));
@@ -1873,7 +1874,7 @@ impl Store {
     /// The roles an administrator gave the account `user_id`, by name. Empty for an OIDC account, whose roles its
     /// provider's groups give.
     pub fn given_roles(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         given_roles_in(&conn, user_id)
     }
 
@@ -1886,7 +1887,7 @@ impl Store {
         roles: &[String],
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let source: Option<String> = tx
             .query_row("SELECT auth_source FROM users WHERE id = ?1", (user_id,), |row| {
@@ -1914,7 +1915,7 @@ impl Store {
 
     /// Every account, however it signs in, oldest first.
     pub fn list_users(&self) -> Result<Vec<UserRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, auth_source, display_name, enabled, generation, created_at, updated_at
                FROM users ORDER BY created_at, id",
@@ -1924,7 +1925,7 @@ impl Store {
     }
 
     pub fn get_user(&self, id: &str) -> Result<Option<UserRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         Ok(conn
             .query_row(
                 "SELECT id, auth_source, display_name, enabled, generation, created_at, updated_at
@@ -1937,7 +1938,7 @@ impl Store {
 
     /// The account to verify a login against, by canonical username. The one method that returns a verifier.
     pub fn local_credential_by_username(&self, username: &str) -> Result<Option<LocalCredentialRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         Ok(conn
             .query_row(
                 // One statement, so the hash and the generation are the same moment of this account. Read apart,
@@ -1962,7 +1963,7 @@ impl Store {
     /// What a local account signs in as. Its own method rather than a field of [`UserRecord`], so reading a
     /// person's login name never reaches the table holding their password.
     pub fn username_of(&self, user_id: &str) -> Result<Option<String>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         Ok(conn
             .query_row(
                 "SELECT username FROM local_credentials WHERE user_id = ?1",
@@ -1990,7 +1991,7 @@ impl Store {
         expect: Option<i64>,
         event: Option<&SecurityEvent>,
     ) -> Result<Result<i64, AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         match local_user_exists(&tx, user_id)? {
             Presence::Absent => return Ok(Err(AccountError::NoSuchUser)),
@@ -2030,7 +2031,7 @@ impl Store {
         user_id: &str,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         if !user_exists(&tx, user_id)? {
             return Ok(Err(AccountError::NoSuchUser));
@@ -2051,7 +2052,7 @@ impl Store {
         enabled: bool,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         if !user_exists(&tx, user_id)? {
             return Ok(Err(AccountError::NoSuchUser));
@@ -2087,7 +2088,7 @@ impl Store {
     /// name it. Refused for an enabled account and for [`super::accounts::BOOTSTRAP_USERNAME`], the account
     /// recovery restores.
     pub fn delete_user(&self, user_id: &str, event: &SecurityEvent) -> Result<Result<(), AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let found: Option<(String, String, bool)> = tx
             .query_row(
@@ -2139,7 +2140,7 @@ impl Store {
 
     /// Rename an account. Display names may repeat: the id tells accounts apart.
     pub fn set_display_name(&self, user_id: &str, display_name: &str) -> Result<Result<(), AccountError>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let n = conn.execute(
             "UPDATE users SET display_name = ?2, updated_at = ?3 WHERE id = ?1",
             rusqlite::params![user_id, display_name, super::warnings::now_millis()],
@@ -2158,7 +2159,7 @@ impl Store {
     pub fn oidc_sign_in(&self, who: OidcSignIn<'_>, created: &SecurityEvent) -> Result<UserRecord, StoreError> {
         let groups =
             serde_json::to_string(who.groups).map_err(|e| StoreError::failed(format!("encoding groups: {e}")))?;
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         // The lookup and the insert are one transaction, so two first sign-ins racing for one identity make one
         // account between them.
@@ -2204,7 +2205,7 @@ impl Store {
 
     /// The identity an OIDC account signs in as. `None` for a local account or no account.
     pub fn oidc_identity_of(&self, user_id: &str) -> Result<Option<OidcIdentityRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let row: Option<(String, String, String, Option<String>, i64)> = conn
             .query_row(
                 "SELECT issuer, subject, groups, login, last_sign_in FROM oidc_identities WHERE user_id = ?1",
@@ -2231,7 +2232,7 @@ impl Store {
     /// as it is.
     pub fn oidc_refreshed(&self, user_id: &str, groups: &[String], login: Option<&str>) -> Result<(), StoreError> {
         let groups = serde_json::to_string(groups).map_err(|e| StoreError::failed(format!("encoding groups: {e}")))?;
-        self.conn.lock().unwrap().execute(
+        self.conn().execute(
             "UPDATE oidc_identities SET groups = ?2, login = ?3 WHERE user_id = ?1",
             rusqlite::params![user_id, groups, login],
         )?;
@@ -2245,7 +2246,7 @@ impl Store {
         username: &str,
         password_hash: &str,
     ) -> Result<Result<String, AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let user_id: Option<String> = tx
             .query_row(
@@ -2278,13 +2279,13 @@ impl Store {
     }
 
     pub fn record_security_event(&self, event: &SecurityEvent) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         insert_event(&conn, event)
     }
 
     /// Newest first, capped at `limit`.
     pub fn list_security_events(&self, limit: usize) -> Result<Vec<SecurityEvent>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, at, actor, action, target, outcome FROM security_events
               ORDER BY at DESC, rowid DESC LIMIT ?1",
@@ -2312,7 +2313,7 @@ impl Store {
         roles: &[String],
         event: &SecurityEvent,
     ) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO users (id, auth_source, display_name, enabled, generation, created_at, updated_at)
@@ -2328,7 +2329,7 @@ impl Store {
     /// The keys the account `user_id` holds that are not revoked, expired or not, oldest first. Never a key or its
     /// hash.
     pub fn api_keys_of(&self, user_id: &str) -> Result<Vec<ApiKeyRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, label, created_at, expires_at, last_used_at FROM api_keys
               WHERE user_id = ?1 AND revoked_at IS NULL
@@ -2353,7 +2354,7 @@ impl Store {
         key: NewApiKey<'_>,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         // Read in the transaction, so a disable landing beside it revokes this key too or refuses it.
         let enabled: Option<bool> = tx
@@ -2381,7 +2382,7 @@ impl Store {
     /// Revoke the key `key_id` of the key account `id` at `at`, `event` in the same transaction. Its row stays, so
     /// the key stays out. False when the account holds no such key unrevoked.
     pub fn revoke_api_key(&self, id: &str, key_id: &str, at: i64, event: &SecurityEvent) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let n = tx.execute(
             "UPDATE api_keys SET revoked_at = ?3 WHERE id = ?2 AND user_id = ?1 AND revoked_at IS NULL",
@@ -2397,7 +2398,7 @@ impl Store {
 
     /// The key whose hash is `token_hash`, revoked, expired or neither. `None` for a key never made.
     pub fn api_key_by_hash(&self, token_hash: &str) -> Result<Option<PresentedKey>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         Ok(conn
             .query_row(
                 "SELECT id, user_id, revoked_at IS NOT NULL, expires_at, last_used_at FROM api_keys
@@ -2418,7 +2419,7 @@ impl Store {
 
     /// Record that the key `key_id` let a request in at `at`.
     pub fn mark_api_key_used(&self, key_id: &str, at: i64) -> Result<(), StoreError> {
-        self.conn.lock().unwrap().execute(
+        self.conn().execute(
             "UPDATE api_keys SET last_used_at = ?2 WHERE id = ?1",
             rusqlite::params![key_id, at],
         )?;
@@ -2427,7 +2428,7 @@ impl Store {
 
     /// What `user_id` lets their own agent use: the default until they have said.
     pub fn agent_permissions_of(&self, user_id: &str) -> Result<AgentPermissions, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let permissions: Option<String> = conn
             .query_row(
                 "SELECT permissions FROM agent_permissions WHERE user_id = ?1",
@@ -2451,7 +2452,7 @@ impl Store {
     ) -> Result<Result<(), AccountError>, StoreError> {
         let encoded = serde_json::to_string(permissions)
             .map_err(|e| StoreError::failed(format!("encoding agent permissions: {e}")))?;
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         if !user_exists(&tx, user_id)? {
             return Ok(Err(AccountError::NoSuchUser));
@@ -2468,7 +2469,7 @@ impl Store {
 
     /// Keep a new conversation, with no turns yet.
     pub fn create_conversation(&self, conversation: &ConversationRecord) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO agent_conversations (id, user_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
@@ -2484,7 +2485,7 @@ impl Store {
 
     /// `user_id`'s conversations, the one added to last first.
     pub fn conversations_of(&self, user_id: &str) -> Result<Vec<ConversationRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, user_id, title, created_at, updated_at FROM agent_conversations
              WHERE user_id = ?1 ORDER BY updated_at DESC",
@@ -2495,7 +2496,7 @@ impl Store {
 
     /// The conversation `id`, whoever's it is.
     pub fn conversation(&self, id: &str) -> Result<Option<ConversationRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         Ok(conn
             .query_row(
                 "SELECT id, user_id, title, created_at, updated_at FROM agent_conversations WHERE id = ?1",
@@ -2507,7 +2508,7 @@ impl Store {
 
     /// The turns of `conversation_id`, in the order said, as [`Store::append_turn`] was given them.
     pub fn turns_of(&self, conversation_id: &str) -> Result<Vec<String>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare("SELECT turn FROM agent_turns WHERE conversation_id = ?1 ORDER BY seq")?;
         let rows = stmt.query_map((conversation_id,), |row| row.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -2516,7 +2517,7 @@ impl Store {
     /// Add `turn` after the last of `conversation_id`'s, and mark it touched `at`. False when there is no such
     /// conversation, deleted while its turn ran.
     pub fn append_turn(&self, conversation_id: &str, turn: &str, at: i64) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let n = tx.execute(
             "UPDATE agent_conversations SET updated_at = ?2 WHERE id = ?1",
@@ -2536,7 +2537,7 @@ impl Store {
 
     /// Remove a conversation and its turns. False when there was none.
     pub fn delete_conversation(&self, id: &str) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM agent_turns WHERE conversation_id = ?1", (id,))?;
         let n = tx.execute("DELETE FROM agent_conversations WHERE id = ?1", (id,))?;
@@ -2546,7 +2547,7 @@ impl Store {
 
     /// Remove every conversation not added to since `before`, in milliseconds since the epoch. How many went.
     pub fn delete_conversations_untouched_since(&self, before: i64) -> Result<usize, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM agent_turns WHERE conversation_id IN
@@ -2560,7 +2561,7 @@ impl Store {
 
     /// Every role, by name.
     pub fn list_roles(&self) -> Result<Vec<Role>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut roles: Vec<Role> = conn
             .prepare("SELECT name FROM roles ORDER BY name")?
             .query_map([], |row| {
@@ -2600,7 +2601,7 @@ impl Store {
 
     /// Create `role`, or replace the one of that name whole, with `event` written in the same transaction.
     pub fn put_role(&self, role: &Role, event: &SecurityEvent) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO roles (name) VALUES (?1) ON CONFLICT(name) DO NOTHING",
@@ -2629,7 +2630,7 @@ impl Store {
     /// Remove the role called `name`, and take it off every account it was given to, with `event` written in the same
     /// transaction. False when there was none.
     pub fn delete_role(&self, name: &str, event: &SecurityEvent) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         if tx.execute("DELETE FROM roles WHERE name = ?1", (name,))? == 0 {
             return Ok(false);
@@ -2651,7 +2652,7 @@ impl Store {
     /// What an operator has configured, or `None` where they have not. Absent means the default applies, which is
     /// a different thing from a value they chose that happens to equal it.
     pub fn setting(&self, key: &str) -> Result<Option<String>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn();
         let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
         let mut rows = stmt.query_map([key], |row| row.get::<_, String>(0))?;
         rows.next().transpose().map_err(StoreError::from)
@@ -2660,7 +2661,7 @@ impl Store {
     /// Write several settings as one transaction. A tab saves together or not at all: half of a pair that
     /// constrains itself is worse than neither half.
     pub fn put_settings(&self, entries: &[(&str, String)], event: Option<&SecurityEvent>) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         for (key, value) in entries {
             tx.execute(
@@ -2696,7 +2697,7 @@ impl Store {
 
     /// Every warning an alert channel has been told of and not yet told has cleared.
     pub fn alerts_told(&self) -> Result<Vec<AlertTold>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn();
         let mut stmt =
             conn.prepare("SELECT channel, warning, told_at, body FROM alerts_told ORDER BY channel, warning")?;
         let rows = stmt.query_map([], |row| {
@@ -2713,7 +2714,7 @@ impl Store {
     /// Record, as one transaction, that channels took `told` and were told that each `(channel, warning)` in
     /// `cleared` has cleared.
     pub fn record_alerts_told(&self, told: &[AlertTold], cleared: &[(String, String)]) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         for t in told {
             tx.execute(
@@ -2734,7 +2735,7 @@ impl Store {
 
     /// Drop what was told to every channel not in `keep`: a channel that is gone has nobody left to tell.
     pub fn forget_alert_channels(&self, keep: &[String]) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn();
         let keep = serde_json::to_string(keep).map_err(|e| StoreError::failed(e.to_string()))?;
         conn.execute(
             "DELETE FROM alerts_told WHERE channel NOT IN (SELECT value FROM json_each(?1))",
@@ -2976,7 +2977,8 @@ mod tests {
     #[test]
     fn an_enrollment_code_for_one_worker_is_spent_by_the_first_and_refused_to_the_second() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR), None)
+            .unwrap();
 
         assert!(matches!(
             s.spend_enrollment_code("h1", "w1", "t1", NOW, "fp", &["fp"]).unwrap(),
@@ -2992,7 +2994,8 @@ mod tests {
     #[test]
     fn an_enrollment_code_minted_for_a_fleet_brings_in_that_many_and_stops() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 3, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 3, NOW + AN_HOUR), None)
+            .unwrap();
         for worker in ["w1", "w2", "w3"] {
             assert!(matches!(
                 s.spend_enrollment_code("h1", worker, &format!("t-{worker}"), NOW, "fp", &["fp"])
@@ -3009,7 +3012,7 @@ mod tests {
     #[test]
     fn an_enrollment_code_past_its_expiry_is_refused_and_says_so() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW), None).unwrap();
         match s.spend_enrollment_code("h1", "w1", "t1", NOW, "fp", &["fp"]).unwrap() {
             Spend::Expired { expired_at } => assert_eq!(expired_at, NOW),
             other => panic!("{other:?}"),
@@ -3023,7 +3026,8 @@ mod tests {
     #[test]
     fn an_enrollment_code_is_held_to_the_authority_it_was_minted_against_not_the_one_presented() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR), None)
+            .unwrap();
 
         // "fp" is what `a_code` wrote down; this is a leader that has since moved to another root.
         assert_eq!(
@@ -3050,8 +3054,10 @@ mod tests {
     #[test]
     fn a_credential_taken_back_frees_the_worker_id_it_was_issued_for() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR)).unwrap();
-        s.create_enrollment_code(&a_code("j2", "h2", 1, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR), None)
+            .unwrap();
+        s.create_enrollment_code(&a_code("j2", "h2", 1, NOW + AN_HOUR), None)
+            .unwrap();
         s.spend_enrollment_code("h1", "w1", "t1", NOW, "fp", &["fp"]).unwrap();
 
         assert!(
@@ -3078,7 +3084,8 @@ mod tests {
     #[test]
     fn unspending_an_enrollment_code_lets_the_same_worker_spend_it_again() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR), None)
+            .unwrap();
         let Spend::Spent { code_id, .. } = s.spend_enrollment_code("h1", "w1", "t1", NOW, "fp", &["fp"]).unwrap()
         else {
             panic!("expected the enrollment code to spend")
@@ -3107,7 +3114,8 @@ mod tests {
     #[test]
     fn an_enrollment_code_edited_to_name_a_different_authority_is_refused() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR), None)
+            .unwrap();
 
         // What a leader serving an operator's publicly trusted certificate accepts: that root, or none.
         let may = ["fp", ""];
@@ -3136,11 +3144,11 @@ mod tests {
     #[test]
     fn an_enrollment_code_that_pins_no_root_is_held_to_naming_none() {
         let s = store();
-        s.create_enrollment_code(&NewEnrollmentCode {
+        let code = NewEnrollmentCode {
             fingerprint: String::new(),
             ..a_code("j1", "h1", 1, NOW + AN_HOUR)
-        })
-        .unwrap();
+        };
+        s.create_enrollment_code(&code, None).unwrap();
 
         assert_eq!(
             s.spend_enrollment_code("h1", "w1", "t1", NOW, "", &["a root this leader signs under"])
@@ -3167,7 +3175,8 @@ mod tests {
     #[test]
     fn a_worker_id_that_has_enrolled_before_costs_the_enrollment_code_nothing() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR), None)
+            .unwrap();
         s.store_worker_credential("w1", "already").unwrap();
 
         assert_eq!(
@@ -3191,7 +3200,8 @@ mod tests {
     #[test]
     fn a_retried_enrollment_replaces_a_credential_nothing_has_used() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR), None)
+            .unwrap();
         assert!(matches!(
             s.spend_enrollment_code("h1", "w1", "lost", NOW, "fp", &["fp"]).unwrap(),
             Spend::Spent { .. }
@@ -3223,7 +3233,8 @@ mod tests {
     #[test]
     fn a_credential_in_use_is_not_replaced_by_a_retry() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 2, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 2, NOW + AN_HOUR), None)
+            .unwrap();
         s.spend_enrollment_code("h1", "w1", "t1", NOW, "fp", &["fp"]).unwrap();
         s.mark_credential_used("t1").unwrap();
 
@@ -3241,8 +3252,10 @@ mod tests {
     fn only_the_enrollment_code_that_enrolled_a_worker_retries_it_and_never_once_revoked() {
         let s = store();
         // A use to spare, so what refuses the revoked worker is its being enrolled and not the count.
-        s.create_enrollment_code(&a_code("j1", "h1", 2, NOW + AN_HOUR)).unwrap();
-        s.create_enrollment_code(&a_code("j2", "h2", 1, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 2, NOW + AN_HOUR), None)
+            .unwrap();
+        s.create_enrollment_code(&a_code("j2", "h2", 1, NOW + AN_HOUR), None)
+            .unwrap();
         s.spend_enrollment_code("h1", "w1", "t1", NOW, "fp", &["fp"]).unwrap();
 
         assert_eq!(
@@ -3267,13 +3280,13 @@ mod tests {
     #[test]
     fn an_ephemeral_enrollment_code_brings_workers_in_until_it_is_withdrawn() {
         let s = store();
-        s.create_enrollment_code(&NewEnrollmentCode {
+        let code = NewEnrollmentCode {
             expires_at: None,
             max_uses: None,
             kind: WorkerKind::Ephemeral,
             ..a_code("j1", "h1", 1, NOW)
-        })
-        .unwrap();
+        };
+        s.create_enrollment_code(&code, None).unwrap();
 
         // Past any cap a permanent enrollment code has ever had, and long past any date.
         let later = NOW + 365 * 24 * AN_HOUR;
@@ -3293,7 +3306,7 @@ mod tests {
         assert_eq!(code.kind, WorkerKind::Ephemeral);
         assert_eq!(s.list_usable_enrollment_codes(later).unwrap().len(), 1);
 
-        s.withdraw_enrollment_code("j1", later).unwrap();
+        s.withdraw_enrollment_code("j1", later, None).unwrap();
         assert_eq!(
             s.spend_enrollment_code("h1", "pod-60", "t-60", later, "fp", &["fp"])
                 .unwrap(),
@@ -3306,12 +3319,13 @@ mod tests {
     #[test]
     fn forgetting_takes_an_ephemeral_worker_and_nothing_else() {
         let s = store();
-        s.create_enrollment_code(&NewEnrollmentCode {
+        let code = NewEnrollmentCode {
             kind: WorkerKind::Ephemeral,
             ..a_code("fleet", "hf", 3, NOW + AN_HOUR)
-        })
-        .unwrap();
-        s.create_enrollment_code(&a_code("vm", "hv", 1, NOW + AN_HOUR)).unwrap();
+        };
+        s.create_enrollment_code(&code, None).unwrap();
+        s.create_enrollment_code(&a_code("vm", "hv", 1, NOW + AN_HOUR), None)
+            .unwrap();
         s.spend_enrollment_code("hf", "pod-1", "t1", NOW, "fp", &["fp"])
             .unwrap();
         s.spend_enrollment_code("hf", "pod-2", "t2", NOW + 5, "fp", &["fp"])
@@ -3352,13 +3366,13 @@ mod tests {
     #[test]
     fn a_worker_keeps_the_kind_of_the_enrollment_code_that_brought_it_in() {
         let s = store();
-        s.create_enrollment_code(&a_code("permanent", "hp", 1, NOW + AN_HOUR))
+        s.create_enrollment_code(&a_code("permanent", "hp", 1, NOW + AN_HOUR), None)
             .unwrap();
-        s.create_enrollment_code(&NewEnrollmentCode {
+        let code = NewEnrollmentCode {
             kind: WorkerKind::Ephemeral,
             ..a_code("ephemeral", "he", 1, NOW + AN_HOUR)
-        })
-        .unwrap();
+        };
+        s.create_enrollment_code(&code, None).unwrap();
         s.spend_enrollment_code("hp", "vm", "tp", NOW, "fp", &["fp"]).unwrap();
         s.spend_enrollment_code("he", "pod", "te", NOW, "fp", &["fp"]).unwrap();
 
@@ -3386,9 +3400,10 @@ mod tests {
     #[test]
     fn a_withdrawn_enrollment_code_retries_nothing() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR), None)
+            .unwrap();
         s.spend_enrollment_code("h1", "w1", "t1", NOW, "fp", &["fp"]).unwrap();
-        s.withdraw_enrollment_code("j1", NOW).unwrap();
+        s.withdraw_enrollment_code("j1", NOW, None).unwrap();
 
         assert_eq!(
             s.spend_enrollment_code("h1", "w1", "t2", NOW, "fp", &["fp"]).unwrap(),
@@ -3412,15 +3427,15 @@ mod tests {
             fingerprint: fingerprint.to_string(),
             ..a_code(id, id, max_uses, expires_at)
         };
-        s.create_enrollment_code(&named("outgoing-live", "outgoing", 1, NOW + AN_HOUR))
+        s.create_enrollment_code(&named("outgoing-live", "outgoing", 1, NOW + AN_HOUR), None)
             .unwrap();
-        s.create_enrollment_code(&named("outgoing-spent", "outgoing", 1, NOW + AN_HOUR))
+        s.create_enrollment_code(&named("outgoing-spent", "outgoing", 1, NOW + AN_HOUR), None)
             .unwrap();
-        s.create_enrollment_code(&named("outgoing-expired", "outgoing", 1, NOW))
+        s.create_enrollment_code(&named("outgoing-expired", "outgoing", 1, NOW), None)
             .unwrap();
-        s.create_enrollment_code(&named("outgoing-withdrawn", "outgoing", 1, NOW + AN_HOUR))
+        s.create_enrollment_code(&named("outgoing-withdrawn", "outgoing", 1, NOW + AN_HOUR), None)
             .unwrap();
-        s.create_enrollment_code(&named("incoming-live", promoted, 1, NOW + AN_HOUR))
+        s.create_enrollment_code(&named("incoming-live", promoted, 1, NOW + AN_HOUR), None)
             .unwrap();
         assert!(
             matches!(
@@ -3430,15 +3445,15 @@ mod tests {
             ),
             "the enrollment code this test needs spent was refused, so it is still usable and proves nothing"
         );
-        s.withdraw_enrollment_code("outgoing-withdrawn", NOW).unwrap();
+        s.withdraw_enrollment_code("outgoing-withdrawn", NOW, None).unwrap();
 
         // What this leader mints the worker inside its own process. A cutover taking it would refuse that
         // worker's enrollment, and that refusal stops this leader rather than just the thread.
-        s.create_enrollment_code(&NewEnrollmentCode {
+        let code = NewEnrollmentCode {
             fingerprint: String::new(),
             ..a_code("rootless", "rootless", 1, NOW + AN_HOUR)
-        })
-        .unwrap();
+        };
+        s.create_enrollment_code(&code, None).unwrap();
 
         let withdrawn = s
             .withdraw_enrollment_codes_not_naming(&[promoted, ""], NOW, &|id| SecurityEvent {
@@ -3478,7 +3493,7 @@ mod tests {
     #[test]
     fn an_outstanding_enrollment_code_reads_back_as_it_was_minted() {
         let s = store();
-        s.create_enrollment_code(&a_code("live", "h1", 1, NOW + AN_HOUR))
+        s.create_enrollment_code(&a_code("live", "h1", 1, NOW + AN_HOUR), None)
             .unwrap();
 
         let listed = s.list_enrollment_codes(NOW).unwrap();
@@ -3491,7 +3506,8 @@ mod tests {
     #[test]
     fn an_enrollment_code_says_which_workers_it_brought_in() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 5, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 5, NOW + AN_HOUR), None)
+            .unwrap();
         s.spend_enrollment_code("h1", "w1", "t1", NOW, "fp", &["fp"]).unwrap();
         s.spend_enrollment_code("h1", "w2", "t2", NOW + 1, "fp", &["fp"])
             .unwrap();
@@ -3506,7 +3522,8 @@ mod tests {
     #[test]
     fn withdrawing_an_enrollment_code_and_recording_it_are_one_transaction() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR), None)
+            .unwrap();
         let event = SecurityEvent {
             recorded: Default::default(),
             id: "e1".to_string(),
@@ -3517,12 +3534,12 @@ mod tests {
             outcome: "ok".to_string(),
         };
 
-        assert!(s.withdraw_enrollment_code_recorded("j1", &event).unwrap());
+        assert!(s.withdraw_enrollment_code("j1", event.at, Some(&event)).unwrap());
         assert_eq!(s.list_security_events(10).unwrap().len(), 1);
 
         // Nothing to withdraw writes nothing: an event for an enrollment code that was already gone would be a record
         // of an act that did not happen.
-        assert!(!s.withdraw_enrollment_code_recorded("j1", &event).unwrap());
+        assert!(!s.withdraw_enrollment_code("j1", event.at, Some(&event)).unwrap());
         assert_eq!(s.list_security_events(10).unwrap().len(), 1);
     }
 
@@ -3531,11 +3548,15 @@ mod tests {
     #[test]
     fn withdrawing_an_enrollment_code_stops_it_bringing_in_anybody_else() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 5, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 5, NOW + AN_HOUR), None)
+            .unwrap();
         s.spend_enrollment_code("h1", "w1", "t1", NOW, "fp", &["fp"]).unwrap();
 
-        assert!(s.withdraw_enrollment_code("j1", NOW).unwrap());
-        assert!(!s.withdraw_enrollment_code("j1", NOW).unwrap(), "already withdrawn");
+        assert!(s.withdraw_enrollment_code("j1", NOW, None).unwrap());
+        assert!(
+            !s.withdraw_enrollment_code("j1", NOW, None).unwrap(),
+            "already withdrawn"
+        );
         assert_eq!(
             s.spend_enrollment_code("h1", "w2", "t2", NOW, "fp", &["fp"]).unwrap(),
             Spend::Withdrawn
@@ -3557,7 +3578,8 @@ mod tests {
     #[test]
     fn an_enrollment_code_spent_out_still_says_who_it_brought_in() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR), None)
+            .unwrap();
         s.spend_enrollment_code("h1", "w1", "t1", NOW, "fp", &["fp"]).unwrap();
 
         let listed = s.list_enrollment_codes(NOW).unwrap();
@@ -3574,7 +3596,8 @@ mod tests {
     #[test]
     fn an_enrollment_code_that_expired_unused_is_not_kept() {
         let s = store();
-        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR)).unwrap();
+        s.create_enrollment_code(&a_code("j1", "h1", 1, NOW + AN_HOUR), None)
+            .unwrap();
         assert_eq!(s.list_enrollment_codes(NOW).unwrap().len(), 1, "outstanding");
         assert!(s.list_enrollment_codes(NOW + 2 * AN_HOUR).unwrap().is_empty());
     }
@@ -4121,7 +4144,7 @@ mod tests {
         leader_stored(&s, "kafka-east-sasl", "swordfish");
 
         {
-            let conn = s.conn.lock().unwrap();
+            let conn = s.conn();
             conn.execute(
                 "UPDATE secret_versions SET key_id = w.key_id, nonce = w.nonce, ciphertext = w.ciphertext
                    FROM (SELECT key_id, nonce, ciphertext FROM secret_versions WHERE name = 'kafka-west-sasl') AS w
@@ -4647,7 +4670,7 @@ mod tests {
     #[test]
     fn a_credential_cannot_hang_off_a_non_local_account() {
         let s = store();
-        let conn = s.conn.lock().unwrap();
+        let conn = s.conn();
         conn.execute(
             "INSERT INTO users (id, auth_source, display_name, enabled, generation, created_at, updated_at)
              VALUES ('u_oidc', 'oidc', 'Someone', 1, 1, 0, 0)",
@@ -4849,7 +4872,7 @@ mod tests {
     fn an_identity_cannot_hang_off_a_local_account() {
         let s = store();
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
-        let conn = s.conn.lock().unwrap();
+        let conn = s.conn();
         let refused = conn.execute(
             "INSERT INTO oidc_identities (user_id, auth_source, issuer, subject, last_sign_in)
              VALUES ('u_1', 'oidc', 'https://idp', 'sub', 0)",
@@ -5651,7 +5674,7 @@ mod tests {
                 .unwrap(),
             Err(AccountError::NoSuchUser)
         );
-        let refused = s.conn.lock().unwrap().execute(
+        let refused = s.conn().execute(
             "INSERT INTO api_keys (id, user_id, auth_source, token_hash, created_at) VALUES ('k', 'u_1', 'key', 'h', 0)",
             [],
         );
@@ -5731,7 +5754,7 @@ mod tests {
         assert!(back.enabled);
 
         let kept: Vec<String> = {
-            let conn = s.conn.lock().unwrap();
+            let conn = s.conn();
             let mut stmt = conn
                 .prepare("SELECT display_name FROM deleted_accounts ORDER BY id")
                 .unwrap();
@@ -6181,7 +6204,7 @@ mod tests {
         let store = Store::open(&db, &temp_key()).unwrap();
         // A write, so the WAL exists to be checked.
         store
-            .create_enrollment_code(&a_code("j1", "deadbeef", 1, i64::MAX))
+            .create_enrollment_code(&a_code("j1", "deadbeef", 1, i64::MAX), None)
             .unwrap();
         make_private(&db).unwrap();
 

@@ -947,21 +947,22 @@ fn mint_embedded_enrollment_code(
         .to_string();
     let secret = smeltr::leader::auth::generate_secret();
     let now_ms = smeltr::leader::warnings::now_millis();
+    let code = smeltr::leader::store::NewEnrollmentCode {
+        id: format!("ec_embedded_{now_ms}"),
+        code_hash: smeltr::leader::auth::hash_secret(&secret),
+        fingerprint: fingerprint.clone(),
+        group_id: group_id.to_string(),
+        minted_by: smeltr::leader::store::Actor::SYSTEM_ID.to_string(),
+        minted_at: now_ms,
+        // It is spent within the second, on this thread. A window is what an operator needs to walk to a
+        // machine, and there is no walk.
+        expires_at: Some(now_ms + 60 * 60 * 1000),
+        max_uses: Some(1),
+        // It lives in the leader's own data directory, so a restart brings it back as itself.
+        kind: smeltr::leader::store::WorkerKind::Permanent,
+    };
     store
-        .create_enrollment_code(&smeltr::leader::store::NewEnrollmentCode {
-            id: format!("ec_embedded_{now_ms}"),
-            code_hash: smeltr::leader::auth::hash_secret(&secret),
-            fingerprint: fingerprint.clone(),
-            group_id: group_id.to_string(),
-            minted_by: smeltr::leader::store::Actor::SYSTEM_ID.to_string(),
-            minted_at: now_ms,
-            // It is spent within the second, on this thread. A window is what an operator needs to walk to a
-            // machine, and there is no walk.
-            expires_at: Some(now_ms + 60 * 60 * 1000),
-            max_uses: Some(1),
-            // It lives in the leader's own data directory, so a restart brings it back as itself.
-            kind: smeltr::leader::store::WorkerKind::Permanent,
-        })
+        .create_enrollment_code(&code, None)
         .expect("mint an enrollment code for this leader's own worker");
     smeltr::enrollment_code::EnrollmentCode {
         authority: match fingerprint.as_str() {

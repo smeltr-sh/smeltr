@@ -5064,7 +5064,7 @@ mod warnings_endpoint_tests {
             Arc::new(Registry::default().started_at(std::time::Instant::now() - 2 * forget::DEFAULT_FORGET_AFTER));
         let long_ago = warnings::now_millis() - 2 * forget::DEFAULT_FORGET_AFTER.as_millis() as i64;
         run_store(state.store.clone(), move |s| {
-            s.create_enrollment_code(&store::NewEnrollmentCode {
+            let code = store::NewEnrollmentCode {
                 id: "j1".to_string(),
                 code_hash: "h1".to_string(),
                 fingerprint: "fp".to_string(),
@@ -5074,7 +5074,8 @@ mod warnings_endpoint_tests {
                 expires_at: None,
                 max_uses: None,
                 kind: store::WorkerKind::Ephemeral,
-            })?;
+            };
+            s.create_enrollment_code(&code, None)?;
             s.spend_enrollment_code("h1", "pod-1", "t-1", long_ago, "fp", &["fp"])
                 .map(|_| ())
         })
