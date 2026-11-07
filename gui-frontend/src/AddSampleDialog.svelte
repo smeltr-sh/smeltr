@@ -4,6 +4,7 @@
   already reading a source taps what is flowing, one that is not opens it and never commits.
 -->
 <script lang="ts" module>
+  import { Busy } from './busy.svelte';
   import { reported } from './errors.svelte';
   export type SampleWay = 'paste' | 'upload' | 'capture' | 'output' | 'input';
 </script>
@@ -82,7 +83,7 @@
   };
 
   let way: SampleWay | null = $state(null);
-  let busy = $state(false);
+  const busy = new Busy();
 
   // Paste and upload: an uploaded file is a paste that came from disk, one
   // record per non-empty line.
@@ -112,14 +113,9 @@
   });
 
   async function take(output: () => Promise<Pick<SampleDto, 'columns' | 'records'>>) {
-    busy = true;
-    try {
+    await busy.run(async () => {
       taken = await output();
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   function pick(next: SampleWay | null) {
@@ -140,8 +136,7 @@
   async function save() {
     if (!name.trim() || kept === 0) return;
     if (way === 'input') return saveInput();
-    busy = true;
-    try {
+    await busy.run(async () => {
       const id = mintSampleId();
       const res = await putSample({
         id,
@@ -152,34 +147,25 @@
       });
       // A refusal is the dialog's error bar's to say.
       if (res.ok) onsaved(id);
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   /** The capture saved as it is held, standing for the source it read, which then holds it no longer. */
   async function saveInput() {
     if (!input) return;
-    busy = true;
     error = '';
-    try {
+    await busy.run(async () => {
       const id = mintSampleId();
       const res = await saveCapture(input.session, id, name.trim(), input.source);
       if (res.ok) onsaved(id);
       else error = errorText(res.errors) || 'could not save';
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   let canSave = $derived(name.trim() !== '' && kept > 0);
 
   function submit() {
-    if (!busy && way && canSave) void save();
+    if (!busy.on && way && canSave) void save();
   }
 </script>
 
@@ -187,7 +173,7 @@
   open={open && way !== 'capture'}
   title={way ? TITLES[way] : 'add sample'}
   wide
-  oncancel={() => busy || oncancel()}
+  oncancel={() => busy.on || oncancel()}
   onback={way && !start ? () => pick(null) : undefined}
   onsubmit={submit}
 >
@@ -237,10 +223,10 @@
     <TypeCatalog types={WAYS} onpick={pick} />
   {/if}
   {#snippet actions()}
-    <Button type="button" onclick={oncancel} disabled={busy ? BUSY : ''}>Cancel</Button>
+    <Button type="button" onclick={oncancel} disabled={busy.on ? BUSY : ''}>Cancel</Button>
     {#if way}
-      <Button type="submit" class="primary" disabled={busy ? BUSY : !canSave ? INCOMPLETE : ''}>
-        {busy ? (way === 'output' && !taken ? 'Loading…' : 'Saving…') : 'Save sample'}
+      <Button type="submit" class="primary" disabled={busy.on ? BUSY : !canSave ? INCOMPLETE : ''}>
+        {busy.on ? (way === 'output' && !taken ? 'Loading…' : 'Saving…') : 'Save sample'}
       </Button>
     {/if}
   {/snippet}

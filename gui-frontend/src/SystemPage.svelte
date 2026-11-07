@@ -4,6 +4,7 @@
   `nav.ts` holds the tab list.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -69,7 +70,7 @@
   let updates = $state<UpdateSettingsDto | null>(null);
   let checkShown = $state(true);
   let updatesMessage = $state('');
-  let updatesBusy = $state(false);
+  const updatesBusy = new Busy();
 
   const checkDirty = $derived(updates !== null && checkShown !== updates.check);
 
@@ -89,25 +90,20 @@
 
   async function saveUpdates(event: SubmitEvent) {
     event.preventDefault();
-    if (updatesBusy || updates === null) return;
-    updatesBusy = true;
+    if (updatesBusy.on || updates === null) return;
     updatesMessage = '';
-    try {
+    await updatesBusy.run(async () => {
       const result = await putUpdateSettings(checkShown);
       if (!result.ok || !result.settings) return;
       adoptUpdates(result.settings);
       updatesMessage = 'saved';
-    } catch (e) {
-      reported(e);
-    } finally {
-      updatesBusy = false;
-    }
+    });
   }
 
   let warnings = $state<WarningSettingsDto | null>(null);
   let bandShown = $state(99);
   let warningsMessage = $state('');
-  let warningsBusy = $state(false);
+  const warningsBusy = new Busy();
 
   const bandDirty = $derived(warnings !== null && bandShown !== warnings.sourceRowsBandPercent);
 
@@ -127,19 +123,14 @@
 
   async function saveWarnings(event: SubmitEvent) {
     event.preventDefault();
-    if (warningsBusy || warnings === null) return;
-    warningsBusy = true;
+    if (warningsBusy.on || warnings === null) return;
     warningsMessage = '';
-    try {
+    await warningsBusy.run(async () => {
       const result = await putWarningSettings(bandShown);
       if (!result.ok || !result.settings) return;
       adoptWarnings(result.settings);
       warningsMessage = 'saved';
-    } catch (e) {
-      reported(e);
-    } finally {
-      warningsBusy = false;
-    }
+    });
   }
 
   let settings = $state<SessionSettingsDto | null>(null);
@@ -164,7 +155,7 @@
   let idleShown = $state(0);
   let absoluteShown = $state(0);
   let message = $state('');
-  let busy = $state(false);
+  const busy = new Busy();
 
   const idleSeconds = $derived(Math.round(idleShown * idleUnit.seconds));
   const absoluteSeconds = $derived(Math.round(absoluteShown * absoluteUnit.seconds));
@@ -213,19 +204,14 @@
 
   async function save(event: SubmitEvent) {
     event.preventDefault();
-    if (busy || settings === null) return;
-    busy = true;
+    if (busy.on || settings === null) return;
     message = '';
-    try {
+    await busy.run(async () => {
       const result = await putSessionSettings(idleSeconds, absoluteSeconds);
       if (refused(result)) return;
       adopt(result);
       message = 'saved -- these apply to every session on the next request it makes';
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   function discard() {
@@ -288,7 +274,7 @@
         <InlineSaveBar
           dirty={checkDirty}
           label="Save updates"
-          disabled={updatesBusy ? BUSY : ''}
+          disabled={updatesBusy.on ? BUSY : ''}
           ondiscard={() => updates && adoptUpdates(updates)}
         />
       </Panel>
@@ -318,7 +304,7 @@
           <InlineSaveBar
             dirty={bandDirty}
             label="Save warnings"
-            disabled={warningsBusy ? BUSY : ''}
+            disabled={warningsBusy.on ? BUSY : ''}
             ondiscard={() => warnings && adoptWarnings(warnings)}
           />
         </Panel>
@@ -386,7 +372,7 @@
         <InlineSaveBar
           {dirty}
           label="Save sessions"
-          disabled={busy ? BUSY : impossible ? INCOMPLETE : ''}
+          disabled={busy.on ? BUSY : impossible ? INCOMPLETE : ''}
           ondiscard={discard}
         >
           <p class="critical">

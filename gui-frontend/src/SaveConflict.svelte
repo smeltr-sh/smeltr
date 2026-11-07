@@ -8,6 +8,7 @@
   is on screen. Taking it to a branch keeps both.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -32,7 +33,7 @@
   let diffFailed = $state(false);
   let naming = $state(false);
   let newName = $state('');
-  let busy = $state(false);
+  const busy = new Busy();
   let forkError = $state('');
 
   async function readTheirs() {
@@ -54,10 +55,9 @@
 
   async function fork() {
     const name = newName.trim();
-    if (!name || busy) return;
-    busy = true;
+    if (!name || busy.on) return;
     forkError = '';
-    try {
+    await busy.run(async () => {
       const started = await createBranch(name);
       // A refusal is the error bar's to say.
       if (!started.ok) return;
@@ -66,11 +66,7 @@
       setBranch(name);
       if (await onRetry(name)) location.reload();
       else forkError = 'the change did not save onto the new branch';
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   function lineKind(line: string): string {
@@ -121,15 +117,15 @@
 
   {#if naming}
     <form class="actions" onsubmit={(e) => (e.preventDefault(), fork())}>
-      <input placeholder="a name for the branch" bind:value={newName} disabled={busy} />
+      <input placeholder="a name for the branch" bind:value={newName} disabled={busy.on} />
       <Button
         class="primary"
         type="submit"
-        disabled={busy ? BUSY : newName.trim() === '' ? INCOMPLETE : ''}
+        disabled={busy.on ? BUSY : newName.trim() === '' ? INCOMPLETE : ''}
       >
         Start it and save
       </Button>
-      <Button type="button" onclick={() => (naming = false)} disabled={busy ? BUSY : ''}>
+      <Button type="button" onclick={() => (naming = false)} disabled={busy.on ? BUSY : ''}>
         Cancel
       </Button>
     </form>

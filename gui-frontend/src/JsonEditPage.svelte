@@ -4,6 +4,7 @@
   and saving are the caller's (`onSave`).
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -35,7 +36,7 @@
   // svelte-ignore state_referenced_locally
   let savedText = $state(initialText);
   let isDirty = $derived(draft !== savedText);
-  let saving = $state(false);
+  const saving = new Busy();
   let saveError = $state('');
   let saveMessage = $state('');
 
@@ -54,10 +55,9 @@
   }
 
   async function save() {
-    saving = true;
     saveError = '';
     saveMessage = '';
-    try {
+    await saving.run(async () => {
       const result = await onSave(draft);
       if (result.ok) {
         saveMessage = 'Saved.';
@@ -65,11 +65,7 @@
       } else {
         saveError = result.errors;
       }
-    } catch (e) {
-      reported(e);
-    } finally {
-      saving = false;
-    }
+    });
   }
 </script>
 
@@ -84,8 +80,8 @@
   ></textarea>
   {#if !readOnly}
     <div class="run-row">
-      <Button class="primary" onclick={save} disabled={saving ? BUSY : ''}
-        >{saving ? 'Validating…' : 'Save'}</Button
+      <Button class="primary" onclick={save} disabled={saving.on ? BUSY : ''}
+        >{saving.on ? 'Validating…' : 'Save'}</Button
       >
       {#if saveMessage}<span class="save-message">{saveMessage}</span>{/if}
     </div>

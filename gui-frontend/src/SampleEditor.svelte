@@ -8,6 +8,7 @@
   which goes through whatever they would say: a config that breaks a test is always saved.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported } from './errors.svelte';
   import Field from './Field.svelte';
@@ -66,7 +67,7 @@
   let findError = $state('');
   let showAll = $state(false);
   let pasted = $state('');
-  let saving = $state(false);
+  const saving = new Busy();
 
   async function load() {
     try {
@@ -147,24 +148,20 @@
 
   async function save() {
     if (!sample || 'error' in adding) return;
-    saving = true;
-    try {
+    const saved = sample;
+    await saving.run(async () => {
       const res = await putSample({
-        ...sample,
+        ...saved,
         name: name.trim(),
         source: source.trim() || undefined,
         records: [...rows.map((r) => r.record), ...adding.records],
       });
       // A refusal is the error bar's to say.
       if (res.ok) onsaved();
-    } catch (e) {
-      reported(e);
-    } finally {
-      saving = false;
-    }
+    });
   }
 
-  let canSave = $derived(name.trim() !== '' && total > 0 && pasteError === '' && !saving);
+  let canSave = $derived(name.trim() !== '' && total > 0 && pasteError === '' && !saving.on);
 </script>
 
 {#if loadFailed}
@@ -337,9 +334,9 @@
 
     <div class="actions">
       <span class="spacer"></span>
-      <Button type="button" onclick={oncancel} disabled={saving ? BUSY : ''}>Cancel</Button>
-      <Button class="primary" type="submit" disabled={saving ? BUSY : !canSave ? INCOMPLETE : ''}
-        >{saving ? 'Saving…' : 'Save sample'}</Button
+      <Button type="button" onclick={oncancel} disabled={saving.on ? BUSY : ''}>Cancel</Button>
+      <Button class="primary" type="submit" disabled={saving.on ? BUSY : !canSave ? INCOMPLETE : ''}
+        >{saving.on ? 'Saving…' : 'Save sample'}</Button
       >
     </div>
   </form>
