@@ -68,11 +68,20 @@ pub enum Stream {
 }
 
 impl Stream {
-    fn tcp(&self) -> &TcpStream {
+    pub fn tcp(&self) -> &TcpStream {
         match self {
             Stream::Plain(tcp) => tcp,
             Stream::Tls(tls) => &tls.sock,
         }
+    }
+
+    /// Hangs up its side, with close_notify first under TLS. The stream can still be read afterwards.
+    pub fn close_write(&mut self) {
+        if let Stream::Tls(tls) = self {
+            tls.conn.send_close_notify();
+            let _ = tls.flush();
+        }
+        let _ = self.tcp().shutdown(Shutdown::Write);
     }
 }
 
@@ -115,7 +124,7 @@ pub fn connect(at: SocketAddr, from: IpAddr) -> io::Result<TcpStream> {
 }
 
 /// `tcp`, under TLS where `speaks` says. The handshake is made with the first write or read.
-fn speaking(tcp: TcpStream, speaks: Speaks, pki: &Pki) -> Stream {
+pub fn speaking(tcp: TcpStream, speaks: Speaks, pki: &Pki) -> Stream {
     match speaks {
         Speaks::Plain => Stream::Plain(tcp),
         Speaks::Tls(presents) => {
@@ -220,11 +229,12 @@ pub fn send(at: SocketAddr, pki: &Pki, connection: &Connection) -> Sent {
         }
         End::HangUp | End::Unsaid => {
             answers(&mut stream, connection.answers.unwrap_or(0), &mut sent);
-            if let (Stream::Tls(tls), End::HangUp) = (&mut stream, connection.end) {
-                tls.conn.send_close_notify();
-                let _ = tls.flush();
+            match connection.end {
+                End::HangUp => stream.close_write(),
+                _ => {
+                    let _ = stream.tcp().shutdown(Shutdown::Write);
+                }
             }
-            let _ = stream.tcp().shutdown(Shutdown::Write);
         }
     }
     sent.left_open = drained(&mut stream);
