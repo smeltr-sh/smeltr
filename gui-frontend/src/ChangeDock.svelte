@@ -209,8 +209,4 @@
     font-weight: 600;
     font-size: var(--text-note);
   }
-
-  .mono {
-    font-family: var(--mono);
-  }
 </style>

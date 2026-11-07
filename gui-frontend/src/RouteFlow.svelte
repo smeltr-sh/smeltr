@@ -1767,9 +1767,6 @@
     font-size: var(--text-note);
     white-space: nowrap;
   }
-  .mono {
-    font-family: var(--mono);
-  }
   code {
     font-family: var(--mono);
   }

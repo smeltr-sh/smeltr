@@ -570,7 +570,7 @@
       <OnlyNotice {narrowing} ids={[...sharedRoutes, ...routes].map((r) => r.id)} />
 
       {#if sharedRoutes.some((r) => kept(r.id))}
-        <div class="band">from shared/ &mdash; every worker group runs these</div>
+        <div class="band uppercase-label">from shared/ &mdash; every worker group runs these</div>
         {#each sharedRoutes.filter((r) => kept(r.id)) as route (route.id)}
           <div class="rest fromshared">
             <span class="rest-meta">{flow(route)}</span>
@@ -579,7 +579,7 @@
             <EditInShared hash="#/build/routes" />
           </div>
         {/each}
-        <div class="band">this worker group</div>
+        <div class="band uppercase-label">this worker group</div>
       {/if}
 
       {#each sourceCards as card (card.source)}
@@ -770,11 +770,6 @@
     align-items: center;
     gap: 0.5rem;
     margin: 1rem 0 0.5rem;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
   }
 
   .band::after {

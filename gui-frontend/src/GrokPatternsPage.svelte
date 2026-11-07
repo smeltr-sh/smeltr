@@ -173,7 +173,8 @@
           <tr>
             <th class="name">Name</th>
             <th>Pattern</th>
-            <th class="act"><span class="hidden">Remove</span></th>
+            <!-- Names a column whose head would otherwise be an empty cell. -->
+            <th class="act"><span class="visually-hidden">Remove</span></th>
           </tr>
         </thead>
         <tbody>
@@ -348,19 +349,5 @@
 
   .grow {
     flex: 1;
-  }
-
-  /* Names a column whose head would otherwise be an empty cell. */
-  .hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 </style>

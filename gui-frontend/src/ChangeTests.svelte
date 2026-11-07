@@ -192,7 +192,7 @@
 
 <div class="card">
   <div class="row card-head">
-    <h2>
+    <h2 class="uppercase-label">
       Tests<Help label="Tests"
         >The tests of every pipeline and route this change touches, run on this branch.</Help
       >
@@ -219,7 +219,9 @@
         {@const errored = group.tests.filter((t) => t.error)}
         <div class="pipeline-block">
           <div class="pipeline-head">
-            <span class="kind-tag">{group.kind === 'changed' ? 'test' : group.kind}</span>
+            <span class="kind-tag uppercase-label"
+              >{group.kind === 'changed' ? 'test' : group.kind}</span
+            >
             {#if group.kind === 'pipeline'}
               <span class="pipeline-id">{pipelineName(group.scope, group.id)}</span>
             {:else if group.kind === 'changed'}
@@ -315,14 +317,6 @@
 <style>
   h2 {
     margin: 0;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-  }
-  .mono {
-    font-family: var(--mono);
   }
   .card {
     border: 1px solid var(--border);
@@ -390,11 +384,6 @@
     padding: 0.05rem 0.35rem;
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
   }
   .reasons {
     margin: 0 0 0.5rem 0.9rem;

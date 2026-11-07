@@ -360,9 +360,6 @@
     gap: 0.5rem;
     margin: 1.2rem 0;
   }
-  .mono {
-    font-family: var(--mono);
-  }
   .warn {
     color: var(--warn);
   }

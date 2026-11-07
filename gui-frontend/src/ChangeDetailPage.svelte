@@ -487,7 +487,7 @@
           {#if renaming}
             <div class="card rename-card">
               <div class="row card-head">
-                <h2>
+                <h2 class="uppercase-label">
                   Rename this change<Help label="Rename this change"
                     >When the change deploys, its title and description become its entry in History:
                     the title as the commit subject on
@@ -605,7 +605,7 @@
 
           {#if loaded.change.state === 'closed'}
             <div class="card">
-              <div class="row card-head"><h2>Closed</h2></div>
+              <div class="row card-head"><h2 class="uppercase-label">Closed</h2></div>
               <div class="card-body">
                 {#if loaded.change.reason}
                   <p class="dim">{loaded.change.reason}</p>
@@ -656,14 +656,6 @@
 <style>
   h2 {
     margin: 0;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-  }
-  .mono {
-    font-family: var(--mono);
   }
 
   .meta {

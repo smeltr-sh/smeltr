@@ -235,10 +235,10 @@
             >
           </div>
           {#each allDocuments ? open.documents : open.documents.slice(0, SHOWN) as doc}
-            <div class="doc mono">{doc}</div>
+            <div class="doc mono ellipsis">{doc}</div>
           {/each}
           {#if !allDocuments && open.documents.length > SHOWN}
-            <div class="doc dim">
+            <div class="doc dim ellipsis">
               <ShowAll
                 more={open.documents.length - SHOWN}
                 what="document"
@@ -444,9 +444,6 @@
   .doc {
     font-size: var(--text-micro);
     padding: 0.2rem 0.6rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     border-bottom: 1px solid var(--border);
   }
   .doc:last-child {
@@ -482,8 +479,5 @@
   td .dim + .dim,
   td .mono + .dim {
     margin-left: 0.5rem;
-  }
-  .mono {
-    font-family: var(--mono);
   }
 </style>

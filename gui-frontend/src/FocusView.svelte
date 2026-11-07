@@ -474,7 +474,7 @@
           {@const of = connected.filter((c) => c.node.kind === kind)}
           {#if of.length > 0}
             <div class="chips">
-              <span class="eyebrow chip-kind">{kind}s</span>
+              <span class="chip-kind uppercase-label">{kind}s</span>
               {#each of as c (c.hash)}
                 <a class="chip mono" href={c.hash}>{c.node.name}</a>
               {/each}
@@ -741,10 +741,6 @@
     margin: 0.7rem 0 0.2rem;
   }
 
-  .mono {
-    font-family: var(--mono);
-  }
-
   .small {
     font-size: var(--text-label);
   }
@@ -815,14 +811,6 @@
     align-items: baseline;
     gap: 0.35rem;
     margin-bottom: 0.4rem;
-  }
-
-  .eyebrow {
-    color: var(--dim);
-    font-size: var(--text-micro);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
   }
 
   .chip-kind {

@@ -201,7 +201,7 @@
             disabled={readOnly || !!under}
             onchange={(e) => set([n.path], !e.currentTarget.checked)}
           />
-          <span class="mono name"
+          <span class="mono name ellipsis"
             >{before}<mark>{match}</mark>{after}{#if n.children.length}<span class="dim"
                 >&nbsp;· {count} {count === 1 ? 'field' : 'fields'}</span
               >{/if}</span
@@ -222,10 +222,6 @@
 </div>
 
 <style>
-  .mono {
-    font-family: var(--mono);
-  }
-
   .dim {
     color: var(--dim);
     font-size: var(--text-label);
@@ -284,12 +280,6 @@
     color: var(--dim);
     cursor: pointer;
     font: inherit;
-  }
-
-  .name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   mark {

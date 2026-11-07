@@ -57,7 +57,7 @@
 <div class="advanced" class:has-error={errors > 0}>
   <Collapsible bind:open actions={help ? ask : undefined}>
     {#snippet summary()}
-      <span class="label">{label}</span>
+      <span class="label uppercase-label">{label}</span>
       <ErrorCount {errors} />
       {#if values && values.length > 0}
         <span class="values">
@@ -79,14 +79,6 @@
 <style>
   .advanced {
     margin-top: 0.6rem;
-  }
-
-  .label {
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
   }
 
   /* Ink and bold against the dim "defaults", not warn: a changed default
