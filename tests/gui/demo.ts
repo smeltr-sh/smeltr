@@ -46,10 +46,12 @@ function site(servicePort: number): http.Server {
         },
         (answer) => {
           res.writeHead(answer.statusCode!, answer.headers);
+          answer.on('error', () => res.destroy());
           answer.pipe(res);
         },
       );
       out.on('error', () => res.destroy());
+      req.on('error', () => out.destroy());
       req.pipe(out);
       return;
     }
