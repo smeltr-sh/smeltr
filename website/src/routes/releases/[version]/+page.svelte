@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { categorized, downloadHref } from '#lib/releases.ts';
+  import { categorized, codeRuns, downloadHref } from '#lib/releases.ts';
 
   let { data } = $props();
   const r = $derived(data.release);
@@ -34,7 +34,10 @@
         <h3>{g.title}</h3>
         <ul>
           {#each g.items as item (item)}
-            <li>{item}</li>
+            <li>
+              {#each codeRuns(item) as run, i (i)}{#if run.code}<code>{run.text}</code
+                  >{:else}{run.text}{/if}{/each}
+            </li>
           {/each}
         </ul>
       {/each}

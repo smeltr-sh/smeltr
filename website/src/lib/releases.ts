@@ -26,6 +26,11 @@ export function categorized(release: Release): { title: string; groups: NoteGrou
     .filter((c) => c.groups.length > 0);
 }
 
+/** A note's text split at its backticks, as the GitHub release's Markdown splits it: the runs between backticks are code. */
+export function codeRuns(note: string): { text: string; code: boolean }[] {
+  return note.split('`').map((text, i) => ({ text, code: i % 2 === 1 }));
+}
+
 /** A release's major, minor and patch: `just cut-release` names every release so. */
 function parts(release: Release): number[] {
   return release.version.split('.').map(Number);
