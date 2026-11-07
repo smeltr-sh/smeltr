@@ -102,6 +102,29 @@ pub enum Verdict {
     FullScan { relation: String, rows: u64 },
 }
 
+impl Verdict {
+    /// The largest of `scans`, each a relation and the rows it reads, past [`FULL_SCAN_ROWS`]; else `Indexed` through
+    /// `indexes`, returning about `rows`.
+    pub fn of(scans: impl IntoIterator<Item = (String, u64)>, indexes: Vec<String>, rows: u64) -> Verdict {
+        match scans
+            .into_iter()
+            .filter(|(_, read)| *read > FULL_SCAN_ROWS)
+            .max_by_key(|(_, read)| *read)
+        {
+            Some((relation, rows)) => Verdict::FullScan { relation, rows },
+            None => Verdict::Indexed { indexes, rows },
+        }
+    }
+}
+
+/// The text at `key` in the plan node `node`.
+pub(super) fn text_at<'p>(node: &'p [u8], key: &str) -> Option<&'p str> {
+    match crate::core::variant::read(crate::core::variant::member(node, key)?) {
+        crate::core::variant::Value::Str(s) => Some(s),
+        _ => None,
+    }
+}
+
 /// Whether a database connection is encrypted. `Require` also verifies the server's certificate and name: rustls has
 /// no mode that encrypts without verifying.
 #[derive(Clone, Debug)]
