@@ -1,6 +1,7 @@
 //! `unpack` against layouts drawn from every option it takes, over messages written for the layout, the same cut
 //! short, and arbitrary bytes. Each row must give what a plain decoder here reads from the same bytes, raise the
-//! exceptions it raises, and never panic.
+//! exceptions it raises, and never panic. A message `unpack` read whole must `pack` back to the same bytes,
+//! except where a text field does not decode and encode back to its own bytes.
 
 use base64::Engine;
 use serde_json::{Map, Value, json};
@@ -54,6 +55,7 @@ const OPTIONS: &[&str] = &[
     "IndexOutOfRange",
     "Overflow",
     "NaN",
+    "packed back",
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -76,7 +78,7 @@ enum Field {
     Data { charset: Option<&'static str>, len: Len },
 }
 
-/// A layout, as its fields and the literal `unpack` takes.
+/// A layout, as its fields and the literal `unpack` and `pack` take.
 struct Layout {
     fields: Vec<Field>,
     literal: String,
@@ -95,15 +97,15 @@ fn layout(rng: &mut Rng, reached: &mut Coverage) -> Layout {
         let order = |rng: &mut Rng, reached: &mut Coverage| match rng.below(3) {
             0 => {
                 reached.reach("default order");
-                (call_order, String::new())
+                (call_order, "")
             }
             1 => {
                 reached.reach("order big");
-                (Order::Big, ", order: \"big\"".to_string())
+                (Order::Big, " big")
             }
             _ => {
                 reached.reach("order little");
-                (Order::Little, ", order: \"little\"".to_string())
+                (Order::Little, " little")
             }
         };
         let last = i == n - 1;
@@ -115,38 +117,37 @@ fn layout(rng: &mut Rng, reached: &mut Coverage) -> Layout {
             };
             reached.reach(ty);
             let (o, said) = order(rng, reached);
-            let spelled = if said.is_empty() && rng.chance(2) {
-                format!("\"{ty}\"")
-            } else {
-                format!("{{type: \"{ty}\"{said}}}")
-            };
-            (Field::Num(ty, o), spelled)
+            (Field::Num(ty, o), format!("\"{ty}{said}\""))
         } else {
             let text = rng.chance(2);
             let ty = if text { "str" } else { "bytes" };
             reached.reach(ty);
-            let charset = (text && rng.chance(2)).then(|| *rng.pick(&CHARSETS));
+            let mut charset = (text && rng.chance(2)).then(|| *rng.pick(&CHARSETS));
             let earlier: Vec<usize> = (0..i)
                 .filter(|&j| matches!(&fields[j], Field::Num(t, _) if INTS.contains(t)))
                 .collect();
             let (len, said) = match rng.below(4) {
                 0 => {
                     let c = rng.below(6);
-                    (Len::Count(c), format!(", length: {c}"))
+                    (Len::Count(c), c.to_string())
                 }
                 1 if !earlier.is_empty() => {
                     let j = *rng.pick(&earlier);
-                    (Len::Field(j), format!(", length: \"f{j}\""))
+                    (Len::Field(j), format!("f{j}"))
                 }
                 2 => {
                     let t = *rng.pick(&INTS);
                     let (o, said) = order(rng, reached);
-                    (Len::Prefix(t, o), format!(", prefix: \"{t}\"{said}"))
+                    (Len::Prefix(t, o), format!("{t}{said}"))
                 }
-                _ if last => (Len::Rest, String::new()),
+                // A charset follows a length, so text that runs to the end is UTF-8.
+                _ if last => {
+                    charset = None;
+                    (Len::Rest, String::new())
+                }
                 _ => {
                     let c = rng.below(6);
-                    (Len::Count(c), format!(", length: {c}"))
+                    (Len::Count(c), c.to_string())
                 }
             };
             reached.reach(match len {
@@ -155,14 +156,13 @@ fn layout(rng: &mut Rng, reached: &mut Coverage) -> Layout {
                 Len::Prefix(..) => "prefix",
                 Len::Rest => "rest",
             });
-            let charset_said = charset.map_or(String::new(), |c| {
-                reached.reach("charset");
-                format!(", charset: \"{c}\"")
-            });
-            let spelled = if said.is_empty() && charset_said.is_empty() && rng.chance(2) {
-                format!("\"{ty}\"")
-            } else {
-                format!("{{type: \"{ty}\"{said}{charset_said}}}")
+            let spelled = match charset {
+                _ if said.is_empty() => format!("\"{ty}\""),
+                None => format!("\"{ty}({said})\""),
+                Some(c) => {
+                    reached.reach("charset");
+                    format!("\"{ty}({said}, {c})\"")
+                }
             };
             (
                 Field::Data {
@@ -255,8 +255,10 @@ fn message(rng: &mut Rng, layout: &Layout) -> Vec<u8> {
     out
 }
 
-/// What `unpack` gives for `b`, read here as plainly as it can be, and the exceptions it raises.
-fn decode(layout: &Layout, b: &[u8]) -> (Value, Vec<&'static str>) {
+/// What `unpack` gives for `b`, read here as plainly as it can be, the exceptions it raises, and whether each text
+/// field writes back to its own bytes.
+fn decode(layout: &Layout, b: &[u8]) -> (Value, Vec<&'static str>, bool) {
+    let mut lossless = true;
     let mut out = Map::new();
     let mut raised = Vec::new();
     let mut ints: Vec<Option<i64>> = Vec::new();
@@ -355,7 +357,14 @@ fn decode(layout: &Layout, b: &[u8]) -> (Value, Vec<&'static str>) {
                     None => json!(base64::engine::general_purpose::STANDARD.encode(bytes)),
                     Some(c) => {
                         let encoding = encoding_rs::Encoding::for_label(c.as_bytes()).expect("a charset");
-                        json!(encoding.decode_without_bom_handling(bytes).0)
+                        let text = encoding.decode_without_bom_handling(bytes).0;
+                        let back: Vec<u8> = if encoding == encoding_rs::UTF_16LE {
+                            text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+                        } else {
+                            encoding.encode(&text).0.into_owned()
+                        };
+                        lossless &= back == bytes;
+                        json!(text)
                     }
                 };
                 out.insert(name, value);
@@ -363,33 +372,34 @@ fn decode(layout: &Layout, b: &[u8]) -> (Value, Vec<&'static str>) {
             }
         }
     }
-    (Value::Object(out), raised)
+    (Value::Object(out), raised, lossless)
 }
 
 fn check(seed: u64, reached: &mut Coverage) -> Result<(), String> {
     let mut rng = Rng::seeded(seed);
     let layout = layout(&mut rng, reached);
-    let messages: Vec<Vec<u8>> = (0..ROWS)
+    // Each message, and whether it is whole: written for the layout, with nothing cut or left over.
+    let messages: Vec<(Vec<u8>, bool)> = (0..ROWS)
         .map(|_| match rng.below(3) {
             0 => {
                 reached.reach("whole");
-                message(&mut rng, &layout)
+                (message(&mut rng, &layout), true)
             }
             1 => {
                 reached.reach("cut short");
                 let mut m = message(&mut rng, &layout);
                 m.truncate(rng.below(m.len() + 1));
-                m
+                (m, false)
             }
             _ => {
                 reached.reach("arbitrary");
-                (0..rng.below(40)).map(|_| rng.next_u64() as u8).collect()
+                ((0..rng.below(40)).map(|_| rng.next_u64() as u8).collect(), false)
             }
         })
         .collect();
     let hex: Vec<String> = messages
         .iter()
-        .map(|m| m.iter().map(|b| format!("{b:02x}")).collect())
+        .map(|(m, _)| m.iter().map(|b| format!("{b:02x}")).collect())
         .collect();
     let texts: Vec<&str> = hex.iter().map(String::as_str).collect();
 
@@ -397,30 +407,14 @@ fn check(seed: u64, reached: &mut Coverage) -> Result<(), String> {
         "out = unpack(parseBytes(_raw, \"hex\"), {}); delete(_raw);",
         layout.literal
     );
-    let plan = compile(&harness::pipeline(vec![harness::code(0, &body)]), &SourceMeta::KAFKA).map_err(|errs| {
-        format!(
-            "{body} does not compile: {}",
-            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; ")
-        )
-    })?;
-    let mut pool = BufferPool::new();
-    let mut errors = ErrorSink::new();
-    let mut batch = harness::raw_batch(&plan, &texts, &mut pool);
-    let rows: Vec<Value> = {
-        let mut ctx = Ctx::new(&mut pool, &mut errors);
-        run_to_json_marked(&plan, &Default::default(), &mut batch, &mut ctx, false, None)
-            .iter()
-            .filter_map(|r| r.json.as_ref())
-            .map(|row| serde_json::from_slice::<Value>(row).unwrap())
-            .map(|row| row.get("out").cloned().unwrap_or(json!({})))
-            .collect()
-    };
-    batch.reclaim(&mut pool);
-    if rows.len() != messages.len() {
-        return Err(format!("{body}: {} rows for {} messages", rows.len(), messages.len()));
-    }
-    for (row, (got, m)) in rows.iter().zip(&messages).enumerate() {
-        let (want, want_raised) = decode(&layout, m);
+    let (rows, errors) = run(&body, &texts)?;
+    let back_body = format!(
+        "out = toString(unpack(parseBytes(_raw, \"hex\"), {0}).pack({0}), \"hex\"); delete(_raw);",
+        layout.literal
+    );
+    let (backs, _) = run(&back_body, &texts)?;
+    for (row, (got, (m, whole))) in rows.iter().zip(&messages).enumerate() {
+        let (want, want_raised, lossless) = decode(&layout, m);
         let mut raised: Vec<&str> = (errors.entries().iter())
             .filter(|e| e.row as usize == row)
             .map(|e| e.kind.label())
@@ -431,14 +425,49 @@ fn check(seed: u64, reached: &mut Coverage) -> Result<(), String> {
         }
         raised.sort_unstable();
         want_raised.sort_unstable();
-        if *got != want || raised != want_raised {
+        let got = got.clone().unwrap_or(json!({}));
+        if got != want || raised != want_raised {
             return Err(format!(
                 "{body}\nmessage {}: gave {got} raising {raised:?}, where it reads {want} raising {want_raised:?}",
                 hex[row]
             ));
         }
+        if *whole && want_raised.is_empty() && lossless {
+            reached.reach("packed back");
+            let back = backs[row].clone().unwrap_or(Value::Null);
+            if back != json!(hex[row]) {
+                return Err(format!("{back_body}\nmessage {}: packed back as {back}", hex[row]));
+            }
+        }
     }
     Ok(())
+}
+
+/// Each row's `out` from running `body` on the messages `texts` in `_raw`, and the exceptions they raised.
+fn run(body: &str, texts: &[&str]) -> Result<(Vec<Option<Value>>, ErrorSink), String> {
+    let plan = compile(&harness::pipeline(vec![harness::code(0, body)]), &SourceMeta::KAFKA).map_err(|errs| {
+        format!(
+            "{body} does not compile: {}",
+            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; ")
+        )
+    })?;
+    let mut pool = BufferPool::new();
+    let mut errors = ErrorSink::new();
+    let mut batch = harness::raw_batch(&plan, texts, &mut pool);
+    let rows: Vec<Option<Value>> = {
+        let mut ctx = Ctx::new(&mut pool, &mut errors);
+        run_to_json_marked(&plan, &Default::default(), &mut batch, &mut ctx, false, None)
+            .iter()
+            .filter_map(|r| r.json.as_ref())
+            .map(|row| serde_json::from_slice::<Value>(row).unwrap())
+            .map(|row| row.get("out").cloned())
+            .collect()
+    };
+    batch.reclaim(&mut pool);
+    if rows.len() != texts.len() {
+        return Err(format!("{body}: {} rows for {} messages", rows.len(), texts.len()));
+    }
+    Ok((rows, errors))
 }
 
 #[test]

@@ -511,17 +511,17 @@ fn check_body(body: &[Stmt], what: &str) -> Result<(), InlineError> {
     Ok(())
 }
 
-/// The arguments of a call named `name` when it calls `unpack`, the bytes first, so `unpack(b, layout)` and
-/// `b.unpack(layout)` give the same. `None` for any other call.
-fn unpack_args(name: &str, args: &[Expr], span: Span) -> Option<Vec<Expr>> {
-    if name == unpack::UNPACK {
-        return (!args.is_empty()).then(|| args.to_vec());
+/// The function and the arguments of a call named `name` when it calls `unpack` or `pack`, the value first, so
+/// `unpack(b, layout)` and `b.unpack(layout)` give the same. `None` for any other call.
+fn layout_call(name: &str, args: &[Expr], span: Span) -> Option<(&'static str, Vec<Expr>)> {
+    let layout = |n: &str| [unpack::UNPACK, unpack::PACK].into_iter().find(|f| *f == n);
+    if let Some(f) = layout(name) {
+        return (!args.is_empty()).then(|| (f, args.to_vec()));
     }
     let (recv, method) = name.rsplit_once('.')?;
-    (method == unpack::UNPACK && recv != "Object").then(|| {
-        let recv = Expr::new(span, ExprKind::Field(recv.to_string()));
-        std::iter::once(recv).chain(args.iter().cloned()).collect()
-    })
+    let f = layout(method).filter(|_| recv != "Object")?;
+    let recv = Expr::new(span, ExprKind::Field(recv.to_string()));
+    Some((f, std::iter::once(recv).chain(args.iter().cloned()).collect()))
 }
 
 /// `e`, leaving a null in its place.
@@ -694,8 +694,8 @@ impl Inliner {
         let span = e.span;
         match &e.kind {
             ExprKind::Call { name, args } => {
-                if let Some(args) = unpack_args(name, args, span) {
-                    *e = self.unpack_value(&args, span, out)?;
+                if let Some((f, args)) = layout_call(name, args, span) {
+                    *e = self.layout_value(f, &args, span, out)?;
                     return Ok(());
                 }
                 if let Some((name, args)) = self.callee(name, args, span) {
@@ -861,10 +861,21 @@ impl Inliner {
         value
     }
 
-    /// The value of a call of `unpack`: the function its layout is, called on its bytes.
-    fn unpack_value(&mut self, args: &[Expr], span: Span, out: &mut Vec<Stmt>) -> Result<Expr, InlineError> {
-        let function = unpack::function(args, span).map_err(|message| InlineError { span, message })?;
-        let id = self.tmp(unpack::UNPACK);
+    /// The value of a call of `unpack` or `pack`, named `f`: the function its layout is, called on its value.
+    fn layout_value(
+        &mut self,
+        f: &'static str,
+        args: &[Expr],
+        span: Span,
+        out: &mut Vec<Stmt>,
+    ) -> Result<Expr, InlineError> {
+        let function = if f == unpack::UNPACK {
+            unpack::function(args, span)
+        } else {
+            unpack::pack_function(args, span)
+        };
+        let function = function.map_err(|message| InlineError { span, message })?;
+        let id = self.tmp(f);
         let bound = Bound {
             function: Rc::new(function),
             id: id.clone(),

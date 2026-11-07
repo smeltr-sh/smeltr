@@ -55,6 +55,10 @@
     {
       "params": "(array of scalars, array of scalars, ...)",
       "result": "the array's type"
+    },
+    {
+      "params": "(bytes, bytes, ...)",
+      "result": "bytes"
     }
   ],
   "countIn": [
@@ -661,6 +665,26 @@
     {
       "params": "(str)",
       "result": "str"
+    }
+  ],
+  "writeFloat": [
+    {
+      "params": "(f64, str)",
+      "result": "bytes"
+    },
+    {
+      "params": "(f64, str, str)",
+      "result": "bytes"
+    }
+  ],
+  "writeInt": [
+    {
+      "params": "(i64, str)",
+      "result": "bytes"
+    },
+    {
+      "params": "(i64, str, str)",
+      "result": "bytes"
     }
   ],
   "year": [
