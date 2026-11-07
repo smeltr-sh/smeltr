@@ -29,6 +29,7 @@ use super::sql::{Bind, Dialect, Poll, Query, Statement};
 use super::values::{Value, column, spell, stored, unbuilt};
 use super::{CommitMap, IoError, Progress, RecordChunk, Source, SourceRecord};
 use crate::core::column::DataType;
+use crate::core::variant;
 use crate::heartbeat::{LedgerEntry, MAX_CURSOR, MAX_LEDGER_ENTRY, MAX_LEDGER_ITEM};
 
 /// The most rows comparing values reads in one poll. Each is a ledger entry the leader keeps.
@@ -103,8 +104,8 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    /// The largest of `scans`, each a relation and the rows it reads, past [`FULL_SCAN_ROWS`]; else `Indexed` through
-    /// `indexes`, returning about `rows`.
+    /// `FullScan`, with the largest of `scans` (each a relation and the rows it reads), if that is past
+    /// [`FULL_SCAN_ROWS`]; otherwise `Indexed` through `indexes`, returning about `rows`.
     pub fn of(scans: impl IntoIterator<Item = (String, u64)>, indexes: Vec<String>, rows: u64) -> Verdict {
         match scans
             .into_iter()
@@ -119,8 +120,8 @@ impl Verdict {
 
 /// The text at `key` in the plan node `node`.
 pub(super) fn text_at<'p>(node: &'p [u8], key: &str) -> Option<&'p str> {
-    match crate::core::variant::read(crate::core::variant::member(node, key)?) {
-        crate::core::variant::Value::Str(s) => Some(s),
+    match variant::read(variant::member(node, key)?) {
+        variant::Value::Str(s) => Some(s),
         _ => None,
     }
 }

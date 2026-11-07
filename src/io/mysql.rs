@@ -647,8 +647,8 @@ fn tables(explained: &[u8]) -> Vec<&[u8]> {
     found
 }
 
-/// Every read of a whole table the database holds: the table as the query names it, its alias when it has one, which
-/// is all EXPLAIN gives, and the database's estimate of the rows it reads.
+/// Every read of a whole table in the plan: the table's name, or its alias when the query gives it one (EXPLAIN gives
+/// only the alias then), and the database's estimate of the rows it reads.
 fn scans(explained: &[u8]) -> Vec<(String, u64)> {
     tables(explained)
         .into_iter()
