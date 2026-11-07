@@ -502,15 +502,6 @@ impl SourceKindDto {
             _ => None,
         }
     }
-
-    /// `sql`, to change.
-    pub fn sql_mut(&mut self) -> Option<(SqlKind, &mut SqlSourceDto)> {
-        match self {
-            SourceKindDto::Postgres(s) => Some((SqlKind::Postgres, s)),
-            SourceKindDto::MySql(s) => Some((SqlKind::MySql, s)),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

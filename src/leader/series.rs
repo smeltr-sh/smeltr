@@ -874,6 +874,7 @@ impl RegistryStore {
     /// spike that a last-value or an average would have smoothed away, and it composes without re-deriving
     /// anything: the maximum of a set of maxima is the maximum of the whole set, so a rollup can fold it forward
     /// tier by tier and never has to look back at raw samples.
+    #[cfg(test)]
     pub fn record_gauge_max(
         &self,
         metric: &str,
