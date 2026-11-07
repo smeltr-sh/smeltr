@@ -5,7 +5,7 @@
 -->
 <script lang="ts" module>
   import { reported } from './errors.svelte';
-  export type SampleWay = 'paste' | 'upload' | 'capture' | 'output';
+  export type SampleWay = 'paste' | 'upload' | 'capture' | 'output' | 'input';
 </script>
 
 <script lang="ts">
@@ -16,11 +16,20 @@
   import CaptureFlow from './CaptureFlow.svelte';
   import type { ComponentProps } from 'svelte';
   import Field from './Field.svelte';
+  import InlineError from './InlineError.svelte';
   import { STEP_GLYPHS, type Glyph } from './stepGlyphs';
   import { SYSTEM_GLYPHS } from './systemGlyphs';
   import { mintSampleId } from './ids';
   import { count } from './time';
-  import { putSample, recordsFromText, type SampleDto } from './api';
+  import {
+    errorText,
+    putSample,
+    recordsFromText,
+    saveCapture,
+    type CaptureStatus,
+    type SampleDto,
+  } from './api';
+  import { heldCount } from './capture';
   import { mayCapture } from './access';
 
   let {
@@ -29,6 +38,7 @@
     target,
     onuse,
     output,
+    input,
     oncancel,
     onsaved,
   }: {
@@ -42,6 +52,9 @@
     /** A pipeline's output rows, as a sample holds them: what the dialog saves when it opens at `output`, the
      * `SampleWay` for a pipeline's output. */
     output?: () => Promise<Pick<SampleDto, 'columns' | 'records'>>;
+    /** The finished capture the leader holds for whoever is signed in: what the dialog saves when it opens at
+     * `input`, the `SampleWay` for a pipeline's input that is not saved yet. */
+    input?: CaptureStatus;
     oncancel: () => void;
     /** The new sample's id, once it is saved. */
     onsaved: (id: string) => void;
@@ -65,6 +78,7 @@
     upload: 'upload a sample',
     capture: 'capture a sample',
     output: 'save output as sample',
+    input: 'save input as sample',
   };
 
   let way: SampleWay | null = $state(null);
@@ -78,6 +92,10 @@
   /** The records `output` returned, for the `output` `SampleWay`. */
   let taken = $state<Pick<SampleDto, 'columns' | 'records'> | null>(null);
   let records = $derived(way === 'output' ? (taken?.records ?? []) : recordsFromText(text));
+  /** How many records `save` keeps. */
+  let kept = $derived(way === 'input' ? (input ? heldCount(input) : 0) : records.length);
+  /** Why the leader refused to save the capture: the input's own, since a capture says what went wrong in its flow. */
+  let error = $state('');
 
   // Every opening starts clean, so a cancel leaves nothing for the next one.
   $effect(() => {
@@ -87,6 +105,7 @@
       source = '';
       text = '';
       taken = null;
+      error = '';
       pick(start ?? null);
       if (start === 'output' && output) void take(output);
     });
@@ -119,7 +138,8 @@
   /** A new sample's id is minted, never the name: a test names its sample by
    * id, so a rename must leave the id alone. */
   async function save() {
-    if (!name.trim() || records.length === 0) return;
+    if (!name.trim() || kept === 0) return;
+    if (way === 'input') return saveInput();
     busy = true;
     try {
       const id = mintSampleId();
@@ -139,7 +159,24 @@
     }
   }
 
-  let canSave = $derived(name.trim() !== '' && records.length > 0);
+  /** The capture saved as it is held, standing for the source it read, which then holds it no longer. */
+  async function saveInput() {
+    if (!input) return;
+    busy = true;
+    error = '';
+    try {
+      const id = mintSampleId();
+      const res = await saveCapture(input.session, id, name.trim(), input.source);
+      if (res.ok) onsaved(id);
+      else error = errorText(res.errors) || 'could not save';
+    } catch (e) {
+      reported(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  let canSave = $derived(name.trim() !== '' && kept > 0);
 
   function submit() {
     if (!busy && way && canSave) void save();
@@ -187,6 +224,14 @@
         <input bind:value={name} placeholder="orders-west, enriched" />
       </Field>
       <span class="dim">{count(records.length, 'record')}</span>
+    </div>
+  {:else if way === 'input'}
+    <div class="form-body">
+      <Field required label="Name">
+        <input bind:value={name} placeholder="orders-west, ordinary hour" />
+      </Field>
+      <span class="dim">{count(kept, 'record')}</span>
+      <InlineError message={error} />
     </div>
   {:else}
     <TypeCatalog types={WAYS} onpick={pick} />
