@@ -15,6 +15,7 @@ pub mod http;
 pub mod leader_tls;
 pub mod receiver;
 pub mod registry;
+pub mod sender;
 
 use smeltr::core::batch::{Batch, SLOT_RAW};
 use smeltr::core::buffer::BufferPool;

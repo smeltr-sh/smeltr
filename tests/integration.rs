@@ -17,6 +17,8 @@ mod adversarial_memory_tests;
 mod api_source_fuzz;
 #[path = "api-source-tests.rs"]
 mod api_source_tests;
+#[path = "bad-sender-fuzz.rs"]
+mod bad_sender_fuzz;
 #[path = "code-tests.rs"]
 mod code_tests;
 #[path = "compile-fuzz.rs"]
