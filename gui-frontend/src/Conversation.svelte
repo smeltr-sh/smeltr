@@ -32,7 +32,6 @@
   import {
     deleteConversation,
     getConversation,
-    redactConversationItem,
     refused,
     restartConversation,
     sendToConversation,
@@ -157,24 +156,6 @@
     ondeleted?.();
   }
 
-  /** Make every character of the item `at` `*` where it is stored, for good, once the person says so. */
-  async function redact(at: number) {
-    if (!open) return;
-    const sure = await ask({
-      title: 'redact',
-      body: 'Every character of this line becomes * on the leader, and your agent reads it as *. Text already sent to the model provider cannot be taken back.',
-      action: 'Redact',
-      danger: true,
-    });
-    if (!sure) return;
-    try {
-      if (refused(await redactConversationItem(open, at))) return;
-      await read(open);
-    } catch (e) {
-      reported(e);
-    }
-  }
-
   /** Summarize the conversation for the agent to carry on from, or clear what it reads. Clearing asks first: the
    * agent forgets it all. */
   async function restart(summarize: boolean) {
@@ -195,43 +176,35 @@
     }
   }
 
-  /** Each call with the result it came back with, beside what was said. `at` is where an item stands in the
-   * conversation's items, which is what redacting it names; an answer still being written has no `at`. */
+  /** Each call with the result it came back with, beside what was said. */
   type Shown =
-    | { kind: 'message' | 'answer'; text: string; at?: number }
-    | {
-        kind: 'call';
-        label: string;
-        input: unknown;
-        at: number;
-        result?: { output: string; isError: boolean; at: number };
-      }
+    | { kind: 'message' | 'answer'; text: string }
+    | { kind: 'call'; label: string; input: unknown; result?: { output: string; isError: boolean } }
     | { kind: 'unreadable'; error: string }
-    | { kind: 'fresh'; summary: string | null; at: number };
+    | { kind: 'fresh'; summary: string | null };
 
-  function arrange(items: ConversationItem[], writing?: string): Shown[] {
+  function arrange(items: ConversationItem[]): Shown[] {
     const results = new Map(
-      items.flatMap((i, at) => (i.kind === 'result' ? [[i.callId, { ...i, at }] as const] : [])),
+      items.flatMap((i) => (i.kind === 'result' ? [[i.callId, i] as const] : [])),
     );
-    const shown = items.flatMap((i, at): Shown[] => {
+    return items.flatMap((i): Shown[] => {
       switch (i.kind) {
         case 'message':
         case 'answer':
-          return [{ kind: i.kind, text: i.text, at }];
+          return [{ kind: i.kind, text: i.text }];
         case 'call': {
           const query = new URLSearchParams(i.input.query ?? {}).toString();
           const label = `${i.input.method ?? '?'} ${i.input.path ?? '?'}${query ? `?${query}` : ''}`;
-          return [{ kind: 'call', label, input: i.input.body, at, result: results.get(i.id) }];
+          return [{ kind: 'call', label, input: i.input.body, result: results.get(i.id) }];
         }
         case 'result':
           return [];
         case 'unreadable':
           return [{ kind: 'unreadable', error: i.error }];
         case 'fresh':
-          return [{ kind: 'fresh', summary: i.summary, at }];
+          return [{ kind: 'fresh', summary: i.summary }];
       }
     });
-    return writing ? [...shown, { kind: 'answer', text: writing }] : shown;
   }
 
   /** The status a result's output opens with, the answer's body after it. */
@@ -251,17 +224,6 @@
   }
 </script>
 
-<!-- Redacted text is all stars, which Markdown would draw as a rule. -->
-{#snippet said(text: string)}
-  {#if /^\*+$/.test(text)}<span class="mono">{text}</span>{:else}<Markdown {text} />{/if}
-{/snippet}
-
-{#snippet redactable(at: number | undefined)}
-  {#if at !== undefined && !compact && !shown?.running}
-    <button type="button" class="compact redact" onclick={() => redact(at)}>Redact</button>
-  {/if}
-{/snippet}
-
 <section class="conversation" class:compact aria-label="Conversation">
   {#if open && shown}
     {#if !compact}
@@ -270,18 +232,19 @@
         <button type="button" class="compact" onclick={remove}>Delete conversation</button>
       </div>
     {/if}
-    {#each arrange(shown.items, shown.writing) as item, n (n)}
+    {#each arrange(shown.writing ? [...shown.items, { kind: 'answer', text: shown.writing }] : shown.items) as item, n (n)}
       {#if compact && (item.kind === 'message' || item.kind === 'answer')}
         <!-- A terminal's shape: what was said is the line after the prompt, and the answer the lines under it. -->
         <div class="line" class:said={item.kind === 'message'}>
-          {#if item.kind === 'message'}<span class="prompt" aria-label={me}>›</span
-            >{/if}{@render said(item.text)}
+          {#if item.kind === 'message'}<span class="prompt" aria-label={me}>›</span>{/if}<Markdown
+            text={item.text}
+          />
         </div>
       {:else if item.kind === 'message' || item.kind === 'answer'}
         {@const who = item.kind === 'message' ? me : 'Agent'}
         <ConversationEntry author={who}>
-          {#snippet head()}<span class="who">{who}</span>{@render redactable(item.at)}{/snippet}
-          {@render said(item.text)}
+          {#snippet head()}<span class="who">{who}</span>{/snippet}
+          <Markdown text={item.text} />
         </ConversationEntry>
       {:else if item.kind === 'call'}
         {@const answered = item.result ? split(item.result.output) : null}
@@ -299,12 +262,10 @@
             {/snippet}
             {#if item.input !== undefined}
               <h3>Sent</h3>
-              {@render redactable(item.at)}
               <pre>{JSON.stringify(item.input, null, 2)}</pre>
             {/if}
             {#if answered}
               <h3>Answered</h3>
-              {@render redactable(item.result?.at)}
               <pre>{pretty(answered.body)}</pre>
             {/if}
           </Collapsible>
@@ -317,8 +278,7 @@
             <Collapsible variant="row">
               {#snippet summary()}Summarized. Your agent reads this summary in place of what is
                 above.{/snippet}
-              <div class="summary">{@render said(item.summary)}</div>
-              {@render redactable(item.at)}
+              <div class="summary"><Markdown text={item.summary} /></div>
             </Collapsible>
           {/if}
         </ConversationEvent>
@@ -510,12 +470,6 @@
   }
   .later {
     margin-left: 0.5rem;
-  }
-  .redact {
-    margin-left: auto;
-  }
-  .call .redact {
-    margin-bottom: 0.25rem;
   }
   .status {
     margin-left: 0.5rem;

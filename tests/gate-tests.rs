@@ -1482,56 +1482,6 @@ fn an_agent_reads_back_only_its_own_conversation() {
     assert!(last_result(&read).starts_with("404\n"), "{read}");
 }
 
-/// A person redacts one line of their conversation: it is stars where it is stored, and no later request sends it.
-#[test]
-fn a_person_redacts_a_line_of_their_conversation() {
-    let leader = start("agent-redact");
-    let op = operator(&leader);
-    let model = FakeModel::start();
-    agents_on(&leader, &op, &model);
-    let (status, started) = leader.post_as(
-        &op,
-        "/api/agent/conversations",
-        serde_json::json!({ "message": "My key is sk-unseen-41" }),
-    );
-    assert_eq!(status, 202, "{started}");
-    let id = started["id"].as_str().unwrap().to_string();
-    turn_ended(&leader, &op, &id);
-    let redact = |who: &Operator, item: u64| {
-        leader
-            .post_as(
-                who,
-                &format!("/api/agent/conversations/{id}/redact"),
-                serde_json::json!({ "item": item }),
-            )
-            .0
-    };
-
-    assert_eq!(redact(&op, 0), 200);
-    let read = turn_ended(&leader, &op, &id);
-    assert_eq!(read["items"][0]["text"], "*".repeat(22), "{read}");
-    assert_eq!(read["title"], "*".repeat(22), "the title is the start of that message");
-    assert_eq!(redact(&op, 2), 200, "a call's result");
-    let read = turn_ended(&leader, &op, &id);
-    assert!(
-        read["items"][2]["output"].as_str().unwrap().chars().all(|c| c == '*'),
-        "{read}"
-    );
-    assert_eq!(redact(&op, 99), 404);
-    let other = second_operator(&leader, &op, "bea", "Bea");
-    assert_eq!(redact(&other, 0), 404);
-
-    let (status, _) = leader.post_as(
-        &op,
-        &format!("/api/agent/conversations/{id}/messages"),
-        serde_json::json!({ "message": "What next?" }),
-    );
-    assert_eq!(status, 202);
-    turn_ended(&leader, &op, &id);
-    let last = model.asked.lock().unwrap().last().cloned().unwrap();
-    assert!(!last.to_string().contains("sk-unseen-41"), "{last}");
-}
-
 /// A username is taken once, whatever case it is typed in.
 #[test]
 fn a_username_cannot_be_taken_twice() {
