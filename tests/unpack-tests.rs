@@ -117,9 +117,9 @@ fn unpack_reads_each_field_where_the_one_before_ended() {
     let layout = r#"unpack(b, {
         version: "u8",
         len: "u16",
-        host: {type: "str", length: "len"},
-        port: {type: "u16", order: "little"},
-        tag: {type: "bytes", prefix: "u8"},
+        host: "str(len)",
+        port: "u16 little",
+        tag: "bytes(u8)",
         temp: "f32",
         body: "bytes",
     })"#;
@@ -132,10 +132,7 @@ fn unpack_reads_each_field_where_the_one_before_ended() {
 
 #[test]
 fn a_field_the_message_is_too_short_for_is_null_and_so_is_every_field_after() {
-    let (rows, kinds) = run(
-        r#"b.unpack({a: "u8", s: {type: "str", prefix: "u8"}, c: "u8"})"#,
-        &["0105616263"],
-    );
+    let (rows, kinds) = run(r#"b.unpack({a: "u8", s: "str(u8)", c: "u8"})"#, &["0105616263"]);
     assert_eq!(rows, [json!({"a": 1})]);
     assert_eq!(kinds, ["IndexOutOfRange"]);
 }
@@ -164,34 +161,108 @@ fn unpack_writes_into_the_record() {
 #[test]
 fn a_layout_that_cannot_be_read_is_refused_when_it_compiles() {
     for (layout, says) in [
-        (r#"{a: "u24"}"#, "`a`'s type is"),
+        (r#"{a: "u24"}"#, "`a` is a number type"),
         (r#"{a: "bytes", b: "u8"}"#, "`a` runs to the end of the message"),
-        (
-            r#"{a: {type: "str", length: "n"}}"#,
-            "names `n`, which is not a field before it",
-        ),
-        (
-            r#"{n: "f32", a: {type: "str", length: "n"}}"#,
-            "which is not an integer",
-        ),
-        (
-            r#"{a: {type: "bytes", length: 1, prefix: "u8"}}"#,
-            "a `length` or a `prefix`, not both",
-        ),
-        (r#"{a: {type: "u8", charset: "utf-8"}}"#, "takes no `charset`"),
-        (r#"{a: {type: "u8", order: "middle"}}"#, "\"big\" or \"little\""),
+        (r#"{a: "str(n)"}"#, "names `n`, which is not a field before it"),
+        (r#"{n: "f32", a: "str(n)"}"#, "which is not an integer"),
+        (r#"{a: "bytes(f32)"}"#, "prefix is an integer type"),
+        (r#"{a: "u8(2)"}"#, "takes no length"),
+        (r#"{a: "u8 middle"}"#, "\"big\" or \"little\""),
         (r#"{}"#, "names no field"),
-        (r#"{a: {type: "str", charset: "klingon"}}"#, "an encoding's name"),
-        (
-            r#"{a: {type: "bytes", length: 2, order: "little"}}"#,
-            "has no `prefix` for an `order` to read",
-        ),
+        (r#"{a: "str(4, klingon)"}"#, "an encoding's name"),
+        (r#"{a: "bytes(4, latin1)"}"#, "takes only its length"),
+        (r#"{a: "bytes little"}"#, "takes no order"),
+        (r#"{a: "str(4"}"#, "no `)`"),
+        (r#"{a: {type: "u8"}}"#, "'s type is a string"),
+        (r#"{u8: "u8", a: "str(u8)"}"#, "`u8` is a type's name"),
     ] {
         let errs = refused(&format!("unpack(b, {layout})"));
         assert!(errs.contains(says), "{layout}: {errs}");
     }
     assert!(refused(r#"unpack(b, {a: "u8"}, {endian: "big"})"#).contains("takes no option `endian`"));
     assert!(refused(r#"unpack("text", {a: "u8"})"#).contains("bytes"));
+    assert!(refused(r#"pack({a: 1}, {a: "u8"}, {order: "middle"})"#).contains("`pack`'s `order`"));
+}
+
+/// A length is a count, a field before it, or a prefix in its own order, and a `str` reads in its charset.
+#[test]
+fn a_length_and_a_charset_are_written_in_parentheses() {
+    let (rows, kinds) = run(
+        r#"b.unpack({a: "bytes(1)", s: "str(u16 little, latin1)", n: "u8", t: "str(n)"})"#,
+        // 07 | 0200 e9 41 | 01 "z"
+        &["070200e941017a"],
+    );
+    assert!(kinds.is_empty(), "{kinds:?}");
+    assert_eq!(rows, [json!({"a": "Bw==", "s": "éA", "n": 1, "t": "z"})]);
+}
+
+/// `pack` writes what `unpack` reads: the same bytes, from the same layout.
+#[test]
+fn pack_writes_the_bytes_unpack_reads() {
+    let layout = r#"{version: "u8", len: "u16", host: "str(len)", port: "u16 little", tag: "bytes(u8)",
+                     temp: "f32", fixed: "bytes(2)", body: "bytes"}"#;
+    let hex = "01000361626350000268693fc000000a0b7a7a";
+    let (rows, kinds) = run(&format!("toString(b.unpack({layout}).pack({layout}), \"hex\")"), &[hex]);
+    assert!(kinds.is_empty(), "{kinds:?}");
+    assert_eq!(rows, [json!(hex)]);
+}
+
+#[test]
+fn pack_writes_each_number_in_its_type_and_order() {
+    let (rows, kinds) = run(
+        r#"toString({a: 1, b: -2, c: 1.5, d: 7}.pack({a: "u16 little", b: "i32", c: "f64", d: "u64"}, {order: "little"}), "hex")"#,
+        &["00"],
+    );
+    assert!(kinds.is_empty(), "{kinds:?}");
+    assert_eq!(rows, [json!("0100feffffff000000000000f83f0700000000000000")]);
+}
+
+/// A length field is written from its data, whatever the value holds for it.
+#[test]
+fn pack_writes_a_length_from_its_data() {
+    let (rows, kinds) = run(
+        r#"toString({n: 99, s: "hé", t: "ab"}.pack({n: "u8", s: "str(n)", t: "str(u16)"}), "hex")"#,
+        &["00"],
+    );
+    assert!(kinds.is_empty(), "{kinds:?}");
+    assert_eq!(rows, [json!("0368c3a900026162")]);
+}
+
+#[test]
+fn a_value_its_field_cannot_hold_makes_the_message_null() {
+    for (expr, kind) in [
+        (r#"{a: 256}.pack({a: "u8"})"#, "Overflow"),
+        (r#"{a: -1}.pack({a: "u64"})"#, "Overflow"),
+        (r#"{a: 1e40}.pack({a: "f32"})"#, "Overflow"),
+        (r#"{a: "abc"}.pack({a: "str(2)"})"#, "IndexOutOfRange"),
+        (r#"{a: 300, s: "x"}.pack({a: "u8", s: "str(u8)"})"#, "Overflow"),
+        (
+            r#"{n: 0, a: "ab", b: "abc"}.pack({n: "u8", a: "str(n)", b: "str(n)"})"#,
+            "IndexOutOfRange",
+        ),
+    ] {
+        let (rows, kinds) = run(expr, &["00"]);
+        assert_eq!(rows, [Value::Null], "{expr}");
+        assert!(kinds.contains(&kind), "{expr}: {kinds:?}");
+    }
+}
+
+#[test]
+fn a_number_is_written_in_its_type_and_order() {
+    let (rows, kinds) = run(
+        r#"[writeInt(258, "u16"), writeInt(258, "u16", "little"), writeInt(-1, "i8"), writeFloat(1.5, "f32"),
+            writeInt(128, "i8"), writeInt(1, "f32"), writeFloat(1, "u8")].map((w) => toString(w, "hex"))"#,
+        &["00"],
+    );
+    assert_eq!(rows, [json!(["0102", "0201", "ff", "3fc00000", null, null, null])]);
+    assert_eq!(kinds, ["Overflow", "CoercionRefused", "CoercionRefused"]);
+}
+
+#[test]
+fn concat_joins_bytes() {
+    let (rows, kinds) = run(r#"toString(concat(b, writeInt(2, "u8"), b), "hex")"#, &["01"]);
+    assert!(kinds.is_empty(), "{kinds:?}");
+    assert_eq!(rows, [json!("010201")]);
 }
 
 /// A field's name may hold a control character.

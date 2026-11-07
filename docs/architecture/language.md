@@ -90,22 +90,29 @@ that is not the form, or a character the charset cannot spell is null with a
 
 A binary message is read out of `bytes` by byte position: a number with
 `readInt` or `readFloat`, in the byte order the call names or big, and bytes
-with `readBytes`.
+with `readBytes`. One is written with `writeInt` and `writeFloat`, which give
+a number's bytes, and `concat`, which joins bytes.
 
 A read past the end of the bytes is null with an `IndexOutOfRange` error, so a
 read never reaches outside the message. An integer above the largest `i64` is
 null with an `Overflow` error, and a float that is NaN or infinite is null
-with a `NaN` error.
+with a `NaN` error. A number its type cannot hold is null with an `Overflow`
+error when it is written.
 
 `unpack` reads a whole message into an object, from a layout that names each
 field and its type in the order the bytes come. Each field starts where the
-one before it ends. The compiler reads the layout as a literal and expands the
-call to those reads, so a layout it cannot read is a compile error. A field
-the message is too short for is null with its error, and every field after it
-is null.
+one before it ends. `pack` writes an object back as a message from the same
+layout, so `value.pack(layout).unpack(layout)` gives the value back. A type
+is a string that also carries a number's order, or the length of bytes or
+text: a count, an integer field before it, or a prefix. The
+compiler reads the layout as a literal and expands the call to those reads or
+writes, so a layout it cannot read is a compile error. A field the message is
+too short for is null with its error, and every field after it is null. `pack`
+writes a length from the data it measures, and a value the layout cannot hold
+makes the message null with its error.
 
 ```ts
-msg = unpack(__source.bytes, {version: "u8", len: "u16", host: {type: "str", length: "len"}, body: "bytes"})
+msg = __source.bytes.unpack({version: "u8", len: "u16", host: "str(len)", port: "u16 little", body: "bytes"})
 ```
 
 ## Null

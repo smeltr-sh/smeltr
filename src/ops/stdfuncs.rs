@@ -409,6 +409,8 @@ stdfuncs! {
     ReadInt     "readInt"     = some(byteops::read_int);       [Bytes, I64, Str] => (I64), [Bytes, I64, Str, Str] => (I64);
     ReadFloat   "readFloat"   = some(byteops::read_float);     [Bytes, I64, Str] => (F64), [Bytes, I64, Str, Str] => (F64);
     ReadBytes   "readBytes"   = some(byteops::read_bytes);     [Bytes, I64, I64] => (Bytes);
+    WriteInt    "writeInt"    = some(byteops::write_int);      [I64, Str] => (Bytes), [I64, Str, Str] => (Bytes);
+    WriteFloat  "writeFloat"  = some(byteops::write_float);    [F64, Str] => (Bytes), [F64, Str, Str] => (Bytes);
     ParseInt    "parseInt"    = some(|c, i| convert::read_or_refuse(c, i, convert::parse_int));      [Str] => (I64), [Str, I64] => (I64);
     ParseHex    "parseHex"    = some(|c, i| convert::read_or_refuse(c, i, convert::parse_hex));      [Str] => (I64);
     ParseFloat  "parseFloat"  = some(|c, i| convert::read_or_refuse(c, i, convert::parse_float));    [Str] => (F64);
@@ -461,7 +463,7 @@ stdfuncs! {
     Remove      "remove"      = some(arrayops::array_remove);  [Array, I64] => (same 0);
     Resize      "resize"      = some(arrayops::array_resize);  [Array, I64] => (same 0);
     Join        "join"        = some(arrayops::array_join);    [Array, Str] => (Str);
-    Concat      "concat"      = some(arrayops::array_concat);  [Array, Array] => (same_array);
+    Concat      "concat"      = some(concat_any);              [Array, Array] => (same_array), [Bytes, Bytes] => (Bytes);
     Match       "match"       = None;                          [Str, Pattern] => (array Str);
     Test        "test"        = None;                          [Str, Pattern] => (Bool);
     ReplaceFirst "replaceFirst" = None;                        [Str, Pattern, Str] => (Str);
@@ -519,7 +521,7 @@ impl StdFunc {
         use StdFunc::*;
         match self {
             Min | Max | Clamp | Idiv | IsNull | CommunityId | Decode | Encode | FormatTime | ReadInt | ReadFloat
-            | ReadBytes => true,
+            | ReadBytes | WriteInt | WriteFloat => true,
             StartsWith | EndsWith | Split | Join | Repeat | At | Insert | Remove | Resize | Duration | CountIn
             | ParseInt | CidrNetwork | ToString | ParseBytes => i == 1,
             Slice | PadStart | PadEnd | ParseTime | Includes | IndexOf | LastIndexOf => i == 1 || i == 2,
@@ -626,6 +628,14 @@ macro_rules! text_or_array {
             }
         }
     };
+}
+
+/// `concat` on arrays, or on bytes.
+pub fn concat_any(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+    match ins[0].data_type() {
+        DataType::Bytes => byteops::concat(ctx, ins),
+        _ => arrayops::array_concat(ctx, ins),
+    }
 }
 
 text_or_array!(slice_any, strops::str_slice, arrayops::array_slice);

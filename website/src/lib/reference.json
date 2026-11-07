@@ -380,7 +380,7 @@
     {
       "id": "binary",
       "title": "Bytes",
-      "blurb": "A `bytes` value: made from text and read back as text, read at a byte position, and searched. A byte position counts from 0. A read that runs past the end of the bytes is null and throws an `IndexOutOfRange` exception. A number's type is `\"u8\"`, `\"u16\"`, `\"u32\"` or `\"u64\"` unsigned, `\"i8\"`, `\"i16\"`, `\"i32\"` or `\"i64\"` signed, or `\"f32\"` or `\"f64\"`. Its byte order is `\"big\"` or `\"little\"`, and big when the call names none. `unpack` reads a whole layout of fields at once.",
+      "blurb": "A `bytes` value: made from text and read back as text, read at a byte position, and searched. A byte position counts from 0. A read that runs past the end of the bytes is null and throws an `IndexOutOfRange` exception. A number's type is `\"u8\"`, `\"u16\"`, `\"u32\"` or `\"u64\"` unsigned, `\"i8\"`, `\"i16\"`, `\"i32\"` or `\"i64\"` signed, or `\"f32\"` or `\"f64\"`. Its byte order is `\"big\"` or `\"little\"`, and big when the call names none. `unpack` reads a whole layout of fields at once, and `pack` writes one.",
       "functions": [
         {
           "name": "parseBytes",
@@ -588,11 +588,11 @@
         {
           "name": "unpack",
           "signature": "bytes.unpack({field: type, ...}, {order})",
-          "summary": "A binary message read into an object, one field after another in the order the layout names them, each starting where the one before it ends. A field is a number type; `\"bytes\"` or `\"str\"`, which run to the end of the message unless given a `length`; or an object naming its `type` and what that type takes. A number takes an `order`. A `\"bytes\"` or `\"str\"` field takes a `length`, which is a count or the name of an integer field before it, or else a `prefix`, the integer type of a length written just before it, with its own `order`. A `\"str\"` field takes a `charset`, `\"utf-8\"` when it names none. The options' `order` is the byte order of every number that names none. A field the message is too short for is null and throws an `IndexOutOfRange` exception, and every field after it is null, so the object leaves them out.",
+          "summary": "A binary message read into an object, one field after another in the order the layout names them, each starting where the one before it ends. A field's type is a string. A number type may be followed by its order, `\"u16 little\"`. `\"bytes\"` and `\"str\"` run to the end of the message, or take their length in parentheses: a count, `\"bytes(4)\"`; an integer field before them, `\"str(len)\"`; or the integer type of a length written just before them, with its own order, `\"str(u16 little)\"`. A `\"str\"` takes its charset after its length, `\"str(len, latin1)\"`, and is UTF-8 when it names none. No field is named after a type. The options' `order` is the byte order of every number that names none. A field the message is too short for is null and throws an `IndexOutOfRange` exception, and every field after it is null, so the object leaves them out.",
           "examples": [
             {
               "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
-              "expr": "msg.unpack({version: \"u8\", len: \"u16\", host: {type: \"str\", length: \"len\"}, port: {type: \"u16\", order: \"little\"}, tag: {type: \"str\", prefix: \"u8\"}, temp: \"f32\", rest: \"bytes\"})",
+              "expr": "msg.unpack({version: \"u8\", len: \"u16\", host: \"str(len)\", port: \"u16 little\", tag: \"str(u8)\", temp: \"f32\", rest: \"bytes\"})",
               "result": "{\"version\": 1, \"len\": 3, \"host\": \"abc\", \"port\": 80, \"tag\": \"hi\", \"temp\": 1.5, \"rest\": \"eno=\"}"
             },
             {
@@ -600,13 +600,109 @@
               "result": "{\"a\": 1, \"b\": -1}"
             },
             {
-              "expr": "parseBytes(\"01056162\", \"hex\").unpack({a: \"u8\", s: {type: \"str\", prefix: \"u8\"}, c: \"u8\"})",
+              "expr": "parseBytes(\"ffffffffffffffff01\", \"hex\").unpack({id: \"bytes(8)\", n: \"u8\"})",
+              "result": "{\"id\": \"//////////8=\", \"n\": 1}",
+              "note": "a `u64` past the largest `i64`, kept as its 8 bytes; `\"u64\"` would read it as null and throw an `Overflow` exception"
+            },
+            {
+              "expr": "parseBytes(\"01056162\", \"hex\").unpack({a: \"u8\", s: \"str(u8)\", c: \"u8\"})",
               "result": "{\"a\": 1}",
               "throws": ["IndexOutOfRange"],
               "note": "`s` says 5 bytes, and only 2 are left"
             }
           ],
           "group": "Reading at a position"
+        },
+        {
+          "name": "writeInt",
+          "signature": "number.writeInt(type, order)",
+          "summary": "The bytes of an integer as the given `type`, `\"u8\"` to `\"i64\"`. A number the type cannot hold, such as 256 as a `\"u8\"` or a negative number as a `\"u64\"`, is null and throws an `Overflow` exception. A type or an order it does not know is null and throws a `CoercionRefused` exception.",
+          "examples": [
+            {
+              "given": ["n = 258"],
+              "expr": "n.writeInt(\"u16\").toString(\"hex\")",
+              "result": "\"0102\""
+            },
+            {
+              "given": ["n = 258"],
+              "expr": "n.writeInt(\"u32\", \"little\").toString(\"hex\")",
+              "result": "\"02010000\""
+            },
+            {
+              "expr": "writeInt(256, \"u8\")",
+              "result": "null",
+              "throws": ["Overflow"]
+            },
+            {
+              "expr": "writeInt(-1, \"i8\").toString(\"hex\")",
+              "note": "the same call, written as a function",
+              "result": "\"ff\""
+            }
+          ],
+          "group": "Writing"
+        },
+        {
+          "name": "writeFloat",
+          "signature": "number.writeFloat(type, order)",
+          "summary": "The bytes of a number as the given `type`, `\"f32\"` or `\"f64\"`. An `\"f32\"` rounds to the nearest one it holds, and a number past its range is null and throws an `Overflow` exception. A type or an order it does not know is null and throws a `CoercionRefused` exception.",
+          "examples": [
+            {
+              "expr": "writeFloat(1.5, \"f32\").toString(\"hex\")",
+              "result": "\"3fc00000\""
+            },
+            {
+              "expr": "writeFloat(1.5, \"f32\", \"little\").toString(\"hex\")",
+              "result": "\"0000c03f\""
+            }
+          ],
+          "group": "Writing"
+        },
+        {
+          "name": "concat",
+          "on": "bytes",
+          "signature": "bytes.concat(other, ...)",
+          "summary": "The bytes of each in turn, as one `bytes` value.",
+          "examples": [
+            {
+              "expr": "writeInt(2, \"u8\").concat(\"hi\".encode(\"utf-8\")).toString(\"hex\")",
+              "result": "\"026869\""
+            },
+            {
+              "expr": "concat(writeInt(1, \"u8\"), writeInt(2, \"u8\"), writeInt(3, \"u8\")).toString(\"hex\")",
+              "note": "the same call, written as a function",
+              "result": "\"010203\""
+            }
+          ],
+          "group": "Writing"
+        },
+        {
+          "name": "pack",
+          "signature": "object.pack({field: type, ...}, {order})",
+          "summary": "An object's fields written as a binary message, from the layout `unpack` reads, so `value.pack(layout).unpack(layout)` gives the value back. A field whose bytes have a length is written with the length of its data: a length field is written from the field it measures, whatever the object holds for it, and a count the data does not match is null and throws an `IndexOutOfRange` exception. A number its type cannot hold is null and throws an `Overflow` exception. Either of these, or a null field, makes the message null.",
+          "examples": [
+            {
+              "expr": "{version: 1, host: \"abc\", port: 80}.pack({version: \"u8\", len: \"u16\", host: \"str(len)\", port: \"u16 little\"}).toString(\"hex\")",
+              "result": "\"0100036162635000\"",
+              "note": "`len` is written from `host`"
+            },
+            {
+              "expr": "{id: parseBytes(\"ffffffffffffffff\", \"hex\"), n: 1}.pack({id: \"bytes(8)\", n: \"u8\"}).toString(\"hex\")",
+              "result": "\"ffffffffffffffff01\"",
+              "note": "a `u64` past the largest `i64`, written from its 8 bytes"
+            },
+            {
+              "expr": "{a: 256}.pack({a: \"u8\"})",
+              "result": "null",
+              "throws": ["Overflow"]
+            },
+            {
+              "given": ["msg = parseBytes(\"01000361626350000268693fc000007a7a\", \"hex\")"],
+              "expr": "pack(msg.unpack({a: \"u8\", b: \"u16\"}), {a: \"u8\", b: \"u16\"}).toString(\"hex\")",
+              "note": "the same call, written as a function",
+              "result": "\"010003\""
+            }
+          ],
+          "group": "Writing"
         },
         {
           "name": "indexOf",

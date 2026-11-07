@@ -1,6 +1,8 @@
-//! Reads of a `bytes` value at a position: `readInt`, `readFloat` and `readBytes`, what a binary layout is read
-//! with. Each reads only inside the value: a position or a count that runs past its end, or is negative, is null with
-//! an `IndexOutOfRange` on its row, so no input reads more than the message holds.
+//! Reads of a `bytes` value at a position: `readInt`, `readFloat` and `readBytes`, what `unpack` reads a layout with.
+//! Each reads only inside the value: a position or a count that runs past its end, or is negative, is null with an
+//! `IndexOutOfRange` on its row, so no input reads more than the message holds. Their writers, `writeInt`,
+//! `writeFloat` and `concat` on bytes, are what `pack` writes a layout with. A number its type cannot hold is null
+//! with an `Overflow`.
 //!
 //! A number's type is named as `unpack`'s layout names it, `"u8"` to `"u64"`, `"i8"` to `"i64"`, `"f32"` and
 //! `"f64"`, and its byte order `"big"` or `"little"`, big when the call names none: network order.
@@ -101,6 +103,42 @@ impl NumType {
             (_, Order::Big) => f64::from_be_bytes(wide),
             (_, Order::Little) => f64::from_le_bytes(wide),
         }
+    }
+}
+
+impl NumType {
+    /// Appends `n` as this integer type in `order`. A value the type cannot hold is an `Overflow`.
+    fn put_int(self, n: i64, order: Order, out: &mut Vec<u8>) -> Result<(), ExceptionKind> {
+        let bits = 8 * self.width() as u32;
+        let fits = match self {
+            NumType::I8 | NumType::I16 | NumType::I32 | NumType::I64 => {
+                bits == 64 || (-(1i64 << (bits - 1))..1i64 << (bits - 1)).contains(&n)
+            }
+            _ => n >= 0 && (bits == 64 || n < 1i64 << bits),
+        };
+        if !fits {
+            return Err(ExceptionKind::Overflow);
+        }
+        let wide = (n as u64).to_be_bytes();
+        let low = &wide[8 - self.width()..];
+        match order {
+            Order::Big => out.extend_from_slice(low),
+            Order::Little => out.extend(low.iter().rev()),
+        }
+        Ok(())
+    }
+
+    /// Appends `x` as this float type in `order`. A value past an `f32`'s range is an `Overflow`; one between two
+    /// `f32`s rounds to the nearer.
+    fn put_float(self, x: f64, order: Order, out: &mut Vec<u8>) -> Result<(), ExceptionKind> {
+        match (self, order) {
+            (NumType::F32, _) if (x as f32).is_infinite() => return Err(ExceptionKind::Overflow),
+            (NumType::F32, Order::Big) => out.extend((x as f32).to_be_bytes()),
+            (NumType::F32, Order::Little) => out.extend((x as f32).to_le_bytes()),
+            (_, Order::Big) => out.extend(x.to_be_bytes()),
+            (_, Order::Little) => out.extend(x.to_le_bytes()),
+        }
+        Ok(())
     }
 }
 
@@ -255,6 +293,104 @@ pub fn read_bytes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     }
     for (row, kind) in raised {
         ctx.raise(row, kind);
+    }
+    out.finish()
+}
+
+/// A number written as its bytes: `None` for a type the call does not write, a float to `writeInt` or an integer to
+/// `writeFloat`.
+type NumWrite<T> = fn(NumType, T, Order, &mut Vec<u8>) -> Option<Result<(), ExceptionKind>>;
+
+/// The numbers a column holds, as `side::i64` and `side::f64` read them.
+type Numbers<'a, T> = fn(&'a Column) -> Option<Side<'a, &'a [T], T>>;
+
+/// The bytes of the number `ins[0]`, as type `ins[1]` in the order `ins[2]` or big, written by `write`. A type or an
+/// order that is not one of the names above is a `CoercionRefused`, as it is to the reads.
+fn write_num<'a, T: Copy>(ctx: &mut Ctx, ins: &[&'a Column], value: Numbers<'a, T>, write: NumWrite<T>) -> Column {
+    let len = ins[0].len();
+    if let Some(e) = short_circuit_empty(ins, &DataType::Bytes, len) {
+        return e;
+    }
+    let (Some(v), Some(ty)) = (value(ins[0]), side::var(ins[1])) else {
+        return Column::empty(DataType::Bytes, len);
+    };
+    let order = match ins.get(2) {
+        None => None,
+        Some(c) => match side::var(c) {
+            Some(o) => Some(o),
+            None => return Column::empty(DataType::Bytes, len),
+        },
+    };
+    let refused = ExceptionKind::CoercionRefused { to: DataType::Bytes };
+    let mut types = Labels::new(NumType::of);
+    let mut orders = Labels::new(Order::of);
+    let mut out = StrBuilder::new(ctx.pool, VarType::Bytes, len);
+    let mut bytes = Vec::with_capacity(8);
+    let mut raised = Vec::new();
+    for i in 0..len {
+        if !(v.is_valid(i) && ty.is_valid(i) && order.as_ref().is_none_or(|o| o.is_valid(i))) {
+            out.push_null();
+            continue;
+        }
+        let ty = types.get(ty.at(i));
+        let order = match &order {
+            None => Some(Order::Big),
+            Some(o) => orders.get(o.at(i)),
+        };
+        bytes.clear();
+        let written = match (ty, order) {
+            (Some(ty), Some(order)) => write(ty, v.at(i), order, &mut bytes).unwrap_or_else(|| Err(refused.clone())),
+            _ => Err(refused.clone()),
+        };
+        match written {
+            Ok(()) => out.push_grow(ctx.pool, &bytes),
+            Err(kind) => {
+                out.push_null();
+                raised.push((i, kind));
+            }
+        }
+    }
+    for (row, kind) in raised {
+        ctx.raise(row, kind);
+    }
+    out.finish()
+}
+
+/// `writeInt(n, type[, order])` -> `Bytes`: `n` as the integer type `type`, `"u8"` to `"i64"`.
+pub fn write_int(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+    write_num(ctx, ins, side::i64, |ty, n, order, out| {
+        (!ty.is_float()).then(|| ty.put_int(n, order, out))
+    })
+}
+
+/// `writeFloat(x, type[, order])` -> `Bytes`: `x` as the float type `type`, `"f32"` or `"f64"`.
+pub fn write_float(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+    write_num(ctx, ins, side::f64, |ty, x, order, out| {
+        ty.is_float().then(|| ty.put_float(x, order, out))
+    })
+}
+
+/// `concat(a, b, ...)` -> `Bytes`: the bytes of each in turn, or null where any is null.
+pub fn concat(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+    let len = ins[0].len();
+    if let Some(e) = short_circuit_empty(ins, &DataType::Bytes, len) {
+        return e;
+    }
+    let Some(parts) = ins.iter().map(|c| side::var(c)).collect::<Option<Vec<_>>>() else {
+        return Column::empty(DataType::Bytes, len);
+    };
+    let mut out = StrBuilder::new(ctx.pool, VarType::Bytes, len);
+    let mut bytes = Vec::new();
+    for i in 0..len {
+        if !parts.iter().all(|p| p.is_valid(i)) {
+            out.push_null();
+            continue;
+        }
+        bytes.clear();
+        for p in &parts {
+            bytes.extend_from_slice(p.at(i));
+        }
+        out.push_grow(ctx.pool, &bytes);
     }
     out.finish()
 }

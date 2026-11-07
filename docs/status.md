@@ -19,6 +19,7 @@ document's systems.
 | Stdlib: variadic `push`/`insert`/`concat`/`min`/`max`, `+` on arrays; address functions; Elastic's enrichments (`parseUrl`, `registeredDomain`, `parseUserAgent`, hashes, `communityId`, ...) (Language) | built |
 | Bytes are not text: `decode`, `encode`, `toString(bytes, form)`, `parseBytes` (Language, Columnar data model) | built |
 | Binary messages: `readInt`, `readFloat`, `readBytes` and `unpack`, which `expr::inline` expands to them (Language, Compiler) | built |
+| Binary messages written: `writeInt`, `writeFloat`, `concat` on bytes and `pack`, which `expr::inline` expands to them (Language, Compiler) | built |
 | Functions as values: `let`-bound arrows, `map`/`filter` (Language) | built. Not built: a function type annotation, `(x: T) => R`; a function chosen per row, `(c ? f : g)(x)`; a `let`-bound arrow calling itself |
 | A key is a key; `splitDots` (Language) | built |
 | Compile warnings and formatting (Compiler) | built (`Plan::warnings`, `expr::pretty`, `POST /api/preview/format`). Warnings show in the pipeline editor only; a review or a deploy does not list them |
