@@ -108,6 +108,17 @@ describe('agent permissions', () => {
     });
   });
 
+  it('shows an area without a level of its own as every area, before a save and after', async () => {
+    await open({ administrator: false, default: 'viewer', areas: {} });
+    const select = () =>
+      target.querySelector<HTMLSelectElement>('select[aria-label="payments level"]')!;
+    expect(select().value).toBe('');
+    button('Save').click();
+    await vi.waitFor(() => expect(target.textContent).toContain('agent permissions saved'));
+    expect(select().value).toBe('');
+    expect(select().selectedOptions[0]?.textContent).toBe('as every area');
+  });
+
   it('lets an administrator give their agent the administrator role, which leaves no levels', async () => {
     await open({ administrator: false, default: 'viewer', areas: {} }, true);
     target.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();

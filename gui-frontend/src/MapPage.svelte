@@ -31,6 +31,8 @@
     streamsIn,
     type MapGroupError,
     type MapNode,
+    type SourceDto,
+    type DestinationDto,
     type NodeReadingDto,
     type MapResponse,
     type MeasurementsResponse,
@@ -53,6 +55,8 @@
     type Attention,
   } from './mapTerms';
   import { mapGlyph, SYSTEM_LABELS } from './systemGlyphs';
+  import { typeLabel as sourceTypeLabel } from './sources';
+  import { typeLabel as destinationTypeLabel } from './destinations';
   import {
     HEAD_H,
     NODE_H,
@@ -291,11 +295,18 @@
     return `<svg viewBox="0 0 64 64" width="${px}" height="${px}" aria-hidden="true"><path d="${g.d}" fill="currentColor" fill-rule="${rule}"/></svg>`;
   }
 
-  /** A card's second line: the system behind a source or destination, or how many routes run
-   * through a pipeline. */
+  /** A card's second line: a source's or destination's type, as its own page names it, or how
+   * many routes run through a pipeline. */
   function cardMeta(n: MapNode): string {
     if (n.kind === 'pipeline')
       return count(routesThrough(allEdges, nodeKey(n.group, n.kind, n.authorId)).size, 'route');
+    // A type this build does not know has no name here: the name of its system stands in.
+    const named =
+      n.type &&
+      (n.kind === 'source'
+        ? sourceTypeLabel(n.type as SourceDto['type'])
+        : destinationTypeLabel(n.type as DestinationDto['type']));
+    if (named) return named;
     if (!n.system) return '';
     // `MapSystem` mirrors the leader's enum by hand: a system this build does not know reads as
     // the leader named it.
