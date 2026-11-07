@@ -32,6 +32,10 @@ pub const TOOL: &str = "request";
 /// What a call the turn ended before is answered with.
 const NOT_RUN: &str = "not run: the turn ended before this call ran";
 
+/// The ask that ends a turn whose rounds ran out.
+const ROUNDS_OUT: &str = "You have used every round of requests this turn allows, so the calls above were not run. \
+                          Tell the person what you did, where you stopped and what is left, and call no tool.";
+
 /// One route the agent may call, as the system prompt describes it.
 #[derive(Clone, Copy, Debug)]
 pub struct Route {
@@ -406,7 +410,7 @@ pub async fn run(
             return Ok(Ended::Answered);
         }
         if round == MAX_ROUNDS {
-            break;
+            return end_rounds(model, host, system, turns, &calls, asking).await;
         }
         let mut results = Vec::with_capacity(calls.len());
         for call in &calls {
@@ -423,6 +427,47 @@ pub async fn run(
             return Ok(Ended::Stopped);
         }
     }
+    unreachable!("a turn ends within its rounds")
+}
+
+/// End a turn whose rounds ran out: its last `calls` are answered [`NOT_RUN`], and the model, asked [`ROUNDS_OUT`],
+/// tells the person where it stopped. The ask is not kept, so the conversation shows only that answer.
+async fn end_rounds(
+    model: &dyn Model,
+    host: &dyn Host,
+    system: &str,
+    mut turns: Vec<Turn>,
+    calls: &[Call],
+    asking: &Asking,
+) -> Result<Ended, String> {
+    let not_run: Vec<Said> = calls
+        .iter()
+        .map(|call| Said::Result {
+            call_id: call.id.clone(),
+            output: NOT_RUN.to_string(),
+            is_error: true,
+        })
+        .collect();
+    host.keep(&Turn::Asked(not_run.clone())).await?;
+    let mut said = not_run;
+    said.push(Said::Text(ROUNDS_OUT.to_string()));
+    turns.push(Turn::Asked(said));
+    let heard = |text: &str| host.heard(text);
+    let reply = model
+        .ask(Request {
+            system,
+            turns: &turns,
+            tools: &[tool()],
+            max_tokens: MAX_TOKENS,
+            think: false,
+            compact: true,
+            effort: asking.effort,
+            cache_key: asking.cache_key.as_deref(),
+            person: asking.person.as_deref(),
+            heard: Some(Heard(&heard)),
+        })
+        .await?;
+    host.keep(&Turn::Answered(reply)).await?;
     Ok(Ended::Rounds)
 }
 
@@ -677,14 +722,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_turn_ends_after_its_rounds_and_its_last_calls_are_answered_next_turn() {
+    async fn a_turn_ends_after_its_rounds_with_the_agent_saying_where_it_stopped() {
         let call = || {
             reply(
                 "",
                 &[("c", json!({"method": "GET", "path": "/api/areas/shared/pipelines"}))],
             )
         };
-        let model = Scripted::new((0..=MAX_ROUNDS).map(|_| call()).chain([reply("ok", &[])]).collect());
+        let model = Scripted::new(
+            (0..=MAX_ROUNDS)
+                .map(|_| call())
+                .chain([reply("Stopped here.", &[]), reply("ok", &[])])
+                .collect(),
+        );
         let host = Fake::new(usize::MAX, "");
         let ended = run(
             &model,
@@ -699,23 +749,34 @@ mod tests {
         assert_eq!(ended, Ok(Ended::Rounds));
         assert_eq!(host.sent.lock().unwrap().len(), MAX_ROUNDS);
 
-        let before = host.kept.lock().unwrap().clone();
-        run(&model, &host, CATALOG, "", before, asked("Go on."), &Asking::default())
+        // The model is told why the calls were not run and asked where it stopped; only its answer is kept.
+        let asked_last = model.asked.lock().unwrap().last().unwrap().clone();
+        let Turn::Asked(said) = asked_last.last().unwrap() else {
+            panic!("the model's last request is the closing ask: {asked_last:?}");
+        };
+        assert_eq!(said.last(), Some(&Said::Text(ROUNDS_OUT.to_string())));
+        let kept = host.kept.lock().unwrap().clone();
+        let [.., Turn::Asked(not_run), Turn::Answered(closing)] = kept.as_slice() else {
+            panic!("the turn ends with its calls not run and the closing answer: {kept:?}");
+        };
+        assert_eq!(
+            not_run,
+            &vec![Said::Result {
+                call_id: "c".to_string(),
+                output: NOT_RUN.to_string(),
+                is_error: true,
+            }]
+        );
+        assert_eq!(closing.text, "Stopped here.");
+
+        run(&model, &host, CATALOG, "", kept, asked("Go on."), &Asking::default())
             .await
             .unwrap();
         let last = model.asked.lock().unwrap().last().unwrap().clone();
         let Turn::Asked(said) = last.last().unwrap() else {
             panic!("the conversation ends with what was said");
         };
-        assert_eq!(
-            said[0],
-            Said::Result {
-                call_id: "c".to_string(),
-                output: NOT_RUN.to_string(),
-                is_error: true,
-            }
-        );
-        assert_eq!(said[1], Said::Text("Go on.".to_string()));
+        assert_eq!(said, &vec![Said::Text("Go on.".to_string())]);
     }
 
     #[tokio::test]
