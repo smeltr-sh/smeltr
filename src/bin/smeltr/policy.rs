@@ -88,9 +88,21 @@ pub fn need(method: &Method, path: &str) -> Need {
 
     match (method.clone(), segments.as_slice()) {
         // A preview computes from what it is given and reads no area. The standards' releases are carried in smeltr.
-        (Method::POST, ["preview", _]) | (Method::GET | Method::HEAD, ["preview", "schema-standards"]) => {
-            Need::Somewhere(Level::Viewer)
-        }
+        (
+            Method::POST,
+            [
+                "preview",
+                "grok"
+                | "onboard"
+                | "line-breaker"
+                | "format"
+                | "certificate"
+                | "sql"
+                | "schema-read"
+                | "schema-export",
+            ],
+        )
+        | (Method::GET | Method::HEAD, ["preview", "schema-standards"]) => Need::Somewhere(Level::Viewer),
         // Production records a capture reads from a group's workers, in no one area.
         (Method::POST, ["captures"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["captures", _])
@@ -359,6 +371,7 @@ mod tests {
         ] {
             assert_eq!(need(&Method::POST, path), Need::Somewhere(Level::Viewer), "{path}");
         }
+        assert_eq!(need(&Method::POST, "/api/preview/unlisted"), Need::Administrator);
     }
 
     #[test]
