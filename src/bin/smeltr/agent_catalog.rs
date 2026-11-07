@@ -654,7 +654,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/agent/conversations/:id",
-        what: "Read back this conversation, the only one you can read, with `this` as its id, by a range of turns or a search: `items`, each with the `turn` it is of, and `turns`, how many there are. Query, at least one of: from (the first turn, counted from 0), to (stop before this turn; without it, read through the last), q (instead of whole turns, a snippet of each item whose text holds every word of q, within from and to; narrow a long answer with more words or a range).",
+        what: "Read back this conversation, the only one you can read, with `this` as its id, by a range of turns or a search: `items`, each with the `turn` it is of, and `turns`, how many there are. Query, at least one of: from (the first turn, counted from 0), to (stop before this turn; without it, only the `from` turn is read, or with no `from` every turn through the last), q (instead of whole turns, a snippet of each item whose text holds every word of q, within the turns from and to name; narrow a long answer with more words or a range).",
         body: "",
     },
     Route {

@@ -672,7 +672,8 @@ pub struct Reading {
     /// The first turn read, counted from 0. Without it, the first.
     #[serde(default)]
     from: Option<usize>,
-    /// The turn the read stops before. Without it, the read goes to the last turn.
+    /// The turn the read stops before. Without it, the read is of `from` alone, or with no `from` goes to the last
+    /// turn.
     #[serde(default)]
     to: Option<usize>,
     /// Instead of whole turns, a snippet of each item whose text holds every word of it, ignoring case.
@@ -713,6 +714,9 @@ pub async fn read(
             "name the turns with from or to, or search with q",
         );
     }
+    if reading.q.as_deref().is_some_and(|q| q.trim().is_empty()) {
+        return refuse(StatusCode::BAD_REQUEST, "q needs a word to search for");
+    }
     let conversation = match owned(&auth, &actor, &id).await {
         Ok(c) => c,
         Err(refused) => return *refused,
@@ -752,7 +756,12 @@ pub async fn read(
 /// The items of `turns` that `reading` asks for, each saying which turn it is of: whole, or with `q` a snippet of
 /// each that matches.
 fn read_items(turns: &[String], reading: &Reading) -> Vec<Value> {
-    let to = reading.to.unwrap_or(turns.len()).min(turns.len());
+    let to = match (reading.from, reading.to) {
+        (_, Some(to)) => to,
+        (Some(from), None) => from + 1,
+        (None, None) => turns.len(),
+    }
+    .min(turns.len());
     let from = reading.from.unwrap_or(0).min(to);
     let numbered = turns[from..to].iter().enumerate().flat_map(|(n, t)| {
         items(t).into_iter().map(move |mut item| {

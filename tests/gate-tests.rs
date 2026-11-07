@@ -1466,6 +1466,9 @@ fn an_agent_reads_back_only_its_own_conversation() {
         "{found}"
     );
     assert!(items.iter().all(|i| i.get("snippet").is_some()), "{found}");
+    // A search for no word would match every item.
+    let (status, _) = leader.get_as(&op.session, &format!("/api/agent/conversations/{id}?q=%20"));
+    assert_eq!(status, 400);
     // Naming no turns, the GUI reads the conversation whole, as before.
     let (_, whole) = leader.get_as(&op.session, &format!("/api/agent/conversations/{id}"));
     assert!(whole["conversation"].get("turns").is_none(), "{whole}");
@@ -1483,6 +1486,15 @@ fn an_agent_reads_back_only_its_own_conversation() {
         "{page}"
     );
     assert!(page["conversation"]["turns"].as_u64().unwrap() > 4, "{page}");
+    // `from` alone reads that one turn.
+    let read = say(&id, "read back /api/agent/conversations/this?from=0");
+    let output = last_result(&read);
+    let page: serde_json::Value = serde_json::from_str(output.split_once('\n').unwrap().1).unwrap();
+    assert_eq!(
+        page["conversation"]["items"],
+        serde_json::json!([{"kind": "message", "text": "What runs in shared?", "turn": 0}]),
+        "{page}"
+    );
     // Naming no turns and no search, the agent is refused: the whole conversation would fill its context.
     let read = say(&id, "read back /api/agent/conversations/this");
     assert!(last_result(&read).starts_with("400\n"), "{read}");
