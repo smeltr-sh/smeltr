@@ -98,10 +98,6 @@
       <a href="mailto:support@smeltr.sh">support@smeltr.sh</a>.
     </p>
     <p>
-      Employees are counted as your organization already reports them, together with those of any
-      parent company and of everything it controls. Contractors are not counted.
-    </p>
-    <p>
       Smeltr is licensed under the Business Source License 1.1. Each release becomes Apache 2.0 four
       years after it ships. The <a href={source}>source code</a> is public, and
       <a href={license}>the license</a> has the full terms.
