@@ -7,7 +7,9 @@
     EXCEPTIONS as exceptions,
     GROUPS as groups,
     LITERALS as literals,
-    SIGNATURES as signatures,
+    anchor,
+    title,
+    typedRows,
     TYPES as types,
     topic,
     type Example,
@@ -29,7 +31,7 @@
   const errors: Record<string, Refused[]> = examplesData.errors;
   const entries = groups
     .flatMap((group) =>
-      group.functions.map((fn) => ({ id: fn.name, title: fn.name, summary: fn.summary })),
+      group.functions.map((fn) => ({ id: anchor(fn), title: title(fn), summary: fn.summary })),
     )
     .concat(
       language.parseFunctions.map((fn) => ({
@@ -201,16 +203,16 @@
       {#if run.group}
         <p class="grouphead">{run.group}</p>
       {/if}
-      {#each run.items as fn (fn.name)}
+      {#each run.items as fn (anchor(fn))}
         <article class="fn">
-          <h3 id={fn.name}>
-            <a class="heading-link" href={`#${fn.name}`}
+          <h3 id={anchor(fn)}>
+            <a class="heading-link" href={`#${anchor(fn)}`}
               ><code>{fn.signature}</code><span aria-hidden="true"> #</span></a
             >
           </h3>
-          {#if signatures[fn.name]}
+          {#if typedRows(fn).length}
             <p class="types">
-              {#each signatures[fn.name] as row, i (i)}
+              {#each typedRows(fn) as row, i (i)}
                 <span><code>{row.params}</code> &rarr; <code>{row.result}</code></span>
               {/each}
             </p>

@@ -40,8 +40,9 @@ function entry(f: { name: string; signature: string; summary: string }, anchor: 
   };
 }
 
+// One completion for each name: its entry without `on`, which documents it for every type but those.
 const documented: StdFuncEntry[] = reference.groups.flatMap((g) =>
-  (g.functions ?? []).map((f) => entry(f, f.name)),
+  (g.functions ?? []).filter((f) => !('on' in f)).map((f) => entry(f, f.name)),
 );
 
 const parseFunctions: StdFuncEntry[] = codeLanguage.parseFunctions.map((f) =>

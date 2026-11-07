@@ -138,6 +138,9 @@ struct Function {
     /// The label over the run of functions this one belongs to.
     #[serde(default)]
     group: Option<String>,
+    /// The first argument's type this entry documents the function for; the entry without one documents the rest.
+    #[serde(default)]
+    on: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -350,7 +353,10 @@ fn out_is(body: &str, expr: &str) -> PipelineConfig {
 #[test]
 fn the_reference_documents_every_function_exactly_once() {
     let r = reference();
-    let mut documented: Vec<&str> = functions(&r).map(|f| f.name.as_str()).collect();
+    let mut documented: Vec<&str> = functions(&r)
+        .filter(|f| f.on.is_none())
+        .map(|f| f.name.as_str())
+        .collect();
     documented.sort_unstable();
     let before = documented.len();
     documented.dedup();
@@ -372,6 +378,42 @@ fn the_reference_documents_every_function_exactly_once() {
         documented, defined,
         "website/src/lib/reference.json and ops::stdfuncs have drifted apart"
     );
+}
+
+/// An entry with `on` documents its function for one type of first argument, as the page shows it: the rows whose
+/// first argument may be a type that starts with that word. The function has its entry without `on` too, and each
+/// type has one entry.
+#[test]
+fn an_entry_for_one_type_documents_rows_of_that_type() {
+    let r = reference();
+    let signatures = engine_signatures();
+    let mut seen = std::collections::BTreeSet::new();
+    for f in functions(&r) {
+        assert!(
+            seen.insert((&f.name, &f.on)),
+            "{} {:?} is documented twice",
+            f.name,
+            f.on
+        );
+        let Some(on) = &f.on else { continue };
+        assert!(
+            functions(&r).any(|g| g.name == f.name && g.on.is_none()),
+            "{} has an entry on {on} but none without `on`",
+            f.name
+        );
+        let rows = signatures[&f.name]
+            .as_array()
+            .unwrap_or_else(|| panic!("{} has no typed rows", f.name));
+        assert!(
+            rows.iter().any(|row| {
+                let params = row["params"].as_str().unwrap();
+                let first = params[1..].split([',', ')']).next().unwrap_or("");
+                first.split('/').any(|t| t.split(' ').next() == Some(on.as_str()))
+            }),
+            "{} on {on} has no typed row whose first argument is {on}",
+            f.name
+        );
+    }
 }
 
 /// Group ids are HTML `id` attributes, the targets of the page's own table of

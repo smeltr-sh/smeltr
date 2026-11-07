@@ -175,6 +175,22 @@
       "result": "bool"
     },
     {
+      "params": "(bytes, i64)",
+      "result": "bool"
+    },
+    {
+      "params": "(bytes, i64, i64)",
+      "result": "bool"
+    },
+    {
+      "params": "(bytes, bytes)",
+      "result": "bool"
+    },
+    {
+      "params": "(bytes, bytes, i64)",
+      "result": "bool"
+    },
+    {
       "params": "(array of scalars, value)",
       "result": "bool"
     },
@@ -190,6 +206,22 @@
     },
     {
       "params": "(str, str, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, i64, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, bytes)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, bytes, i64)",
       "result": "i64"
     },
     {
@@ -256,6 +288,22 @@
     },
     {
       "params": "(str, str, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, i64, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, bytes)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, bytes, i64)",
       "result": "i64"
     },
     {

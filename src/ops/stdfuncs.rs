@@ -424,19 +424,19 @@ stdfuncs! {
     Max         "max"         = some(arith::max_num);          [Num, Num] => (numeric_join);
     Clamp       "clamp"       = some(arith::clamp_num);        [Num, Num, Num] => (numeric_join);
     Slice       "slice"       = some(slice_any);               [Str, I64] => (Str), [Str, I64, I64] => (Str), [Array, I64] => (same 0), [Array, I64, I64] => (same 0);
-    IndexOf     "indexOf"     = some(index_of_any);            [Str, Str] => (I64), [Str, Str, I64] => (I64), [Array, Element] => (for_element I64), [Array, Element, I64] => (for_element I64);
+    IndexOf     "indexOf"     = some(index_of_any);            [Str, Str] => (I64), [Str, Str, I64] => (I64), [Bytes, I64] => (I64), [Bytes, I64, I64] => (I64), [Bytes, Bytes] => (I64), [Bytes, Bytes, I64] => (I64), [Array, Element] => (for_element I64), [Array, Element, I64] => (for_element I64);
     ToUpperCase "toUpperCase" = some(strops::str_to_upper);    [Str] => (Str);
     ToLowerCase "toLowerCase" = some(strops::str_to_lower);    [Str] => (Str);
     Trim        "trim"        = some(strops::str_trim);        [Str] => (Str);
     StartsWith  "startsWith"  = some(strops::str_starts_with); [Str, Str] => (Bool);
     EndsWith    "endsWith"    = some(strops::str_ends_with);   [Str, Str] => (Bool);
-    Includes    "includes"    = some(includes_any);            [Str, Str] => (Bool), [Str, Str, I64] => (Bool), [Array, Element] => (for_element Bool), [Array, Element, I64] => (for_element Bool);
+    Includes    "includes"    = some(includes_any);            [Str, Str] => (Bool), [Str, Str, I64] => (Bool), [Bytes, I64] => (Bool), [Bytes, I64, I64] => (Bool), [Bytes, Bytes] => (Bool), [Bytes, Bytes, I64] => (Bool), [Array, Element] => (for_element Bool), [Array, Element, I64] => (for_element Bool);
     TrimStart   "trimStart"   = some(strops::str_trim_start);  [Str] => (Str);
     TrimEnd     "trimEnd"     = some(strops::str_trim_end);    [Str] => (Str);
     PadStart    "padStart"    = some(strops::str_pad_start);   [Str, I64] => (Str), [Str, I64, Str] => (Str);
     PadEnd      "padEnd"      = some(strops::str_pad_end);     [Str, I64] => (Str), [Str, I64, Str] => (Str);
     Repeat      "repeat"      = some(strops::str_repeat);      [Str, I64] => (Str);
-    LastIndexOf "lastIndexOf" = some(last_index_of_any);       [Str, Str] => (I64), [Str, Str, I64] => (I64), [Array, Element] => (for_element I64), [Array, Element, I64] => (for_element I64);
+    LastIndexOf "lastIndexOf" = some(last_index_of_any);       [Str, Str] => (I64), [Str, Str, I64] => (I64), [Bytes, I64] => (I64), [Bytes, I64, I64] => (I64), [Bytes, Bytes] => (I64), [Bytes, Bytes, I64] => (I64), [Array, Element] => (for_element I64), [Array, Element, I64] => (for_element I64);
     At          "at"          = some(at_any);                  [Str, I64] => (Str), [Array, I64] => (element 0);
     ParseTime   "parseTime"   = some(|c, i| convert::read_or_refuse(c, i, convert::parse_time));     [Str] => (DateTime), [Str, Str] => (DateTime), [Str, DateTime] => (DateTime), [Str, Str, DateTime] => (DateTime);
     FormatTime  "formatTime"  = some(datetime::format_time);   [DateTime, Str] => (Str);
@@ -614,13 +614,15 @@ pub fn length_any(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     }
 }
 
+/// Dispatches on the first argument's type: an array to `$array`, bytes to `$bytes` where one is named, and anything
+/// else to `$text`.
 macro_rules! text_or_array {
-    ($name:ident, $text:path, $array:path) => {
+    ($name:ident, $text:path, $array:path $(, bytes: $bytes:path)?) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
-            if matches!(ins[0].data_type(), DataType::Array(_)) {
-                $array(ctx, ins)
-            } else {
-                $text(ctx, ins)
+            match ins[0].data_type() {
+                DataType::Array(_) => $array(ctx, ins),
+                $(DataType::Bytes => $bytes(ctx, ins),)?
+                _ => $text(ctx, ins),
             }
         }
     };
@@ -628,12 +630,13 @@ macro_rules! text_or_array {
 
 text_or_array!(slice_any, strops::str_slice, arrayops::array_slice);
 text_or_array!(at_any, strops::str_at, arrayops::array_at);
-text_or_array!(includes_any, strops::str_includes, arrayops::array_includes);
-text_or_array!(index_of_any, strops::str_index_of, arrayops::array_index_of);
+text_or_array!(includes_any, strops::str_includes, arrayops::array_includes, bytes: byteops::includes);
+text_or_array!(index_of_any, strops::str_index_of, arrayops::array_index_of, bytes: byteops::index_of);
 text_or_array!(
     last_index_of_any,
     strops::str_last_index_of,
-    arrayops::array_last_index_of
+    arrayops::array_last_index_of,
+    bytes: byteops::last_index_of
 );
 
 /// `test(value, /pattern/)` -> `Bool`. Null propagates.
