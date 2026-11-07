@@ -158,6 +158,10 @@ test('an export is imported, a taken id renamed and a secret matched to one here
   await expect(importButton).toBeDisabled();
 
   const common = dialog.getByRole('region', { name: 'Pipeline common' });
+  // Only the name differs, from the one here to the imported one.
+  await expect(common.getByRole('list', { name: /^What differs/ })).toHaveText(
+    /^\s*name:\s*Ours\s*→\s*Common\s*$/,
+  );
   await common.getByLabel('Keep').selectOption('Both, rename imported');
   await common.getByLabel('New id').fill('common-fw');
   await dialog.getByLabel('Match for FW_PASSWORD').selectOption('kafka-fw');

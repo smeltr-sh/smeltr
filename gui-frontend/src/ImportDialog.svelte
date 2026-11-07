@@ -21,6 +21,7 @@
     type ImportListed,
     type ImportPart,
   } from './api';
+  import { diffObjects, formatDiffValue } from './diff';
   import { reported } from './errors.svelte';
 
   let {
@@ -59,6 +60,13 @@
   let leftOut = $state<Record<string, boolean>>({});
   let secretsHere = $state<string[]>([]);
   let certificatesHere = $state<string[]>([]);
+
+  /** Each top-level field a taken id's two versions differ in, from the one here to the imported one. */
+  function differs(l: ImportListed) {
+    const parsed = (text: string | undefined) =>
+      text === undefined ? undefined : JSON.parse(text);
+    return diffObjects(parsed(l.here), parsed(l.imported)).filter((e) => e.kind !== 'unchanged');
+  }
 
   const key = (l: ImportListed) => `${l.part}\u0000${l.id}`;
   const credKey = (c: ImportCredential) => `${c.certificate}\u0000${c.name}`;
@@ -218,7 +226,7 @@
     {/if}
     {#if taken.length > 0}
       <h3>Taken ids</h3>
-      {#each taken as l (key(l))}
+      {#each taken as l, i (key(l))}
         <section class="taken-id" aria-label="{PARTS[l.part]} {l.id}">
           <h4>{PARTS[l.part]} {l.id}</h4>
           {#if l.inShared}
@@ -227,14 +235,34 @@
               imported.
             </p>
           {/if}
-          <div class="versions">
-            {#each [['Imported', l.imported], ['Here', l.here]] as [label, text] (label)}
-              <div role="group" aria-label={label}>
-                <h5>{label}</h5>
-                <pre>{text}</pre>
-              </div>
+          <h5 id="differs-{i}">What differs, here → imported</h5>
+          <ul class="differs" aria-labelledby="differs-{i}">
+            {#each differs(l) as entry (entry.key)}
+              <li class="mono">
+                <span class="diff-key">{entry.key}:</span>
+                {#if entry.kind !== 'added'}
+                  <span class="removed">{formatDiffValue(entry.before)}</span>
+                {/if}
+                {#if entry.kind === 'changed'}
+                  <span class="dim">&rarr;</span>
+                {/if}
+                {#if entry.kind !== 'removed'}
+                  <span class="added">{formatDiffValue(entry.after)}</span>
+                {/if}
+              </li>
             {/each}
-          </div>
+          </ul>
+          <details>
+            <summary>Both versions</summary>
+            <div class="versions">
+              {#each [['Imported', l.imported], ['Here', l.here]] as [label, text] (label)}
+                <div role="group" aria-label={label}>
+                  <h5>{label}</h5>
+                  <pre>{text}</pre>
+                </div>
+              {/each}
+            </div>
+          </details>
           <div class="answer">
             <Field label="Keep">
               <select bind:value={keeps[key(l)]} disabled={busy}>
@@ -319,6 +347,25 @@
   .taken-id + .taken-id {
     border-top: 1px solid var(--border);
     padding-top: 0.9rem;
+  }
+  .differs {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    overflow-wrap: anywhere;
+  }
+  .diff-key {
+    color: var(--dim);
+    margin-right: 0.4rem;
+  }
+  .added {
+    color: var(--added);
+  }
+  .removed {
+    color: var(--removed);
+  }
+  summary {
+    cursor: pointer;
   }
   .versions {
     display: grid;
