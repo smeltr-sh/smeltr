@@ -1831,11 +1831,10 @@ test('A6: the output rows on screen are saved as a sample that another pipeline 
   const saved = (await api.get(`/api/areas/shared/samples/${made.id}${ON}`)).sample;
   expect(saved.columns).toContainEqual({ name: 'total', type: 'f64' });
   expect(saved.records.map((r: { id: number }) => r.id)).toEqual([1, 3]);
-  // The fields say how the saved pipeline made these records from the sample: the leader writes them in place of a
+  // The fields say how the pipeline made these records from the sample: the leader writes them in place of a
   // capture's.
   const how = saved.records[0].__capture;
   expect(how).toMatchObject({ pipeline: 'orders', sample: 'orders-sample' });
-  expect(how.config).toMatch(/^[0-9a-f]{40}$/);
 
   // Typed as the first pipeline wrote it, so `total` compares as a number.
   await goto(admin, leader, `#/build/pipelines/enrich/for/${made.id}`);

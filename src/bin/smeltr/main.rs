@@ -499,7 +499,6 @@ fn preview_on(
     };
     match sample {
         Ok((columns, records)) => {
-            req.saved_at = saved_at(&req, &reading);
             with_branch_schemas(&mut req, &reading);
             let produced = produced_in(&req);
             let declared_at = if scope == config_file::SHARED_DIR {
@@ -560,7 +559,6 @@ async fn import_schema(
                 filter: None,
                 attribution: false,
                 as_sample: false,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -613,26 +611,6 @@ fn refused_on_branch(
         answer.body.warnings.push(ApiError::new(found.message));
         answer.body.schema_findings += 1;
     }
-}
-
-/// The commit `reading` resolved, if it holds everything `req` runs exactly as `req` has it; a sample of the output
-/// names it. The editor sends a part of the bundle, so each thing it sends is compared with the one of its id on the
-/// branch. Only a preview asked for a sample compares them.
-fn saved_at(req: &PreviewRequest, reading: &config_api::Reading) -> Option<String> {
-    if !req.as_sample {
-        return None;
-    }
-    let sent = serde_json::to_value(serde_json::from_str::<config_file::FileConfig>(&req.config).ok()?).ok()?;
-    let saved = serde_json::to_value(reading.raw().file).ok()?;
-    let held = |kind: &str, item: &serde_json::Value| match (&saved[kind], item.get("id")) {
-        (serde_json::Value::Array(items), Some(id)) => items.iter().any(|s| s.get("id") == Some(id) && s == item),
-        (whole, _) => whole == item,
-    };
-    let all_held = sent.as_object()?.iter().all(|(kind, value)| match value {
-        serde_json::Value::Array(items) => items.iter().all(|item| held(kind, item)),
-        value => &saved[kind] == value,
-    });
-    all_held.then(|| reading.commit.clone())
 }
 
 /// `req.config` with each schema it names but does not declare taken from `reading`, the area as the branch holds
@@ -2730,7 +2708,6 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2775,7 +2752,6 @@ mod tests {
                 filter: None,
                 attribution: true,
                 as_sample: false,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2816,7 +2792,6 @@ mod tests {
                 filter: None,
                 attribution: true,
                 as_sample: false,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2880,7 +2855,6 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2905,7 +2879,6 @@ mod tests {
                 filter: Some(filter.to_string()),
                 attribution: false,
                 as_sample: false,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2964,7 +2937,6 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -3374,7 +3346,6 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -3412,82 +3383,12 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
             (Vec::new(), Vec::new()),
         );
         assert!(!response.succeeded(), "{} rows", response.rows.len());
-        std::fs::remove_dir_all(&data).ok();
-    }
-
-    /// A sample of a preview's output names the commit holding the bundle it ran, and only while the bundle is saved
-    /// there as it ran: an edit not saved yet, to the pipeline or beside it, ran a bundle no commit holds.
-    #[test]
-    fn a_sample_of_the_output_names_the_commit_only_while_the_bundle_is_saved() {
-        use smeltr::config_file;
-
-        let data = std::env::temp_dir().join(format!("smeltr-preview-saved-{}", std::process::id()));
-        let mut group = audit_calling_shared();
-        let sample = config_file::SampleDto {
-            id: "s".to_string(),
-            name: "s".to_string(),
-            source: None,
-            records: vec![smeltr::io::raw_object("{}".to_string())],
-            columns: Vec::new(),
-        };
-        seed_west_over_shared(&data, &group, &sample);
-        let output = |group: &config_file::FileConfig| {
-            let response = super::preview_on(
-                &data,
-                "work",
-                "west",
-                super::PreviewRequest {
-                    config: serde_json::to_string(group).unwrap(),
-                    pipeline: None,
-                    sample: Some(sample.id.clone()),
-                    show_internal: false,
-                    at_micros: Some(1_700_000_000_000_000),
-                    filter: None,
-                    attribution: false,
-                    as_sample: true,
-                    saved_at: None,
-                    after_dot: None,
-                    capture_filter: None,
-                },
-                (Vec::new(), Vec::new()),
-            );
-            assert!(
-                response.succeeded(),
-                "{:?}",
-                response.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
-            );
-            response.body.as_sample.unwrap().records[0]["__capture"].clone()
-        };
-
-        let repo = smeltr::leader::git::repo_path(&data);
-        let commit = smeltr::leader::git::branch_tip(&repo, "work").unwrap();
-        let made = output(&group);
-        assert_eq!(made["config"], serde_json::json!(commit), "{made}");
-        assert_eq!(made["pipeline"], serde_json::json!(group.pipelines[0].id), "{made}");
-        assert_eq!(made["sample"], serde_json::json!("s"), "{made}");
-        assert_eq!(
-            made["timestamp"],
-            serde_json::json!("2023-11-14T22:13:20.000000Z"),
-            "{made}"
-        );
-
-        let mut beside = group.clone();
-        let mut other = beside.pipelines[0].clone();
-        other.id = "other".to_string();
-        beside.pipelines.push(other);
-        let made = output(&beside);
-        assert_eq!(made.get("config"), None, "an edit beside the pipeline: {made}");
-
-        group.pipelines[0].name = "edited".to_string();
-        let made = output(&group);
-        assert_eq!(made.get("config"), None, "{made}");
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -3533,7 +3434,6 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -3605,7 +3505,6 @@ mod tests {
                     filter: None,
                     attribution: false,
                     as_sample: false,
-                    saved_at: None,
                     after_dot: None,
                     capture_filter: None,
                 },

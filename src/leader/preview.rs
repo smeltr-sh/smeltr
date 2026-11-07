@@ -55,10 +55,6 @@ pub struct PreviewRequest {
     /// Also return the rows shown as a sample holds them (`Preview::as_sample`), to be saved as one.
     #[serde(default)]
     pub as_sample: bool,
-    /// The commit on the editor's branch that holds the pipeline exactly as it ran, if there is one: what a sample
-    /// saved from its output records as `__capture.config`. The leader sets it; a caller cannot.
-    #[serde(skip)]
-    pub saved_at: Option<String>,
     /// What may follow a `.` in an expression of the config. Asked, the preview answers it instead of running the
     /// sample, and `Preview::after_dot` holds the answer.
     #[serde(default)]
@@ -1005,7 +1001,6 @@ pub fn run_preview(
                 at_micros.unwrap_or_else(crate::core::ctx::wall_clock_micros),
                 &pipeline_id,
                 req.sample.as_deref(),
-                req.saved_at.as_deref(),
             );
             as_sample(&plan, &on_exception.tag_field, &batch, &rows, &made)
         });
@@ -1518,7 +1513,6 @@ pub fn run_pipeline_actual(
             filter: None,
             attribution: false,
             as_sample: false,
-            saved_at: None,
             after_dot: None,
             capture_filter: None,
         },
@@ -1657,7 +1651,6 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -1751,7 +1744,6 @@ mod tests {
                 filter: Some(r#"u.path == "/x""#.into()),
                 attribution: false,
                 as_sample: true,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -1810,7 +1802,6 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: true,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -1822,7 +1813,6 @@ mod tests {
         assert_eq!(
             sample.records[0]["__capture"],
             serde_json::json!({"timestamp": "2023-11-14T22:13:20.000000Z", "pipeline": "p", "sample": "orders"}),
-            "unsaved, it names no commit"
         );
         let named: Vec<_> = sample.columns.iter().map(|c| c.name.as_str()).collect();
         assert!(!named.contains(&"__capture.source"), "{named:?}");
@@ -1848,7 +1838,6 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
-                saved_at: None,
                 after_dot: Some(AfterDotRequest {
                     dot: text.len() - 1,
                     text: text.into(),
@@ -1945,7 +1934,6 @@ mod tests {
                     filter: None,
                     attribution: false,
                     as_sample: false,
-                    saved_at: None,
                     after_dot: None,
                     capture_filter: Some(CaptureFilterRequest {
                         text: text.into(),
@@ -1985,7 +1973,6 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
-                saved_at: None,
                 after_dot: Some(AfterDotRequest {
                     text: "_raw.".into(),
                     dot: 4,
@@ -2026,7 +2013,6 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
-                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },

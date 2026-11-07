@@ -360,13 +360,12 @@ fn rows_in(batches: &[CaptureBatch]) -> usize {
 }
 
 /// How a pipeline's output was made, as the `__capture` fields a sample saved from it carries on every record in place of
-/// its input's: the instant it ran at, the pipeline by id, the sample it ran over by id, and the commit holding that
-/// pipeline as it ran. A field with nothing to say is left out.
+/// its input's: the instant it ran at, the pipeline by id, and the sample it ran over by id. A field with nothing to say
+/// is left out.
 pub fn output_fields(
     at_micros: i64,
     pipeline: &str,
     sample: Option<&str>,
-    config: Option<&str>,
 ) -> Vec<(crate::heartbeat::CaptureColumn, serde_json::Value)> {
     use crate::core::column::DataType;
     let text = |v: &str| serde_json::Value::String(v.to_string());
@@ -374,7 +373,6 @@ pub fn output_fields(
         ("timestamp", DataType::DateTime, Some(text(&instant(at_micros)))),
         ("pipeline", DataType::Str, Some(text(pipeline))),
         ("sample", DataType::Str, sample.map(text)),
-        ("config", DataType::Str, config.map(text)),
     ]
     .into_iter()
     .filter_map(said)
