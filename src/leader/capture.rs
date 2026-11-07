@@ -369,14 +369,14 @@ fn drop_to_hold(sessions: &mut HashMap<String, Session>, owner: &str) {
         .collect();
     for id in theirs {
         sessions.remove(&id);
-        tracing::info!(target: "captures", session = %id, owner, "a capture was dropped for its owner's next one");
+        tracing::info!(name: "dropped_for_next", target: "captures", session = %id, owner, "a capture was dropped for its owner's next one");
     }
     while sessions.values().map(Session::charge).sum::<usize>() + SESSION_BYTES_CEILING > HELD_BYTES_CEILING {
         let Some(oldest) = sessions.iter().min_by_key(|(_, s)| s.started).map(|(id, _)| id.clone()) else {
             break;
         };
         let dropped = sessions.remove(&oldest).map(|s| s.owner).unwrap_or_default();
-        tracing::info!(target: "captures", session = %oldest, owner = %dropped, "the oldest capture was dropped to make room for a new one");
+        tracing::info!(name: "dropped_for_room", target: "captures", session = %oldest, owner = %dropped, "the oldest capture was dropped to make room for a new one");
     }
 }
 
@@ -672,7 +672,7 @@ impl Captures {
         sessions.retain(|id, s| {
             let keep = (!s.done() || s.used.elapsed() < idle) && s.elapsed() < at_most;
             if !keep {
-                tracing::info!(target: "captures", session = %id, owner = %s.owner, "a capture nobody read was dropped");
+                tracing::info!(name: "dropped_unread", target: "captures", session = %id, owner = %s.owner, "a capture nobody read was dropped");
             }
             keep
         });
