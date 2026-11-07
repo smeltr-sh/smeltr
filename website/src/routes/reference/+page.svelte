@@ -1,6 +1,6 @@
 <script lang="ts">
   import DocRedirect from '#lib/components/DocRedirect.svelte';
-  import { GROUPS, anchor } from '#lib/reference.ts';
+  import { GROUPS, anchor, title } from '#lib/reference.ts';
   const destination = '/docs/code-reference';
   const topics = [
     { id: 'how-it-works', title: 'How it works' },
@@ -8,7 +8,7 @@
     { id: 'fields', title: 'Fields' },
     ...GROUPS.flatMap((group) => [
       { id: group.id, title: group.title },
-      ...group.functions.map((fn) => ({ id: anchor(fn), title: fn.name })),
+      ...group.functions.map((fn) => ({ id: anchor(fn), title: title(fn) })),
     ]),
   ];
   const links = topics.map((topic) => ({

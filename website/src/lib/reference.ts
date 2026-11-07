@@ -99,6 +99,11 @@ export function anchor(fn: FunctionEntry): string {
   return fn.on ? `${fn.name}-${fn.on}` : fn.name;
 }
 
+/** How a search lists `fn`: its name, and where it has an `on`, the word "on" and that type after it. */
+export function title(fn: FunctionEntry): string {
+  return fn.on ? `${fn.name} on ${fn.on}` : fn.name;
+}
+
 /** The `on` of each name's entries that have one. */
 const ON = new Map<string, string[]>();
 for (const fn of GROUPS.flatMap((g) => g.functions)) {

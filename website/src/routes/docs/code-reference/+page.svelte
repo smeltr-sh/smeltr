@@ -8,6 +8,7 @@
     GROUPS as groups,
     LITERALS as literals,
     anchor,
+    title,
     typedRows,
     TYPES as types,
     topic,
@@ -30,7 +31,7 @@
   const errors: Record<string, Refused[]> = examplesData.errors;
   const entries = groups
     .flatMap((group) =>
-      group.functions.map((fn) => ({ id: anchor(fn), title: fn.name, summary: fn.summary })),
+      group.functions.map((fn) => ({ id: anchor(fn), title: title(fn), summary: fn.summary })),
     )
     .concat(
       language.parseFunctions.map((fn) => ({

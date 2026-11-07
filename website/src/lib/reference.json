@@ -357,6 +357,23 @@
           "notes": [
             "A declared field a record lacks reads as null, so `isNull(user.id)` is how you test for absence."
           ]
+        },
+        {
+          "name": "toString",
+          "on": "bool",
+          "signature": "bool.toString()",
+          "summary": "A bool as text: `\"true\"` or `\"false\"`.",
+          "examples": [
+            {
+              "expr": "(1 < 2).toString()",
+              "result": "\"true\""
+            },
+            {
+              "expr": "toString(1 > 2)",
+              "note": "the same call, written as a function",
+              "result": "\"false\""
+            }
+          ]
         }
       ]
     },
@@ -365,31 +382,6 @@
       "title": "Conversion",
       "blurb": "Reading one type as another. A parse whose text does not convert is null on that row and throws a `CoercionRefused` exception on the record; it never returns an approximation. Blank text is null and throws nothing. Text that reads as an instant is read with [parseTime](#parseTime).",
       "functions": [
-        {
-          "name": "toString",
-          "signature": "value.toString()",
-          "summary": "Renders a number, bool, datetime or duration as text, exactly as the JSON output would. Bytes render as base64; [toString on bytes](#toString-bytes) takes other forms.",
-          "examples": [
-            {
-              "expr": "404.toString()",
-              "result": "\"404\""
-            },
-            {
-              "expr": "\"1998-08-30T12:00:00Z\".parseTime().toString()",
-              "result": "\"1998-08-30T12:00:00.000000Z\""
-            },
-            {
-              "expr": "duration(1, \"s\").toString()",
-              "result": "\"1000000\"",
-              "note": "a span writes as its microsecond count"
-            },
-            {
-              "expr": "toString(404)",
-              "note": "the same call, written as a function",
-              "result": "\"404\""
-            }
-          ]
-        },
         {
           "name": "parseInt",
           "signature": "value.parseInt(radix = 10)",
@@ -671,8 +663,8 @@
             },
             {
               "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
-              "expr": "msg.readBytes(3, msg.indexOf(0, 3) - 3).decode(\"utf-8\")",
-              "result": "\"ok\"",
+              "expr": "msg.readBytes(0, msg.indexOf(0)).decode(\"utf-8\")",
+              "result": "\"hi\"",
               "note": "a zero-terminated string; a message with no zero byte gives null and an `IndexOutOfRange`"
             },
             {
@@ -732,9 +724,9 @@
             },
             {
               "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
-              "expr": "indexOf(msg, 0)",
-              "note": "the same call, written as a function",
-              "result": "2"
+              "expr": "indexOf(msg, 0x6f)",
+              "note": "written as a function; `0x6f` is the byte searched for, an \"o\"",
+              "result": "3"
             }
           ],
           "group": "Searching"
@@ -758,9 +750,9 @@
             },
             {
               "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
-              "expr": "lastIndexOf(msg, 0)",
-              "note": "the same call, written as a function",
-              "result": "5"
+              "expr": "lastIndexOf(msg, 0x6f)",
+              "note": "written as a function; `0x6f` is the byte searched for, an \"o\"",
+              "result": "3"
             }
           ],
           "group": "Searching"
@@ -784,8 +776,8 @@
             },
             {
               "given": ["msg = parseBytes(\"6869006f6b00\", \"hex\")"],
-              "expr": "includes(msg, 0)",
-              "note": "the same call, written as a function",
+              "expr": "includes(msg, 0x6f)",
+              "note": "written as a function; `0x6f` is the byte searched for, an \"o\"",
               "result": "true"
             }
           ],
@@ -1201,6 +1193,26 @@
             {
               "expr": "sign(0.5)",
               "result": "1"
+            }
+          ]
+        },
+        {
+          "name": "toString",
+          "signature": "number.toString()",
+          "summary": "A number as text, exactly as the JSON output writes it.",
+          "examples": [
+            {
+              "expr": "404.toString()",
+              "result": "\"404\""
+            },
+            {
+              "expr": "(1.5).toString()",
+              "result": "\"1.5\""
+            },
+            {
+              "expr": "toString(404)",
+              "note": "the same call, written as a function",
+              "result": "\"404\""
             }
           ]
         }
@@ -2773,6 +2785,23 @@
               "result": "\"1998-08-30T12:00:00.000000Z\""
             }
           ]
+        },
+        {
+          "name": "toString",
+          "on": "datetime",
+          "signature": "datetime.toString()",
+          "summary": "A datetime as text, exactly as the JSON output writes it. [formatTime](#formatTime) writes other forms.",
+          "examples": [
+            {
+              "expr": "\"1998-08-30T12:00:00Z\".parseTime().toString()",
+              "result": "\"1998-08-30T12:00:00.000000Z\""
+            },
+            {
+              "expr": "toString(\"1998-08-30T12:00:00Z\".parseTime())",
+              "note": "the same call, written as a function",
+              "result": "\"1998-08-30T12:00:00.000000Z\""
+            }
+          ]
         }
       ]
     },
@@ -2912,6 +2941,23 @@
               "expr": "countIn(duration(90, \"s\"), \"m\")",
               "note": "the same call, written as a function",
               "result": "1.5"
+            }
+          ]
+        },
+        {
+          "name": "toString",
+          "on": "duration",
+          "signature": "duration.toString()",
+          "summary": "A duration as text: its microsecond count, as the JSON output writes it.",
+          "examples": [
+            {
+              "expr": "duration(1, \"s\").toString()",
+              "result": "\"1000000\""
+            },
+            {
+              "expr": "toString(duration(2, \"ms\"))",
+              "note": "the same call, written as a function",
+              "result": "\"2000\""
             }
           ]
         }
