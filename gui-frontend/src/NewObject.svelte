@@ -4,8 +4,8 @@
   the Routes page saves it there and then.
 -->
 <script lang="ts" generics="O extends { id: string; type: T }, T extends string, K extends string">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
-  import { reported } from './errors.svelte';
   import type { Snippet } from 'svelte';
   import Dialog from './Dialog.svelte';
   import TypeCatalog, { type CatalogKind, type CatalogType } from './TypeCatalog.svelte';
@@ -48,7 +48,7 @@
 
   let kind: K | null = $state(null);
   let draft: O | null = $state(null);
-  let busy = $state(false);
+  const busy = new Busy();
   // Each opening starts at the catalog.
   $effect(() => {
     if (!open) {
@@ -60,15 +60,10 @@
   const heading = (label: string) => (label.includes(noun) ? label : `${label} ${noun}`);
 
   async function add() {
-    if (!draft || busy || idProblem(draft.id, unavailable) || !ready(draft)) return;
-    busy = true;
-    try {
+    if (!draft || busy.on || idProblem(draft.id, unavailable) || !ready(draft)) return;
+    await busy.run(async () => {
       await onadd($state.snapshot(draft) as O);
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 </script>
 
@@ -102,7 +97,7 @@
       <Button
         type="submit"
         class="primary"
-        disabled={busy
+        disabled={busy.on
           ? BUSY
           : (idProblem(draft.id, unavailable) ?? (ready(draft) ? '' : INCOMPLETE))}>Add</Button
       >

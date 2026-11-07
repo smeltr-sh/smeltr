@@ -6,6 +6,7 @@
   one has an answer, against the commit the list was read at.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY } from './Button.svelte';
   import Dialog from './Dialog.svelte';
   import Field from './Field.svelte';
@@ -50,7 +51,7 @@
   let listed = $state<ImportListed[]>([]);
   let credentials = $state<ImportCredential[]>([]);
   let at = $state<string | undefined>(undefined);
-  let busy = $state(false);
+  const busy = new Busy();
   /** Each taken id's answer, by `key`: a side, or `renamed` with the new id in `renames`. */
   let keeps = $state<Record<string, '' | 'imported' | 'here' | 'renamed'>>({});
   let renames = $state<Record<string, string>>({});
@@ -108,8 +109,7 @@
     reset();
     const [chosen, scope] = [file, into];
     if (!chosen || !scope) return;
-    busy = true;
-    try {
+    await busy.run(async () => {
       const [res, secrets, certificates] = await Promise.all([
         importExport(chosen, scope),
         listSecrets(),
@@ -127,11 +127,7 @@
         matches[credKey(c)] = here.includes(c.name) ? c.name : '';
       }
       for (const l of listed.filter((l) => l.standing === 'taken')) keeps[key(l)] = '';
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   /** Why Import is disabled, or '' when every taken id and credential has an answer. */
@@ -168,22 +164,18 @@
       ),
       leftOut: listed.filter((l) => leftOut[key(l)]).map((l) => ({ part: l.part, id: l.id })),
     };
-    busy = true;
-    try {
-      const res = await importExport(file, into, answers, at);
+    const chosen = file;
+    await busy.run(async () => {
+      const res = await importExport(chosen, into, answers, at);
       if (res.ok) onimported();
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 </script>
 
 <Dialog {open} title="import pipeline" wide {oncancel}>
   <div class="body">
     <Field label="Import into" required>
-      <select bind:value={into} disabled={busy} onchange={list}>
+      <select bind:value={into} disabled={busy.on} onchange={list}>
         <option value="" disabled>Choose</option>
         <option value={SHARED_SCOPE}>Shared</option>
         {#each groups as g (g.id)}
@@ -192,9 +184,14 @@
       </select>
     </Field>
     <Field label="Export file" required>
-      <input type="file" accept=".zip" disabled={busy} onchange={(e) => choose(e.currentTarget)} />
+      <input
+        type="file"
+        accept=".zip"
+        disabled={busy.on}
+        onchange={(e) => choose(e.currentTarget)}
+      />
     </Field>
-    {#if busy && listed.length === 0 && file}
+    {#if busy.on && listed.length === 0 && file}
       <p class="dim">Reading…</p>
     {/if}
     {#if listed.length > 0}
@@ -215,7 +212,7 @@
                   type="checkbox"
                   aria-label="Import {PARTS[l.part]} {l.id}"
                   checked={!leftOut[key(l)]}
-                  disabled={busy}
+                  disabled={busy.on}
                   onchange={(e) => (leftOut[key(l)] = !e.currentTarget.checked)}
                 />
               </td>
@@ -267,7 +264,7 @@
           </details>
           <div class="answer">
             <Field label="Keep">
-              <select bind:value={keeps[key(l)]} disabled={busy}>
+              <select bind:value={keeps[key(l)]} disabled={busy.on}>
                 <option value="" disabled>Choose</option>
                 {#if !l.inShared}
                   <option value="imported">Imported</option>
@@ -278,7 +275,7 @@
             </Field>
             {#if keeps[key(l)] === 'renamed'}
               <Field label="New id" required>
-                <input class="mono" bind:value={renames[key(l)]} disabled={busy} />
+                <input class="mono" bind:value={renames[key(l)]} disabled={busy.on} />
               </Field>
             {/if}
           </div>
@@ -298,7 +295,7 @@
               <td>{c.namedBy.join(', ')}</td>
               <td>
                 <Field label="Match for {c.name}" bare>
-                  <select bind:value={matches[credKey(c)]} disabled={busy}>
+                  <select bind:value={matches[credKey(c)]} disabled={busy.on}>
                     <option value="" disabled
                       >{c.certificate ? 'Choose a certificate' : 'Choose a secret'}</option
                     >
@@ -316,7 +313,7 @@
   </div>
   {#snippet actions()}
     <Button type="button" onclick={oncancel}>Cancel</Button>
-    <Button type="button" class="primary" disabled={busy ? BUSY : unanswered} onclick={save}
+    <Button type="button" class="primary" disabled={busy.on ? BUSY : unanswered} onclick={save}
       >Import</Button
     >
   {/snippet}

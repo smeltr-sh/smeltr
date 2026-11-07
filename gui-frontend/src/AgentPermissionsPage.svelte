@@ -4,6 +4,7 @@
   the person holds, so each area shows what they hold beside it.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY } from './Button.svelte';
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
@@ -30,7 +31,7 @@
   let groups = $state<{ id: string; hue: number | null }[]>([]);
   let sharedHue = $state<number | null>(null);
 
-  let busy = $state(false);
+  const busy = new Busy();
   let message = $state('');
 
   function held(area: string): AccessLevel | null {
@@ -92,19 +93,14 @@
 
   async function save(event: SubmitEvent) {
     event.preventDefault();
-    if (busy) return;
-    busy = true;
+    if (busy.on) return;
     message = '';
-    try {
+    await busy.run(async () => {
       const result = await putAgentPermissions(draft);
       if (refused(result)) return;
       show(result);
       message = 'agent permissions saved';
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 </script>
 
@@ -164,7 +160,7 @@
       {/if}
       {#if message}<p class="message" role="status">{message}</p>{/if}
       <div class="actions">
-        <Button class="primary" type="submit" disabled={busy ? BUSY : ''}>Save</Button>
+        <Button class="primary" type="submit" disabled={busy.on ? BUSY : ''}>Save</Button>
       </div>
     </form>
   {/if}

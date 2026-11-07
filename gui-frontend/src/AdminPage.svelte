@@ -5,6 +5,7 @@
 -->
 
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import WorkerGroupIcon from './WorkerGroupIcon.svelte';
   import { slugify } from './slugify';
@@ -164,7 +165,7 @@
   let newGroupName = $state('');
   let newGroupId = $state('');
   let idHandEdited = $state(false); // once true, typing the name stops overwriting the id
-  let groupSaving = $state(false);
+  const groupSaving = new Busy();
   // Set on a successful create, rename or delete, naming the branch it
   // landed on. A group write is not live until a change carrying it
   // deploys (design doc, Control plane). So this stands until dismissed,
@@ -356,26 +357,21 @@
   }
 
   async function addGroup() {
-    if (groupSaving || !newGroupName.trim() || !newGroupId.trim() || groupIdProblem) return;
+    if (groupSaving.on || !newGroupName.trim() || !newGroupId.trim() || groupIdProblem) return;
     const name = newGroupName.trim();
     const id = newGroupId.trim();
-    groupSaving = true;
-    try {
+    await groupSaving.run(async () => {
       const res = await createWorkerGroup(id, name);
       if (!res.ok) return;
       cancelGroup();
       groupSaved = { id, branch: currentBranch(), kind: 'created' };
       await load();
-    } catch (e) {
-      reported(e);
-    } finally {
-      groupSaving = false;
-    }
+    });
   }
 
   // -- enrollment codes -------------------------------------------------------
 
-  let minting = $state(false);
+  const minting = new Busy();
   let minted = $state<MintedEnrollmentCode | null>(null);
   let withdrawingCode = $state('');
 
@@ -431,10 +427,9 @@
   );
 
   async function mintCode() {
-    if (minting || !mintReady) return;
-    minting = true;
+    if (minting.on || !mintReady) return;
     minted = null;
-    try {
+    await minting.run(async () => {
       const groupId = mintGroup.trim();
       const request: MintEnrollmentCodeRequest =
         mintKind === 'ephemeral'
@@ -445,11 +440,7 @@
       minted = res.code;
       mintOpen = false;
       await load();
-    } catch (e) {
-      reported(e);
-    } finally {
-      minting = false;
-    }
+    });
   }
 
   /** Whether it can still bring anybody in, which is the whole of what there is
@@ -513,7 +504,7 @@
   // The leader keeps seconds; the form offers minutes, which is the scale this
   // is set on. Exact either way: a stored 90 seconds reads as 1.5 minutes.
   let forgetMinutes = $state(10);
-  let forgetSaving = $state(false);
+  const forgetSaving = new Busy();
   let forgetSaved = $state(false);
 
   function adoptWorkerSettings(next: WorkerSettingsDto) {
@@ -533,18 +524,13 @@
   async function saveForgetAfter(event: SubmitEvent) {
     event.preventDefault();
     if (!forgetReady) return;
-    forgetSaving = true;
     forgetSaved = false;
-    try {
+    await forgetSaving.run(async () => {
       const result = await putWorkerSettings(forgetSeconds);
       if (!result.ok || !result.settings) return;
       adoptWorkerSettings(result.settings);
       forgetSaved = true;
-    } catch (e) {
-      reported(e);
-    } finally {
-      forgetSaving = false;
-    }
+    });
   }
 
   // -- a worker's actions -----------------------------------------------------
@@ -807,9 +793,9 @@
               <Button
                 type="submit"
                 class="primary"
-                disabled={forgetSaving ? BUSY : !forgetReady ? INCOMPLETE : ''}
+                disabled={forgetSaving.on ? BUSY : !forgetReady ? INCOMPLETE : ''}
               >
-                {forgetSaving ? 'Saving…' : 'Save'}
+                {forgetSaving.on ? 'Saving…' : 'Save'}
               </Button>
             </div>
             {#if forgetSaved}<p>Saved. The next look for gone workers uses it.</p>{/if}
@@ -868,9 +854,9 @@
         <Button
           type="submit"
           class="primary"
-          disabled={minting ? BUSY : !mintReady ? INCOMPLETE : ''}
+          disabled={minting.on ? BUSY : !mintReady ? INCOMPLETE : ''}
         >
-          {minting ? 'Minting…' : 'Mint'}
+          {minting.on ? 'Minting…' : 'Mint'}
         </Button>
       {/snippet}
     </Dialog>
@@ -998,7 +984,7 @@
     <Dialog
       open={addingGroup}
       title="new worker group"
-      oncancel={() => groupSaving || cancelGroup()}
+      oncancel={() => groupSaving.on || cancelGroup()}
       onsubmit={addGroup}
     >
       <div class="mintrow">
@@ -1023,19 +1009,19 @@
         </Field>
       </div>
       {#snippet actions()}
-        <Button type="button" onclick={cancelGroup} disabled={groupSaving ? BUSY : ''}
+        <Button type="button" onclick={cancelGroup} disabled={groupSaving.on ? BUSY : ''}
           >Cancel</Button
         >
         <Button
           type="submit"
           class="primary"
-          disabled={groupSaving
+          disabled={groupSaving.on
             ? BUSY
             : !newGroupName.trim() || !newGroupId.trim()
               ? INCOMPLETE
               : (groupIdProblem ?? '')}
         >
-          {groupSaving ? 'Saving…' : 'Add'}
+          {groupSaving.on ? 'Saving…' : 'Add'}
         </Button>
       {/snippet}
     </Dialog>

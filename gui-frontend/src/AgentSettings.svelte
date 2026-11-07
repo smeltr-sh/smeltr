@@ -66,6 +66,7 @@
 </script>
 
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE, UNCHANGED } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -86,7 +87,7 @@
 
   let settings = $state<AgentSettingsDto | null>(null);
   let loadFailed = $state(false);
-  let busy = $state(false);
+  const busy = new Busy();
 
   let enabled = $state(false);
   let provider = $state<ModelProvider>('anthropic');
@@ -142,7 +143,7 @@
         keepDays !== settings.keepDays ||
         contextTokens !== settings.contextTokens),
   );
-  const savable = $derived(dirty && !busy && missing.length === 0);
+  const savable = $derived(dirty && !busy.on && missing.length === 0);
 
   function answer(result: AgentSettingsResult) {
     if (!result.ok || !result.settings) return;
@@ -154,8 +155,7 @@
   async function save(event: SubmitEvent) {
     event.preventDefault();
     if (!savable) return;
-    busy = true;
-    try {
+    await busy.run(async () => {
       const result = await putAgentSettings({
         enabled,
         provider,
@@ -166,11 +166,7 @@
         contextTokens,
       });
       if (!refused(result)) answer(result);
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   function discard() {
@@ -269,13 +265,13 @@
     {/if}
 
     <div class="buttons">
-      <Button type="button" onclick={discard} disabled={busy ? BUSY : !dirty ? UNCHANGED : ''}
+      <Button type="button" onclick={discard} disabled={busy.on ? BUSY : !dirty ? UNCHANGED : ''}
         >Discard</Button
       >
       <Button
         class="primary"
         type="submit"
-        disabled={busy ? BUSY : !dirty ? UNCHANGED : !savable ? INCOMPLETE : ''}>Save</Button
+        disabled={busy.on ? BUSY : !dirty ? UNCHANGED : !savable ? INCOMPLETE : ''}>Save</Button
       >
     </div>
   </Panel>
