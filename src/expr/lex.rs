@@ -284,8 +284,11 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
         }
 
+        // A keyword is never a name, so `true.toString()` calls a method on the value `true`.
+        let keyword = KEYWORDS.iter().any(|(word, _)| *word == &self.text[start..self.pos]);
         // The chain continues only when an identifier follows the dot.
-        while self.peek() == Some(b'.')
+        while !keyword
+            && self.peek() == Some(b'.')
             && self
                 .peek_at(1)
                 .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_' || c == b'$')
@@ -916,6 +919,20 @@ mod tests {
         assert_eq!(toks("null")[0], Token::Keyword(Keyword::Null));
         assert_eq!(toks("nullable")[0], ident("nullable"));
         assert_eq!(toks("trueish")[0], ident("trueish"));
+    }
+
+    #[test]
+    fn a_keyword_before_a_dot_is_a_keyword() {
+        assert_eq!(
+            toks("false.toString"),
+            vec![
+                Token::Keyword(Keyword::False),
+                Token::Punct(Punct::Dot),
+                ident("toString"),
+                Token::Eof
+            ]
+        );
+        assert_eq!(toks("a.true")[0], ident("a.true"));
     }
 
     #[test]
