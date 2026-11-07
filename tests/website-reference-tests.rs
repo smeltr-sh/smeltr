@@ -1409,8 +1409,8 @@ struct ConnectorReference {
 }
 
 /// Each variant of `enum_name` in `src/config_file/dto.rs`, by its `type` tag, to the keys it takes, a flattened
-/// struct's keys included. Read from the source so that a setting added to the engine is a setting missing here:
-/// `dto.rs`, and each kind's own file under `src/config_file/load/`.
+/// struct's keys included. Read from `dto.rs` and each kind's file under `src/config_file/load/`, so that a setting
+/// added to the engine is a setting missing here.
 fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
     let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config_file");
     let mut text = std::fs::read_to_string(config.join("dto.rs")).unwrap();
@@ -1459,7 +1459,7 @@ fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collecti
                 continue;
             }
             if let Some(c) = field.captures(line).filter(|c| c[1].len() == indent) {
-                // A field serde skips is no key of the file's.
+                // A field serde skips is not a key in the file.
                 if attrs.contains("serde(skip)") {
                 } else if attrs.contains("flatten") {
                     let lines = body(&format!("pub struct {} {{", &c[3]));

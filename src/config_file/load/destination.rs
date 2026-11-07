@@ -28,7 +28,8 @@ pub use self::{
 /// What one kind of destination answers about itself. Each kind implements it in its own file, beside its struct.
 pub(super) trait DestinationSpec {
     fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>);
-    /// What it loads as. `of` names it in what the loaded destination says about itself.
+    /// What it loads as. `of` names it, as `destination "out"`, in the messages the loaded destination gives an
+    /// operator.
     fn to_kind(&self, of: &str) -> DestinationKind;
     /// Every address this destination reaches over HTTP: the service, and where it obtains credentials when that
     /// is configured apart, by the field naming each. Empty from a kind that is not reached over HTTP.

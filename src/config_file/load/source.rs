@@ -39,10 +39,10 @@ pub use self::{
 /// What one kind of source answers about itself. Each kind implements it in its own file, beside its struct.
 pub(super) trait SourceSpec {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>);
-    /// What it loads as. `of` names it in what the loaded source says about itself.
+    /// What it loads as. `of` names it, as `source "in"`, in the messages the loaded source gives an operator.
     fn to_kind(&self, of: &str) -> SourceKind;
 
-    /// What records from this kind carry before what it reads them into and its encoding (`SourceKindDto::meta`).
+    /// What records from this kind carry, before its read format and encoding are applied (`SourceKindDto::meta`).
     fn declared_meta(&self) -> SourceMeta;
     /// Whether one worker of the group reads this source at a time, the same answer
     /// `plan::topology::SourceKind::single_worker` gives. Asked of a source on its way to a capture, which then goes
@@ -70,12 +70,12 @@ pub(super) trait SourceSpec {
     fn schema_registry(&self) -> Option<&SchemaRegistryDto> {
         None
     }
-    /// Where each record of an object it reads ends, where it reads objects.
+    /// How an object it reads is cut into records, for a source that reads objects.
     fn framing(&self) -> Option<&FramingSettingsDto> {
         None
     }
 
-    /// How its payloads become its record, where it reads payloads.
+    /// How a payload becomes a record, for a source that reads payloads.
     fn read(&self) -> Option<&ReadFormatDto> {
         None
     }
@@ -89,8 +89,8 @@ pub(super) trait SourceSpec {
     }
 }
 
-/// What the OTLP, Prometheus and Elasticsearch receivers are checked for alike: where they listen, what they serve and
-/// who may send.
+/// The checks the OTLP, Prometheus and Elasticsearch receivers share: where they listen, what they serve and who
+/// may send.
 fn check_intake(
     s: &SourceDto,
     listener: &ReceiverSettingsDto,
@@ -164,7 +164,7 @@ impl SourceKindDto {
         self.spec().schema_registry()
     }
 
-    /// How its payloads become its record, where it reads payloads.
+    /// How a payload becomes a record, for a source that reads payloads.
     pub fn read(&self) -> Option<&ReadFormatDto> {
         self.spec().read()
     }
@@ -191,7 +191,7 @@ impl SourceKindDto {
         declared.with_encoding(self.encoding())
     }
 
-    /// Where each record of an object it reads ends, where it reads objects.
+    /// How an object it reads is cut into records, for a source that reads objects.
     pub(super) fn framing(&self) -> Option<&FramingSettingsDto> {
         self.spec().framing()
     }

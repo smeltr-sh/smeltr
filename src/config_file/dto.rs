@@ -262,7 +262,8 @@ pub struct SourceDto {
 /// `deny_unknown_fields` cannot refuse them on a type that flattens another into it, so this takes what the
 /// flattening leaves over. Each struct holds it as its last flattened field: serde fills flattened fields in order,
 /// and a flattened field after it would find its keys already taken. A flattened block must not flatten another:
-/// serde reads such a block without marking its keys taken, so this would refuse them.
+/// serde reads a flattened block inside a flattened block without marking its keys taken, so `NoUnknownKeys` would
+/// refuse them as unknown.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NoUnknownKeys;
 
@@ -1109,7 +1110,7 @@ impl Default for PollIntervalSecs {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SqlSourceDto {
-    /// Which SQL source it is, as the variant it is read as says (`SqlSourceDto::postgres`, `SqlSourceDto::mysql`).
+    /// Which database this source reads, `postgres` or `mysql`.
     #[serde(skip)]
     pub kind: SqlKind,
     pub host: String,
