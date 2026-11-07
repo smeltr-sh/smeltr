@@ -211,6 +211,7 @@ async fn preview(State(service): State<Service>, Json(body): Json<PreviewBody>) 
                 filter: body.filter,
                 attribution: body.attribution,
                 as_sample: body.as_sample,
+                saved_at: None,
                 after_dot: body.after_dot,
                 capture_filter: body.capture_filter,
             };

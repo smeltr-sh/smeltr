@@ -55,6 +55,10 @@ pub struct PreviewRequest {
     /// Also return the rows shown as a sample holds them (`Preview::as_sample`), to be saved as one.
     #[serde(default)]
     pub as_sample: bool,
+    /// The commit on the editor's branch that holds the pipeline run as it is here, if one does: what a sample saved
+    /// from its output records as `__capture.config`. The leader sets it; a caller cannot.
+    #[serde(skip)]
+    pub saved_at: Option<String>,
     /// What may follow a `.` in an expression of the config. Asked, the preview answers it instead of running the
     /// sample, and `Preview::after_dot` holds the answer.
     #[serde(default)]
@@ -878,6 +882,10 @@ pub fn run_preview(
         Some(id) => system.pipeline(id),
         None => system.pipelines.first(),
     };
+    let pipeline_id = match &req.pipeline {
+        Some(id) => id.clone(),
+        None => system.pipeline_ids.first().cloned().unwrap_or_default(),
+    };
     let Some(pipeline_cfg) = pipeline_cfg else {
         return Preview::failed(
             "config",
@@ -992,9 +1000,15 @@ pub fn run_preview(
         );
         // An unroll makes rows of its own, which no longer line up with the sample's.
         let touched = (req.attribution && batch.rows() == records.len()).then(|| touched(&plan, &batch));
-        let sample = req
-            .as_sample
-            .then(|| as_sample(&plan, &on_exception.tag_field, &batch, &rows));
+        let sample = req.as_sample.then(|| {
+            let made = crate::leader::capture::output_fields(
+                at_micros.unwrap_or_else(crate::core::ctx::wall_clock_micros),
+                &pipeline_id,
+                req.sample.as_deref(),
+                req.saved_at.as_deref(),
+            );
+            as_sample(&plan, &on_exception.tag_field, &batch, &rows, &made)
+        });
         batch.reclaim(&mut pool);
         (rows, touched, sample)
     });
@@ -1098,7 +1112,13 @@ pub fn run_preview(
 /// The rows of `batch` that `plan` finished and `rows` shows, as a sample holds them: each as a capture at a
 /// destination takes it, with no `__destination` fields, since the row was not sent to a destination. In row order,
 /// each with its row.
-fn as_sample(plan: &Plan, tag_field: &str, batch: &Batch, rows: &[plan::output::PreviewRow]) -> AsSample {
+fn as_sample(
+    plan: &Plan,
+    tag_field: &str,
+    batch: &Batch,
+    rows: &[plan::output::PreviewRow],
+    made: &[(crate::heartbeat::CaptureColumn, serde_json::Value)],
+) -> AsSample {
     let finished = crate::worker::capture::Finished::of(plan, tag_field);
     let mut taken = Vec::new();
     let mut numbers = Vec::new();
@@ -1117,9 +1137,21 @@ fn as_sample(plan: &Plan, tag_field: &str, batch: &Batch, rows: &[plan::output::
         });
         numbers.push(shown.row);
     }
+    // How the output was made stands in for how its input was captured, which these records no longer are.
+    let mut columns = config_file::sample_columns(&taken);
+    columns.retain(|c| !c.name.starts_with("__capture."));
+    columns.extend(made.iter().map(|(c, _)| c.clone()));
+    let mut capture = serde_json::Map::new();
+    for (column, value) in made {
+        capture.insert(column.name["__capture.".len()..].to_string(), value.clone());
+    }
+    let mut records: Vec<_> = taken.iter().flat_map(config_file::sample_records).collect();
+    for record in &mut records {
+        record.insert("__capture".to_string(), serde_json::Value::Object(capture.clone()));
+    }
     AsSample {
-        columns: config_file::sample_columns(&taken),
-        records: taken.iter().flat_map(config_file::sample_records).collect(),
+        columns,
+        records,
         rows: numbers,
     }
 }
@@ -1486,6 +1518,7 @@ pub fn run_pipeline_actual(
             filter: None,
             attribution: false,
             as_sample: false,
+            saved_at: None,
             after_dot: None,
             capture_filter: None,
         },
@@ -1624,6 +1657,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -1717,6 +1751,7 @@ mod tests {
                 filter: Some(r#"u.path == "/x""#.into()),
                 attribution: false,
                 as_sample: true,
+                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -1748,6 +1783,56 @@ mod tests {
         assert!(read.warnings.is_empty(), "{:?}", read.warnings);
     }
 
+    /// A sample of a captured sample's output says how the output was made, in place of how its input was captured:
+    /// it was taken from no source.
+    #[test]
+    fn a_sample_of_the_output_says_how_it_was_made_not_how_its_input_was_captured() {
+        let column = |name: &str, ty: &str| crate::heartbeat::CaptureColumn {
+            name: name.into(),
+            ty: ty.into(),
+        };
+        let columns = [
+            column("_raw", "str"),
+            column("__capture.timestamp", "datetime"),
+            column("__capture.source", "str"),
+        ];
+        let captured = serde_json::json!({
+            "_raw": "http://a/x",
+            "__capture": {"timestamp": "2026-10-25T13:57:12.000000Z", "source": "orders-west"},
+        });
+        let previewed = run_preview(
+            PreviewRequest {
+                config: compiling(),
+                pipeline: Some("p".into()),
+                sample: Some("orders".into()),
+                show_internal: false,
+                at_micros: Some(1_700_000_000_000_000),
+                filter: None,
+                attribution: false,
+                as_sample: true,
+                saved_at: None,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &columns,
+            vec![captured.as_object().unwrap().clone()],
+        );
+        let sample = previewed.body.as_sample.unwrap();
+        assert_eq!(
+            sample.records[0]["__capture"],
+            serde_json::json!({"timestamp": "2023-11-14T22:13:20.000000Z", "pipeline": "p", "sample": "orders"}),
+            "unsaved, it names no commit"
+        );
+        let named: Vec<_> = sample.columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(!named.contains(&"__capture.source"), "{named:?}");
+        assert!(named.contains(&"__capture.pipeline"), "{named:?}");
+
+        let meta = SourceMeta::of_columns(&sample.columns).unwrap();
+        let read = read_sample(&meta, &sample.columns, &sample.records).unwrap();
+        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+    }
+
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {
         let config = match at {
             DotAt::Destination(_) => compiling(),
@@ -1763,6 +1848,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                saved_at: None,
                 after_dot: Some(AfterDotRequest {
                     dot: text.len() - 1,
                     text: text.into(),
@@ -1859,6 +1945,7 @@ mod tests {
                     filter: None,
                     attribution: false,
                     as_sample: false,
+                    saved_at: None,
                     after_dot: None,
                     capture_filter: Some(CaptureFilterRequest {
                         text: text.into(),
@@ -1898,6 +1985,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                saved_at: None,
                 after_dot: Some(AfterDotRequest {
                     text: "_raw.".into(),
                     dot: 4,
@@ -1938,6 +2026,7 @@ mod tests {
                 filter: None,
                 attribution: false,
                 as_sample: false,
+                saved_at: None,
                 after_dot: None,
                 capture_filter: None,
             },

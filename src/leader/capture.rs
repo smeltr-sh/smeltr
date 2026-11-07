@@ -359,6 +359,46 @@ fn rows_in(batches: &[CaptureBatch]) -> usize {
     batches.iter().map(|b| b.rows.len()).sum()
 }
 
+/// How a pipeline's output was made, as the `__capture` fields a sample saved from it carries on every record in place of
+/// its input's: the instant it ran at, the pipeline by id, the sample it ran over by id, and the commit holding that
+/// pipeline as it ran. A field with nothing to say is left out.
+pub fn output_fields(
+    at_micros: i64,
+    pipeline: &str,
+    sample: Option<&str>,
+    config: Option<&str>,
+) -> Vec<(crate::heartbeat::CaptureColumn, serde_json::Value)> {
+    use crate::core::column::DataType;
+    let text = |v: &str| serde_json::Value::String(v.to_string());
+    [
+        ("timestamp", DataType::DateTime, Some(text(&instant(at_micros)))),
+        ("pipeline", DataType::Str, Some(text(pipeline))),
+        ("sample", DataType::Str, sample.map(text)),
+        ("config", DataType::Str, config.map(text)),
+    ]
+    .into_iter()
+    .filter_map(said)
+    .collect()
+}
+
+/// `micros` as a `__capture.timestamp` spells it.
+fn instant(micros: i64) -> String {
+    let mut timestamp = Vec::new();
+    crate::ops::datetime::write_iso8601_micros_bare(micros, &mut timestamp);
+    String::from_utf8(timestamp).expect("an instant is written as ASCII")
+}
+
+/// One `__capture` field, as its column and value, if it has something to say.
+fn said(
+    (name, ty, value): (&str, crate::core::column::DataType, Option<serde_json::Value>),
+) -> Option<(crate::heartbeat::CaptureColumn, serde_json::Value)> {
+    let column = crate::heartbeat::CaptureColumn {
+        name: format!("__capture.{name}"),
+        ty: ty.spell(),
+    };
+    value.map(|v| (column, v))
+}
+
 /// Who opened a capture, and the commit the fleet ran then, for a sample saved from it to record.
 pub struct Opened {
     /// By `Actor::id`. A person holds one capture at a time.
@@ -593,9 +633,7 @@ impl Captures {
         let Some(s) = sessions.get(session) else {
             return Vec::new();
         };
-        let mut timestamp = Vec::new();
-        crate::ops::datetime::write_iso8601_micros_bare(s.opened_micros, &mut timestamp);
-        let timestamp = String::from_utf8(timestamp).expect("an instant is written as ASCII");
+        let timestamp = instant(s.opened_micros);
         let failed: Vec<serde_json::Value> = s
             .ended
             .iter()
@@ -635,13 +673,7 @@ impl Captures {
             ),
         ]
         .into_iter()
-        .filter_map(|(name, ty, value)| {
-            let column = crate::heartbeat::CaptureColumn {
-                name: format!("__capture.{name}"),
-                ty: ty.spell(),
-            };
-            value.map(|v| (column, v))
-        })
+        .filter_map(said)
         .collect()
     }
 
