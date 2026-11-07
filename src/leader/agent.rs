@@ -440,6 +440,9 @@ async fn end_rounds(
     calls: &[Call],
     asking: &Asking,
 ) -> Result<Ended, String> {
+    if !host.live().await {
+        return Ok(Ended::Stopped);
+    }
     let not_run: Vec<Said> = calls
         .iter()
         .map(|call| Said::Result {
