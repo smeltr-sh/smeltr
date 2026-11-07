@@ -585,8 +585,9 @@ impl Store {
         })
     }
 
-    /// The connection. A panic that held it poisons the mutex but not the file: an open transaction rolls back as
-    /// it unwinds, so every later call goes on rather than failing for one that already did.
+    /// Locks the connection and returns it, even if a panic poisoned the mutex. A panic that held it poisons the
+    /// mutex but not the file: the open transaction rolls back as it unwinds, so later calls carry on instead of
+    /// failing because an earlier one panicked.
     fn conn(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
