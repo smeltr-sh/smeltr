@@ -279,6 +279,56 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   await expect(viewer.getByRole('option', { name: /Your capture/ })).toContainText('3 records');
 });
 
+// A1, an editor: the capture that could be saved as a sample is run over unsaved instead, and nothing is committed.
+test('A1: an editor runs a pipeline over a capture without saving it', async ({
+  api,
+  leader,
+  fleet,
+  admin,
+}) => {
+  await api.put('/api/areas/shared/sources?branch=arrive', [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+  ]);
+  await api.put('/api/areas/shared/pipelines/tidy?branch=arrive', {
+    id: 'tidy',
+    name: 'tidy',
+    steps: [],
+  });
+  await api.put('/api/areas/shared/destinations?branch=arrive', [
+    { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
+  ]);
+  await api.put('/api/areas/shared/routes?branch=arrive', [
+    {
+      id: 'r1',
+      source: 'own-metrics',
+      condition: null,
+      pipeline: 'tidy',
+      deliver: [{ to: ['es-a'] }],
+    },
+  ]);
+  await api.openChange('arrive', 'Tidy own metrics');
+  await api.deploy('arrive');
+  await fleet.startWorker(leader, api, 'default', 'w1');
+  await goto(admin, leader, '#/build/pipelines/tidy');
+
+  await admin.getByRole('button', { name: 'Choose a sample' }).click();
+  await admin.getByRole('tab', { name: /^Capture/ }).click();
+  await admin.getByRole('option', { name: /own-metrics/ }).click();
+  const form = admin.getByRole('dialog');
+  await form.getByRole('spinbutton', { name: 'records' }).fill('3');
+  await form.getByRole('button', { name: 'Start' }).click();
+  const use = admin.getByRole('button', { name: 'Use these records' });
+  await expect(use).toBeEnabled({ timeout: 60_000 });
+  await expect(admin.getByRole('button', { name: 'Save sample' })).toBeEnabled();
+  await use.click();
+  await expect(admin.getByRole('dialog')).toHaveCount(0);
+
+  const chip = admin.getByRole('button', { name: 'Choose a sample' });
+  await expect(chip).toContainText('Your capture');
+  await expect(chip).toContainText('3 records', { timeout: 30_000 });
+  expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toEqual([]);
+});
+
 // A1, a source's card: one route to one destination is a line; a second destination turns it top to bottom, a [+]
 // on a line writes a condition there, and a second pipeline is a second route from the same source.
 test('A1: a route card turns at a second destination, takes conditions on its lines, and grows a pipeline', async ({

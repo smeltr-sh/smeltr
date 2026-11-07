@@ -773,9 +773,20 @@
   function useCapture(status: CaptureStatus): string | undefined {
     if (heldCount(status) === 0) return 'Nothing was captured, so there is nothing to run.';
     held = status;
-    void chooseSample(heldChoice(status.session));
+    capturing = false;
+    adding = false;
+    captureAt = null;
+    void chooseSample(heldChoice(status.session)).then(() => {
+      if (making) void proposeFrom(sampleRows);
+    });
     return undefined;
   }
+  const USE_CAPTURE = {
+    title: 'Capture records to run',
+    label: 'Use these records',
+    keeps: true,
+    take: useCapture,
+  };
 
   // The sample a pipeline last ran over, remembered per pipeline in this browser: the editor
   // opens on it, and the sample menu lists it first.
@@ -1633,6 +1644,7 @@
         open={capturing || adding}
         start={capturing ? 'capture' : undefined}
         target={captureAt ?? captureTarget}
+        use={USE_CAPTURE}
         oncancel={() => {
           capturing = false;
           adding = false;
@@ -1643,12 +1655,7 @@
     {:else if capturing && captureAt}
       <CaptureFlow
         target={captureAt}
-        use={{
-          title: 'Capture records to run',
-          label: 'Use these records',
-          keeps: true,
-          take: useCapture,
-        }}
+        use={USE_CAPTURE}
         oncancel={() => {
           capturing = false;
           captureAt = null;

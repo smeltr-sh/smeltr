@@ -58,7 +58,8 @@
     onstop: () => void;
     /** Saves it as a sample named `name`; absent for a viewer, who may not save one. */
     onsave?: (name: string) => void;
-    /** What the capture is for, in place of saving it: its title, and the action that takes it. */
+    /** What the capture is for without saving it: its title, and the action that takes it. Beside `onsave`, it is a
+     * second way out and the title is saving's. */
     use?: { title: string; label: string; take: () => void };
     /** Discard: the session goes. */
     ondiscard: () => void;
@@ -96,7 +97,7 @@
 <Dialog
   open
   wide
-  title={use
+  title={use && !onsave
     ? use.title
     : done && onsave
       ? 'Save the capture'
@@ -109,8 +110,8 @@
   }}
   onsubmit={() => {
     if (!done) onstop();
-    else if (use) use.take();
-    else onsave?.(saveName.trim());
+    else if (onsave) onsave(saveName.trim());
+    else use?.take();
   }}
 >
   <div class="content">
@@ -217,7 +218,7 @@
           before you save or share them.
         </p>
       {/if}
-      {#if done && !use && onsave}
+      {#if done && onsave}
         <div class="name" class:off={held === 0}>
           <label for="capture-name">Save as</label>
           <input id="capture-name" bind:value={saveName} disabled={held === 0} />
@@ -240,12 +241,14 @@
       {/if}
       {#if use}
         <Button
-          type="submit"
-          class="primary"
+          type={onsave ? 'button' : 'submit'}
+          class={onsave ? '' : 'primary'}
+          onclick={onsave ? use.take : undefined}
           disabled={busy ? BUSY : !status ? 'Wait for the capture to start.' : ''}
           >{use.label}</Button
         >
-      {:else if onsave}
+      {/if}
+      {#if onsave}
         <Button
           type="submit"
           class="primary"
