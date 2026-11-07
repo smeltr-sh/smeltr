@@ -46,9 +46,9 @@
   let shown = $state(-1);
   let ringing = $derived(shown >= 0 && !done[shown] ? shown : next);
 
-  // The count a chime is measured from. The first look at a branch sets it, so opening the demo, or another branch,
-  // with tasks already done stays quiet. Opening a branch reloads the page, so the count outlives a reload; and
-  // leaving main for a branch ticks the first task, so one more there rings too.
+  // The count a chime is measured from. The first look at a branch sets it, so opening the demo, or a branch with
+  // tasks already done, stays quiet. It is kept across a reload, because opening a branch reloads the page. Leaving
+  // main for a branch ticks the first task there, so that one chimes.
   const HEARD_KEY = 'smeltr-demo-guide-heard';
   let heard: { branch: string; count: number } | null = null;
   try {

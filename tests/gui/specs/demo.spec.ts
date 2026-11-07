@@ -157,7 +157,7 @@ test('starting and opening a branch ticks the first task, and chimes', async ({ 
   await expect.poll(chimes).toBe(1);
 });
 
-test("the guide's FortiGate task rings the parser that declares proto", async ({ page }) => {
+test("the guide's FortiGate task points at the parser that declares proto", async ({ page }) => {
   await open(page, '#/map');
   await page
     .locator('#demo-guide li', { hasText: 'Fix the proto field' })
