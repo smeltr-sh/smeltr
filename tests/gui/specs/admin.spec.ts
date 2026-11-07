@@ -4,7 +4,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { test, expect, goto, withKey, type Api } from '../fleet';
-import { FakeModel, MODEL_KEY, request, say } from '../model';
+import { FakeModel, MODEL_KEY, request, say, summary } from '../model';
 import {
   described,
   openAdmin,
@@ -814,6 +814,35 @@ test('a person sets what their agent may use from their name', async ({ admin, a
     default: 'viewer',
     areas: { shared: 'editor' },
   });
+});
+
+test('a summary the model writes part way through a turn is shown, and the agent carries on from it', async ({
+  admin,
+  api,
+}) => {
+  const model = await FakeModel.start();
+  try {
+    await agentsOn(api, model);
+    model.answer(
+      [request('GET', '/api/areas/shared/pipelines')],
+      [summary('They asked what runs in shared.')],
+      [say('Nothing runs in shared yet.')],
+    );
+    await admin.reload();
+    await openAgent(admin);
+    await admin.getByRole('textbox', { name: 'Message' }).fill('What runs in shared?');
+    await admin.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(admin.getByText('Nothing runs in shared yet.')).toBeVisible();
+    await expect(admin.getByText(/^Summarized\./)).toBeVisible();
+    // The summary stands in for what was said, and the last answer and its call's result are read after it.
+    const [said, answered, result] = model.asked.at(-1)?.messages ?? [];
+    expect(JSON.stringify(said)).toContain('They asked what runs in shared.');
+    expect(JSON.stringify(said)).not.toContain('What runs in shared?');
+    expect(JSON.stringify(answered)).toContain('tool_use');
+    expect(JSON.stringify(result)).toContain('tool_result');
+  } finally {
+    await model.stop();
+  }
 });
 
 test('a person asks their agent, sees what it asked the leader, and deletes the conversation', async ({

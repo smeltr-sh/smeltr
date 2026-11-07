@@ -831,6 +831,10 @@ fn items(stored: &str) -> Vec<Value> {
         Ok(Turn::Fresh(fresh)) => vec![json!({"kind": "fresh", "summary": fresh.summary})],
         Ok(Turn::Answered(reply)) => {
             let mut items = Vec::new();
+            // OpenAI's summary is sealed: only where it is can be shown.
+            if reply.compacted() {
+                items.push(json!({"kind": "compacted"}));
+            }
             if !reply.text.is_empty() {
                 items.push(json!({"kind": "answer", "text": reply.text}));
             }

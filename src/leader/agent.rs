@@ -15,7 +15,7 @@
 
 use serde_json::{Value, json};
 
-use super::model::{self, Call, Effort, Fresh, Heard, Model, Request, Said, Tool, Turn};
+use super::model::{self, Call, Effort, Fresh, Heard, Model, Request, Said, Stop, Tool, Turn};
 
 /// The rounds of tool calls one turn may take. The calls of the last are left unrun, and said so next turn.
 pub const MAX_ROUNDS: usize = 25;
@@ -265,9 +265,9 @@ pub fn ready(turns: Vec<Turn>) -> Vec<Turn> {
                     _ => out.push(Turn::Asked(said)),
                 }
             }
-            // Nothing before it is read again, its calls included.
+            // A summary keeps the last answer before it, which must have its calls answered.
             Turn::Fresh(fresh) => {
-                owed.clear();
+                settle(&mut out, &mut owed);
                 out.push(Turn::Fresh(fresh));
             }
         }
@@ -331,7 +331,8 @@ pub struct Asking {
 }
 
 /// A fresh start for `turns` carrying what the model writes of them, to carry on from in place of them. Asked with
-/// the same system prompt and tool as a turn, so it reads them from the provider's cache.
+/// the same system prompt and tool as a turn, so it reads them from the provider's cache. A model that summarizes
+/// the conversation itself may answer with its own summary.
 pub async fn summarize(model: &dyn Model, system: &str, turns: Vec<Turn>, asking: &Asking) -> Result<Fresh, String> {
     let mut turns = ready(turns);
     let ask = Said::Text(model::SUMMARIZE.to_string());
@@ -380,9 +381,15 @@ pub async fn run(
     turns.push(asked);
     let mut turns = ready(turns);
     let heard = |text: &str| host.heard(text);
-    for round in 0.. {
+    // A summary written part way is no round.
+    let mut round = 0;
+    loop {
         if !host.live().await {
             return Ok(Ended::Stopped);
+        }
+        if model.due(&turns) {
+            let fresh = summarize(model, system, turns.clone(), asking).await?;
+            compacted(host, &mut turns, fresh).await?;
         }
         let reply = model
             .ask(Request {
@@ -398,6 +405,18 @@ pub async fn run(
                 heard: Some(Heard(&heard)),
             })
             .await?;
+        if reply.stop == Stop::Compacted {
+            let fresh = match reply.text.trim() {
+                // The model called a tool in place of writing it: the leader asks for one.
+                "" => summarize(model, system, turns.clone(), asking).await?,
+                summary => Fresh {
+                    summary: Some(summary.to_string()),
+                    tokens: reply.usage.output,
+                },
+            };
+            compacted(host, &mut turns, fresh).await?;
+            continue;
+        }
         let calls = reply.calls.clone();
         let answered = Turn::Answered(reply);
         host.keep(&answered).await?;
@@ -408,6 +427,7 @@ pub async fn run(
         if round == MAX_ROUNDS {
             break;
         }
+        round += 1;
         let mut results = Vec::with_capacity(calls.len());
         for call in &calls {
             if !host.live().await {
@@ -424,6 +444,14 @@ pub async fn run(
         }
     }
     Ok(Ended::Rounds)
+}
+
+/// Keep `fresh` after `turns`, the fresh start the turn carries on from.
+async fn compacted(host: &dyn Host, turns: &mut Vec<Turn>, fresh: Fresh) -> Result<(), String> {
+    let fresh = Turn::Fresh(fresh);
+    host.keep(&fresh).await?;
+    turns.push(fresh);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -471,6 +499,8 @@ mod tests {
     struct Scripted {
         replies: Mutex<Vec<Reply>>,
         asked: Mutex<Vec<Vec<Turn>>>,
+        /// Which ask, counted from 1, the leader is due to summarize before. 0 for none.
+        due: AtomicUsize,
     }
 
     impl Scripted {
@@ -479,6 +509,7 @@ mod tests {
             Scripted {
                 replies: Mutex::new(replies),
                 asked: Mutex::new(Vec::new()),
+                due: AtomicUsize::new(0),
             }
         }
     }
@@ -492,6 +523,10 @@ mod tests {
                 heard(&reply.text);
             }
             Ok(reply)
+        }
+        fn due(&self, _turns: &[Turn]) -> bool {
+            let due = self.due.load(Ordering::SeqCst);
+            due > 0 && due == self.asked.lock().unwrap().len()
         }
     }
 
@@ -802,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn calls_left_open_before_a_fresh_start_are_not_answered_after_it() {
+    fn calls_left_open_before_a_fresh_start_are_answered_before_it() {
         let fresh = Turn::Fresh(Fresh {
             summary: None,
             tokens: 0,
@@ -812,6 +847,37 @@ mod tests {
             fresh.clone(),
             Turn::Asked(asked("Next")),
         ]);
-        assert_eq!(turns[1..], [fresh, Turn::Asked(asked("Next"))]);
+        assert_eq!(results(&turns[1]), vec![("call_1".to_string(), NOT_RUN.to_string(), true)]);
+        assert_eq!(turns[2..], [fresh, Turn::Asked(asked("Next"))]);
+    }
+
+    #[tokio::test]
+    async fn a_turn_keeps_a_summary_written_part_way_and_carries_on_from_it() {
+        let mut compacted = reply("By the model.", &[]);
+        compacted.stop = Stop::Compacted;
+        let get = json!({"method": "GET", "path": "/api/areas/shared/pipelines"});
+        let model = Scripted::new(vec![
+            compacted,
+            reply("", &[("c", get)]),
+            reply("By the leader.", &[]),
+            reply("ok", &[]),
+        ]);
+        let host = Fake::new(usize::MAX, "");
+        // The leader is due to summarize once, after the call.
+        model.due.store(2, Ordering::SeqCst);
+        let ended = run(&model, &host, CATALOG, "", Vec::new(), asked("Go."), &Asking::default()).await;
+        assert_eq!(ended, Ok(Ended::Answered));
+        let fresh = |summary: &str| {
+            Turn::Fresh(Fresh {
+                summary: Some(summary.to_string()),
+                tokens: 1,
+            })
+        };
+        let kept = host.kept.lock().unwrap();
+        assert_eq!(kept[1], fresh("By the model."));
+        assert_eq!(kept[4], fresh("By the leader."));
+        let asked = model.asked.lock().unwrap();
+        assert_eq!(asked[1].last(), Some(&fresh("By the model.")));
+        assert_eq!(asked[3].last(), Some(&fresh("By the leader.")));
     }
 }
