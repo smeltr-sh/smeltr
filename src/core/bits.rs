@@ -92,7 +92,7 @@ pub fn xor_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     mask_tail(&mut dst[..w], len);
 }
 
-/// `dst = a & !b`: the Drop kernel, `live' = live & !dropped`.
+/// `dst = a & !b`.
 #[cfg(test)]
 #[inline]
 pub fn and_not_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
@@ -228,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn and_not_is_the_drop_kernel() {
+    fn and_not_into_clears_the_bits_b_sets() {
         let live = from_rows(8, &[0, 1, 2, 3, 4, 5, 6, 7]);
         let dropped = from_rows(8, &[1, 3]);
         let mut out = vec![0u64; 1];
