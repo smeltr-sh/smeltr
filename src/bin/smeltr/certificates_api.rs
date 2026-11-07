@@ -159,7 +159,7 @@ async fn read(tls: Option<&Arc<Tls>>) -> Result<CertificatesDto, String> {
     let rotation = tls::rotation(&serving.dir)?;
     let unserved = tls::unserved(&serving.dir);
     let workers = match &rotation {
-        Some(state) => smeltr::leader::rotation_workers(&serving.leader, &state.incoming)
+        Some(state) => smeltr::leader::rotation_workers(&serving.leader, &state.incoming, state.started_millis)
             .await?
             .into_iter()
             .map(|(id, holds_incoming)| RotationWorkerDto { id, holds_incoming })

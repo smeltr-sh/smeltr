@@ -107,6 +107,8 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
             if follow {
                 follow_disk(&smeltr::leader::tls::dir_of(&state.data_dir), tls.clone());
             }
+            // As `main` runs it, so a rotation cuts over without a request to carry it.
+            tokio::spawn(smeltr::leader::housekeeping::run(state.clone()));
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             tx.send(listener.local_addr().unwrap().port()).unwrap();
@@ -812,13 +814,10 @@ fn a_worker_takes_a_rotated_authority_without_being_restarted() {
     stop(child);
 }
 
-/// The beat that carries a rotation past its deadline is still a beat from a worker the leader can reach, and it
-/// must leave holding the root the leader is about to sign under.
-///
-/// Answering the cutover first finds no rotation and sends nothing, so the one worker that was certainly reachable
-/// is the one stranded -- which is the failure the whole overlap exists to prevent, arriving by the other door.
+/// A deadline is kept by the leader's own clock: it cuts over once the deadline passes, whether or not any worker
+/// beats.
 #[test]
-fn the_worker_whose_beat_ends_a_rotation_is_handed_the_authority_first() {
+fn a_rotation_cuts_over_at_its_deadline_without_a_beat() {
     let _alone = alone();
     let (base, ca_pem, data_dir) = start_leader_tls_in();
     let dir = smeltr::leader::tls::dir_of(&data_dir);
@@ -827,11 +826,11 @@ fn the_worker_whose_beat_ends_a_rotation_is_handed_the_authority_first() {
 
     let child = spawn_worker(&base, code["value"].as_str().unwrap(), &state_dir);
     assert!(heartbeating(&base, &ca_pem, Duration::from_secs(20)), "never enrolled");
+    // Enrolled and silent: the fleet never holds the incoming root, so only the deadline can end the rotation.
+    stop(child);
 
-    // A deadline already past, so the very next beat ends the rotation.
     let now_ms = smeltr::leader::warnings::now_millis();
-    let state = smeltr::leader::tls::begin_rotation(&dir, Duration::from_secs(60 * 60), now_ms - 1000, now_ms)
-        .expect("a rotation");
+    smeltr::leader::tls::begin_rotation(&dir, Duration::from_secs(60 * 60), now_ms - 1000, now_ms).expect("a rotation");
 
     let cut_over = {
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -846,34 +845,6 @@ fn the_worker_whose_beat_ends_a_rotation_is_handed_the_authority_first() {
         }
     };
     assert!(cut_over, "a deadline already past did not end the rotation");
-
-    // The worker was there for it, so it holds what this leader now signs under.
-    let kept = state_dir.join("pinned-ca.pem");
-    let holds = {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            if std::fs::read(&kept)
-                .ok()
-                .and_then(|pem| smeltr::leader::tls::describe_each(&pem, "kept").ok())
-                .is_some_and(|roots| roots.iter().any(|r| r.fingerprint == state.incoming))
-            {
-                break true;
-            }
-            if Instant::now() >= deadline {
-                break false;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    };
-    assert!(
-        holds,
-        "the beat that ended the rotation left without the authority it ended it for"
-    );
-    assert!(
-        heartbeating(&base, &ca_pem, Duration::from_secs(20)),
-        "the worker stopped reaching the leader after the deadline cutover"
-    );
-    stop(child);
 }
 
 /// The authority is public, and a worker holding an enrollment code has no session to prove anything with.
@@ -1203,15 +1174,9 @@ fn a_cutover_withdraws_the_enrollment_codes_that_named_the_authority_it_retired(
         "the page does not say this enrollment code has a window, and how long it is"
     );
 
-    // The page an operator watches a rotation on. It is one of the two places a cutover happens -- this leader has
-    // no workers to beat, so the deadline is what ends it -- and the withdrawal rides the same call.
-    agent
-        .get(format!("{base}/api/warnings"))
-        .call()
-        .expect("the warnings a rotation is watched on");
-
+    // This leader has no workers to wait on, so its housekeeping cuts over on its next tick.
     assert!(
-        smeltr::leader::tls::rotation(&tls_dir).unwrap().is_none(),
+        finished(&tls_dir, Duration::from_secs(30)),
         "the rotation did not finish, so nothing here is about a cutover"
     );
     // What `main` says once its socket has loaded what the cutover wrote, so this leader will mint again.

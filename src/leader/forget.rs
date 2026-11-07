@@ -7,9 +7,8 @@
 //! registry holds for it. The roster, the registry and a rotation's wait then have nothing of it to account for.
 //!
 //! Gone is one of two things. The worker said it was stopping, and is forgotten on that heartbeat. Or it has said
-//! nothing for longer than this leader's setting allows, and is forgotten by the next look -- which rides the
-//! heartbeat and the pages that read the fleet, since the leader has no clock of its own. Until then its silence is
-//! reported like any other worker's.
+//! nothing for longer than this leader's setting allows, and is forgotten the next time [`sweep`] runs, which the
+//! leader's housekeeping does (`leader::housekeeping`). Until then its silence is reported like any other worker's.
 //!
 //! Silence is what this leader was up to hear. While it was down it heard nobody, and that says nothing about who
 //! was still there: a fleet that ran on through a leader outage is not forgotten for it.

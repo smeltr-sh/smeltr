@@ -144,6 +144,14 @@ impl FactKey {
     }
 }
 
+/// What a worker last said of the authorities it would accept, and when.
+struct Reported {
+    held: Vec<String>,
+    /// Whether the worker accepts authorities from this leader at all.
+    takes: bool,
+    at_ms: i64,
+}
+
 pub struct Registry {
     threads: Mutex<HashMap<(String, String), ThreadState>>,
     /// What each worker last said it would verify this leader by.
@@ -152,7 +160,7 @@ pub struct Registry {
     /// thread at all, and that is exactly the worker a rotation must not sign away from. In memory only -- a
     /// leader restarted mid-rotation waits for the fleet to say it again, which is one heartbeat interval and is
     /// the more current answer in any case.
-    authorities: Mutex<HashMap<String, (Vec<String>, bool)>>,
+    authorities: Mutex<HashMap<String, Reported>>,
     /// When each currently-true catalog fact was first observed, in epoch milliseconds. See [`Registry::observe_facts`].
     fact_clock: Mutex<HashMap<FactKey, i64>>,
     /// The durable mirror refusing heartbeats, and refusing logs: each said once per change and then on the
@@ -167,7 +175,7 @@ pub struct Registry {
     /// When the next look for progress no deployed source reads is due, in epoch milliseconds
     /// (`leader::prune_source_progress`).
     next_prune_ms: std::sync::atomic::AtomicI64,
-    /// When the heartbeat next looks at every issue, in epoch milliseconds (`leader::catalog`).
+    /// When the housekeeping next looks at every issue, in epoch milliseconds (`leader::catalog`).
     next_issue_look_ms: std::sync::atomic::AtomicI64,
     /// The newest time the fact clock was observed at, in epoch milliseconds (`Registry::observe_facts`).
     observed_ms: std::sync::atomic::AtomicI64,
@@ -374,7 +382,7 @@ impl Registry {
     }
 
     /// Whether a look for gone ephemeral workers is due at `now_ms`, and if so, that the next is `every` later.
-    /// Asked on every heartbeat and every read of the fleet; true for one caller per `every`.
+    /// Asked on every housekeeping tick; true for one caller per `every`.
     pub fn sweep_due(&self, now_ms: i64, every: Duration) -> bool {
         due(&self.next_sweep_ms, now_ms, every)
     }
@@ -384,7 +392,7 @@ impl Registry {
         due(&self.next_prune_ms, now_ms, every)
     }
 
-    /// Whether the heartbeat's look at every issue is due at `now_ms`, as [`Registry::sweep_due`].
+    /// Whether the housekeeping's look at every issue is due at `now_ms`, as [`Registry::sweep_due`].
     pub fn issue_look_due(&self, now_ms: i64, every: Duration) -> bool {
         due(&self.next_issue_look_ms, now_ms, every)
     }
@@ -392,10 +400,14 @@ impl Registry {
     /// Records which authorities a worker would accept, as it just reported them, and whether it takes one from
     /// this leader at all.
     pub fn record_authority(&self, worker_id: &str, fingerprints: Vec<String>, takes_authority: bool) {
-        self.authorities
-            .lock()
-            .unwrap()
-            .insert(worker_id.to_string(), (fingerprints, takes_authority));
+        self.authorities.lock().unwrap().insert(
+            worker_id.to_string(),
+            Reported {
+                held: fingerprints,
+                takes: takes_authority,
+                at_ms: super::warnings::now_millis(),
+            },
+        );
     }
 
     /// The workers that verify this leader by an authority their operator gave them, and so take none it hands
@@ -406,14 +418,15 @@ impl Registry {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, (_, takes))| !takes)
+            .filter(|(_, reported)| !reported.takes)
             .map(|(worker, _)| worker.clone())
             .collect();
         names.sort();
         names
     }
 
-    /// What each of `expected` would verify this leader by, one entry per worker.
+    /// The roots each of `expected` would use to verify this leader, one entry per worker, as reported at or after
+    /// `since_ms`.
     ///
     /// The question a rotation asks: signing under a root any of these lists lacks strands that worker. A worker
     /// in `expected` that has said nothing holds nothing, which is never ready -- how long to wait for one that is
@@ -425,19 +438,25 @@ impl Registry {
     /// A worker that takes no authority from this leader is left out: it can never hold what this leader hands
     /// out, so waiting on it is waiting for the deadline. [`Self::not_taking_authority`] names it to the operator
     /// instead, whose job the incoming root is.
-    pub fn authorities_held(&self, expected: &HashSet<String>) -> Vec<Vec<String>> {
-        self.holders(expected).into_iter().map(|(_, held)| held).collect()
+    ///
+    /// A rotation passes its start as `since_ms`. A report from before it can list a root the worker has since
+    /// dropped, as when it has just switched away from one, so it counts as nothing held.
+    pub fn authorities_held(&self, expected: &HashSet<String>, since_ms: i64) -> Vec<Vec<String>> {
+        self.holders(expected, since_ms)
+            .into_iter()
+            .map(|(_, held)| held)
+            .collect()
     }
 
     /// [`Self::authorities_held`], each list beside the worker it is for, in id order.
-    pub fn holders(&self, expected: &HashSet<String>) -> Vec<(String, Vec<String>)> {
+    pub fn holders(&self, expected: &HashSet<String>, since_ms: i64) -> Vec<(String, Vec<String>)> {
         let held = self.authorities.lock().unwrap();
         let mut holders: Vec<(String, Vec<String>)> = expected
             .iter()
             .filter_map(|worker| match held.get(worker) {
-                Some((_, false)) => None,
-                Some((held, true)) => Some((worker.clone(), held.clone())),
-                None => Some((worker.clone(), Vec::new())),
+                Some(reported) if !reported.takes => None,
+                Some(reported) if reported.at_ms >= since_ms => Some((worker.clone(), reported.held.clone())),
+                _ => Some((worker.clone(), Vec::new())),
             })
             .collect();
         holders.sort();
@@ -853,7 +872,7 @@ mod tests {
         // Only one of them has said what it holds this run.
         r.record_authority("w1", vec!["incoming".to_string()], true);
 
-        let held = r.authorities_held(&r.known_workers());
+        let held = r.authorities_held(&r.known_workers(), 0);
         assert_eq!(
             held.len(),
             2,
@@ -871,7 +890,7 @@ mod tests {
         let r = Registry::default();
         r.record_authority("idle", vec!["incoming".to_string()], true);
         assert_eq!(
-            r.authorities_held(&r.known_workers()),
+            r.authorities_held(&r.known_workers(), 0),
             vec![vec!["incoming".to_string()]]
         );
     }
@@ -884,7 +903,7 @@ mod tests {
         r.record_authority("follows", vec!["incoming".to_string()], true);
         r.record_authority("theirs", vec!["operators-root".to_string()], false);
         let expected = HashSet::from(["follows".to_string(), "theirs".to_string()]);
-        assert_eq!(r.authorities_held(&expected), vec![vec!["incoming".to_string()]]);
+        assert_eq!(r.authorities_held(&expected, 0), vec![vec!["incoming".to_string()]]);
         assert_eq!(r.not_taking_authority(), vec!["theirs".to_string()]);
     }
 
@@ -895,7 +914,7 @@ mod tests {
         let r = Registry::default();
         r.record_authority("spoke", vec!["incoming".to_string()], true);
         let expected = HashSet::from(["spoke".to_string(), "enrolled-and-silent".to_string()]);
-        let held = r.authorities_held(&expected);
+        let held = r.authorities_held(&expected, 0);
         assert_eq!(held.len(), 2);
         assert!(
             held.iter().any(Vec::is_empty),
@@ -917,11 +936,23 @@ mod tests {
         .unwrap();
         r.record_authority("gone", vec!["outgoing".to_string()], true);
         // Expected is the caller's answer, and a revoked worker is not in it.
-        assert!(r.authorities_held(&HashSet::new()).is_empty());
+        assert!(r.authorities_held(&HashSet::new(), 0).is_empty());
     }
 
-    /// Quiet is not gone. However long ago a worker said what it holds, it still holds it: how long a rotation
-    /// waits on a quiet worker is the operator's deadline, and nothing here ages it out first.
+    /// A report from before a rotation began can name a root the worker has since dropped.
+    #[test]
+    fn a_report_from_before_a_rotation_holds_nothing_for_it() {
+        let r = Registry::default();
+        r.record_authority("w1", vec!["incoming".to_string()], true);
+        let later = super::super::warnings::now_millis() + 1;
+        assert_eq!(
+            r.authorities_held(&r.known_workers(), later),
+            vec![Vec::<String>::new()]
+        );
+    }
+
+    /// Quiet is not gone. However long ago in the rotation a worker said what it holds, it still holds it: how long
+    /// a rotation waits on a quiet worker is the operator's deadline, and nothing here ages it out first.
     #[test]
     fn a_worker_that_has_merely_gone_quiet_is_still_waited_for() {
         let r = Registry::default();
@@ -946,7 +977,7 @@ mod tests {
         }
 
         assert_eq!(
-            r.authorities_held(&r.known_workers()),
+            r.authorities_held(&r.known_workers(), 0),
             vec![vec!["outgoing".to_string()]]
         );
     }
