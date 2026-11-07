@@ -1538,6 +1538,7 @@ fn post(at: std::net::SocketAddr, token: &str, body: &str) -> Option<u16> {
 
 /// A receiver's port outlives the runtime serving it: a sender that connects while no runtime runs waits in the
 /// queue of the socket the supervisor holds, and the runtime that replaces the lost one answers it.
+#[cfg(unix)]
 #[test]
 fn a_receiver_answers_a_request_sent_while_its_runtime_was_being_replaced() {
     // The worker's address, so the socket the supervisor holds is the one its setting names.
