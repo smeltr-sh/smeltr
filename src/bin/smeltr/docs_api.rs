@@ -47,7 +47,7 @@ pub async fn list(Query(query): Query<ListQuery>) -> Response {
     Envelope::ok(serde_json::json!({ "pages": pages })).into_response()
 }
 
-/// A page's headings, after its opening.
+/// A page's headings, each with the id `section` takes.
 fn headings(page: &'static docs::Page) -> Vec<Heading> {
     page.sections[1..]
         .iter()

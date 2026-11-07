@@ -2907,9 +2907,9 @@ mod tests {
         assert!(sampled.iter().any(|(name, _)| name == "y"), "{sampled:?}");
     }
 
-    /// The record the pipeline writes comes only when asked: it is the largest part of an answer.
+    /// The dictionary comes only when asked: it is the largest part of an answer.
     #[test]
-    fn a_preview_says_the_record_it_writes_only_when_asked() {
+    fn a_preview_returns_the_dictionary_only_when_asked() {
         let config = r#"{"version":1,"sources":[],"destinations":[],"routes":[],
             "pipelines":[{"id":"p","name":"p","steps":[{"id":"c","type":"code","body":"x = _raw;"}]}]}"#;
         let previewed = super::run_preview(

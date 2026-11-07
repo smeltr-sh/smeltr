@@ -2325,6 +2325,7 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       filter: req.filter ?? null,
       attribution: req.attribution ?? false,
       as_sample: req.asSample ?? false,
+      dictionary: true,
       after_dot: req.afterDot ?? null,
       capture_filter: req.captureFilter ?? null,
     },

@@ -55,7 +55,8 @@ pub struct PreviewRequest {
     /// Also return the rows shown as a sample holds them (`Preview::as_sample`), to be saved as one.
     #[serde(default)]
     pub as_sample: bool,
-    /// Also return the record the pipeline writes (`Preview::dictionary`).
+    /// Also return the dictionary of what the pipeline writes (`Preview::dictionary`): its fields and an Elasticsearch
+    /// mapping.
     #[serde(default)]
     pub dictionary: bool,
     /// What may follow a `.` in an expression of the config. Asked, the preview answers it instead of running the
@@ -136,7 +137,7 @@ pub struct Preview {
     /// the parse decided, so it is what the parser did rather than a second reading of the records.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parsers: Vec<ParserOut>,
-    /// The record the pipeline writes (`plan::dictionary`), when asked. Absent when it did not compile.
+    /// The dictionary of what the pipeline writes (`plan::dictionary`), when asked. Absent when it did not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictionary: Option<DictionaryOut>,
     /// What compiles but is likely a mistake (`Plan::warnings`), each placed at its step as an error is.
