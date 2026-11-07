@@ -102,18 +102,6 @@
       parent company and of everything it controls. Contractors are not counted.
     </p>
     <p>
-      An organization that grows to 250 employees or more keeps the free license for 90 days from
-      then.
-    </p>
-    <p>
-      There is no license key. Your paid invoice is your proof of license for one year from the date
-      of purchase, and nothing in Smeltr needs activating.
-    </p>
-    <p>
-      The free license does not cover offering Smeltr to others as a hosted or managed service. For
-      that, email <a href="mailto:support@smeltr.sh">support@smeltr.sh</a>.
-    </p>
-    <p>
       Smeltr is licensed under the Business Source License 1.1. Each release becomes Apache 2.0 four
       years after it ships. The <a href={source}>source code</a> is public, and
       <a href={license}>the license</a> has the full terms.
