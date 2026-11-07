@@ -649,6 +649,8 @@ fn delivered_by(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_file::KafkaDestinationDto;
+    use crate::config_file::KafkaSourceDto;
     use crate::config_file::{
         CURRENT_VERSION, DeliverRuleDto, DestinationDto, DestinationKindDto, FileConfig, PipelineDto, RawBundle,
         RouteDto, SourceDto, SourceKindDto, StepDto,
@@ -657,7 +659,8 @@ mod tests {
     fn source(id: &str, topic: &str) -> SourceDto {
         SourceDto {
             id: id.to_string(),
-            kind: SourceKindDto::Kafka {
+            kind: SourceKindDto::Kafka(KafkaSourceDto {
+                unknown: Default::default(),
                 schema_registry: None,
                 read: Default::default(),
                 brokers: "kafka:9092".to_string(),
@@ -669,7 +672,7 @@ mod tests {
                 fetch_bytes: Default::default(),
                 encoding: Default::default(),
                 props: Default::default(),
-            },
+            }),
         }
     }
 
@@ -677,7 +680,8 @@ mod tests {
         DestinationDto {
             id: id.to_string(),
             on_exception: None,
-            kind: DestinationKindDto::Kafka {
+            kind: DestinationKindDto::Kafka(KafkaDestinationDto {
+                unknown: Default::default(),
                 schema_registry: None,
                 brokers: "kafka:9092".to_string(),
                 default_topic: "out".to_string(),
@@ -689,7 +693,7 @@ mod tests {
                 stall_after_secs: Default::default(),
                 buffer_bytes: Default::default(),
                 props: Default::default(),
-            },
+            }),
             accepts: vec![],
         }
     }

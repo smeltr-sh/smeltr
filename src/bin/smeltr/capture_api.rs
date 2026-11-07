@@ -668,7 +668,7 @@ fn takes_its_start(request: &CaptureRequest) -> bool {
         || request.source.as_ref().is_some_and(|s| {
             matches!(
                 s.kind,
-                config_file::SourceKindDto::Kafka { .. } | config_file::SourceKindDto::EventHubs { .. }
+                config_file::SourceKindDto::Kafka(_) | config_file::SourceKindDto::EventHubs(_)
             )
         })
 }

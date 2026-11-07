@@ -1282,18 +1282,19 @@ pub fn cold_source_config(
 ) -> crate::config_file::SourceDto {
     let mut source = source.clone();
     use crate::config_file::SourceKindDto;
-    if let SourceKindDto::Kafka {
+    use crate::config_file::{EventHubsSourceDto, KafkaSourceDto};
+    if let SourceKindDto::Kafka(KafkaSourceDto {
         group_id: group,
         start,
         stop,
         ..
-    }
-    | SourceKindDto::EventHubs {
+    })
+    | SourceKindDto::EventHubs(EventHubsSourceDto {
         consumer_group: group,
         start,
         stop,
         ..
-    } = &mut source.kind
+    }) = &mut source.kind
     {
         *group = capture_group_id(session);
         *start = from.unwrap_or(crate::config_file::StartPositionDto::Latest);
@@ -1713,12 +1714,14 @@ mod tests {
             ..Default::default()
         })
     }
+    use crate::config_file::{KafkaSourceDto, LogsSourceDto, MetricsSourceDto};
     use crate::config_file::{SourceDto, SourceKindDto};
 
     fn kafka_source(id: &str) -> SourceDto {
         SourceDto {
             id: id.to_string(),
-            kind: SourceKindDto::Kafka {
+            kind: SourceKindDto::Kafka(KafkaSourceDto {
+                unknown: Default::default(),
                 schema_registry: None,
                 read: Default::default(),
                 brokers: "b1:9092".to_string(),
@@ -1730,7 +1733,7 @@ mod tests {
                 fetch_bytes: Default::default(),
                 encoding: Default::default(),
                 props: Default::default(),
-            },
+            }),
         }
     }
 
@@ -1744,7 +1747,7 @@ mod tests {
         let server_only = params.self_signed(&key).unwrap().pem();
 
         let mut source = kafka_source("orders");
-        if let SourceKindDto::Kafka { tls, props, .. } = &mut source.kind {
+        if let SourceKindDto::Kafka(KafkaSourceDto { tls, props, .. }) = &mut source.kind {
             tls.certificate = Some("acme".to_string());
             // The operator's, and refused without it: librdkafka defaults to plaintext, where nothing the TLS
             // settings say is used.
@@ -1957,7 +1960,7 @@ mod tests {
     fn a_capture_whose_source_will_not_open_reports_why() {
         let captures = Arc::new(Captures::default());
         let mut bad = invitation("s1", 10, 1_000_000, 60);
-        let SourceKindDto::Kafka { topics, .. } = &mut bad.source.as_mut().unwrap().kind else {
+        let SourceKindDto::Kafka(KafkaSourceDto { topics, .. }) = &mut bad.source.as_mut().unwrap().kind else {
             panic!("still a kafka source");
         };
         topics.clear();
@@ -1982,7 +1985,7 @@ mod tests {
         let mut inv = invitation("s1", 1, 1_000_000, 10);
         inv.source = Some(SourceDto {
             id: "self".to_string(),
-            kind: SourceKindDto::Metrics { bucket_seconds: 1 },
+            kind: SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds: 1 }),
         });
         let first = captures.admit(&[inv.clone()]).remove(0);
 
@@ -2253,7 +2256,7 @@ mod tests {
             &invitation.session,
             invitation.start,
         );
-        let SourceKindDto::Kafka { group_id, start, .. } = &source.kind else {
+        let SourceKindDto::Kafka(KafkaSourceDto { group_id, start, .. }) = &source.kind else {
             panic!("still a kafka source");
         };
         assert_eq!(group_id, "smeltr-capture-s1");
@@ -2274,7 +2277,7 @@ mod tests {
             &invitation.session,
             invitation.start,
         );
-        let SourceKindDto::Kafka { group_id, start, .. } = &source.kind else {
+        let SourceKindDto::Kafka(KafkaSourceDto { group_id, start, .. }) = &source.kind else {
             panic!("still a kafka source");
         };
         assert_eq!(group_id, "smeltr-capture-s1");
@@ -2518,7 +2521,7 @@ mod tests {
         let mut inv = invitation("s1", 1_000_000, 1_000_000, 30);
         inv.source = Some(SourceDto {
             id: "self".into(),
-            kind: SourceKindDto::Metrics { bucket_seconds: 1 },
+            kind: SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds: 1 }),
         });
         let admitted = captures.admit(&[inv]).remove(0);
 
@@ -2575,9 +2578,9 @@ mod tests {
         let mut inv = invitation("s1", 10, 1_000_000, 30);
         inv.source = Some(SourceDto {
             id: "own-logs".into(),
-            kind: SourceKindDto::Logs {
+            kind: SourceKindDto::Logs(LogsSourceDto {
                 min_level: Default::default(),
-            },
+            }),
         });
         let admitted = captures.admit(&[inv]).remove(0);
 

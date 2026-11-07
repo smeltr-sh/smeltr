@@ -252,88 +252,124 @@ impl SourceDto {
     /// answer, or its credentials would go unnamed, unchecked at deploy and left behind on a version move.
     pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
         match &self.kind {
-            SourceKindDto::Kafka {
+            SourceKindDto::Kafka(KafkaSourceDto {
                 props, schema_registry, ..
-            } => (props.secrets().into_iter())
+            }) => (props.secrets().into_iter())
                 .chain(schema_registry.iter().flat_map(SchemaRegistryDto::secrets))
                 .collect(),
-            SourceKindDto::EventHubs {
+            SourceKindDto::EventHubs(EventHubsSourceDto {
                 connection_string,
                 sign_in,
                 schema_registry,
                 ..
-            } => (connection_string.iter().map(|r| ("connectionString", r)))
+            }) => (connection_string.iter().map(|r| ("connectionString", r)))
                 .chain(sign_in.secrets())
                 .chain(schema_registry.iter().flat_map(SchemaRegistryDto::secrets))
                 .collect(),
-            SourceKindDto::S3Sqs { access, .. } | SourceKindDto::S3List { access, .. } => access.secrets(),
-            SourceKindDto::AzureBlobQueue { access, .. } | SourceKindDto::AzureBlobList { access, .. } => {
-                access.secrets()
-            }
-            SourceKindDto::GcsPubSub { access, .. } | SourceKindDto::GcsList { access, .. } => access.secrets(),
-            SourceKindDto::Sftp { access, .. } => access.secrets(),
-            SourceKindDto::HttpApi {
+            SourceKindDto::S3Sqs(S3SqsSourceDto { access, .. })
+            | SourceKindDto::S3List(S3ListSourceDto { access, .. }) => access.secrets(),
+            SourceKindDto::AzureBlobQueue(AzureBlobQueueSourceDto { access, .. })
+            | SourceKindDto::AzureBlobList(AzureBlobListSourceDto { access, .. }) => access.secrets(),
+            SourceKindDto::GcsPubSub(GcsPubSubSourceDto { access, .. })
+            | SourceKindDto::GcsList(GcsListSourceDto { access, .. }) => access.secrets(),
+            SourceKindDto::Sftp(SftpSourceDto { access, .. }) => access.secrets(),
+            SourceKindDto::HttpApi(HttpApiSourceDto {
                 credentials, sign_in, ..
-            } => (credentials.values().map(|r| ("credentials", r)))
+            }) => (credentials.values().map(|r| ("credentials", r)))
                 .chain(sign_in.secrets())
                 .collect(),
-            SourceKindDto::OktaLogs { token, private_key, .. } => (token.iter().map(|r| ("token", r)))
-                .chain(private_key.iter().map(|r| ("privateKey", r)))
-                .collect(),
-            SourceKindDto::HttpReceiver { tokens, .. }
-            | SourceKindDto::OtlpReceiver { tokens, .. }
-            | SourceKindDto::PrometheusReceiver { tokens, .. }
-            | SourceKindDto::ElasticReceiver { tokens, .. } => tokens.values().map(|r| ("tokens", r)).collect(),
-            SourceKindDto::HecReceiver { tokens, .. } => tokens.values().map(|t| ("tokens", &t.token)).collect(),
-            SourceKindDto::S2sReceiver { tokens, .. } => tokens.values().map(|r| ("tokens", r)).collect(),
+            SourceKindDto::OktaLogs(OktaLogsSourceDto { token, private_key, .. }) => {
+                (token.iter().map(|r| ("token", r)))
+                    .chain(private_key.iter().map(|r| ("privateKey", r)))
+                    .collect()
+            }
+            SourceKindDto::HttpReceiver(HttpReceiverSourceDto { tokens, .. })
+            | SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto { tokens, .. })
+            | SourceKindDto::PrometheusReceiver(PrometheusReceiverSourceDto { tokens, .. })
+            | SourceKindDto::ElasticReceiver(ElasticReceiverSourceDto { tokens, .. }) => {
+                tokens.values().map(|r| ("tokens", r)).collect()
+            }
+            SourceKindDto::HecReceiver(HecReceiverSourceDto { tokens, .. }) => {
+                tokens.values().map(|t| ("tokens", &t.token)).collect()
+            }
+            SourceKindDto::S2sReceiver(S2sReceiverSourceDto { tokens, .. }) => {
+                tokens.values().map(|r| ("tokens", r)).collect()
+            }
             SourceKindDto::Postgres(s) | SourceKindDto::MySql(s) => {
                 s.password.iter().map(|r| ("password", r)).collect()
             }
-            SourceKindDto::Metrics { .. }
-            | SourceKindDto::Logs { .. }
-            | SourceKindDto::SyslogReceiver { .. }
-            | SourceKindDto::SocketReceiver { .. } => Vec::new(),
+            SourceKindDto::Metrics(_)
+            | SourceKindDto::Logs(_)
+            | SourceKindDto::SyslogReceiver(_)
+            | SourceKindDto::SocketReceiver(_) => Vec::new(),
         }
     }
 
     /// `secrets`, for the leader to move one onto a new version. Exhaustive as `secrets` is.
     pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
         match &mut self.kind {
-            SourceKindDto::Kafka {
+            SourceKindDto::Kafka(KafkaSourceDto {
                 props, schema_registry, ..
-            } => (props.secrets_mut().into_iter())
+            }) => (props.secrets_mut().into_iter())
                 .chain(schema_registry.iter_mut().flat_map(SchemaRegistryDto::secrets_mut))
                 .collect(),
-            SourceKindDto::EventHubs {
+            SourceKindDto::EventHubs(EventHubsSourceDto {
                 connection_string,
                 sign_in,
                 schema_registry,
                 ..
-            } => (connection_string.iter_mut().chain(sign_in.secrets_mut()))
+            }) => (connection_string.iter_mut().chain(sign_in.secrets_mut()))
                 .chain(schema_registry.iter_mut().flat_map(SchemaRegistryDto::secrets_mut))
                 .collect(),
-            SourceKindDto::S3Sqs { access, .. } | SourceKindDto::S3List { access, .. } => access.secrets_mut(),
-            SourceKindDto::AzureBlobQueue { access, .. } | SourceKindDto::AzureBlobList { access, .. } => {
-                access.secrets_mut()
-            }
-            SourceKindDto::GcsPubSub { access, .. } | SourceKindDto::GcsList { access, .. } => access.secrets_mut(),
-            SourceKindDto::Sftp { access, .. } => access.secrets_mut(),
-            SourceKindDto::HttpApi {
+            SourceKindDto::S3Sqs(S3SqsSourceDto { access, .. })
+            | SourceKindDto::S3List(S3ListSourceDto { access, .. }) => access.secrets_mut(),
+            SourceKindDto::AzureBlobQueue(AzureBlobQueueSourceDto { access, .. })
+            | SourceKindDto::AzureBlobList(AzureBlobListSourceDto { access, .. }) => access.secrets_mut(),
+            SourceKindDto::GcsPubSub(GcsPubSubSourceDto { access, .. })
+            | SourceKindDto::GcsList(GcsListSourceDto { access, .. }) => access.secrets_mut(),
+            SourceKindDto::Sftp(SftpSourceDto { access, .. }) => access.secrets_mut(),
+            SourceKindDto::HttpApi(HttpApiSourceDto {
                 credentials, sign_in, ..
-            } => credentials.values_mut().chain(sign_in.secrets_mut()).collect(),
-            SourceKindDto::OktaLogs { token, private_key, .. } => token.iter_mut().chain(private_key).collect(),
-            SourceKindDto::HttpReceiver { tokens, .. }
-            | SourceKindDto::OtlpReceiver { tokens, .. }
-            | SourceKindDto::PrometheusReceiver { tokens, .. }
-            | SourceKindDto::ElasticReceiver { tokens, .. } => tokens.values_mut().collect(),
-            SourceKindDto::HecReceiver { tokens, .. } => tokens.values_mut().map(|t| &mut t.token).collect(),
-            SourceKindDto::S2sReceiver { tokens, .. } => tokens.values_mut().collect(),
+            }) => credentials.values_mut().chain(sign_in.secrets_mut()).collect(),
+            SourceKindDto::OktaLogs(OktaLogsSourceDto { token, private_key, .. }) => {
+                token.iter_mut().chain(private_key).collect()
+            }
+            SourceKindDto::HttpReceiver(HttpReceiverSourceDto { tokens, .. })
+            | SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto { tokens, .. })
+            | SourceKindDto::PrometheusReceiver(PrometheusReceiverSourceDto { tokens, .. })
+            | SourceKindDto::ElasticReceiver(ElasticReceiverSourceDto { tokens, .. }) => tokens.values_mut().collect(),
+            SourceKindDto::HecReceiver(HecReceiverSourceDto { tokens, .. }) => {
+                tokens.values_mut().map(|t| &mut t.token).collect()
+            }
+            SourceKindDto::S2sReceiver(S2sReceiverSourceDto { tokens, .. }) => tokens.values_mut().collect(),
             SourceKindDto::Postgres(s) | SourceKindDto::MySql(s) => s.password.iter_mut().collect(),
-            SourceKindDto::Metrics { .. }
-            | SourceKindDto::Logs { .. }
-            | SourceKindDto::SyslogReceiver { .. }
-            | SourceKindDto::SocketReceiver { .. } => Vec::new(),
+            SourceKindDto::Metrics(_)
+            | SourceKindDto::Logs(_)
+            | SourceKindDto::SyslogReceiver(_)
+            | SourceKindDto::SocketReceiver(_) => Vec::new(),
         }
+    }
+}
+
+/// The keys of a source or destination that none of its fields name, refused as the bundle is read.
+/// `deny_unknown_fields` cannot refuse them on a type that flattens another into it, so this takes what the
+/// flattening leaves over.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NoUnknownKeys;
+
+impl<'de> Deserialize<'de> for NoUnknownKeys {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let keys = BTreeMap::<String, serde::de::IgnoredAny>::deserialize(deserializer)?;
+        match keys.keys().next() {
+            None => Ok(NoUnknownKeys),
+            Some(key) => Err(serde::de::Error::custom(format!("unknown field `{key}`"))),
+        }
+    }
+}
+
+impl Serialize for NoUnknownKeys {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::ser::SerializeMap::end(serializer.serialize_map(Some(0))?)
     }
 }
 
@@ -341,9 +377,8 @@ impl SourceKindDto {
     /// The registry a stream's Avro payloads name their schemas in.
     pub fn schema_registry(&self) -> Option<&SchemaRegistryDto> {
         match self {
-            SourceKindDto::Kafka { schema_registry, .. } | SourceKindDto::EventHubs { schema_registry, .. } => {
-                schema_registry.as_ref()
-            }
+            SourceKindDto::Kafka(KafkaSourceDto { schema_registry, .. })
+            | SourceKindDto::EventHubs(EventHubsSourceDto { schema_registry, .. }) => schema_registry.as_ref(),
             _ => None,
         }
     }
@@ -351,15 +386,15 @@ impl SourceKindDto {
     /// How its payloads become its record, where it reads payloads.
     pub fn read(&self) -> Option<&ReadFormatDto> {
         match self {
-            SourceKindDto::Kafka { read, .. }
-            | SourceKindDto::EventHubs { read, .. }
-            | SourceKindDto::S3Sqs { read, .. }
-            | SourceKindDto::S3List { read, .. }
-            | SourceKindDto::GcsList { read, .. }
-            | SourceKindDto::AzureBlobList { read, .. }
-            | SourceKindDto::Sftp { read, .. }
-            | SourceKindDto::AzureBlobQueue { read, .. }
-            | SourceKindDto::GcsPubSub { read, .. } => Some(read),
+            SourceKindDto::Kafka(KafkaSourceDto { read, .. })
+            | SourceKindDto::EventHubs(EventHubsSourceDto { read, .. })
+            | SourceKindDto::S3Sqs(S3SqsSourceDto { read, .. })
+            | SourceKindDto::S3List(S3ListSourceDto { read, .. })
+            | SourceKindDto::GcsList(GcsListSourceDto { read, .. })
+            | SourceKindDto::AzureBlobList(AzureBlobListSourceDto { read, .. })
+            | SourceKindDto::Sftp(SftpSourceDto { read, .. })
+            | SourceKindDto::AzureBlobQueue(AzureBlobQueueSourceDto { read, .. })
+            | SourceKindDto::GcsPubSub(GcsPubSubSourceDto { read, .. }) => Some(read),
             _ => None,
         }
     }
@@ -370,79 +405,81 @@ impl SourceDto {
     /// over HTTP.
     pub fn urls(&self) -> Vec<(&'static str, &str)> {
         match &self.kind {
-            SourceKindDto::S3Sqs { queue_url, access, .. } => std::iter::once(("queueUrl", queue_url.as_str()))
-                .chain(access.urls())
-                .collect(),
-            SourceKindDto::S3List { access, .. } => access.urls(),
-            SourceKindDto::GcsList { access, .. } => access.urls(),
-            SourceKindDto::AzureBlobList { access, .. } => access.urls(),
-            SourceKindDto::AzureBlobQueue { queue_url, access, .. } => {
+            SourceKindDto::S3Sqs(S3SqsSourceDto { queue_url, access, .. }) => {
                 std::iter::once(("queueUrl", queue_url.as_str()))
                     .chain(access.urls())
                     .collect()
             }
-            SourceKindDto::GcsPubSub {
+            SourceKindDto::S3List(S3ListSourceDto { access, .. }) => access.urls(),
+            SourceKindDto::GcsList(GcsListSourceDto { access, .. }) => access.urls(),
+            SourceKindDto::AzureBlobList(AzureBlobListSourceDto { access, .. }) => access.urls(),
+            SourceKindDto::AzureBlobQueue(AzureBlobQueueSourceDto { queue_url, access, .. }) => {
+                std::iter::once(("queueUrl", queue_url.as_str()))
+                    .chain(access.urls())
+                    .collect()
+            }
+            SourceKindDto::GcsPubSub(GcsPubSubSourceDto {
                 pubsub_endpoint,
                 access,
                 ..
-            } => std::iter::once(("pubsubEndpoint", pubsub_endpoint.as_deref().unwrap_or(PUBSUB_ENDPOINT)))
+            }) => std::iter::once(("pubsubEndpoint", pubsub_endpoint.as_deref().unwrap_or(PUBSUB_ENDPOINT)))
                 .chain(access.urls())
                 .collect(),
-            SourceKindDto::HttpApi { url, sign_in, .. } => {
+            SourceKindDto::HttpApi(HttpApiSourceDto { url, sign_in, .. }) => {
                 std::iter::once(("url", url.as_str())).chain(sign_in.urls()).collect()
             }
-            SourceKindDto::OktaLogs { org, .. } => vec![("org", org)],
-            SourceKindDto::EventHubs {
+            SourceKindDto::OktaLogs(OktaLogsSourceDto { org, .. }) => vec![("org", org)],
+            SourceKindDto::EventHubs(EventHubsSourceDto {
                 sign_in,
                 schema_registry,
                 ..
-            } => (sign_in.urls().into_iter())
+            }) => (sign_in.urls().into_iter())
                 .chain(schema_registry.iter().map(SchemaRegistryDto::url))
                 .collect(),
-            SourceKindDto::Kafka { schema_registry, .. } => {
+            SourceKindDto::Kafka(KafkaSourceDto { schema_registry, .. }) => {
                 schema_registry.iter().map(SchemaRegistryDto::url).collect()
             }
-            SourceKindDto::Sftp { .. }
+            SourceKindDto::Sftp(_)
             | SourceKindDto::Postgres(_)
             | SourceKindDto::MySql(_)
-            | SourceKindDto::Metrics { .. }
-            | SourceKindDto::Logs { .. }
-            | SourceKindDto::HttpReceiver { .. }
-            | SourceKindDto::HecReceiver { .. }
-            | SourceKindDto::S2sReceiver { .. }
-            | SourceKindDto::OtlpReceiver { .. }
-            | SourceKindDto::PrometheusReceiver { .. }
-            | SourceKindDto::ElasticReceiver { .. }
-            | SourceKindDto::SyslogReceiver { .. }
-            | SourceKindDto::SocketReceiver { .. } => Vec::new(),
+            | SourceKindDto::Metrics(_)
+            | SourceKindDto::Logs(_)
+            | SourceKindDto::HttpReceiver(_)
+            | SourceKindDto::HecReceiver(_)
+            | SourceKindDto::S2sReceiver(_)
+            | SourceKindDto::OtlpReceiver(_)
+            | SourceKindDto::PrometheusReceiver(_)
+            | SourceKindDto::ElasticReceiver(_)
+            | SourceKindDto::SyslogReceiver(_)
+            | SourceKindDto::SocketReceiver(_) => Vec::new(),
         }
     }
 
     /// The TLS this source connects out or serves under. `None` from a kind that speaks none.
     pub fn tls(&self) -> Option<TlsDto> {
         match &self.kind {
-            SourceKindDto::Kafka { tls, .. }
-            | SourceKindDto::S3Sqs { tls, .. }
-            | SourceKindDto::S3List { tls, .. }
-            | SourceKindDto::GcsList { tls, .. }
-            | SourceKindDto::AzureBlobList { tls, .. }
-            | SourceKindDto::AzureBlobQueue { tls, .. }
-            | SourceKindDto::GcsPubSub { tls, .. }
-            | SourceKindDto::HttpApi { tls, .. }
-            | SourceKindDto::OktaLogs { tls, .. } => Some(tls.clone()),
+            SourceKindDto::Kafka(KafkaSourceDto { tls, .. })
+            | SourceKindDto::S3Sqs(S3SqsSourceDto { tls, .. })
+            | SourceKindDto::S3List(S3ListSourceDto { tls, .. })
+            | SourceKindDto::GcsList(GcsListSourceDto { tls, .. })
+            | SourceKindDto::AzureBlobList(AzureBlobListSourceDto { tls, .. })
+            | SourceKindDto::AzureBlobQueue(AzureBlobQueueSourceDto { tls, .. })
+            | SourceKindDto::GcsPubSub(GcsPubSubSourceDto { tls, .. })
+            | SourceKindDto::HttpApi(HttpApiSourceDto { tls, .. })
+            | SourceKindDto::OktaLogs(OktaLogsSourceDto { tls, .. }) => Some(tls.clone()),
             SourceKindDto::Postgres(s) | SourceKindDto::MySql(s) => Some(s.tls.clone()),
-            SourceKindDto::HttpReceiver { tls, .. }
-            | SourceKindDto::HecReceiver { tls, .. }
-            | SourceKindDto::S2sReceiver { tls, .. }
-            | SourceKindDto::OtlpReceiver { tls, .. }
-            | SourceKindDto::PrometheusReceiver { tls, .. }
-            | SourceKindDto::ElasticReceiver { tls, .. }
-            | SourceKindDto::SyslogReceiver { tls, .. }
-            | SourceKindDto::SocketReceiver { tls, .. } => Some(tls.tls()),
-            SourceKindDto::EventHubs { .. }
-            | SourceKindDto::Sftp { .. }
-            | SourceKindDto::Metrics { .. }
-            | SourceKindDto::Logs { .. } => None,
+            SourceKindDto::HttpReceiver(HttpReceiverSourceDto { tls, .. })
+            | SourceKindDto::HecReceiver(HecReceiverSourceDto { tls, .. })
+            | SourceKindDto::S2sReceiver(S2sReceiverSourceDto { tls, .. })
+            | SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto { tls, .. })
+            | SourceKindDto::PrometheusReceiver(PrometheusReceiverSourceDto { tls, .. })
+            | SourceKindDto::ElasticReceiver(ElasticReceiverSourceDto { tls, .. })
+            | SourceKindDto::SyslogReceiver(SyslogReceiverSourceDto { tls, .. })
+            | SourceKindDto::SocketReceiver(SocketReceiverSourceDto { tls, .. }) => Some(tls.tls()),
+            SourceKindDto::EventHubs(_)
+            | SourceKindDto::Sftp(_)
+            | SourceKindDto::Metrics(_)
+            | SourceKindDto::Logs(_) => None,
         }
     }
 }
@@ -450,338 +487,44 @@ impl SourceDto {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SourceKindDto {
-    #[serde(rename_all = "camelCase")]
-    Kafka {
-        brokers: String,
-        topics: Vec<String>,
-        /// The consumer group this source reads as. Absent is its worker group's own
-        /// (`load::fill_default_group_ids`).
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        group_id: String,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(default, skip_serializing_if = "StartPositionDto::is_default")]
-        start: StartPositionDto,
-        /// `None` is an unbounded streaming source.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        stop: Option<StopPositionDto>,
-        /// Unset means the worker sizes it to its memory (`worker::memory::fit`), `FetchBytes::DEFAULT` without a memory
-        /// figure.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        fetch_bytes: Option<FetchBytes>,
-        /// How this source's record bytes become text. See [`EncodingLabel`].
-        #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-        encoding: EncodingLabel,
-        /// Where its payloads are Avro: the registry holding each writer's schema.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        schema_registry: Option<SchemaRegistryDto>,
-        #[serde(default, flatten)]
-        read: ReadFormatDto,
-        #[serde(default, flatten, skip_serializing_if = "KafkaPropsDto::is_empty")]
-        props: KafkaPropsDto,
-    },
+    Kafka(KafkaSourceDto),
     /// Azure Event Hubs, read through its Kafka endpoint: loading makes it a Kafka source signed in as `sign_in`
     /// says.
-    #[serde(rename_all = "camelCase")]
-    EventHubs {
-        /// The namespace: its name in Azure's public cloud, its host name in another cloud, or `host:port`.
-        namespace: String,
-        /// The event hubs it reads, each a Kafka topic.
-        event_hubs: Vec<String>,
-        consumer_group: String,
-        /// The namespace's or an event hub's connection string. At most one of it, `clientSecret` and
-        /// `managedIdentityClientId`; none signs in as the host's managed identity.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        connection_string: Option<SecretRefDto>,
-        #[serde(flatten)]
-        sign_in: EntraSignInDto,
-        #[serde(default, skip_serializing_if = "StartPositionDto::is_default")]
-        start: StartPositionDto,
-        /// `None` is an unbounded streaming source.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        stop: Option<StopPositionDto>,
-        /// Unset means the worker sizes it to its memory (`worker::memory::fit`), `FetchBytes::DEFAULT` without a memory
-        /// figure.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        fetch_bytes: Option<FetchBytes>,
-        /// How this source's record bytes become text. See [`EncodingLabel`].
-        #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-        encoding: EncodingLabel,
-        /// Where its payloads are Avro: the registry holding each writer's schema.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        schema_registry: Option<SchemaRegistryDto>,
-        #[serde(default, flatten)]
-        read: ReadFormatDto,
-    },
+    EventHubs(EventHubsSourceDto),
     /// The smeltr metrics source: this process's own observability counters (`metrics::MetricsSource`).
-    #[serde(rename_all = "camelCase")]
-    Metrics { bucket_seconds: u64 },
+    Metrics(MetricsSourceDto),
     /// The smeltr logs source: this process's own logs (`io::logs::LogsSource`).
-    #[serde(rename_all = "camelCase")]
-    Logs {
-        /// The lowest severity it carries. See [`LevelLabel`].
-        #[serde(default, skip_serializing_if = "LevelLabel::is_default")]
-        min_level: LevelLabel,
-    },
+    Logs(LogsSourceDto),
     /// The objects S3 announces on an SQS queue, from whichever bucket a notification names.
-    #[serde(rename_all = "camelCase")]
-    S3Sqs {
-        /// The queue's own URL, which names its region and account.
-        queue_url: String,
-        #[serde(flatten)]
-        access: S3AccessDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(flatten)]
-        framing: FramingSettingsDto,
-        #[serde(default, flatten)]
-        read: ReadFormatDto,
-        /// How this source's record bytes become text. See [`EncodingLabel`].
-        #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-        encoding: EncodingLabel,
-        #[serde(default, skip_serializing_if = "VisibilitySecs::is_default")]
-        visibility_secs: VisibilitySecs,
-    },
+    S3Sqs(S3SqsSourceDto),
     /// The objects under a prefix of one S3 bucket, found by listing it every `pollIntervalSecs`. One worker reads
     /// it.
     ///
     /// Use `s3Sqs` when the bucket can notify. Otherwise delete or move each object after commit, so the bucket is
     /// its own queue. Keep with a ledger is for a bucket the reader may not change, and costs a full listing per
     /// poll.
-    #[serde(rename_all = "camelCase")]
-    S3List {
-        bucket: String,
-        /// Only keys that start with it. Empty is the whole bucket.
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        prefix: String,
-        #[serde(flatten)]
-        access: S3AccessDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(flatten)]
-        framing: FramingSettingsDto,
-        #[serde(default, flatten)]
-        read: ReadFormatDto,
-        /// How this source's record bytes become text. See [`EncodingLabel`].
-        #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-        encoding: EncodingLabel,
-        #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
-        poll_interval_secs: PollIntervalSecs,
-        #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
-        start: ListStartDto,
-        #[serde(default, skip_serializing_if = "AfterCommitDto::is_default")]
-        after_commit: AfterCommitDto,
-        /// Where `"move"` puts an object, in place of `prefix`. Named with `"move"` and only then.
-        /// Ends in `/` when `prefix` does or is empty, and only then, so a moved key keeps one `/` between them.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        move_prefix: Option<String>,
-    },
+    S3List(S3ListSourceDto),
     /// The objects under a prefix of one Cloud Storage bucket, found by listing it, as `s3List` reads S3. Use
     /// `gcsPubSub` when the bucket can notify.
-    #[serde(rename_all = "camelCase")]
-    GcsList {
-        bucket: String,
-        /// Only names that start with it. Empty is the whole bucket.
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        prefix: String,
-        #[serde(flatten)]
-        access: GcsAccessDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(flatten)]
-        framing: FramingSettingsDto,
-        #[serde(default, flatten)]
-        read: ReadFormatDto,
-        /// How this source's record bytes become text. See [`EncodingLabel`].
-        #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-        encoding: EncodingLabel,
-        #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
-        poll_interval_secs: PollIntervalSecs,
-        #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
-        start: ListStartDto,
-        #[serde(default, skip_serializing_if = "AfterCommitDto::is_default")]
-        after_commit: AfterCommitDto,
-        /// Where `"move"` puts an object, in place of `prefix`, as for `s3List`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        move_prefix: Option<String>,
-    },
+    GcsList(GcsListSourceDto),
     /// The blobs under a prefix of one Azure container, found by listing it, as `s3List` reads S3. A blob that
     /// changes after it is read is read again whole. Use `azureBlobQueue` when the account can notify.
-    #[serde(rename_all = "camelCase")]
-    AzureBlobList {
-        container: String,
-        /// Only names that start with it. Empty is the whole container.
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        prefix: String,
-        #[serde(flatten)]
-        access: AzureAccessDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(flatten)]
-        framing: FramingSettingsDto,
-        #[serde(default, flatten)]
-        read: ReadFormatDto,
-        /// How this source's record bytes become text. See [`EncodingLabel`].
-        #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-        encoding: EncodingLabel,
-        #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
-        poll_interval_secs: PollIntervalSecs,
-        #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
-        start: ListStartDto,
-        #[serde(default, skip_serializing_if = "AfterCommitDto::is_default")]
-        after_commit: AfterCommitDto,
-        /// Where `"move"` puts an object, in place of `prefix`, as for `s3List`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        move_prefix: Option<String>,
-    },
+    AzureBlobList(AzureBlobListSourceDto),
     /// The files under a prefix of one directory on an SFTP server, found by listing it, as `s3List` reads S3. A file
     /// that changes after it is read is read again whole.
-    #[serde(rename_all = "camelCase")]
-    Sftp {
-        /// Absolute, or under the user's home directory. Empty is the home directory.
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        directory: String,
-        /// Only paths under `directory` that start with it. Empty is all of it.
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        prefix: String,
-        #[serde(flatten)]
-        access: SftpAccessDto,
-        #[serde(flatten)]
-        framing: FramingSettingsDto,
-        #[serde(default, flatten)]
-        read: ReadFormatDto,
-        /// How this source's record bytes become text. See [`EncodingLabel`].
-        #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-        encoding: EncodingLabel,
-        #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
-        poll_interval_secs: PollIntervalSecs,
-        #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
-        start: ListStartDto,
-        #[serde(default, skip_serializing_if = "AfterCommitDto::is_default")]
-        after_commit: AfterCommitDto,
-        /// Where `"move"` puts a file, in place of `prefix`, as for `s3List`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        move_prefix: Option<String>,
-    },
+    Sftp(SftpSourceDto),
     /// The blobs Event Grid announces on an Azure Storage queue, from whichever container of the account a
     /// notification names.
-    #[serde(rename_all = "camelCase")]
-    AzureBlobQueue {
-        /// The queue's own URL.
-        queue_url: String,
-        #[serde(flatten)]
-        access: AzureAccessDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(flatten)]
-        framing: FramingSettingsDto,
-        #[serde(default, flatten)]
-        read: ReadFormatDto,
-        /// How this source's record bytes become text. See [`EncodingLabel`].
-        #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-        encoding: EncodingLabel,
-        #[serde(default, skip_serializing_if = "VisibilitySecs::is_default")]
-        visibility_secs: VisibilitySecs,
-        #[serde(default, skip_serializing_if = "MaxDeliveries::is_default")]
-        max_deliveries: MaxDeliveries,
-    },
+    AzureBlobQueue(AzureBlobQueueSourceDto),
     /// The objects Cloud Storage announces on a Pub/Sub subscription, from whichever bucket a notification names.
-    #[serde(rename_all = "camelCase")]
-    GcsPubSub {
-        /// `projects/<project>/subscriptions/<subscription>`.
-        subscription: String,
-        /// Another Pub/Sub address, such as an emulator's. Absent is Google's.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pubsub_endpoint: Option<String>,
-        #[serde(flatten)]
-        access: GcsAccessDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(flatten)]
-        framing: FramingSettingsDto,
-        #[serde(default, flatten)]
-        read: ReadFormatDto,
-        /// How this source's record bytes become text. See [`EncodingLabel`].
-        #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-        encoding: EncodingLabel,
-        /// At most 600, Pub/Sub's longest ack deadline.
-        #[serde(default, skip_serializing_if = "VisibilitySecs::is_default")]
-        visibility_secs: VisibilitySecs,
-    },
+    GcsPubSub(GcsPubSubSourceDto),
     /// What one address answers a GET, or a POST of a fixed body, with, asked every `pollIntervalSecs`. One worker
     /// reads it.
     ///
     /// For an API that answers with JSON or lines of text. An API with its own kind is read through that kind.
-    #[serde(rename_all = "camelCase")]
-    HttpApi {
-        /// The whole address asked, with any fixed query parameters.
-        url: String,
-        /// `"GET"` (default) or `"POST"`.
-        #[serde(default, skip_serializing_if = "ApiMethodDto::is_default")]
-        method: ApiMethodDto,
-        /// The JSON every POST carries. Absent is a POST of nothing.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        body: Option<serde_json::Value>,
-        /// Header name -> its value, committed to the config repository.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        headers: BTreeMap<String, String>,
-        /// Header name -> the credential holding its value.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        credentials: BTreeMap<String, SecretRefDto>,
-        #[serde(flatten)]
-        tls: TlsDto,
-        /// `"body"` (default), `"lines"` or `"array"`.
-        #[serde(default, skip_serializing_if = "ApiRecordsDto::is_default")]
-        records: ApiRecordsDto,
-        /// The JSON pointer to the array `"array"` reads, such as `/data`. Absent is an answer that is the array.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        records_at: Option<String>,
-        /// Whether a poll follows each answer's `Link: rel="next"` to the next page.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        follow_links: bool,
-        /// The query parameter that asks for what happened since a time, sent the start of the last poll whose
-        /// records every destination took. Absent reads everything every poll.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        since_param: Option<String>,
-        /// How many seconds before the last poll's start `sinceParam` asks from, for an API that records late.
-        #[serde(default, skip_serializing_if = "is_zero")]
-        since_overlap_secs: u64,
-        #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
-        poll_interval_secs: PollIntervalSecs,
-        /// What the first poll asks for, with `sinceParam`.
-        #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
-        start: ListStartDto,
-        /// Signing in as an app for the token every request carries.
-        #[serde(flatten)]
-        sign_in: AppSignInDto,
-    },
+    HttpApi(HttpApiSourceDto),
     /// An Okta org's System Log, every event once, in the order Okta stored them. One worker reads it.
-    #[serde(rename_all = "camelCase")]
-    OktaLogs {
-        /// The org's address, as `https://acme.okta.com`.
-        org: String,
-        /// The credential holding an API token with read access to the System Log. A source names a token or a
-        /// service app, never both.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        token: Option<SecretRefDto>,
-        /// The service app's client id, when the source signs in as a service app.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        client_id: Option<String>,
-        /// The credential holding the service app's private key, a PEM RSA key.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        private_key: Option<SecretRefDto>,
-        /// Which of the service app's keys `privateKey` is, for an app with several.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key_id: Option<String>,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
-        poll_interval_secs: PollIntervalSecs,
-        /// `"everything"` (default) reads what Okta lists with no start, its last seven days; `"new"` reads what
-        /// happens from the first poll on.
-        #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
-        start: ListStartDto,
-    },
+    OktaLogs(OktaLogsSourceDto),
     /// The rows a query returns from a PostgreSQL database, each a record whose fields are the result's columns. One
     /// worker reads it, and the leader keeps how far it has read.
     #[serde(deserialize_with = "SqlSourceDto::postgres")]
@@ -791,194 +534,591 @@ pub enum SourceKindDto {
     MySql(SqlSourceDto),
     /// What senders POST to `path` on `port`. Every worker of the group listens; a request is answered as
     /// `answerAfterDelivery` says.
-    #[serde(rename_all = "camelCase")]
-    HttpReceiver {
-        #[serde(flatten)]
-        listener: ReceiverSettingsDto,
-        #[serde(flatten)]
-        connections: ConnectionLimitsDto,
-        #[serde(flatten)]
-        tls: ServedTlsDto,
-        /// Whether a request is answered only once every destination has its records, rather than as soon as it is
-        /// received.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        answer_after_delivery: bool,
-        /// The path senders POST to.
-        #[serde(default = "root_path", skip_serializing_if = "is_root_path")]
-        path: String,
-        /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        tokens: BTreeMap<String, SecretRefDto>,
-        /// `"body"` (default), `"lines"` or `"array"`.
-        #[serde(default, skip_serializing_if = "ApiRecordsDto::is_default")]
-        records: ApiRecordsDto,
-        /// The JSON pointer to the array `"array"` reads, such as `/events`. Absent is a body that is the array.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        records_at: Option<String>,
-    },
+    HttpReceiver(HttpReceiverSourceDto),
     /// What Splunk HTTP Event Collector clients send to `port`, at the paths Splunk serves. Every worker of the group
     /// listens; a request is answered as `answerAfterDelivery` says.
-    #[serde(rename_all = "camelCase")]
-    HecReceiver {
-        #[serde(flatten)]
-        listener: ReceiverSettingsDto,
-        #[serde(flatten)]
-        connections: ConnectionLimitsDto,
-        #[serde(flatten)]
-        tls: ServedTlsDto,
-        /// Whether a request is answered only once every destination has its records, rather than as soon as it is
-        /// received.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        answer_after_delivery: bool,
-        /// Token name -> a token a sender may present as `Authorization: Splunk`, and whether its senders use
-        /// indexer acknowledgement.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        tokens: BTreeMap<String, HecTokenDto>,
-        /// Sourcetype -> where a raw request's events end, by the request's `sourcetype`. A sourcetype not named
-        /// here is an event per line.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        sourcetypes: BTreeMap<String, SourcetypeDto>,
-    },
+    HecReceiver(HecReceiverSourceDto),
     /// What Splunk forwarders send to `port` over Splunk-to-Splunk, as to an indexer. Every worker of the group
     /// listens, and each connection is one forwarder's. `maxRequestBytes` bounds one frame and one record.
-    #[serde(rename_all = "camelCase")]
-    S2sReceiver {
-        #[serde(flatten)]
-        listener: ReceiverSettingsDto,
-        #[serde(flatten)]
-        connections: ConnectionLimitsDto,
-        #[serde(flatten)]
-        tls: ServedTlsDto,
-        /// Token name -> the credential holding a token a forwarder may present, its outputs.conf `token`. A
-        /// forwarder presenting none, or another, is cut off.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        tokens: BTreeMap<String, SecretRefDto>,
-        /// Sourcetype -> where its events end. A sourcetype not named here is an event per line.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        sourcetypes: BTreeMap<String, SourcetypeDto>,
-    },
+    S2sReceiver(S2sReceiverSourceDto),
 
     /// What OpenTelemetry exporters send to `port` over OTLP, over HTTP as protobuf or JSON and over gRPC: the
     /// exports of one `signal`, one record per log record, data point or span. The receivers of a group's other
     /// signals may share its port, as an exporter sends every signal to one. Every worker of the group listens; an
     /// export is answered as `answerAfterDelivery` says.
-    #[serde(rename_all = "camelCase")]
-    OtlpReceiver {
-        #[serde(flatten)]
-        listener: ReceiverSettingsDto,
-        #[serde(flatten)]
-        connections: ConnectionLimitsDto,
-        #[serde(flatten)]
-        tls: ServedTlsDto,
-        /// Whether a request is answered only once every destination has its records, rather than as soon as it is
-        /// received.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        answer_after_delivery: bool,
-        /// The signal it takes. Absent is logs.
-        #[serde(default, skip_serializing_if = "is_logs")]
-        signal: Signal,
-        /// Token name -> the credential holding a token an exporter may present as `Authorization: Bearer`.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        tokens: BTreeMap<String, SecretRefDto>,
-    },
+    OtlpReceiver(OtlpReceiverSourceDto),
     /// What Prometheus and the agents speaking its remote_write protocol send to `port`, at `/api/v1/write`, one
     /// record per sample. Every worker of the group listens; a request is answered as
     /// `answerAfterDelivery` says.
-    #[serde(rename_all = "camelCase")]
-    PrometheusReceiver {
-        #[serde(flatten)]
-        listener: ReceiverSettingsDto,
-        #[serde(flatten)]
-        connections: ConnectionLimitsDto,
-        #[serde(flatten)]
-        tls: ServedTlsDto,
-        /// Whether a request is answered only once every destination has its records, rather than as soon as it is
-        /// received.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        answer_after_delivery: bool,
-        /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        tokens: BTreeMap<String, SecretRefDto>,
-    },
+    PrometheusReceiver(PrometheusReceiverSourceDto),
     /// What Elasticsearch clients and shippers send to `port` through the `_bulk` API, at `/_bulk` and
     /// `/{index}/_bulk`, one record per document. Every worker of the group listens; a request is answered as
     /// `answerAfterDelivery` says.
-    #[serde(rename_all = "camelCase")]
-    ElasticReceiver {
-        #[serde(flatten)]
-        listener: ReceiverSettingsDto,
-        #[serde(flatten)]
-        connections: ConnectionLimitsDto,
-        #[serde(flatten)]
-        tls: ServedTlsDto,
-        /// Whether a request is answered only once every destination has its records, rather than as soon as it is
-        /// received.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        answer_after_delivery: bool,
-        /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`, as
-        /// `Authorization: ApiKey` (the key as sent, or the `id:key` it encodes), or as the password of
-        /// `Authorization: Basic`, whose user is not read.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        tokens: BTreeMap<String, SecretRefDto>,
-    },
+    ElasticReceiver(ElasticReceiverSourceDto),
     /// What syslog senders send to `port`, as RFC 5424 or RFC 3164 messages: over TCP framed by octet count or ended
     /// by a newline (RFC 6587), under TLS (RFC 5425) when it names a certificate; over UDP one to a datagram (RFC 5426).
     /// Every worker of the group listens, and each message is one record. Syslog has no acknowledgement, so delivery
     /// is best-effort. A full receiver stops reading TCP, so the sender's window fills, and drops UDP datagrams.
-    #[serde(rename_all = "camelCase")]
-    SyslogReceiver {
-        #[serde(flatten)]
-        listener: ReceiverSettingsDto,
-        #[serde(flatten)]
-        connections: ConnectionLimitsDto,
-        #[serde(flatten)]
-        tls: ServedTlsDto,
-        /// The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token, so
-        /// this is what admits a sender, unless the receiver names authorities a sender's certificate
-        /// must chain to.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        allow_from: Vec<String>,
-        /// How a message's bytes become text. Syslog over TCP names no charset, and older senders write their own.
-        /// See [`EncodingLabel`].
-        #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-        encoding: EncodingLabel,
-        /// What senders send over. Absent is TCP. Over UDP each datagram is a message, served without TLS.
-        #[serde(default, skip_serializing_if = "Transport::is_tcp")]
-        transport: Transport,
-        /// A pattern whose first capture group is where a message over TCP ends, the group dropped, as Splunk's
-        /// `LINE_BREAKER`, for senders that end a message with something other than a newline, or with nothing.
-        /// Absent, a message ends at a newline. A message that starts with a digit 1 to 9 is framed by octet counting,
-        /// whatever this says.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        line_breaker: Option<String>,
-    },
+    SyslogReceiver(SyslogReceiverSourceDto),
     /// What senders send to `port` in a protocol smeltr has no receiver for: over TCP cut into records by its
     /// framing, under TLS when it names a certificate; over UDP a datagram to a record. Every worker of the group
     /// listens. Nothing is acknowledged, so delivery is best-effort. A full receiver stops reading TCP, so the
     /// sender's window fills, and drops UDP datagrams.
-    #[serde(rename_all = "camelCase")]
-    SocketReceiver {
-        #[serde(flatten)]
-        listener: ReceiverSettingsDto,
-        #[serde(flatten)]
-        connections: ConnectionLimitsDto,
-        #[serde(flatten)]
-        tls: ServedTlsDto,
-        /// The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Nothing it receives carries a
-        /// token, so this is what admits a sender, unless the receiver names authorities a sender's certificate must
-        /// chain to.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        allow_from: Vec<String>,
-        /// How a record's bytes become text. See [`EncodingLabel`].
-        #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-        encoding: EncodingLabel,
-        /// What senders send over. Absent is TCP. Over UDP each datagram is a record, served without TLS.
-        #[serde(default, skip_serializing_if = "Transport::is_tcp")]
-        transport: Transport,
-        /// TCP only: where one record ends and the next starts.
-        #[serde(flatten)]
-        framing: FramingSettingsDto,
-    },
+    SocketReceiver(SocketReceiverSourceDto),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KafkaSourceDto {
+    pub brokers: String,
+    pub topics: Vec<String>,
+    /// The consumer group this source reads as. Absent is its worker group's own
+    /// (`load::fill_default_group_ids`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group_id: String,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(default, skip_serializing_if = "StartPositionDto::is_default")]
+    pub start: StartPositionDto,
+    /// `None` is an unbounded streaming source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<StopPositionDto>,
+    /// Unset means the worker sizes it to its memory (`worker::memory::fit`), `FetchBytes::DEFAULT` without a memory
+    /// figure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetch_bytes: Option<FetchBytes>,
+    /// How this source's record bytes become text. See [`EncodingLabel`].
+    #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
+    pub encoding: EncodingLabel,
+    /// Where its payloads are Avro: the registry holding each writer's schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_registry: Option<SchemaRegistryDto>,
+    #[serde(default, flatten)]
+    pub read: ReadFormatDto,
+    #[serde(default, flatten, skip_serializing_if = "KafkaPropsDto::is_empty")]
+    pub props: KafkaPropsDto,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventHubsSourceDto {
+    /// The namespace: its name in Azure's public cloud, its host name in another cloud, or `host:port`.
+    pub namespace: String,
+    /// The event hubs it reads, each a Kafka topic.
+    pub event_hubs: Vec<String>,
+    pub consumer_group: String,
+    /// The namespace's or an event hub's connection string. At most one of it, `clientSecret` and
+    /// `managedIdentityClientId`; none signs in as the host's managed identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_string: Option<SecretRefDto>,
+    #[serde(flatten)]
+    pub sign_in: EntraSignInDto,
+    #[serde(default, skip_serializing_if = "StartPositionDto::is_default")]
+    pub start: StartPositionDto,
+    /// `None` is an unbounded streaming source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<StopPositionDto>,
+    /// Unset means the worker sizes it to its memory (`worker::memory::fit`), `FetchBytes::DEFAULT` without a memory
+    /// figure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetch_bytes: Option<FetchBytes>,
+    /// How this source's record bytes become text. See [`EncodingLabel`].
+    #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
+    pub encoding: EncodingLabel,
+    /// Where its payloads are Avro: the registry holding each writer's schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_registry: Option<SchemaRegistryDto>,
+    #[serde(default, flatten)]
+    pub read: ReadFormatDto,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MetricsSourceDto {
+    pub bucket_seconds: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LogsSourceDto {
+    /// The lowest severity it carries. See [`LevelLabel`].
+    #[serde(default, skip_serializing_if = "LevelLabel::is_default")]
+    pub min_level: LevelLabel,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct S3SqsSourceDto {
+    /// The queue's own URL, which names its region and account.
+    pub queue_url: String,
+    #[serde(flatten)]
+    pub access: S3AccessDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(flatten)]
+    pub framing: FramingSettingsDto,
+    #[serde(default, flatten)]
+    pub read: ReadFormatDto,
+    /// How this source's record bytes become text. See [`EncodingLabel`].
+    #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
+    pub encoding: EncodingLabel,
+    #[serde(default, skip_serializing_if = "VisibilitySecs::is_default")]
+    pub visibility_secs: VisibilitySecs,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct S3ListSourceDto {
+    pub bucket: String,
+    /// Only keys that start with it. Empty is the whole bucket.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prefix: String,
+    #[serde(flatten)]
+    pub access: S3AccessDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(flatten)]
+    pub framing: FramingSettingsDto,
+    #[serde(default, flatten)]
+    pub read: ReadFormatDto,
+    /// How this source's record bytes become text. See [`EncodingLabel`].
+    #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
+    pub encoding: EncodingLabel,
+    #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
+    pub poll_interval_secs: PollIntervalSecs,
+    #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
+    pub start: ListStartDto,
+    #[serde(default, skip_serializing_if = "AfterCommitDto::is_default")]
+    pub after_commit: AfterCommitDto,
+    /// Where `"move"` puts an object, in place of `prefix`. Named with `"move"` and only then.
+    /// Ends in `/` when `prefix` does or is empty, and only then, so a moved key keeps one `/` between them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_prefix: Option<String>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GcsListSourceDto {
+    pub bucket: String,
+    /// Only names that start with it. Empty is the whole bucket.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prefix: String,
+    #[serde(flatten)]
+    pub access: GcsAccessDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(flatten)]
+    pub framing: FramingSettingsDto,
+    #[serde(default, flatten)]
+    pub read: ReadFormatDto,
+    /// How this source's record bytes become text. See [`EncodingLabel`].
+    #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
+    pub encoding: EncodingLabel,
+    #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
+    pub poll_interval_secs: PollIntervalSecs,
+    #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
+    pub start: ListStartDto,
+    #[serde(default, skip_serializing_if = "AfterCommitDto::is_default")]
+    pub after_commit: AfterCommitDto,
+    /// Where `"move"` puts an object, in place of `prefix`, as for `s3List`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_prefix: Option<String>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureBlobListSourceDto {
+    pub container: String,
+    /// Only names that start with it. Empty is the whole container.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prefix: String,
+    #[serde(flatten)]
+    pub access: AzureAccessDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(flatten)]
+    pub framing: FramingSettingsDto,
+    #[serde(default, flatten)]
+    pub read: ReadFormatDto,
+    /// How this source's record bytes become text. See [`EncodingLabel`].
+    #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
+    pub encoding: EncodingLabel,
+    #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
+    pub poll_interval_secs: PollIntervalSecs,
+    #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
+    pub start: ListStartDto,
+    #[serde(default, skip_serializing_if = "AfterCommitDto::is_default")]
+    pub after_commit: AfterCommitDto,
+    /// Where `"move"` puts an object, in place of `prefix`, as for `s3List`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_prefix: Option<String>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpSourceDto {
+    /// Absolute, or under the user's home directory. Empty is the home directory.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub directory: String,
+    /// Only paths under `directory` that start with it. Empty is all of it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prefix: String,
+    #[serde(flatten)]
+    pub access: SftpAccessDto,
+    #[serde(flatten)]
+    pub framing: FramingSettingsDto,
+    #[serde(default, flatten)]
+    pub read: ReadFormatDto,
+    /// How this source's record bytes become text. See [`EncodingLabel`].
+    #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
+    pub encoding: EncodingLabel,
+    #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
+    pub poll_interval_secs: PollIntervalSecs,
+    #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
+    pub start: ListStartDto,
+    #[serde(default, skip_serializing_if = "AfterCommitDto::is_default")]
+    pub after_commit: AfterCommitDto,
+    /// Where `"move"` puts a file, in place of `prefix`, as for `s3List`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_prefix: Option<String>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureBlobQueueSourceDto {
+    /// The queue's own URL.
+    pub queue_url: String,
+    #[serde(flatten)]
+    pub access: AzureAccessDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(flatten)]
+    pub framing: FramingSettingsDto,
+    #[serde(default, flatten)]
+    pub read: ReadFormatDto,
+    /// How this source's record bytes become text. See [`EncodingLabel`].
+    #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
+    pub encoding: EncodingLabel,
+    #[serde(default, skip_serializing_if = "VisibilitySecs::is_default")]
+    pub visibility_secs: VisibilitySecs,
+    #[serde(default, skip_serializing_if = "MaxDeliveries::is_default")]
+    pub max_deliveries: MaxDeliveries,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GcsPubSubSourceDto {
+    /// `projects/<project>/subscriptions/<subscription>`.
+    pub subscription: String,
+    /// Another Pub/Sub address, such as an emulator's. Absent is Google's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pubsub_endpoint: Option<String>,
+    #[serde(flatten)]
+    pub access: GcsAccessDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(flatten)]
+    pub framing: FramingSettingsDto,
+    #[serde(default, flatten)]
+    pub read: ReadFormatDto,
+    /// How this source's record bytes become text. See [`EncodingLabel`].
+    #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
+    pub encoding: EncodingLabel,
+    /// At most 600, Pub/Sub's longest ack deadline.
+    #[serde(default, skip_serializing_if = "VisibilitySecs::is_default")]
+    pub visibility_secs: VisibilitySecs,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpApiSourceDto {
+    /// The whole address asked, with any fixed query parameters.
+    pub url: String,
+    /// `"GET"` (default) or `"POST"`.
+    #[serde(default, skip_serializing_if = "ApiMethodDto::is_default")]
+    pub method: ApiMethodDto,
+    /// The JSON every POST carries. Absent is a POST of nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<serde_json::Value>,
+    /// Header name -> its value, committed to the config repository.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Header name -> the credential holding its value.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credentials: BTreeMap<String, SecretRefDto>,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    /// `"body"` (default), `"lines"` or `"array"`.
+    #[serde(default, skip_serializing_if = "ApiRecordsDto::is_default")]
+    pub records: ApiRecordsDto,
+    /// The JSON pointer to the array `"array"` reads, such as `/data`. Absent is an answer that is the array.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records_at: Option<String>,
+    /// Whether a poll follows each answer's `Link: rel="next"` to the next page.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub follow_links: bool,
+    /// The query parameter that asks for what happened since a time, sent the start of the last poll whose
+    /// records every destination took. Absent reads everything every poll.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_param: Option<String>,
+    /// How many seconds before the last poll's start `sinceParam` asks from, for an API that records late.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub since_overlap_secs: u64,
+    #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
+    pub poll_interval_secs: PollIntervalSecs,
+    /// What the first poll asks for, with `sinceParam`.
+    #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
+    pub start: ListStartDto,
+    /// Signing in as an app for the token every request carries.
+    #[serde(flatten)]
+    pub sign_in: AppSignInDto,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OktaLogsSourceDto {
+    /// The org's address, as `https://acme.okta.com`.
+    pub org: String,
+    /// The credential holding an API token with read access to the System Log. A source names a token or a
+    /// service app, never both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SecretRefDto>,
+    /// The service app's client id, when the source signs in as a service app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// The credential holding the service app's private key, a PEM RSA key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<SecretRefDto>,
+    /// Which of the service app's keys `privateKey` is, for an app with several.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
+    pub poll_interval_secs: PollIntervalSecs,
+    /// `"everything"` (default) reads what Okta lists with no start, its last seven days; `"new"` reads what
+    /// happens from the first poll on.
+    #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
+    pub start: ListStartDto,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpReceiverSourceDto {
+    #[serde(flatten)]
+    pub listener: ReceiverSettingsDto,
+    #[serde(flatten)]
+    pub connections: ConnectionLimitsDto,
+    #[serde(flatten)]
+    pub tls: ServedTlsDto,
+    /// Whether a request is answered only once every destination has its records, rather than as soon as it is
+    /// received.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_after_delivery: bool,
+    /// The path senders POST to.
+    #[serde(default = "root_path", skip_serializing_if = "is_root_path")]
+    pub path: String,
+    /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tokens: BTreeMap<String, SecretRefDto>,
+    /// `"body"` (default), `"lines"` or `"array"`.
+    #[serde(default, skip_serializing_if = "ApiRecordsDto::is_default")]
+    pub records: ApiRecordsDto,
+    /// The JSON pointer to the array `"array"` reads, such as `/events`. Absent is a body that is the array.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records_at: Option<String>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HecReceiverSourceDto {
+    #[serde(flatten)]
+    pub listener: ReceiverSettingsDto,
+    #[serde(flatten)]
+    pub connections: ConnectionLimitsDto,
+    #[serde(flatten)]
+    pub tls: ServedTlsDto,
+    /// Whether a request is answered only once every destination has its records, rather than as soon as it is
+    /// received.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_after_delivery: bool,
+    /// Token name -> a token a sender may present as `Authorization: Splunk`, and whether its senders use
+    /// indexer acknowledgement.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tokens: BTreeMap<String, HecTokenDto>,
+    /// Sourcetype -> where a raw request's events end, by the request's `sourcetype`. A sourcetype not named
+    /// here is an event per line.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sourcetypes: BTreeMap<String, SourcetypeDto>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct S2sReceiverSourceDto {
+    #[serde(flatten)]
+    pub listener: ReceiverSettingsDto,
+    #[serde(flatten)]
+    pub connections: ConnectionLimitsDto,
+    #[serde(flatten)]
+    pub tls: ServedTlsDto,
+    /// Token name -> the credential holding a token a forwarder may present, its outputs.conf `token`. A
+    /// forwarder presenting none, or another, is cut off.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tokens: BTreeMap<String, SecretRefDto>,
+    /// Sourcetype -> where its events end. A sourcetype not named here is an event per line.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sourcetypes: BTreeMap<String, SourcetypeDto>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OtlpReceiverSourceDto {
+    #[serde(flatten)]
+    pub listener: ReceiverSettingsDto,
+    #[serde(flatten)]
+    pub connections: ConnectionLimitsDto,
+    #[serde(flatten)]
+    pub tls: ServedTlsDto,
+    /// Whether a request is answered only once every destination has its records, rather than as soon as it is
+    /// received.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_after_delivery: bool,
+    /// The signal it takes. Absent is logs.
+    #[serde(default, skip_serializing_if = "is_logs")]
+    pub signal: Signal,
+    /// Token name -> the credential holding a token an exporter may present as `Authorization: Bearer`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tokens: BTreeMap<String, SecretRefDto>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrometheusReceiverSourceDto {
+    #[serde(flatten)]
+    pub listener: ReceiverSettingsDto,
+    #[serde(flatten)]
+    pub connections: ConnectionLimitsDto,
+    #[serde(flatten)]
+    pub tls: ServedTlsDto,
+    /// Whether a request is answered only once every destination has its records, rather than as soon as it is
+    /// received.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_after_delivery: bool,
+    /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tokens: BTreeMap<String, SecretRefDto>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElasticReceiverSourceDto {
+    #[serde(flatten)]
+    pub listener: ReceiverSettingsDto,
+    #[serde(flatten)]
+    pub connections: ConnectionLimitsDto,
+    #[serde(flatten)]
+    pub tls: ServedTlsDto,
+    /// Whether a request is answered only once every destination has its records, rather than as soon as it is
+    /// received.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_after_delivery: bool,
+    /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`, as
+    /// `Authorization: ApiKey` (the key as sent, or the `id:key` it encodes), or as the password of
+    /// `Authorization: Basic`, whose user is not read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tokens: BTreeMap<String, SecretRefDto>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyslogReceiverSourceDto {
+    #[serde(flatten)]
+    pub listener: ReceiverSettingsDto,
+    #[serde(flatten)]
+    pub connections: ConnectionLimitsDto,
+    #[serde(flatten)]
+    pub tls: ServedTlsDto,
+    /// The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token, so
+    /// this is what admits a sender, unless the receiver names authorities a sender's certificate
+    /// must chain to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_from: Vec<String>,
+    /// How a message's bytes become text. Syslog over TCP names no charset, and older senders write their own.
+    /// See [`EncodingLabel`].
+    #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
+    pub encoding: EncodingLabel,
+    /// What senders send over. Absent is TCP. Over UDP each datagram is a message, served without TLS.
+    #[serde(default, skip_serializing_if = "Transport::is_tcp")]
+    pub transport: Transport,
+    /// A pattern whose first capture group is where a message over TCP ends, the group dropped, as Splunk's
+    /// `LINE_BREAKER`, for senders that end a message with something other than a newline, or with nothing.
+    /// Absent, a message ends at a newline. A message that starts with a digit 1 to 9 is framed by octet counting,
+    /// whatever this says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_breaker: Option<String>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocketReceiverSourceDto {
+    #[serde(flatten)]
+    pub listener: ReceiverSettingsDto,
+    #[serde(flatten)]
+    pub connections: ConnectionLimitsDto,
+    #[serde(flatten)]
+    pub tls: ServedTlsDto,
+    /// The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Nothing it receives carries a
+    /// token, so this is what admits a sender, unless the receiver names authorities a sender's certificate must
+    /// chain to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_from: Vec<String>,
+    /// How a record's bytes become text. See [`EncodingLabel`].
+    #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
+    pub encoding: EncodingLabel,
+    /// What senders send over. Absent is TCP. Over UDP each datagram is a record, served without TLS.
+    #[serde(default, skip_serializing_if = "Transport::is_tcp")]
+    pub transport: Transport,
+    /// TCP only: where one record ends and the next starts.
+    #[serde(flatten)]
+    pub framing: FramingSettingsDto,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
 }
 
 fn is_logs(signal: &Signal) -> bool {
@@ -989,14 +1129,14 @@ impl SourceKindDto {
     /// The port a receiver listens on, or `None` for a source that connects out.
     pub fn receiver_port(&self) -> Option<u16> {
         match self {
-            SourceKindDto::HttpReceiver { listener, .. }
-            | SourceKindDto::HecReceiver { listener, .. }
-            | SourceKindDto::S2sReceiver { listener, .. }
-            | SourceKindDto::OtlpReceiver { listener, .. }
-            | SourceKindDto::PrometheusReceiver { listener, .. }
-            | SourceKindDto::ElasticReceiver { listener, .. }
-            | SourceKindDto::SyslogReceiver { listener, .. }
-            | SourceKindDto::SocketReceiver { listener, .. } => Some(listener.port),
+            SourceKindDto::HttpReceiver(HttpReceiverSourceDto { listener, .. })
+            | SourceKindDto::HecReceiver(HecReceiverSourceDto { listener, .. })
+            | SourceKindDto::S2sReceiver(S2sReceiverSourceDto { listener, .. })
+            | SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto { listener, .. })
+            | SourceKindDto::PrometheusReceiver(PrometheusReceiverSourceDto { listener, .. })
+            | SourceKindDto::ElasticReceiver(ElasticReceiverSourceDto { listener, .. })
+            | SourceKindDto::SyslogReceiver(SyslogReceiverSourceDto { listener, .. })
+            | SourceKindDto::SocketReceiver(SocketReceiverSourceDto { listener, .. }) => Some(listener.port),
             _ => None,
         }
     }
@@ -1004,9 +1144,8 @@ impl SourceKindDto {
     /// What a receiver's senders send over. TCP for every kind but a syslog receiver given UDP.
     pub fn receiver_transport(&self) -> Transport {
         match self {
-            SourceKindDto::SyslogReceiver { transport, .. } | SourceKindDto::SocketReceiver { transport, .. } => {
-                *transport
-            }
+            SourceKindDto::SyslogReceiver(SyslogReceiverSourceDto { transport, .. })
+            | SourceKindDto::SocketReceiver(SocketReceiverSourceDto { transport, .. }) => *transport,
             _ => Transport::Tcp,
         }
     }
@@ -1145,27 +1284,27 @@ impl SourceKindDto {
     pub fn meta(&self) -> crate::plan::topology::SourceMeta {
         use crate::plan::topology::SourceMeta;
         let declared = match self {
-            SourceKindDto::Kafka { .. } => SourceMeta::KAFKA,
-            SourceKindDto::EventHubs { .. } => SourceMeta::EVENT_HUBS,
-            SourceKindDto::Metrics { .. } => SourceMeta::METRICS,
-            SourceKindDto::Logs { .. } => SourceMeta::LOGS,
-            SourceKindDto::S3Sqs { .. } => SourceMeta::S3_SQS,
-            SourceKindDto::S3List { .. } => SourceMeta::S3_LIST,
-            SourceKindDto::GcsList { .. } => SourceMeta::GCS_LIST,
-            SourceKindDto::AzureBlobList { .. } => SourceMeta::AZURE_BLOB_LIST,
-            SourceKindDto::Sftp { .. } => SourceMeta::SFTP,
-            SourceKindDto::AzureBlobQueue { .. } => SourceMeta::AZURE_BLOB_QUEUE,
-            SourceKindDto::GcsPubSub { .. } => SourceMeta::GCS_PUB_SUB,
-            SourceKindDto::HttpApi { .. } => SourceMeta::HTTP_API,
-            SourceKindDto::OktaLogs { .. } => SourceMeta::OKTA_LOGS,
-            SourceKindDto::HttpReceiver { .. } => SourceMeta::HTTP_RECEIVER,
-            SourceKindDto::HecReceiver { .. } => SourceMeta::HEC_RECEIVER,
-            SourceKindDto::S2sReceiver { .. } => SourceMeta::S2S_RECEIVER,
-            SourceKindDto::OtlpReceiver { signal, .. } => SourceMeta::otlp(*signal),
-            SourceKindDto::PrometheusReceiver { .. } => SourceMeta::prometheus_receiver(),
-            SourceKindDto::ElasticReceiver { .. } => SourceMeta::ELASTIC_RECEIVER,
-            SourceKindDto::SyslogReceiver { .. } => SourceMeta::SYSLOG_RECEIVER,
-            SourceKindDto::SocketReceiver { .. } => SourceMeta::SOCKET_RECEIVER,
+            SourceKindDto::Kafka(_) => SourceMeta::KAFKA,
+            SourceKindDto::EventHubs(_) => SourceMeta::EVENT_HUBS,
+            SourceKindDto::Metrics(_) => SourceMeta::METRICS,
+            SourceKindDto::Logs(_) => SourceMeta::LOGS,
+            SourceKindDto::S3Sqs(_) => SourceMeta::S3_SQS,
+            SourceKindDto::S3List(_) => SourceMeta::S3_LIST,
+            SourceKindDto::GcsList(_) => SourceMeta::GCS_LIST,
+            SourceKindDto::AzureBlobList(_) => SourceMeta::AZURE_BLOB_LIST,
+            SourceKindDto::Sftp(_) => SourceMeta::SFTP,
+            SourceKindDto::AzureBlobQueue(_) => SourceMeta::AZURE_BLOB_QUEUE,
+            SourceKindDto::GcsPubSub(_) => SourceMeta::GCS_PUB_SUB,
+            SourceKindDto::HttpApi(_) => SourceMeta::HTTP_API,
+            SourceKindDto::OktaLogs(_) => SourceMeta::OKTA_LOGS,
+            SourceKindDto::HttpReceiver(_) => SourceMeta::HTTP_RECEIVER,
+            SourceKindDto::HecReceiver(_) => SourceMeta::HEC_RECEIVER,
+            SourceKindDto::S2sReceiver(_) => SourceMeta::S2S_RECEIVER,
+            SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto { signal, .. }) => SourceMeta::otlp(*signal),
+            SourceKindDto::PrometheusReceiver(_) => SourceMeta::prometheus_receiver(),
+            SourceKindDto::ElasticReceiver(_) => SourceMeta::ELASTIC_RECEIVER,
+            SourceKindDto::SyslogReceiver(_) => SourceMeta::SYSLOG_RECEIVER,
+            SourceKindDto::SocketReceiver(_) => SourceMeta::SOCKET_RECEIVER,
             SourceKindDto::Postgres(sql) => sql.meta(SqlKind::Postgres),
             SourceKindDto::MySql(sql) => sql.meta(SqlKind::MySql),
         };
@@ -1212,29 +1351,29 @@ impl SourceKindDto {
     /// to one worker too.
     pub fn single_worker(&self) -> bool {
         match self {
-            SourceKindDto::S3List { .. }
-            | SourceKindDto::GcsList { .. }
-            | SourceKindDto::AzureBlobList { .. }
-            | SourceKindDto::Sftp { .. }
-            | SourceKindDto::HttpApi { .. }
-            | SourceKindDto::OktaLogs { .. }
+            SourceKindDto::S3List(_)
+            | SourceKindDto::GcsList(_)
+            | SourceKindDto::AzureBlobList(_)
+            | SourceKindDto::Sftp(_)
+            | SourceKindDto::HttpApi(_)
+            | SourceKindDto::OktaLogs(_)
             | SourceKindDto::Postgres(_)
             | SourceKindDto::MySql(_) => true,
-            SourceKindDto::Kafka { .. }
-            | SourceKindDto::EventHubs { .. }
-            | SourceKindDto::S3Sqs { .. }
-            | SourceKindDto::AzureBlobQueue { .. }
-            | SourceKindDto::GcsPubSub { .. }
-            | SourceKindDto::Metrics { .. }
-            | SourceKindDto::Logs { .. }
-            | SourceKindDto::HttpReceiver { .. }
-            | SourceKindDto::HecReceiver { .. }
-            | SourceKindDto::S2sReceiver { .. }
-            | SourceKindDto::OtlpReceiver { .. }
-            | SourceKindDto::SyslogReceiver { .. }
-            | SourceKindDto::SocketReceiver { .. }
-            | SourceKindDto::PrometheusReceiver { .. }
-            | SourceKindDto::ElasticReceiver { .. } => false,
+            SourceKindDto::Kafka(_)
+            | SourceKindDto::EventHubs(_)
+            | SourceKindDto::S3Sqs(_)
+            | SourceKindDto::AzureBlobQueue(_)
+            | SourceKindDto::GcsPubSub(_)
+            | SourceKindDto::Metrics(_)
+            | SourceKindDto::Logs(_)
+            | SourceKindDto::HttpReceiver(_)
+            | SourceKindDto::HecReceiver(_)
+            | SourceKindDto::S2sReceiver(_)
+            | SourceKindDto::OtlpReceiver(_)
+            | SourceKindDto::SyslogReceiver(_)
+            | SourceKindDto::SocketReceiver(_)
+            | SourceKindDto::PrometheusReceiver(_)
+            | SourceKindDto::ElasticReceiver(_) => false,
         }
     }
 
@@ -1244,29 +1383,31 @@ impl SourceKindDto {
     pub fn encoding(&self) -> crate::format::encoding::Encoding {
         use crate::format::encoding::Encoding;
         match self {
-            SourceKindDto::Kafka { encoding, .. }
-            | SourceKindDto::EventHubs { encoding, .. }
-            | SourceKindDto::S3Sqs { encoding, .. }
-            | SourceKindDto::S3List { encoding, .. }
-            | SourceKindDto::GcsList { encoding, .. }
-            | SourceKindDto::AzureBlobList { encoding, .. }
-            | SourceKindDto::Sftp { encoding, .. }
-            | SourceKindDto::AzureBlobQueue { encoding, .. }
-            | SourceKindDto::GcsPubSub { encoding, .. }
-            | SourceKindDto::SyslogReceiver { encoding, .. }
-            | SourceKindDto::SocketReceiver { encoding, .. } => Encoding::for_label(&encoding.0).unwrap_or_default(),
-            SourceKindDto::Metrics { .. }
-            | SourceKindDto::Logs { .. }
-            | SourceKindDto::HttpApi { .. }
-            | SourceKindDto::OktaLogs { .. }
+            SourceKindDto::Kafka(KafkaSourceDto { encoding, .. })
+            | SourceKindDto::EventHubs(EventHubsSourceDto { encoding, .. })
+            | SourceKindDto::S3Sqs(S3SqsSourceDto { encoding, .. })
+            | SourceKindDto::S3List(S3ListSourceDto { encoding, .. })
+            | SourceKindDto::GcsList(GcsListSourceDto { encoding, .. })
+            | SourceKindDto::AzureBlobList(AzureBlobListSourceDto { encoding, .. })
+            | SourceKindDto::Sftp(SftpSourceDto { encoding, .. })
+            | SourceKindDto::AzureBlobQueue(AzureBlobQueueSourceDto { encoding, .. })
+            | SourceKindDto::GcsPubSub(GcsPubSubSourceDto { encoding, .. })
+            | SourceKindDto::SyslogReceiver(SyslogReceiverSourceDto { encoding, .. })
+            | SourceKindDto::SocketReceiver(SocketReceiverSourceDto { encoding, .. }) => {
+                Encoding::for_label(&encoding.0).unwrap_or_default()
+            }
+            SourceKindDto::Metrics(_)
+            | SourceKindDto::Logs(_)
+            | SourceKindDto::HttpApi(_)
+            | SourceKindDto::OktaLogs(_)
             | SourceKindDto::Postgres(_)
             | SourceKindDto::MySql(_)
-            | SourceKindDto::HttpReceiver { .. }
-            | SourceKindDto::HecReceiver { .. }
-            | SourceKindDto::S2sReceiver { .. }
-            | SourceKindDto::OtlpReceiver { .. }
-            | SourceKindDto::PrometheusReceiver { .. }
-            | SourceKindDto::ElasticReceiver { .. } => Encoding::Fixed(encoding_rs::UTF_8),
+            | SourceKindDto::HttpReceiver(_)
+            | SourceKindDto::HecReceiver(_)
+            | SourceKindDto::S2sReceiver(_)
+            | SourceKindDto::OtlpReceiver(_)
+            | SourceKindDto::PrometheusReceiver(_)
+            | SourceKindDto::ElasticReceiver(_) => Encoding::Fixed(encoding_rs::UTF_8),
         }
     }
 }
@@ -1314,35 +1455,40 @@ impl DestinationDto {
     /// is configured apart, by the field naming each. Empty from a kind that is not reached over HTTP.
     pub fn urls(&self) -> Vec<(&'static str, &str)> {
         match &self.kind {
-            DestinationKindDto::Kafka { schema_registry, .. } => schema_registry.iter().map(|r| r.url()).collect(),
-            DestinationKindDto::EventHubs {
+            DestinationKindDto::Kafka(KafkaDestinationDto { schema_registry, .. }) => {
+                schema_registry.iter().map(|r| r.url()).collect()
+            }
+            DestinationKindDto::EventHubs(EventHubsDestinationDto {
                 sign_in,
                 schema_registry,
                 ..
-            } => (sign_in.urls().into_iter())
+            }) => (sign_in.urls().into_iter())
                 .chain(schema_registry.iter().map(|r| r.url()))
                 .collect(),
-            DestinationKindDto::Elasticsearch { url, zone_urls, .. }
-            | DestinationKindDto::SplunkHec { url, zone_urls, .. }
-            | DestinationKindDto::Http { url, zone_urls, .. } => std::iter::once(("url", url.as_str()))
-                .chain(zone_urls.values().map(|u| ("zoneUrls", u.as_str())))
-                .collect(),
-            DestinationKindDto::S3 { access, .. } => access.urls(),
-            DestinationKindDto::Gcs { access, .. } => access.urls(),
-            DestinationKindDto::AzureBlob { access, .. } => access.urls(),
-            DestinationKindDto::Sftp { .. } => Vec::new(),
-            DestinationKindDto::Prometheus { url, .. } | DestinationKindDto::Otlp { url, .. } => vec![("url", url)],
-            DestinationKindDto::LogAnalytics { endpoint, sign_in, .. } => {
+            DestinationKindDto::Elasticsearch(ElasticsearchDestinationDto { url, zone_urls, .. })
+            | DestinationKindDto::SplunkHec(SplunkHecDestinationDto { url, zone_urls, .. })
+            | DestinationKindDto::Http(HttpDestinationDto { url, zone_urls, .. }) => {
+                std::iter::once(("url", url.as_str()))
+                    .chain(zone_urls.values().map(|u| ("zoneUrls", u.as_str())))
+                    .collect()
+            }
+            DestinationKindDto::S3(S3DestinationDto { access, .. }) => access.urls(),
+            DestinationKindDto::Gcs(GcsDestinationDto { access, .. }) => access.urls(),
+            DestinationKindDto::AzureBlob(AzureBlobDestinationDto { access, .. }) => access.urls(),
+            DestinationKindDto::Sftp(SftpDestinationDto { .. }) => Vec::new(),
+            DestinationKindDto::Prometheus(PrometheusDestinationDto { url, .. })
+            | DestinationKindDto::Otlp(OtlpDestinationDto { url, .. }) => vec![("url", url)],
+            DestinationKindDto::LogAnalytics(LogAnalyticsDestinationDto { endpoint, sign_in, .. }) => {
                 std::iter::once(("endpoint", endpoint.as_str()))
                     .chain(sign_in.urls())
                     .collect()
             }
-            DestinationKindDto::Iceberg {
+            DestinationKindDto::Iceberg(IcebergDestinationDto {
                 catalog,
                 token_url,
                 access,
                 ..
-            } => {
+            }) => {
                 let mut urls = vec![("catalog", catalog.as_str())];
                 urls.extend(token_url.as_deref().map(|u| ("tokenUrl", u)));
                 if !access.is_empty() {
@@ -1351,7 +1497,7 @@ impl DestinationDto {
                 urls
             }
             // A Unity Catalog workspace is held to more than a URL, a root alone, by its own check.
-            DestinationKindDto::Delta { access, .. } => access.urls(),
+            DestinationKindDto::Delta(DeltaDestinationDto { access, .. }) => access.urls(),
         }
     }
 
@@ -1359,46 +1505,48 @@ impl DestinationDto {
     /// must answer, or its credentials would go unnamed, unchecked at deploy and left behind on a version move.
     pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
         match &self.kind {
-            DestinationKindDto::Kafka {
+            DestinationKindDto::Kafka(KafkaDestinationDto {
                 props, schema_registry, ..
-            } => (props.secrets().into_iter())
+            }) => (props.secrets().into_iter())
                 .chain(schema_registry.iter().flat_map(|r| r.secrets()))
                 .collect(),
-            DestinationKindDto::EventHubs {
+            DestinationKindDto::EventHubs(EventHubsDestinationDto {
                 connection_string,
                 sign_in,
                 schema_registry,
                 ..
-            } => (connection_string.iter().map(|r| ("connectionString", r)))
+            }) => (connection_string.iter().map(|r| ("connectionString", r)))
                 .chain(sign_in.secrets())
                 .chain(schema_registry.iter().flat_map(|r| r.secrets()))
                 .collect(),
-            DestinationKindDto::Elasticsearch { auth, password, .. } => (auth.iter().map(|r| ("auth", r)))
-                .chain(password.iter().map(|r| ("password", r)))
-                .collect(),
-            DestinationKindDto::SplunkHec { token, .. } => vec![("token", token)],
-            DestinationKindDto::S3 { access, .. } => access.secrets(),
-            DestinationKindDto::Gcs { access, .. } => access.secrets(),
-            DestinationKindDto::AzureBlob { access, .. } => access.secrets(),
-            DestinationKindDto::Sftp { access, .. } => access.secrets(),
-            DestinationKindDto::Http { credentials, .. }
-            | DestinationKindDto::Prometheus { credentials, .. }
-            | DestinationKindDto::Otlp { credentials, .. } => {
+            DestinationKindDto::Elasticsearch(ElasticsearchDestinationDto { auth, password, .. }) => {
+                (auth.iter().map(|r| ("auth", r)))
+                    .chain(password.iter().map(|r| ("password", r)))
+                    .collect()
+            }
+            DestinationKindDto::SplunkHec(SplunkHecDestinationDto { token, .. }) => vec![("token", token)],
+            DestinationKindDto::S3(S3DestinationDto { access, .. }) => access.secrets(),
+            DestinationKindDto::Gcs(GcsDestinationDto { access, .. }) => access.secrets(),
+            DestinationKindDto::AzureBlob(AzureBlobDestinationDto { access, .. }) => access.secrets(),
+            DestinationKindDto::Sftp(SftpDestinationDto { access, .. }) => access.secrets(),
+            DestinationKindDto::Http(HttpDestinationDto { credentials, .. })
+            | DestinationKindDto::Prometheus(PrometheusDestinationDto { credentials, .. })
+            | DestinationKindDto::Otlp(OtlpDestinationDto { credentials, .. }) => {
                 credentials.values().map(|r| ("credentials", r)).collect()
             }
-            DestinationKindDto::LogAnalytics { sign_in, .. } => sign_in.secrets(),
-            DestinationKindDto::Iceberg {
+            DestinationKindDto::LogAnalytics(LogAnalyticsDestinationDto { sign_in, .. }) => sign_in.secrets(),
+            DestinationKindDto::Iceberg(IcebergDestinationDto {
                 token,
                 client_secret,
                 access,
                 ..
-            } => (token.iter().map(|r| ("token", r)))
+            }) => (token.iter().map(|r| ("token", r)))
                 .chain(client_secret.iter().map(|r| ("clientSecret", r)))
                 .chain(access.secrets())
                 .collect(),
-            DestinationKindDto::Delta {
+            DestinationKindDto::Delta(DeltaDestinationDto {
                 unity_catalog, access, ..
-            } => (unity_catalog
+            }) => (unity_catalog
                 .iter()
                 .map(|u| ("unityCatalog.clientSecret", &u.client_secret)))
             .chain(access.secrets())
@@ -1409,42 +1557,42 @@ impl DestinationDto {
     /// `secrets`, for the leader to move one onto a new version. Exhaustive as `secrets` is.
     pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
         match &mut self.kind {
-            DestinationKindDto::Kafka {
+            DestinationKindDto::Kafka(KafkaDestinationDto {
                 props, schema_registry, ..
-            } => (props.secrets_mut().into_iter())
+            }) => (props.secrets_mut().into_iter())
                 .chain(schema_registry.iter_mut().flat_map(|r| r.secrets_mut()))
                 .collect(),
-            DestinationKindDto::EventHubs {
+            DestinationKindDto::EventHubs(EventHubsDestinationDto {
                 connection_string,
                 sign_in,
                 schema_registry,
                 ..
-            } => (connection_string.iter_mut().chain(sign_in.secrets_mut()))
+            }) => (connection_string.iter_mut().chain(sign_in.secrets_mut()))
                 .chain(schema_registry.iter_mut().flat_map(|r| r.secrets_mut()))
                 .collect(),
-            DestinationKindDto::Elasticsearch { auth, password, .. } => {
+            DestinationKindDto::Elasticsearch(ElasticsearchDestinationDto { auth, password, .. }) => {
                 auth.iter_mut().chain(password.iter_mut()).collect()
             }
-            DestinationKindDto::SplunkHec { token, .. } => vec![token],
-            DestinationKindDto::S3 { access, .. } => access.secrets_mut(),
-            DestinationKindDto::Gcs { access, .. } => access.secrets_mut(),
-            DestinationKindDto::AzureBlob { access, .. } => access.secrets_mut(),
-            DestinationKindDto::Sftp { access, .. } => access.secrets_mut(),
-            DestinationKindDto::Http { credentials, .. }
-            | DestinationKindDto::Prometheus { credentials, .. }
-            | DestinationKindDto::Otlp { credentials, .. } => credentials.values_mut().collect(),
-            DestinationKindDto::LogAnalytics { sign_in, .. } => sign_in.secrets_mut(),
-            DestinationKindDto::Iceberg {
+            DestinationKindDto::SplunkHec(SplunkHecDestinationDto { token, .. }) => vec![token],
+            DestinationKindDto::S3(S3DestinationDto { access, .. }) => access.secrets_mut(),
+            DestinationKindDto::Gcs(GcsDestinationDto { access, .. }) => access.secrets_mut(),
+            DestinationKindDto::AzureBlob(AzureBlobDestinationDto { access, .. }) => access.secrets_mut(),
+            DestinationKindDto::Sftp(SftpDestinationDto { access, .. }) => access.secrets_mut(),
+            DestinationKindDto::Http(HttpDestinationDto { credentials, .. })
+            | DestinationKindDto::Prometheus(PrometheusDestinationDto { credentials, .. })
+            | DestinationKindDto::Otlp(OtlpDestinationDto { credentials, .. }) => credentials.values_mut().collect(),
+            DestinationKindDto::LogAnalytics(LogAnalyticsDestinationDto { sign_in, .. }) => sign_in.secrets_mut(),
+            DestinationKindDto::Iceberg(IcebergDestinationDto {
                 token,
                 client_secret,
                 access,
                 ..
-            } => (token.iter_mut().chain(client_secret.iter_mut()))
+            }) => (token.iter_mut().chain(client_secret.iter_mut()))
                 .chain(access.secrets_mut())
                 .collect(),
-            DestinationKindDto::Delta {
+            DestinationKindDto::Delta(DeltaDestinationDto {
                 unity_catalog, access, ..
-            } => (unity_catalog.iter_mut().map(|u| &mut u.client_secret))
+            }) => (unity_catalog.iter_mut().map(|u| &mut u.client_secret))
                 .chain(access.secrets_mut())
                 .collect(),
         }
@@ -1453,19 +1601,20 @@ impl DestinationDto {
     /// The TLS this destination connects out under. `None` from a kind that speaks none.
     pub fn tls(&self) -> Option<TlsDto> {
         match &self.kind {
-            DestinationKindDto::Kafka { tls, .. }
-            | DestinationKindDto::Elasticsearch { tls, .. }
-            | DestinationKindDto::SplunkHec { tls, .. }
-            | DestinationKindDto::S3 { tls, .. }
-            | DestinationKindDto::Gcs { tls, .. }
-            | DestinationKindDto::AzureBlob { tls, .. }
-            | DestinationKindDto::Http { tls, .. }
-            | DestinationKindDto::Prometheus { tls, .. }
-            | DestinationKindDto::Otlp { tls, .. }
-            | DestinationKindDto::LogAnalytics { tls, .. }
-            | DestinationKindDto::Iceberg { tls, .. }
-            | DestinationKindDto::Delta { tls, .. } => Some(tls.clone()),
-            DestinationKindDto::EventHubs { .. } | DestinationKindDto::Sftp { .. } => None,
+            DestinationKindDto::Kafka(KafkaDestinationDto { tls, .. })
+            | DestinationKindDto::Elasticsearch(ElasticsearchDestinationDto { tls, .. })
+            | DestinationKindDto::SplunkHec(SplunkHecDestinationDto { tls, .. })
+            | DestinationKindDto::S3(S3DestinationDto { tls, .. })
+            | DestinationKindDto::Gcs(GcsDestinationDto { tls, .. })
+            | DestinationKindDto::AzureBlob(AzureBlobDestinationDto { tls, .. })
+            | DestinationKindDto::Http(HttpDestinationDto { tls, .. })
+            | DestinationKindDto::Prometheus(PrometheusDestinationDto { tls, .. })
+            | DestinationKindDto::Otlp(OtlpDestinationDto { tls, .. })
+            | DestinationKindDto::LogAnalytics(LogAnalyticsDestinationDto { tls, .. })
+            | DestinationKindDto::Iceberg(IcebergDestinationDto { tls, .. })
+            | DestinationKindDto::Delta(DeltaDestinationDto { tls, .. }) => Some(tls.clone()),
+            DestinationKindDto::EventHubs(EventHubsDestinationDto { .. })
+            | DestinationKindDto::Sftp(SftpDestinationDto { .. }) => None,
         }
     }
 }
@@ -1473,414 +1622,484 @@ impl DestinationDto {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum DestinationKindDto {
-    #[serde(rename_all = "camelCase")]
-    Kafka {
-        brokers: String,
-        default_topic: String,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(default, skip_serializing_if = "FormatDto::is_default")]
-        format: FormatDto,
-        /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        field: Option<String>,
-        #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
-        compression: CompressionDto,
-        #[serde(default, skip_serializing_if = "AcksDto::is_default")]
-        acks: AcksDto,
-        /// Seconds one batch may take to deliver before it is a stall.
-        #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-        stall_after_secs: StallAfter,
-        /// Unset means the worker sizes it to its memory (`worker::memory::fit`), `BufferBytes::DEFAULT` without a
-        /// memory figure.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        buffer_bytes: Option<BufferBytes>,
-        /// Where `format` is `"avro"`: the registry each route's record is registered with.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        schema_registry: Option<SchemaRegistryDto>,
-        #[serde(default, flatten, skip_serializing_if = "KafkaPropsDto::is_empty")]
-        props: KafkaPropsDto,
-    },
+    Kafka(KafkaDestinationDto),
     /// Azure Event Hubs, written through its Kafka endpoint: loading makes it a Kafka destination signed in as
     /// `sign_in` says.
-    #[serde(rename_all = "camelCase")]
-    EventHubs {
-        /// The namespace: its name in Azure's public cloud, its host name in another cloud, or `host:port`.
-        namespace: String,
-        /// The event hub a row goes to when it names none, as a Kafka destination's default topic.
-        default_event_hub: String,
-        /// The namespace's or an event hub's connection string. At most one of it, `clientSecret` and
-        /// `managedIdentityClientId`; none signs in as the host's managed identity.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        connection_string: Option<SecretRefDto>,
-        #[serde(flatten)]
-        sign_in: EntraSignInDto,
-        #[serde(default, skip_serializing_if = "FormatDto::is_default")]
-        format: FormatDto,
-        /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        field: Option<String>,
-        /// None or gzip: Event Hubs refuses the other codecs.
-        #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
-        compression: CompressionDto,
-        /// Seconds one batch may take to deliver before it is a stall.
-        #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-        stall_after_secs: StallAfter,
-        /// As a Kafka destination's.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        buffer_bytes: Option<BufferBytes>,
-        /// As a Kafka destination's.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        schema_registry: Option<SchemaRegistryDto>,
-    },
-    #[serde(rename_all = "camelCase")]
-    Elasticsearch {
-        url: String,
-        /// Zone -> the address a worker in that zone sends to instead of `url`.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        zone_urls: BTreeMap<String, String>,
-        default_index: String,
-        #[serde(flatten)]
-        tls: TlsDto,
-        /// The credential holding the API key or a whole `Authorization` header value, never the value itself.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        auth: Option<SecretRefDto>,
-        /// Basic auth, in place of `auth`: `username` and `password` together.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        username: Option<String>,
-        /// The credential holding `username`'s password.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        password: Option<SecretRefDto>,
-        /// `"auto"` (default), `"dedupe"`, or `"overwrite"`; see `plan::topology::DocIdPolicy`.
-        #[serde(default, skip_serializing_if = "DocIdPolicyDto::is_default")]
-        doc_id: DocIdPolicyDto,
-        /// The row field holding the document identity. Omitted, the pipeline must set `__destination.id`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        id_field: Option<String>,
-        #[serde(default, skip_serializing_if = "InFlight::is_default")]
-        in_flight: InFlight,
-        #[serde(default, skip_serializing_if = "BulkBytes::is_default")]
-        max_bulk_bytes: BulkBytes,
-        /// Unset means the default, or one whole bulk request if that is larger: raising `max_bulk_bytes` alone must
-        /// never leave a destination unable to hand a request over.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        buffer_bytes: Option<BufferBytes>,
-        /// Seconds one batch may take to deliver before it is a stall.
-        #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-        stall_after_secs: StallAfter,
-        /// Whether a worker learns the cluster's nodes from `url` and spreads its requests across them.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        sniff: bool,
-        /// The node attribute naming a node's zone, which sniffing prefers the worker's own of. Absent is `zone`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        zone_attribute: Option<String>,
-    },
+    EventHubs(EventHubsDestinationDto),
+    Elasticsearch(ElasticsearchDestinationDto),
     /// Events sent to a Splunk HTTP Event Collector.
-    #[serde(rename_all = "camelCase")]
-    SplunkHec {
-        /// The collector's base address; the destination adds the endpoint paths itself.
-        url: String,
-        /// Zone -> the address a worker in that zone sends to instead of `url`.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        zone_urls: BTreeMap<String, String>,
-        /// The credential holding the HEC token, never the token itself.
-        token: SecretRefDto,
-        /// Where a row with no `__destination.index` goes. Absent leaves the token's own default index. The raw
-        /// endpoint files every row here, so it refuses a row whose `__destination.index` names another.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        index: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        sourcetype: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        host: Option<String>,
-        /// `"event"` (default) or `"raw"`; see `plan::topology::Endpoint`.
-        #[serde(default, skip_serializing_if = "EndpointDto::is_default")]
-        endpoint: EndpointDto,
-        /// `"json"` (default) or `"text"`; the raw endpoint also takes `"bytes"`.
-        #[serde(default, skip_serializing_if = "FormatDto::is_default")]
-        format: FormatDto,
-        /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        field: Option<String>,
-        /// `"indexer"` (default) or `"receipt"`; see `plan::topology::Acknowledgement`.
-        #[serde(default, skip_serializing_if = "AcknowledgementDto::is_default")]
-        acknowledgement: AcknowledgementDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(default, skip_serializing_if = "InFlight::is_default")]
-        in_flight: InFlight,
-        #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
-        max_request_bytes: RequestBytes,
-        /// Unset means the default, or one whole request if that is larger.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        buffer_bytes: Option<BufferBytes>,
-        /// Seconds one batch may take to deliver, its acknowledgement included, before it is a stall.
-        #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-        stall_after_secs: StallAfter,
-    },
+    SplunkHec(SplunkHecDestinationDto),
     /// Objects written to an S3 bucket, one open file per prefix.
-    #[serde(rename_all = "camelCase")]
-    S3 {
-        bucket: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        kms_key_id: Option<String>,
-        #[serde(flatten)]
-        access: S3AccessDto,
-        #[serde(flatten)]
-        objects: ObjectSettingsDto,
-        #[serde(flatten)]
-        cloud: CloudSettingsDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-    },
+    S3(S3DestinationDto),
     /// Objects written to a Google Cloud Storage bucket, one open file per prefix.
-    #[serde(rename_all = "camelCase")]
-    Gcs {
-        bucket: String,
-        #[serde(flatten)]
-        access: GcsAccessDto,
-        #[serde(flatten)]
-        objects: ObjectSettingsDto,
-        #[serde(flatten)]
-        cloud: CloudSettingsDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-    },
+    Gcs(GcsDestinationDto),
     /// Blobs written to an Azure Blob Storage container, one open file per prefix.
-    #[serde(rename_all = "camelCase")]
-    AzureBlob {
-        container: String,
-        #[serde(flatten)]
-        access: AzureAccessDto,
-        #[serde(flatten)]
-        objects: ObjectSettingsDto,
-        #[serde(flatten)]
-        cloud: CloudSettingsDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-    },
+    AzureBlob(AzureBlobDestinationDto),
     /// Files written to one directory of an SFTP server, one open file per prefix, each renamed into place whole.
-    #[serde(rename_all = "camelCase")]
-    Sftp {
-        /// Absolute, or under the user's home directory. Empty is the home directory.
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        directory: String,
-        #[serde(flatten)]
-        access: SftpAccessDto,
-        #[serde(flatten)]
-        objects: ObjectSettingsDto,
-    },
+    Sftp(SftpDestinationDto),
     /// Rows POSTed to one URL, as lines, a JSON array or one per request.
-    #[serde(rename_all = "camelCase")]
-    Http {
-        /// The whole address each request is POSTed to.
-        url: String,
-        /// Zone -> the address a worker in that zone sends to instead of `url`.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        zone_urls: BTreeMap<String, String>,
-        #[serde(default, skip_serializing_if = "RequestBodyDto::is_default")]
-        body: RequestBodyDto,
-        /// `"json"` (default), `"text"` or `"bytes"`; bytes are not a JSON array's element.
-        #[serde(default, skip_serializing_if = "FormatDto::is_default")]
-        format: FormatDto,
-        /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        field: Option<String>,
-        /// `"none"` (default) or `"gzip"`.
-        #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
-        compression: CompressionDto,
-        /// Header name -> its value, committed to the config repository.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        headers: BTreeMap<String, String>,
-        /// Header name -> the credential holding its value.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        credentials: BTreeMap<String, SecretRefDto>,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(default, skip_serializing_if = "InFlight::is_default")]
-        in_flight: InFlight,
-        #[serde(default, skip_serializing_if = "HttpRequestBytes::is_default")]
-        max_request_bytes: HttpRequestBytes,
-        /// Unset means the default, or one whole request if that is larger.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        buffer_bytes: Option<BufferBytes>,
-        /// Seconds one batch may take to deliver before it is a stall.
-        #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-        stall_after_secs: StallAfter,
-    },
+    Http(HttpDestinationDto),
     /// Samples sent as Prometheus remote_write to a store's endpoint.
-    #[serde(rename_all = "camelCase")]
-    Prometheus {
-        /// The whole address each request is POSTed to.
-        url: String,
-        /// `"1.0"` (default) or `"2.0"`.
-        #[serde(default, skip_serializing_if = "RemoteWriteVersionDto::is_default")]
-        version: RemoteWriteVersionDto,
-        /// Header name -> its value, committed to the config repository.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        headers: BTreeMap<String, String>,
-        /// Header name -> the credential holding its value.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        credentials: BTreeMap<String, SecretRefDto>,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
-        max_request_bytes: RequestBytes,
-        /// Unset means the default, or one whole request if that is larger.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        buffer_bytes: Option<BufferBytes>,
-        /// Seconds one batch may take to deliver before it is a stall.
-        #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-        stall_after_secs: StallAfter,
-    },
+    Prometheus(PrometheusDestinationDto),
     /// Rows sent as OTLP/HTTP exports of one signal to an OpenTelemetry endpoint.
-    #[serde(rename_all = "camelCase")]
-    Otlp {
-        /// The endpoint, which each request goes to with its signal's path, `/v1/logs`, `/v1/metrics` or
-        /// `/v1/traces`, after it.
-        url: String,
-        /// The signal it sends. Absent is logs.
-        #[serde(default, skip_serializing_if = "is_logs")]
-        signal: Signal,
-        /// `"none"` (default) or `"gzip"`.
-        #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
-        compression: CompressionDto,
-        /// Header name -> its value, committed to the config repository.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        headers: BTreeMap<String, String>,
-        /// Header name -> the credential holding its value.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        credentials: BTreeMap<String, SecretRefDto>,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(default, skip_serializing_if = "InFlight::is_default")]
-        in_flight: InFlight,
-        #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
-        max_request_bytes: RequestBytes,
-        /// Unset means the default, or one whole request if that is larger.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        buffer_bytes: Option<BufferBytes>,
-        /// Seconds one batch may take to deliver before it is a stall.
-        #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-        stall_after_secs: StallAfter,
-    },
+    Otlp(OtlpDestinationDto),
     /// Rows sent to a stream of a data collection rule through Azure Monitor's Logs Ingestion API, which lands
     /// them in the rule's Log Analytics table, where Microsoft Sentinel reads them.
-    #[serde(rename_all = "camelCase")]
-    LogAnalytics {
-        /// The rule's logs ingestion endpoint, or the data collection endpoint it is linked to.
-        endpoint: String,
-        /// The rule's immutable id, `dcr-` and 32 hex digits.
-        rule_id: String,
-        /// The rule's stream the rows go to, such as `Custom-Events_CL`.
-        stream: String,
-        #[serde(flatten)]
-        sign_in: EntraSignInDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-        #[serde(default, skip_serializing_if = "InFlight::is_default")]
-        in_flight: InFlight,
-        #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
-        max_request_bytes: RequestBytes,
-        /// Unset means the default, or one whole request if that is larger.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        buffer_bytes: Option<BufferBytes>,
-        /// Seconds one batch may take to deliver before it is a stall.
-        #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-        stall_after_secs: StallAfter,
-    },
+    LogAnalytics(LogAnalyticsDestinationDto),
     /// Rows written as Parquet data files into an Iceberg table, committed through a REST catalog.
-    #[serde(rename_all = "camelCase")]
-    Iceberg {
-        /// The catalog's base address, before `/v1`.
-        catalog: String,
-        /// Absent is the catalog's default warehouse.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        warehouse: Option<String>,
-        /// The table's namespace, its levels joined by `.`.
-        namespace: String,
-        table: String,
-        /// The partition spec a created table takes: `host`, `day(ts)`, `bucket(16, id)`, `truncate(4, name)`.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        partition_by: Vec<String>,
-        /// A bearer token for the catalog. At most one of `token` and `clientId`; neither signs in as no one.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        token: Option<SecretRefDto>,
-        /// OAuth client credentials: `clientId` and `clientSecret` together.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        client_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        client_secret: Option<SecretRefDto>,
-        /// Where client credentials are exchanged for a token. Absent is the catalog's own `/v1/oauth/tokens`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        token_url: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scope: Option<String>,
-        /// Signs every catalog call with AWS Signature Version 4 for this service, `glue` or `s3tables`, with the AWS
-        /// credentials storage names, else the host's, for the region the catalog's AWS address names, else `region`.
-        /// In place of `token` and `clientId`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        signing_name: Option<String>,
-        /// Storage credentials of its own. None of its fields set uses what the catalog vends.
-        #[serde(flatten)]
-        access: S3AccessDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-        /// Absent is zstd.
-        #[serde(default = "CompressionDto::zstd", skip_serializing_if = "CompressionDto::is_zstd")]
-        compression: CompressionDto,
-        /// Parts of one file uploading at once.
-        #[serde(default, skip_serializing_if = "InFlight::is_default")]
-        in_flight: InFlight,
-        #[serde(default, skip_serializing_if = "ObjectBytes::is_default")]
-        max_object_bytes: ObjectBytes,
-        /// Memory for records not yet committed. Unset is `BufferBytes::OBJECT_DEFAULT`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        buffer_bytes: Option<BufferBytes>,
-        /// Seconds one store or catalog call, or one commit, may take before it is a stall.
-        #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-        stall_after_secs: StallAfter,
-        /// Seconds files stay open before they are committed and their batches acknowledged.
-        #[serde(default, skip_serializing_if = "FileInterval::is_default")]
-        file_interval_secs: FileInterval,
-    },
+    Iceberg(IcebergDestinationDto),
     /// Rows written as Parquet data files into a Delta table at a path in S3, committed through its `_delta_log`.
-    #[serde(rename_all = "camelCase")]
-    Delta {
-        /// The table's root, `s3://bucket/path`. Exactly one of `location` and `unityCatalog`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        location: Option<String>,
-        /// A Unity Catalog external table, whose root and storage credentials the catalog gives.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        unity_catalog: Option<UnityCatalogDto>,
-        /// The columns a created table is partitioned by, each a top-level column of the record.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        partition_by: Vec<String>,
-        /// How the bucket is reached and signed for. None of its fields set takes the host's.
-        #[serde(flatten)]
-        access: S3AccessDto,
-        #[serde(flatten)]
-        tls: TlsDto,
-        /// Absent is zstd.
-        #[serde(default = "CompressionDto::zstd", skip_serializing_if = "CompressionDto::is_zstd")]
-        compression: CompressionDto,
-        /// Parts of one file uploading at once.
-        #[serde(default, skip_serializing_if = "InFlight::is_default")]
-        in_flight: InFlight,
-        #[serde(default, skip_serializing_if = "ObjectBytes::is_default")]
-        max_object_bytes: ObjectBytes,
-        /// Memory for records not yet committed. Unset is `BufferBytes::OBJECT_DEFAULT`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        buffer_bytes: Option<BufferBytes>,
-        /// Seconds one store call, or one commit, may take before it is a stall.
-        #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-        stall_after_secs: StallAfter,
-        /// Seconds files stay open before they are committed and their batches acknowledged.
-        #[serde(default, skip_serializing_if = "FileInterval::is_default")]
-        file_interval_secs: FileInterval,
-    },
+    Delta(DeltaDestinationDto),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KafkaDestinationDto {
+    pub brokers: String,
+    pub default_topic: String,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(default, skip_serializing_if = "FormatDto::is_default")]
+    pub format: FormatDto,
+    /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
+    pub compression: CompressionDto,
+    #[serde(default, skip_serializing_if = "AcksDto::is_default")]
+    pub acks: AcksDto,
+    /// Seconds one batch may take to deliver before it is a stall.
+    #[serde(default, skip_serializing_if = "StallAfter::is_default")]
+    pub stall_after_secs: StallAfter,
+    /// Unset means the worker sizes it to its memory (`worker::memory::fit`), `BufferBytes::DEFAULT` without a
+    /// memory figure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_bytes: Option<BufferBytes>,
+    /// Where `format` is `"avro"`: the registry each route's record is registered with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_registry: Option<SchemaRegistryDto>,
+    #[serde(default, flatten, skip_serializing_if = "KafkaPropsDto::is_empty")]
+    pub props: KafkaPropsDto,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventHubsDestinationDto {
+    /// The namespace: its name in Azure's public cloud, its host name in another cloud, or `host:port`.
+    pub namespace: String,
+    /// The event hub a row goes to when it names none, as a Kafka destination's default topic.
+    pub default_event_hub: String,
+    /// The namespace's or an event hub's connection string. At most one of it, `clientSecret` and
+    /// `managedIdentityClientId`; none signs in as the host's managed identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_string: Option<SecretRefDto>,
+    #[serde(flatten)]
+    pub sign_in: EntraSignInDto,
+    #[serde(default, skip_serializing_if = "FormatDto::is_default")]
+    pub format: FormatDto,
+    /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// None or gzip: Event Hubs refuses the other codecs.
+    #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
+    pub compression: CompressionDto,
+    /// Seconds one batch may take to deliver before it is a stall.
+    #[serde(default, skip_serializing_if = "StallAfter::is_default")]
+    pub stall_after_secs: StallAfter,
+    /// As a Kafka destination's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_bytes: Option<BufferBytes>,
+    /// As a Kafka destination's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_registry: Option<SchemaRegistryDto>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElasticsearchDestinationDto {
+    pub url: String,
+    /// Zone -> the address a worker in that zone sends to instead of `url`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub zone_urls: BTreeMap<String, String>,
+    pub default_index: String,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    /// The credential holding the API key or a whole `Authorization` header value, never the value itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<SecretRefDto>,
+    /// Basic auth, in place of `auth`: `username` and `password` together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// The credential holding `username`'s password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<SecretRefDto>,
+    /// `"auto"` (default), `"dedupe"`, or `"overwrite"`; see `plan::topology::DocIdPolicy`.
+    #[serde(default, skip_serializing_if = "DocIdPolicyDto::is_default")]
+    pub doc_id: DocIdPolicyDto,
+    /// The row field holding the document identity. Omitted, the pipeline must set `__destination.id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_field: Option<String>,
+    #[serde(default, skip_serializing_if = "InFlight::is_default")]
+    pub in_flight: InFlight,
+    #[serde(default, skip_serializing_if = "BulkBytes::is_default")]
+    pub max_bulk_bytes: BulkBytes,
+    /// Unset means the default, or one whole bulk request if that is larger: raising `max_bulk_bytes` alone must
+    /// never leave a destination unable to hand a request over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_bytes: Option<BufferBytes>,
+    /// Seconds one batch may take to deliver before it is a stall.
+    #[serde(default, skip_serializing_if = "StallAfter::is_default")]
+    pub stall_after_secs: StallAfter,
+    /// Whether a worker learns the cluster's nodes from `url` and spreads its requests across them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sniff: bool,
+    /// The node attribute naming a node's zone, which sniffing prefers the worker's own of. Absent is `zone`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone_attribute: Option<String>,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SplunkHecDestinationDto {
+    /// The collector's base address; the destination adds the endpoint paths itself.
+    pub url: String,
+    /// Zone -> the address a worker in that zone sends to instead of `url`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub zone_urls: BTreeMap<String, String>,
+    /// The credential holding the HEC token, never the token itself.
+    pub token: SecretRefDto,
+    /// Where a row with no `__destination.index` goes. Absent leaves the token's own default index. The raw
+    /// endpoint files every row here, so it refuses a row whose `__destination.index` names another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sourcetype: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// `"event"` (default) or `"raw"`; see `plan::topology::Endpoint`.
+    #[serde(default, skip_serializing_if = "EndpointDto::is_default")]
+    pub endpoint: EndpointDto,
+    /// `"json"` (default) or `"text"`; the raw endpoint also takes `"bytes"`.
+    #[serde(default, skip_serializing_if = "FormatDto::is_default")]
+    pub format: FormatDto,
+    /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// `"indexer"` (default) or `"receipt"`; see `plan::topology::Acknowledgement`.
+    #[serde(default, skip_serializing_if = "AcknowledgementDto::is_default")]
+    pub acknowledgement: AcknowledgementDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(default, skip_serializing_if = "InFlight::is_default")]
+    pub in_flight: InFlight,
+    #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
+    pub max_request_bytes: RequestBytes,
+    /// Unset means the default, or one whole request if that is larger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_bytes: Option<BufferBytes>,
+    /// Seconds one batch may take to deliver, its acknowledgement included, before it is a stall.
+    #[serde(default, skip_serializing_if = "StallAfter::is_default")]
+    pub stall_after_secs: StallAfter,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct S3DestinationDto {
+    pub bucket: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kms_key_id: Option<String>,
+    #[serde(flatten)]
+    pub access: S3AccessDto,
+    #[serde(flatten)]
+    pub objects: ObjectSettingsDto,
+    #[serde(flatten)]
+    pub cloud: CloudSettingsDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GcsDestinationDto {
+    pub bucket: String,
+    #[serde(flatten)]
+    pub access: GcsAccessDto,
+    #[serde(flatten)]
+    pub objects: ObjectSettingsDto,
+    #[serde(flatten)]
+    pub cloud: CloudSettingsDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureBlobDestinationDto {
+    pub container: String,
+    #[serde(flatten)]
+    pub access: AzureAccessDto,
+    #[serde(flatten)]
+    pub objects: ObjectSettingsDto,
+    #[serde(flatten)]
+    pub cloud: CloudSettingsDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpDestinationDto {
+    /// Absolute, or under the user's home directory. Empty is the home directory.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub directory: String,
+    #[serde(flatten)]
+    pub access: SftpAccessDto,
+    #[serde(flatten)]
+    pub objects: ObjectSettingsDto,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpDestinationDto {
+    /// The whole address each request is POSTed to.
+    pub url: String,
+    /// Zone -> the address a worker in that zone sends to instead of `url`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub zone_urls: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "RequestBodyDto::is_default")]
+    pub body: RequestBodyDto,
+    /// `"json"` (default), `"text"` or `"bytes"`; bytes are not a JSON array's element.
+    #[serde(default, skip_serializing_if = "FormatDto::is_default")]
+    pub format: FormatDto,
+    /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// `"none"` (default) or `"gzip"`.
+    #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
+    pub compression: CompressionDto,
+    /// Header name -> its value, committed to the config repository.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Header name -> the credential holding its value.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credentials: BTreeMap<String, SecretRefDto>,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(default, skip_serializing_if = "InFlight::is_default")]
+    pub in_flight: InFlight,
+    #[serde(default, skip_serializing_if = "HttpRequestBytes::is_default")]
+    pub max_request_bytes: HttpRequestBytes,
+    /// Unset means the default, or one whole request if that is larger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_bytes: Option<BufferBytes>,
+    /// Seconds one batch may take to deliver before it is a stall.
+    #[serde(default, skip_serializing_if = "StallAfter::is_default")]
+    pub stall_after_secs: StallAfter,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrometheusDestinationDto {
+    /// The whole address each request is POSTed to.
+    pub url: String,
+    /// `"1.0"` (default) or `"2.0"`.
+    #[serde(default, skip_serializing_if = "RemoteWriteVersionDto::is_default")]
+    pub version: RemoteWriteVersionDto,
+    /// Header name -> its value, committed to the config repository.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Header name -> the credential holding its value.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credentials: BTreeMap<String, SecretRefDto>,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
+    pub max_request_bytes: RequestBytes,
+    /// Unset means the default, or one whole request if that is larger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_bytes: Option<BufferBytes>,
+    /// Seconds one batch may take to deliver before it is a stall.
+    #[serde(default, skip_serializing_if = "StallAfter::is_default")]
+    pub stall_after_secs: StallAfter,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OtlpDestinationDto {
+    /// The endpoint, which each request goes to with its signal's path, `/v1/logs`, `/v1/metrics` or
+    /// `/v1/traces`, after it.
+    pub url: String,
+    /// The signal it sends. Absent is logs.
+    #[serde(default, skip_serializing_if = "is_logs")]
+    pub signal: Signal,
+    /// `"none"` (default) or `"gzip"`.
+    #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
+    pub compression: CompressionDto,
+    /// Header name -> its value, committed to the config repository.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Header name -> the credential holding its value.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credentials: BTreeMap<String, SecretRefDto>,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(default, skip_serializing_if = "InFlight::is_default")]
+    pub in_flight: InFlight,
+    #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
+    pub max_request_bytes: RequestBytes,
+    /// Unset means the default, or one whole request if that is larger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_bytes: Option<BufferBytes>,
+    /// Seconds one batch may take to deliver before it is a stall.
+    #[serde(default, skip_serializing_if = "StallAfter::is_default")]
+    pub stall_after_secs: StallAfter,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogAnalyticsDestinationDto {
+    /// The rule's logs ingestion endpoint, or the data collection endpoint it is linked to.
+    pub endpoint: String,
+    /// The rule's immutable id, `dcr-` and 32 hex digits.
+    pub rule_id: String,
+    /// The rule's stream the rows go to, such as `Custom-Events_CL`.
+    pub stream: String,
+    #[serde(flatten)]
+    pub sign_in: EntraSignInDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    #[serde(default, skip_serializing_if = "InFlight::is_default")]
+    pub in_flight: InFlight,
+    #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
+    pub max_request_bytes: RequestBytes,
+    /// Unset means the default, or one whole request if that is larger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_bytes: Option<BufferBytes>,
+    /// Seconds one batch may take to deliver before it is a stall.
+    #[serde(default, skip_serializing_if = "StallAfter::is_default")]
+    pub stall_after_secs: StallAfter,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IcebergDestinationDto {
+    /// The catalog's base address, before `/v1`.
+    pub catalog: String,
+    /// Absent is the catalog's default warehouse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warehouse: Option<String>,
+    /// The table's namespace, its levels joined by `.`.
+    pub namespace: String,
+    pub table: String,
+    /// The partition spec a created table takes: `host`, `day(ts)`, `bucket(16, id)`, `truncate(4, name)`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub partition_by: Vec<String>,
+    /// A bearer token for the catalog. At most one of `token` and `clientId`; neither signs in as no one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SecretRefDto>,
+    /// OAuth client credentials: `clientId` and `clientSecret` together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<SecretRefDto>,
+    /// Where client credentials are exchanged for a token. Absent is the catalog's own `/v1/oauth/tokens`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Signs every catalog call with AWS Signature Version 4 for this service, `glue` or `s3tables`, with the AWS
+    /// credentials storage names, else the host's, for the region the catalog's AWS address names, else `region`.
+    /// In place of `token` and `clientId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_name: Option<String>,
+    /// Storage credentials of its own. None of its fields set uses what the catalog vends.
+    #[serde(flatten)]
+    pub access: S3AccessDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    /// Absent is zstd.
+    #[serde(default = "CompressionDto::zstd", skip_serializing_if = "CompressionDto::is_zstd")]
+    pub compression: CompressionDto,
+    /// Parts of one file uploading at once.
+    #[serde(default, skip_serializing_if = "InFlight::is_default")]
+    pub in_flight: InFlight,
+    #[serde(default, skip_serializing_if = "ObjectBytes::is_default")]
+    pub max_object_bytes: ObjectBytes,
+    /// Memory for records not yet committed. Unset is `BufferBytes::OBJECT_DEFAULT`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_bytes: Option<BufferBytes>,
+    /// Seconds one store or catalog call, or one commit, may take before it is a stall.
+    #[serde(default, skip_serializing_if = "StallAfter::is_default")]
+    pub stall_after_secs: StallAfter,
+    /// Seconds files stay open before they are committed and their batches acknowledged.
+    #[serde(default, skip_serializing_if = "FileInterval::is_default")]
+    pub file_interval_secs: FileInterval,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeltaDestinationDto {
+    /// The table's root, `s3://bucket/path`. Exactly one of `location` and `unityCatalog`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// A Unity Catalog external table, whose root and storage credentials the catalog gives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unity_catalog: Option<UnityCatalogDto>,
+    /// The columns a created table is partitioned by, each a top-level column of the record.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub partition_by: Vec<String>,
+    /// How the bucket is reached and signed for. None of its fields set takes the host's.
+    #[serde(flatten)]
+    pub access: S3AccessDto,
+    #[serde(flatten)]
+    pub tls: TlsDto,
+    /// Absent is zstd.
+    #[serde(default = "CompressionDto::zstd", skip_serializing_if = "CompressionDto::is_zstd")]
+    pub compression: CompressionDto,
+    /// Parts of one file uploading at once.
+    #[serde(default, skip_serializing_if = "InFlight::is_default")]
+    pub in_flight: InFlight,
+    #[serde(default, skip_serializing_if = "ObjectBytes::is_default")]
+    pub max_object_bytes: ObjectBytes,
+    /// Memory for records not yet committed. Unset is `BufferBytes::OBJECT_DEFAULT`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_bytes: Option<BufferBytes>,
+    /// Seconds one store call, or one commit, may take before it is a stall.
+    #[serde(default, skip_serializing_if = "StallAfter::is_default")]
+    pub stall_after_secs: StallAfter,
+    /// Seconds files stay open before they are committed and their batches acknowledged.
+    #[serde(default, skip_serializing_if = "FileInterval::is_default")]
+    pub file_interval_secs: FileInterval,
+    #[serde(flatten, default)]
+    pub unknown: NoUnknownKeys,
 }
 
 impl SourceKindDto {
@@ -1888,7 +2107,8 @@ impl SourceKindDto {
     pub fn leaves_fetch(&self) -> bool {
         matches!(
             self,
-            SourceKindDto::Kafka { fetch_bytes: None, .. } | SourceKindDto::EventHubs { fetch_bytes: None, .. }
+            SourceKindDto::Kafka(KafkaSourceDto { fetch_bytes: None, .. })
+                | SourceKindDto::EventHubs(EventHubsSourceDto { fetch_bytes: None, .. })
         )
     }
 }
@@ -1897,20 +2117,20 @@ impl DestinationKindDto {
     /// Whether the bundle states this destination's `bufferBytes`. One it leaves out the worker sizes to its memory.
     pub fn states_buffer(&self) -> bool {
         match self {
-            DestinationKindDto::Kafka { buffer_bytes, .. }
-            | DestinationKindDto::EventHubs { buffer_bytes, .. }
-            | DestinationKindDto::Elasticsearch { buffer_bytes, .. }
-            | DestinationKindDto::SplunkHec { buffer_bytes, .. }
-            | DestinationKindDto::Http { buffer_bytes, .. }
-            | DestinationKindDto::Prometheus { buffer_bytes, .. }
-            | DestinationKindDto::Otlp { buffer_bytes, .. }
-            | DestinationKindDto::LogAnalytics { buffer_bytes, .. }
-            | DestinationKindDto::Iceberg { buffer_bytes, .. }
-            | DestinationKindDto::Delta { buffer_bytes, .. } => buffer_bytes.is_some(),
-            DestinationKindDto::S3 { objects, .. }
-            | DestinationKindDto::Gcs { objects, .. }
-            | DestinationKindDto::AzureBlob { objects, .. }
-            | DestinationKindDto::Sftp { objects, .. } => objects.buffer_bytes.is_some(),
+            DestinationKindDto::Kafka(KafkaDestinationDto { buffer_bytes, .. })
+            | DestinationKindDto::EventHubs(EventHubsDestinationDto { buffer_bytes, .. })
+            | DestinationKindDto::Elasticsearch(ElasticsearchDestinationDto { buffer_bytes, .. })
+            | DestinationKindDto::SplunkHec(SplunkHecDestinationDto { buffer_bytes, .. })
+            | DestinationKindDto::Http(HttpDestinationDto { buffer_bytes, .. })
+            | DestinationKindDto::Prometheus(PrometheusDestinationDto { buffer_bytes, .. })
+            | DestinationKindDto::Otlp(OtlpDestinationDto { buffer_bytes, .. })
+            | DestinationKindDto::LogAnalytics(LogAnalyticsDestinationDto { buffer_bytes, .. })
+            | DestinationKindDto::Iceberg(IcebergDestinationDto { buffer_bytes, .. })
+            | DestinationKindDto::Delta(DeltaDestinationDto { buffer_bytes, .. }) => buffer_bytes.is_some(),
+            DestinationKindDto::S3(S3DestinationDto { objects, .. })
+            | DestinationKindDto::Gcs(GcsDestinationDto { objects, .. })
+            | DestinationKindDto::AzureBlob(AzureBlobDestinationDto { objects, .. })
+            | DestinationKindDto::Sftp(SftpDestinationDto { objects, .. }) => objects.buffer_bytes.is_some(),
         }
     }
 }

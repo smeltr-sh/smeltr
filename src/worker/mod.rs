@@ -6614,7 +6614,8 @@ mod tests {
             destination: None,
             source: Some(crate::config_file::SourceDto {
                 id: "orders".to_string(),
-                kind: crate::config_file::SourceKindDto::Kafka {
+                kind: crate::config_file::SourceKindDto::Kafka(crate::config_file::KafkaSourceDto {
+                    unknown: Default::default(),
                     schema_registry: None,
                     read: Default::default(),
                     brokers: "b1:9092".to_string(),
@@ -6626,7 +6627,7 @@ mod tests {
                     fetch_bytes: Default::default(),
                     encoding: Default::default(),
                     props: Default::default(),
-                },
+                }),
             }),
             filter: None,
             start: None,
@@ -6835,7 +6836,8 @@ mod tests {
             destination: None,
             source: Some(crate::config_file::SourceDto {
                 id: "orders".to_string(),
-                kind: crate::config_file::SourceKindDto::Kafka {
+                kind: crate::config_file::SourceKindDto::Kafka(crate::config_file::KafkaSourceDto {
+                    unknown: Default::default(),
                     schema_registry: None,
                     read: Default::default(),
                     brokers: "b1:9092".to_string(),
@@ -6847,7 +6849,7 @@ mod tests {
                     fetch_bytes: Default::default(),
                     encoding: Default::default(),
                     props: Default::default(),
-                },
+                }),
             }),
             filter: None,
             start: None,

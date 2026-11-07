@@ -2461,6 +2461,7 @@ fn refuse_worse_read(writing: &Writing, edits: &[git::FileEdit]) -> Result<(), E
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smeltr::config_file::MetricsSourceDto;
     use std::path::PathBuf;
 
     /// The shape the GUI places a save's error by (`api.ts`, `ApiError`).
@@ -2838,7 +2839,7 @@ mod tests {
             |file| {
                 file.sources.push(SourceDto {
                     id: "source-a".into(),
-                    kind: config_file::SourceKindDto::Metrics { bucket_seconds: 10 },
+                    kind: config_file::SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds: 10 }),
                 });
                 file.routes.push(route);
             },
@@ -2890,7 +2891,7 @@ mod tests {
             |file| {
                 file.sources = vec![SourceDto {
                     id: "source-1".to_string(),
-                    kind: config_file::SourceKindDto::Metrics { bucket_seconds: 10 },
+                    kind: config_file::SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds: 10 }),
                 }]
             },
         );
@@ -2927,7 +2928,7 @@ mod tests {
             |file| {
                 file.sources = vec![SourceDto {
                     id: "source-1".to_string(),
-                    kind: config_file::SourceKindDto::Metrics { bucket_seconds: 10 },
+                    kind: config_file::SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds: 10 }),
                 }]
             },
         );
@@ -2983,7 +2984,7 @@ mod tests {
         save(Touches::Sources, &|file| {
             file.sources = vec![SourceDto {
                 id: "source-1".to_string(),
-                kind: config_file::SourceKindDto::Metrics { bucket_seconds: 10 },
+                kind: config_file::SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds: 10 }),
             }]
         });
         save(Touches::OnlyPipelines, &|file| {
@@ -3138,7 +3139,7 @@ mod tests {
             "sources.json",
             serde_json::to_vec(&vec![SourceDto {
                 id: "fleet-audit".to_string(),
-                kind: config_file::SourceKindDto::Metrics { bucket_seconds: 10 },
+                kind: config_file::SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds: 10 }),
             }])
             .unwrap(),
         );
@@ -3253,7 +3254,7 @@ mod tests {
             "sources.json",
             serde_json::to_vec(&vec![SourceDto {
                 id: "fleet-audit".to_string(),
-                kind: config_file::SourceKindDto::Metrics { bucket_seconds: 10 },
+                kind: config_file::SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds: 10 }),
             }])
             .unwrap(),
             "a source every group draws on",
@@ -3323,7 +3324,7 @@ mod tests {
         let source = |id: &str| {
             serde_json::to_vec(&vec![SourceDto {
                 id: id.to_string(),
-                kind: config_file::SourceKindDto::Metrics { bucket_seconds: 10 },
+                kind: config_file::SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds: 10 }),
             }])
             .unwrap()
         };
@@ -4073,7 +4074,7 @@ mod tests {
     fn a_source(id: &str) -> SourceDto {
         SourceDto {
             id: id.to_string(),
-            kind: config_file::SourceKindDto::Metrics { bucket_seconds: 10 },
+            kind: config_file::SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds: 10 }),
         }
     }
 

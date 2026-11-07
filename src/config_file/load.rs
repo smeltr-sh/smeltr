@@ -818,7 +818,7 @@ const DEFAULT_GROUP_ID: &str = "smeltr";
 /// every worker group that runs it.
 pub fn fill_default_group_ids(sources: &mut [SourceDto], worker_group: &str) {
     for s in sources {
-        if let SourceKindDto::Kafka { group_id, .. } = &mut s.kind
+        if let SourceKindDto::Kafka(KafkaSourceDto { group_id, .. }) = &mut s.kind
             && group_id.trim().is_empty()
         {
             *group_id = format!("{DEFAULT_GROUP_ID}.{worker_group}");
@@ -873,7 +873,8 @@ pub fn sql_connection(source: &SourceDto) -> Option<crate::plan::topology::SqlDa
 fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
     let of = format!("source {:?}", dto.id);
     let mut kind = match &dto.kind {
-        SourceKindDto::Kafka {
+        SourceKindDto::Kafka(KafkaSourceDto {
+            unknown: _,
             brokers,
             topics,
             group_id,
@@ -885,7 +886,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             schema_registry: _,
             read: _,
             props,
-        } => SourceKind::Kafka(KafkaSourceConfig {
+        }) => SourceKind::Kafka(KafkaSourceConfig {
             tls: to_tls(tls, &of, Side::Client),
             fetch_bytes: fetch_bytes.map_or(FetchBytes::DEFAULT, |f| f.0),
             // Validation refused an unknown label before any of this ran, so the fallback is unreachable.
@@ -907,7 +908,8 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             service: KafkaService::Kafka,
             avro: None,
         }),
-        SourceKindDto::EventHubs {
+        SourceKindDto::EventHubs(EventHubsSourceDto {
+            unknown: _,
             namespace,
             event_hubs,
             consumer_group,
@@ -919,7 +921,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             encoding,
             schema_registry: _,
             read: _,
-        } => {
+        }) => {
             let brokers = event_hubs_brokers(namespace);
             SourceKind::Kafka(KafkaSourceConfig {
                 tls: None,
@@ -939,14 +941,15 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
                 avro: None,
             })
         }
-        SourceKindDto::Metrics { bucket_seconds } => SourceKind::Metrics(MetricsSourceConfig {
+        SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds }) => SourceKind::Metrics(MetricsSourceConfig {
             bucket: Duration::from_secs(*bucket_seconds),
         }),
         // Validation refused an unknown label before any of this ran, so the fallback is unreachable.
-        SourceKindDto::Logs { min_level } => SourceKind::Logs(LogsSourceConfig {
+        SourceKindDto::Logs(LogsSourceDto { min_level }) => SourceKind::Logs(LogsSourceConfig {
             min_level: crate::logs::level_for_label(&min_level.0).unwrap_or(tracing::Level::INFO),
         }),
-        SourceKindDto::S3Sqs {
+        SourceKindDto::S3Sqs(S3SqsSourceDto {
+            unknown: _,
             queue_url,
             access,
             tls,
@@ -954,7 +957,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             encoding,
             read: _,
             visibility_secs,
-        } => SourceKind::Objects(ObjectSourceConfig {
+        }) => SourceKind::Objects(ObjectSourceConfig {
             queue: ObjectQueue::Sqs {
                 queue_url: queue_url.trim().to_string(),
                 access: to_s3_access(access),
@@ -966,7 +969,8 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             avro: None,
             visibility: Duration::from_secs(visibility_secs.0),
         }),
-        SourceKindDto::S3List {
+        SourceKindDto::S3List(S3ListSourceDto {
+            unknown: _,
             bucket,
             prefix,
             access,
@@ -978,7 +982,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             start,
             after_commit,
             move_prefix,
-        } => listed(
+        }) => listed(
             to_list(
                 ListPlace::S3 {
                     bucket: bucket.trim().to_string(),
@@ -994,7 +998,8 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             framing,
             encoding,
         ),
-        SourceKindDto::GcsList {
+        SourceKindDto::GcsList(GcsListSourceDto {
+            unknown: _,
             bucket,
             prefix,
             access,
@@ -1006,7 +1011,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             start,
             after_commit,
             move_prefix,
-        } => listed(
+        }) => listed(
             to_list(
                 ListPlace::Gcs(GcsStore {
                     bucket: bucket.trim().to_string(),
@@ -1022,7 +1027,8 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             framing,
             encoding,
         ),
-        SourceKindDto::AzureBlobList {
+        SourceKindDto::AzureBlobList(AzureBlobListSourceDto {
+            unknown: _,
             container,
             prefix,
             access,
@@ -1034,7 +1040,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             start,
             after_commit,
             move_prefix,
-        } => listed(
+        }) => listed(
             to_list(
                 ListPlace::Azure(AzureStore {
                     container: container.trim().to_string(),
@@ -1050,7 +1056,8 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             framing,
             encoding,
         ),
-        SourceKindDto::Sftp {
+        SourceKindDto::Sftp(SftpSourceDto {
+            unknown: _,
             directory,
             prefix,
             access,
@@ -1061,7 +1068,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             start,
             after_commit,
             move_prefix,
-        } => listed(
+        }) => listed(
             to_list(
                 ListPlace::Sftp(SftpStore {
                     directory: sftp_directory(directory),
@@ -1077,7 +1084,8 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             framing,
             encoding,
         ),
-        SourceKindDto::HttpApi {
+        SourceKindDto::HttpApi(HttpApiSourceDto {
+            unknown: _,
             url,
             method,
             body,
@@ -1092,7 +1100,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             poll_interval_secs,
             start,
             sign_in,
-        } => SourceKind::Api(crate::plan::topology::ApiSourceConfig {
+        }) => SourceKind::Api(crate::plan::topology::ApiSourceConfig {
             api: crate::plan::topology::Api::HttpApi(crate::plan::topology::HttpApiConfig {
                 url: url.trim().to_string(),
                 method: match method {
@@ -1121,7 +1129,8 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             tls: to_tls(tls, &of, Side::Client),
             poll_interval: Duration::from_secs(poll_interval_secs.0),
         }),
-        SourceKindDto::OktaLogs {
+        SourceKindDto::OktaLogs(OktaLogsSourceDto {
+            unknown: _,
             org,
             token,
             client_id,
@@ -1130,7 +1139,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             tls,
             poll_interval_secs,
             start,
-        } => SourceKind::Api(crate::plan::topology::ApiSourceConfig {
+        }) => SourceKind::Api(crate::plan::topology::ApiSourceConfig {
             api: crate::plan::topology::Api::OktaLogs(crate::plan::topology::OktaLogsConfig {
                 org: org.trim().trim_end_matches('/').to_string(),
                 sign_in: match (token, client_id, private_key) {
@@ -1173,7 +1182,8 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
                 database,
             ))
         }
-        SourceKindDto::HttpReceiver {
+        SourceKindDto::HttpReceiver(HttpReceiverSourceDto {
+            unknown: _,
             listener,
             connections,
             tls,
@@ -1182,7 +1192,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             records,
             records_at,
             answer_after_delivery,
-        } => receiver_config(
+        }) => receiver_config(
             crate::plan::topology::Receiver::Http(crate::plan::topology::HttpReceiverConfig {
                 path: path.clone(),
                 records: match records {
@@ -1198,14 +1208,15 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             to_connection_limits(connections),
             &of,
         ),
-        SourceKindDto::OtlpReceiver {
+        SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto {
+            unknown: _,
             listener,
             connections,
             tls,
             signal,
             tokens,
             answer_after_delivery,
-        } => receiver_config(
+        }) => receiver_config(
             crate::plan::topology::Receiver::Otlp(*signal),
             *answer_after_delivery,
             listener,
@@ -1214,13 +1225,14 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             to_connection_limits(connections),
             &of,
         ),
-        SourceKindDto::PrometheusReceiver {
+        SourceKindDto::PrometheusReceiver(PrometheusReceiverSourceDto {
+            unknown: _,
             listener,
             connections,
             tls,
             tokens,
             answer_after_delivery,
-        } => receiver_config(
+        }) => receiver_config(
             crate::plan::topology::Receiver::Prometheus,
             *answer_after_delivery,
             listener,
@@ -1229,13 +1241,14 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             to_connection_limits(connections),
             &of,
         ),
-        SourceKindDto::ElasticReceiver {
+        SourceKindDto::ElasticReceiver(ElasticReceiverSourceDto {
+            unknown: _,
             listener,
             connections,
             tls,
             tokens,
             answer_after_delivery,
-        } => receiver_config(
+        }) => receiver_config(
             crate::plan::topology::Receiver::Elastic,
             *answer_after_delivery,
             listener,
@@ -1244,14 +1257,15 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             to_connection_limits(connections),
             &of,
         ),
-        SourceKindDto::HecReceiver {
+        SourceKindDto::HecReceiver(HecReceiverSourceDto {
+            unknown: _,
             listener,
             connections,
             tls,
             tokens,
             sourcetypes,
             answer_after_delivery,
-        } => receiver_config(
+        }) => receiver_config(
             crate::plan::topology::Receiver::Hec(crate::plan::topology::HecReceiverConfig {
                 acknowledging: tokens
                     .iter()
@@ -1267,13 +1281,14 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             to_connection_limits(connections),
             &of,
         ),
-        SourceKindDto::S2sReceiver {
+        SourceKindDto::S2sReceiver(S2sReceiverSourceDto {
+            unknown: _,
             listener,
             connections,
             tls,
             tokens,
             sourcetypes,
-        } => receiver_config(
+        }) => receiver_config(
             crate::plan::topology::Receiver::S2s(crate::plan::topology::S2sReceiverConfig {
                 sourcetypes: to_line_breakers(sourcetypes),
             }),
@@ -1284,7 +1299,8 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             to_connection_limits(connections),
             &of,
         ),
-        SourceKindDto::SyslogReceiver {
+        SourceKindDto::SyslogReceiver(SyslogReceiverSourceDto {
+            unknown: _,
             listener,
             connections,
             tls,
@@ -1292,7 +1308,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             encoding,
             transport,
             line_breaker,
-        } => receiver_config(
+        }) => receiver_config(
             crate::plan::topology::Receiver::Syslog(crate::plan::topology::SocketReceiverConfig {
                 // Validation refused a block that does not parse, or a label that names no encoding, before any of
                 // this ran.
@@ -1308,7 +1324,8 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             to_connection_limits(connections),
             &of,
         ),
-        SourceKindDto::SocketReceiver {
+        SourceKindDto::SocketReceiver(SocketReceiverSourceDto {
+            unknown: _,
             listener,
             connections,
             tls,
@@ -1316,7 +1333,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             encoding,
             transport,
             framing,
-        } => receiver_config(
+        }) => receiver_config(
             crate::plan::topology::Receiver::Socket(crate::plan::topology::SocketReceiverConfig {
                 // Validation refused a block that does not parse, or a label that names no encoding, before any of
                 // this ran.
@@ -1332,7 +1349,8 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             to_connection_limits(connections),
             &of,
         ),
-        SourceKindDto::AzureBlobQueue {
+        SourceKindDto::AzureBlobQueue(AzureBlobQueueSourceDto {
+            unknown: _,
             queue_url,
             access,
             tls,
@@ -1341,7 +1359,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             read: _,
             visibility_secs,
             max_deliveries,
-        } => SourceKind::Objects(ObjectSourceConfig {
+        }) => SourceKind::Objects(ObjectSourceConfig {
             queue: ObjectQueue::StorageQueue {
                 queue_url: queue_url.clone(),
                 access: to_azure_access(access),
@@ -1354,7 +1372,8 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             avro: None,
             visibility: Duration::from_secs(visibility_secs.0),
         }),
-        SourceKindDto::GcsPubSub {
+        SourceKindDto::GcsPubSub(GcsPubSubSourceDto {
+            unknown: _,
             subscription,
             pubsub_endpoint,
             access,
@@ -1363,7 +1382,7 @@ fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
             encoding,
             read: _,
             visibility_secs,
-        } => SourceKind::Objects(ObjectSourceConfig {
+        }) => SourceKind::Objects(ObjectSourceConfig {
             queue: ObjectQueue::PubSub {
                 subscription: subscription.trim().to_string(),
                 endpoint: pubsub_endpoint.clone(),
@@ -2329,18 +2348,18 @@ fn check_group_topics(file: &FileConfig, attributed: &mut Vec<ValidationError>) 
     let mut readers: HashMap<(&str, &str), Vec<Reader<'_>>> = HashMap::new();
     for s in &file.sources {
         let (brokers, group, topics, field) = match &s.kind {
-            SourceKindDto::Kafka {
+            SourceKindDto::Kafka(KafkaSourceDto {
                 brokers,
                 group_id,
                 topics,
                 ..
-            } => (brokers.clone(), group_id, topics, "topics"),
-            SourceKindDto::EventHubs {
+            }) => (brokers.clone(), group_id, topics, "topics"),
+            SourceKindDto::EventHubs(EventHubsSourceDto {
                 namespace,
                 consumer_group,
                 event_hubs,
                 ..
-            } => (event_hubs_brokers(namespace), consumer_group, event_hubs, "eventHubs"),
+            }) => (event_hubs_brokers(namespace), consumer_group, event_hubs, "eventHubs"),
             _ => continue,
         };
         let cluster = cluster_of(&brokers);
@@ -2476,15 +2495,15 @@ fn check_read(kind: &SourceKindDto, id: &str, errors: &mut ItemErrors<'_>) {
     use crate::config_file::dto::SourceFormatDto;
     let Some(read) = kind.read() else { return };
     let what = format!("source {id:?}");
-    let stream = matches!(kind, SourceKindDto::Kafka { .. } | SourceKindDto::EventHubs { .. });
+    let stream = matches!(kind, SourceKindDto::Kafka(_) | SourceKindDto::EventHubs(_));
     let framing = match kind {
-        SourceKindDto::S3Sqs { framing, .. }
-        | SourceKindDto::S3List { framing, .. }
-        | SourceKindDto::GcsList { framing, .. }
-        | SourceKindDto::AzureBlobList { framing, .. }
-        | SourceKindDto::Sftp { framing, .. }
-        | SourceKindDto::AzureBlobQueue { framing, .. }
-        | SourceKindDto::GcsPubSub { framing, .. } => Some(framing),
+        SourceKindDto::S3Sqs(S3SqsSourceDto { framing, .. })
+        | SourceKindDto::S3List(S3ListSourceDto { framing, .. })
+        | SourceKindDto::GcsList(GcsListSourceDto { framing, .. })
+        | SourceKindDto::AzureBlobList(AzureBlobListSourceDto { framing, .. })
+        | SourceKindDto::Sftp(SftpSourceDto { framing, .. })
+        | SourceKindDto::AzureBlobQueue(AzureBlobQueueSourceDto { framing, .. })
+        | SourceKindDto::GcsPubSub(GcsPubSubSourceDto { framing, .. }) => Some(framing),
         _ => None,
     };
     if let Some(registry) = kind.schema_registry() {
@@ -2942,9 +2961,11 @@ pub fn plain_off_this_host(url: &str) -> bool {
 /// Every field with no workable default, and every bounded value. About emptiness and range, not reachability: a broker
 /// that is down is a runtime concern, or a restart would depend on everything else being up. Whitespace counts as
 /// empty.
-fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
-    let blank = |v: &str| v.trim().is_empty();
+fn blank(v: &str) -> bool {
+    v.trim().is_empty()
+}
 
+fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
     check_receiver_ports(file, attributed);
 
     let with_tls = (file
@@ -3004,408 +3025,46 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
         let errors = &mut ItemErrors::new(attributed, "sources", &s.id);
         check_read(&s.kind, &s.id, errors);
         match &s.kind {
-            SourceKindDto::Kafka {
-                brokers,
-                topics,
-                tls,
-                fetch_bytes,
-                encoding,
-                props,
-                ..
-            } => {
-                check_kafka_tls(tls, props, &format!("source {:?}", s.id), errors);
-                check_encoding(encoding, &s.id, errors);
-                validate_kafka_props(props, &format!("source {:?}", s.id), errors);
-                check_fetch_bytes(*fetch_bytes, &s.id, errors);
-                if blank(brokers) {
-                    errors.at("brokers").push(format!("source {:?} has no brokers", s.id));
-                }
-                if topics.iter().all(|t| blank(t)) {
-                    errors
-                        .at("topics")
-                        .push(format!("source {:?} subscribes to no topics", s.id));
-                }
-                for topic in topics {
-                    if let Some(Err(e)) = crate::io::kafka::topic_pattern(topic) {
-                        errors.at("topics").push(format!(
-                            "source {:?} names the topic pattern {topic:?}, which does not compile: {e}",
-                            s.id
-                        ));
-                    }
-                }
-            }
-            SourceKindDto::EventHubs {
-                namespace,
-                event_hubs,
-                consumer_group,
-                connection_string,
-                sign_in,
-                fetch_bytes,
-                encoding,
-                ..
-            } => {
-                check_encoding(encoding, &s.id, errors);
-                check_fetch_bytes(*fetch_bytes, &s.id, errors);
-                check_event_hubs_namespace(namespace, &format!("source {:?}", s.id), errors);
-                check_event_hubs_sign_in(
-                    connection_string.as_ref(),
-                    sign_in,
-                    &format!("source {:?}", s.id),
-                    errors,
-                );
-                if event_hubs.iter().all(|h| blank(h)) {
-                    errors
-                        .at("eventHubs")
-                        .push(format!("source {:?} reads no event hubs", s.id));
-                }
-                for hub in event_hubs.iter().filter(|h| h.starts_with('^')) {
-                    errors.at("eventHubs").push(format!(
-                        "source {:?} names {hub:?}; an event hub is named in full, not by a pattern",
-                        s.id
-                    ));
-                }
-                if blank(consumer_group) {
-                    errors.at("consumerGroup").push(format!(
-                        "source {:?} has no consumer group -- it is the group every event hub above is read \
-                         under",
-                        s.id
-                    ));
-                }
-            }
-            SourceKindDto::Metrics { bucket_seconds } => {
-                if *bucket_seconds == 0 {
-                    errors.at("bucketSeconds").push(format!(
-                        "source {:?} drains its bucket every 0 seconds; bucketSeconds is at least 1, since \
-                         waiting out the bucket is what paces its reader",
-                        s.id
-                    ));
-                }
-            }
-            SourceKindDto::Logs { min_level } => {
-                if crate::logs::level_for_label(&min_level.0).is_none() {
-                    errors.at("minLevel").push(format!(
-                        "source {:?} carries logs from {:?} down; it must be one of {}",
-                        s.id,
-                        min_level.0,
-                        crate::logs::LEVEL_LABELS.join(", ")
-                    ));
-                }
-            }
-            SourceKindDto::S3Sqs {
-                queue_url,
-                access,
-                tls,
-                encoding,
-                framing,
-                visibility_secs,
-                ..
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_tls_reaches(tls, &s.urls(), &what, errors);
-                check_s3_access(access, &what, errors);
-                check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-                check_queue(queue_url, *visibility_secs, &what, errors);
-            }
-            SourceKindDto::S3List {
-                bucket,
-                prefix,
-                access,
-                tls,
-                encoding,
-                framing,
-                poll_interval_secs,
-                start,
-                after_commit,
-                move_prefix,
-                ..
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_tls_reaches(tls, &s.urls(), &what, errors);
-                check_s3_access(access, &what, errors);
-                check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-                check_bucket_name(bucket, &what, errors);
-                check_listing(
-                    prefix,
-                    *poll_interval_secs,
-                    *start,
-                    *after_commit,
-                    move_prefix,
-                    &what,
-                    errors,
-                );
-            }
-            SourceKindDto::GcsList {
-                bucket,
-                prefix,
-                access,
-                tls,
-                encoding,
-                framing,
-                poll_interval_secs,
-                start,
-                after_commit,
-                move_prefix,
-                ..
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_tls_reaches(tls, &s.urls(), &what, errors);
-                check_endpoint(access.endpoint.as_deref(), "endpoint", &what, errors);
-                check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-                if bucket.trim().is_empty() {
-                    errors.at("bucket").push(format!("{what} names no bucket"));
-                }
-                check_listing(
-                    prefix,
-                    *poll_interval_secs,
-                    *start,
-                    *after_commit,
-                    move_prefix,
-                    &what,
-                    errors,
-                );
-            }
-            SourceKindDto::AzureBlobList {
-                container,
-                prefix,
-                access,
-                tls,
-                encoding,
-                framing,
-                poll_interval_secs,
-                start,
-                after_commit,
-                move_prefix,
-                ..
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_tls_reaches(tls, &s.urls(), &what, errors);
-                check_azure_access(access, &what, errors);
-                check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-                if container.trim().is_empty() {
-                    errors.at("container").push(format!("{what} names no container"));
-                }
-                check_listing(
-                    prefix,
-                    *poll_interval_secs,
-                    *start,
-                    *after_commit,
-                    move_prefix,
-                    &what,
-                    errors,
-                );
-            }
-            SourceKindDto::Sftp {
-                prefix,
-                access,
-                encoding,
-                framing,
-                poll_interval_secs,
-                start,
-                after_commit,
-                move_prefix,
-                ..
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_sftp_access(access, &what, errors);
-                check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-                check_listing(
-                    prefix,
-                    *poll_interval_secs,
-                    *start,
-                    *after_commit,
-                    move_prefix,
-                    &what,
-                    errors,
-                );
-            }
-            SourceKindDto::HttpApi {
-                url,
-                method,
-                body,
-                headers,
-                credentials,
-                tls,
-                records,
-                records_at,
-                since_param,
-                since_overlap_secs,
-                poll_interval_secs,
-                start,
-                sign_in,
-                ..
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_api_source(&what, ("url", url), tls, *poll_interval_secs, errors);
-                check_http_headers(&what, headers, credentials, SOURCE_HEADERS, "for every request", errors);
-                check_app_sign_in(&what, sign_in, headers, credentials, errors);
-                check_records_at(&what, *records, records_at, errors);
-                if body.is_some() && *method != ApiMethodDto::Post {
-                    errors
-                        .at("body")
-                        .push(format!("{what} sends a body only with a POST; set method to \"POST\""));
-                }
-                match since_param {
-                    Some(param) if param.is_empty() || !param.bytes().all(is_query_name_byte) => {
-                        errors.at("sinceParam").push(format!(
-                            "{what} names the query parameter {param:?}; a name is letters, digits and -._~[] only"
-                        ))
-                    }
-                    Some(param)
-                        if reqwest::Url::parse(url.trim())
-                            .is_ok_and(|u| u.query_pairs().any(|(name, _)| name == param.as_str())) =>
-                    {
-                        errors.at("sinceParam").push(format!(
-                            "{what} asks for {param:?} in its URL already, and sinceParam adds it on every poll; \
-                             take it out of the URL"
-                        ))
-                    }
-                    Some(_) => {}
-                    None => {
-                        if *since_overlap_secs != 0 {
-                            errors.at("sinceOverlapSecs").push(format!(
-                                "{what} sets an overlap and no sinceParam; the overlap is how far back sinceParam \
-                                 asks from"
-                            ));
-                        }
-                        if *start != ListStartDto::Everything {
-                            errors.at("start").push(format!(
-                                "{what} starts at new records and has no sinceParam to ask for them with; with \
-                                 none, every poll reads everything"
-                            ));
-                        }
-                    }
-                }
-            }
-            SourceKindDto::HttpReceiver {
-                listener,
-                connections,
-                tls,
-                path,
-                tokens,
-                records,
-                records_at,
-                ..
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_receiver(&what, listener, tls, tokens, errors);
-                check_connection_limits(&what, connections, true, errors);
-                check_records_at(&what, *records, records_at, errors);
-                if !path.starts_with('/')
-                    || path.contains(['?', '#', ':', '*'])
-                    || path.chars().any(char::is_whitespace)
-                {
-                    errors.at("path").push(format!(
-                        "{what} takes requests at {path:?}; a path starts with / and holds no ?, #, :, * or space"
-                    ));
-                } else if path == crate::io::receiver::HEALTH_PATH {
-                    errors.at("path").push(format!(
-                        "{what} takes requests at {path:?}, which is where it answers health checks; give it another \
-                         path"
-                    ));
-                }
-            }
-            SourceKindDto::HecReceiver {
-                listener,
-                connections,
-                tls,
-                tokens,
-                sourcetypes,
-                ..
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_receiver(&what, listener, tls, tokens, errors);
-                check_connection_limits(&what, connections, true, errors);
-                check_sourcetypes(&s.id, sourcetypes, errors);
-            }
-            SourceKindDto::S2sReceiver {
-                listener,
-                connections,
-                tls,
-                tokens,
-                sourcetypes,
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_receiver(&what, listener, tls, tokens, errors);
-                check_connection_limits(&what, connections, true, errors);
-                check_sourcetypes(&s.id, sourcetypes, errors);
-            }
-            SourceKindDto::OtlpReceiver {
+            SourceKindDto::Kafka(k) => k.check(s, errors),
+            SourceKindDto::EventHubs(k) => k.check(s, errors),
+            SourceKindDto::Metrics(k) => k.check(s, errors),
+            SourceKindDto::Logs(k) => k.check(s, errors),
+            SourceKindDto::S3Sqs(k) => k.check(s, errors),
+            SourceKindDto::S3List(k) => k.check(s, errors),
+            SourceKindDto::GcsList(k) => k.check(s, errors),
+            SourceKindDto::AzureBlobList(k) => k.check(s, errors),
+            SourceKindDto::Sftp(k) => k.check(s, errors),
+            SourceKindDto::HttpApi(k) => k.check(s, errors),
+            SourceKindDto::HttpReceiver(k) => k.check(s, errors),
+            SourceKindDto::HecReceiver(k) => k.check(s, errors),
+            SourceKindDto::S2sReceiver(k) => k.check(s, errors),
+            SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto {
                 listener,
                 connections,
                 tls,
                 tokens,
                 ..
-            }
-            | SourceKindDto::PrometheusReceiver {
+            })
+            | SourceKindDto::PrometheusReceiver(PrometheusReceiverSourceDto {
                 listener,
                 connections,
                 tls,
                 tokens,
                 ..
-            }
-            | SourceKindDto::ElasticReceiver {
+            })
+            | SourceKindDto::ElasticReceiver(ElasticReceiverSourceDto {
                 listener,
                 connections,
                 tls,
                 tokens,
                 ..
-            } => {
+            }) => {
                 let what = format!("source {:?}", s.id);
                 check_receiver(&what, listener, tls, tokens, errors);
                 check_connection_limits(&what, connections, true, errors);
             }
-            SourceKindDto::SyslogReceiver {
-                listener,
-                connections,
-                tls,
-                allow_from,
-                encoding,
-                transport,
-                line_breaker,
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_syslog_receiver(&what, listener, tls, allow_from, *transport, errors);
-                check_connection_limits(&what, connections, *transport == Transport::Tcp, errors);
-                check_encoding(encoding, &s.id, errors);
-                if let Some(line_breaker) = line_breaker {
-                    match transport {
-                        Transport::Udp => errors.at("lineBreaker").push(format!(
-                            "{what} sets lineBreaker, which only TCP reads: over UDP a datagram is a message"
-                        )),
-                        Transport::Tcp => check_line_breaker(&what, line_breaker, errors.at("lineBreaker")),
-                    }
-                }
-            }
-            SourceKindDto::SocketReceiver {
-                listener,
-                connections,
-                tls,
-                allow_from,
-                encoding,
-                transport,
-                framing,
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_syslog_receiver(&what, listener, tls, allow_from, *transport, errors);
-                check_connection_limits(&what, connections, *transport == Transport::Tcp, errors);
-                check_encoding(encoding, &s.id, errors);
-                match transport {
-                    Transport::Udp if framing.is_set() => errors.at("framing").push(format!(
-                        "{what} sets a framing, which only TCP reads: over UDP a datagram is a record"
-                    )),
-                    Transport::Udp => {}
-                    // A receiver keeps a message to its largest request.
-                    Transport::Tcp => {
-                        let max = listener.max_request_bytes.0;
-                        check_framing(framing, &s.id, max, "message", errors);
-                    }
-                }
-            }
+            SourceKindDto::SyslogReceiver(k) => k.check(s, errors),
+            SourceKindDto::SocketReceiver(k) => k.check(s, errors),
             SourceKindDto::Postgres(_) | SourceKindDto::MySql(_) => {
                 let (kind, sql) = s.kind.sql().expect("an SQL source");
                 let SqlSourceDto {
@@ -3452,572 +3111,1088 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 };
                 read.check(&s.id, kind.dialect(), kind.meta(), errors);
             }
-            SourceKindDto::OktaLogs {
-                org,
-                token,
-                client_id,
-                private_key,
-                key_id,
-                tls,
-                poll_interval_secs,
-                ..
-            } => {
-                let what = format!("source {:?}", s.id);
-                let parsed = check_api_source(&what, ("org", org), tls, *poll_interval_secs, errors);
-                if parsed.is_some_and(|u| u.path() != "/" || u.query().is_some() || u.fragment().is_some()) {
-                    errors.at("org").push(format!(
-                        "{what} names the org {org:?}; give its address alone, as https://acme.okta.com"
-                    ));
-                }
-                let client_id = client_id.as_deref().filter(|c| !blank(c));
-                let service_app = client_id.is_some() || private_key.is_some();
-                match (token, service_app) {
-                    (Some(_), true) => errors.at("token").push(format!(
-                        "{what} names both a token and a service app; give the token, or clientId and privateKey"
-                    )),
-                    (None, false) => errors.at("token").push(format!(
-                        "{what} names no sign-in; give a token, or a service app's clientId and privateKey"
-                    )),
-                    (None, true) => {
-                        if client_id.is_none() {
-                            errors.at("clientId").push(format!(
-                                "{what} names a service app's private key and no client id; give its clientId"
-                            ));
-                        }
-                        if private_key.is_none() {
-                            errors.at("privateKey").push(format!(
-                                "{what} names a service app's client id and no private key; give the credential \
-                                 holding it as privateKey"
-                            ));
-                        }
-                    }
-                    (Some(_), false) => {}
-                }
-                if key_id.is_some() && !service_app {
-                    errors.at("keyId").push(format!(
-                        "{what} names a keyId with no service app; give it beside clientId and privateKey, or drop it"
-                    ));
-                }
-            }
-            SourceKindDto::AzureBlobQueue {
-                queue_url,
-                access,
-                tls,
-                encoding,
-                framing,
-                visibility_secs,
-                max_deliveries,
-                ..
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_tls_reaches(tls, &s.urls(), &what, errors);
-                check_azure_access(access, &what, errors);
-                check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-                check_queue(queue_url, *visibility_secs, &what, errors);
-                let poison = crate::io::storage_queue::POISON_SUFFIX;
-                let name = queue_url
-                    .trim()
-                    .trim_end_matches('/')
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or_default();
-                if name.len() + poison.len() > QUEUE_NAME_MAX {
-                    errors.at("queueUrl").push(format!(
-                        "{what} reads the queue {name:?}, whose name leaves no room for its poison queue \
-                         {name}{poison}. A queue's name is at most {QUEUE_NAME_MAX} characters, so this one may have \
-                         at most {}",
-                        QUEUE_NAME_MAX - poison.len()
-                    ));
-                }
-                if !(MaxDeliveries::MIN..=MaxDeliveries::MAX).contains(&max_deliveries.0) {
-                    errors.at("maxDeliveries").push(format!(
-                        "{what} moves a message to the poison queue after {} deliveries; maxDeliveries must be \
-                         between {} and {}",
-                        max_deliveries.0,
-                        MaxDeliveries::MIN,
-                        MaxDeliveries::MAX
-                    ));
-                }
-            }
-            SourceKindDto::GcsPubSub {
-                subscription,
-                pubsub_endpoint,
-                access,
-                tls,
-                encoding,
-                framing,
-                visibility_secs,
-                ..
-            } => {
-                let what = format!("source {:?}", s.id);
-                check_tls_reaches(tls, &s.urls(), &what, errors);
-                check_encoding(encoding, &s.id, errors);
-                check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
-                check_subscription(subscription, &what, errors);
-                check_endpoint(pubsub_endpoint.as_deref(), "pubsubEndpoint", &what, errors);
-                check_endpoint(access.endpoint.as_deref(), "endpoint", &what, errors);
-                check_visibility(*visibility_secs, ACK_DEADLINE_MAX, &what, errors);
-            }
+            SourceKindDto::OktaLogs(k) => k.check(s, errors),
+            SourceKindDto::AzureBlobQueue(k) => k.check(s, errors),
+            SourceKindDto::GcsPubSub(k) => k.check(s, errors),
         }
     }
 
     for d in &file.destinations {
         let errors = &mut ItemErrors::new(attributed, "destinations", &d.id);
         match &d.kind {
-            DestinationKindDto::Kafka {
-                brokers,
-                default_topic,
-                tls,
-                props,
-                stall_after_secs,
-                buffer_bytes,
-                format,
-                field,
-                schema_registry,
-                ..
-            } => {
-                check_field(
-                    &d.id,
-                    matches!(format, FormatDto::Text | FormatDto::Bytes),
-                    field,
-                    errors,
-                );
-                check_stream_avro(*format, schema_registry, &d.id, errors);
-                check_stall_after(*stall_after_secs, &d.id, errors);
-                validate_kafka_props(props, &format!("destination {:?}", d.id), errors);
-                check_kafka_tls(tls, props, &format!("destination {:?}", d.id), errors);
-                check_kafka_buffer(*buffer_bytes, &d.id, errors);
-                if blank(brokers) {
-                    errors
-                        .at("brokers")
-                        .push(format!("destination {:?} has no brokers", d.id));
-                }
-                if blank(default_topic) {
-                    errors
-                        .at("defaultTopic")
-                        .push(format!("destination {:?} has no default topic", d.id));
-                }
-            }
-            DestinationKindDto::EventHubs {
-                namespace,
-                default_event_hub,
-                format,
-                field,
-                compression,
-                stall_after_secs,
-                buffer_bytes,
-                connection_string,
-                sign_in,
-                schema_registry,
-                ..
-            } => {
-                check_field(
-                    &d.id,
-                    matches!(format, FormatDto::Text | FormatDto::Bytes),
-                    field,
-                    errors,
-                );
-                check_stream_avro(*format, schema_registry, &d.id, errors);
-                check_stall_after(*stall_after_secs, &d.id, errors);
-                check_kafka_buffer(*buffer_bytes, &d.id, errors);
-                check_event_hubs_namespace(namespace, &format!("destination {:?}", d.id), errors);
-                check_event_hubs_sign_in(
-                    connection_string.as_ref(),
-                    sign_in,
-                    &format!("destination {:?}", d.id),
-                    errors,
-                );
-                if blank(default_event_hub) {
-                    errors
-                        .at("defaultEventHub")
-                        .push(format!("destination {:?} has no default event hub", d.id));
-                }
-                if !matches!(compression, CompressionDto::None | CompressionDto::Gzip) {
-                    errors.at("compression").push(format!(
-                        "destination {:?} compresses with {compression:?}; an Event Hubs destination takes only \
-                         \"gzip\" or \"none\"",
-                        d.id
-                    ));
-                }
-            }
-            DestinationKindDto::Elasticsearch {
-                url,
-                zone_urls,
-                default_index,
-                tls,
-                in_flight,
-                max_bulk_bytes,
-                buffer_bytes,
-                stall_after_secs,
-                sniff,
-                zone_attribute,
-                auth,
-                username,
-                password,
-                ..
-            } => {
-                check_elastic_sign_in(&d.id, auth, username, password, errors);
-                match zone_attribute {
-                    Some(_) if !sniff => errors.at("zoneAttribute").push(format!(
-                        "destination {:?} names a zone attribute but does not sniff; turn sniffing on, or take \
-                         the zone attribute off",
-                        d.id
-                    )),
-                    Some(a) if blank(a) => errors
-                        .at("zoneAttribute")
-                        .push(format!("destination {:?} names a blank zone attribute", d.id)),
-                    _ => {}
-                }
-                check_http_delivery(
-                    &HttpDelivery {
-                        id: &d.id,
-                        url,
-                        url_field: "url",
-                        zone_urls: Some(zone_urls),
-                        request_field: "maxBulkBytes",
-                        tls,
-                        in_flight: Some(*in_flight),
-                        request_bytes: max_bulk_bytes.0,
-                        request_limits: (BulkBytes::MIN, BulkBytes::MAX),
-                        request_what: "a bulk size",
-                        limit_why: "Elasticsearch refuses a body over its own http.max_content_length, which \
-                                    defaults to 100 MB",
-                        buffer_bytes: *buffer_bytes,
-                        stall_after: *stall_after_secs,
-                    },
-                    errors,
-                );
-                if blank(default_index) {
-                    errors
-                        .at("defaultIndex")
-                        .push(format!("destination {:?} has no default index", d.id));
-                }
-            }
-            DestinationKindDto::SplunkHec {
-                url,
-                zone_urls,
-                index,
-                sourcetype,
-                source,
-                host,
-                endpoint,
-                format,
-                field,
-                tls,
-                in_flight,
-                max_request_bytes,
-                buffer_bytes,
-                stall_after_secs,
-                ..
-            } => {
-                check_field(
-                    &d.id,
-                    matches!(format, FormatDto::Text | FormatDto::Bytes),
-                    field,
-                    errors,
-                );
-                refuse_avro(*format, &d.id, errors);
-                // An event is a JSON string, so its text is UTF-8; only the raw endpoint takes bytes that may not be.
-                if *format == FormatDto::Bytes && *endpoint == EndpointDto::Event {
-                    errors.at("format").push(format!(
-                        "destination {:?} writes format \"bytes\", which only the raw endpoint takes",
-                        d.id
-                    ));
-                }
-                check_http_delivery(
-                    &HttpDelivery {
-                        id: &d.id,
-                        url,
-                        url_field: "url",
-                        zone_urls: Some(zone_urls),
-                        request_field: "maxRequestBytes",
-                        tls,
-                        in_flight: Some(*in_flight),
-                        request_bytes: max_request_bytes.0,
-                        request_limits: (RequestBytes::MIN, RequestBytes::MAX),
-                        request_what: "a request size",
-                        limit_why: "Splunk refuses a body over its own max_content_length, and Splunk Cloud over \
-                                    a megabyte",
-                        buffer_bytes: *buffer_bytes,
-                        stall_after: *stall_after_secs,
-                    },
-                    errors,
-                );
-                // The event and ack paths are joined to the base address, so a pasted endpoint would get its path
-                // twice and every request a 404.
-                if let Some(at) = url.find("/services/collector") {
-                    errors.at("url").push(format!(
-                        "destination {:?} is reached at {url:?}, which names a collector endpoint. Give the base \
-                         address, {:?}: the destination adds the endpoint itself",
-                        d.id,
-                        &url[..at]
-                    ));
-                }
-                // Unset is the way to say "none"; an empty one is a field left half-filled.
-                for (what, value) in [
-                    ("index", index),
-                    ("sourcetype", sourcetype),
-                    ("source", source),
-                    ("host", host),
-                ] {
-                    if value.as_deref().is_some_and(blank) {
-                        errors.at(what).push(format!(
-                            "destination {:?} has an empty {what}; name one, or leave it out",
-                            d.id
-                        ));
-                    }
-                }
-            }
-            DestinationKindDto::S3 {
-                bucket,
-                kms_key_id,
-                access,
-                objects,
-                cloud,
-                tls,
-            } => {
-                let url = access.endpoint.as_deref().unwrap_or(S3_ENDPOINT);
-                check_objects(&d.id, objects, url, tls, errors);
-                check_storage_class(&d.id, cloud, crate::io::objects::S3_STORAGE_CLASSES, errors);
-                if blank(bucket) {
-                    errors
-                        .at("bucket")
-                        .push(format!("destination {:?} names no bucket", d.id));
-                }
-                check_s3_access(access, &format!("destination {:?}", d.id), errors);
-                if kms_key_id.as_deref().is_some_and(blank) {
-                    errors.at("kmsKeyId").push(format!(
-                        "destination {:?} has an empty kmsKeyId; name one, or leave it out",
-                        d.id
-                    ));
-                }
-            }
-            DestinationKindDto::Gcs {
-                bucket,
-                access,
-                objects,
-                cloud,
-                tls,
-            } => {
-                let url = access.endpoint.as_deref().unwrap_or(GCS_ENDPOINT);
-                check_objects(&d.id, objects, url, tls, errors);
-                check_storage_class(&d.id, cloud, crate::io::objects::GCS_STORAGE_CLASSES, errors);
-                if blank(bucket) {
-                    errors
-                        .at("bucket")
-                        .push(format!("destination {:?} names no bucket", d.id));
-                }
-                check_endpoint(
-                    access.endpoint.as_deref(),
-                    "endpoint",
-                    &format!("destination {:?}", d.id),
-                    errors,
-                );
-            }
-            DestinationKindDto::AzureBlob {
-                container,
-                access,
-                objects,
-                cloud,
-                tls,
-            } => {
-                let url = access.endpoint.as_deref().unwrap_or(AZURE_ENDPOINT);
-                check_objects(&d.id, objects, url, tls, errors);
-                check_storage_class(&d.id, cloud, crate::io::objects::AZURE_ACCESS_TIERS, errors);
-                if blank(container) {
-                    errors
-                        .at("container")
-                        .push(format!("destination {:?} names no container", d.id));
-                }
-                check_azure_access(access, &format!("destination {:?}", d.id), errors);
-            }
-            DestinationKindDto::Http {
-                url,
-                zone_urls,
-                body: _,
-                format,
-                field,
-                compression,
-                headers,
-                credentials,
-                tls,
-                in_flight,
-                max_request_bytes,
-                buffer_bytes,
-                stall_after_secs,
-            } => {
-                check_http_delivery(
-                    &HttpDelivery {
-                        id: &d.id,
-                        url,
-                        url_field: "url",
-                        zone_urls: Some(zone_urls),
-                        request_field: "maxRequestBytes",
-                        tls,
-                        in_flight: Some(*in_flight),
-                        request_bytes: max_request_bytes.0,
-                        request_limits: (RequestBytes::MIN, RequestBytes::MAX),
-                        request_what: "a request size",
-                        limit_why: "a request is held whole in memory until the service answers it",
-                        buffer_bytes: *buffer_bytes,
-                        stall_after: *stall_after_secs,
-                    },
-                    errors,
-                );
-                check_field(
-                    &d.id,
-                    matches!(format, FormatDto::Text | FormatDto::Bytes),
-                    field,
-                    errors,
-                );
-                refuse_avro(*format, &d.id, errors);
-                check_http_compression(&d.id, compression, errors);
-                check_http_headers(
-                    &format!("destination {:?}", d.id),
-                    headers,
-                    credentials,
-                    DESTINATION_HEADERS,
-                    "from the body and compression",
-                    errors,
-                );
-            }
-            DestinationKindDto::Prometheus {
-                url,
-                version: _,
-                headers,
-                credentials,
-                tls,
-                max_request_bytes,
-                buffer_bytes,
-                stall_after_secs,
-            } => {
-                check_http_delivery(
-                    &HttpDelivery {
-                        id: &d.id,
-                        url,
-                        url_field: "url",
-                        zone_urls: None,
-                        request_field: "maxRequestBytes",
-                        tls,
-                        in_flight: None,
-                        request_bytes: max_request_bytes.0,
-                        request_limits: (RequestBytes::MIN, RequestBytes::MAX),
-                        request_what: "a request size",
-                        limit_why: "a request is held whole in memory until the store answers it",
-                        buffer_bytes: *buffer_bytes,
-                        stall_after: *stall_after_secs,
-                    },
-                    errors,
-                );
-                check_http_headers(
-                    &format!("destination {:?}", d.id),
-                    headers,
-                    credentials,
-                    PROMETHEUS_HEADERS,
-                    "as remote_write asks",
-                    errors,
-                );
-            }
-            DestinationKindDto::Otlp {
-                url,
-                signal: _,
-                compression,
-                headers,
-                credentials,
-                tls,
-                in_flight,
-                max_request_bytes,
-                buffer_bytes,
-                stall_after_secs,
-            } => {
-                check_http_delivery(
-                    &HttpDelivery {
-                        id: &d.id,
-                        url,
-                        url_field: "url",
-                        zone_urls: None,
-                        request_field: "maxRequestBytes",
-                        tls,
-                        in_flight: Some(*in_flight),
-                        request_bytes: max_request_bytes.0,
-                        request_limits: (RequestBytes::MIN, RequestBytes::MAX),
-                        request_what: "a request size",
-                        limit_why: "a request is held whole in memory until the service answers it",
-                        buffer_bytes: *buffer_bytes,
-                        stall_after: *stall_after_secs,
-                    },
-                    errors,
-                );
-                check_http_compression(&d.id, compression, errors);
-                // An exporter's per-signal endpoint, as `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` holds one, names its path.
-                let signals = [Signal::Logs, Signal::Metrics, Signal::Traces].map(crate::io::otlp::http_path);
-                if let Some(path) = (signals.into_iter()).find(|path| url.trim().trim_end_matches('/').ends_with(path))
-                {
-                    errors.at("url").push(format!(
-                        "destination {:?} has a url ending in {path}; remove {path}, which the destination adds \
-                         itself for its signal",
-                        d.id
-                    ));
-                }
-                check_http_headers(
-                    &format!("destination {:?}", d.id),
-                    headers,
-                    credentials,
-                    DESTINATION_HEADERS,
-                    "as OTLP asks",
-                    errors,
-                );
-            }
-            DestinationKindDto::LogAnalytics {
-                endpoint,
-                rule_id,
-                stream,
-                sign_in,
-                tls,
-                in_flight,
-                max_request_bytes,
-                buffer_bytes,
-                stall_after_secs,
-            } => {
-                check_http_delivery(
-                    &HttpDelivery {
-                        id: &d.id,
-                        url: endpoint,
-                        url_field: "endpoint",
-                        zone_urls: None,
-                        request_field: "maxRequestBytes",
-                        tls,
-                        in_flight: Some(*in_flight),
-                        request_bytes: max_request_bytes.0,
-                        request_limits: (RequestBytes::MIN, LOG_ANALYTICS_MAX_REQUEST_BYTES),
-                        request_what: "a request size",
-                        limit_why: "the Logs Ingestion API takes at most 1 MiB in one call",
-                        buffer_bytes: *buffer_bytes,
-                        stall_after: *stall_after_secs,
-                    },
-                    errors,
-                );
-                check_log_analytics_rule(&d.id, endpoint, rule_id, stream, errors);
-                check_entra_sign_in(sign_in, &[], &[], &format!("destination {:?}", d.id), errors);
-            }
-            DestinationKindDto::Sftp { access, objects, .. } => {
-                check_objects(&d.id, objects, "sftp", &TlsDto::default(), errors);
-                if objects.stall_after_secs.0 < SFTP_MIN_STALL_AFTER {
-                    errors.at("stallAfterSecs").push(format!(
-                        "destination {:?} sets a stall threshold of {}s; an SFTP destination needs at least \
-                         {SFTP_MIN_STALL_AFTER}s, or a slow sign-in or a dead connection outlasts every write",
-                        d.id, objects.stall_after_secs.0
-                    ));
-                }
-                check_sftp_access(access, &format!("destination {:?}", d.id), errors);
-            }
-            DestinationKindDto::Iceberg { .. } => check_iceberg(d, errors),
-            DestinationKindDto::Delta { .. } => check_delta(d, errors),
+            DestinationKindDto::Kafka(k) => k.check(d, errors),
+            DestinationKindDto::EventHubs(k) => k.check(d, errors),
+            DestinationKindDto::Elasticsearch(k) => k.check(d, errors),
+            DestinationKindDto::SplunkHec(k) => k.check(d, errors),
+            DestinationKindDto::S3(k) => k.check(d, errors),
+            DestinationKindDto::Gcs(k) => k.check(d, errors),
+            DestinationKindDto::AzureBlob(k) => k.check(d, errors),
+            DestinationKindDto::Http(k) => k.check(d, errors),
+            DestinationKindDto::Prometheus(k) => k.check(d, errors),
+            DestinationKindDto::Otlp(k) => k.check(d, errors),
+            DestinationKindDto::LogAnalytics(k) => k.check(d, errors),
+            DestinationKindDto::Sftp(k) => k.check(d, errors),
+            DestinationKindDto::Iceberg(k) => k.check(d, errors),
+            DestinationKindDto::Delta(k) => k.check(d, errors),
         }
     }
     for p in &file.pipelines {
         eval_assignments(&p.steps, p, &blank, attributed);
+    }
+}
+
+impl KafkaDestinationDto {
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            brokers,
+            default_topic,
+            tls,
+            props,
+            stall_after_secs,
+            buffer_bytes,
+            format,
+            field,
+            schema_registry,
+            ..
+        } = self;
+        check_field(
+            &d.id,
+            matches!(format, FormatDto::Text | FormatDto::Bytes),
+            field,
+            errors,
+        );
+        check_stream_avro(*format, schema_registry, &d.id, errors);
+        check_stall_after(*stall_after_secs, &d.id, errors);
+        validate_kafka_props(props, &format!("destination {:?}", d.id), errors);
+        check_kafka_tls(tls, props, &format!("destination {:?}", d.id), errors);
+        check_kafka_buffer(*buffer_bytes, &d.id, errors);
+        if blank(brokers) {
+            errors
+                .at("brokers")
+                .push(format!("destination {:?} has no brokers", d.id));
+        }
+        if blank(default_topic) {
+            errors
+                .at("defaultTopic")
+                .push(format!("destination {:?} has no default topic", d.id));
+        }
+    }
+}
+
+impl EventHubsDestinationDto {
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            namespace,
+            default_event_hub,
+            format,
+            field,
+            compression,
+            stall_after_secs,
+            buffer_bytes,
+            connection_string,
+            sign_in,
+            schema_registry,
+            ..
+        } = self;
+        check_field(
+            &d.id,
+            matches!(format, FormatDto::Text | FormatDto::Bytes),
+            field,
+            errors,
+        );
+        check_stream_avro(*format, schema_registry, &d.id, errors);
+        check_stall_after(*stall_after_secs, &d.id, errors);
+        check_kafka_buffer(*buffer_bytes, &d.id, errors);
+        check_event_hubs_namespace(namespace, &format!("destination {:?}", d.id), errors);
+        check_event_hubs_sign_in(
+            connection_string.as_ref(),
+            sign_in,
+            &format!("destination {:?}", d.id),
+            errors,
+        );
+        if blank(default_event_hub) {
+            errors
+                .at("defaultEventHub")
+                .push(format!("destination {:?} has no default event hub", d.id));
+        }
+        if !matches!(compression, CompressionDto::None | CompressionDto::Gzip) {
+            errors.at("compression").push(format!(
+                "destination {:?} compresses with {compression:?}; an Event Hubs destination takes only \
+                     \"gzip\" or \"none\"",
+                d.id
+            ));
+        }
+    }
+}
+
+impl ElasticsearchDestinationDto {
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            url,
+            zone_urls,
+            default_index,
+            tls,
+            in_flight,
+            max_bulk_bytes,
+            buffer_bytes,
+            stall_after_secs,
+            sniff,
+            zone_attribute,
+            auth,
+            username,
+            password,
+            ..
+        } = self;
+        check_elastic_sign_in(&d.id, auth, username, password, errors);
+        match zone_attribute {
+            Some(_) if !sniff => errors.at("zoneAttribute").push(format!(
+                "destination {:?} names a zone attribute but does not sniff; turn sniffing on, or take \
+                     the zone attribute off",
+                d.id
+            )),
+            Some(a) if blank(a) => errors
+                .at("zoneAttribute")
+                .push(format!("destination {:?} names a blank zone attribute", d.id)),
+            _ => {}
+        }
+        check_http_delivery(
+            &HttpDelivery {
+                id: &d.id,
+                url,
+                url_field: "url",
+                zone_urls: Some(zone_urls),
+                request_field: "maxBulkBytes",
+                tls,
+                in_flight: Some(*in_flight),
+                request_bytes: max_bulk_bytes.0,
+                request_limits: (BulkBytes::MIN, BulkBytes::MAX),
+                request_what: "a bulk size",
+                limit_why: "Elasticsearch refuses a body over its own http.max_content_length, which \
+                                defaults to 100 MB",
+                buffer_bytes: *buffer_bytes,
+                stall_after: *stall_after_secs,
+            },
+            errors,
+        );
+        if blank(default_index) {
+            errors
+                .at("defaultIndex")
+                .push(format!("destination {:?} has no default index", d.id));
+        }
+    }
+}
+
+impl SplunkHecDestinationDto {
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            url,
+            zone_urls,
+            index,
+            sourcetype,
+            source,
+            host,
+            endpoint,
+            format,
+            field,
+            tls,
+            in_flight,
+            max_request_bytes,
+            buffer_bytes,
+            stall_after_secs,
+            ..
+        } = self;
+        check_field(
+            &d.id,
+            matches!(format, FormatDto::Text | FormatDto::Bytes),
+            field,
+            errors,
+        );
+        refuse_avro(*format, &d.id, errors);
+        // An event is a JSON string, so its text is UTF-8; only the raw endpoint takes bytes that may not be.
+        if *format == FormatDto::Bytes && *endpoint == EndpointDto::Event {
+            errors.at("format").push(format!(
+                "destination {:?} writes format \"bytes\", which only the raw endpoint takes",
+                d.id
+            ));
+        }
+        check_http_delivery(
+            &HttpDelivery {
+                id: &d.id,
+                url,
+                url_field: "url",
+                zone_urls: Some(zone_urls),
+                request_field: "maxRequestBytes",
+                tls,
+                in_flight: Some(*in_flight),
+                request_bytes: max_request_bytes.0,
+                request_limits: (RequestBytes::MIN, RequestBytes::MAX),
+                request_what: "a request size",
+                limit_why: "Splunk refuses a body over its own max_content_length, and Splunk Cloud over \
+                                a megabyte",
+                buffer_bytes: *buffer_bytes,
+                stall_after: *stall_after_secs,
+            },
+            errors,
+        );
+        // The event and ack paths are joined to the base address, so a pasted endpoint would get its path
+        // twice and every request a 404.
+        if let Some(at) = url.find("/services/collector") {
+            errors.at("url").push(format!(
+                "destination {:?} is reached at {url:?}, which names a collector endpoint. Give the base \
+                     address, {:?}: the destination adds the endpoint itself",
+                d.id,
+                &url[..at]
+            ));
+        }
+        // Unset is the way to say "none"; an empty one is a field left half-filled.
+        for (what, value) in [
+            ("index", index),
+            ("sourcetype", sourcetype),
+            ("source", source),
+            ("host", host),
+        ] {
+            if value.as_deref().is_some_and(blank) {
+                errors.at(what).push(format!(
+                    "destination {:?} has an empty {what}; name one, or leave it out",
+                    d.id
+                ));
+            }
+        }
+    }
+}
+
+impl S3DestinationDto {
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            bucket,
+            kms_key_id,
+            access,
+            objects,
+            cloud,
+            tls,
+            unknown: _,
+        } = self;
+        let url = access.endpoint.as_deref().unwrap_or(S3_ENDPOINT);
+        check_objects(&d.id, objects, url, tls, errors);
+        check_storage_class(&d.id, cloud, crate::io::objects::S3_STORAGE_CLASSES, errors);
+        if blank(bucket) {
+            errors
+                .at("bucket")
+                .push(format!("destination {:?} names no bucket", d.id));
+        }
+        check_s3_access(access, &format!("destination {:?}", d.id), errors);
+        if kms_key_id.as_deref().is_some_and(blank) {
+            errors.at("kmsKeyId").push(format!(
+                "destination {:?} has an empty kmsKeyId; name one, or leave it out",
+                d.id
+            ));
+        }
+    }
+}
+
+impl GcsDestinationDto {
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            bucket,
+            access,
+            objects,
+            cloud,
+            tls,
+            unknown: _,
+        } = self;
+        let url = access.endpoint.as_deref().unwrap_or(GCS_ENDPOINT);
+        check_objects(&d.id, objects, url, tls, errors);
+        check_storage_class(&d.id, cloud, crate::io::objects::GCS_STORAGE_CLASSES, errors);
+        if blank(bucket) {
+            errors
+                .at("bucket")
+                .push(format!("destination {:?} names no bucket", d.id));
+        }
+        check_endpoint(
+            access.endpoint.as_deref(),
+            "endpoint",
+            &format!("destination {:?}", d.id),
+            errors,
+        );
+    }
+}
+
+impl AzureBlobDestinationDto {
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            container,
+            access,
+            objects,
+            cloud,
+            tls,
+            unknown: _,
+        } = self;
+        let url = access.endpoint.as_deref().unwrap_or(AZURE_ENDPOINT);
+        check_objects(&d.id, objects, url, tls, errors);
+        check_storage_class(&d.id, cloud, crate::io::objects::AZURE_ACCESS_TIERS, errors);
+        if blank(container) {
+            errors
+                .at("container")
+                .push(format!("destination {:?} names no container", d.id));
+        }
+        check_azure_access(access, &format!("destination {:?}", d.id), errors);
+    }
+}
+
+impl HttpDestinationDto {
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            url,
+            zone_urls,
+            body: _,
+            format,
+            field,
+            compression,
+            headers,
+            credentials,
+            tls,
+            in_flight,
+            max_request_bytes,
+            buffer_bytes,
+            stall_after_secs,
+            unknown: _,
+        } = self;
+        check_http_delivery(
+            &HttpDelivery {
+                id: &d.id,
+                url,
+                url_field: "url",
+                zone_urls: Some(zone_urls),
+                request_field: "maxRequestBytes",
+                tls,
+                in_flight: Some(*in_flight),
+                request_bytes: max_request_bytes.0,
+                request_limits: (RequestBytes::MIN, RequestBytes::MAX),
+                request_what: "a request size",
+                limit_why: "a request is held whole in memory until the service answers it",
+                buffer_bytes: *buffer_bytes,
+                stall_after: *stall_after_secs,
+            },
+            errors,
+        );
+        check_field(
+            &d.id,
+            matches!(format, FormatDto::Text | FormatDto::Bytes),
+            field,
+            errors,
+        );
+        refuse_avro(*format, &d.id, errors);
+        check_http_compression(&d.id, compression, errors);
+        check_http_headers(
+            &format!("destination {:?}", d.id),
+            headers,
+            credentials,
+            DESTINATION_HEADERS,
+            "from the body and compression",
+            errors,
+        );
+    }
+}
+
+impl PrometheusDestinationDto {
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            url,
+            version: _,
+            headers,
+            credentials,
+            tls,
+            max_request_bytes,
+            buffer_bytes,
+            stall_after_secs,
+            unknown: _,
+        } = self;
+        check_http_delivery(
+            &HttpDelivery {
+                id: &d.id,
+                url,
+                url_field: "url",
+                zone_urls: None,
+                request_field: "maxRequestBytes",
+                tls,
+                in_flight: None,
+                request_bytes: max_request_bytes.0,
+                request_limits: (RequestBytes::MIN, RequestBytes::MAX),
+                request_what: "a request size",
+                limit_why: "a request is held whole in memory until the store answers it",
+                buffer_bytes: *buffer_bytes,
+                stall_after: *stall_after_secs,
+            },
+            errors,
+        );
+        check_http_headers(
+            &format!("destination {:?}", d.id),
+            headers,
+            credentials,
+            PROMETHEUS_HEADERS,
+            "as remote_write asks",
+            errors,
+        );
+    }
+}
+
+impl OtlpDestinationDto {
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            url,
+            signal: _,
+            compression,
+            headers,
+            credentials,
+            tls,
+            in_flight,
+            max_request_bytes,
+            buffer_bytes,
+            stall_after_secs,
+            unknown: _,
+        } = self;
+        check_http_delivery(
+            &HttpDelivery {
+                id: &d.id,
+                url,
+                url_field: "url",
+                zone_urls: None,
+                request_field: "maxRequestBytes",
+                tls,
+                in_flight: Some(*in_flight),
+                request_bytes: max_request_bytes.0,
+                request_limits: (RequestBytes::MIN, RequestBytes::MAX),
+                request_what: "a request size",
+                limit_why: "a request is held whole in memory until the service answers it",
+                buffer_bytes: *buffer_bytes,
+                stall_after: *stall_after_secs,
+            },
+            errors,
+        );
+        check_http_compression(&d.id, compression, errors);
+        // An exporter's per-signal endpoint, as `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` holds one, names its path.
+        let signals = [Signal::Logs, Signal::Metrics, Signal::Traces].map(crate::io::otlp::http_path);
+        if let Some(path) = (signals.into_iter()).find(|path| url.trim().trim_end_matches('/').ends_with(path)) {
+            errors.at("url").push(format!(
+                "destination {:?} has a url ending in {path}; remove {path}, which the destination adds \
+                     itself for its signal",
+                d.id
+            ));
+        }
+        check_http_headers(
+            &format!("destination {:?}", d.id),
+            headers,
+            credentials,
+            DESTINATION_HEADERS,
+            "as OTLP asks",
+            errors,
+        );
+    }
+}
+
+impl LogAnalyticsDestinationDto {
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            endpoint,
+            rule_id,
+            stream,
+            sign_in,
+            tls,
+            in_flight,
+            max_request_bytes,
+            buffer_bytes,
+            stall_after_secs,
+            unknown: _,
+        } = self;
+        check_http_delivery(
+            &HttpDelivery {
+                id: &d.id,
+                url: endpoint,
+                url_field: "endpoint",
+                zone_urls: None,
+                request_field: "maxRequestBytes",
+                tls,
+                in_flight: Some(*in_flight),
+                request_bytes: max_request_bytes.0,
+                request_limits: (RequestBytes::MIN, LOG_ANALYTICS_MAX_REQUEST_BYTES),
+                request_what: "a request size",
+                limit_why: "the Logs Ingestion API takes at most 1 MiB in one call",
+                buffer_bytes: *buffer_bytes,
+                stall_after: *stall_after_secs,
+            },
+            errors,
+        );
+        check_log_analytics_rule(&d.id, endpoint, rule_id, stream, errors);
+        check_entra_sign_in(sign_in, &[], &[], &format!("destination {:?}", d.id), errors);
+    }
+}
+
+impl SftpDestinationDto {
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self { access, objects, .. } = self;
+        check_objects(&d.id, objects, "sftp", &TlsDto::default(), errors);
+        if objects.stall_after_secs.0 < SFTP_MIN_STALL_AFTER {
+            errors.at("stallAfterSecs").push(format!(
+                "destination {:?} sets a stall threshold of {}s; an SFTP destination needs at least \
+                     {SFTP_MIN_STALL_AFTER}s, or a slow sign-in or a dead connection outlasts every write",
+                d.id, objects.stall_after_secs.0
+            ));
+        }
+        check_sftp_access(access, &format!("destination {:?}", d.id), errors);
+    }
+}
+
+impl KafkaSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            brokers,
+            topics,
+            tls,
+            fetch_bytes,
+            encoding,
+            props,
+            ..
+        } = self;
+        check_kafka_tls(tls, props, &format!("source {:?}", s.id), errors);
+        check_encoding(encoding, &s.id, errors);
+        validate_kafka_props(props, &format!("source {:?}", s.id), errors);
+        check_fetch_bytes(*fetch_bytes, &s.id, errors);
+        if blank(brokers) {
+            errors.at("brokers").push(format!("source {:?} has no brokers", s.id));
+        }
+        if topics.iter().all(|t| blank(t)) {
+            errors
+                .at("topics")
+                .push(format!("source {:?} subscribes to no topics", s.id));
+        }
+        for topic in topics {
+            if let Some(Err(e)) = crate::io::kafka::topic_pattern(topic) {
+                errors.at("topics").push(format!(
+                    "source {:?} names the topic pattern {topic:?}, which does not compile: {e}",
+                    s.id
+                ));
+            }
+        }
+    }
+}
+
+impl EventHubsSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            namespace,
+            event_hubs,
+            consumer_group,
+            connection_string,
+            sign_in,
+            fetch_bytes,
+            encoding,
+            ..
+        } = self;
+        check_encoding(encoding, &s.id, errors);
+        check_fetch_bytes(*fetch_bytes, &s.id, errors);
+        check_event_hubs_namespace(namespace, &format!("source {:?}", s.id), errors);
+        check_event_hubs_sign_in(
+            connection_string.as_ref(),
+            sign_in,
+            &format!("source {:?}", s.id),
+            errors,
+        );
+        if event_hubs.iter().all(|h| blank(h)) {
+            errors
+                .at("eventHubs")
+                .push(format!("source {:?} reads no event hubs", s.id));
+        }
+        for hub in event_hubs.iter().filter(|h| h.starts_with('^')) {
+            errors.at("eventHubs").push(format!(
+                "source {:?} names {hub:?}; an event hub is named in full, not by a pattern",
+                s.id
+            ));
+        }
+        if blank(consumer_group) {
+            errors.at("consumerGroup").push(format!(
+                "source {:?} has no consumer group -- it is the group every event hub above is read \
+                     under",
+                s.id
+            ));
+        }
+    }
+}
+
+impl MetricsSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self { bucket_seconds } = self;
+        if *bucket_seconds == 0 {
+            errors.at("bucketSeconds").push(format!(
+                "source {:?} drains its bucket every 0 seconds; bucketSeconds is at least 1, since \
+                     waiting out the bucket is what paces its reader",
+                s.id
+            ));
+        }
+    }
+}
+
+impl LogsSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self { min_level } = self;
+        if crate::logs::level_for_label(&min_level.0).is_none() {
+            errors.at("minLevel").push(format!(
+                "source {:?} carries logs from {:?} down; it must be one of {}",
+                s.id,
+                min_level.0,
+                crate::logs::LEVEL_LABELS.join(", ")
+            ));
+        }
+    }
+}
+
+impl S3SqsSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            queue_url,
+            access,
+            tls,
+            encoding,
+            framing,
+            visibility_secs,
+            ..
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_tls_reaches(tls, &s.urls(), &what, errors);
+        check_s3_access(access, &what, errors);
+        check_encoding(encoding, &s.id, errors);
+        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        check_queue(queue_url, *visibility_secs, &what, errors);
+    }
+}
+
+impl S3ListSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            bucket,
+            prefix,
+            access,
+            tls,
+            encoding,
+            framing,
+            poll_interval_secs,
+            start,
+            after_commit,
+            move_prefix,
+            ..
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_tls_reaches(tls, &s.urls(), &what, errors);
+        check_s3_access(access, &what, errors);
+        check_encoding(encoding, &s.id, errors);
+        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        check_bucket_name(bucket, &what, errors);
+        check_listing(
+            prefix,
+            *poll_interval_secs,
+            *start,
+            *after_commit,
+            move_prefix,
+            &what,
+            errors,
+        );
+    }
+}
+
+impl GcsListSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            bucket,
+            prefix,
+            access,
+            tls,
+            encoding,
+            framing,
+            poll_interval_secs,
+            start,
+            after_commit,
+            move_prefix,
+            ..
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_tls_reaches(tls, &s.urls(), &what, errors);
+        check_endpoint(access.endpoint.as_deref(), "endpoint", &what, errors);
+        check_encoding(encoding, &s.id, errors);
+        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        if bucket.trim().is_empty() {
+            errors.at("bucket").push(format!("{what} names no bucket"));
+        }
+        check_listing(
+            prefix,
+            *poll_interval_secs,
+            *start,
+            *after_commit,
+            move_prefix,
+            &what,
+            errors,
+        );
+    }
+}
+
+impl AzureBlobListSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            container,
+            prefix,
+            access,
+            tls,
+            encoding,
+            framing,
+            poll_interval_secs,
+            start,
+            after_commit,
+            move_prefix,
+            ..
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_tls_reaches(tls, &s.urls(), &what, errors);
+        check_azure_access(access, &what, errors);
+        check_encoding(encoding, &s.id, errors);
+        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        if container.trim().is_empty() {
+            errors.at("container").push(format!("{what} names no container"));
+        }
+        check_listing(
+            prefix,
+            *poll_interval_secs,
+            *start,
+            *after_commit,
+            move_prefix,
+            &what,
+            errors,
+        );
+    }
+}
+
+impl SftpSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            prefix,
+            access,
+            encoding,
+            framing,
+            poll_interval_secs,
+            start,
+            after_commit,
+            move_prefix,
+            ..
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_sftp_access(access, &what, errors);
+        check_encoding(encoding, &s.id, errors);
+        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        check_listing(
+            prefix,
+            *poll_interval_secs,
+            *start,
+            *after_commit,
+            move_prefix,
+            &what,
+            errors,
+        );
+    }
+}
+
+impl HttpApiSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            url,
+            method,
+            body,
+            headers,
+            credentials,
+            tls,
+            records,
+            records_at,
+            since_param,
+            since_overlap_secs,
+            poll_interval_secs,
+            start,
+            sign_in,
+            ..
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_api_source(&what, ("url", url), tls, *poll_interval_secs, errors);
+        check_http_headers(&what, headers, credentials, SOURCE_HEADERS, "for every request", errors);
+        check_app_sign_in(&what, sign_in, headers, credentials, errors);
+        check_records_at(&what, *records, records_at, errors);
+        if body.is_some() && *method != ApiMethodDto::Post {
+            errors
+                .at("body")
+                .push(format!("{what} sends a body only with a POST; set method to \"POST\""));
+        }
+        match since_param {
+            Some(param) if param.is_empty() || !param.bytes().all(is_query_name_byte) => errors.at("sinceParam").push(
+                format!("{what} names the query parameter {param:?}; a name is letters, digits and -._~[] only"),
+            ),
+            Some(param)
+                if reqwest::Url::parse(url.trim())
+                    .is_ok_and(|u| u.query_pairs().any(|(name, _)| name == param.as_str())) =>
+            {
+                errors.at("sinceParam").push(format!(
+                    "{what} asks for {param:?} in its URL already, and sinceParam adds it on every poll; \
+                         take it out of the URL"
+                ))
+            }
+            Some(_) => {}
+            None => {
+                if *since_overlap_secs != 0 {
+                    errors.at("sinceOverlapSecs").push(format!(
+                        "{what} sets an overlap and no sinceParam; the overlap is how far back sinceParam \
+                             asks from"
+                    ));
+                }
+                if *start != ListStartDto::Everything {
+                    errors.at("start").push(format!(
+                        "{what} starts at new records and has no sinceParam to ask for them with; with \
+                             none, every poll reads everything"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+impl HttpReceiverSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            listener,
+            connections,
+            tls,
+            path,
+            tokens,
+            records,
+            records_at,
+            ..
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_receiver(&what, listener, tls, tokens, errors);
+        check_connection_limits(&what, connections, true, errors);
+        check_records_at(&what, *records, records_at, errors);
+        if !path.starts_with('/') || path.contains(['?', '#', ':', '*']) || path.chars().any(char::is_whitespace) {
+            errors.at("path").push(format!(
+                "{what} takes requests at {path:?}; a path starts with / and holds no ?, #, :, * or space"
+            ));
+        } else if path == crate::io::receiver::HEALTH_PATH {
+            errors.at("path").push(format!(
+                "{what} takes requests at {path:?}, which is where it answers health checks; give it another \
+                     path"
+            ));
+        }
+    }
+}
+
+impl HecReceiverSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            listener,
+            connections,
+            tls,
+            tokens,
+            sourcetypes,
+            ..
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_receiver(&what, listener, tls, tokens, errors);
+        check_connection_limits(&what, connections, true, errors);
+        check_sourcetypes(&s.id, sourcetypes, errors);
+    }
+}
+
+impl S2sReceiverSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            listener,
+            connections,
+            tls,
+            tokens,
+            sourcetypes,
+            unknown: _,
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_receiver(&what, listener, tls, tokens, errors);
+        check_connection_limits(&what, connections, true, errors);
+        check_sourcetypes(&s.id, sourcetypes, errors);
+    }
+}
+
+impl SyslogReceiverSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            listener,
+            connections,
+            tls,
+            allow_from,
+            encoding,
+            transport,
+            line_breaker,
+            unknown: _,
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_syslog_receiver(&what, listener, tls, allow_from, *transport, errors);
+        check_connection_limits(&what, connections, *transport == Transport::Tcp, errors);
+        check_encoding(encoding, &s.id, errors);
+        if let Some(line_breaker) = line_breaker {
+            match transport {
+                Transport::Udp => errors.at("lineBreaker").push(format!(
+                    "{what} sets lineBreaker, which only TCP reads: over UDP a datagram is a message"
+                )),
+                Transport::Tcp => check_line_breaker(&what, line_breaker, errors.at("lineBreaker")),
+            }
+        }
+    }
+}
+
+impl SocketReceiverSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            listener,
+            connections,
+            tls,
+            allow_from,
+            encoding,
+            transport,
+            framing,
+            unknown: _,
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_syslog_receiver(&what, listener, tls, allow_from, *transport, errors);
+        check_connection_limits(&what, connections, *transport == Transport::Tcp, errors);
+        check_encoding(encoding, &s.id, errors);
+        match transport {
+            Transport::Udp if framing.is_set() => errors.at("framing").push(format!(
+                "{what} sets a framing, which only TCP reads: over UDP a datagram is a record"
+            )),
+            Transport::Udp => {}
+            // A receiver keeps a message to its largest request.
+            Transport::Tcp => {
+                let max = listener.max_request_bytes.0;
+                check_framing(framing, &s.id, max, "message", errors);
+            }
+        }
+    }
+}
+
+impl OktaLogsSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            org,
+            token,
+            client_id,
+            private_key,
+            key_id,
+            tls,
+            poll_interval_secs,
+            ..
+        } = self;
+        let what = format!("source {:?}", s.id);
+        let parsed = check_api_source(&what, ("org", org), tls, *poll_interval_secs, errors);
+        if parsed.is_some_and(|u| u.path() != "/" || u.query().is_some() || u.fragment().is_some()) {
+            errors.at("org").push(format!(
+                "{what} names the org {org:?}; give its address alone, as https://acme.okta.com"
+            ));
+        }
+        let client_id = client_id.as_deref().filter(|c| !blank(c));
+        let service_app = client_id.is_some() || private_key.is_some();
+        match (token, service_app) {
+            (Some(_), true) => errors.at("token").push(format!(
+                "{what} names both a token and a service app; give the token, or clientId and privateKey"
+            )),
+            (None, false) => errors.at("token").push(format!(
+                "{what} names no sign-in; give a token, or a service app's clientId and privateKey"
+            )),
+            (None, true) => {
+                if client_id.is_none() {
+                    errors.at("clientId").push(format!(
+                        "{what} names a service app's private key and no client id; give its clientId"
+                    ));
+                }
+                if private_key.is_none() {
+                    errors.at("privateKey").push(format!(
+                        "{what} names a service app's client id and no private key; give the credential \
+                             holding it as privateKey"
+                    ));
+                }
+            }
+            (Some(_), false) => {}
+        }
+        if key_id.is_some() && !service_app {
+            errors.at("keyId").push(format!(
+                "{what} names a keyId with no service app; give it beside clientId and privateKey, or drop it"
+            ));
+        }
+    }
+}
+
+impl AzureBlobQueueSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            queue_url,
+            access,
+            tls,
+            encoding,
+            framing,
+            visibility_secs,
+            max_deliveries,
+            ..
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_tls_reaches(tls, &s.urls(), &what, errors);
+        check_azure_access(access, &what, errors);
+        check_encoding(encoding, &s.id, errors);
+        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        check_queue(queue_url, *visibility_secs, &what, errors);
+        let poison = crate::io::storage_queue::POISON_SUFFIX;
+        let name = queue_url
+            .trim()
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or_default();
+        if name.len() + poison.len() > QUEUE_NAME_MAX {
+            errors.at("queueUrl").push(format!(
+                "{what} reads the queue {name:?}, whose name leaves no room for its poison queue \
+                     {name}{poison}. A queue's name is at most {QUEUE_NAME_MAX} characters, so this one may have \
+                     at most {}",
+                QUEUE_NAME_MAX - poison.len()
+            ));
+        }
+        if !(MaxDeliveries::MIN..=MaxDeliveries::MAX).contains(&max_deliveries.0) {
+            errors.at("maxDeliveries").push(format!(
+                "{what} moves a message to the poison queue after {} deliveries; maxDeliveries must be \
+                     between {} and {}",
+                max_deliveries.0,
+                MaxDeliveries::MIN,
+                MaxDeliveries::MAX
+            ));
+        }
+    }
+}
+
+impl GcsPubSubSourceDto {
+    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            subscription,
+            pubsub_endpoint,
+            access,
+            tls,
+            encoding,
+            framing,
+            visibility_secs,
+            ..
+        } = self;
+        let what = format!("source {:?}", s.id);
+        check_tls_reaches(tls, &s.urls(), &what, errors);
+        check_encoding(encoding, &s.id, errors);
+        check_framing(framing, &s.id, MAX_RECORD_BYTES, "record", errors);
+        check_subscription(subscription, &what, errors);
+        check_endpoint(pubsub_endpoint.as_deref(), "pubsubEndpoint", &what, errors);
+        check_endpoint(access.endpoint.as_deref(), "endpoint", &what, errors);
+        check_visibility(*visibility_secs, ACK_DEADLINE_MAX, &what, errors);
     }
 }
 
@@ -4154,150 +4329,152 @@ fn check_file_limits(id: &str, in_flight: InFlight, buffer_bytes: Option<BufferB
     }
 }
 
-/// Everything an Iceberg destination is checked for: its delivery limits, where its catalog is, how it signs in,
-/// which table it writes and how a created one is partitioned.
-fn check_iceberg(d: &DestinationDto, errors: &mut ItemErrors<'_>) {
-    let DestinationKindDto::Iceberg {
-        catalog,
-        warehouse,
-        namespace,
-        table,
-        partition_by,
-        token,
-        client_id,
-        client_secret,
-        token_url,
-        scope,
-        signing_name,
-        access,
-        tls,
-        compression: _,
-        in_flight,
-        max_object_bytes,
-        buffer_bytes,
-        stall_after_secs,
-        file_interval_secs,
-    } = &d.kind
-    else {
-        return;
-    };
-    let id = d.id.as_str();
-    check_http_delivery(
-        &HttpDelivery {
-            id,
-            url: catalog,
-            url_field: "catalog",
-            zone_urls: None,
-            request_field: "maxObjectBytes",
+impl IcebergDestinationDto {
+    /// Everything an Iceberg destination is checked for: its delivery limits, where its catalog is, how it signs in,
+    /// which table it writes and how a created one is partitioned.
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            unknown: _,
+            catalog,
+            warehouse,
+            namespace,
+            table,
+            partition_by,
+            token,
+            client_id,
+            client_secret,
+            token_url,
+            scope,
+            signing_name,
+            access,
             tls,
-            // A file's parts, not requests: checked below.
-            in_flight: None,
-            request_bytes: max_object_bytes.0,
-            request_limits: (ObjectBytes::MIN, ObjectBytes::MAX),
-            request_what: "a data file size",
-            limit_why: "a file is finished early at this size",
-            // Bounded below, against a file's own limits: files upload in parts, so it need not hold one.
-            buffer_bytes: None,
-            stall_after: *stall_after_secs,
-        },
-        errors,
-    );
-    check_file_limits(id, *in_flight, *buffer_bytes, errors);
-    let what = format!("destination {id:?}");
-    let blank = |v: &str| v.trim().is_empty();
-    if token_url.as_deref().is_some_and(blank) {
-        errors
-            .at("tokenUrl")
-            .push(format!("{what} has an empty tokenUrl; name one, or leave it out"));
-    }
-    if token.is_some() && client_id.is_some() {
-        errors.at("token").push(format!(
-            "{what} names both a token and a clientId. Name a token, or clientId and clientSecret, not both"
-        ));
-    }
-    if let Some(name) = signing_name
-        && !blank(name)
-        && !SIGNING_NAMES.contains(&name.trim())
-    {
-        errors.at("signingName").push(format!(
-            "{what} signs its catalog calls for {name:?}; the signing service is {}",
-            SIGNING_NAMES.join(" or ")
-        ));
-    }
-    if signing_name.is_some() && access.region.is_none() && crate::io::iceberg::table::signing_region(catalog).is_none()
-    {
-        errors.at("region").push(format!(
-            "{what} signs its catalog calls with AWS signatures, and its catalog's address {catalog:?} names no AWS \
-             region. Name the region the catalog is in"
-        ));
-    }
-    if signing_name.is_some() && (token.is_some() || client_id.is_some()) {
-        errors.at("signingName").push(format!(
-            "{what} names a signingName beside a token or clientId. A catalog signed in to with AWS signatures takes \
-             neither"
-        ));
-    }
-    if client_id.is_some() != client_secret.is_some() {
-        let missing = if client_id.is_none() {
-            "clientId"
-        } else {
-            "clientSecret"
-        };
-        errors.at(missing).push(format!(
-            "{what} names half of its client credentials. Name both clientId and clientSecret, or neither"
-        ));
-    }
-    if (token_url.is_some() || scope.is_some()) && client_id.is_none() {
-        let field = if token_url.is_some() { "tokenUrl" } else { "scope" };
-        errors.at(field).push(format!(
-            "{what} has a tokenUrl or scope and no clientId; both serve signing in with client credentials"
-        ));
-    }
-    for (field, value) in [
-        ("warehouse", warehouse),
-        ("clientId", client_id),
-        ("scope", scope),
-        ("signingName", signing_name),
-    ] {
-        if value.as_deref().is_some_and(blank) {
+            compression: _,
+            in_flight,
+            max_object_bytes,
+            buffer_bytes,
+            stall_after_secs,
+            file_interval_secs,
+        } = self;
+        let id = d.id.as_str();
+        check_http_delivery(
+            &HttpDelivery {
+                id,
+                url: catalog,
+                url_field: "catalog",
+                zone_urls: None,
+                request_field: "maxObjectBytes",
+                tls,
+                // A file's parts, not requests: checked below.
+                in_flight: None,
+                request_bytes: max_object_bytes.0,
+                request_limits: (ObjectBytes::MIN, ObjectBytes::MAX),
+                request_what: "a data file size",
+                limit_why: "a file is finished early at this size",
+                // Bounded below, against a file's own limits: files upload in parts, so it need not hold one.
+                buffer_bytes: None,
+                stall_after: *stall_after_secs,
+            },
+            errors,
+        );
+        check_file_limits(id, *in_flight, *buffer_bytes, errors);
+        let what = format!("destination {id:?}");
+        let blank = |v: &str| v.trim().is_empty();
+        if token_url.as_deref().is_some_and(blank) {
             errors
-                .at(field)
-                .push(format!("{what} has an empty {field}; name one, or leave it out"));
+                .at("tokenUrl")
+                .push(format!("{what} has an empty tokenUrl; name one, or leave it out"));
         }
-    }
-    if blank(namespace) {
-        errors.at("namespace").push(format!("{what} names no namespace"));
-    } else if namespace.trim().split('.').any(blank) {
-        errors.at("namespace").push(format!(
-            "{what} names the namespace {namespace:?}, which has an empty level. Join its levels with single dots, \
-             as logs.web"
-        ));
-    }
-    if blank(table) {
-        errors.at("table").push(format!("{what} names no table"));
-    }
-    let mut names = std::collections::HashSet::new();
-    for term in partition_by {
-        match crate::io::iceberg::transform::partition_term(term) {
-            Err(why) => errors
-                .at("partitionBy")
-                .push(format!("{what} has a partitionBy term it cannot read: {why}")),
-            // Iceberg names each partition field once: a catalog refuses to create a table with a second of a name.
-            Ok((transform, path)) => {
-                let name = crate::io::iceberg::transform::partition_name(&transform, &path);
-                if names.contains(&name) {
-                    errors.at("partitionBy").push(format!(
-                        "{what} has two partitionBy terms naming the partition field {name:?}; keep one"
-                    ));
-                }
-                names.insert(name);
+        if token.is_some() && client_id.is_some() {
+            errors.at("token").push(format!(
+                "{what} names both a token and a clientId. Name a token, or clientId and clientSecret, not both"
+            ));
+        }
+        if let Some(name) = signing_name
+            && !blank(name)
+            && !SIGNING_NAMES.contains(&name.trim())
+        {
+            errors.at("signingName").push(format!(
+                "{what} signs its catalog calls for {name:?}; the signing service is {}",
+                SIGNING_NAMES.join(" or ")
+            ));
+        }
+        if signing_name.is_some()
+            && access.region.is_none()
+            && crate::io::iceberg::table::signing_region(catalog).is_none()
+        {
+            errors.at("region").push(format!(
+                "{what} signs its catalog calls with AWS signatures, and its catalog's address {catalog:?} names no AWS \
+                 region. Name the region the catalog is in"
+            ));
+        }
+        if signing_name.is_some() && (token.is_some() || client_id.is_some()) {
+            errors.at("signingName").push(format!(
+                "{what} names a signingName beside a token or clientId. A catalog signed in to with AWS signatures takes \
+                 neither"
+            ));
+        }
+        if client_id.is_some() != client_secret.is_some() {
+            let missing = if client_id.is_none() {
+                "clientId"
+            } else {
+                "clientSecret"
+            };
+            errors.at(missing).push(format!(
+                "{what} names half of its client credentials. Name both clientId and clientSecret, or neither"
+            ));
+        }
+        if (token_url.is_some() || scope.is_some()) && client_id.is_none() {
+            let field = if token_url.is_some() { "tokenUrl" } else { "scope" };
+            errors.at(field).push(format!(
+                "{what} has a tokenUrl or scope and no clientId; both serve signing in with client credentials"
+            ));
+        }
+        for (field, value) in [
+            ("warehouse", warehouse),
+            ("clientId", client_id),
+            ("scope", scope),
+            ("signingName", signing_name),
+        ] {
+            if value.as_deref().is_some_and(blank) {
+                errors
+                    .at(field)
+                    .push(format!("{what} has an empty {field}; name one, or leave it out"));
             }
         }
+        if blank(namespace) {
+            errors.at("namespace").push(format!("{what} names no namespace"));
+        } else if namespace.trim().split('.').any(blank) {
+            errors.at("namespace").push(format!(
+                "{what} names the namespace {namespace:?}, which has an empty level. Join its levels with single dots, \
+                 as logs.web"
+            ));
+        }
+        if blank(table) {
+            errors.at("table").push(format!("{what} names no table"));
+        }
+        let mut names = std::collections::HashSet::new();
+        for term in partition_by {
+            match crate::io::iceberg::transform::partition_term(term) {
+                Err(why) => errors
+                    .at("partitionBy")
+                    .push(format!("{what} has a partitionBy term it cannot read: {why}")),
+                // Iceberg names each partition field once: a catalog refuses to create a table with a second of a name.
+                Ok((transform, path)) => {
+                    let name = crate::io::iceberg::transform::partition_name(&transform, &path);
+                    if names.contains(&name) {
+                        errors.at("partitionBy").push(format!(
+                            "{what} has two partitionBy terms naming the partition field {name:?}; keep one"
+                        ));
+                    }
+                    names.insert(name);
+                }
+            }
+        }
+        if !access.is_empty() {
+            check_s3_access(access, &what, errors);
+        }
+        check_file_interval(*file_interval_secs, &what, "committed", errors);
     }
-    if !access.is_empty() {
-        check_s3_access(access, &what, errors);
-    }
-    check_file_interval(*file_interval_secs, &what, "committed", errors);
 }
 
 /// A source waits up to the interval for its batches' acknowledgement, and after a crash reads that much again.
@@ -4315,86 +4492,86 @@ fn check_file_interval(file_interval: FileInterval, what: &str, finished: &str, 
     }
 }
 
-/// Everything a Delta destination is checked for: its delivery limits, how it reaches its bucket, where its table is
-/// and how a created one is partitioned.
-fn check_delta(d: &DestinationDto, errors: &mut ItemErrors<'_>) {
-    let DestinationKindDto::Delta {
-        location,
-        unity_catalog,
-        partition_by,
-        access,
-        tls,
-        compression: _,
-        in_flight,
-        max_object_bytes,
-        buffer_bytes,
-        stall_after_secs,
-        file_interval_secs,
-    } = &d.kind
-    else {
-        return;
-    };
-    let id = d.id.as_str();
-    check_http_delivery(
-        &HttpDelivery {
-            id,
-            url: access.endpoint.as_deref().unwrap_or(S3_ENDPOINT),
-            url_field: "endpoint",
-            zone_urls: None,
-            request_field: "maxObjectBytes",
+impl DeltaDestinationDto {
+    /// Everything a Delta destination is checked for: its delivery limits, how it reaches its bucket, where its
+    /// table is and how a created one is partitioned.
+    fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
+        let Self {
+            unknown: _,
+            location,
+            unity_catalog,
+            partition_by,
+            access,
             tls,
-            // A file's parts, not requests: checked below.
-            in_flight: None,
-            request_bytes: max_object_bytes.0,
-            request_limits: (ObjectBytes::MIN, ObjectBytes::MAX),
-            request_what: "a data file size",
-            limit_why: "a file is finished early at this size",
-            // Bounded below, against a file's own limits: files upload in parts, so it need not hold one.
-            buffer_bytes: None,
-            stall_after: *stall_after_secs,
-        },
-        errors,
-    );
-    check_file_limits(id, *in_flight, *buffer_bytes, errors);
-    let what = format!("destination {id:?}");
-    check_s3_access(access, &what, errors);
-    match (location, unity_catalog) {
-        (Some(_), Some(_)) => errors.at("location").push(format!(
-            "{what} names both a location and a unityCatalog table. Name the table's root in S3 as location, or its \
-             Unity Catalog table as unityCatalog, not both"
-        )),
-        (None, None) => errors.at("location").push(format!(
-            "{what} names no table. Name its root in S3 as location, as s3://bucket/path, or its Unity Catalog table \
-             as unityCatalog"
-        )),
-        (Some(location), None) => {
-            let bucket = ["s3://", "s3a://"]
-                .iter()
-                .find_map(|scheme| location.trim().strip_prefix(scheme))
-                .map(|rest| rest.split('/').next().unwrap_or_default());
-            if bucket.is_none_or(str::is_empty) {
-                errors.at("location").push(format!(
-                    "{what} keeps its table at {location:?}; give the table's root in S3, as s3://bucket/path"
+            compression: _,
+            in_flight,
+            max_object_bytes,
+            buffer_bytes,
+            stall_after_secs,
+            file_interval_secs,
+        } = self;
+        let id = d.id.as_str();
+        check_http_delivery(
+            &HttpDelivery {
+                id,
+                url: access.endpoint.as_deref().unwrap_or(S3_ENDPOINT),
+                url_field: "endpoint",
+                zone_urls: None,
+                request_field: "maxObjectBytes",
+                tls,
+                // A file's parts, not requests: checked below.
+                in_flight: None,
+                request_bytes: max_object_bytes.0,
+                request_limits: (ObjectBytes::MIN, ObjectBytes::MAX),
+                request_what: "a data file size",
+                limit_why: "a file is finished early at this size",
+                // Bounded below, against a file's own limits: files upload in parts, so it need not hold one.
+                buffer_bytes: None,
+                stall_after: *stall_after_secs,
+            },
+            errors,
+        );
+        check_file_limits(id, *in_flight, *buffer_bytes, errors);
+        let what = format!("destination {id:?}");
+        check_s3_access(access, &what, errors);
+        match (location, unity_catalog) {
+            (Some(_), Some(_)) => errors.at("location").push(format!(
+                "{what} names both a location and a unityCatalog table. Name the table's root in S3 as location, or its \
+                 Unity Catalog table as unityCatalog, not both"
+            )),
+            (None, None) => errors.at("location").push(format!(
+                "{what} names no table. Name its root in S3 as location, as s3://bucket/path, or its Unity Catalog table \
+                 as unityCatalog"
+            )),
+            (Some(location), None) => {
+                let bucket = ["s3://", "s3a://"]
+                    .iter()
+                    .find_map(|scheme| location.trim().strip_prefix(scheme))
+                    .map(|rest| rest.split('/').next().unwrap_or_default());
+                if bucket.is_none_or(str::is_empty) {
+                    errors.at("location").push(format!(
+                        "{what} keeps its table at {location:?}; give the table's root in S3, as s3://bucket/path"
+                    ));
+                }
+            }
+            (None, Some(uc)) => check_unity_catalog(uc, access, &what, errors),
+        }
+        // Delta partitions by top-level columns, by their values, so a term is a column's name and nothing more.
+        let mut seen = HashSet::new();
+        for column in partition_by {
+            if column.trim().is_empty() || column.contains(['.', '(', ')', ',']) {
+                errors.at("partitionBy").push(format!(
+                    "{what} partitions by {column:?}; a Delta table is partitioned by top-level columns, so name one \
+                     column, as host"
                 ));
+            } else if !seen.insert(column) {
+                errors
+                    .at("partitionBy")
+                    .push(format!("{what} partitions by {column:?} twice; name each column once"));
             }
         }
-        (None, Some(uc)) => check_unity_catalog(uc, access, &what, errors),
+        check_file_interval(*file_interval_secs, &what, "committed", errors);
     }
-    // Delta partitions by top-level columns, by their values, so a term is a column's name and nothing more.
-    let mut seen = HashSet::new();
-    for column in partition_by {
-        if column.trim().is_empty() || column.contains(['.', '(', ')', ',']) {
-            errors.at("partitionBy").push(format!(
-                "{what} partitions by {column:?}; a Delta table is partitioned by top-level columns, so name one \
-                 column, as host"
-            ));
-        } else if !seen.insert(column) {
-            errors
-                .at("partitionBy")
-                .push(format!("{what} partitions by {column:?} twice; name each column once"));
-        }
-    }
-    check_file_interval(*file_interval_secs, &what, "committed", errors);
 }
 
 /// Refuses a Unity Catalog table that cannot be found or signed in to as written.
@@ -4824,22 +5001,22 @@ fn check_receiver_ports(file: &FileConfig, attributed: &mut Vec<ValidationError>
                 Some(
                     first @ SourceDto {
                         kind:
-                            SourceKindDto::OtlpReceiver {
+                            SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto {
                                 tls: theirs,
                                 connections: their_limits,
                                 ..
-                            },
+                            }),
                         ..
                     },
                 ),
-                SourceKindDto::OtlpReceiver {
+                SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto {
                     tls,
                     signal,
                     connections,
                     ..
-                },
+                }),
             ) => {
-                let same = |o: &SourceDto| matches!(&o.kind, SourceKindDto::OtlpReceiver { signal: other, .. } if other == signal);
+                let same = |o: &SourceDto| matches!(&o.kind, SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto { signal: other, .. }) if other == signal);
                 if let Some(taken) = on_port.iter().find(|o| same(o)) {
                     Some(format!(
                         "source {:?} takes {} on port {port}, which source {:?} already does; an export of \
@@ -5450,7 +5627,8 @@ fn to_objects(
 fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
     let of = format!("destination {:?}", dto.id);
     let kind = match &dto.kind {
-        DestinationKindDto::Kafka {
+        DestinationKindDto::Kafka(KafkaDestinationDto {
+            unknown: _,
             brokers,
             default_topic,
             tls,
@@ -5462,7 +5640,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             format,
             field,
             schema_registry,
-        } => DestinationKind::Kafka(KafkaDestinationConfig {
+        }) => DestinationKind::Kafka(KafkaDestinationConfig {
             payload: to_payload(*format, field),
             tls: to_tls(tls, &of, Side::Client),
             brokers: brokers.clone(),
@@ -5475,7 +5653,8 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             service: KafkaService::Kafka,
             avro: avro_write(*format, schema_registry),
         }),
-        DestinationKindDto::EventHubs {
+        DestinationKindDto::EventHubs(EventHubsDestinationDto {
+            unknown: _,
             namespace,
             default_event_hub,
             connection_string,
@@ -5486,7 +5665,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             stall_after_secs,
             buffer_bytes,
             schema_registry,
-        } => {
+        }) => {
             let brokers = event_hubs_brokers(namespace);
             DestinationKind::Kafka(KafkaDestinationConfig {
                 payload: to_payload(*format, field),
@@ -5502,7 +5681,8 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
                 avro: avro_write(*format, schema_registry),
             })
         }
-        DestinationKindDto::Elasticsearch {
+        DestinationKindDto::Elasticsearch(ElasticsearchDestinationDto {
+            unknown: _,
             url,
             zone_urls,
             default_index,
@@ -5518,7 +5698,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             stall_after_secs,
             sniff,
             zone_attribute,
-        } => DestinationKind::Elasticsearch(crate::plan::topology::ElasticDestinationConfig {
+        }) => DestinationKind::Elasticsearch(crate::plan::topology::ElasticDestinationConfig {
             sniff: sniff.then(|| crate::plan::topology::Sniff {
                 zone_attribute: zone_attribute
                     .as_deref()
@@ -5545,7 +5725,8 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_bulk_bytes.0),
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
         }),
-        DestinationKindDto::SplunkHec {
+        DestinationKindDto::SplunkHec(SplunkHecDestinationDto {
+            unknown: _,
             url,
             zone_urls,
             token,
@@ -5562,7 +5743,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             max_request_bytes,
             buffer_bytes,
             stall_after_secs,
-        } => DestinationKind::SplunkHec(SplunkHecDestinationConfig {
+        }) => DestinationKind::SplunkHec(SplunkHecDestinationConfig {
             payload: to_payload(*format, field),
             url: url.clone(),
             zone_urls: zone_urls.clone(),
@@ -5585,14 +5766,15 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
         }),
-        DestinationKindDto::S3 {
+        DestinationKindDto::S3(S3DestinationDto {
+            unknown: _,
             bucket,
             kms_key_id,
             access,
             objects,
             cloud,
             tls,
-        } => to_objects(
+        }) => to_objects(
             Cloud::S3(S3Store {
                 bucket: bucket.clone(),
                 kms_key_id: kms_key_id.clone(),
@@ -5603,13 +5785,14 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             tls,
             &of,
         ),
-        DestinationKindDto::Gcs {
+        DestinationKindDto::Gcs(GcsDestinationDto {
+            unknown: _,
             bucket,
             access,
             objects,
             cloud,
             tls,
-        } => to_objects(
+        }) => to_objects(
             Cloud::Gcs(GcsStore {
                 bucket: bucket.clone(),
                 access: to_gcs_access(access),
@@ -5619,13 +5802,14 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             tls,
             &of,
         ),
-        DestinationKindDto::AzureBlob {
+        DestinationKindDto::AzureBlob(AzureBlobDestinationDto {
+            unknown: _,
             container,
             access,
             objects,
             cloud,
             tls,
-        } => to_objects(
+        }) => to_objects(
             Cloud::Azure(AzureStore {
                 container: container.clone(),
                 access: to_azure_access(access),
@@ -5635,7 +5819,8 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             tls,
             &of,
         ),
-        DestinationKindDto::Http {
+        DestinationKindDto::Http(HttpDestinationDto {
+            unknown: _,
             url,
             zone_urls,
             body,
@@ -5649,7 +5834,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             max_request_bytes,
             buffer_bytes,
             stall_after_secs,
-        } => DestinationKind::Http(HttpDestinationConfig {
+        }) => DestinationKind::Http(HttpDestinationConfig {
             zone_urls: zone_urls
                 .iter()
                 .map(|(zone, url)| (zone.clone(), as_parsed(url)))
@@ -5672,7 +5857,8 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
                 stall_after_secs,
             )
         }),
-        DestinationKindDto::Prometheus {
+        DestinationKindDto::Prometheus(PrometheusDestinationDto {
+            unknown: _,
             url,
             version,
             headers,
@@ -5681,7 +5867,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             max_request_bytes,
             buffer_bytes,
             stall_after_secs,
-        } => DestinationKind::Prometheus(PrometheusDestinationConfig {
+        }) => DestinationKind::Prometheus(PrometheusDestinationConfig {
             url: url.trim().to_string(),
             version: match version {
                 RemoteWriteVersionDto::V1 => RemoteWriteVersion::V1,
@@ -5694,7 +5880,8 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
         }),
-        DestinationKindDto::Otlp {
+        DestinationKindDto::Otlp(OtlpDestinationDto {
+            unknown: _,
             url,
             signal,
             compression,
@@ -5705,7 +5892,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             max_request_bytes,
             buffer_bytes,
             stall_after_secs,
-        } => DestinationKind::Otlp(OtlpDestinationConfig {
+        }) => DestinationKind::Otlp(OtlpDestinationConfig {
             http: HttpDestinationConfig {
                 compression: compression.to_plan(),
                 headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -5721,7 +5908,8 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             },
             signal: *signal,
         }),
-        DestinationKindDto::LogAnalytics {
+        DestinationKindDto::LogAnalytics(LogAnalyticsDestinationDto {
+            unknown: _,
             endpoint,
             rule_id,
             stream,
@@ -5731,7 +5919,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             max_request_bytes,
             buffer_bytes,
             stall_after_secs,
-        } => DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig {
+        }) => DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig {
             http: HttpDestinationConfig {
                 body: RequestBody::JsonArray,
                 compression: crate::plan::topology::Compression::Gzip,
@@ -5746,11 +5934,12 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             },
             sign_in: to_entra_sign_in(sign_in),
         }),
-        DestinationKindDto::Sftp {
+        DestinationKindDto::Sftp(SftpDestinationDto {
+            unknown: _,
             directory,
             access,
             objects,
-        } => to_objects(
+        }) => to_objects(
             Cloud::Sftp(SftpStore {
                 directory: sftp_directory(directory),
                 access: to_sftp_access(access),
@@ -5761,7 +5950,8 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             &TlsDto::default(),
             &of,
         ),
-        DestinationKindDto::Iceberg {
+        DestinationKindDto::Iceberg(IcebergDestinationDto {
+            unknown: _,
             catalog,
             warehouse,
             namespace,
@@ -5781,7 +5971,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             buffer_bytes,
             stall_after_secs,
             file_interval_secs,
-        } => DestinationKind::Iceberg(IcebergDestinationConfig {
+        }) => DestinationKind::Iceberg(IcebergDestinationConfig {
             catalog: catalog.trim().to_string(),
             warehouse: warehouse.as_ref().map(|w| w.trim().to_string()),
             sign_in: match (token, client_id, client_secret) {
@@ -5815,7 +6005,8 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
             file_interval: std::time::Duration::from_secs(file_interval_secs.0),
         }),
-        DestinationKindDto::Delta {
+        DestinationKindDto::Delta(DeltaDestinationDto {
+            unknown: _,
             location,
             unity_catalog,
             partition_by,
@@ -5827,7 +6018,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             buffer_bytes,
             stall_after_secs,
             file_interval_secs,
-        } => DestinationKind::Delta(DeltaDestinationConfig {
+        }) => DestinationKind::Delta(DeltaDestinationConfig {
             // Naming both, or neither, is refused where the fields are checked.
             location: location.as_deref().map(str::trim).unwrap_or_default().to_string(),
             unity_catalog: unity_catalog.as_ref().map(|u| UnityCatalogTable {
