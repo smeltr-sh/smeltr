@@ -2,9 +2,15 @@
   import { page } from '$app/state';
   import type { Group, Link } from '#lib/nav.ts';
 
-  /** `label` names the sidebar, `links` come before its groups, and `id` names the panel a narrow screen folds. */
-  let { label, id, links, groups }: { label: string; id: string; links: Link[]; groups: Group[] } =
-    $props();
+  /** `label` names the sidebar, `links` come before its groups, and `id` names the panel a narrow screen folds. A
+   * group starts open when it holds the page, or always with `open`. */
+  let {
+    label,
+    id,
+    links,
+    groups,
+    open = false,
+  }: { label: string; id: string; links: Link[]; groups: Group[]; open?: boolean } = $props();
 
   // On a narrow screen the whole sidebar folds behind a button.
   let toggle: HTMLButtonElement;
@@ -16,7 +22,7 @@
   /** The groups a reader folded or opened, by title. */
   let flipped = $state(new Set<string>());
   function isOpen(group: Group): boolean {
-    return holds(group, page.url.pathname) !== flipped.has(group.title);
+    return (open || holds(group, page.url.pathname)) !== flipped.has(group.title);
   }
   function flip(group: Group) {
     const next = new Set(flipped);

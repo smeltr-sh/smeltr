@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { downloadHref } from '#lib/releases.ts';
+  import { categorized, codeRuns, downloadHref } from '#lib/releases.ts';
 
   let { data } = $props();
   const r = $derived(data.release);
@@ -28,14 +28,19 @@
     </section>
   {/if}
   <article>
-    {#if r.highlights?.length}<h2 class="all">In detail</h2>{/if}
-    {#each r.sections as s (s.title)}
-      <h3>{s.title}</h3>
-      <ul>
-        {#each s.items as item (item)}
-          <li>{item}</li>
-        {/each}
-      </ul>
+    {#each categorized(r) as c (c.title)}
+      <h2 class="category">{c.title}</h2>
+      {#each c.groups as g (g.title)}
+        <h3>{g.title}</h3>
+        <ul>
+          {#each g.items as item (item)}
+            <li>
+              {#each codeRuns(item) as run, i (i)}{#if run.code}<code>{run.text}</code
+                  >{:else}{run.text}{/if}{/each}
+            </li>
+          {/each}
+        </ul>
+      {/each}
     {/each}
     {#if r.date}
       <h2>Upgrade</h2>
@@ -77,7 +82,7 @@
     color: var(--dim);
     font-size: 0.92rem;
   }
-  .all {
+  .category {
     margin: 3rem 0 1rem;
   }
   .date {
