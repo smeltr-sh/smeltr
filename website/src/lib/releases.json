@@ -1,7 +1,7 @@
 [
   {
     "version": "1.1.0",
-    "summary": "An OTLP destination and a socket receiver, senders admitted by their certificate's fingerprint, log levels set for the whole fleet on the leader, and receivers that answer a request as soon as they have received it, and changed defaults for connections, file intervals and message sizes.",
+    "summary": "The second release: more capabilities, and fixes for the bugs found since 1.0.",
     "highlights": [
       {
         "title": "Send to any OpenTelemetry endpoint",
