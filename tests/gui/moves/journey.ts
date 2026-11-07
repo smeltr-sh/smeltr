@@ -2004,11 +2004,8 @@ const pasteSample: Move = {
         ),
       );
     await expect(dialog.getByText(`${records} record${records === 1 ? '' : 's'}`)).toBeVisible();
-    await saveBy(
-      j,
-      dialog.getByRole('button', { name: 'Save sample' }),
-      () => expect(dialog).toBeHidden(),
-      true,
+    await saveBy(j, dialog.getByRole('button', { name: 'Save sample' }), () =>
+      expect(dialog).toBeHidden(),
     );
     world.editing.samples.push(name);
     await expect(page.getByRole('row', { name: new RegExp(name) })).toBeVisible();
@@ -2119,11 +2116,8 @@ const editSample: Move = {
       done.push('paste one');
     }
 
-    await saveBy(
-      j,
-      editor.getByRole('button', { name: 'Save sample' }),
-      () => expect(editor).toBeHidden(),
-      true,
+    await saveBy(j, editor.getByRole('button', { name: 'Save sample' }), () =>
+      expect(editor).toBeHidden(),
     );
     expect(await read(), `${name} holds the edited records`).toEqual(draft.map((r) => r.record));
     await editingIsSaved(j);
@@ -2145,7 +2139,6 @@ const deleteSample: Move = {
       j,
       page.getByRole('dialog', { name: 'delete sample' }).getByRole('button', { name: 'Delete' }),
       () => expect(row).toHaveCount(0),
-      true,
     );
     world.editing.samples = world.editing.samples.filter((s) => s !== name);
     await editingIsSaved(j);
@@ -2337,11 +2330,8 @@ const saveInputSample: Move = {
     // Found by what it holds: a branch prompt can open beside it.
     const dialog = page.getByRole('dialog').filter({ has: page.getByLabel('Name') });
     await dialog.getByLabel('Name').fill(name);
-    await saveBy(
-      j,
-      dialog.getByRole('button', { name: 'Save sample' }),
-      () => expect(dialog).toBeHidden(),
-      true,
+    await saveBy(j, dialog.getByRole('button', { name: 'Save sample' }), () =>
+      expect(dialog).toBeHidden(),
     );
     await expect(chip).toContainText(name);
     world.editing.samples.push(name);
