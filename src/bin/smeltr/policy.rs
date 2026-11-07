@@ -92,13 +92,7 @@ pub fn need(method: &Method, path: &str) -> Need {
             Method::POST,
             [
                 "preview",
-                "grok"
-                | "onboard"
-                | "line-breaker"
-                | "format"
-                | "certificate"
-                | "sql"
-                | "schema-read"
+                "grok" | "onboard" | "line-breaker" | "format" | "certificate" | "sql" | "schema-read"
                 | "schema-export",
             ],
         )
@@ -107,10 +101,11 @@ pub fn need(method: &Method, path: &str) -> Need {
         (Method::POST, ["captures"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["captures", _])
         | (Method::POST, ["captures", _, "stop"])
-        | (Method::GET | Method::HEAD, ["captures", _, "download"])
+        | (Method::GET | Method::HEAD, ["captures", _, "download"]) => Need::Somewhere(Level::Viewer),
         // Names, versions and where each is used, never a value: what a secret picker offers whoever saves a form.
-        | (Method::GET | Method::HEAD, ["secrets"])
-        | (Method::GET | Method::HEAD, ["certificates"]) => Need::Somewhere(Level::Editor),
+        (Method::GET | Method::HEAD, ["secrets"]) | (Method::GET | Method::HEAD, ["certificates"]) => {
+            Need::Somewhere(Level::Editor)
+        }
 
         // Branches and changes. Which areas a change touches is in the branch, so reviewing and deploying one, and
         // reading and running its own tests, is checked again by its handler.
@@ -374,18 +369,24 @@ mod tests {
         assert_eq!(need(&Method::POST, "/api/preview/unlisted"), Need::Administrator);
     }
 
+    /// The group a capture runs in is in its body or its session, so its handler judges it.
     #[test]
-    fn captures_and_what_a_form_offers_need_editor_somewhere() {
+    fn captures_need_viewer_somewhere() {
         for (method, path) in [
             (Method::POST, "/api/captures"),
             (Method::GET, "/api/captures/c1"),
             (Method::POST, "/api/captures/c1/stop"),
             (Method::GET, "/api/captures/c1/download"),
             (Method::DELETE, "/api/captures/c1"),
-            (Method::GET, "/api/secrets"),
-            (Method::GET, "/api/certificates"),
         ] {
-            assert_eq!(need(&method, path), Need::Somewhere(Level::Editor), "{method} {path}");
+            assert_eq!(need(&method, path), Need::Somewhere(Level::Viewer), "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn what_a_form_offers_needs_editor_somewhere() {
+        for path in ["/api/secrets", "/api/certificates"] {
+            assert_eq!(get(path), Need::Somewhere(Level::Editor), "{path}");
         }
     }
 

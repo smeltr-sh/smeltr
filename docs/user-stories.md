@@ -303,11 +303,11 @@ outside the boundary the enclave exists to enforce.
 person holds one level in each area they may see, and each level includes
 the ones before it:
 
-| level        | what it is                                             |
-| ------------ | ------------------------------------------------------ |
-| **viewer**   | read the area's configuration and samples, and preview |
-| **editor**   | change it on a branch, and capture                     |
-| **deployer** | approve and deploy a change to it                      |
+| level        | what it is                                                     |
+| ------------ | -------------------------------------------------------------- |
+| **viewer**   | read the area's configuration and samples, preview and capture |
+| **editor**   | change it on a branch                                          |
+| **deployer** | approve and deploy a change to it                              |
 
 A role is the level it gives in each area, and the provider groups that
 give it. Holding several roles holds the highest level any of them gives.
@@ -327,9 +327,10 @@ provider group, so one person can run the whole system alone. Only
 administrators reach Admin, and at least one local administrator
 remains.
 
-**P5 — Capturing is editor work.** A viewer reads an area's samples and
-runs a preview over them. A capture asks a group's workers for live records,
-so it takes editor in the group, as changing its configuration does.
+**P5 — Records are a viewer's to read.** A viewer reads an area's samples,
+runs a preview over them and captures a group's live records. Saving a
+capture as a sample takes editor, as changing the configuration does. Every
+capture is audited with what it read.
 
 **P6 — A team sees its own areas.** A change, a commit, the map and the
 status pages show a person only the areas they hold; a change reaching an

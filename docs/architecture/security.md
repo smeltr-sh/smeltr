@@ -160,9 +160,9 @@ The gate names the area and level each route needs
 ([api.md](api.md), Who may call what), and a route it does not
 name is for administrators alone, so a route added without a decision is
 closed rather than open. Viewer covers reading samples, which hold production
-records, and running a preview over them, since neither changes anything.
-Editor covers capture as well as saving, since a capture asks a group's workers
-for live records. Approving or deploying a
+records, running a preview over them, and capturing a group's live records,
+since none of them changes the configuration. A capture's audit row says what
+it read. Editor covers saving, a captured sample included. Approving or deploying a
 change takes deployer in every area its paths touch; a change to `shared` is
 judged as `shared`, so a `shared` deployer changes what every group runs.
 Running a change's own tests judges it the same way. Changing a change, its
@@ -173,8 +173,8 @@ their next request; a person's groups change at their next refresh.
 A person sees only the areas they hold. A change, its diff and a commit in
 the history are shown whole to someone holding viewer in every area they
 touch, and to nobody else, as though absent. The map, the status pages, a
-node's counts and the list of groups show only the groups held. A capture is answered only to an
-editor of the group it runs in. A role names areas by name and outlives the
+node's counts and the list of groups show only the groups held. A capture is answered only to a
+viewer of the group it runs in. A role names areas by name and outlives the
 group: a group removed and created again under the same id is given to the
 roles that named it.
 

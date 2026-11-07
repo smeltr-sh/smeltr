@@ -3,6 +3,7 @@ import {
   allows,
   areaOfPath,
   canEdit,
+  mayCapture,
   deployBlocker,
   heldAreas,
   holds,
@@ -52,6 +53,13 @@ describe('what a person may do', () => {
     expect(canEdit('search')).toBe(true);
     expect(canEdit('payments')).toBe(false);
     expect(holds('default', 'viewer')).toBe(false);
+  });
+
+  it('lets a viewer of a group capture there, a shared source included', async () => {
+    await signInAs({ administrator: false, areas: LEE });
+    expect(mayCapture({ kind: 'source', scope: 'shared', group: 'payments' })).toBe(true);
+    expect(mayCapture({ kind: 'destination', scope: 'payments', group: 'payments' })).toBe(true);
+    expect(mayCapture({ kind: 'source', scope: 'shared', group: 'default' })).toBe(false);
   });
 
   it('lists the areas held, shared first', async () => {

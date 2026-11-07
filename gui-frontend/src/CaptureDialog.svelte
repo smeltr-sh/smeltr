@@ -56,7 +56,8 @@
     busy: boolean;
     error: string;
     onstop: () => void;
-    onsave: (name: string) => void;
+    /** Saves it as a sample named `name`; absent for a viewer, who may not save one. */
+    onsave?: (name: string) => void;
     /** What the capture is for, in place of saving it: its title, and the action that takes it. */
     use?: { title: string; label: string; take: () => void };
     /** Discard: the session goes. */
@@ -97,11 +98,11 @@
   wide
   title={use
     ? use.title
-    : done
+    : done && onsave
       ? 'Save the capture'
       : destination !== undefined
-        ? `Capturing at ${destination}`
-        : `Capturing from ${source}`}
+        ? `${done ? 'Captured' : 'Capturing'} at ${destination}`
+        : `${done ? 'Captured' : 'Capturing'} from ${source}`}
   oncancel={() => {
     // Escape refuses, and while the capture runs there is nothing to refuse yet.
     if (done && !busy) ondiscard();
@@ -109,7 +110,7 @@
   onsubmit={() => {
     if (!done) onstop();
     else if (use) use.take();
-    else onsave(saveName.trim());
+    else onsave?.(saveName.trim());
   }}
 >
   <div class="content">
@@ -216,7 +217,7 @@
           before you save or share them.
         </p>
       {/if}
-      {#if done && !use}
+      {#if done && !use && onsave}
         <div class="name" class:off={held === 0}>
           <label for="capture-name">Save as</label>
           <input id="capture-name" bind:value={saveName} disabled={held === 0} />
@@ -244,7 +245,7 @@
           disabled={busy ? BUSY : !status ? 'Wait for the capture to start.' : ''}
           >{use.label}</Button
         >
-      {:else}
+      {:else if onsave}
         <Button
           type="submit"
           class="primary"

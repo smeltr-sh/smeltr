@@ -119,6 +119,10 @@
   /** The target the running session was started at, so a change to the form
    * while the dialog is up cannot rename what it saves. */
   let sessionTarget = $state<{ kind: CaptureAt; id: string } | null>(null);
+  /** Where a sample saved from the session goes. A source's sample goes where the source is declared,
+   * so a route preview can find it. No route takes in a destination, so its sample goes to the scope
+   * the scope chip shows. */
+  let savedIn = $derived(sessionTarget?.kind === 'source' && given ? given.scope : currentScope());
   /** Whether the running session captures as sent, which the dialog warns of. */
   let sessionRaw = $state(false);
 
@@ -141,8 +145,7 @@
       if (given) readAt = config.commit ?? null;
       if (config.config) {
         loaded = config.config;
-        // A source's sample is saved in its own scope, so only one its editor may save to is offered.
-        sources = scope !== SHARED_SCOPE || canEdit(SHARED_SCOPE) ? config.config.sources : [];
+        sources = config.config.sources;
         destinations = config.config.destinations;
         const keys = [
           ...sources.map((s) => targetKey('source', s.id)),
@@ -291,8 +294,6 @@
     error = '';
     try {
       const id = mintSampleId();
-      // A source's sample goes where the source is declared, so a route preview can find it; a
-      // destination's, which no route takes in, goes to the scope chip's.
       const source = sessionTarget?.kind === 'source' ? sessionTarget.id : undefined;
       const res = await saveCapture(
         session,
@@ -300,7 +301,7 @@
         sampleName,
         source,
         source && given ? readAt : undefined,
-        source ? given?.scope : undefined,
+        savedIn,
       );
       if (!res.ok) {
         error = errorText(res.errors) || 'could not save';
@@ -473,7 +474,7 @@
     {busy}
     {error}
     onstop={stop}
-    onsave={save}
+    onsave={canEdit(savedIn) ? save : undefined}
     use={use && { title: use.title, label: use.label, take }}
     ondiscard={discard}
   />

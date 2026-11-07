@@ -63,16 +63,15 @@ export function canEdit(area: string = currentScope()): boolean {
   return holds(area, 'editor');
 }
 
-/** Whether a capture may be started here: the group's workers are asked for records, and a source's sample
- * is saved where the source is declared. Without a target, whether the scope chip's form may be opened, since
- * its sample is saved there. */
+/** Whether a capture may be started at `at`: it asks `at.group`'s workers for records, which a viewer of
+ * that group may. Without `at`, whether the capture form may be opened from the scope chip. Saving
+ * what it caught is `canEdit`'s. */
 export function mayCapture(at?: {
   kind: 'source' | 'destination';
   scope: string;
   group: string;
 }): boolean {
-  if (!at) return canEdit();
-  return canEdit(at.group) && (at.kind === 'destination' || canEdit(at.scope));
+  return holds(at?.group ?? currentScope(), 'viewer');
 }
 
 /** The areas a person who is not an administrator holds, `shared` first. Empty for an

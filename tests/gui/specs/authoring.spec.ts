@@ -4,7 +4,7 @@
 // test is not about.
 //
 // A fresh browser edits branch `work` in the `shared` scope, which is where `api` arranges things too.
-import { test, expect, goto, type Api, type Leader } from '../fleet';
+import { test, expect, goto, signedIn, signInThroughGui, type Api, type Leader } from '../fleet';
 import type { Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -147,6 +147,62 @@ test("A1: a capture from smeltr's own metrics source, read by a worker, is saved
   const row = admin.getByRole('row', { name: /worker counters/ });
   await expect(row).toContainText('own-metrics');
   await expect(row.getByRole('cell', { name: '3', exact: true })).toBeVisible();
+});
+
+// A1, a viewer captures what a group runs, to look at and download. Saving it as a sample is an editor's, and the
+// audit says what the capture read.
+test('A1: a viewer captures a deployed source from the map and downloads it', async ({
+  api,
+  leader,
+  fleet,
+  browser,
+}) => {
+  await api.put('/api/areas/shared/sources?branch=arrive', [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+  ]);
+  await api.openChange('arrive', 'Read own metrics');
+  await api.deploy('arrive');
+  await fleet.startWorker(leader, api, 'default', 'w1');
+  await api.put('/api/roles/smeltr-readers', { areas: { default: 'viewer' } });
+  const made = await api.post('/api/accounts', {
+    authSource: 'local',
+    username: 'vera',
+    displayName: 'Vera Viewer',
+    roles: ['smeltr-readers'],
+  });
+  const first = await signedIn(leader, 'vera', made.temporaryPassword);
+  await first.put('/api/auth/password', { username: 'vera', newPassword: 'vera-chosen-password' });
+  await first.ctx.dispose();
+
+  const viewer = await (await browser.newContext({ ignoreHTTPSErrors: true })).newPage();
+  await viewer.goto(leader.url);
+  await signInThroughGui(viewer, 'vera', 'vera-chosen-password');
+  await expect(viewer.getByRole('button', { name: 'Sign in' })).toHaveCount(0);
+  // The map draws the source once the worker reports the rows no route takes.
+  await goto(viewer, leader, '#/map');
+  const capture = viewer.getByRole('button', { name: 'Capture', exact: true });
+  await expect(async () => {
+    await viewer.reload();
+    await viewer.locator('a.node[title="own-metrics"]').click({ timeout: 2_000 });
+    await expect(capture).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 60_000 });
+  await capture.click();
+  const form = viewer.getByRole('dialog');
+  await form.getByRole('spinbutton', { name: 'records' }).fill('3');
+  await form.getByRole('button', { name: 'Start' }).click();
+
+  const captured = viewer.getByRole('dialog', { name: 'Captured from own-metrics' });
+  await expect(captured).toBeVisible({ timeout: 60_000 });
+  await expect(captured.getByRole('link', { name: 'Download' })).toBeVisible();
+  await expect(captured.getByRole('button', { name: 'Save sample' })).toHaveCount(0);
+  await expect(captured.getByLabel('Save as')).toHaveCount(0);
+
+  const { events } = await api.get('/api/security-events');
+  expect(
+    events.map((e: { action: string; target: string }) => `${e.action} ${e.target}`),
+  ).toContain('capture-start default: source own-metrics as deployed');
+  await captured.getByRole('button', { name: 'Discard' }).click();
+  await expect(captured).toBeHidden();
 });
 
 // A1, a source's card: one route to one destination is a line; a second destination turns it top to bottom, a [+]
