@@ -116,16 +116,16 @@ test('the Schemas page reads a schema through the service', async ({ page }) => 
   await expect(page.getByRole('cell', { name: 'src_endpoint.port', exact: true })).toBeVisible();
 });
 
-/** Counts the sounds the page plays, in place of playing them. */
+/** Counts the chimes the page plays, in place of playing them. The count outlasts a reload, since a chime can play
+ * just before a reload. */
 async function listen(page: Page) {
   await page.addInitScript(() => {
-    (window as unknown as { chimes: number }).chimes = 0;
     HTMLMediaElement.prototype.play = function () {
-      (window as unknown as { chimes: number }).chimes++;
+      sessionStorage.setItem('chimes', String(Number(sessionStorage.getItem('chimes')) + 1));
       return Promise.resolve();
     };
   });
-  return () => page.evaluate(() => (window as unknown as { chimes: number }).chimes);
+  return () => page.evaluate(() => Number(sessionStorage.getItem('chimes')));
 }
 
 test('the guide chimes as a task ticks', async ({ page }) => {
@@ -140,7 +140,7 @@ test('the guide chimes as a task ticks', async ({ page }) => {
   // A reload finds the task done already, and stays quiet.
   await page.reload();
   await expect(guide).toHaveText('Guide · 1/7');
-  expect(await chimes()).toBe(0);
+  expect(await chimes()).toBe(1);
 });
 
 test('starting and opening a branch ticks the first task, and chimes', async ({ page }) => {
@@ -148,6 +148,11 @@ test('starting and opening a branch ticks the first task, and chimes', async ({ 
   await open(page, '#/changes');
   const guide = page.getByRole('button', { name: /^Guide · / });
   await expect(guide).toHaveText('Guide · 0/7');
+  // The guide shows 0/7 before it has first counted the tasks done on main, and a branch started before then does
+  // not chime.
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem('smeltr-demo-guide-heard')))
+    .not.toBeNull();
   await page.getByPlaceholder('a name for new work').fill('fix-network');
   await page.getByRole('button', { name: 'Start a branch' }).click();
   await page
