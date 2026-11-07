@@ -250,12 +250,14 @@
                   <span class="added">{formatDiffValue(entry.after)}</span>
                 {/if}
               </li>
+            {:else}
+              <li class="dim">Only the contents of the lookup file differ.</li>
             {/each}
           </ul>
           <details>
             <summary>Both versions</summary>
             <div class="versions">
-              {#each [['Imported', l.imported], ['Here', l.here]] as [label, text] (label)}
+              {#each [['Here', l.here], ['Imported', l.imported]] as [label, text] (label)}
                 <div role="group" aria-label={label}>
                   <h5>{label}</h5>
                   <pre>{text}</pre>
