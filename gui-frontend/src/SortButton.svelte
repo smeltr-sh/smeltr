@@ -15,7 +15,8 @@
 <button type="button" class="sort-head" class:sorted onclick={() => sort.toggle(key)}
   >{@render children()}<span class="arrow" aria-hidden="true"
     >{sorted ? (sort.dir === 1 ? '↑' : '↓') : ''}</span
-  >{#if sorted}<span class="state">, sorted {sort.dir === 1 ? 'ascending' : 'descending'}</span
+  >{#if sorted}<span class="state visually-hidden"
+      >, sorted {sort.dir === 1 ? 'ascending' : 'descending'}</span
     >{/if}</button
 >
 
@@ -53,16 +54,6 @@
     outline: 2px solid var(--accent);
     outline-offset: 2px;
     border-radius: var(--radius);
-  }
-
-  /* The arrow's meaning, for a screen reader: a head outside a table has no `aria-sort` to say it. */
-  .state {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
   }
 
   /* Holds its width when empty, so a column does not shift as its head is sorted. */

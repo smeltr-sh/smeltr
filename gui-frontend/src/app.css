@@ -37,6 +37,38 @@ body {
   color: var(--dim);
 }
 
+/* What every component would otherwise repeat. Each sits at zero specificity, so a component's own rule wins. */
+
+/* An uppercase label (STYLE_GUIDE.md, "Typography"): a step's kind, a dialog's header rule. */
+:where(.uppercase-label) {
+  color: var(--dim);
+  font-size: var(--text-micro);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* A value: a name, an id, code, a number someone copies. */
+:where(.mono) {
+  font-family: var(--mono);
+}
+
+:where(.ellipsis) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Read by a screen reader, not drawn. */
+:where(.visually-hidden) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* A field's requirement, as every list of a schema's fields colors it (`RequirementMark`, the Schemas table's
    choice of it). An optional one is `dim`. */
 .requirement-mark.required {

@@ -161,7 +161,7 @@
                 onpick(s.id);
               }}
             >
-              <span class="name">
+              <span class="name ellipsis">
                 {#if lockers.length > 0}<span title={`Locked by the test ${lockers.join(', ')}`}
                     ><LockIcon /></span
                   >{/if}
@@ -196,7 +196,7 @@
                 onpick(held.choice);
               }}
             >
-              <span class="name">{HELD_NAME}</span>
+              <span class="name ellipsis">{HELD_NAME}</span>
               <span class="dim">{count(held.records, 'record')} · not saved</span>
             </button>
           {/if}
@@ -209,7 +209,7 @@
               onclick={() => {
                 open = false;
                 oncapture?.(c);
-              }}><span class="name mono">◉ {c.id}</span></button
+              }}><span class="name mono ellipsis">◉ {c.id}</span></button
             >
           {/each}
         </div>
@@ -274,13 +274,6 @@
   .name {
     flex: 1;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 
   .foot {

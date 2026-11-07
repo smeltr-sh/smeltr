@@ -38,7 +38,7 @@
 
 <aside class="focus" aria-labelledby={titleId}>
   <div class="head">
-    <span class="eyebrow">{kind}</span>
+    <span class="uppercase-label">{kind}</span>
     <span class="pill mono">{group}</span>
     <span class="actions">
       {@render actions?.()}
@@ -64,23 +64,11 @@
     gap: 0.5rem;
   }
 
-  .eyebrow {
-    color: var(--dim);
-    font-size: var(--text-micro);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
   .pill {
     padding: 0.05rem 0.4rem;
     border-radius: var(--radius);
     background: var(--panel);
     font-size: var(--text-micro);
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 
   h2 {

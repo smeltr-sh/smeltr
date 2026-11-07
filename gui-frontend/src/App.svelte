@@ -449,7 +449,7 @@
           kind="identity"
           ariaLabel="signed in as {who.displayName}"
         >
-          {#snippet face()}<PersonIcon /><span class="who-face">{who.displayName}</span
+          {#snippet face()}<PersonIcon /><span class="who-face ellipsis">{who.displayName}</span
             >{#if administrator}<span class="dim"><LevelMark level="administrator" /></span
               >{/if}<span class="caret" aria-hidden="true">&#9662;</span>{/snippet}
 
@@ -859,9 +859,6 @@
   /* The chip's name: held short so a long one leaves the branch chip room. */
   .who-face {
     max-width: 10rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .who-name {

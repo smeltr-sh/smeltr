@@ -411,8 +411,4 @@
     font-size: var(--text-micro);
     color: var(--dim);
   }
-
-  .mono {
-    font-family: var(--mono);
-  }
 </style>

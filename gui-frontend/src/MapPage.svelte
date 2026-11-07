@@ -1066,7 +1066,7 @@
                       >
                         <span class="node-head">
                           <span class="node-shape">{@html shapeGlyph(p.node, 14)}</span>
-                          <span class="node-label">{p.node.name}</span>
+                          <span class="node-label ellipsis">{p.node.name}</span>
                           {#if mark}<StateMark state={mark} />{/if}
                         </span>
                         <span class="node-meta">
@@ -1176,10 +1176,6 @@
 </main>
 
 <style>
-  .mono {
-    font-family: var(--mono);
-  }
-
   .subtitle {
     margin: 0 0 1rem;
     font-size: var(--text-body);
@@ -1568,9 +1564,6 @@
   .node-label {
     font-family: var(--mono);
     font-size: var(--text-note);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .node.warning .node-label {

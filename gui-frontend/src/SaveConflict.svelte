@@ -179,10 +179,6 @@
     font-size: var(--text-note);
   }
 
-  .mono {
-    font-family: var(--mono);
-  }
-
   .theirs {
     margin: 0.75rem 0 0 calc(62px + 0.75rem);
     border: 1px solid var(--border);

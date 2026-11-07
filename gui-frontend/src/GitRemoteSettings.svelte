@@ -245,10 +245,6 @@
     gap: 0.3rem;
   }
 
-  .mono {
-    font-family: var(--mono);
-  }
-
   p {
     margin: 0;
   }

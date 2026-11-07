@@ -58,7 +58,4 @@
 </Field>
 
 <style>
-  .mono {
-    font-family: var(--mono);
-  }
 </style>

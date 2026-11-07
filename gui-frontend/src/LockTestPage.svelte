@@ -289,15 +289,15 @@
     <div class="grid2">
       <div class="card">
         <div class="row">
-          <h2>Input, locked</h2>
+          <h2 class="uppercase-label">Input, locked</h2>
           <span class="mono dim">{count(sampleRecords.length, 'row')}</span>
         </div>
         <div class="rows">
           {#each allRecords ? sampleRecords : sampleRecords.slice(0, SHOWN) as line}
-            <div class="mono line">{short(line)}</div>
+            <div class="mono line ellipsis">{short(line)}</div>
           {/each}
           {#if !allRecords && sampleRecords.length > SHOWN}
-            <div class="dim line">
+            <div class="dim line ellipsis">
               <ShowAll
                 more={sampleRecords.length - SHOWN}
                 what="row"
@@ -310,7 +310,7 @@
 
       <div class="card accent">
         <div class="row">
-          <h2>Expected output, locked</h2>
+          <h2 class="uppercase-label">Expected output, locked</h2>
           <span class="mono dim">
             {#if pipeline}
               {count(expected.length, 'row')}, {droppedCount} dropped
@@ -322,7 +322,7 @@
         <div class="rows">
           {#if pipeline}
             {#each allExpected ? expected : expected.slice(0, SHOWN) as doc}
-              <div class="mono line" class:dim={doc === null}>
+              <div class="mono line ellipsis" class:dim={doc === null}>
                 {doc === null ? 'dropped' : short(JSON.stringify(doc))}
               </div>
             {/each}
@@ -330,7 +330,7 @@
             {#each allExpected ? expected : expected.slice(0, SHOWN) as entry}
               {@const e = routed(entry)}
               <div class="e2e-entry">
-                <div class="mono line">{short(JSON.stringify(e.document))}</div>
+                <div class="mono line ellipsis">{short(JSON.stringify(e.document))}</div>
                 <div class="mono dim e2e-meta">
                   via {e.route} &rarr; {e.destinations.join(', ')}
                 </div>
@@ -338,7 +338,7 @@
             {/each}
           {/if}
           {#if !allExpected && expected.length > SHOWN}
-            <div class="dim line">
+            <div class="dim line ellipsis">
               <ShowAll
                 more={expected.length - SHOWN}
                 what={pipeline ? 'row' : 'document'}
@@ -375,17 +375,9 @@
 <style>
   h2 {
     margin: 0;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--dim);
   }
   .warn {
     color: var(--warn);
-  }
-  .mono {
-    font-family: var(--mono);
   }
 
   .card {
@@ -446,9 +438,6 @@
   }
   .line {
     font-size: var(--text-note);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     padding: 0.15rem 0;
   }
 

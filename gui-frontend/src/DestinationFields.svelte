@@ -169,7 +169,7 @@
     {@render formatFields(destination, AVRO_STREAM_FORMATS, 'json', streamFormatHelp)}
     <TlsFields value={destination} farEnd="destination" />
     <div class="section">
-      <div class="section-head">security</div>
+      <div class="section-head uppercase-label">security</div>
       <KafkaSecurity
         value={destination}
         {secrets}
@@ -1081,11 +1081,6 @@
   }
 
   .section-head {
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
     margin-bottom: 0.5rem;
   }
 

@@ -312,10 +312,6 @@
     box-sizing: border-box;
   }
 
-  .mono {
-    font-family: var(--mono);
-  }
-
   p {
     margin: 0;
   }

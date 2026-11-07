@@ -166,7 +166,7 @@
     <tbody>
       {#each shown as f (f.field)}
         <tr>
-          <td class="name" title={f.field}>
+          <td class="name ellipsis" title={f.field}>
             <span class="mono">{f.field}</span>
           </td>
           <td class="mono">{f.type}</td>
@@ -325,12 +325,6 @@
     color: var(--dim);
   }
 
-  .name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   /* An example can be a whole JSON document; two lines of it say what it is. */
   .example {
     max-width: 18rem;
@@ -351,9 +345,5 @@
 
   .dim {
     color: var(--dim);
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 </style>

@@ -132,7 +132,7 @@
 
 <div class="card">
   <div class="row card-head">
-    <h2>Files</h2>
+    <h2 class="uppercase-label">Files</h2>
     <span class="dim count">{count(files.length, 'file')}</span>
     {#if selectedPath}
       <button type="button" onclick={() => selectFile(null)}>Whole change</button>
@@ -194,7 +194,7 @@
 
 <div class="card">
   <div class="row card-head">
-    <h2>Diff</h2>
+    <h2 class="uppercase-label">Diff</h2>
     <span class="dim mono scope">{selectedPath ? shortPath(selectedPath) : 'whole change'}</span>
   </div>
   {#if diffLoading}
@@ -271,14 +271,6 @@
 <style>
   h2 {
     margin: 0;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-  }
-  .mono {
-    font-family: var(--mono);
   }
   .card {
     border: 1px solid var(--border);
@@ -313,16 +305,6 @@
   }
   .edit-cell {
     text-align: right;
-    white-space: nowrap;
-  }
-
-  /* Names a column whose header would otherwise be an empty cell. */
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
     white-space: nowrap;
   }
 

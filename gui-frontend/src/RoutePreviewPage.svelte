@@ -385,7 +385,7 @@
             <div class="node" class:warn={n.warn} style="left: {n.x}px; top: {n.y}px">
               <div class="node-label">{n.label}</div>
               <div class="node-sub mono">{n.sub}</div>
-              {#if n.kind}<div class="node-kind">{n.kind}</div>{/if}
+              {#if n.kind}<div class="node-kind uppercase-label">{n.kind}</div>{/if}
             </div>
           {/each}
         </div>
@@ -397,10 +397,6 @@
 </SectionShell>
 
 <style>
-  .mono {
-    font-family: var(--mono);
-  }
-
   .saved-context {
     display: inline-flex;
     align-items: center;
@@ -498,11 +494,6 @@
   }
 
   .node-kind {
-    color: var(--dim);
-    font-size: var(--text-micro);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
     margin-top: 0.15rem;
   }
 </style>
