@@ -150,7 +150,13 @@
                 ></span>{area.id}</span
               >
               <span class="dim">you hold {held(area.id) ?? 'nothing'}</span>
-              <select aria-label="{area.id} level" bind:value={byArea[area.id]}>
+              <!-- The saved permissions leave out an area with no level of its own. Its value is then
+                   undefined, which no option matches, so the select would show nothing; read it as '', the
+                   option "as every area". -->
+              <select
+                aria-label="{area.id} level"
+                bind:value={() => byArea[area.id] ?? '', (v) => (byArea[area.id] = v)}
+              >
                 <option value="">as every area</option>
                 {#each LEVELS as level (level)}<option value={level}>{level}</option>{/each}
               </select>

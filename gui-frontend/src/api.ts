@@ -4231,6 +4231,8 @@ export type MapNode = {
   kind: MapNodeKind;
   /** Absent for a pipeline. */
   system?: MapSystem;
+  /** A source's or destination's `type`, as its config names it. Absent for a pipeline. */
+  type?: SourceDto['type'] | DestinationDto['type'];
   /** Declared in `shared/` rather than in this group's own subtree -- still one running thing
    * per group that merges it in, just not authored here. */
   shared: boolean;
