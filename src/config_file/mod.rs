@@ -18,6 +18,7 @@
 mod bundle;
 pub mod bytes;
 mod dto;
+mod export;
 #[cfg(test)]
 mod fuzz_delta;
 #[cfg(test)]
@@ -58,6 +59,7 @@ pub use dto::{
     ParserKindDto, PipelineDto, RenamePairDto, Requirement, RouteDto, SchemaDto, SchemaFieldDto, SecretRefDto,
     SourceDto, SourceKindDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto,
 };
+pub use export::{Export, export};
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
 pub use links::{Connections, Kind, Links, Object};
 pub use load::{

@@ -12,6 +12,7 @@
 <script lang="ts">
   import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
   import StateMark from './StateMark.svelte';
+  import ExportDialog from './ExportDialog.svelte';
   import InlineError from './InlineError.svelte';
   import { tick, untrack } from 'svelte';
   import PipelineFindings from './PipelineFindings.svelte';
@@ -115,7 +116,7 @@
   import { mintPipelineId } from './ids';
   import { announcePipelineNames, newPipelineHash, withPipeline, type Making } from './nav';
   import { ago } from './time';
-  import { editable, mayCapture } from './access';
+  import { NOT_IN_DEMO, editable, mayCapture } from './access';
 
   let {
     id,
@@ -412,6 +413,7 @@
    * pipeline that was not removes it. */
   let existedAtBase = $state(true);
   let undoBusy = $state(false);
+  let exporting = $state(false);
   let undoError = $state('');
   let compares = 0;
 
@@ -1444,7 +1446,15 @@
       >
         Raw JSON
       </button>
+      {#if id !== 'new'}
+        <Button
+          type="button"
+          disabled={isDirty ? SAVE_FIRST : ''}
+          onclick={() => (exporting = true)}>Export</Button
+        >
+      {/if}
     </header>
+    <ExportDialog open={exporting} pipeline={id} oncancel={() => (exporting = false)} />
     <InlineError message={undoError} />
 
     {#if id !== 'new'}<Connections kind="pipeline" {id} />{/if}

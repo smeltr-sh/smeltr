@@ -161,6 +161,44 @@ otherwise the file is the author's choice.
 A save writes only the file its section owns, so an edit to one section never
 touches another.
 
+## Moving a pipeline between leaders
+
+A pipeline moves to another leader as an export: a bundle in a zip holding the
+pipeline and what it reads, so it loads and runs on its own. That is the
+pipelines it calls, however deep, the lookup tables they read, the grok
+patterns they name, however deep, the schemas they produce, and the samples
+and tests that lock any of them. With routes included, the export adds each
+route that runs the pipeline, its source, the destinations it delivers to and
+those their refusals go to, and the schemas those destinations accept. The
+group's own settings stay behind: its exception answers, what only they
+deliver to, and its name. The importing group runs under its own. A lookup file
+travels as its bytes, not as the pointer a commit holds. The export holds
+secret and certificate names only, never a value.
+
+```mermaid
+flowchart LR
+  P[pipeline] --> W[its links, however deep]
+  W --> Z[a bundle in a zip,<br/>lookup files as bytes]
+  Z --> R[read by the bundle loader]
+  R --> C{an id taken<br/>by something else?}
+  C -- yes --> K[keep the imported one,<br/>keep the one already held, or rename]
+  C -- no --> M
+  K --> M[match each secret and<br/>certificate to one here]
+  M --> S[one save on a branch]
+```
+
+Import reads the zip with the loader that reads every bundle, so a format
+version or a field this build does not read is refused as it would be in any
+bundle. It writes one save onto the importer's branch, in the area being
+imported into, refused if it makes the bundle's errors worse; the change is
+reviewed and deployed like any other. An object identical to one already
+there is not written again. An id the importing leader holds for a different
+object is a conflict, answered per object, as bringing a change current
+answers one: keep the imported object, keep the one already held, or rename the
+imported one, which rewrites every reference to it inside the import. Each
+secret and certificate an imported source or destination names is matched to
+one the importing leader lists.
+
 ## Kafka client settings
 
 Kafka client settings smeltr owns are set and cannot be overridden by a

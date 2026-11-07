@@ -1904,6 +1904,56 @@ export function deletePipeline(id: string): Promise<MutationResult> {
   return configJson(inArea(`/pipelines/${encodeURIComponent(id)}`), { method: 'DELETE' });
 }
 
+// -- export -----------------------------------------------------------------
+//
+// One pipeline and what it reads, as a bundle in a zip (`config_file::export`). With `routes`, the export also
+// includes the routes that run it, with their sources and destinations.
+
+/** A lookup table an export holds, with the file it reads and that file's size. An inline table reads none. */
+export interface ExportTable {
+  id: string;
+  file?: string;
+  bytes?: number;
+}
+
+/** What an export holds, by kind and id. */
+export interface ExportContents {
+  pipelines: string[];
+  lookupTables: ExportTable[];
+  grokPatterns: string[];
+  schemas: string[];
+  samples: string[];
+  tests: string[];
+  routes: string[];
+  sources: string[];
+  destinations: string[];
+  secrets: string[];
+  certificates: string[];
+}
+
+export type ExportContentsResult = {
+  ok: boolean;
+  errors: ApiError[];
+  commit?: string;
+} & Partial<ExportContents>;
+
+function exportRoute(id: string, routes: boolean, rest = ''): string {
+  return inArea(
+    `/pipelines/${encodeURIComponent(id)}/export${rest}${routes ? '?routes=true' : ''}`,
+  );
+}
+
+export function exportContents(id: string, routes: boolean): Promise<ExportContentsResult> {
+  return configJson<ExportContentsResult>(exportRoute(id, routes, '/contents'), undefined, {
+    adopt: false,
+  });
+}
+
+/** The export itself. A plain link rather than a fetch: the browser names the file and puts it where downloads go. */
+export function exportUrl(id: string, routes: boolean): string {
+  return branched(exportRoute(id, routes));
+}
+
 // -- samples ----------------------------------------------------------------
 //
 // Records under a name, saved beside the config they are authored against

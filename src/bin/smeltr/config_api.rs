@@ -507,6 +507,25 @@ fn group_of(prefix: &str) -> Option<&str> {
     prefix.strip_prefix(&format!("{}/", config_file::GROUPS_DIR))
 }
 
+/// The bundle that group `group_id` runs: `shared/`'s file merged with the group's own, shared first. `system.json`
+/// comes from the group's own alone.
+pub(crate) fn merged_file(shared: &FileConfig, own: &FileConfig, group_id: &str) -> FileConfig {
+    let mut merged = FileConfig {
+        version: own.version,
+        on_exception: own.on_exception.clone(),
+        name: own.name.clone(),
+        sources: [&shared.sources[..], &own.sources[..]].concat(),
+        destinations: [&shared.destinations[..], &own.destinations[..]].concat(),
+        pipelines: [&shared.pipelines[..], &own.pipelines[..]].concat(),
+        routes: [&shared.routes[..], &own.routes[..]].concat(),
+        lookup_tables: [&shared.lookup_tables[..], &own.lookup_tables[..]].concat(),
+        grok_patterns: [&shared.grok_patterns[..], &own.grok_patterns[..]].concat(),
+        schemas: [&shared.schemas[..], &own.schemas[..]].concat(),
+    };
+    config_file::fill_default_group_ids(&mut merged.sources, group_id);
+    merged
+}
+
 /// The problems of the bundle a group runs, from lenient reads of `shared/` and of the group's own subtree, each
 /// with the `at` it was read from. A file `shared/` could not parse is among them, named by its path in the
 /// repository; the group's own unreadable files are not, since the caller already reports those.
@@ -525,20 +544,7 @@ fn errors_of_merge(
         .collect();
     declared_at.extend(raw.file.lookup_tables.iter().map(|t| (t.id.clone(), at.clone())));
 
-    // Shared first, as the merge that runs orders them. `system.json` is the group's alone.
-    let mut merged = FileConfig {
-        version: raw.file.version,
-        on_exception: raw.file.on_exception.clone(),
-        name: raw.file.name.clone(),
-        sources: [&shared_raw.file.sources[..], &raw.file.sources[..]].concat(),
-        destinations: [&shared_raw.file.destinations[..], &raw.file.destinations[..]].concat(),
-        pipelines: [&shared_raw.file.pipelines[..], &raw.file.pipelines[..]].concat(),
-        routes: [&shared_raw.file.routes[..], &raw.file.routes[..]].concat(),
-        lookup_tables: [&shared_raw.file.lookup_tables[..], &raw.file.lookup_tables[..]].concat(),
-        grok_patterns: [&shared_raw.file.grok_patterns[..], &raw.file.grok_patterns[..]].concat(),
-        schemas: [&shared_raw.file.schemas[..], &raw.file.schemas[..]].concat(),
-    };
-    config_file::fill_default_group_ids(&mut merged.sources, group_id);
+    let merged = merged_file(&shared_raw.file, &raw.file, group_id);
 
     // A file `shared/` could not parse breaks this group too. Named with its subtree: a group has a `system.json`
     // of its own, and the two must not read as one file.

@@ -26,6 +26,7 @@ mod chat_api;
 mod cluster;
 mod config_api;
 mod docs_api;
+mod export_api;
 // What the crate's fuzzers share, compiled here as `tests/harness` compiles it: the library's is test-only.
 #[cfg(test)]
 #[path = "../../fuzz.rs"]
@@ -2247,6 +2248,14 @@ async fn run_leader() {
             get(config_api::get_pipeline)
                 .put(config_api::put_pipeline)
                 .delete(config_api::delete_pipeline),
+        )
+        .route(
+            "/api/areas/:area/pipelines/:id/export",
+            get(export_api::export_pipeline),
+        )
+        .route(
+            "/api/areas/:area/pipelines/:id/export/contents",
+            get(export_api::export_contents),
         )
         .route("/api/areas/:area/pipeline-callers", get(pipeline_callers))
         .route("/api/areas/:area/:section/:id/connections", get(get_connections))

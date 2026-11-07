@@ -14,8 +14,9 @@
   import { ask } from './Confirm.svelte';
   import SortButton from './SortButton.svelte';
   import { TableSort } from './sort.svelte';
-  import { editable } from './access';
+  import { NOT_IN_DEMO, editable } from './access';
   import { sharedConfig, listPipelines, deletePipeline, type PipelineDto } from './api';
+  import ExportDialog from './ExportDialog.svelte';
 
   // Carried from a sample row's "Run in a pipeline" link (`nav.ts`'s `for`
   // route). Not validated against the sample library here -- a stale link
@@ -44,6 +45,8 @@
   // Something else in the bundle does not validate; the list is complete.
   let bundleProblems = $state<string[]>([]);
   let deletingId = $state('');
+  /** The pipeline the export dialog is open for. */
+  let exporting = $state('');
 
   // One sort for both bands: each band sorts within itself, so the shared rows stay under their own heading.
   const pipelineSort = new TableSort<'name' | 'steps'>();
@@ -175,6 +178,9 @@
               <td><a href={pipelineHash(p.id)}>{p.name}</a></td>
               <td class="dim">{p.steps.length}</td>
               <td class="row-actions">
+                <Button type="button" class="compact" onclick={() => (exporting = p.id)}
+                  >Export</Button
+                >
                 {#if !readOnly}
                   <Button
                     type="button"
@@ -193,6 +199,7 @@
     </div>
   {/if}
 </SectionShell>
+<ExportDialog open={exporting !== ''} pipeline={exporting} oncancel={() => (exporting = '')} />
 
 <style>
   /* What `shared/` gave this group: listed, because the group runs it, and not this page's to change. */

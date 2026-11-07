@@ -120,6 +120,7 @@ document's systems.
 | Blast radius: an editor's connections (A5, `gui-design.md`, Connections) | built (`config_file::Links`, `leader::connections`) |
 | GUI pipeline editing with sample data (Control plane) | built |
 | Samples and tests as bundle files (Control plane) | built |
+| Moving a pipeline between leaders (Config plane) | export built (`config_file::export`, `GET /api/areas/:area/pipelines/:id/export`), from the pipelines list and the pipeline editor. Not built: import |
 | Capture at a source and at a destination, and of a receiver as sent; route preview (Control plane, Runtime stages) | built (`io::raw`); a capture's records download as NDJSON. A reachability check is not built |
 | Routing what arrives (`gui-design.md`, Routing what arrives) | built: the map's tags and panel, the Routes page's new route, and the workspace's capture with its parser proposed (`leader::onboard`). A line of a format with no whole-line Grok pattern is not proposed |
 | Warnings (Control plane) | built (`leader::warnings`), with info entries and the warning on a source's volume against its normal (`leader::throughput`); an editor lowers that warning to info or resets the source's history (`leader::marks`). Not built: a weekly normal, which needs more history than the series keeps |

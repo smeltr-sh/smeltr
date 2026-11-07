@@ -158,6 +158,8 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             | ["unreadable"]
             | ["pipelines"]
             | ["pipeline-callers"]
+            | ["pipelines", _, "export"]
+            | ["pipelines", _, "export", "contents"]
             | ["tests"]
             | ["stats"]
             | ["lookups", "file" | "mmdb"]
@@ -285,6 +287,8 @@ mod tests {
             "/api/areas/payments/pipelines",
             "/api/areas/payments/pipelines/p1",
             "/api/areas/payments/pipeline-callers",
+            "/api/areas/payments/pipelines/p1/export",
+            "/api/areas/payments/pipelines/p1/export/contents",
             "/api/areas/payments/sources/s1/connections",
             "/api/areas/payments/tests",
             "/api/areas/payments/tests/t1",
