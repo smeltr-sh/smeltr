@@ -410,7 +410,7 @@ pub async fn run(
             return Ok(Ended::Answered);
         }
         if round == MAX_ROUNDS {
-            return end_rounds(model, host, system, turns, &calls, asking).await;
+            return end_rounds(model, host, system, turns, asking).await;
         }
         let mut results = Vec::with_capacity(calls.len());
         for call in &calls {
@@ -430,31 +430,20 @@ pub async fn run(
     unreachable!("a turn ends within its rounds")
 }
 
-/// End a turn whose rounds ran out: its last `calls` are answered [`NOT_RUN`], and the model, asked [`ROUNDS_OUT`],
+/// End a turn whose rounds ran out: the model, asked [`ROUNDS_OUT`] after its last calls are answered [`NOT_RUN`],
 /// tells the person where it stopped. The ask is not kept, so the conversation shows only that answer.
 async fn end_rounds(
     model: &dyn Model,
     host: &dyn Host,
     system: &str,
     mut turns: Vec<Turn>,
-    calls: &[Call],
     asking: &Asking,
 ) -> Result<Ended, String> {
     if !host.live().await {
         return Ok(Ended::Stopped);
     }
-    let not_run: Vec<Said> = calls
-        .iter()
-        .map(|call| Said::Result {
-            call_id: call.id.clone(),
-            output: NOT_RUN.to_string(),
-            is_error: true,
-        })
-        .collect();
-    host.keep(&Turn::Asked(not_run.clone())).await?;
-    let mut said = not_run;
-    said.push(Said::Text(ROUNDS_OUT.to_string()));
-    turns.push(Turn::Asked(said));
+    turns.push(Turn::Asked(vec![Said::Text(ROUNDS_OUT.to_string())]));
+    let turns = ready(turns);
     let heard = |text: &str| host.heard(text);
     let reply = model
         .ask(Request {
@@ -759,16 +748,16 @@ mod tests {
         };
         assert_eq!(said.last(), Some(&Said::Text(ROUNDS_OUT.to_string())));
         let kept = host.kept.lock().unwrap().clone();
-        let [.., Turn::Asked(not_run), Turn::Answered(closing)] = kept.as_slice() else {
-            panic!("the turn ends with its calls not run and the closing answer: {kept:?}");
+        let [.., Turn::Answered(closing)] = kept.as_slice() else {
+            panic!("the turn ends with the closing answer: {kept:?}");
         };
         assert_eq!(
-            not_run,
-            &vec![Said::Result {
+            said[0],
+            Said::Result {
                 call_id: "c".to_string(),
                 output: NOT_RUN.to_string(),
                 is_error: true,
-            }]
+            }
         );
         assert_eq!(closing.text, "Stopped here.");
 
