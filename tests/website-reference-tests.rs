@@ -1409,12 +1409,20 @@ struct ConnectorReference {
 }
 
 /// Each variant of `enum_name` in `src/config_file/dto.rs`, by its `type` tag, to the keys it takes, a flattened
-/// struct's keys included. Read from the source so that a setting added to the engine is a setting missing here.
+/// struct's keys included. Read from the source so that a setting added to the engine is a setting missing here:
+/// `dto.rs`, and each kind's own file under `src/config_file/load/`.
 fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config_file/dto.rs");
-    let text = std::fs::read_to_string(&path).unwrap();
+    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config_file");
+    let mut text = std::fs::read_to_string(config.join("dto.rs")).unwrap();
+    for kinds in ["load/source", "load/destination"] {
+        for file in std::fs::read_dir(config.join(kinds)).unwrap() {
+            text.push_str(&std::fs::read_to_string(file.unwrap().path()).unwrap());
+        }
+    }
     let body = |head: &str| -> Vec<&str> {
-        let start = text.find(head).unwrap_or_else(|| panic!("no `{head}` in dto.rs"));
+        let start = text
+            .find(head)
+            .unwrap_or_else(|| panic!("no `{head}` in the config DTOs"));
         text[start..].lines().skip(1).take_while(|l| *l != "}").collect()
     };
     let camel = |snake: &str| -> String {
@@ -1451,7 +1459,9 @@ fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collecti
                 continue;
             }
             if let Some(c) = field.captures(line).filter(|c| c[1].len() == indent) {
-                if attrs.contains("flatten") {
+                // A field serde skips is no key of the file's.
+                if attrs.contains("serde(skip)") {
+                } else if attrs.contains("flatten") {
                     let lines = body(&format!("pub struct {} {{", &c[3]));
                     let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
                     out.extend(keys(&lines, 4, field, rename, camel, body));
