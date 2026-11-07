@@ -10,6 +10,7 @@
   import { currentBranch, setScope } from '../api';
   import {
     CHANGED_EVENT,
+    MAIN,
     TASKS,
     look,
     sawStatus,
@@ -45,15 +46,25 @@
   let shown = $state(-1);
   let ringing = $derived(shown >= 0 && !done[shown] ? shown : next);
 
-  // The count a chime is measured from: the first look at a branch sets it, so opening the demo, or another branch,
-  // with tasks already done stays quiet.
+  // The count a chime is measured from. The first look at a branch sets it, so opening the demo, or another branch,
+  // with tasks already done stays quiet. Opening a branch reloads the page, so the count outlives a reload; and
+  // leaving main for a branch ticks the first task, so one more there rings too.
+  const HEARD_KEY = 'smeltr-demo-guide-heard';
   let heard: { branch: string; count: number } | null = null;
+  try {
+    heard = JSON.parse(store?.getItem(HEARD_KEY) ?? 'null');
+  } catch {
+    // A count that does not parse is a first look.
+  }
   let chime: HTMLAudioElement | null = null;
   $effect(() => {
     if (!world) return;
     const now = { branch: world.branch, count };
-    const rose = heard?.branch === now.branch && now.count > heard.count;
+    const rose =
+      (heard?.branch === now.branch && now.count > heard.count) ||
+      (heard?.branch === MAIN && now.branch !== MAIN && now.count === heard.count + 1);
     heard = now;
+    store?.setItem(HEARD_KEY, JSON.stringify(now));
     if (!rose || untrack(() => muted)) return;
     chime ??= Object.assign(new Audio(chimeUrl), { volume: 0.4 });
     chime.currentTime = 0;
