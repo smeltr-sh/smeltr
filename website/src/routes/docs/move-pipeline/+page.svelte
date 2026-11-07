@@ -31,6 +31,9 @@
       To include the routes that run the pipeline, with their sources and destinations, turn on
       <strong>Include routes, sources and destinations</strong>.
     </li>
+    <li>
+      To leave out the tests and samples, turn off <strong>Include tests and samples</strong>.
+    </li>
     <li>Select <strong>Download</strong>.</li>
   </ol>
   <p>
@@ -50,13 +53,19 @@
       <strong>Same as here</strong> or <strong>Taken</strong>.
     </li>
     <li>
+      Every object is imported at first. Untick <strong>Import</strong> on each row you want to leave
+      out.
+    </li>
+    <li>
       Answer each taken id and match each secret and certificate, then select <strong>Import</strong
       >.
     </li>
   </ol>
   <p>
     An object that is the same as one here is not written again. The import is one save on your
-    branch, and it is refused if it would add errors to the configuration.
+    branch, and it is refused if it would add errors to the configuration. So when an object you
+    import uses one you leave out, that one must already exist in shared or in the group you import
+    into.
   </p>
   <h2 id="taken">Taken ids</h2>
   <p>

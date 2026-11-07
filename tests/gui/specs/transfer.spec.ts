@@ -40,6 +40,21 @@ test('a pipeline is exported with the pipeline it calls, and its routes when ask
   await api.put(`${SHARED}/routes${ON}`, [
     { id: 'fw-out', source: 'fw', pipeline: 'firewall', deliver: [{ to: ['out'] }] },
   ]);
+  await api.put(`${SHARED}/samples/lines${ON}`, {
+    id: 'lines',
+    name: 'lines',
+    columns: [{ name: '_raw', type: 'str' }],
+    records: [{ _raw: '10.0.0.1 allow' }],
+  });
+  await api.put(`${SHARED}/tests/firewall-lines${ON}`, {
+    id: 'firewall-lines',
+    name: 'firewall lines',
+    pipeline: 'firewall',
+    sample: 'lines',
+    lockedAt: 0,
+    rowsIn: 1,
+    expected: [null],
+  });
 
   await goto(admin, leader, '#/build/pipelines');
   await admin
@@ -51,6 +66,16 @@ test('a pipeline is exported with the pipeline it calls, and its routes when ask
   await expect(row('Pipelines')).toContainText('firewall, common');
   await expect(row('Grok patterns')).toContainText('FW_LINE');
   await expect(row('Routes')).toBeHidden();
+  await expect(row('Tests')).toContainText('firewall-lines');
+  await expect(row('Samples')).toContainText('lines');
+
+  await dialog.getByRole('switch', { name: 'Include tests and samples' }).uncheck();
+  await expect(row('Tests')).toBeHidden();
+  await expect(row('Samples')).toBeHidden();
+  await expect(dialog.getByRole('link', { name: 'Download' })).toHaveAttribute(
+    'href',
+    /tests=false/,
+  );
 
   await dialog.getByRole('switch', { name: 'Include routes, sources and destinations' }).check();
   await expect(row('Routes')).toContainText('fw-out');
@@ -134,4 +159,61 @@ test('an export is imported, a taken id renamed and a secret matched to one here
   const firewall = saved.config.pipelines.find((p: { id: string }) => p.id === 'firewall');
   expect(firewall.steps[0].pipeline).toBe('common-fw');
   expect(saved.config.sources[0].credentials['sasl.password']).toBe('kafka-fw');
+});
+
+test('only the ticked part of an export is imported, and leaving out what the rest needs is refused', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  await api.put(`${SHARED}/pipelines/common${ON}`, { id: 'common', name: 'Common', steps: [] });
+  await api.put(`${SHARED}/pipelines/firewall${ON}`, {
+    id: 'firewall',
+    name: 'Firewall',
+    steps: [{ type: 'call', id: 'common', pipeline: 'common' }],
+  });
+  const zip = await admin.request.get(`${leader.url}${SHARED}/pipelines/firewall/export${ON}`);
+  await api.delete(`${SHARED}/pipelines/firewall${ON}`);
+  await api.put(`${SHARED}/pipelines/common${ON}`, { id: 'common', name: 'Ours', steps: [] });
+
+  await goto(admin, leader, '#/build/pipelines');
+  await admin.getByRole('button', { name: 'Import' }).click();
+  const dialog = admin.getByRole('dialog', { name: /import pipeline/ });
+  await dialog.getByLabel('Import into').selectOption('Shared');
+  await dialog.getByLabel('Export file').setInputFiles({
+    name: 'firewall.zip',
+    mimeType: 'application/zip',
+    buffer: await zip.body(),
+  });
+  const common = dialog.getByRole('region', { name: 'Pipeline common' });
+  await expect(common).toBeVisible();
+  // Left out, the taken common needs no answer: the firewall calls the one here.
+  await dialog.getByRole('checkbox', { name: 'Import Pipeline common' }).uncheck();
+  await expect(common).toBeHidden();
+  await dialog.getByRole('button', { name: 'Import' }).click();
+  await expect(dialog).toBeHidden();
+  const saved = await api.get(`${SHARED}${ON}`);
+  const names = saved.config.pipelines.map((p: { name: string }) => p.name).sort();
+  expect(names).toEqual(['Firewall', 'Ours']);
+
+  // With nothing here under that id, the firewall would call a pipeline that does not exist.
+  await api.delete(`${SHARED}/pipelines/firewall${ON}`);
+  await api.delete(`${SHARED}/pipelines/common${ON}`);
+  await admin.getByRole('button', { name: 'Import' }).click();
+  await dialog.getByLabel('Import into').selectOption('Shared');
+  await dialog.getByLabel('Export file').setInputFiles({
+    name: 'firewall.zip',
+    mimeType: 'application/zip',
+    buffer: await zip.body(),
+  });
+  await dialog.getByRole('checkbox', { name: 'Import Pipeline common' }).uncheck();
+  await dialog.getByRole('button', { name: 'Import' }).click();
+  await expect(
+    admin
+      .getByText(/common/)
+      .filter({ hasText: /pipeline/i })
+      .first(),
+  ).toBeVisible();
+  await expect(dialog).toBeVisible();
+  expect((await api.get(`${SHARED}${ON}`)).config.pipelines).toEqual([]);
 });

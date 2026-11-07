@@ -166,8 +166,8 @@ touches another.
 A pipeline moves to another leader as an export: a bundle in a zip holding the
 pipeline and what it reads, so it loads and runs on its own. That is the
 pipelines it calls, however deep, the lookup tables they read, the grok
-patterns they name, however deep, the schemas they produce, and the samples
-and tests that lock any of them. With routes included, the export adds each
+patterns they name, however deep, the schemas they produce, and, unless left
+out, the samples and tests that lock any of them. With routes included, the export adds each
 route that runs the pipeline, its source, the destinations it delivers to and
 those their refusals go to, and the schemas those destinations accept. The
 group's own settings stay behind: its exception answers, what only they
@@ -206,7 +206,9 @@ object is a conflict, answered per object, as bringing a change current
 answers one: keep the imported object, keep the one already held, or rename the
 imported one, which rewrites every reference to it inside the import. Each
 secret and certificate an imported source or destination names is matched to
-one the importing leader lists.
+one the importing leader lists. The importer can leave out any object; one that
+an imported object uses must then already exist where it is imported, or the
+save is refused.
 
 ## Kafka client settings
 

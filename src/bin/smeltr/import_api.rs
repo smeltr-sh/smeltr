@@ -50,6 +50,17 @@ pub struct Answers {
     secrets: BTreeMap<String, String>,
     #[serde(default)]
     certificates: BTreeMap<String, String>,
+    /// The objects the importer chose not to import. The save is refused if what is left names one of them and that one is
+    /// not already held where it is imported.
+    #[serde(default)]
+    left_out: Vec<PartId>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PartId {
+    part: Part,
+    id: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -194,8 +205,9 @@ fn imported(
     if !replaces_shared.is_empty() {
         return still_needed(replaces_shared);
     }
+    let left_out = (answers.left_out.into_iter()).map(|o| (o.part, o.id)).collect();
     let keeps = (answers.taken.into_iter()).map(|a| ((a.part, a.id), a.keep)).collect();
-    let mut written = match objects.clone().resolve(&here, &keeps) {
+    let mut written = match objects.without(&left_out).resolve(&here, &keeps) {
         Ok(written) => written,
         Err(errors) => return still_needed(errors),
     };
@@ -610,7 +622,11 @@ mod tests {
     }
 
     fn import_into(data: &Path, zip: &[u8], answers: Option<Answers>) -> Envelope<Import> {
-        let writing = Writing::open_in(data, "work", None, "west").unwrap();
+        import_to(data, "west", zip, answers)
+    }
+
+    fn import_to(data: &Path, area: &str, zip: &[u8], answers: Option<Answers>) -> Envelope<Import> {
+        let writing = Writing::open_in(data, "work", None, area).unwrap();
         let unpacking = Unpacking::new(writing.repo()).unwrap();
         std::fs::write(unpacking.zip(), zip).unwrap();
         imported(writing, &unpacking, answers, &[], &Actor::system())
@@ -743,6 +759,40 @@ mod tests {
         assert_eq!(
             answer.errors[0].message,
             r#"pipeline "audit" is in shared, so only an import into shared can replace it"#
+        );
+    }
+
+    #[test]
+    fn what_the_importer_leaves_out_is_not_written() {
+        let data = leader("left-out");
+        // The group's own `sites` lacks the column `audit` reads, so the imported one is kept beside it.
+        let answers: Answers = serde_json::from_value(json!({
+            "taken": [{"part": "lookupTable", "id": "sites", "keep": "renamed", "as": "sites-2"}],
+            "leftOut": [{"part": "sample", "id": "s1"}]}))
+        .unwrap();
+        let answer = import_into(&data, &export_zip(&[]), Some(answers));
+        assert_eq!(answer.status, StatusCode::OK, "{:?}", answer.errors);
+        let reading = crate::config_api::Reading::open_in(&data, "work", "west").unwrap();
+        let file = reading.raw().file;
+        assert_eq!(
+            file.pipelines.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            ["audit", "common"]
+        );
+        assert!(read_sample(&mut reading.files(), "s1").unwrap().is_none());
+    }
+
+    #[test]
+    fn leaving_out_what_the_rest_names_is_refused() {
+        let data = leader("broken");
+        let answers: Answers =
+            serde_json::from_value(json!({"leftOut": [{"part": "pipeline", "id": "common"}]})).unwrap();
+        let answer = import_to(&data, "shared", &export_zip(&[]), Some(answers));
+        assert_eq!(answer.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", answer.errors);
+        assert!(answer.body.commit.is_none());
+        assert!(
+            answer.errors.iter().any(|e| e.message.contains("common")),
+            "{:?}",
+            answer.errors
         );
     }
 

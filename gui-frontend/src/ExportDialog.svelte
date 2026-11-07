@@ -1,6 +1,7 @@
 <!--
-  Exporting one pipeline: what the file will hold, by kind and id, and the link that downloads it. The toggle
-  includes the routes that run the pipeline, with their sources and destinations, and asks the leader again.
+  Exporting one pipeline: what the file will hold, by kind and id, and the link that downloads it. Two toggles:
+  one, off at first, includes the routes that run the pipeline, with their sources and destinations; the other, on
+  at first, includes the tests and samples. Each change asks the leader again.
 -->
 <script lang="ts">
   import Button from './Button.svelte';
@@ -15,17 +16,18 @@
     $props();
 
   let routes = $state(false);
+  let tests = $state(true);
   let contents = $state<Partial<ExportContents> | null>(null);
 
   $effect(() => {
-    if (open) void load(pipeline, routes);
+    if (open) void load(pipeline, routes, tests);
   });
 
-  async function load(id: string, withRoutes: boolean) {
+  async function load(id: string, withRoutes: boolean, withTests: boolean) {
     contents = null;
     try {
-      const res = await exportContents(id, withRoutes);
-      if (res.ok && id === pipeline && withRoutes === routes) contents = res;
+      const res = await exportContents(id, { routes: withRoutes, tests: withTests });
+      if (res.ok && id === pipeline && withRoutes === routes && withTests === tests) contents = res;
     } catch (e) {
       reported(e);
     }
@@ -70,6 +72,9 @@
         on the other leader.{/snippet}
       <Toggle bind:checked={routes} ariaLabel="Include routes, sources and destinations" />
     </Field>
+    <Field label="Include tests and samples">
+      <Toggle bind:checked={tests} ariaLabel="Include tests and samples" />
+    </Field>
     {#if contents === null}
       <p class="dim">Loading…</p>
     {:else}
@@ -87,7 +92,7 @@
   </div>
   {#snippet actions()}
     <Button type="button" onclick={oncancel}>Cancel</Button>
-    <a class="btn primary" href={exportUrl(pipeline, routes)} download onclick={oncancel}
+    <a class="btn primary" href={exportUrl(pipeline, { routes, tests })} download onclick={oncancel}
       >Download</a
     >
   {/snippet}

@@ -55,12 +55,20 @@
   let renames = $state<Record<string, string>>({});
   /** The secret or certificate here each one the file names is matched to, by `credKey`. */
   let matches = $state<Record<string, string>>({});
+  /** The objects not to import, by `key`. Every object is imported until it is unticked. */
+  let leftOut = $state<Record<string, boolean>>({});
   let secretsHere = $state<string[]>([]);
   let certificatesHere = $state<string[]>([]);
 
   const key = (l: ImportListed) => `${l.part}\u0000${l.id}`;
   const credKey = (c: ImportCredential) => `${c.certificate}\u0000${c.name}`;
-  let taken = $derived(listed.filter((l) => l.standing === 'taken'));
+  let kept = $derived(listed.filter((l) => !leftOut[key(l)]));
+  let taken = $derived(kept.filter((l) => l.standing === 'taken'));
+  /** The secrets and certificates a source or destination being imported names. */
+  let needed = $derived.by(() => {
+    const by = new Set(kept.map((l) => `${PARTS[l.part]} ${l.id}`));
+    return credentials.filter((c) => c.namedBy.some((n) => by.has(n)));
+  });
 
   $effect(() => {
     if (!open) return;
@@ -79,6 +87,7 @@
     keeps = {};
     renames = {};
     matches = {};
+    leftOut = {};
   }
 
   function choose(input: HTMLInputElement) {
@@ -121,13 +130,14 @@
   let unanswered = $derived.by(() => {
     if (!into) return 'Choose where to import into first.';
     if (!file || listed.length === 0) return 'Choose an export file first.';
+    if (kept.length === 0) return 'Tick something to import first.';
     for (const l of taken) {
       const keep = keeps[key(l)];
       if (!keep) return 'Choose what to keep for every taken id first.';
       if (keep === 'renamed' && !renames[key(l)]?.trim())
         return 'Give every renamed object a new id first.';
     }
-    if (credentials.some((c) => !matches[credKey(c)]))
+    if (needed.some((c) => !matches[credKey(c)]))
       return 'Match every secret and certificate to one here first.';
     return '';
   });
@@ -143,11 +153,12 @@
           : { ...base, keep: keep as 'imported' | 'here' };
       }),
       secrets: Object.fromEntries(
-        credentials.filter((c) => !c.certificate).map((c) => [c.name, matches[credKey(c)]]),
+        needed.filter((c) => !c.certificate).map((c) => [c.name, matches[credKey(c)]]),
       ),
       certificates: Object.fromEntries(
-        credentials.filter((c) => c.certificate).map((c) => [c.name, matches[credKey(c)]]),
+        needed.filter((c) => c.certificate).map((c) => [c.name, matches[credKey(c)]]),
       ),
+      leftOut: listed.filter((l) => leftOut[key(l)]).map((l) => ({ part: l.part, id: l.id })),
     };
     busy = true;
     try {
@@ -181,7 +192,7 @@
     {#if listed.length > 0}
       <table>
         <thead>
-          <tr><th>Kind</th><th>Id</th><th></th></tr>
+          <tr><th>Kind</th><th>Id</th><th></th><th>Import</th></tr>
         </thead>
         <tbody>
           {#each listed as l (key(l))}
@@ -191,6 +202,15 @@
               <td class:dim={l.standing === 'same'} class:taken={l.standing === 'taken'}
                 >{STANDINGS[l.standing]}</td
               >
+              <td>
+                <input
+                  type="checkbox"
+                  aria-label="Import {PARTS[l.part]} {l.id}"
+                  checked={!leftOut[key(l)]}
+                  disabled={busy}
+                  onchange={(e) => (leftOut[key(l)] = !e.currentTarget.checked)}
+                />
+              </td>
             </tr>
           {/each}
         </tbody>
@@ -235,14 +255,14 @@
         </section>
       {/each}
     {/if}
-    {#if credentials.length > 0}
+    {#if needed.length > 0}
       <h3>Secrets and certificates</h3>
       <table>
         <thead>
           <tr><th>In the file</th><th>Named by</th><th>Here</th></tr>
         </thead>
         <tbody>
-          {#each credentials as c (credKey(c))}
+          {#each needed as c (credKey(c))}
             <tr>
               <td class="mono">{c.name}</td>
               <td>{c.namedBy.join(', ')}</td>

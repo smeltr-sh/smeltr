@@ -26,6 +26,13 @@ pub struct ExportQuery {
     /// Include the routes that run the pipeline, with their sources and destinations.
     #[serde(default)]
     routes: bool,
+    /// Include the tests that lock what the export holds, and the samples they run over.
+    #[serde(default = "yes")]
+    tests: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Pipeline `id`'s export from `area`, as a zip to download. The zip is written as it is sent, so a large lookup file
@@ -184,8 +191,12 @@ fn exported(
     let tests: Vec<TestSummary> = (scopes.iter())
         .flat_map(|(scope, _)| list_tests(&mut scope.files()).0)
         .collect();
-    let export = config_file::export(&merged, &tests, id, q.routes)
+    let mut export = config_file::export(&merged, &tests, id, q.routes)
         .ok_or_else(|| Refusal::not_found(format!("no pipeline {id:?}")))?;
+    if !q.tests {
+        export.samples.clear();
+        export.tests.clear();
+    }
 
     let mut files: BTreeMap<String, Held> = config_file::bundle_files(&export.file)
         .map_err(|e| Refusal::internal(e.to_string()))?
@@ -364,6 +375,22 @@ mod tests {
         }
         let loaded = config_file::load_bundle_dir(&dir).expect("the export loads");
         drop(loaded);
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn without_tests_the_export_holds_neither_tests_nor_samples() {
+        let data = seeded("untested");
+        let Query(q) = Query::<ExportQuery>::try_from_uri(&"/?tests=false".parse().unwrap()).unwrap();
+        let (_, files) = exported(&data, "west", "audit", &q).unwrap();
+        assert!(files.contains_key("pipelines/audit.json") && files.contains_key("lookups/sites.csv"));
+        assert!(
+            !files
+                .keys()
+                .any(|p| p.starts_with("samples/") || p.starts_with("tests/")),
+            "{:?}",
+            files.keys()
+        );
         let _ = std::fs::remove_dir_all(&data);
     }
 

@@ -232,6 +232,13 @@ impl Objects {
         unlike
     }
 
+    /// This import without the objects `left_out` names, which the importer chose not to import.
+    pub fn without(&self, left_out: &BTreeSet<(Part, String)>) -> Objects {
+        let mut kept = self.clone();
+        kept.retain(|part, id| !left_out.contains(&(part, id.to_string())));
+        kept
+    }
+
     /// Keeps only the objects `keep` answers true for.
     fn retain(&mut self, keep: impl Fn(Part, &str) -> bool) {
         let f = &mut self.file;

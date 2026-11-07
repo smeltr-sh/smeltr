@@ -1937,21 +1937,34 @@ export type ExportContentsResult = {
   commit?: string;
 } & Partial<ExportContents>;
 
-function exportRoute(id: string, routes: boolean, rest = ''): string {
-  return inArea(
-    `/pipelines/${encodeURIComponent(id)}/export${rest}${routes ? '?routes=true' : ''}`,
-  );
+/** What an export includes beyond the pipeline and what it reads. */
+export interface ExportIncludes {
+  /** The routes that run the pipeline, with their sources and destinations. */
+  routes: boolean;
+  /** The tests that lock what the export holds, and the samples they run over. */
+  tests: boolean;
 }
 
-export function exportContents(id: string, routes: boolean): Promise<ExportContentsResult> {
-  return configJson<ExportContentsResult>(exportRoute(id, routes, '/contents'), undefined, {
+function exportRoute(id: string, { routes, tests }: ExportIncludes, rest = ''): string {
+  const query = new URLSearchParams();
+  if (routes) query.set('routes', 'true');
+  if (!tests) query.set('tests', 'false');
+  const q = query.size > 0 ? `?${query}` : '';
+  return inArea(`/pipelines/${encodeURIComponent(id)}/export${rest}${q}`);
+}
+
+export function exportContents(
+  id: string,
+  includes: ExportIncludes,
+): Promise<ExportContentsResult> {
+  return configJson<ExportContentsResult>(exportRoute(id, includes, '/contents'), undefined, {
     adopt: false,
   });
 }
 
 /** The export itself. A plain link rather than a fetch: the browser names the file and puts it where downloads go. */
-export function exportUrl(id: string, routes: boolean): string {
-  return branched(exportRoute(id, routes));
+export function exportUrl(id: string, includes: ExportIncludes): string {
+  return branched(exportRoute(id, includes));
 }
 
 // -- import -----------------------------------------------------------------
@@ -1997,6 +2010,8 @@ export interface ImportAnswers {
   /** The secret here each one the file names is matched to, by name. */
   secrets: Record<string, string>;
   certificates: Record<string, string>;
+  /** The objects not to import. The save is refused if what is left names one that isn't already held where it is imported. */
+  leftOut: { part: ImportPart; id: string }[];
 }
 
 export type ImportResult = {
