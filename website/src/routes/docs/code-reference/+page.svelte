@@ -79,7 +79,7 @@
   <title>Language reference — smeltr</title>
   <meta
     name="description"
-    content="Every operator and function in Smeltr's language, grouped by type with worked examples: naming a field, comparison and logic, conversion, numbers, sequences, strings, regular expressions, arrays, dates, durations and addresses."
+    content="Every operator and function in Smeltr's language, grouped by type with worked examples: naming a field, objects, comparison and logic, bytes, numbers, strings, regular expressions, arrays, dates and times, durations, addresses and networks, URLs, domains and user agents, and rebuilding a record's text."
   />
 </svelte:head>
 

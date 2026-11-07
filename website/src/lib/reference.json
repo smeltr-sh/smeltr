@@ -2878,7 +2878,6 @@
         {
           "name": "parseDuration",
           "signature": "value.parseDuration()",
-          "group": "Reading text",
           "summary": "Parses text into a duration: the count of microseconds `toString()` writes, whole or as a decimal rounded to the microsecond. Text that is no count is null.",
           "examples": [
             {
