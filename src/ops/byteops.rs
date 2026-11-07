@@ -11,7 +11,7 @@ use crate::core::bits;
 use crate::core::column::{Column, DataType, FixedMut, StrBuilder, VarLen, VarType};
 use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
-use crate::ops::helpers::{Labels, Operand, Side, clamped, side};
+use crate::ops::helpers::{Labels, Operand, Side, clamped, short_circuit_empty, side};
 use memchr::memmem;
 
 /// A number's type in a layout.
