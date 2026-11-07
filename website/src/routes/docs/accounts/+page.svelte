@@ -203,8 +203,8 @@
     provider's groups claim gives. A local or key account holds the roles you give it under Change access.
   </p>
   <ul>
-    <li><strong>viewer</strong> reads the area's configuration and samples, and runs previews.</li>
-    <li><strong>editor</strong> also saves to it on a branch, and captures.</li>
+    <li><strong>viewer</strong> reads the area's configuration and samples, runs previews and captures.</li>
+    <li><strong>editor</strong> also saves to it on a branch.</li>
     <li><strong>deployer</strong> also approves and deploys changes to it.</li>
   </ul>
   <p>

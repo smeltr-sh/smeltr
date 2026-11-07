@@ -40,7 +40,9 @@ pub struct StartedCapture {
 /// The source is validated exactly as saving one is, and a filter that will not compile is refused now rather than
 /// by every worker separately -- the author is here to read the error, and the workers are not.
 ///
-/// The gate let in anyone who edits somewhere; what is captured is the group's records, so it needs editor there.
+/// The gate let in anyone who views somewhere; what is captured is the group's records, so it needs viewer there.
+/// Its audit row says what the workers were asked to read ([`captured`]), so a capture of a source the group does
+/// not run is on the record.
 pub async fn start_capture(
     State(state): State<AppState>,
     Extension(access): Extension<Access>,
@@ -49,21 +51,66 @@ pub async fn start_capture(
 ) -> Response {
     let need = Need::Area {
         area: request.group.clone(),
-        level: Level::Editor,
+        level: Level::Viewer,
     };
     if !need.met_by(&access) {
         return Refusal::from(need).into_response();
     }
-    let (store, group) = (state.store.clone(), request.group.clone());
-    let response = open_capture(state, request).await.into_response();
-    // A capture reads live records out of a group, so who opened one is recorded.
+    // The commit the fleet ran when the capture opened, for a sample saved from it to record and for the audit to
+    // compare against. A leader that cannot read its history still takes the capture, and records none.
+    let (data_dir, request_read) = (state.data_dir.clone(), request.clone());
+    let (config, what) = blocking(move || {
+        let config = smeltr::leader::git::deployed(&smeltr::leader::git::repo_path(&data_dir));
+        let what = captured(&data_dir, &request_read, config.as_deref());
+        Ok::<_, String>((config, what))
+    })
+    .await
+    .unwrap_or_else(|_| (None, captured(&state.data_dir, &request, None)));
+    let store = state.store.clone();
+    let response = open_capture(state, request, config).await.into_response();
+    // A capture reads live records out of a group, so who opened one, and on what, is recorded.
     if response.status().is_success() {
-        accounts::record_async(store, &actor, "capture-start", &group, "ok").await;
+        accounts::record_async(store, &actor, "capture-start", &what, "ok").await;
     }
     response
 }
 
-async fn open_capture(state: AppState, request: CaptureRequest) -> Envelope<StartedCapture> {
+/// What a capture-start's audit row names: its group, then what its workers were asked to read. A destination, and a
+/// source the group's deployment runs unchanged, are named by id. Any other source is written out whole, its
+/// credentials by name as a bundle names them, so whoever reads the audit sees where it pointed.
+fn captured(data_dir: &std::path::Path, request: &CaptureRequest, deployed: Option<&str>) -> String {
+    let group = &request.group;
+    match (&request.destination, &request.source) {
+        (Some(destination), _) => format!("{group}: destination {destination}"),
+        (None, Some(source)) if deployed.is_some_and(|commit| runs(data_dir, commit, group, source)) => {
+            format!("{group}: source {} as deployed", source.id)
+        }
+        (None, Some(source)) => {
+            let written = serde_json::to_string(source).unwrap_or_else(|e| format!("({e})"));
+            format!("{group}: source {}, not as deployed: {written}", source.id)
+        }
+        (None, None) => group.clone(),
+    }
+}
+
+/// Whether `group`'s bundle at `commit` holds `source` exactly as the request carries it, in the group's own subtree
+/// or in `shared`.
+fn runs(data_dir: &std::path::Path, commit: &str, group: &str, source: &config_file::SourceDto) -> bool {
+    let sent = serde_json::to_value(source).ok();
+    [group, config_file::SHARED_DIR].into_iter().any(|scope| {
+        config_api::Reading::at_commit_in(data_dir, scope, commit).is_ok_and(|reading| {
+            reading
+                .raw()
+                .file
+                .sources
+                .iter()
+                .find(|s| s.id == source.id)
+                .is_some_and(|s| serde_json::to_value(s).ok() == sent)
+        })
+    })
+}
+
+async fn open_capture(state: AppState, request: CaptureRequest, config: Option<String>) -> Envelope<StartedCapture> {
     if !takes_its_start(&request) {
         return Envelope::refused(Refusal::invalid(
             "only a Kafka or Event Hubs source's capture takes a start",
@@ -72,13 +119,6 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Envelope<Star
     if let Some(why) = not_as_sent(&request) {
         return Envelope::refused(Refusal::invalid(why));
     }
-    // What the fleet ran when it opened, for a sample saved from it to record. A capture is no less worth taking for a
-    // leader that cannot read its own history, so a failed read records none.
-    let repo = smeltr::leader::git::repo_path(&state.data_dir);
-    let config = blocking(move || Ok::<_, String>(smeltr::leader::git::deployed(&repo)))
-        .await
-        .ok()
-        .flatten();
     let source = match (&request.source, &request.destination) {
         (Some(source), None) => source.clone(),
         (None, Some(destination)) => {
@@ -295,13 +335,14 @@ fn status_of(captures: &Captures, access: &Access, session: &str) -> Envelope<Fo
     Followed::found(capture.flatten())
 }
 
-/// Whether `access` may follow `session`: watch, stop, discard or save it. The gate let in anyone who edits
-/// somewhere; a capture holds its group's records, so it needs editor there. A capture in a group the caller does
-/// not edit answers as an unknown id does, so the ids of other areas' captures stay invisible.
+/// Whether `access` may follow `session`: watch, stop, discard, download or save it. The gate let in anyone who views
+/// somewhere; a capture holds its group's records, so it needs viewer there, and saving it needs editor where the
+/// sample is saved. A capture in a group the caller does not view answers as an unknown id does, so the ids of
+/// other areas' captures stay invisible.
 fn followed(captures: &Captures, access: &Access, session: &str) -> bool {
     captures
         .group(session)
-        .is_some_and(|group| access.allows(&group, Level::Editor))
+        .is_some_and(|group| access.allows(&group, Level::Viewer))
 }
 
 impl Followed {
@@ -956,7 +997,7 @@ mod tests {
         assert_eq!(typed_twice[0].ty, "variant", "a variant holds either");
     }
 
-    /// A capture in "payments", and someone who edits only "search".
+    /// A capture in "payments", someone who views "payments", and someone who views only "search".
     fn payments_capture() -> (Captures, Access, Access) {
         use std::collections::BTreeMap;
         let captures = Captures::default();
@@ -973,14 +1014,14 @@ mod tests {
             Vec::new(),
             None,
         );
-        let editor = |area: &str| Access::Areas(BTreeMap::from([(area.to_string(), Level::Editor)]));
-        (captures, editor("payments"), editor("search"))
+        let viewer = |area: &str| Access::Areas(BTreeMap::from([(area.to_string(), Level::Viewer)]));
+        (captures, viewer("payments"), viewer("search"))
     }
 
-    /// Following a capture needs editor in its group. Anyone else is answered as for an id that does not exist, so
+    /// Following a capture needs viewer in its group. Anyone else is answered as for an id that does not exist, so
     /// the ids of other areas' captures stay invisible.
     #[test]
-    fn a_capture_in_a_group_the_caller_does_not_edit_answers_as_unknown() {
+    fn a_capture_in_a_group_the_caller_does_not_view_answers_as_unknown() {
         let (captures, own, other) = payments_capture();
         let unknown = status_of(&captures, &own, "no-such-id").to_json();
 
@@ -997,20 +1038,87 @@ mod tests {
         );
         assert!(captures.status("c1").is_some(), "not discarded by the refused call");
 
-        let viewer = Access::Areas([("payments".to_string(), Level::Viewer)].into());
-        assert_eq!(status_of(&captures, &viewer, "c1").to_json(), unknown);
-
         assert!(status_of(&captures, &own, "c1").succeeded());
         assert!(
             savable(&captures, &own, "c1")
                 .unwrap_err()
                 .message()
                 .contains("still running"),
-            "its own group's editor reaches the save's own checks"
+            "its own group's viewer reaches the save's own checks"
         );
         assert!(stop(&captures, &own, "c1").body.capture.unwrap().stopped);
         assert!(status_of(&captures, &Access::Administrator, "c1").succeeded());
         assert!(discard(&captures, &own, "c1"));
         assert!(captures.status("c1").is_none());
+    }
+
+    fn metrics_source(bucket: u64) -> config_file::SourceDto {
+        serde_json::from_value(serde_json::json!({"id": "m", "type": "metrics", "bucketSeconds": bucket})).unwrap()
+    }
+
+    fn request_for(source: Option<config_file::SourceDto>, destination: Option<&str>) -> CaptureRequest {
+        CaptureRequest {
+            group: "payments".to_string(),
+            source,
+            destination: destination.map(str::to_string),
+            filter: None,
+            start: None,
+            raw: false,
+            max_matches: None,
+            max_bytes: None,
+            deadline_secs: None,
+        }
+    }
+
+    /// A scratch leader whose `work` branch holds `source` in "payments", and the commit that holds it.
+    fn a_repo_holding(source: &config_file::SourceDto) -> (std::path::PathBuf, String) {
+        use smeltr::leader::git;
+        let data = std::env::temp_dir().join(format!("smeltr-capture-api-{}-{}", std::process::id(), rand_session()));
+        let repo = git::repo_path(&data);
+        git::init_bare_repo(&repo).unwrap();
+        git::ensure_main_commit(&repo).unwrap();
+        let commit = config_api::Writing::open_in(&data, "work", None, "payments")
+            .unwrap()
+            .commit(
+                vec![git::FileEdit {
+                    path: "sources.json".to_string(),
+                    content: Some(serde_json::to_vec(&[source]).unwrap()),
+                }],
+                "seed",
+                &Actor::system(),
+            )
+            .expect("seeded");
+        (data, commit)
+    }
+
+    /// The audit names a capture of the deployed source by its id, and writes out whole one that differs from it, so
+    /// a capture pointed somewhere new is on the record.
+    #[test]
+    fn the_audit_says_what_a_capture_read() {
+        let deployed = metrics_source(10);
+        let (data, commit) = a_repo_holding(&deployed);
+
+        let as_deployed = request_for(Some(deployed), None);
+        assert_eq!(
+            captured(&data, &as_deployed, Some(&commit)),
+            "payments: source m as deployed"
+        );
+
+        let changed = request_for(Some(metrics_source(60)), None);
+        let written = captured(&data, &changed, Some(&commit));
+        assert!(
+            written.starts_with("payments: source m, not as deployed: {"),
+            "{written}"
+        );
+        assert!(written.contains(r#""bucketSeconds":60"#), "{written}");
+        assert_eq!(
+            captured(&data, &request_for(Some(metrics_source(10)), None), None),
+            written.replace("60", "10"),
+            "with nothing deployed, a source is written out whole"
+        );
+
+        let at = request_for(None, Some("search"));
+        assert_eq!(captured(&data, &at, Some(&commit)), "payments: destination search");
+        std::fs::remove_dir_all(&data).ok();
     }
 }
