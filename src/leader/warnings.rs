@@ -2563,8 +2563,8 @@ const NOT_DEPLOYING_AFTER_MS: i64 = 5 * 60 * 1000;
 /// The fleet's part of the fixed catalog (design doc, Control plane), read fresh from `snapshot` and `credentials` on
 /// every call. `starts` is the fact clock's answer (`Registry::observe_facts`) for whichever facts need one; a warning
 /// with no entry there carries no start time. `series_store` is the durable registry's series half
-/// (`crate::leader::registry::Registry::series`), and `deployed_groups` is every group the deployed commit holds a
-/// subtree for.
+/// (`crate::leader::registry::Registry::series`), and `deployed` is every group the deployed commit holds a subtree
+/// for, with what it runs there (`crate::leader::git::ContentId::key`).
 pub fn derive(
     snapshot: &[ThreadHealth],
     credentials: &[WorkerCredentialRecord],
@@ -2572,8 +2572,9 @@ pub fn derive(
     now_ms: i64,
     heartbeat_interval: Duration,
     series_store: Option<&RegistryStore>,
-    deployed_groups: &HashSet<String>,
+    deployed: &HashMap<String, String>,
 ) -> Vec<Warning> {
+    let deployed_groups: HashSet<String> = deployed.keys().cloned().collect();
     let mut out = worker_silent(snapshot, credentials, now_ms, heartbeat_interval);
     out.extend(enrolled_never_heartbeating(snapshot, credentials));
     out.extend(source_blocked(snapshot, starts));
@@ -2584,7 +2585,7 @@ pub fn derive(
     out.extend(destinations_memory_bound(series_store, now_ms));
     let logged = recent_logs(series_store, credentials, now_ms);
     out.extend(worker_logged_warnings(&logged));
-    out.extend(group_not_deployed(snapshot, deployed_groups, starts));
+    out.extend(group_not_deployed(snapshot, &deployed_groups, starts));
     out.extend(worker_not_deploying_its_target(snapshot, starts, now_ms));
     out.extend(workers_on_another_build(
         snapshot,
@@ -2599,7 +2600,7 @@ pub fn derive(
     out.extend(workers_memory_high(snapshot, heartbeat_interval));
     out.extend(authority_expiring(snapshot, credentials, now_ms));
     out.extend(declared_fields_drifted(series_store, now_ms));
-    out.extend(streams_unrouted(series_store, now_ms));
+    out.extend(streams_unrouted(series_store, now_ms, deployed));
     fold_logged_details(&mut out, &logged);
     out
 }
@@ -3000,12 +3001,18 @@ fn declared_fields_drifted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Wa
         .collect()
 }
 
-/// Rows a source received that no route took, within the drift window: one warning per source of a group, naming
-/// the streams they came under. It clears once a window passes with none, which is how a route that takes them shows,
-/// however its condition is written.
-fn streams_unrouted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
+/// Rows a source received that no route took, within the drift window, while its group ran what `deployed_configs`
+/// says it is deployed at: one warning per source of a group, naming the streams they came under. It clears once a
+/// window passes with none, which is how a route that takes them shows, however its condition is written, and at
+/// once when its group is deployed at anything else.
+fn streams_unrouted(
+    store: Option<&RegistryStore>,
+    now_ms: i64,
+    deployed_configs: &HashMap<String, String>,
+) -> Vec<Warning> {
     let Some(store) = store else { return Vec::new() };
-    let sources = match store.unrouted_since(now_ms - DRIFT_WINDOW.as_millis() as i64) {
+    let deployed = |group: &str| deployed_configs.get(group).cloned();
+    let sources = match store.unrouted_since(now_ms - DRIFT_WINDOW.as_millis() as i64, deployed) {
         Ok(sources) => sources,
         Err(e) => {
             tracing::warn!(
@@ -3344,7 +3351,7 @@ mod tests {
     #[test]
     fn a_worker_that_has_just_found_a_commit_is_not_yet_a_warning() {
         let snapshot = vec![behind("w1", Some("older"), "newer", None)];
-        let active = currently_active_facts(&snapshot, NOW, INTERVAL, &deployed());
+        let active = currently_active_facts(&snapshot, NOW, INTERVAL, &deployed_groups());
         assert!(
             active.contains(&not_deploying_key("w1", "newer")),
             "the fact is true from the first beat that names it"
@@ -3368,7 +3375,8 @@ mod tests {
             "source \"in\" presents a certificate whose Extended Key Usage does not permit client authentication";
         let snapshot = vec![behind("w1", Some("newer"), "newer", Some(refusing))];
         assert!(
-            currently_active_facts(&snapshot, NOW, INTERVAL, &deployed()).contains(&not_deploying_key("w1", "newer"))
+            currently_active_facts(&snapshot, NOW, INTERVAL, &deployed_groups())
+                .contains(&not_deploying_key("w1", "newer"))
         );
         let stuck = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 600_000)]);
         let warnings = derive(&snapshot, &[], &stuck, NOW, INTERVAL, None, &deployed());
@@ -3384,7 +3392,8 @@ mod tests {
 
         let running = vec![behind("w1", Some("newer"), "newer", None)];
         assert!(
-            !currently_active_facts(&running, NOW, INTERVAL, &deployed()).contains(&not_deploying_key("w1", "newer"))
+            !currently_active_facts(&running, NOW, INTERVAL, &deployed_groups())
+                .contains(&not_deploying_key("w1", "newer"))
         );
     }
 
@@ -3482,7 +3491,7 @@ mod tests {
             "a worker that is up to date is not behind"
         );
         assert!(
-            currently_active_facts(&snapshot, NOW, INTERVAL, &deployed())
+            currently_active_facts(&snapshot, NOW, INTERVAL, &deployed_groups())
                 .iter()
                 .all(|k| *k != not_deploying_key("w1", "same"))
         );
@@ -4472,8 +4481,12 @@ mod tests {
 
     /// `main` holding a subtree for every group `thread_health` ever reports ("g"), the ordinary case every test
     /// but the ones about [`Condition::GroupNotDeployed`] itself wants.
-    fn deployed() -> HashSet<String> {
-        HashSet::from(["g".to_string()])
+    fn deployed() -> HashMap<String, String> {
+        HashMap::from([("g".to_string(), "config".to_string())])
+    }
+
+    fn deployed_groups() -> HashSet<String> {
+        deployed().into_keys().collect()
     }
 
     /// The key `registry::subject_key` would produce for `smeltr_source_lag { group, source, topic, partition }` --
@@ -4547,7 +4560,7 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         for (source, failed, at) in [("a", 1, 1_000), ("a", 2, 5_000), ("b", 0, 6_000)] {
             store
-                .record_streams("prod", &declared_window(source, 10, failed), true, at)
+                .record_streams("prod", &declared_window(source, 10, failed), true, None, at)
                 .unwrap();
         }
         let warnings = declared_fields_drifted(Some(&store), 5_000 + HOUR);
@@ -4607,12 +4620,12 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let beat = |keys: &[(&str, u64)], at: i64| {
             store
-                .record_streams("prod", &untaken_window("hec", keys), true, at)
+                .record_streams("prod", &untaken_window("hec", keys), true, None, at)
                 .unwrap();
         };
         beat(&[("okta:system", 3), ("pan:threat", 2)], 1_000);
         beat(&[("pan:threat", 4)], 2_000 + HOUR);
-        let warnings = streams_unrouted(Some(&store), 2_000 + HOUR);
+        let warnings = streams_unrouted(Some(&store), 2_000 + HOUR, &HashMap::new());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         let w = &warnings[0];
         assert_eq!(
@@ -4630,13 +4643,53 @@ mod tests {
         );
         beat(&[("pan:threat", 1)], 3_000 + HOUR);
         assert_eq!(
-            streams_unrouted(Some(&store), 3_000 + HOUR)[0].since_millis,
+            streams_unrouted(Some(&store), 3_000 + HOUR, &HashMap::new())[0].since_millis,
             Some(2_000 + HOUR),
             "rows within the hour carry the run on"
         );
         assert!(
-            streams_unrouted(Some(&store), 3_001 + 2 * HOUR).is_empty(),
+            streams_unrouted(Some(&store), 3_001 + 2 * HOUR, &HashMap::new()).is_empty(),
             "a window with none clears it, whatever route took them"
+        );
+    }
+
+    /// A stream is unrouted by what its group is deployed at: a deployment that changes what the group runs starts
+    /// over, so a route it adds clears the warning at once, and rows another configuration left count for nothing.
+    #[test]
+    fn a_stream_is_unrouted_by_what_its_group_is_deployed_at() {
+        let store = RegistryStore::open(Path::new(":memory:")).unwrap();
+        let beat = |key: &str, deployed: bool, config: &str, at: i64| {
+            store
+                .record_streams("prod", &untaken_window("hec", &[(key, 1)]), deployed, Some(config), at)
+                .unwrap();
+        };
+        let at = |config: &str| HashMap::from([("prod".to_string(), config.to_string())]);
+        let named = |config: &str, now: i64| {
+            streams_unrouted(Some(&store), now, &at(config))
+                .into_iter()
+                .map(|w| (w.message, w.since_millis))
+                .collect::<Vec<_>>()
+        };
+        beat("pan:threat", true, "old", 1_000);
+        assert_eq!(
+            named("new", 2_000),
+            [],
+            "a deployment that took the stream still showed it"
+        );
+        beat("okta:system", false, "new", 2_000);
+        assert_eq!(
+            named("new", 2_000),
+            [],
+            "a worker still on the old configuration was counted"
+        );
+        beat("okta:system", true, "new", 3_000);
+        assert_eq!(
+            named("new", 3_000),
+            [(
+                "source hec in worker group \"prod\": no route took stream okta:system in the last hour.".to_string(),
+                Some(3_000)
+            )],
+            "the old configuration's stream was named, or its run carried on"
         );
     }
 
@@ -4645,9 +4698,9 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let said = |keys: &[(&str, u64)]| {
             store
-                .record_streams("prod", &untaken_window("in", keys), true, 1_000)
+                .record_streams("prod", &untaken_window("in", keys), true, None, 1_000)
                 .unwrap();
-            streams_unrouted(Some(&store), 1_000).remove(0).message
+            streams_unrouted(Some(&store), 1_000, &HashMap::new()).remove(0).message
         };
         assert_eq!(
             said(&[("", 2)]),
@@ -4664,7 +4717,7 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let beat = |source: &str, present: u64, at: i64| {
             store
-                .record_streams("prod", &declared_window(source, present, 0), true, at)
+                .record_streams("prod", &declared_window(source, present, 0), true, None, at)
                 .unwrap();
         };
         beat("a", 10, 1_000);
@@ -5521,7 +5574,7 @@ mod tests {
 
         assert!(derived(std::slice::from_ref(&stopped)).is_empty());
         assert!(
-            !currently_active_facts(std::slice::from_ref(&stopped), NOW, INTERVAL, &deployed())
+            !currently_active_facts(std::slice::from_ref(&stopped), NOW, INTERVAL, &deployed_groups())
                 .contains(&not_deploying_key("w1", "newer")),
             "the clock would age a failure that is not one"
         );
@@ -6313,7 +6366,7 @@ mod tests {
             NOW,
             INTERVAL,
             None,
-            &HashSet::new(),
+            &HashMap::new(),
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -6343,7 +6396,7 @@ mod tests {
         let heartbeating = vec![thread_health("w1", "t0", 0, vec![])];
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(GROUP_NOT_DEPLOYED, "w1"), NOW - 60_000);
-        let warnings = derive(&heartbeating, &[], &starts, NOW, INTERVAL, None, &HashSet::new());
+        let warnings = derive(&heartbeating, &[], &starts, NOW, INTERVAL, None, &HashMap::new());
         assert_eq!(warnings[0].since_millis, Some(NOW - 60_000));
     }
 
@@ -6353,7 +6406,7 @@ mod tests {
         let active = currently_active_facts(&heartbeating, NOW, INTERVAL, &HashSet::new());
         assert!(active.contains(&FactKey::new(GROUP_NOT_DEPLOYED, "w1")));
 
-        let active = currently_active_facts(&heartbeating, NOW, INTERVAL, &deployed());
+        let active = currently_active_facts(&heartbeating, NOW, INTERVAL, &deployed_groups());
         assert!(
             !active.contains(&FactKey::new(GROUP_NOT_DEPLOYED, "w1")),
             "a deployed group's fact clears the moment main holds it, same as source_blocked and destination_refusing"
@@ -6400,7 +6453,10 @@ mod tests {
             thread_health_in("g1", "w1", "reader-3", 0, vec![blocked_metric("7", "blocked in g1")]),
             thread_health_in("g2", "w2", "reader-3", 0, vec![blocked_metric("7", "blocked in g2")]),
         ];
-        let deployed = HashSet::from(["g1".to_string(), "g2".to_string()]);
+        let deployed = HashMap::from([
+            ("g1".to_string(), "c1".to_string()),
+            ("g2".to_string(), "c2".to_string()),
+        ]);
         let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed);
         let held: Vec<&Warning> = warnings
             .iter()
@@ -6426,7 +6482,10 @@ mod tests {
             thread_health_in("g1", "w1", "reader-3", 0, vec![blocked_metric("shared-src", "blocked")]),
             thread_health_in("g2", "w2", "reader-3", 0, vec![]), // g2 runs it too, but it is fine there
         ];
-        let deployed = HashSet::from(["g1".to_string(), "g2".to_string()]);
+        let deployed = HashMap::from([
+            ("g1".to_string(), "c1".to_string()),
+            ("g2".to_string(), "c2".to_string()),
+        ]);
         let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed);
         let held: Vec<&Warning> = warnings
             .iter()

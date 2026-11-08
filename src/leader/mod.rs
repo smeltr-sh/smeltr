@@ -15,7 +15,7 @@
 //! durable when opened against its own database (`registry::Registry::open`, `series`).
 //!
 //! Deploying moves the pointer workers fetch (`git::DEPLOYED_REF`) to a commit of `main`'s history. Every group
-//! fetches it and decides for itself whether its own subtree moved (`worker::content_id`).
+//! fetches it and decides for itself whether its own subtree moved (`git::content_id`).
 
 pub mod access;
 pub mod accounts;
@@ -153,6 +153,23 @@ pub fn at_newest(quoted: &Quoted, newest: &std::collections::HashMap<String, i64
 /// mid-rollout has workers on two commits at once, and each needs its own answer.
 #[derive(Default)]
 pub struct Expiries(std::sync::Mutex<std::collections::HashMap<(String, String), Vec<DeployedTls>>>);
+
+/// What each of `groups` is deployed at, as [`git::ContentId::key`] names it. Empty with nothing deployed.
+///
+/// Blocking; the caller is inside `spawn_blocking`.
+fn deployed_configs(
+    data_dir: &std::path::Path,
+    groups: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, String> {
+    let repo = git::repo_path(data_dir);
+    let Some(commit) = git::deployed(&repo) else {
+        return Default::default();
+    };
+    groups
+        .iter()
+        .filter_map(|group| Some((group.clone(), git::content_id(&repo, &commit, group).ok()?.key())))
+        .collect()
+}
 
 /// One deployed connector's TLS as its bundle says it: the list entry it presents, by name, and the authorities it
 /// trusts, described. The chain the entry holds is read when it is asked for, since it changes without the bundle.
@@ -377,6 +394,13 @@ async fn heartbeat(
             .record_authority(&worker_id, req.authority_fingerprints.clone(), req.takes_authority);
         let recorded = tokio::task::spawn_blocking(move || {
             registry.record_logs(&worker, boot_id, group.as_deref(), &events);
+            let repo = git::repo_path(&data_dir);
+            let deployed = git::deployed(&repo);
+            let config = |group_id: &str, commit: &str| Some(git::content_id(&repo, commit, group_id).ok()?.key());
+            let held = group
+                .as_deref()
+                .zip(deployed.as_deref())
+                .and_then(|(group_id, deployed)| config(group_id, deployed));
             // A worker too old to state its group reports under none, and its streams go unrecorded.
             let streams = streams
                 .as_ref()
@@ -386,10 +410,13 @@ async fn heartbeat(
                     report,
                     // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart,
                     // so the report counts as the deployed one.
-                    deployed: match (&facts.commit, git::deployed(&git::repo_path(&data_dir))) {
-                        (Some(running), Some(deployed)) => *running == deployed,
+                    deployed: match (&facts.commit, &deployed) {
+                        (Some(running), Some(deployed)) => {
+                            held.is_some() && (running == deployed || config(group_id, running) == held)
+                        }
                         _ => true,
                     },
+                    config: held.as_deref(),
                 });
             let window = series::Window { boot_id, seq, streams };
             registry.record_heartbeat(&worker, threads, facts, window, now_ms)
@@ -1144,6 +1171,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let remote_failure = state.remote.state().failure;
     let newer_release = state.updates.newer();
     let deploy_warnings = warnings::deploy_checked(&findings, &starts);
+    let data_dir = state.data_dir.clone();
     let mut out = tokio::task::spawn_blocking(move || {
         warnings::derive(
             &snapshot,
@@ -1152,7 +1180,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
             now_ms,
             heartbeat_interval,
             registry.series(),
-            &deployed,
+            &deployed_configs(&data_dir, &deployed),
         )
     })
     .await
@@ -1668,14 +1696,22 @@ async fn get_streams(
     // Off the runtime's threads: a blocking read behind the lock every heartbeat's write takes, and the bundles read
     // from the tree.
     let stored = tokio::task::spawn_blocking(move || {
-        let mut stored = match registry.series() {
-            Some(store) => store.streams()?,
-            None => series::StoredStreams::default(),
+        let Some(store) = registry.series() else {
+            return Ok(series::StoredStreams::default());
         };
+        let mut stored = store.streams()?;
         stream_conditions(&data_dir, &mut stored.unmatched);
+        // `recent` is what the `StreamUnrouted` warning names: the same rows, read by the same rule.
+        let deployed = deployed_configs(&data_dir, &deployed_groups(&data_dir));
         let since = warnings::now_millis() - series::DRIFT_WINDOW.as_millis() as i64;
-        for key in stored.unmatched.iter_mut().flat_map(|u| &mut u.keys) {
-            key.recent = key.last_seen_ms >= since;
+        let unrouted = store.unrouted_since(since, |group| deployed.get(group).cloned())?;
+        for u in &mut stored.unmatched {
+            let named = unrouted
+                .iter()
+                .find(|s| s.group_id == u.group_id && s.source == u.source);
+            for key in &mut u.keys {
+                key.recent = named.is_some_and(|s| s.keys.contains(&key.key));
+            }
         }
         Ok::<_, StoreError>(stored)
     })

@@ -2285,6 +2285,81 @@ pub fn deployed(repo_path: &Path) -> Option<String> {
     deployed_in(&open(repo_path).ok()?).map(|id| id.to_string())
 }
 
+/// What a deployment can read in the `group` and `shared` folders of a commit: each entry's name and object id, with
+/// `samples/` and `tests/` left out. `None` for a folder the commit does not hold.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ContentId {
+    pub group: Option<Vec<(String, gix::ObjectId)>>,
+    pub shared: Option<Vec<(String, gix::ObjectId)>>,
+}
+
+impl ContentId {
+    /// A name for what a group runs that the leader can store. It is the same for two commits exactly when their
+    /// `ContentId`s are equal.
+    pub fn key(&self) -> String {
+        let mut hasher = twox_hash::XxHash64::with_seed(0);
+        for (folder, entries) in [("group", &self.group), ("shared", &self.shared)] {
+            std::hash::Hasher::write(&mut hasher, folder.as_bytes());
+            // Separated, so no two different lists run together into the same bytes.
+            for (name, id) in entries.iter().flatten() {
+                std::hash::Hasher::write(&mut hasher, &[0xff]);
+                std::hash::Hasher::write(&mut hasher, name.as_bytes());
+                std::hash::Hasher::write(&mut hasher, id.as_bytes());
+            }
+            std::hash::Hasher::write(&mut hasher, &[0xfe, u8::from(entries.is_some())]);
+        }
+        format!("{:016x}", std::hash::Hasher::finish(&hasher))
+    }
+}
+
+/// The entries of the `group` and `shared` subtrees at `commit`, or `None` for one the commit does not hold.
+///
+/// `samples/` and `tests/` are left out. Only the leader reads them, so a commit that moves nothing else is not a
+/// redeploy (design doc, Control plane).
+///
+/// Absent and unreadable are different answers. A commit that failed to resolve reads as absent, and absent
+/// compared equal to a running deployment that had no `shared/` -- so a commit that added one during a passing
+/// failure was represented without ever being deployed. A path the commit does not hold answers `None`, and a
+/// failure to read the commit at all is the only other case.
+pub fn content_id(repo_dir: &Path, commit: &str, group_id: &str) -> Result<ContentId, String> {
+    let repo = gix::open(repo_dir).map_err(|e| format!("opening {}: {e}", repo_dir.display()))?;
+    let root = repo
+        .rev_parse_single(format!("{commit}^{{tree}}").as_str())
+        .map_err(|e| format!("{commit:?} names nothing here: {e}"))?;
+    let tree = repo
+        .find_tree(root.detach())
+        .map_err(|e| format!("reading {commit}: {e}"))?;
+    let entries = |path: &str| -> Result<Option<Vec<(String, gix::ObjectId)>>, String> {
+        let unreadable = |e: &dyn std::fmt::Display| format!("reading {path:?} of {commit}: {e}");
+        let Some(entry) = tree.clone().lookup_entry_by_path(path).map_err(|e| unreadable(&e))? else {
+            return Ok(None);
+        };
+        let object = entry.object().map_err(|e| unreadable(&e))?;
+        if object.kind != gix::object::Kind::Tree {
+            // Not a folder, so nothing in it to leave out.
+            return Ok(Some(vec![(String::new(), entry.object_id())]));
+        }
+        let folder = object.into_tree();
+        let mut kept = Vec::new();
+        for child in folder.iter() {
+            let child = child.map_err(|e| unreadable(&e))?;
+            let name = child.inner.filename.to_string();
+            if name != crate::config_file::SAMPLES_DIR && name != crate::config_file::TESTS_DIR {
+                kept.push((name, child.inner.oid.to_owned()));
+            }
+        }
+        Ok(Some(kept))
+    };
+    Ok(ContentId {
+        group: match crate::config_file::group_subtree(group_id) {
+            Ok(sub) => entries(&sub)?,
+            // Not a name any group can have, so not one any commit holds.
+            Err(_) => None,
+        },
+        shared: entries(crate::config_file::SHARED_DIR)?,
+    })
+}
+
 /// What a deploy does to `main` besides moving the fleet onto it.
 enum Main {
     /// A rollback or a release: the fleet moves within `main`'s history.
