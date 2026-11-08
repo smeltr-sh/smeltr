@@ -452,7 +452,6 @@ pub async fn run(
             return Ok(Ended::Stopped);
         }
     }
-    unreachable!("a turn ends within its rounds")
 }
 
 /// End a turn whose rounds ran out: the model, asked [`ROUNDS_OUT`] after its last calls are answered [`NOT_RUN`],
@@ -477,7 +476,7 @@ async fn end_rounds(
             tools: &[tool()],
             max_tokens: MAX_TOKENS,
             think: false,
-            compact: true,
+            compact: false,
             effort: asking.effort,
             cache_key: asking.cache_key.as_deref(),
             person: asking.person.as_deref(),
