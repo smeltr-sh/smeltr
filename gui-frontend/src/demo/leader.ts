@@ -1565,8 +1565,7 @@ export class DemoLeader {
     req: { id: string; name: string; source?: string },
   ): Promise<Answer> {
     const capture = this.state.captures[session];
-    if (!capture)
-      return refused(404, [bareError('no capture by that id -- it may already have been saved')]);
+    if (!capture) return refused(404, [bareError(NO_CAPTURE)]);
     const { done, batches } = await this.held(capture);
     const pool = (await this.pool(capture.pool))?.sample;
     if (!done)

@@ -510,8 +510,7 @@ fn waits_for(
 
 /// The capture `session` as a save would commit it, or why it cannot be saved.
 fn savable(captures: &Captures, access: &Access, session: &str) -> Result<CaptureStatus, Refusal> {
-    let status = followed_status(captures, access, session)
-        .ok_or_else(|| Refusal::not_found("no capture by that id -- it may already have been saved"))?;
+    let status = followed_status(captures, access, session).ok_or_else(|| Refusal::not_found(NO_CAPTURE))?;
     if !status.done {
         let waiting = if status.waiting_on.is_empty() {
             String::new()
