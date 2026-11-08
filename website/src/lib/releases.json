@@ -73,6 +73,16 @@
           "Every disabled button says why it is disabled when you point at it or press it.",
           "The leader's log now names, for each capture, what the workers were asked to read."
         ]
+      },
+      {
+        "title": "Agent",
+        "items": [
+          "Once a conversation outgrows the model's context, the agent can read back its older turns, by a range of turns or a search.",
+          "For a model that writes no summary itself, the leader asks it for one once a conversation gets long, even in the middle of a turn.",
+          "When the agent runs out of rounds of requests in a turn, it tells you where it stopped.",
+          "The agent can read the capture you have open, the models it can pick from and the warning metrics, and can create a key.",
+          "The Agent page opens from the agent panel, and the menu under a person's name no longer lists it."
+        ]
       }
     ],
     "fixes": [
@@ -116,7 +126,16 @@
           "The leader sets how often its workers report, with `SMELTR_LEADER_HEARTBEAT_INTERVAL_MS`. A worker's own heartbeat interval does nothing now, and a worker that sets it in its file says at start that it can be removed.",
           "Furthest from normal on the Status page ranks sources against the normal their warnings use.",
           "The leader keeps working after an internal error part way through a request, where it used to fail later requests until it restarted.",
-          "The Map names each source and destination card by its type, as the Sources and Destinations pages do, where a syslog receiver read as HTTP."
+          "The Map names each source and destination card by its type, as the Sources and Destinations pages do, where a syslog receiver read as HTTP.",
+          "A viewer can read the warning metrics for the worker groups it views; before, that needed an administrator."
+        ]
+      },
+      {
+        "title": "Agent",
+        "items": [
+          "Agent permissions keep \"as every area\" after Save; before, the area showed nothing.",
+          "Switching quickly between conversations no longer leaves the one you left on screen.",
+          "The agent panel's conversation list is disabled when there is no conversation to pick."
         ]
       },
       {
