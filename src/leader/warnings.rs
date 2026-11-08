@@ -2009,8 +2009,8 @@ pub fn outside_normal_facts(
         .collect()
 }
 
-/// A source reading fewer rows than it normally does at this time of day, or more. A warning either way: it is
-/// reading, and how much is off. Info instead where an admin lowered it (`marks`).
+/// A source reading fewer rows than it normally does at this time of day, or more: it is reading, and how much is
+/// off. Fewer is a warning, or info where an admin lowered it (`marks`). More is info.
 pub fn outside_normal_warnings(
     readings: &[throughput::Reading],
     snapshot: &[ThreadHealth],
@@ -2033,7 +2033,7 @@ pub fn outside_normal_warnings(
                 SubjectKind::Source,
                 r.source.clone(),
                 Some(r.group.clone()),
-                if lowered_by.is_some() {
+                if side == throughput::Outside::Above || lowered_by.is_some() {
                     Severity::Info
                 } else {
                     Severity::Warning
@@ -2104,7 +2104,7 @@ const SOURCE_SPANS: &[(&str, Condition, Severity)] = &[
     (SOURCE_WAITING, Condition::SourceWaiting, Severity::Warning),
     (SOURCE_UNREACHABLE, Condition::SourceUnreachable, Severity::Failed),
     (SOURCE_ROWS_BELOW, Condition::SourceRowsBelow, Severity::Warning),
-    (SOURCE_ROWS_ABOVE, Condition::SourceRowsAbove, Severity::Warning),
+    (SOURCE_ROWS_ABOVE, Condition::SourceRowsAbove, Severity::Info),
 ];
 
 /// The warnings a destination's chart marks, by the fact each is kept under.
@@ -4245,17 +4245,34 @@ mod tests {
                 ),
             ]
         );
-        let w = &outside_normal_warnings(
+        let raised = outside_normal_warnings(
             &readings,
             &snapshot,
             &HashSet::new(),
             &HashMap::new(),
             &Marks::default(),
             INTERVAL,
-        )[0];
+        );
+        let seen: Vec<_> = raised
+            .iter()
+            .map(|w| (w.condition, w.severity, w.subject_kind, w.group.as_deref()))
+            .collect();
         assert_eq!(
-            (w.severity, w.subject_kind, w.group.as_deref()),
-            (Severity::Warning, SubjectKind::Source, Some("g"))
+            seen,
+            [
+                (
+                    Condition::SourceRowsAbove,
+                    Severity::Info,
+                    SubjectKind::Source,
+                    Some("g")
+                ),
+                (
+                    Condition::SourceRowsBelow,
+                    Severity::Warning,
+                    SubjectKind::Source,
+                    Some("g")
+                ),
+            ]
         );
     }
 
