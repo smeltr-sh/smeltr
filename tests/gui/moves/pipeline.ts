@@ -471,7 +471,7 @@ const chooseSample: Move = {
     const { page } = j;
     await page.getByRole('button', { name: 'Choose a sample' }).click();
     await page
-      .getByRole('listbox', { name: 'Saved samples' })
+      .getByRole('listbox', { name: 'Samples' })
       .getByRole('option', { name: new RegExp(`^${SAMPLE}\\b`) })
       .click();
     j.model.sampled = true;
