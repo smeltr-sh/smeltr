@@ -354,14 +354,15 @@ pub async fn my_capture(
     Envelope::ok(Followed { capture })
 }
 
-/// A finished capture's records, as a preview runs them in place of a saved sample's, or why it cannot run them. Only
-/// whoever opened the capture previews over it, while they view its group.
+/// A finished capture as a preview runs it in place of a saved sample, named by its session and standing for the
+/// source it was taken from, or why it cannot run. Only whoever opened the capture previews over it, while they view
+/// its group.
 pub fn held_for_preview(
     captures: &Captures,
     access: &Access,
     actor: &Actor,
     session: &str,
-) -> Result<(Vec<smeltr::heartbeat::CaptureColumn>, Vec<smeltr::io::RecordObject>), String> {
+) -> Result<config_file::SampleDto, String> {
     let gone = || {
         "this capture is no longer held: a newer one replaced it, or it went unused too long, or it was dropped to make \
          room. Capture again"
@@ -374,7 +375,14 @@ pub fn held_for_preview(
     if !status.done {
         return Err("this capture is still running. Stop it to use what it holds".to_string());
     }
-    Ok(held_records(captures, session, &status))
+    let (columns, records) = held_records(captures, session, &status);
+    Ok(config_file::SampleDto {
+        id: session.to_string(),
+        name: session.to_string(),
+        source: status.source,
+        columns,
+        records,
+    })
 }
 
 pub async fn capture_status(

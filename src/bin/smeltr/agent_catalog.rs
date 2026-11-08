@@ -172,8 +172,8 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/areas/:area/preview/routes",
-        what: "Route a saved sample through a draft bundle's routes and pipelines; nothing is written. Query: branch.",
-        body: "{ config: string (bundle JSON as a string), sample: id, at_micros?: number }",
+        what: "Route a saved sample or a held capture through a draft bundle's routes and pipelines; nothing is written. Query: branch.",
+        body: "{ config: string (bundle JSON as a string), sample?: id, capture?: string (a held capture's session id, in place of sample), at_micros?: number }",
     },
     Route {
         method: "POST",
