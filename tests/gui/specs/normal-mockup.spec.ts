@@ -112,10 +112,10 @@ test('mockup: the Status panel as the place to see and manage normal', async ({
 
   await goto(admin, leader, '#/status');
   const ranked = admin.locator('section.ranked');
-  await expect(ranked.getByRole('row').nth(1)).toContainText('firewall-syslog', {
+  await expect(ranked.getByRole('row').nth(1)).toContainText(/firewall-syslog.*%/, {
     timeout: 420_000,
   });
-  await ranked.scrollIntoViewIfNeeded();
+  await ranked.evaluate((e) => e.scrollIntoView({ block: 'center' }));
   await admin.mouse.move(0, 0);
   await shoot(admin, '1-panel');
   await ranked.getByRole('row').nth(1).hover();
