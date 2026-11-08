@@ -2176,7 +2176,7 @@ const saveOutputSample: Move = {
     const menu = page.getByRole('button', { name: 'Choose a sample' });
     await menu.click();
     await page
-      .getByRole('listbox', { name: 'Saved samples' })
+      .getByRole('listbox', { name: 'Samples' })
       .getByRole('option', { name: new RegExp(`^${input}\\b`) })
       .click();
     const saveOutput = page.getByRole('button', { name: 'Save output as sample' });
@@ -2311,7 +2311,7 @@ const saveInputSample: Move = {
     await page.getByRole('link', { name: pipeline, exact: true }).click();
     const chip = page.getByRole('button', { name: 'Choose a sample' });
     await chip.click();
-    await page.getByRole('tab', { name: /^Capture/ }).click();
+    await page.getByRole('button', { name: 'Capture from a source' }).click();
     await page.getByRole('option', { name: new RegExp(source) }).click();
     const form = page.getByRole('dialog');
     await form.getByRole('spinbutton', { name: 'records' }).fill('2');

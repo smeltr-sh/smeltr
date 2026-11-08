@@ -214,11 +214,10 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
 
   await goto(viewer, leader, '#/build/pipelines/tidy');
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
-  await viewer.getByRole('tab', { name: /^Capture/ }).click();
-  await expect(viewer.getByRole('option', { name: /Your capture/ })).toContainText('3 records');
-  // The tab counts the held capture, and no count of sources says the list is empty.
-  await expect(viewer.getByRole('tab', { name: /^Capture/ })).toContainText('1');
-  await expect(viewer.getByText('0 of 0 sources')).toHaveCount(0);
+  // A capture not yet saved is a sample all the same, and is listed before the saved ones.
+  await expect(
+    viewer.getByRole('listbox', { name: 'Samples' }).getByRole('option').first(),
+  ).toContainText(/Your capture\s*3 records · not saved/);
 });
 
 // A1, a viewer: they capture a source feeding a pipeline from its editor's sample menu and run the pipeline over it,
@@ -271,7 +270,7 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   await goto(viewer, leader, '#/build/pipelines/tidy');
 
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
-  await viewer.getByRole('tab', { name: /^Capture/ }).click();
+  await viewer.getByRole('button', { name: 'Capture from a source' }).click();
   await viewer.getByRole('option', { name: /own-metrics/ }).click();
   const form = viewer.getByRole('dialog');
   await form.getByRole('spinbutton', { name: 'records' }).fill('3');
@@ -291,7 +290,6 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   expect((await api.get('/api/areas/shared/samples')).samples).toEqual([]);
   await viewer.reload();
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
-  await viewer.getByRole('tab', { name: /^Capture/ }).click();
   await expect(viewer.getByRole('option', { name: /Your capture/ })).toContainText('3 records');
 });
 
@@ -329,7 +327,7 @@ test('A1: an editor runs a pipeline over a capture without saving it, then saves
   await goto(admin, leader, '#/build/pipelines/tidy');
 
   await admin.getByRole('button', { name: 'Choose a sample' }).click();
-  await admin.getByRole('tab', { name: /^Capture/ }).click();
+  await admin.getByRole('button', { name: 'Capture from a source' }).click();
   await admin.getByRole('option', { name: /own-metrics/ }).click();
   const form = admin.getByRole('dialog');
   await form.getByRole('spinbutton', { name: 'records' }).fill('3');
@@ -1268,7 +1266,7 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
 
   // The locked sample first, though `other` sorts before it by name.
   await sampleMenu.click();
-  const saved = admin.getByRole('listbox', { name: 'Saved samples' });
+  const saved = admin.getByRole('listbox', { name: 'Samples' });
   await expect(saved.getByRole('option').first()).toContainText('orders');
   await expect(saved.getByTitle('Locked by the test orders parse')).toBeVisible();
   await saved.getByRole('option', { name: /\borders 3 records$/ }).click();
@@ -1358,7 +1356,7 @@ test('A2: a sample pasted or captured from the Sample menu is saved and run', as
   await expect(sampleMenu).toContainText('2 records');
 
   await sampleMenu.click();
-  await admin.getByRole('tab', { name: /^Capture/ }).click();
+  await admin.getByRole('button', { name: 'Capture from a source' }).click();
   await admin
     .getByRole('listbox', { name: 'Sources' })
     .getByRole('option', { name: /own-metrics/ })
@@ -1439,7 +1437,7 @@ test('A2: a field shown from the Fields menu stays shown on a sample that would 
   const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
   await sampleMenu.click();
   await admin
-    .getByRole('listbox', { name: 'Saved samples' })
+    .getByRole('listbox', { name: 'Samples' })
     .getByRole('option', { name: /^many/ })
     .click();
   await expect(sampleMenu).toContainText('many');

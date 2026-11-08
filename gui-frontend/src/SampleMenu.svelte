@@ -1,12 +1,12 @@
 <!--
-  The records a workspace runs over, chosen from one menu: a saved sample, a capture of a source
-  that feeds the pipeline, or a new one pasted or read from a file, which `AddSampleDialog` makes.
-  Each tab has its own search, since a fleet's sources and samples run to the hundreds.
+  The records a workspace runs over, chosen from one menu: a saved sample, the capture the leader
+  holds unsaved, or a new sample. A new sample is captured from a source that feeds the pipeline,
+  or made from a paste or a file; `AddSampleDialog` makes either kind for an editor. Each list has
+  its own search, since a fleet's sources and samples run to the hundreds.
 -->
 <script lang="ts">
   import ChipPicker from './ChipPicker.svelte';
   import LockIcon from './LockIcon.svelte';
-  import SecondaryTabs from './SecondaryTabs.svelte';
   import { count, dateTime } from './time';
   import { capturedAt, getConnections, type Connected, type SampleSummary } from './api';
 
@@ -35,7 +35,8 @@
     /** The pipeline, whose sources a capture is offered from; empty before its first save. */
     pipeline: string;
     mayCapture: (source: Connected) => boolean;
-    /** The capture the leader holds for whoever is signed in, picked as `choice`: listed above the sources. */
+    /** The capture the leader holds for the person signed in, listed first among the samples. Picking it passes
+     * `choice` to `onpick`. */
     held?: { choice: string; records: number };
     onpick: (id: string) => void;
     /** Opens the dialog that makes a new sample; absent for a viewer, who may not save one. */
@@ -44,10 +45,9 @@
     oncapture?: (source: Connected) => void;
   } = $props();
 
-  type Tab = 'saved' | 'capture';
-  let tabs = $derived<Tab[]>(oncapture || held ? ['saved', 'capture'] : ['saved']);
   let open = $state(false);
-  let tab = $state<Tab>('saved');
+  /** The menu lists the sources to capture from, in place of the samples. */
+  let choosingSource = $state(false);
   let query = $state('');
 
   const HELD_NAME = 'Your capture';
@@ -57,7 +57,7 @@
       : (samples.find((s) => s.id === selected)?.name ?? selected),
   );
 
-  // -- saved ---------------------------------------------------------------
+  // -- samples -------------------------------------------------------------
 
   const locked = (s: SampleSummary) => (lockedBy.get(s.id)?.length ?? 0) > 0;
   let saved = $derived(
@@ -78,26 +78,20 @@
       const res = await getConnections('pipeline', pipeline);
       sources = res.upstream.filter((c) => c.kind === 'source' && mayCapture(c));
     } catch {
-      // Unreadable connections leave nothing to capture from, which the tab says.
+      // Unreadable connections leave nothing to capture from, which the count of sources says.
       sources = [];
     }
   }
 
-  let found = $derived.by(() => {
-    const q = query.trim().toLowerCase();
-    if (tab === 'saved')
-      return q
-        ? saved.filter((s) => `${s.name} ${s.source ?? ''}`.toLowerCase().includes(q))
-        : saved;
-    return [];
-  });
-  let foundSources = $derived.by(() => {
-    const q = query.trim().toLowerCase();
-    return q ? sources.filter((c) => c.id.toLowerCase().includes(q)) : sources;
-  });
+  let q = $derived(query.trim().toLowerCase());
+  let heldFound = $derived(held && HELD_NAME.toLowerCase().includes(q) ? held : undefined);
+  let found = $derived(
+    saved.filter((s) => `${s.name} ${s.source ?? ''}`.toLowerCase().includes(q)),
+  );
+  let foundSources = $derived(sources.filter((c) => c.id.toLowerCase().includes(q)));
 
-  function show(next: Tab) {
-    tab = next;
+  function listSources(on: boolean) {
+    choosingSource = on;
     query = '';
   }
 </script>
@@ -108,7 +102,7 @@
   bind:open
   ariaLabel="Choose a sample"
   onopen={() => {
-    show('saved');
+    listSources(false);
     void loadSources();
   }}
 >
@@ -119,27 +113,26 @@
   {/snippet}
   {#snippet children()}
     <div class="menu">
-      <SecondaryTabs {tabs} active={tab} onselect={show} ariaLabel="Sample">
-        {#snippet label(t)}
-          {t === 'saved' ? 'Saved' : 'Capture'}
-          <span class="dim">{t === 'saved' ? samples.length : sources.length + (held ? 1 : 0)}</span
-          >
-        {/snippet}
-        {#snippet after()}
+      <div class="head">
+        {#if choosingSource}
+          <button type="button" class="back" onclick={() => listSources(false)}>← Samples</button>
+        {:else}
+          {#if oncapture}
+            <button type="button" onclick={() => listSources(true)}>Capture from a source</button>
+          {/if}
           {#if onadd}
             <button
               type="button"
-              class="add"
               onclick={() => {
                 open = false;
                 onadd();
               }}>Paste or file</button
             >
           {/if}
-        {/snippet}
-      </SecondaryTabs>
+        {/if}
+      </div>
 
-      {#if tab === 'saved'}
+      {#if !choosingSource}
         <!-- svelte-ignore a11y_autofocus -->
         <input
           type="search"
@@ -148,7 +141,22 @@
           aria-label="Find a sample"
           autofocus
         />
-        <div class="list" role="listbox" aria-label="Saved samples">
+        <div class="list" role="listbox" aria-label="Samples">
+          {#if heldFound}
+            <button
+              type="button"
+              class="item"
+              role="option"
+              aria-selected={heldFound.choice === selected}
+              onclick={() => {
+                open = false;
+                onpick(heldFound.choice);
+              }}
+            >
+              <span class="name ellipsis">{HELD_NAME}</span>
+              <span class="dim">{count(heldFound.records, 'record')} · not saved</span>
+            </button>
+          {/if}
           {#each found as s (s.id)}
             {@const lockers = lockedBy.get(s.id) ?? []}
             <button
@@ -175,7 +183,7 @@
             </button>
           {/each}
         </div>
-      {:else if tab === 'capture'}
+      {:else}
         <!-- svelte-ignore a11y_autofocus -->
         <input
           type="search"
@@ -185,21 +193,6 @@
           autofocus
         />
         <div class="list" role="listbox" aria-label="Sources">
-          {#if held && !query.trim()}
-            <button
-              type="button"
-              class="item"
-              role="option"
-              aria-selected={held.choice === selected}
-              onclick={() => {
-                open = false;
-                onpick(held.choice);
-              }}
-            >
-              <span class="name ellipsis">{HELD_NAME}</span>
-              <span class="dim">{count(held.records, 'record')} · not saved</span>
-            </button>
-          {/if}
           {#each foundSources as c (`${c.area}/${c.id}`)}
             <button
               type="button"
@@ -213,10 +206,7 @@
             >
           {/each}
         </div>
-        <!-- The count is of sources, so it says nothing beside a held capture when there are none. -->
-        {#if sources.length || !held}
-          <div class="foot dim">{foundSources.length} of {count(sources.length, 'source')}</div>
-        {/if}
+        <div class="foot dim">{foundSources.length} of {count(sources.length, 'source')}</div>
       {/if}
     </div>
   {/snippet}
@@ -236,8 +226,14 @@
     font-weight: 400;
   }
 
-  .add {
-    margin: 0 0 0.25rem auto;
+  .head {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+
+  .back {
+    margin-right: auto;
   }
 
   .list {
