@@ -43,7 +43,7 @@
           </h2>
           {#if video.youtube}
             <a href="/demo/try/" rel="external">Try it yourself in the demo →</a>
-          {:else}
+          {:else if video.guide}
             <a href={video.guide}>Read the guide →</a>
           {/if}
         </div>
