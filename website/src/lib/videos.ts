@@ -28,12 +28,17 @@ export const walkthrough: Video = {
 
 const allCourses: Course[] = [
   {
+    title: 'Demo walkthrough',
+    slug: 'demo-walkthrough',
+    demo: true,
+    videos: [walkthrough],
+  },
+  {
     title: 'Getting started',
     slug: 'getting-started',
-    demo: true,
+    demo: false,
     videos: [
       { title: 'Install smeltr', slug: 'install' },
-      walkthrough,
       { title: 'Review and deploy a change', slug: 'review-and-deploy' },
     ],
   },
