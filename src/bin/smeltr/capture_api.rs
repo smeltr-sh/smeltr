@@ -354,9 +354,9 @@ pub async fn my_capture(
     Envelope::ok(Followed { capture })
 }
 
-/// A finished capture as a preview runs it in place of a saved sample, named by its session and standing for the
-/// source it was taken from, or why it cannot run. Only whoever opened the capture previews over it, while they view
-/// its group.
+/// A finished capture as a preview runs it in place of a saved sample: the capture named by its session, standing for
+/// the source it was taken from, or the reason it cannot run. Only the person who opened the capture previews over it,
+/// and only while they view its group.
 pub fn held_for_preview(
     captures: &Captures,
     access: &Access,

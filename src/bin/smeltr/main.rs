@@ -456,7 +456,7 @@ async fn line_breaker(Json(req): Json<LineBreakerRequest>) -> Envelope {
     line_breaker_verdict(req)
 }
 
-/// A preview's body: its request, which may run over a capture the leader holds in place of a saved sample.
+/// A preview's request. It may name a capture the leader holds in place of a saved sample.
 #[derive(serde::Deserialize)]
 struct OverCapture<T> {
     #[serde(flatten)]
