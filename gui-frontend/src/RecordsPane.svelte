@@ -157,8 +157,8 @@
   /** The types each side of the step shown: the pause's, or the whole pipeline's. */
   let shownDeclared = $derived(pause && pauseRun ? pauseRun.declared : declared);
 
-  /** Each row as the grid draws it: the record on either side of the step shown, the selected
-   * step or the whole pipeline from its sample row. */
+  /** Each row as the grid draws it, from its sample row: the record before and after the step
+   * shown, or before and after the whole pipeline. */
   let rows = $derived(
     gridRows?.map((row): GridRow => ({
       key: row.row,

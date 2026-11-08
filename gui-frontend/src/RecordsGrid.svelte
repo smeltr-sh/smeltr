@@ -18,7 +18,7 @@
     after: unknown;
     /** Nothing came out of the record. */
     dropped: boolean;
-    /** Why the record failed, each with what raised it where that can be jumped to. */
+    /** Why the record failed. Each says what raised it, with a jump to it where there is one. */
     exceptions: { message: string; by?: { label: string; onjump: () => void } }[];
   };
 
@@ -94,7 +94,7 @@
   }: {
     /** The rows, or none before there is anything to show. */
     rows: GridRow[] | null;
-    /** Whether there are records to show at all: unchosen, only the Fields menu of what the steps
+    /** Whether the reader has chosen a sample. Until then only the Fields menu of what the steps
      * declare is drawn. */
     chosen?: boolean;
     /** Each side's record type, null where that side did not compile. */
@@ -104,7 +104,7 @@
     /** A new value opens the first failing row, or else the first: a new sample opens on a record
      * rather than a wall of lines, and a rerun of the same one leaves the reader's choice alone. */
     openOn: unknown;
-    /** The record the steps write, which the Fields menu lists. */
+    /** The pipeline's dictionary, which the Fields menu lists. */
     dictionary?: DictionaryOut;
     /** The fields the schemas the records are for require or recommend and the rows lack. */
     lacking?: MissingField[];
@@ -119,7 +119,9 @@
     shownRows?: Set<number>;
     /** Each column `lead` draws ahead of the fields, as its CSS width. */
     leadWidths?: string[];
+    /** The head cell of each lead column. */
     leadHead?: Snippet;
+    /** A row's cell in each lead column. */
     lead?: Snippet<[GridRow]>;
     /** Ahead of the Fields menu, on the bar over the grid. */
     bar?: Snippet;
@@ -252,7 +254,7 @@
   let missingColumns = $derived(
     [...missing.values()].filter((m) => isShown(m.path) && !allColumns.includes(m.path)),
   );
-  /** Every column the grid draws, with the fold, the row number and the lead. */
+  /** How many columns the grid draws: the fields, the fold, the row number and the lead. */
   let spanned = $derived(columns.length + missingColumns.length + 2 + leadWidths.length);
 
   const unfoldedPath = (path: string) => !startsHidden(path) || isShown(path);
@@ -728,12 +730,7 @@
                 {@const m = rowsMaps[i]}
                 {@const open = expanded.has(row.key)}
                 {@const failing = row.exceptions.length > 0}
-                <tr
-                  class="grid-row"
-                  class:dropped={row.dropped}
-                  class:open
-                  class:failing
-                >
+                <tr class="grid-row" class:dropped={row.dropped} class:open class:failing>
                   <td class="fold-cell">
                     <button
                       type="button"
@@ -968,7 +965,7 @@
     font-size: var(--text-note);
   }
 
-  /* Every cell, the lead's that a caller draws among them included. */
+  /* Every cell, including those of the lead columns a caller draws. */
   .grid :global(th),
   .grid :global(td) {
     text-align: left;

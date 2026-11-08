@@ -52,7 +52,7 @@
   let result = $derived(driven ? (given ?? null) : own);
   let running = $state(false);
   let error = $state('');
-  /** The destination whose documents alone the grid shows, by id. */
+  /** The one destination whose documents the grid shows, by id; none shows all. */
   let openDestination = $state<number | null>(null);
 
   async function loadSamples() {
