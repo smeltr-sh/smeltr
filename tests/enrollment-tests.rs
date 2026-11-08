@@ -92,6 +92,7 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
                 entitlements: Arc::new(smeltr::leader::Entitlements::default()),
                 verify_limiter: Arc::new(smeltr::leader::VerifyLimiter::default()),
                 expiries: Default::default(),
+                configs: Default::default(),
                 deploy_checks: Default::default(),
                 origin_hosts: Vec::new(),
                 remote: Default::default(),

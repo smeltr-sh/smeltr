@@ -15,7 +15,7 @@
 //! durable when opened against its own database (`registry::Registry::open`, `series`).
 //!
 //! Deploying moves the pointer workers fetch (`git::DEPLOYED_REF`) to a commit of `main`'s history. Every group
-//! fetches it and decides for itself whether its own subtree moved (`worker::content_id`).
+//! fetches it and decides for itself whether its own subtree moved (`git::content_id`).
 
 pub mod access;
 pub mod accounts;
@@ -95,6 +95,8 @@ pub struct AppState {
     pub verify_limiter: Arc<VerifyLimiter>,
     /// The TLS each deployed group's connectors speak, by the commit it was read at.
     pub expiries: Arc<Expiries>,
+    /// What each group runs at each commit.
+    pub configs: Arc<Configs>,
     /// Each source's last window against its normal, recomputed once per five-minute bucket (`throughput`).
     pub throughput: Arc<throughput::Readings>,
     /// What is wrong with the deployed commit: groups that do not load there, and tests that fail there.
@@ -153,6 +155,41 @@ pub fn at_newest(quoted: &Quoted, newest: &std::collections::HashMap<String, i64
 /// mid-rollout has workers on two commits at once, and each needs its own answer.
 #[derive(Default)]
 pub struct Expiries(std::sync::Mutex<std::collections::HashMap<(String, String), Vec<DeployedTls>>>);
+
+/// What each group runs at each commit, as [`git::ContentId::key`] names it, remembered per `(group, commit)`: a
+/// commit's tree never changes, and every heartbeat asks.
+#[derive(Default)]
+pub struct Configs(std::sync::Mutex<std::collections::HashMap<(String, String), String>>);
+
+impl Configs {
+    /// `None` for a commit this leader cannot read, which is asked again next time.
+    pub fn key(&self, data_dir: &std::path::Path, group_id: &str, commit: &str) -> Option<String> {
+        let at = (group_id.to_string(), commit.to_string());
+        if let Some(key) = self.0.lock().unwrap().get(&at) {
+            return Some(key.clone());
+        }
+        let key = git::content_id(&git::repo_path(data_dir), commit, group_id).ok()?.key();
+        self.0.lock().unwrap().insert(at, key.clone());
+        Some(key)
+    }
+}
+
+/// What each of `groups` is deployed at, as [`Configs::key`] names it. Empty with nothing deployed.
+///
+/// Blocking; the caller is inside `spawn_blocking`.
+fn deployed_configs(
+    data_dir: &std::path::Path,
+    configs: &Configs,
+    groups: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, String> {
+    let Some(commit) = git::deployed(&git::repo_path(data_dir)) else {
+        return Default::default();
+    };
+    groups
+        .iter()
+        .filter_map(|group| Some((group.clone(), configs.key(data_dir, group, &commit)?)))
+        .collect()
+}
 
 /// One deployed connector's TLS as its bundle says it: the list entry it presents, by name, and the authorities it
 /// trusts, described. The chain the entry holds is read when it is asked for, since it changes without the bundle.
@@ -370,6 +407,7 @@ async fn heartbeat(
         let group = Some(req.group_id.clone()).filter(|g| !g.is_empty());
         let facts = WorkerFacts::of(&req, now_ms);
         let data_dir = state.data_dir.clone();
+        let configs = state.configs.clone();
         // Kept by worker rather than by thread, so a worker running nothing still counts toward a rotation. Set
         // before the blocking hop, because the answer below is built from it.
         state
@@ -377,6 +415,12 @@ async fn heartbeat(
             .record_authority(&worker_id, req.authority_fingerprints.clone(), req.takes_authority);
         let recorded = tokio::task::spawn_blocking(move || {
             registry.record_logs(&worker, boot_id, group.as_deref(), &events);
+            let deployed = git::deployed(&git::repo_path(&data_dir));
+            let config = |group_id: &str, commit: &str| configs.key(&data_dir, group_id, commit);
+            let held = group
+                .as_deref()
+                .zip(deployed.as_deref())
+                .and_then(|(group_id, deployed)| config(group_id, deployed));
             // A worker too old to state its group reports under none, and its streams go unrecorded.
             let streams = streams
                 .as_ref()
@@ -386,10 +430,13 @@ async fn heartbeat(
                     report,
                     // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart,
                     // so the report counts as the deployed one.
-                    deployed: match (&facts.commit, git::deployed(&git::repo_path(&data_dir))) {
-                        (Some(running), Some(deployed)) => *running == deployed,
+                    deployed: match (&facts.commit, &deployed) {
+                        (Some(running), Some(deployed)) => {
+                            running == deployed || (held.is_some() && config(group_id, running) == held)
+                        }
                         _ => true,
                     },
+                    config: held.as_deref(),
                 });
             let window = series::Window { boot_id, seq, streams };
             registry.record_heartbeat(&worker, threads, facts, window, now_ms)
@@ -1144,6 +1191,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let remote_failure = state.remote.state().failure;
     let newer_release = state.updates.newer();
     let deploy_warnings = warnings::deploy_checked(&findings, &starts);
+    let (data_dir, configs) = (state.data_dir.clone(), state.configs.clone());
     let mut out = tokio::task::spawn_blocking(move || {
         warnings::derive(
             &snapshot,
@@ -1152,7 +1200,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
             now_ms,
             heartbeat_interval,
             registry.series(),
-            &deployed,
+            &deployed_configs(&data_dir, &configs, &deployed),
         )
     })
     .await
@@ -1664,18 +1712,26 @@ async fn get_streams(
     axum::Extension(access): axum::Extension<access::Access>,
 ) -> Result<Envelope<StreamsResponse>, Refusal> {
     let registry = state.registry.clone();
-    let data_dir = state.data_dir.clone();
+    let (data_dir, configs) = (state.data_dir.clone(), state.configs.clone());
     // Off the runtime's threads: a blocking read behind the lock every heartbeat's write takes, and the bundles read
     // from the tree.
     let stored = tokio::task::spawn_blocking(move || {
-        let mut stored = match registry.series() {
-            Some(store) => store.streams()?,
-            None => series::StoredStreams::default(),
+        let Some(store) = registry.series() else {
+            return Ok(series::StoredStreams::default());
         };
+        let mut stored = store.streams()?;
         stream_conditions(&data_dir, &mut stored.unmatched);
+        // What the `StreamUnrouted` warning names, by the same reading.
+        let deployed = deployed_configs(&data_dir, &configs, &deployed_groups(&data_dir));
         let since = warnings::now_millis() - series::DRIFT_WINDOW.as_millis() as i64;
-        for key in stored.unmatched.iter_mut().flat_map(|u| &mut u.keys) {
-            key.recent = key.last_seen_ms >= since;
+        let unrouted = store.unrouted_since(since, |group| deployed.get(group).cloned())?;
+        for u in &mut stored.unmatched {
+            let named = unrouted
+                .iter()
+                .find(|s| s.group_id == u.group_id && s.source == u.source);
+            for key in &mut u.keys {
+                key.recent = named.is_some_and(|s| s.keys.contains(&key.key));
+            }
         }
         Ok::<_, StoreError>(stored)
     })
@@ -4484,6 +4540,7 @@ mod secrets_delivery_tests {
             entitlements: Arc::new(Entitlements::default()),
             verify_limiter: Arc::new(VerifyLimiter::default()),
             expiries: Default::default(),
+            configs: Default::default(),
             throughput: Default::default(),
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
@@ -4980,6 +5037,7 @@ mod warnings_endpoint_tests {
             entitlements: Arc::new(Entitlements::default()),
             verify_limiter: Arc::new(VerifyLimiter::default()),
             expiries: Default::default(),
+            configs: Default::default(),
             throughput: Default::default(),
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
@@ -5214,6 +5272,7 @@ mod logs_endpoint_tests {
             entitlements: Arc::new(Entitlements::default()),
             verify_limiter: Arc::new(VerifyLimiter::default()),
             expiries: Default::default(),
+            configs: Default::default(),
             throughput: Default::default(),
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
@@ -5461,6 +5520,7 @@ mod flow_endpoint_tests {
             entitlements: Arc::new(Entitlements::default()),
             verify_limiter: Arc::new(VerifyLimiter::default()),
             expiries: Default::default(),
+            configs: Default::default(),
             throughput: Default::default(),
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
@@ -5489,6 +5549,7 @@ mod flow_endpoint_tests {
             entitlements: Arc::new(Entitlements::default()),
             verify_limiter: Arc::new(VerifyLimiter::default()),
             expiries: Default::default(),
+            configs: Default::default(),
             throughput: Default::default(),
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
@@ -5855,6 +5916,7 @@ mod authority_delivery_tests {
             entitlements: Arc::new(Entitlements::default()),
             verify_limiter: Arc::new(VerifyLimiter::default()),
             expiries: Default::default(),
+            configs: Default::default(),
             throughput: Default::default(),
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),

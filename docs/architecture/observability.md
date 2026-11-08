@@ -325,9 +325,12 @@ on every tallied batch, present or not, so the leader keeps when each was last
 present and last failed apart from when it was last reported.
 
 A stream is unrouted while rows no route took arrive under it within the same
-drift window, which raises a warning on its source in that group naming its
-streams. A worker reports only what no route took, so the warning clears once a
-window passes without such rows, however the route that takes them is written.
+drift window from workers running what their group is deployed at, which raises
+a warning on its source in that group naming its streams. A worker reports only
+what no route took, so the warning clears once a window passes without such
+rows, however the route that takes them is written, and at once when a
+deployment changes what the group runs. A worker's streams are those of the
+deployment its beat names: what a runtime it replaced still held is dropped.
 
 ## What the leader keeps
 

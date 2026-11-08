@@ -40,6 +40,7 @@ fn app_state(store: Store, data_dir: std::path::PathBuf) -> AppState {
         entitlements: Arc::new(smeltr::leader::Entitlements::default()),
         verify_limiter: Arc::new(smeltr::leader::VerifyLimiter::default()),
         expiries: Default::default(),
+        configs: Default::default(),
         deploy_checks: Default::default(),
         origin_hosts: Vec::new(),
         remote: Default::default(),

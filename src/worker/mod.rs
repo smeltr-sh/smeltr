@@ -30,12 +30,13 @@ mod memory;
 pub use memory::{BASELINE_BYTES, COLUMNAR_BYTES_PER_THREAD, LEAST_BATCH_BYTES, LEAST_COLUMNAR_BYTES, SENDER_BYTES};
 pub mod metrics_endpoint;
 
-use crate::config_file::{self, LoadedSystem};
+use crate::config_file::LoadedSystem;
 use crate::core::buffer::MemoryBudget;
 use crate::core::id::SourceId;
 use crate::egress::Egress;
 use crate::handoff::{Acks, Ready};
 use crate::heartbeat::{self, HeartbeatClient, HeartbeatRequest, PartitionRef, ThreadHeartbeat, ThreadKind};
+use crate::leader::git::{ContentId, content_id};
 use crate::metrics::{Metrics, MetricsHandle};
 use crate::runtime::{DestinationTarget, Lane, Reader, Transform};
 
@@ -1688,62 +1689,6 @@ fn record_memory_parts(registry: &Arc<Metrics>, parts: &[memory::Part]) {
         labels.extend(owner.as_ref().map(|(key, id)| (*key, id.as_str())));
         handle.gauge("smeltr_memory_part_bytes", &labels, part.bytes as f64);
     }
-}
-
-/// What a deployment can read in the `group` and `shared` folders of a commit: each entry's name and object id, with
-/// `samples/` and `tests/` left out. `None` for a folder the commit does not hold.
-#[derive(Clone, PartialEq, Eq, Debug)]
-struct ContentId {
-    group: Option<Vec<(String, gix::ObjectId)>>,
-    shared: Option<Vec<(String, gix::ObjectId)>>,
-}
-
-/// The entries of the `group` and `shared` subtrees at `commit`, or `None` for one the commit does not hold.
-///
-/// `samples/` and `tests/` are left out. Only the leader reads them, so a commit that moves nothing else is not a
-/// redeploy (design doc, Control plane).
-///
-/// Absent and unreadable are different answers. A commit that failed to resolve reads as absent, and absent
-/// compared equal to a running deployment that had no `shared/` -- so a commit that added one during a passing
-/// failure was represented without ever being deployed. A path the commit does not hold answers `None`, and a
-/// failure to read the commit at all is the only other case.
-fn content_id(repo_dir: &Path, commit: &str, group_id: &str) -> Result<ContentId, String> {
-    let repo = gix::open(repo_dir).map_err(|e| format!("opening {}: {e}", repo_dir.display()))?;
-    let root = repo
-        .rev_parse_single(format!("{commit}^{{tree}}").as_str())
-        .map_err(|e| format!("{commit:?} names nothing here: {e}"))?;
-    let tree = repo
-        .find_tree(root.detach())
-        .map_err(|e| format!("reading {commit}: {e}"))?;
-    let entries = |path: &str| -> Result<Option<Vec<(String, gix::ObjectId)>>, String> {
-        let unreadable = |e: &dyn std::fmt::Display| format!("reading {path:?} of {commit}: {e}");
-        let Some(entry) = tree.clone().lookup_entry_by_path(path).map_err(|e| unreadable(&e))? else {
-            return Ok(None);
-        };
-        let object = entry.object().map_err(|e| unreadable(&e))?;
-        if object.kind != gix::object::Kind::Tree {
-            // Not a folder, so nothing in it to leave out.
-            return Ok(Some(vec![(String::new(), entry.object_id())]));
-        }
-        let folder = object.into_tree();
-        let mut kept = Vec::new();
-        for child in folder.iter() {
-            let child = child.map_err(|e| unreadable(&e))?;
-            let name = child.inner.filename.to_string();
-            if name != config_file::SAMPLES_DIR && name != config_file::TESTS_DIR {
-                kept.push((name, child.inner.oid.to_owned()));
-            }
-        }
-        Ok(Some(kept))
-    };
-    Ok(ContentId {
-        group: match config_file::group_subtree(group_id) {
-            Ok(sub) => entries(&sub)?,
-            // Not a name any group can have, so not one any commit holds.
-            Err(_) => None,
-        },
-        shared: entries(config_file::SHARED_DIR)?,
-    })
 }
 
 /// One report per running thread, then one for every other bucket the registry has samples under.
@@ -5323,6 +5268,7 @@ mod tests {
                     entitlements: Arc::new(crate::leader::Entitlements::default()),
                     verify_limiter: Arc::new(crate::leader::VerifyLimiter::default()),
                     expiries: Default::default(),
+                    configs: Default::default(),
                     throughput: Default::default(),
                     deploy_checks: Default::default(),
                     origin_hosts: Vec::new(),
@@ -5513,6 +5459,7 @@ mod tests {
                     entitlements: Arc::new(crate::leader::Entitlements::default()),
                     verify_limiter: Arc::new(crate::leader::VerifyLimiter::default()),
                     expiries: Default::default(),
+                    configs: Default::default(),
                     throughput: Default::default(),
                     deploy_checks: Default::default(),
                     origin_hosts: Vec::new(),

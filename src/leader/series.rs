@@ -430,6 +430,10 @@ pub(crate) const STEPS: &[&str] = &[
     "ALTER TABLE logs ADD COLUMN class TEXT;
      ALTER TABLE logs ADD COLUMN type TEXT NOT NULL DEFAULT '';
      ALTER TABLE logs ADD COLUMN service TEXT;",
+    // 13 -- what the rows no route took were judged against: the configuration their group was deployed at
+    // (`git::ContentId::key`). A stream is unrouted only by what is deployed now. NULL on every row summed before it,
+    // which no deployment matches, so a warning those rows raised clears with the first rows recorded after it.
+    "ALTER TABLE stream_unmatched ADD COLUMN config TEXT;",
 ];
 
 /// Gives each log a build before lines had types wrote, before step 12 or after a rollback to it, its class and
@@ -1529,8 +1533,8 @@ pub struct StoredStreamKey {
     /// fills it from the source's kind in the group's deployed bundle, and leaves it out where that bundle has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
-    /// Whether rows came under it within [`DRIFT_WINDOW`], which is when a `StreamUnrouted` warning names it. Not
-    /// stored: `GET /api/streams` sets it.
+    /// Whether a `StreamUnrouted` warning names it ([`RegistryStore::unrouted_since`]). Not stored:
+    /// `GET /api/streams` sets it.
     pub recent: bool,
 }
 
@@ -1548,8 +1552,12 @@ pub struct Window<'a> {
 pub struct Streams<'a> {
     pub group_id: &'a str,
     pub report: &'a crate::heartbeat::StreamReport,
-    /// Whether the report comes from the commit its group is deployed at.
+    /// Whether the report comes from a commit that runs what its group is deployed at
+    /// (`crate::leader::git::ContentId`).
     pub deployed: bool,
+    /// What its group is deployed at, as [`crate::leader::git::ContentId::key`] names it. `None` with nothing
+    /// deployed.
+    pub config: Option<&'a str>,
 }
 
 /// Whether window `seq` of `boot_id` is one `worker_id` has not had recorded, and if so, records that it now has. A
@@ -1587,6 +1595,7 @@ impl RegistryStore {
         group_id: &str,
         report: &crate::heartbeat::StreamReport,
         deployed: bool,
+        config: Option<&str>,
         now_ms: i64,
     ) -> Result<(), StoreError> {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -1597,6 +1606,7 @@ impl RegistryStore {
                 group_id,
                 report,
                 deployed,
+                config,
             },
             now_ms,
         )?;
@@ -1619,6 +1629,7 @@ fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlit
         group_id,
         report,
         deployed,
+        config,
     } = *streams;
     if report.is_empty() {
         return Ok(());
@@ -1759,7 +1770,8 @@ fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlit
             ],
         )?;
     }
-    for streams in &report.unmatched {
+    // A stream is unrouted by what is deployed, so rows another configuration left are not counted against it.
+    for streams in report.unmatched.iter().filter(|_| deployed) {
         let held: i64 = tx.query_row(
             "SELECT COUNT(*) FROM stream_keys WHERE group_id = ?1 AND source = ?2",
             params![group_id, streams.source],
@@ -1791,12 +1803,13 @@ fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlit
         }
         tx.execute(
             "INSERT INTO stream_unmatched (group_id, source, rows, keys_dropped, first_seen_ms, last_seen_ms, \
-                 unrouted_since_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5) \
+                 unrouted_since_ms, config) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5, ?7) \
              ON CONFLICT (group_id, source) DO UPDATE SET \
                  rows = rows + excluded.rows, keys_dropped = keys_dropped + excluded.keys_dropped, \
-                 unrouted_since_ms = CASE WHEN unrouted_since_ms IS NULL OR ?5 - last_seen_ms > ?6 THEN ?5 \
-                     ELSE unrouted_since_ms END, \
+                 unrouted_since_ms = CASE WHEN unrouted_since_ms IS NULL OR ?5 - last_seen_ms > ?6 \
+                     OR config IS NOT ?7 THEN ?5 ELSE unrouted_since_ms END, \
+                 config = ?7, \
                  first_seen_ms = MIN(first_seen_ms, excluded.first_seen_ms), \
                  last_seen_ms = MAX(last_seen_ms, excluded.last_seen_ms)",
             params![
@@ -1805,7 +1818,8 @@ fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlit
                 streams.rows as i64,
                 dropped,
                 now_ms,
-                DRIFT_WINDOW.as_millis() as i64
+                DRIFT_WINDOW.as_millis() as i64,
+                config
             ],
         )?;
     }
@@ -1930,31 +1944,45 @@ impl RegistryStore {
         Ok(())
     }
 
-    /// Each source that received rows no route took at or after `since_ms`, naming the streams it received them under
-    /// since then.
-    pub fn unrouted_since(&self, since_ms: i64) -> Result<Vec<UnroutedSource>, StoreError> {
+    /// Each source that received rows no route took at or after `since_ms` while its group was deployed at what it is
+    /// now, naming the streams it received them under since then. `deployed` answers what a group is deployed at, as
+    /// [`write_streams`] was given it.
+    pub fn unrouted_since(
+        &self,
+        since_ms: i64,
+        deployed: impl Fn(&str) -> Option<String>,
+    ) -> Result<Vec<UnroutedSource>, StoreError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut sources: Vec<UnroutedSource> = conn
             .prepare(
-                "SELECT group_id, source, unrouted_since_ms FROM stream_unmatched WHERE last_seen_ms >= ?1 \
+                "SELECT group_id, source, unrouted_since_ms, config FROM stream_unmatched WHERE last_seen_ms >= ?1 \
                  ORDER BY group_id, source",
             )?
             .query_map(params![since_ms], |row| {
-                Ok(UnroutedSource {
-                    group_id: row.get(0)?,
-                    source: row.get(1)?,
-                    since_ms: row.get(2)?,
-                    keys: Vec::new(),
-                })
+                Ok((
+                    UnroutedSource {
+                        group_id: row.get(0)?,
+                        source: row.get(1)?,
+                        since_ms: row.get(2)?,
+                        keys: Vec::new(),
+                    },
+                    row.get::<_, Option<String>>(3)?,
+                ))
             })?
+            .filter(|row| !matches!(row, Ok((s, config)) if *config != deployed(&s.group_id)))
+            .map(|row| row.map(|(s, _)| s))
             .collect::<Result<_, _>>()?;
+        // Since the run began too: the streams of rows another deployment left are not this run's.
         let mut keys = conn.prepare(
-            "SELECT key FROM stream_keys WHERE group_id = ?1 AND source = ?2 AND last_seen_ms >= ?3 \
+            "SELECT key FROM stream_keys WHERE group_id = ?1 AND source = ?2 AND last_seen_ms >= MAX(?3, ?4) \
              ORDER BY first_seen_ms, key",
         )?;
         for s in &mut sources {
             s.keys = keys
-                .query_map(params![s.group_id, s.source, since_ms], |row| row.get(0))?
+                .query_map(
+                    params![s.group_id, s.source, since_ms, s.since_ms.unwrap_or(since_ms)],
+                    |row| row.get(0),
+                )?
                 .collect::<Result<_, _>>()?;
         }
         Ok(sources)
@@ -2095,7 +2123,7 @@ mod tests {
         let mut seen = Vec::new();
         for (present, failed, at) in windows {
             store
-                .record_streams("prod", &declared_window(present, failed), true, at)
+                .record_streams("prod", &declared_window(present, failed), true, None, at)
                 .unwrap();
             let f = store.declared_fields().unwrap().remove(0);
             seen.push((f.read_last_ms, f.present_last_ms, f.failed_last_ms, f.failing_since_ms));
@@ -2122,15 +2150,15 @@ mod tests {
     fn a_step_reads_only_the_rows_it_parsed_and_declares_only_what_it_reports() {
         let store = memory_store();
         store
-            .record_streams("prod", &declared_window(10, 0), true, 1_000)
+            .record_streams("prod", &declared_window(10, 0), true, None, 1_000)
             .unwrap();
         let mut guarded = declared_window(0, 0);
         guarded.parsers[0].rows = 0;
-        store.record_streams("prod", &guarded, true, 2_000).unwrap();
+        store.record_streams("prod", &guarded, true, None, 2_000).unwrap();
         assert_eq!(store.declared_fields().unwrap()[0].read_last_ms, Some(1_000));
         let mut undeclared = declared_window(0, 0);
         undeclared.parsers[0].fields.clear();
-        store.record_streams("prod", &undeclared, true, 3_000).unwrap();
+        store.record_streams("prod", &undeclared, true, None, 3_000).unwrap();
         assert!(store.declared_fields().unwrap().is_empty());
     }
 
@@ -2140,15 +2168,15 @@ mod tests {
         let store = memory_store();
         let rows = |store: &RegistryStore| store.streams().unwrap().parsers[0].rows;
         store
-            .record_streams("prod", &declared_window(10, 0), true, 1_000)
+            .record_streams("prod", &declared_window(10, 0), true, None, 1_000)
             .unwrap();
         store
-            .record_streams("prod", &declared_window(10, 0), true, 2_000)
+            .record_streams("prod", &declared_window(10, 0), true, None, 2_000)
             .unwrap();
         assert_eq!(rows(&store), 20);
         let mut retyped = declared_window(10, 0);
         retyped.parsers[0].fields[0].suggested = "str".into();
-        store.record_streams("prod", &retyped, true, 3_000).unwrap();
+        store.record_streams("prod", &retyped, true, None, 3_000).unwrap();
         assert_eq!(rows(&store), 10);
         assert_eq!(store.streams().unwrap().parsers[0].first_seen_ms, 3_000);
     }
@@ -2161,14 +2189,14 @@ mod tests {
         let rows = |store: &RegistryStore| store.streams().unwrap().parsers[0].rows;
         let mut older = declared_window(10, 0);
         older.parsers[0].fields[0].suggested = "str".into();
-        store.record_streams("prod", &older, false, 1_000).unwrap();
+        store.record_streams("prod", &older, false, None, 1_000).unwrap();
         assert_eq!(rows(&store), 10);
         store
-            .record_streams("prod", &declared_window(10, 0), true, 2_000)
+            .record_streams("prod", &declared_window(10, 0), true, None, 2_000)
             .unwrap();
-        store.record_streams("prod", &older, false, 3_000).unwrap();
+        store.record_streams("prod", &older, false, None, 3_000).unwrap();
         store
-            .record_streams("prod", &declared_window(10, 0), false, 4_000)
+            .record_streams("prod", &declared_window(10, 0), false, None, 4_000)
             .unwrap();
         assert_eq!(rows(&store), 20);
     }
@@ -2178,12 +2206,12 @@ mod tests {
     fn a_stream_unseen_for_the_last_window_is_forgotten() {
         let store = memory_store();
         store
-            .record_streams("prod", &stream_report(&["old"], &["k1"]), true, 1_000)
+            .record_streams("prod", &stream_report(&["old"], &["k1"]), true, None, 1_000)
             .unwrap();
         let later = 2_000 + Tier::OneHour.retention_ms();
         let mut newer = stream_report(&["new"], &[]);
         newer.unmatched.clear();
-        store.record_streams("prod", &newer, true, later).unwrap();
+        store.record_streams("prod", &newer, true, None, later).unwrap();
         store.maintain(later).unwrap();
         let streams = store.streams().unwrap();
         let fields: Vec<_> = streams.parsers[0].fields.iter().map(|f| f.name.as_str()).collect();
@@ -2196,7 +2224,7 @@ mod tests {
     fn a_removed_source_takes_its_streams_with_it() {
         let store = memory_store();
         store
-            .record_streams("prod", &stream_report(&["a"], &["k1"]), true, 1_000)
+            .record_streams("prod", &stream_report(&["a"], &["k1"]), true, None, 1_000)
             .unwrap();
         let kept = [("prod".to_string(), "orders".to_string())].into();
         store.forget_streams_except(&kept).unwrap();
@@ -2216,13 +2244,13 @@ mod tests {
     fn streams_accumulate_across_heartbeats() {
         let store = memory_store();
         store
-            .record_streams("prod", &stream_report(&["a", "b"], &["k1"]), true, 1_000)
+            .record_streams("prod", &stream_report(&["a", "b"], &["k1"]), true, None, 1_000)
             .unwrap();
         store
-            .record_streams("prod", &stream_report(&["b", "c"], &["k1", "k2"]), true, 2_000)
+            .record_streams("prod", &stream_report(&["b", "c"], &["k1", "k2"]), true, None, 2_000)
             .unwrap();
         store
-            .record_streams("staging", &stream_report(&["a"], &[]), true, 3_000)
+            .record_streams("staging", &stream_report(&["a"], &[]), true, None, 3_000)
             .unwrap();
 
         let streams = store.streams().unwrap();
@@ -2255,9 +2283,9 @@ mod tests {
         let store = memory_store();
         let mut newer = stream_report(&["a"], &["k1"]);
         newer.parsers[0].fields[0].suggested = "i64".into();
-        store.record_streams("prod", &newer, true, 2_000).unwrap();
+        store.record_streams("prod", &newer, true, None, 2_000).unwrap();
         store
-            .record_streams("prod", &stream_report(&["a"], &["k1"]), true, 1_000)
+            .record_streams("prod", &stream_report(&["a"], &["k1"]), true, None, 1_000)
             .unwrap();
 
         let streams = store.streams().unwrap();
@@ -2299,6 +2327,7 @@ mod tests {
                             group_id: "prod",
                             report: &report,
                             deployed: true,
+                            config: None,
                         }),
                     },
                     stop_after_unreachable_secs: None,
@@ -2371,6 +2400,7 @@ mod tests {
                         group_id: "prod",
                         report: &report,
                         deployed: true,
+                        config: None,
                     }),
                 },
                 stop_after_unreachable_secs: None,
@@ -2406,10 +2436,10 @@ mod tests {
             .collect();
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         store
-            .record_streams("prod", &stream_report(&many, &[]), true, 1)
+            .record_streams("prod", &stream_report(&many, &[]), true, None, 1)
             .unwrap();
         store
-            .record_streams("prod", &stream_report(&["one-more", "f0"], &[]), true, 2)
+            .record_streams("prod", &stream_report(&["one-more", "f0"], &[]), true, None, 2)
             .unwrap();
 
         let streams = store.streams().unwrap();
