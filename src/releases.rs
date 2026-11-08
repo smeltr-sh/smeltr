@@ -276,6 +276,8 @@ fn record_release() {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct NewStep {
     store: &'static str,
+    /// Its place in the store's steps, from 1.
+    number: usize,
     additive: bool,
 }
 
@@ -295,6 +297,7 @@ fn new_steps() -> Vec<NewStep> {
             .skip(shipped(store))
             .map(|(i, step)| NewStep {
                 store,
+                number: i + 1,
                 additive: i > 0 && crate::leader::steps::is_additive(step),
             })
             .collect()
@@ -304,9 +307,11 @@ fn new_steps() -> Vec<NewStep> {
     steps.extend(
         crate::leader::steps::REPO_STEPS
             .iter()
+            .enumerate()
             .skip(shipped("config.git"))
-            .map(|step| NewStep {
+            .map(|(i, step)| NewStep {
                 store: "config.git",
+                number: i + 1,
                 additive: step.additive,
             }),
     );
@@ -347,10 +352,12 @@ fn bump_allowed(previous: &str, release: &str, steps: &[NewStep]) -> Result<(), 
 fn a_release_is_named_for_the_steps_it_adds() {
     let additive = NewStep {
         store: "leader.db",
+        number: 1,
         additive: true,
     };
     let breaking = NewStep {
         store: "registry.db",
+        number: 1,
         additive: false,
     };
     assert_eq!(bump_allowed("1.2.0", "1.2.1", &[]), Ok(()));
@@ -364,6 +371,60 @@ fn a_release_is_named_for_the_steps_it_adds() {
     assert_eq!(bump_allowed("1.2.0", "2.0.0", &[breaking]), Ok(()));
     assert!(bump_allowed("1.2.0", "1.1.9", &[]).is_err());
     assert!(bump_allowed("1.2.0", "1.2.0", &[]).is_err());
+}
+
+/// Print every breaking step since the last release, with what its comment says, for a person to weigh before the
+/// next release. It never fails: whether a step is worth a major release is theirs to decide.
+#[test]
+#[ignore = "run by `just breaking-steps`, at the end of `just check`"]
+fn breaking_steps() {
+    let Some(previous) = released().pop() else {
+        return;
+    };
+    let breaking: Vec<NewStep> = new_steps().into_iter().filter(|s| !s.additive).collect();
+    if breaking.is_empty() {
+        return;
+    }
+    println!("BREAKING STORE STEPS since {previous}:");
+    for step in &breaking {
+        let what = describe(step).unwrap_or_else(|| "(no description)".to_string());
+        println!("  {} step {}: {what}", step.store, step.number);
+    }
+    println!(
+        "Once a newer build has opened a store with these steps, an older build cannot open it again, so the next \
+         release must be a major release."
+    );
+}
+
+/// What the `// <number> --` comment above an SQLite step says, on one line.
+fn describe(step: &NewStep) -> Option<String> {
+    let path = match step.store {
+        "leader.db" => "src/leader/sqlite_store.rs",
+        "registry.db" => "src/leader/series.rs",
+        _ => return None,
+    };
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).ok()?;
+    let first = format!("// {} -- ", step.number);
+    // Search from the STEPS array on, because a comment of the same form above it must not match.
+    let mut lines = text[text.find("const STEPS")?..].lines().map(str::trim_start);
+    let head = lines.find_map(|l| l.strip_prefix(first.as_str()))?;
+    let rest = lines.map_while(|l| l.strip_prefix("// "));
+    Some(std::iter::once(head).chain(rest).collect::<Vec<_>>().join(" "))
+}
+
+#[test]
+fn a_step_is_described_by_its_own_comment() {
+    let step = |store, number| NewStep {
+        store,
+        number,
+        additive: false,
+    };
+    let first = describe(&step("leader.db", 1)).unwrap();
+    assert!(!first.contains("2 --"), "{first}");
+    let last = crate::leader::sqlite_store::STEPS.len();
+    assert!(describe(&step("leader.db", last)).is_some());
+    assert!(describe(&step("registry.db", crate::leader::series::STEPS.len())).is_some());
+    assert_eq!(describe(&step("leader.db", last + 1)), None);
 }
 
 /// The releases recorded so far, oldest first.

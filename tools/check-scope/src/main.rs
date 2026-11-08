@@ -62,6 +62,8 @@ struct Plan {
     website: bool,
     docs: bool,
     deny: bool,
+    /// Report the breaking store steps since the last release, after every other check.
+    breaking: bool,
     why: Vec<String>,
 }
 
@@ -264,6 +266,9 @@ impl Tree {
         if !plan.tests.is_empty() || !plan.packages.is_empty() {
             plan.clippy = true;
         }
+        plan.breaking = changed
+            .iter()
+            .any(|p| self.sources.get(p).is_some_and(|text| text.contains("STEPS: &[")));
         plan
     }
 
@@ -526,6 +531,16 @@ fn run(plan: &Plan) -> ExitCode {
             failed.push(name);
         }
     }
+    // After the others, so its report is the last thing printed rather than lost among their lines.
+    let breaking = || {
+        Command::new("just")
+            .arg("breaking-steps")
+            .env("SMELTR_STABLE_UPDATED", "1")
+            .status()
+    };
+    if plan.breaking && !breaking().is_ok_and(|s| s.success()) {
+        failed.push("breaking-steps".into());
+    }
     if failed.is_empty() {
         eprintln!("check: passed");
         ExitCode::SUCCESS
@@ -568,6 +583,7 @@ mod tests {
             ),
             ("tests/harness/mod.rs", ""),
             ("src/io/kafka.rs", ""),
+            ("src/leader/sqlite_store.rs", "pub(crate) const STEPS: &[&str] = &[];\n"),
             ("src/io/iceberg/table.rs", "#[path = \"fuzz.rs\"]\nmod fuzz;\n"),
             (
                 "src/ops/stdfuncs.rs",
@@ -607,6 +623,12 @@ mod tests {
             ]
         );
         assert!(p.clippy && !p.rust_all && !p.deny);
+    }
+
+    #[test]
+    fn a_file_that_holds_store_steps_reports_the_breaking_ones() {
+        assert!(plan(&["src/leader/sqlite_store.rs"]).breaking);
+        assert!(!plan(&["src/io/kafka.rs"]).breaking);
     }
 
     #[test]
