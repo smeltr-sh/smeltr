@@ -709,7 +709,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/areas/:area/sources/:id/lower",
-        what: "Lower the source's Rows below or above normal warning that holds to info until it ends. The area is the source's worker group. No query.",
+        what: "Lower the source's Rows below normal warning that holds to info until it ends. The area is the source's worker group. No query.",
         body: "",
     },
     Route {

@@ -331,18 +331,18 @@ rows only a new config lets through, rows a destination refused, or a
 destination not taking records. The last releases on its own once the
 destination is back, so it is a warning where the other two are failures.
 
-A source reading more or fewer rows than it normally does warns either way.
-Its normal is the last seven days at the same time of day, and holds the
-share of those windows the operator sets. A window that overlaps any warning
-about the source is not learned, so an outage does not widen the normal, and a
-lasting change of level keeps warning until an admin says otherwise. A source
-with too little history has no normal yet. One held, unreachable or on a
-silent worker is not judged against it: a warning that names the cause is
-already up. Nor is one for a window after such a warning ends, while the
-window still holds the stop and the catch-up after it. The leader keeps when
-each warning held, for as long as it keeps hourly rows, so the end is known
-across a restart. The Status page ranks sources by how far each is from the
-same normal.
+A source reading fewer rows than it normally does warns, and one reading more
+raises info. Its normal is the last seven days at the same time of day, and
+holds the share of those windows the operator sets. A window that overlaps any
+warning about the source, or its rows being above normal, is not learned, so an
+outage does not widen the normal, and a lasting change of level keeps being
+raised until an admin says otherwise. A source with too little history has no
+normal yet. One held, unreachable or on a silent worker is not judged against
+it: a warning that names the cause is already up. Nor is one for a window after
+such a warning ends, while the window still holds the stop and the catch-up
+after it. The leader keeps when each warning held, for as long as it keeps
+hourly rows, so the end is known across a restart. The Status page ranks
+sources by how far each is from the same normal.
 
 An editor in the source's worker group may say either of two things about
 it. Lower turns the warning that holds into info until it ends, and it stays

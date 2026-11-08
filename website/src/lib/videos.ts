@@ -42,7 +42,13 @@ const allCourses: Course[] = [
     slug: 'agent',
     demo: false,
     videos: [
-      { title: 'Set Up Your AI Data Engineer in smeltr', slug: 'setup' },
+      {
+        title: 'Set Up Your AI Data Engineer in smeltr',
+        slug: 'setup',
+        youtube: '1n0qupyS_9E',
+        minutes: 3,
+        poster: '/videos/agent-course-1-poster.jpg',
+      },
       {
         title: 'AI Agent Builds a FortiGate to Elasticsearch Pipeline',
         slug: 'build-a-pipeline',
@@ -57,7 +63,13 @@ const allCourses: Course[] = [
         minutes: 5,
         poster: '/videos/agent-course-3-poster.jpg',
       },
-      { title: 'Ask the agent about your fleet', slug: 'ask-about-your-fleet' },
+      {
+        title: 'Ask Your AI Agent About Your Fleet',
+        slug: 'ask-about-your-fleet',
+        youtube: '48eIRNY_K50',
+        minutes: 2,
+        poster: '/videos/agent-course-4-poster.jpg',
+      },
       { title: 'Have the agent fix a problem', slug: 'fix-a-problem' },
     ],
   },

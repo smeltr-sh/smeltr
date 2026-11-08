@@ -179,10 +179,24 @@ function fieldPhrases(
   };
   return diffObjects(before, after)
     .filter((entry) => entry.kind !== 'unchanged' && !skip.includes(entry.key))
-    .map(
-      (entry) =>
-        `${entry.key} from ${say(entry.key, entry.before, 'before')} to ${say(entry.key, entry.after, 'after')}`,
-    );
+    .map((entry) => {
+      const [was, now] = differing(entry.before, entry.after);
+      return `${entry.key} from ${say(entry.key, was, 'before')} to ${say(entry.key, now, 'after')}`;
+    });
+}
+
+/** Two lists reduced to the items only one of them holds, so a long list that
+ * is shown shortened still shows what changed. A list that only grew, only
+ * shrank or did not change, and anything that is not a list, is returned as it
+ * is. */
+function differing(before: unknown, after: unknown): [unknown, unknown] {
+  if (!Array.isArray(before) || !Array.isArray(after)) return [before, after];
+  const key = (item: unknown) => JSON.stringify(item);
+  const has = (list: unknown[]) => new Set(list.map(key));
+  const [was, now] = [has(before), has(after)];
+  const onlyBefore = before.filter((item) => !now.has(key(item)));
+  const onlyAfter = after.filter((item) => !was.has(key(item)));
+  return onlyBefore.length && onlyAfter.length ? [onlyBefore, onlyAfter] : [before, after];
 }
 
 // -- pipeline steps --------------------------------------------------------

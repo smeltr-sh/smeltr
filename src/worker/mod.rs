@@ -30,12 +30,13 @@ mod memory;
 pub use memory::{BASELINE_BYTES, COLUMNAR_BYTES_PER_THREAD, LEAST_BATCH_BYTES, LEAST_COLUMNAR_BYTES, SENDER_BYTES};
 pub mod metrics_endpoint;
 
-use crate::config_file::{self, LoadedSystem};
+use crate::config_file::LoadedSystem;
 use crate::core::buffer::MemoryBudget;
 use crate::core::id::SourceId;
 use crate::egress::Egress;
 use crate::handoff::{Acks, Ready};
 use crate::heartbeat::{self, HeartbeatClient, HeartbeatRequest, PartitionRef, ThreadHeartbeat, ThreadKind};
+use crate::leader::git::{ContentId, content_id};
 use crate::metrics::{Metrics, MetricsHandle};
 use crate::runtime::{DestinationTarget, Lane, Reader, Transform};
 
@@ -1688,62 +1689,6 @@ fn record_memory_parts(registry: &Arc<Metrics>, parts: &[memory::Part]) {
         labels.extend(owner.as_ref().map(|(key, id)| (*key, id.as_str())));
         handle.gauge("smeltr_memory_part_bytes", &labels, part.bytes as f64);
     }
-}
-
-/// What a deployment can read in the `group` and `shared` folders of a commit: each entry's name and object id, with
-/// `samples/` and `tests/` left out. `None` for a folder the commit does not hold.
-#[derive(Clone, PartialEq, Eq, Debug)]
-struct ContentId {
-    group: Option<Vec<(String, gix::ObjectId)>>,
-    shared: Option<Vec<(String, gix::ObjectId)>>,
-}
-
-/// The entries of the `group` and `shared` subtrees at `commit`, or `None` for one the commit does not hold.
-///
-/// `samples/` and `tests/` are left out. Only the leader reads them, so a commit that moves nothing else is not a
-/// redeploy (design doc, Control plane).
-///
-/// Absent and unreadable are different answers. A commit that failed to resolve reads as absent, and absent
-/// compared equal to a running deployment that had no `shared/` -- so a commit that added one during a passing
-/// failure was represented without ever being deployed. A path the commit does not hold answers `None`, and a
-/// failure to read the commit at all is the only other case.
-fn content_id(repo_dir: &Path, commit: &str, group_id: &str) -> Result<ContentId, String> {
-    let repo = gix::open(repo_dir).map_err(|e| format!("opening {}: {e}", repo_dir.display()))?;
-    let root = repo
-        .rev_parse_single(format!("{commit}^{{tree}}").as_str())
-        .map_err(|e| format!("{commit:?} names nothing here: {e}"))?;
-    let tree = repo
-        .find_tree(root.detach())
-        .map_err(|e| format!("reading {commit}: {e}"))?;
-    let entries = |path: &str| -> Result<Option<Vec<(String, gix::ObjectId)>>, String> {
-        let unreadable = |e: &dyn std::fmt::Display| format!("reading {path:?} of {commit}: {e}");
-        let Some(entry) = tree.clone().lookup_entry_by_path(path).map_err(|e| unreadable(&e))? else {
-            return Ok(None);
-        };
-        let object = entry.object().map_err(|e| unreadable(&e))?;
-        if object.kind != gix::object::Kind::Tree {
-            // Not a folder, so nothing in it to leave out.
-            return Ok(Some(vec![(String::new(), entry.object_id())]));
-        }
-        let folder = object.into_tree();
-        let mut kept = Vec::new();
-        for child in folder.iter() {
-            let child = child.map_err(|e| unreadable(&e))?;
-            let name = child.inner.filename.to_string();
-            if name != config_file::SAMPLES_DIR && name != config_file::TESTS_DIR {
-                kept.push((name, child.inner.oid.to_owned()));
-            }
-        }
-        Ok(Some(kept))
-    };
-    Ok(ContentId {
-        group: match config_file::group_subtree(group_id) {
-            Ok(sub) => entries(&sub)?,
-            // Not a name any group can have, so not one any commit holds.
-            Err(_) => None,
-        },
-        shared: entries(config_file::SHARED_DIR)?,
-    })
 }
 
 /// One report per running thread, then one for every other bucket the registry has samples under.
@@ -4369,6 +4314,12 @@ impl Supervisor {
             // Its threads are gone, so nothing is reported about them. What it counted and said before it went is
             // still owed to the leader, and is carried by the beats that follow.
             held.state = child::RuntimeState::default();
+            // Its streams are the exception: the leader judges a beat's streams by the commit the beat names, and a
+            // later beat no longer names this runtime's commit.
+            held.gathered.streams = None;
+        }
+        if let Some(window) = self.owed.lock().unwrap().window.as_mut() {
+            window.streams = None;
         }
         self.registry.forget_mirrored();
         *self.commit.lock().unwrap() = None;
@@ -7397,6 +7348,52 @@ mod tests {
         );
     }
 
+    /// A runtime that is gone takes its streams with it, both those still owed to the current window and those waiting
+    /// for the next. A later beat names a different commit, and the leader judges streams by the commit the beat names,
+    /// so the old runtime's streams would be judged against the wrong deployment.
+    #[test]
+    fn a_runtime_s_streams_go_with_it() {
+        let supervisor = supervisor_for(temp_dir("streams-forgotten"));
+        let unmatched = |rows| heartbeat::StreamReport {
+            parsers: Vec::new(),
+            unmatched: vec![heartbeat::UnmatchedStreams {
+                source: "hec".to_string(),
+                rows,
+                keys: Vec::new(),
+                keys_dropped: 0,
+            }],
+        };
+        let said = |inbox: &child::RuntimeInbox, rows| {
+            *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+                state: child::RuntimeState::default(),
+                gathered: child::Gathered {
+                    streams: Some(unmatched(rows)),
+                    ..Default::default()
+                },
+            });
+            supervisor.absorb(inbox);
+        };
+        let old = child::RuntimeInbox::default();
+        said(&old, 2);
+        assert_eq!(supervisor.next_beat(false).streams, Some(unmatched(2)));
+        said(&old, 3);
+        supervisor.forget_runtime();
+        let owed = supervisor.next_beat(false);
+        assert_eq!(
+            (owed.streams_window, owed.streams),
+            (Some(1), None),
+            "the owed window kept them"
+        );
+        supervisor.window_answered();
+
+        said(&child::RuntimeInbox::default(), 5);
+        assert_eq!(
+            supervisor.next_beat(false).streams,
+            Some(unmatched(5)),
+            "what the old runtime said waiting was carried on"
+        );
+    }
+
     /// The stopping beat is the last: it sends the window still owed, and with it the progress the drain
     /// committed since, which no later beat would carry.
     #[test]
@@ -8487,6 +8484,28 @@ mod tests {
             content_id(&dir, &after, "west").unwrap(),
             "west runs the same configuration, so nothing should restart"
         );
+    }
+
+    /// The leader's name for what a group runs changes exactly when a worker would restart: a commit that leaves the
+    /// group alone keeps the name, one that changes the group gives it a new one, and a commit the leader cannot read
+    /// has none.
+    #[test]
+    fn the_leader_names_a_group_s_config_by_its_content() {
+        let data = temp_dir("configs");
+        std::fs::create_dir_all(data.join("repos")).unwrap();
+        let dir = crate::leader::git::repo_path(&data);
+        std::fs::rename(repo("configs-repo"), &dir).unwrap();
+        let before = head_of(&dir);
+        write(&dir, "groups/east/sources.json", r#"[{"id":"s"}]"#);
+        let east = commit(&dir, "east only");
+        write(&dir, "groups/west/sources.json", r#"[{"id":"s"}]"#);
+        let west = commit(&dir, "west");
+
+        let key = |commit: &str| Some(content_id(&dir, commit, "west").ok()?.key());
+        assert!(key(&before).is_some());
+        assert_eq!(key(&before), key(&east), "a change to east renamed west");
+        assert_ne!(key(&east), key(&west), "a change to west kept its name");
+        assert_eq!(key("0000000000000000000000000000000000000000"), None);
     }
 
     /// Only the leader reads samples and tests (design doc, Config plane). The GUI saves a sample to `shared/` unless

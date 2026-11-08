@@ -229,7 +229,7 @@ need-checks: need-rust need-nextest need-node need-deny
 # `--list` shows a recipe's last comment line, so `[doc]` supplies the
 # summary rather than this paragraph's tail.
 [doc("Every check but the fuzzers, whatever changed. The five run at once.")]
-check-all: need-checks every-check
+check-all: need-checks every-check breaking-steps
 
 [private]
 [parallel]
@@ -251,6 +251,14 @@ fmt-check: need-rust
 [env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
 check-tests filter: need-nextest stable fips-dll
     cargo nextest run --workspace -j {{test_threads}} --no-tests=pass -E "not test(/fuzz/) & ({{filter}})"
+
+# The store steps since the last release that stop an older build opening the store, printed last so a person sees them.
+# It never fails.
+[private]
+[env("SMELTR_NO_GUI", "1")]
+[env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
+breaking-steps: need-nextest fips-dll
+    cargo nextest run --workspace --lib --run-ignored only --cargo-quiet --show-progress none --status-level none --final-status-level none --success-output final -E "binary_id(=smeltr) & test(=releases::breaking_steps)"
 
 # One crate under `tools/`.
 [private]
