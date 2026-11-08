@@ -727,10 +727,15 @@ fn an_enrollment_code_minted_for_several_workers_brings_in_that_many() {
     let value = code["value"].as_str().unwrap();
 
     for label in ["fleet-1", "fleet-2"] {
-        let child = spawn_worker(&base, value, &temp_dir(label));
-        std::thread::sleep(Duration::from_secs(6));
+        let dir = temp_dir(label);
+        let credential = dir.join("credential.token");
+        let child = spawn_worker(&base, value, &dir);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !credential.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(200));
+        }
         let said = stop(child);
-        assert!(said.contains("enrollment enrolled"), "{label} never enrolled:\n{said}");
+        assert!(credential.exists(), "{label} never enrolled:\n{said}");
     }
     let said = refused(&base, value, &temp_dir("fleet-3"));
     assert!(said.contains("already brought in every worker"), "{said}");
