@@ -2181,7 +2181,6 @@ mod tests {
             entitlements: Default::default(),
             verify_limiter: Default::default(),
             expiries: Default::default(),
-            configs: Default::default(),
             throughput: Default::default(),
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),

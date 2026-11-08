@@ -5268,7 +5268,6 @@ mod tests {
                     entitlements: Arc::new(crate::leader::Entitlements::default()),
                     verify_limiter: Arc::new(crate::leader::VerifyLimiter::default()),
                     expiries: Default::default(),
-                    configs: Default::default(),
                     throughput: Default::default(),
                     deploy_checks: Default::default(),
                     origin_hosts: Vec::new(),
@@ -5459,7 +5458,6 @@ mod tests {
                     entitlements: Arc::new(crate::leader::Entitlements::default()),
                     verify_limiter: Arc::new(crate::leader::VerifyLimiter::default()),
                     expiries: Default::default(),
-                    configs: Default::default(),
                     throughput: Default::default(),
                     deploy_checks: Default::default(),
                     origin_hosts: Vec::new(),
@@ -8503,8 +8501,7 @@ mod tests {
         write(&dir, "groups/west/sources.json", r#"[{"id":"s"}]"#);
         let west = commit(&dir, "west");
 
-        let configs = crate::leader::Configs::default();
-        let key = |commit: &str| configs.key(&data, "west", commit);
+        let key = |commit: &str| Some(content_id(&dir, commit, "west").ok()?.key());
         assert!(key(&before).is_some());
         assert_eq!(key(&before), key(&east), "a change to east renamed west");
         assert_ne!(key(&east), key(&west), "a change to west kept its name");

@@ -2564,7 +2564,7 @@ const NOT_DEPLOYING_AFTER_MS: i64 = 5 * 60 * 1000;
 /// every call. `starts` is the fact clock's answer (`Registry::observe_facts`) for whichever facts need one; a warning
 /// with no entry there carries no start time. `series_store` is the durable registry's series half
 /// (`crate::leader::registry::Registry::series`), and `deployed` is every group the deployed commit holds a subtree
-/// for, with what it runs there (`crate::leader::Configs::key`).
+/// for, with what it runs there (`crate::leader::git::ContentId::key`).
 pub fn derive(
     snapshot: &[ThreadHealth],
     credentials: &[WorkerCredentialRecord],

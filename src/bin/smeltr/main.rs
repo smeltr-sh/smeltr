@@ -1101,7 +1101,6 @@ async fn setup_leader(
         entitlements: Arc::new(smeltr::leader::Entitlements::default()),
         verify_limiter: Arc::new(smeltr::leader::VerifyLimiter::default()),
         expiries: Default::default(),
-        configs: Default::default(),
         throughput: Default::default(),
         deploy_checks: Default::default(),
         origin_hosts: hosts,

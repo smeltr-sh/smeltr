@@ -199,7 +199,6 @@ fn start_leader_tls() -> (
                 entitlements: Arc::new(smeltr::leader::Entitlements::default()),
                 verify_limiter: Arc::new(smeltr::leader::VerifyLimiter::default()),
                 expiries: Default::default(),
-                configs: Default::default(),
                 deploy_checks: Default::default(),
                 data_dir,
                 origin_hosts: Vec::new(),
