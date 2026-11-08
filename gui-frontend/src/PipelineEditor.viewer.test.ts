@@ -109,7 +109,7 @@ describe('a viewer in the pipeline editor', () => {
     expect(asked).toContain('/api/areas/shared/samples');
     expect(asked).toContain('/api/areas/shared/preview/pipeline');
     expect(target.querySelector('p.error')).toBeNull();
-    for (const saves of ['Run now', 'Lock this as a test', 'Paste or file'])
+    for (const saves of ['Run now', 'Lock this as a test'])
       expect(target.textContent).not.toContain(saves);
   });
 

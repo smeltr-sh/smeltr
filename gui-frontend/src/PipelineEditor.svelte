@@ -65,6 +65,7 @@
     getPipeline,
     putPipeline,
     getConfig,
+    getConnections,
     listBranches,
     pipelineAt,
     undoChanges,
@@ -1229,7 +1230,8 @@
       ...(making.condition ? { filter: making.condition } : {}),
     },
   );
-  /** A capture the sample menu started, at one of the pipeline's sources: in place of the route's. */
+  /** The source a capture from the sample menu starts on: the first of the pipeline's sources the person may
+   * capture. When set, the dialog uses it in place of the route's source. */
   let captureAt = $state<ReturnType<typeof sourceTarget> | null>(null);
   function sourceTarget(c: Connected) {
     return {
@@ -1238,6 +1240,25 @@
       scope: c.area,
       group: c.area === SHARED_SCOPE ? '' : c.area,
     };
+  }
+
+  /** Opens Add sample with its capture on the pipeline's own source. A viewer, who may only capture, goes straight
+   * to the capture. */
+  async function addSample() {
+    // Unreadable connections leave the form on its own first target.
+    const upstream = loadedId
+      ? await getConnections('pipeline', loadedId).then(
+          (res) => res.upstream,
+          () => [],
+        )
+      : [];
+    captureAt =
+      upstream
+        .filter((c) => c.kind === 'source')
+        .map(sourceTarget)
+        .find((t) => mayCapture(t)) ?? null;
+    if (readOnly) capturing = true;
+    else adding = true;
   }
 
   /** What the proposal read, said over the steps it made. */
@@ -1685,17 +1706,11 @@
               ? lastGoodResult.rows.length
               : null}
             {lockedBy}
-            pipeline={loadedId}
-            mayCapture={(c) => mayCapture(sourceTarget(c))}
             held={held
               ? { choice: heldChoice(held.session), records: heldCount(held), source: held.source }
               : undefined}
             onpick={chooseSample}
-            onadd={readOnly ? undefined : () => (adding = true)}
-            oncapture={(c) => {
-              captureAt = sourceTarget(c);
-              capturing = true;
-            }}
+            onadd={readOnly && !mayCapture() ? undefined : addSample}
           />
         {/snippet}
         {#snippet stage()}{@render stageChips()}{/snippet}
@@ -1718,9 +1733,9 @@
         }}
         onsaved={savingOutput ? savedOutput : savingInput ? savedInput : captured}
       />
-    {:else if capturing && captureAt}
+    {:else if capturing}
       <CaptureFlow
-        target={captureAt}
+        target={captureAt ?? undefined}
         onuse={useCapture}
         oncancel={() => {
           capturing = false;

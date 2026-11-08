@@ -273,9 +273,12 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   await goto(viewer, leader, '#/build/pipelines/tidy');
 
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
-  await viewer.getByRole('button', { name: 'Capture from a source' }).click();
-  await viewer.getByRole('option', { name: /own-metrics/ }).click();
+  // A viewer may only capture, so Add sample opens on the capture, at the pipeline's own source.
+  await viewer.getByRole('button', { name: 'Add sample' }).click();
   const form = viewer.getByRole('dialog');
+  await expect(form.getByRole('combobox', { name: /^Capture target/ })).toHaveValue(
+    'source:own-metrics',
+  );
   await form.getByRole('spinbutton', { name: 'records' }).fill('3');
   await form.getByRole('button', { name: 'Start' }).click();
   const use = viewer.getByRole('button', { name: 'Use these records' });
@@ -330,9 +333,12 @@ test('A1: an editor runs a pipeline over a capture without saving it, then saves
   await goto(admin, leader, '#/build/pipelines/tidy');
 
   await admin.getByRole('button', { name: 'Choose a sample' }).click();
-  await admin.getByRole('button', { name: 'Capture from a source' }).click();
-  await admin.getByRole('option', { name: /own-metrics/ }).click();
+  await admin.getByRole('button', { name: 'Add sample' }).click();
   const form = admin.getByRole('dialog');
+  await form.getByRole('button', { name: 'Capture' }).click();
+  await expect(form.getByRole('combobox', { name: /^Capture target/ })).toHaveValue(
+    'source:own-metrics',
+  );
   await form.getByRole('spinbutton', { name: 'records' }).fill('3');
   await form.getByRole('button', { name: 'Start' }).click();
   const use = admin.getByRole('button', { name: 'Use these records' });
@@ -1348,7 +1354,7 @@ test('A2: a sample pasted or captured from the Sample menu is saved and run', as
   await goto(admin, leader, '#/build/pipelines/orders');
   const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
   await sampleMenu.click();
-  await admin.getByRole('button', { name: 'Paste or file' }).click();
+  await admin.getByRole('button', { name: 'Add sample' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Paste' }).click();
   await dialog.getByLabel('Name').fill('two orders');
@@ -1359,11 +1365,8 @@ test('A2: a sample pasted or captured from the Sample menu is saved and run', as
   await expect(sampleMenu).toContainText('2 records');
 
   await sampleMenu.click();
-  await admin.getByRole('button', { name: 'Capture from a source' }).click();
-  await admin
-    .getByRole('listbox', { name: 'Sources' })
-    .getByRole('option', { name: /own-metrics/ })
-    .click();
+  await admin.getByRole('button', { name: 'Add sample' }).click();
+  await dialog.getByRole('button', { name: 'Capture' }).click();
   await captureThree(admin, 'metrics now');
   await expect(sampleMenu).toContainText('metrics now');
   await expect(sampleMenu).toContainText('3 records');

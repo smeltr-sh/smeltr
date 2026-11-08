@@ -2311,9 +2311,11 @@ const saveInputSample: Move = {
     await page.getByRole('link', { name: pipeline, exact: true }).click();
     const chip = page.getByRole('button', { name: 'Choose a sample' });
     await chip.click();
-    await page.getByRole('button', { name: 'Capture from a source' }).click();
-    await page.getByRole('option', { name: new RegExp(source) }).click();
+    await page.getByRole('button', { name: 'Add sample' }).click();
     const form = page.getByRole('dialog');
+    await form.getByRole('button', { name: 'Capture' }).click();
+    // The form starts on the pipeline's first source, and this route's may be another.
+    await form.getByRole('combobox', { name: /^Capture target/ }).selectOption(`source:${source}`);
     await form.getByRole('spinbutton', { name: 'records' }).fill('2');
     await form.getByRole('spinbutton', { name: 'seconds' }).fill('45');
     await form.getByRole('button', { name: 'Start' }).click();
