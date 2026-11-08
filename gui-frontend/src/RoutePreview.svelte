@@ -53,8 +53,6 @@
   const SHOWN = 50;
   /** Whether the open destination shows every document, not the first fifty. */
   let allDocuments = $state(false);
-  /** The open destination's documents shown whole, by their place in its list. */
-  let openDocuments = new SvelteSet<number>();
   /** The records whose sent documents are shown whole, by row. Any number can be open at once, as in a
    * pipeline's preview. */
   let expanded = new SvelteSet<number>();
@@ -79,7 +77,6 @@
     error = '';
     openDestination = null;
     allDocuments = false;
-    openDocuments.clear();
     expanded.clear();
     try {
       const res = await routePreview(JSON.stringify(config), selected);
@@ -207,15 +204,6 @@
   );
 </script>
 
-{#snippet whole(document: string)}
-  {@const fields = parsed(document)}
-  {#if fields}
-    <RecordFields before={fields} after={fields} showTypes={false} />
-  {:else}
-    <div class="mono whole">{document}</div>
-  {/if}
-{/snippet}
-
 <div class="preview" class:empty={driven && !result && !error}>
   {#if !driven}
     <div class="controls">
@@ -255,7 +243,6 @@
           onclick={() => {
             openDestination = openDestination === d.id ? null : d.id;
             allDocuments = false;
-            openDocuments.clear();
           }}
         >
           <span class="count">{d.documents.length}</span>
@@ -287,23 +274,8 @@
               >{count(open.documents.length, 'document')}, as they would be sent</span
             >
           </div>
-          {#each allDocuments ? open.documents : open.documents.slice(0, SHOWN) as doc, k}
-            {@const shown = openDocuments.has(k)}
-            <div class="doc">
-              <div class="doc-line">
-                <button
-                  type="button"
-                  class="icon"
-                  aria-expanded={shown}
-                  aria-label={`document ${k + 1}`}
-                  onclick={() => (shown ? openDocuments.delete(k) : openDocuments.add(k))}
-                  ><ChevronIcon open={shown} /></button
-                ><span class="mono ellipsis">{doc}</span>
-              </div>
-              {#if shown}
-                <div class="expanded-cell">{@render whole(doc)}</div>
-              {/if}
-            </div>
+          {#each allDocuments ? open.documents : open.documents.slice(0, SHOWN) as doc}
+            <div class="doc mono ellipsis">{doc}</div>
           {/each}
           {#if !allDocuments && open.documents.length > SHOWN}
             <div class="doc dim ellipsis">
@@ -446,6 +418,7 @@
               <tr aria-label={`record ${row.row}`}>
                 <td class="expanded-cell" colspan="7">
                   {#each sent as doc}
+                    {@const fields = parsed(doc.document)}
                     <div class="sent-head">
                       <span class="mono">{routeName(doc.route)}</span><span class="mono dim"
                         >{doc.destinations
@@ -453,7 +426,11 @@
                           .join(', ')}</span
                       >
                     </div>
-                    {@render whole(doc.document)}
+                    {#if fields}
+                      <RecordFields before={fields} after={fields} showTypes={false} />
+                    {:else}
+                      <div class="mono whole">{doc.document}</div>
+                    {/if}
                   {/each}
                 </td>
               </tr>
@@ -555,17 +532,6 @@
   }
   .doc:last-child {
     border-bottom: none;
-  }
-  .doc-line {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    min-width: 0;
-  }
-  .doc .expanded-cell {
-    margin: 0.2rem 0;
-    padding: 0.3rem 0.6rem;
-    font-size: var(--text-label);
   }
   /* A document that is not a JSON object, whole: it wraps anywhere rather than widening the page. */
   .whole {
