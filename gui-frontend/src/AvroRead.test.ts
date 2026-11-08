@@ -58,6 +58,8 @@ describe('fields a fill declares', () => {
 describe('what a finished fill declares', () => {
   const status = (over: Partial<CaptureStatus>): CaptureStatus => ({
     session: 's',
+    records: 0,
+    revision: 0,
     done: true,
     stopped: false,
     maxMatches: 1,

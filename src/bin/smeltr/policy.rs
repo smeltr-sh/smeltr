@@ -101,7 +101,7 @@ pub fn need(method: &Method, path: &str) -> Need {
         (Method::POST, ["captures"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["captures", _])
         | (Method::POST, ["captures", _, "stop"])
-        | (Method::GET | Method::HEAD, ["captures", _, "download"]) => Need::Somewhere(Level::Viewer),
+        | (Method::GET | Method::HEAD, ["captures", _, "download" | "records"]) => Need::Somewhere(Level::Viewer),
         // Names, versions and where each is used, never a value: what a secret picker offers whoever saves a form.
         (Method::GET | Method::HEAD, ["secrets"]) | (Method::GET | Method::HEAD, ["certificates"]) => {
             Need::Somewhere(Level::Editor)
@@ -386,6 +386,7 @@ mod tests {
             (Method::GET, "/api/captures/mine"),
             (Method::POST, "/api/captures/c1/stop"),
             (Method::GET, "/api/captures/c1/download"),
+            (Method::GET, "/api/captures/c1/records"),
             (Method::DELETE, "/api/captures/c1"),
         ] {
             assert_eq!(need(&method, path), Need::Somewhere(Level::Viewer), "{method} {path}");

@@ -14,6 +14,7 @@ import {
   MAIN_BRANCH,
   setBranch,
   expandBatch,
+  captureStatus,
 } from './api';
 
 // A fresh browser opens on main, where a write first asks for a branch; the writes here are an analyst's on one.
@@ -183,6 +184,41 @@ describe('a review names the branch under review', () => {
     captureFetch();
     await runTests({ touched: true }, 'al/vendor-returns');
     expect(calls).toEqual(['/api/branches/al%2Fvendor-returns/test-runs']);
+  });
+});
+
+describe('polling a capture', () => {
+  const calls: string[] = [];
+  let revision = 1;
+
+  beforeEach(() => {
+    calls.length = 0;
+    revision = 1;
+    vi.stubGlobal('fetch', (url: string) => {
+      calls.push(url);
+      const rows = [{ values: ['a'], worker: 'w1' }];
+      const body = url.endsWith('/records')
+        ? { ok: true, errors: [], batches: [{ columns: [{ name: '_raw', type: 'str' }], rows }] }
+        : { ok: true, errors: [], capture: { session: 'c1', records: 1, revision } };
+      return Promise.resolve(new Response(JSON.stringify(body)));
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('reads the records again only when the revision moves', async () => {
+    const first = (await captureStatus('c1')).capture!;
+    expect(first.batches[0].rows).toHaveLength(1);
+    const same = (await captureStatus('c1', first)).capture!;
+    expect(same.batches).toBe(first.batches);
+    revision = 2;
+    await captureStatus('c1', same);
+    expect(calls).toEqual([
+      '/api/captures/c1',
+      '/api/captures/c1/records',
+      '/api/captures/c1',
+      '/api/captures/c1',
+      '/api/captures/c1/records',
+    ]);
   });
 });
 

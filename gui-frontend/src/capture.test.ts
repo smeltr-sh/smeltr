@@ -22,6 +22,8 @@ const row = (worker: string, raw: string) => ({ worker, values: [raw, 't'], fail
 function status(over: Partial<CaptureStatus> = {}): CaptureStatus {
   return {
     session: 's1',
+    records: 3,
+    revision: 3,
     done: false,
     stopped: false,
     maxMatches: 100,
