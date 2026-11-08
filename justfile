@@ -260,7 +260,7 @@ check-package package: need-nextest stable
 # by hand on it, as a draft pre-release with its own image tag, and Windows only when asked.
 [doc("Record a release, commit it and tag it, or tag a release candidate.")]
 cut-release release: clean-main
-    {{ if release =~ '^[0-9]+\.[0-9]+\.[0-9]+$' { "just record-and-commit " + release } else if release =~ '^[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$' { "" } else { error('a release is named major.minor.patch, like 1.0.0, and its candidate like 1.0.0-rc1') } }}
+    {{ if release =~ '^[0-9]+\.[0-9]+\.[0-9]+$' { '"' + just_executable() + '" record-and-commit ' + release } else if release =~ '^[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$' { "" } else { error('a release is named major.minor.patch, like 1.0.0, and its candidate like 1.0.0-rc1') } }}
     git tag -a "v{{release}}" -m "Release {{release}}"
 
 [private]
